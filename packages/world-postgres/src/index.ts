@@ -1,5 +1,5 @@
+import type { Socket } from 'node:net';
 import type { Storage, World } from '@workflow/world';
-import PgBoss from 'pg-boss';
 import createPostgres from 'postgres';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
@@ -32,12 +32,9 @@ export function createWorld(
       10,
   }
 ): World & { start(): Promise<void> } {
-  const boss = new PgBoss({
-    connectionString: config.connectionString,
-  });
   const postgres = createPostgres(config.connectionString);
   const drizzle = createClient(postgres);
-  const queue = createQueue(boss, config);
+  const queue = createQueue(config, postgres);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(postgres, drizzle);
 
@@ -47,6 +44,22 @@ export function createWorld(
     ...queue,
     async start() {
       await queue.start();
+    },
+    async close() {
+      await streamer.close();
+      await queue.close();
+      await postgres.end();
+      // Force-destroy any TCP sockets that survived postgres.end().
+      // postgres.js's terminate() calls socket.end() (graceful TCP FIN)
+      // rather than socket.destroy(), leaving sockets in FIN_WAIT state
+      // that prevent the process from exiting on slower networks (e.g.
+      // CI Docker containers).
+      // See: https://github.com/porsager/postgres/issues/1022
+      for (const h of (process as any)._getActiveHandles?.() ?? []) {
+        if (h?.constructor?.name === 'Socket' && !h._type && !h.destroyed) {
+          (h as Socket).destroy();
+        }
+      }
     },
   };
 }

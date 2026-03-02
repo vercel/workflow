@@ -133,8 +133,8 @@ describe('DurableAgent', () => {
       });
     });
 
-    it('should re-throw non-FatalError errors for retry', async () => {
-      const errorMessage = 'This is a retryable error';
+    it('should convert non-FatalError to tool error result', async () => {
+      const errorMessage = 'This is a generic error';
       const tools: ToolSet = {
         testTool: {
           description: 'A test tool',
@@ -162,31 +162,49 @@ describe('DurableAgent', () => {
         { role: 'user', content: [{ type: 'text', text: 'test' }] },
       ];
       const mockIterator = {
-        next: vi.fn().mockResolvedValueOnce({
-          done: false,
-          value: {
-            toolCalls: [
-              {
-                toolCallId: 'test-call-id',
-                toolName: 'testTool',
-                input: '{}',
-              } as LanguageModelV2ToolCall,
-            ],
-            messages: mockMessages,
-          },
-        }),
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
         mockIterator as unknown as MockIterator
       );
 
-      // Execute should throw because non-FatalErrors are re-thrown
+      // Non-FatalError should be converted to error-text, not re-thrown
       await expect(
         agent.stream({
           messages: [{ role: 'user', content: 'test' }],
           writable: mockWritable,
         })
-      ).rejects.toThrow(errorMessage);
+      ).resolves.not.toThrow();
+
+      // Verify the error was converted to a tool error result
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'test-call-id',
+        toolName: 'testTool',
+        output: {
+          type: 'error-text',
+          value: errorMessage,
+        },
+      });
     });
 
     it('should successfully execute tools that return normally', async () => {
@@ -252,10 +270,356 @@ describe('DurableAgent', () => {
         toolCallId: 'test-call-id',
         toolName: 'testTool',
         output: {
-          type: 'text',
-          value: JSON.stringify(toolResult),
+          // Object results use 'json' type with raw value (not stringified)
+          type: 'json',
+          value: toolResult,
         },
       });
+    });
+
+    it('should skip local execution for provider-executed tools', async () => {
+      // This tool should NOT be called because the tool call is provider-executed
+      const executeFn = vi.fn();
+      const tools: ToolSet = {
+        // This is a local tool - should never be called for provider-executed calls
+        localTool: {
+          description: 'A local tool',
+          inputSchema: z.object({}),
+          execute: executeFn,
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      // Create a provider-executed tool result map
+      const providerExecutedToolResults = new Map();
+      providerExecutedToolResults.set('provider-call-id', {
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        result: 'Search results for: test query',
+        isError: false,
+      });
+
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'provider-call-id',
+                  toolName: 'WebSearch',
+                  input: '{"query":"test query"}',
+                  providerExecuted: true, // This is a provider-executed tool
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+              providerExecutedToolResults,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // The local tool execute function should NOT have been called
+      expect(executeFn).not.toHaveBeenCalled();
+
+      // Verify that the iterator was called with the provider-executed tool result
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        output: {
+          // String results use 'text' type with raw value
+          type: 'text',
+          value: 'Search results for: test query',
+        },
+      });
+    });
+
+    it('should handle mixed provider-executed and local tools', async () => {
+      const localToolResult = { local: 'result' };
+      const localExecuteFn = vi.fn().mockResolvedValue(localToolResult);
+      const tools: ToolSet = {
+        localTool: {
+          description: 'A local tool',
+          inputSchema: z.object({}),
+          execute: localExecuteFn,
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      // Create a provider-executed tool result map
+      const providerExecutedToolResults = new Map();
+      providerExecutedToolResults.set('provider-call-id', {
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        result: { searchResults: ['result1', 'result2'] },
+        isError: false,
+      });
+
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                // Local tool call - should be executed locally
+                {
+                  toolCallId: 'local-call-id',
+                  toolName: 'localTool',
+                  input: '{}',
+                  providerExecuted: false,
+                } as LanguageModelV2ToolCall,
+                // Provider-executed tool call - should use stream result
+                {
+                  toolCallId: 'provider-call-id',
+                  toolName: 'WebSearch',
+                  input: '{"query":"test"}',
+                  providerExecuted: true,
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+              providerExecutedToolResults,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // The local tool execute function SHOULD have been called
+      expect(localExecuteFn).toHaveBeenCalledTimes(1);
+
+      // Verify that the iterator was called with both tool results
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(2);
+
+      // First result should be from local tool (object result uses 'json' type)
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'local-call-id',
+        toolName: 'localTool',
+        output: {
+          type: 'json',
+          value: localToolResult,
+        },
+      });
+
+      // Second result should be from provider-executed tool (object result uses 'json' type)
+      expect(toolResultsCall[1]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        output: {
+          type: 'json',
+          value: { searchResults: ['result1', 'result2'] },
+        },
+      });
+    });
+
+    it('should handle provider-executed tool errors with isError flag', async () => {
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      // Create a provider-executed tool result with isError: true
+      const providerExecutedToolResults = new Map();
+      providerExecutedToolResults.set('provider-call-id', {
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        result: 'Search failed: Rate limit exceeded',
+        isError: true,
+      });
+
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'provider-call-id',
+                  toolName: 'WebSearch',
+                  input: '{"query":"test query"}',
+                  providerExecuted: true,
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+              providerExecutedToolResults,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Verify that the iterator was called with error-text output type
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'provider-call-id',
+        toolName: 'WebSearch',
+        output: {
+          // String error results use 'error-text' type with raw value
+          type: 'error-text',
+          value: 'Search failed: Rate limit exceeded',
+        },
+      });
+    });
+
+    it('should warn and return empty result when provider-executed tool result is missing', async () => {
+      const consoleWarnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation(() => {});
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      // Empty map - no provider results available
+      const providerExecutedToolResults = new Map();
+
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'missing-result-id',
+                  toolName: 'WebSearch',
+                  input: '{"query":"test query"}',
+                  providerExecuted: true,
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+              providerExecutedToolResults,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Verify warning was logged
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Provider-executed tool "WebSearch"')
+      );
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('missing-result-id')
+      );
+
+      // Verify empty result was returned
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'missing-result-id',
+        toolName: 'WebSearch',
+        output: {
+          type: 'text',
+          value: '',
+        },
+      });
+
+      consoleWarnSpy.mockRestore();
     });
   });
 
@@ -1029,14 +1393,14 @@ describe('DurableAgent', () => {
       );
     });
 
-    it('should call onError when tool execution fails', async () => {
-      const toolError = new Error('Tool execution failed');
+    it('should convert tool execution error to error-text result instead of failing stream', async () => {
+      const errorMessage = 'Tool execution failed';
       const tools: ToolSet = {
         failingTool: {
           description: 'A tool that fails',
           inputSchema: z.object({}),
           execute: async () => {
-            throw toolError;
+            throw new Error(errorMessage);
           },
         },
       };
@@ -1080,17 +1444,28 @@ describe('DurableAgent', () => {
         mockIterator as unknown as MockIterator
       );
 
-      const onError = vi.fn();
-
+      // Tool errors should be handled gracefully, not reject the stream
       await expect(
         agent.stream({
           messages: [{ role: 'user', content: 'test' }],
           writable: mockWritable,
-          onError,
         })
-      ).rejects.toThrow('Tool execution failed');
+      ).resolves.not.toThrow();
 
-      expect(onError).toHaveBeenCalledWith({ error: toolError });
+      // Verify the error was sent back as an error-text tool result
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'test-call-id',
+        toolName: 'failingTool',
+        output: {
+          type: 'error-text',
+          value: errorMessage,
+        },
+      });
     });
 
     it('should call onFinish with steps and messages when streaming completes', async () => {

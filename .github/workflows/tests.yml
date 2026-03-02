@@ -7,11 +7,15 @@ on:
     tags:
       - "!*"
   pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
 
 concurrency:
   # Unique group for this workflow and branch
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Phase 0: Update PR comment to show tests are running
@@ -116,6 +120,8 @@ jobs:
   unit:
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     strategy:
       fail-fast: false
       matrix:
@@ -126,6 +132,8 @@ jobs:
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -140,12 +148,16 @@ jobs:
   build-error-messages:
     name: Node.js Module Build Errors Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -199,6 +211,7 @@ jobs:
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -239,9 +252,12 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -267,8 +283,8 @@ jobs:
         env:
           NODE_OPTIONS: "--enable-source-maps"
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
           APP_NAME: ${{ matrix.app.name }}
-          WORKFLOW_VERCEL_SKIP_PROXY: 'true'
           WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
@@ -294,12 +310,15 @@ jobs:
   getTestMatrix:
     name: Get Test Matrix
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -313,6 +332,8 @@ jobs:
   e2e-local-dev:
     name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
       fail-fast: false
@@ -321,10 +342,13 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -376,6 +400,8 @@ jobs:
   e2e-local-prod:
     name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
       fail-fast: false
@@ -384,10 +410,13 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -442,6 +471,8 @@ jobs:
   e2e-local-postgres:
     name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
       fail-fast: false
@@ -465,12 +496,15 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -528,13 +562,18 @@ jobs:
   e2e-windows:
     name: E2E Windows Tests
     runs-on: windows-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -562,7 +601,8 @@ jobs:
       - name: Run E2E Tests (Next.js)
         run: |
           cd workbench/nextjs-turbopack
-          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev }
+          $logFile = "$env:GITHUB_WORKSPACE/nextjs-server.log"
+          $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
           Start-Sleep -Seconds 15
           cd ../..
           pnpm vitest run packages/core/e2e/dev.test.ts
@@ -574,6 +614,19 @@ jobs:
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
           DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
+
+      - name: Print Next.js server logs
+        if: always()
+        shell: powershell
+        run: |
+          $logFile = "$env:GITHUB_WORKSPACE/nextjs-server.log"
+          if (Test-Path $logFile) {
+            Write-Host "=== Next.js Server Logs ===" -ForegroundColor Cyan
+            Get-Content $logFile
+            Write-Host "=== End of Server Logs ===" -ForegroundColor Cyan
+          } else {
+            Write-Host "No server log file found at $logFile" -ForegroundColor Yellow
+          }
 
       - name: Generate E2E summary
         if: always()
@@ -589,14 +642,26 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+      - name: Upload Next.js server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nextjs-server-logs-windows
+          path: nextjs-server.log
+          retention-days: 7
+          if-no-files-found: ignore
+
   # Community World E2E Tests (dynamically generated from worlds-manifest.json)
   getCommunityWorldsMatrix:
     name: Get Community Worlds Matrix
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -609,6 +674,7 @@ jobs:
 
   e2e-community:
     name: E2E Community World (${{ matrix.world.name }})
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getCommunityWorldsMatrix
     strategy:
       fail-fast: false
@@ -633,6 +699,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
         uses: actions/download-artifact@v4
@@ -718,6 +786,60 @@ jobs:
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
+  # Final required check: passes only when unit + all E2E jobs succeed
+  e2e-required-check:
+    name: E2E Required Check
+    runs-on: ubuntu-latest
+    needs: [unit, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows, e2e-community]
+    if: always()
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate E2E job statuses
+        env:
+          UNIT_STATUS: ${{ needs.unit.result }}
+          VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
+          LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
+          LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
+          POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
+          WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
+          COMMUNITY_STATUS: ${{ needs.e2e-community.result }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+        run: |
+          FAILED_JOBS=()
+
+          # When workflow-server-test label is present, only check vercel-prod (others should be skipped)
+          # Otherwise, all jobs must succeed
+          if [[ "$HAS_LABEL" == "true" ]]; then
+            echo "workflow-server-test label detected - only checking required jobs"
+            [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+
+            # Verify other jobs were actually skipped
+            [[ "$UNIT_STATUS" == "skipped" ]] || echo "Warning: unit was not skipped ($UNIT_STATUS)"
+            [[ "$LOCAL_DEV_STATUS" == "skipped" ]] || echo "Warning: e2e-local-dev was not skipped ($LOCAL_DEV_STATUS)"
+            [[ "$LOCAL_PROD_STATUS" == "skipped" ]] || echo "Warning: e2e-local-prod was not skipped ($LOCAL_PROD_STATUS)"
+            [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
+            [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
+            [[ "$COMMUNITY_STATUS" == "skipped" ]] || echo "Warning: e2e-community was not skipped ($COMMUNITY_STATUS)"
+          else
+            echo "Standard PR - checking all jobs"
+            [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
+            [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+            [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
+            [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
+            [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
+            [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
+            [[ "$COMMUNITY_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-community ($COMMUNITY_STATUS)")
+          fi
+
+          if [[ ${#FAILED_JOBS[@]} -gt 0 ]]; then
+            echo "The following E2E jobs did not succeed:"
+            printf '%s\n' "${FAILED_JOBS[@]}"
+            exit 1
+          fi
+
+          echo "All required E2E jobs succeeded."
+
   # Publish E2E results to GitHub Pages (main branch only)
   publish-results:
     name: Publish E2E Results
@@ -732,6 +854,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
         uses: actions/download-artifact@v4

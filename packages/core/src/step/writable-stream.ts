@@ -4,10 +4,18 @@ import {
   WorkflowServerWritableStream,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
-import type { WorkflowWritableStreamOptions } from '../writable-stream.js';
 import { contextStorage } from './context-storage.js';
 
-export type { WorkflowWritableStreamOptions };
+/**
+ * The options for {@link getWritable}.
+ */
+export interface WorkflowWritableStreamOptions {
+  /**
+   * An optional namespace to distinguish between multiple streams associated
+   * with the same workflow run.
+   */
+  namespace?: string;
+}
 
 /**
  * Retrieves a writable stream that is associated with the current workflow.

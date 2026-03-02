@@ -1,5 +1,5 @@
 import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"steps":{"input.js":{"destructure":{"stepId":"step//input.js//destructure"},"multiple":{"stepId":"step//input.js//multiple"},"nested_destructure":{"stepId":"step//input.js//nested_destructure"},"process_array":{"stepId":"step//input.js//process_array"},"rest_top_level":{"stepId":"step//input.js//rest_top_level"},"with_defaults":{"stepId":"step//input.js//with_defaults"},"with_rest":{"stepId":"step//input.js//with_rest"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"destructure":{"stepId":"step//./input//destructure"},"multiple":{"stepId":"step//./input//multiple"},"nested_destructure":{"stepId":"step//./input//nested_destructure"},"process_array":{"stepId":"step//./input//process_array"},"rest_top_level":{"stepId":"step//./input//rest_top_level"},"with_defaults":{"stepId":"step//./input//with_defaults"},"with_rest":{"stepId":"step//./input//with_rest"}}}}*/;
 export async function destructure({ a, b }) {
     return a + b;
 }
@@ -34,10 +34,10 @@ export async function rest_top_level(a, b, ...rest) {
         rest
     };
 }
-registerStepFunction("step//input.js//destructure", destructure);
-registerStepFunction("step//input.js//process_array", process_array);
-registerStepFunction("step//input.js//nested_destructure", nested_destructure);
-registerStepFunction("step//input.js//with_defaults", with_defaults);
-registerStepFunction("step//input.js//with_rest", with_rest);
-registerStepFunction("step//input.js//multiple", multiple);
-registerStepFunction("step//input.js//rest_top_level", rest_top_level);
+registerStepFunction("step//./input//destructure", destructure);
+registerStepFunction("step//./input//process_array", process_array);
+registerStepFunction("step//./input//nested_destructure", nested_destructure);
+registerStepFunction("step//./input//with_defaults", with_defaults);
+registerStepFunction("step//./input//with_rest", with_rest);
+registerStepFunction("step//./input//multiple", multiple);
+registerStepFunction("step//./input//rest_top_level", rest_top_level);

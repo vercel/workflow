@@ -1,9 +1,8 @@
 import { z } from 'zod';
-import type { SerializedData } from './serialization.js';
+import { type SerializedData, SerializedDataSchema } from './serialization.js';
 import {
   type PaginationOptions,
   type ResolveData,
-  type StructuredError,
   StructuredErrorSchema,
 } from './shared.js';
 
@@ -18,16 +17,22 @@ export const WorkflowRunStatusSchema = z.enum([
 
 /**
  * Base schema for the Workflow runs. Prefer using WorkflowRunSchema
- * which implements a discriminatedUnion for various states
+ * which implements a discriminatedUnion for various states.
+ *
+ * Note: input/output use SerializedDataSchema to support both:
+ * - specVersion >= 2: Uint8Array (binary devalue format)
+ * - specVersion 1: any (legacy JSON format)
  */
 export const WorkflowRunBaseSchema = z.object({
   runId: z.string(),
   status: WorkflowRunStatusSchema,
   deploymentId: z.string(),
   workflowName: z.string(),
+  // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
+  specVersion: z.number().optional(),
   executionContext: z.record(z.string(), z.any()).optional(),
-  input: z.array(z.any()),
-  output: z.any().optional(),
+  input: SerializedDataSchema,
+  output: SerializedDataSchema.optional(),
   error: StructuredErrorSchema.optional(),
   expiredAt: z.coerce.date().optional(),
   startedAt: z.coerce.date().optional(),
@@ -52,10 +57,10 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
     error: z.undefined(),
     completedAt: z.coerce.date(),
   }),
-  // Completed state
+  // Completed state - output can be v1 or v2 format
   WorkflowRunBaseSchema.extend({
     status: z.literal('completed'),
-    output: z.any(),
+    output: SerializedDataSchema,
     error: z.undefined(),
     completedAt: z.coerce.date(),
   }),
@@ -72,19 +77,22 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
 export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
 
+/**
+ * WorkflowRun with input/output fields excluded (when resolveData='none').
+ * Used for listing runs without fetching the full serialized data.
+ */
+export type WorkflowRunWithoutData = Omit<WorkflowRun, 'input' | 'output'> & {
+  input: undefined;
+  output: undefined;
+};
+
 // Request types
 export interface CreateWorkflowRunRequest {
   deploymentId: string;
   workflowName: string;
-  input: SerializedData[];
+  input: SerializedData;
   executionContext?: SerializedData;
-}
-
-export interface UpdateWorkflowRunRequest {
-  status?: WorkflowRunStatus;
-  output?: SerializedData;
-  error?: StructuredError;
-  executionContext?: Record<string, any>;
+  specVersion?: number;
 }
 
 export interface GetWorkflowRunParams {

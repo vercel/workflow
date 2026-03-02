@@ -3,7 +3,7 @@
  * Steps are queued to the __wkf_step_* topic.
  */
 export const STEP_QUEUE_TRIGGER = {
-  type: 'queue/v1beta' as const,
+  type: 'queue/v2beta' as const,
   topic: '__wkf_step_*',
   consumer: 'default',
   maxDeliveries: 64, // Maximum number of delivery attempts (default: 3)
@@ -16,7 +16,7 @@ export const STEP_QUEUE_TRIGGER = {
  * Workflows are queued to the __wkf_workflow_* topic.
  */
 export const WORKFLOW_QUEUE_TRIGGER = {
-  type: 'queue/v1beta' as const,
+  type: 'queue/v2beta' as const,
   topic: '__wkf_workflow_*',
   consumer: 'default',
   maxDeliveries: 64, // Maximum number of delivery attempts (default: 3)

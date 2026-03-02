@@ -14,6 +14,13 @@ export interface ModuleOptions {
    * @default false
    */
   typescriptPlugin?: boolean;
+
+  /**
+   * Node.js runtime version for Vercel Functions.
+   * @example "nodejs22.x"
+   * @example "nodejs24.x"
+   */
+  runtime?: string;
 }
 
 declare module 'nitro/types' {

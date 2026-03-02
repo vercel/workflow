@@ -1,108 +1,128 @@
 'use client';
 
-import type {
-  Folder as FolderType,
-  Item as ItemType,
-  Separator as SeparatorType,
-} from 'fumadocs-core/page-tree';
-import { ChevronRightIcon, ExternalLinkIcon } from 'lucide-react';
-import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import type { ReactNode } from 'react';
+import type { Node } from 'fumadocs-core/page-tree';
 import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import { cn } from '@/lib/utils';
+  SidebarFolder,
+  SidebarFolderContent,
+  SidebarFolderLink,
+  SidebarFolderTrigger,
+  SidebarItem,
+  SidebarSeparator,
+} from 'fumadocs-ui/components/sidebar/base';
+import type { SidebarPageTreeComponents } from 'fumadocs-ui/components/sidebar/page-tree';
+import { useTreeContext, useTreePath } from 'fumadocs-ui/contexts/tree';
+import { usePathname } from 'next/navigation';
+import { Fragment, useEffect, useRef } from 'react';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
+import { useSidebarContext } from '@/hooks/geistdocs/use-sidebar';
+import { SearchButton } from './search';
 
-type FolderProps = {
-  item: FolderType;
-  level: number;
-  children: ReactNode;
-};
-
-export const Folder = ({ item, level, children }: FolderProps) => {
+export const Sidebar = () => {
+  const { root } = useTreeContext();
+  const { isOpen, setIsOpen } = useSidebarContext();
   const pathname = usePathname();
-  const isActive = pathname === item.index?.url;
+  const previousPathname = useRef(pathname);
 
-  const linkInner = item.index ? (
-    <Link
-      href={item.index.url}
-      className={cn(
-        'text-pretty font-medium text-sm',
-        isActive && 'text-primary'
-      )}
+  useEffect(() => {
+    if (pathname !== previousPathname.current) {
+      setIsOpen(false);
+      previousPathname.current = pathname;
+    }
+  }, [pathname, setIsOpen]);
+
+  const renderSidebarList = (items: Node[]) =>
+    items.map((item) => {
+      if (item.type === 'separator') {
+        return <Separator item={item} key={item.$id} />;
+      }
+
+      if (item.type === 'folder') {
+        const children = renderSidebarList(item.children);
+        return (
+          <Folder item={item} key={item.$id}>
+            {children}
+          </Folder>
+        );
+      }
+
+      return <Item item={item} key={item.$id} />;
+    });
+
+  return (
+    <div
+      className="pointer-events-none sticky top-(--fd-docs-row-1) z-20 h-[calc(var(--fd-docs-height)-var(--fd-docs-row-1))] [grid-area:sidebar] *:pointer-events-auto max-md:hidden md:layout:[--fd-sidebar-width:268px]"
+      data-sidebar-placeholder
     >
-      {item.name}
-    </Link>
-  ) : (
-    <span className="text-pretty font-medium text-sm">{item.name}</span>
-  );
-
-  if (!item.children.length) {
-    return (
-      <div
-        className="mt-4 mb-2 flex w-full items-center justify-between gap-4 first-child:mt-0"
-        data-level={level}
-      >
-        {linkInner}
+      <div className="h-full overflow-y-auto px-4 pt-12 pb-4">
+        <Fragment key={root.$id}>{renderSidebarList(root.children)}</Fragment>
       </div>
-    );
-  }
+      <Sheet onOpenChange={setIsOpen} open={isOpen}>
+        <SheetContent className="gap-0">
+          <SheetHeader className="mt-8">
+            <SheetTitle className="sr-only">Mobile Menu</SheetTitle>
+            <SheetDescription className="sr-only">
+              Navigation for the documentation.
+            </SheetDescription>
+            <SearchButton onClick={() => setIsOpen(false)} />
+          </SheetHeader>
+          <div className="flex-1 overflow-y-auto px-4 pb-4">
+            {renderSidebarList(root.children)}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </div>
+  );
+};
+
+export const Folder: SidebarPageTreeComponents['Folder'] = ({
+  children,
+  item,
+}) => {
+  const path = useTreePath();
+  const defaultOpen = item.defaultOpen ?? path.includes(item);
 
   return (
-    <Collapsible defaultOpen={item.defaultOpen}>
-      <CollapsibleTrigger
-        className="group mt-4 mb-2 flex w-full items-center justify-between gap-4 first-child:mt-0"
-        data-level={level}
-      >
-        {linkInner}
-        <ChevronRightIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-90" />
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <ul
-          style={{
-            marginLeft: `${level * 1}rem`,
-          }}
+    <SidebarFolder defaultOpen={defaultOpen}>
+      {item.index ? (
+        <SidebarFolderLink
+          className="flex items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground data-[active=true]:text-foreground [&_svg]:size-3.5"
+          external={item.index.external}
+          href={item.index.url}
         >
-          {children}
-        </ul>
-      </CollapsibleContent>
-    </Collapsible>
+          {item.icon}
+          {item.name}
+        </SidebarFolderLink>
+      ) : (
+        <SidebarFolderTrigger className="flex items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground [&_svg]:size-3.5">
+          {item.icon}
+          {item.name}
+        </SidebarFolderTrigger>
+      )}
+      <SidebarFolderContent className="ml-2">{children}</SidebarFolderContent>
+    </SidebarFolder>
   );
 };
 
-type ItemProps = {
-  item: ItemType;
-};
+export const Item: SidebarPageTreeComponents['Item'] = ({ item }) => (
+  <SidebarItem
+    className="block w-full truncate text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground data-[active=true]:text-foreground"
+    external={item.external}
+    href={item.url}
+    icon={item.icon}
+  >
+    {item.name}
+  </SidebarItem>
+);
 
-export const Item = ({ item }: ItemProps) => {
-  const pathname = usePathname();
-  const isActive = pathname === item.url;
-
-  return (
-    <li className="flex items-center justify-between gap-2">
-      <Link
-        className={cn(
-          'w-full truncate text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground',
-          isActive && 'text-primary'
-        )}
-        href={item.url}
-      >
-        {item.name}
-      </Link>
-      {item.external && <ExternalLinkIcon className="size-4 text-primary" />}
-    </li>
-  );
-};
-
-type SeparatorProps = {
-  item: SeparatorType;
-};
-
-export const Separator = ({ item }: SeparatorProps) => (
-  <div className="mt-4 mb-2 flex items-center gap-2 first-child:mt-0">
-    <span className="font-medium text-sm">{item.name}</span>
-  </div>
+export const Separator: SidebarPageTreeComponents['Separator'] = ({ item }) => (
+  <SidebarSeparator className="mt-4 mb-2 flex items-center gap-2 px-0 font-medium text-sm first-child:mt-0">
+    {item.icon}
+    {item.name}
+  </SidebarSeparator>
 );

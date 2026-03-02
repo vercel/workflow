@@ -1,6 +1,6 @@
 {
   "name": "workflow",
-  "version": "4.0.1-beta.49",
+  "version": "4.1.0-beta.62",
   "description": "Workflow DevKit - Build durable, resilient, and observable workflows",
   "main": "dist/typescript-plugin.cjs",
   "type": "module",
@@ -10,8 +10,12 @@
   },
   "files": [
     "dist",
-    "bin"
+    "bin",
+    "docs/**/*"
   ],
+  "directories": {
+    "doc": "./docs"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -34,7 +38,6 @@
       "default": "./dist/api.js"
     },
     "./internal/errors": "./dist/internal/errors.js",
-    "./internal/serialization": "./dist/internal/serialization.js",
     "./internal/builtins": "./dist/internal/builtins.js",
     "./internal/private": "./dist/internal/private.js",
     "./internal/class-serialization": "./dist/internal/class-serialization.js",
@@ -44,14 +47,17 @@
     "./sveltekit": "./dist/sveltekit.js",
     "./astro": "./dist/astro.js",
     "./vite": "./dist/vite.js",
+    "./nest": "./dist/nest.js",
     "./runtime": "./dist/runtime.js"
   },
   "scripts": {
     "build": "tsc && chmod +x bin/run.js",
-    "clean": "tsc --build --clean && rm -r dist ||:",
+    "clean": "tsc --build --clean && rm -rf dist docs ||:",
     "dev": "tsc --watch",
     "test": "vitest run src",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepack": "cp -r ../../docs/content/docs ./docs",
+    "postpack": "rm -rf docs"
   },
   "dependencies": {
     "@workflow/astro": "workspace:*",
@@ -61,6 +67,7 @@
     "@workflow/typescript-plugin": "workspace:*",
     "ms": "2.1.3",
     "@workflow/next": "workspace:*",
+    "@workflow/nest": "workspace:*",
     "@workflow/nitro": "workspace:*",
     "@workflow/nuxt": "workspace:*",
     "@workflow/sveltekit": "workspace:*",

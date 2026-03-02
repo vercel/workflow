@@ -8,25 +8,57 @@ import {
   type ValidQueueName,
 } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
-import type PgBoss from 'pg-boss';
+import {
+  Logger,
+  makeWorkerUtils,
+  type Runner,
+  run,
+  type WorkerUtils,
+} from 'graphile-worker';
+import type Postgres from 'postgres';
 import { monotonicFactory } from 'ulid';
-import { MessageData } from './boss.js';
 import type { PostgresWorldConfig } from './config.js';
+import { MessageData } from './message.js';
+
+function createGraphileLogger() {
+  const isJsonMode = () => process.env.WORKFLOW_JSON_MODE === '1';
+  const isVerbose = () => Boolean(process.env.DEBUG);
+
+  return new Logger(() => (level: string, message: string, meta?: unknown) => {
+    if (isJsonMode()) return;
+    if ((level === 'debug' || level === 'info') && !isVerbose()) return;
+    const pipe = level === 'error' ? process.stderr : process.stdout;
+    if (meta) {
+      pipe.write(
+        `[Graphile Worker] ${message} ${JSON.stringify(meta, null, 2)}\n`
+      );
+    } else {
+      pipe.write(`[Graphile Worker] ${message}\n`);
+    }
+  });
+}
+
+const graphileLogger = createGraphileLogger();
 
 /**
- * The Postgres queue works by creating two job types in pg-boss:
+ * The Postgres queue works by creating two job types in graphile-worker:
  * - `workflow` for workflow jobs
  *   - `step` for step jobs
  *
- * When a message is queued, it is sent to pg-boss with the appropriate job type.
+ * When a message is queued, it is sent to graphile-worker with the appropriate job type.
  * When a job is processed, it is deserialized and then re-queued into the _local world_, showing that
  * we can reuse the local world, mix and match worlds to build
  * hybrid architectures, and even migrate between worlds.
  */
+export type PostgresQueue = Queue & {
+  start(): Promise<void>;
+  close(): Promise<void>;
+};
+
 export function createQueue(
-  boss: PgBoss,
-  config: PostgresWorldConfig
-): Queue & { start(): Promise<void> } {
+  config: PostgresWorldConfig,
+  postgres: Postgres.Sql
+): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createLocalWorld({ dataDir: undefined, port });
 
@@ -45,59 +77,103 @@ export function createQueue(
     return 'postgres';
   };
 
-  const createdQueues = new Map<string, Promise<void>>();
+  let workerUtils: WorkerUtils | null = null;
+  let runner: Runner | null = null;
+  let startPromise: Promise<void> | null = null;
 
-  function createQueue(name: string) {
-    let createdQueue = createdQueues.get(name);
-    if (!createdQueue) {
-      createdQueue = boss.createQueue(name);
-      createdQueues.set(name, createdQueue);
+  async function migratePgBossJobs(utils: WorkerUtils): Promise<void> {
+    // Scenario A: Drizzle migration already ran — staging table exists
+    const hasStaging = await postgres`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = 'workflow'
+        AND table_name = '_pgboss_pending_jobs'
+      ) AS exists
+    `;
+    if (hasStaging[0].exists) {
+      const jobs = await postgres`
+        SELECT name, data, singleton_key, retry_limit
+        FROM "workflow"."_pgboss_pending_jobs"
+      `;
+      for (const job of jobs) {
+        await utils.addJob(job.name, job.data as Record<string, unknown>, {
+          jobKey: job.singleton_key ?? undefined,
+          maxAttempts: job.retry_limit ?? 3,
+        });
+      }
+      await postgres`DROP TABLE "workflow"."_pgboss_pending_jobs"`;
+      return;
     }
-    return createdQueue;
+
+    // Scenario B: Drizzle migration didn't run — pgboss schema still exists
+    const hasPgBoss = await postgres`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.schemata
+        WHERE schema_name = 'pgboss'
+      ) AS exists
+    `;
+    if (hasPgBoss[0].exists) {
+      const jobs = await postgres`
+        SELECT name, data, singleton_key, retry_limit
+        FROM pgboss.job
+        WHERE state IN ('created', 'retry')
+      `;
+      for (const job of jobs) {
+        await utils.addJob(job.name, job.data as Record<string, unknown>, {
+          jobKey: job.singleton_key ?? undefined,
+          maxAttempts: job.retry_limit ?? 3,
+        });
+      }
+      await postgres`DROP SCHEMA pgboss CASCADE`;
+    }
+  }
+
+  async function start(): Promise<void> {
+    if (!startPromise) {
+      startPromise = (async () => {
+        try {
+          workerUtils = await makeWorkerUtils({
+            connectionString: config.connectionString,
+            logger: graphileLogger,
+          });
+          await workerUtils.migrate();
+          await migratePgBossJobs(workerUtils);
+          await setupListeners();
+        } catch (err) {
+          startPromise = null;
+          throw err;
+        }
+      })();
+    }
+    await startPromise;
   }
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
-    await boss.start();
+    await start();
     const [prefix, queueId] = parseQueueName(queue);
     const jobName = Queues[prefix];
-    await createQueue(jobName);
     const body = transport.serialize(message);
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
-    await boss.send({
-      name: jobName,
-      options: {
-        singletonKey: opts?.idempotencyKey ?? messageId,
-        retryLimit: 3,
-      },
-      data: MessageData.encode({
+    await workerUtils!.addJob(
+      jobName,
+      MessageData.encode({
         id: queueId,
         data: body,
         attempt: 1,
         messageId,
         idempotencyKey: opts?.idempotencyKey,
       }),
-    });
+      {
+        jobKey: opts?.idempotencyKey ?? messageId,
+        maxAttempts: 3,
+      }
+    );
     return { messageId };
   };
 
-  async function setupListener(queue: QueuePrefix, jobName: string) {
-    await createQueue(jobName);
-    await Promise.all(
-      Array.from({ length: config.queueConcurrency || 10 }, async () => {
-        await boss.work(
-          jobName,
-          {
-            // The default is 2s, which is far too slow for running steps in quick succession.
-            // The min is 0.5s, which is still too slow. We should move to a pg NOTIFY/LISTEN-based job system.
-            pollingIntervalSeconds: 0.5,
-          },
-          work
-        );
-      })
-    );
-
-    async function work([job]: PgBoss.Job[]) {
-      const messageData = MessageData.parse(job.data);
+  function createTaskHandler(queue: QueuePrefix) {
+    return async (payload: unknown) => {
+      const messageData = MessageData.parse(payload);
       const bodyStream = Stream.Readable.toWeb(
         Stream.Readable.from([messageData.data])
       );
@@ -106,28 +182,49 @@ export function createQueue(
       );
       const message = QueuePayloadSchema.parse(body);
       const queueName = `${queue}${messageData.id}` as const;
+      // TODO: Custom headers from opts.headers are not propagated into MessageData.
+      // To support this, MessageData schema would need to include a headers field
+      // and the headers would need to be stored/retrieved from graphile-worker job data.
       await localWorld.queue(queueName, message, {
         idempotencyKey: messageData.idempotencyKey,
       });
-    }
+    };
   }
 
   async function setupListeners() {
+    const taskList: Record<string, (payload: unknown) => Promise<void>> = {};
     for (const [prefix, jobName] of Object.entries(Queues) as [
       QueuePrefix,
       string,
     ][]) {
-      await setupListener(prefix, jobName);
+      taskList[jobName] = createTaskHandler(prefix);
     }
+
+    runner = await run({
+      connectionString: config.connectionString,
+      concurrency: config.queueConcurrency || 10,
+      logger: graphileLogger,
+      pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
+      taskList,
+    });
   }
 
   return {
     createQueueHandler,
     getDeploymentId,
     queue,
-    async start() {
-      boss = await boss.start();
-      await setupListeners();
+    start,
+    async close() {
+      if (runner) {
+        await runner.stop();
+        runner = null;
+      }
+      if (workerUtils) {
+        await workerUtils.release();
+        workerUtils = null;
+      }
+      startPromise = null;
+      await localWorld.close?.();
     },
   };
 }

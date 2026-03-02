@@ -1,7 +1,6 @@
+import { start } from '@workflow/core/runtime';
 import type { WorkflowRun, World } from '@workflow/world';
-import chalk from 'chalk';
 import { logger } from '../config/log.js';
-import { start } from '../runtime.js';
 
 interface CLICreateOpts {
   json?: boolean;
@@ -65,9 +64,4 @@ export const startRun = async (
   } else {
     logger.log(newRun);
   }
-};
-
-export const cancelRun = async (world: World, runId: string) => {
-  await world.runs.cancel(runId);
-  logger.log(chalk.green(`Cancel signal sent to run ${runId}`));
 };

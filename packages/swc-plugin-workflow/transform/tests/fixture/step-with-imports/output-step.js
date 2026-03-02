@@ -6,7 +6,7 @@ import defaultExport from './default'; // should be removed
 import * as something from './something'; // should be removed
 import * as useful from './useful'; // do not remove
 import 'dotenv/config'; // should be removed
-/**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//input.js//processData"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//./input//processData"}}}}*/;
 export async function processData(data) {
     const result = someHelper(data);
     const transformed = anotherHelper(result);
@@ -24,4 +24,4 @@ export function normalFunction() {
     useful.doSomething();
     return usefulHelper();
 }
-registerStepFunction("step//input.js//processData", processData);
+registerStepFunction("step//./input//processData", processData);

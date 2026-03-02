@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"validWorkflow":{"workflowId":"workflow//input.js//validWorkflow"}}},"steps":{"input.js":{"validStep":{"stepId":"step//input.js//validStep"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"validWorkflow":{"workflowId":"workflow//./input//validWorkflow"}}},"steps":{"input.js":{"validStep":{"stepId":"step//./input//validStep"}}}}*/;
 // Error: sync function with use step
 export function syncStep() {
     'use step';
@@ -10,9 +10,9 @@ export const syncWorkflow = ()=>{
     return 'test';
 };
 // These are ok
-export var validStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//input.js//validStep");
+export var validStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//validStep");
 export const validWorkflow = async ()=>{
     return 'test';
 };
-validWorkflow.workflowId = "workflow//input.js//validWorkflow";
-globalThis.__private_workflows.set("workflow//input.js//validWorkflow", validWorkflow);
+validWorkflow.workflowId = "workflow//./input//validWorkflow";
+globalThis.__private_workflows.set("workflow//./input//validWorkflow", validWorkflow);

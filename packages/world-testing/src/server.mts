@@ -65,7 +65,20 @@ const app = new Hono()
     return ctx.json({ runId, hookId: hook.hookId });
   })
   .get('/runs/:runId', async (ctx) => {
-    return ctx.json(await getWorld().runs.get(ctx.req.param('runId')));
+    const run = await getWorld().runs.get(ctx.req.param('runId'));
+    // Custom JSON serialization to handle Uint8Array as base64
+    const json = JSON.stringify(run, (_key, value) => {
+      if (value instanceof Uint8Array) {
+        return {
+          __type: 'Uint8Array',
+          data: Buffer.from(value).toString('base64'),
+        };
+      }
+      return value;
+    });
+    return new Response(json, {
+      headers: { 'Content-Type': 'application/json' },
+    });
   })
   .get('/runs/:runId/readable', async (ctx) => {
     const runId = ctx.req.param('runId');

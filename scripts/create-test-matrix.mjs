@@ -34,7 +34,7 @@ const DEV_TEST_CONFIGS = {
   vite: {
     generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
-    apiFilePath: 'routes/api/trigger.post.ts',
+    apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
   },
   hono: {
@@ -54,6 +54,13 @@ const DEV_TEST_CONFIGS = {
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
     apiFilePath: './src/index.ts',
     apiFileImportPath: '..',
+  },
+  nest: {
+    generatedStepPath: '.nestjs/workflow/steps.mjs',
+    generatedWorkflowPath: '.nestjs/workflow/workflows.mjs',
+    apiFilePath: './src/app.controller.ts',
+    apiFileImportPath: '..',
+    workflowsDir: 'src/workflows',
   },
   astro: {
     generatedStepPath: 'src/pages/.well-known/workflow/v1/step.js',
@@ -79,14 +86,12 @@ const matrix = {
   ],
 };
 
-if (process.env.GITHUB_REF === 'refs/heads/main') {
-  const newItems = [];
+const newItems = [];
 
-  for (const item of matrix.app) {
-    newItems.push({ ...item, canary: true });
-  }
-  matrix.app.push(...newItems);
+for (const item of matrix.app) {
+  newItems.push({ ...item, canary: true });
 }
+matrix.app.push(...newItems);
 
 // Manually add nitro
 matrix.app.push({
@@ -129,6 +134,12 @@ matrix.app.push({
   name: 'fastify',
   project: 'workbench-fastify-workflow',
   ...DEV_TEST_CONFIGS.fastify,
+});
+
+matrix.app.push({
+  name: 'nest',
+  project: 'workbench-nest-workflow',
+  ...DEV_TEST_CONFIGS.nest,
 });
 
 matrix.app.push({

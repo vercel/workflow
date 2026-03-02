@@ -4,12 +4,7 @@
  */
 
 import { unstable_cache } from 'next/cache';
-import type {
-  World,
-  WorldBenchmark,
-  WorldE2E,
-  WorldsStatus,
-} from '@/components/worlds/types';
+import type { World, WorldsStatus } from '@/components/worlds/types';
 
 // Import manifest data at build time
 import worldsManifest from '../../worlds-manifest.json';
@@ -50,7 +45,10 @@ interface BenchmarkWorldData {
       max: number;
       samples?: number;
       workflowTime?: number;
+      workflowMin?: number;
+      workflowMax?: number;
       ttfb?: number;
+      slurp?: number;
     }
   >;
   frameworks?: Record<string, Record<string, unknown>>;
@@ -91,8 +89,10 @@ function buildInitialWorldsStatus(): Record<string, World> {
       description: world.description,
       docs: world.docs,
       repository: (world as { repository?: string }).repository,
+      example: (world as { example?: string }).example,
       e2e: null,
       benchmark: null,
+      benchmark10SeqMs: null,
     };
   }
 
@@ -133,14 +133,29 @@ export const getWorldsData = unstable_cache(
         for (const [worldId, data] of Object.entries(e2eData.worlds)) {
           if (worlds[worldId]) {
             const e2eWorld = data as E2EWorldData;
+            const nextjsTurbopack = e2eWorld.frameworks?.['nextjs-turbopack'];
+
+            // Calculate status based on nextjs-turbopack results if available
+            // This is the canonical source for scoring in the UI
+            let status = e2eWorld.status;
+            if (nextjsTurbopack) {
+              if (nextjsTurbopack.failed > 0) {
+                status = nextjsTurbopack.passed > 0 ? 'partial' : 'failing';
+              } else if (nextjsTurbopack.total > 0) {
+                status = 'passing';
+              }
+            }
+
             worlds[worldId].e2e = {
-              status: e2eWorld.status,
+              status,
               total: e2eWorld.total,
               passed: e2eWorld.passed,
               failed: e2eWorld.failed,
               skipped: e2eWorld.skipped,
               progress: e2eWorld.progress ?? 0,
               lastRun: e2eData.lastUpdated,
+              frameworks: e2eWorld.frameworks,
+              nextjsTurbopack: nextjsTurbopack ?? undefined,
             };
           }
         }
@@ -157,6 +172,14 @@ export const getWorldsData = unstable_cache(
               lastRun: benchmarkData.lastUpdated,
             };
           }
+        }
+
+        // Extract "10 sequential steps" benchmark time for each world
+        const BENCHMARK_10_SEQ = 'workflow with 10 sequential steps';
+        for (const worldId of Object.keys(worlds)) {
+          const metric =
+            worlds[worldId]?.benchmark?.metrics?.[BENCHMARK_10_SEQ];
+          worlds[worldId].benchmark10SeqMs = metric?.workflowTime ?? null;
         }
       }
     } catch (error) {
@@ -179,3 +202,30 @@ export const getWorldsData = unstable_cache(
  * Alias for backwards compatibility
  */
 export const getWorldsDataWithArtifacts = getWorldsData;
+
+/**
+ * Get data for a single world by ID
+ */
+export async function getWorldData(id: string): Promise<{
+  world: World;
+  meta: { lastUpdated: string; commit: string | null; branch: string | null };
+} | null> {
+  const data = await getWorldsData();
+  const world = data.worlds[id];
+  if (!world) return null;
+  return {
+    world,
+    meta: {
+      lastUpdated: data.lastUpdated,
+      commit: data.commit,
+      branch: data.branch,
+    },
+  };
+}
+
+/**
+ * Get all world IDs for static generation
+ */
+export function getWorldIds(): string[] {
+  return worldsManifest.worlds.map((w) => w.id);
+}

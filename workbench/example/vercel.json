@@ -8,5 +8,8 @@
       "source": "/api/:provider/webhook",
       "destination": "/api/webhook"
     }
-  ]
+  ],
+  "env": {
+    "WORKFLOW_PUBLIC_MANIFEST": "1"
+  }
 }

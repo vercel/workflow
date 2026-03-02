@@ -1,26 +1,17 @@
+export type {
+  HealthCheckEndpoint,
+  HealthCheckResult,
+} from '@workflow/core/runtime';
 export {
   parseStepName,
   parseWorkflowName,
-} from '@workflow/core/parse-name';
+} from '@workflow/utils/parse-name';
 export type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
-
-export * from './api/workflow-api-client';
-export type { EnvMap, PublicServerConfig } from './api/workflow-server-actions';
-export { ErrorBoundary } from './error-boundary';
-export { EventListView } from './event-list-view';
-export type {
-  HookActionCallbacks,
-  HookActionsDropdownItemProps,
-  HookResolveModalProps,
-  UseHookActionsOptions,
-  UseHookActionsReturn,
-} from './hook-actions';
+export * from './components';
 export {
-  HookResolveModalWrapper,
-  ResolveHookDropdownItem,
-  ResolveHookModal,
-  useHookActions,
-} from './hook-actions';
+  hookEventsToHookEntity,
+  waitEventsToWaitEntity,
+} from './components/workflow-traces/trace-span-construction';
 export type { EventAnalysis } from './lib/event-analysis';
 export {
   analyzeEvents,
@@ -29,6 +20,19 @@ export {
   isTerminalStatus,
   shouldShowReenqueueButton,
 } from './lib/event-analysis';
+export type { Revivers, StreamRef } from './lib/hydration';
+export {
+  CLASS_INSTANCE_REF_TYPE,
+  ClassInstanceRef,
+  extractStreamIds,
+  getWebRevivers,
+  hydrateResourceIO,
+  isClassInstanceRef,
+  isStreamId,
+  isStreamRef,
+  STREAM_REF_TYPE,
+  truncateId,
+} from './lib/hydration';
 export type { StreamStep } from './lib/utils';
 export {
   extractConversation,
@@ -36,8 +40,3 @@ export {
   identifyStreamSteps,
   isDoStreamStep,
 } from './lib/utils';
-export { RunTraceView } from './run-trace-view';
-export { ConversationView } from './sidebar/conversation-view';
-export { StreamViewer } from './stream-viewer';
-export type { Span, SpanEvent } from './trace-viewer/types';
-export { WorkflowTraceViewer } from './workflow-trace-view';

@@ -3,7 +3,13 @@ import path from 'node:path';
 import type { Streamer } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
-import { listJSONFiles, readBuffer, readJSON, write, writeJSON } from './fs.js';
+import {
+  listFilesByExtension,
+  readBuffer,
+  readJSON,
+  write,
+  writeJSON,
+} from './fs.js';
 
 // Create a monotonic ULID factory that ensures ULIDs are always increasing
 // even when generated within the same millisecond
@@ -87,6 +93,17 @@ export function createStreamer(basedir: string): Streamer {
     registeredStreams.add(cacheKey);
   }
 
+  // Helper to convert a chunk to a Buffer
+  function toBuffer(chunk: string | Uint8Array): Buffer {
+    if (typeof chunk === 'string') {
+      return Buffer.from(new TextEncoder().encode(chunk));
+    } else if (chunk instanceof Buffer) {
+      return chunk;
+    } else {
+      return Buffer.from(chunk);
+    }
+  }
+
   return {
     async writeToStream(
       name: string,
@@ -105,14 +122,7 @@ export function createStreamer(basedir: string): Streamer {
       await registerStreamForRun(runId, name);
 
       // Convert chunk to buffer for serialization
-      let chunkBuffer: Buffer;
-      if (typeof chunk === 'string') {
-        chunkBuffer = Buffer.from(new TextEncoder().encode(chunk));
-      } else if (chunk instanceof Buffer) {
-        chunkBuffer = chunk;
-      } else {
-        chunkBuffer = Buffer.from(chunk);
-      }
+      const chunkBuffer = toBuffer(chunk);
 
       const serialized = serializeChunk({
         chunk: chunkBuffer,
@@ -123,7 +133,7 @@ export function createStreamer(basedir: string): Streamer {
         basedir,
         'streams',
         'chunks',
-        `${name}-${chunkId}.json`
+        `${name}-${chunkId}.bin`
       );
 
       await write(chunkPath, serialized);
@@ -136,6 +146,64 @@ export function createStreamer(basedir: string): Streamer {
         chunkData,
         chunkId,
       });
+    },
+
+    async writeToStreamMulti(
+      name: string,
+      _runId: string | Promise<string>,
+      chunks: (string | Uint8Array)[]
+    ) {
+      if (chunks.length === 0) return;
+
+      // Generate all ULIDs synchronously BEFORE any await to preserve call order.
+      // This ensures that chunks maintain their order even when runId is a promise.
+      const chunkIds = chunks.map(() => `chnk_${monotonicUlid()}`);
+
+      // Await runId if it's a promise
+      const runId = await _runId;
+
+      // Register this stream for the run
+      await registerStreamForRun(runId, name);
+
+      // Prepare chunk data for parallel writes
+      const chunkBuffers = chunks.map((chunk) => toBuffer(chunk));
+
+      // Write all chunks in parallel for efficiency, but track individual completion
+      const writePromises = chunkBuffers.map(async (chunkBuffer, i) => {
+        const chunkId = chunkIds[i];
+
+        const serialized = serializeChunk({
+          chunk: chunkBuffer,
+          eof: false,
+        });
+
+        const chunkPath = path.join(
+          basedir,
+          'streams',
+          'chunks',
+          `${name}-${chunkId}.bin`
+        );
+
+        await write(chunkPath, serialized);
+
+        // Return data needed for event emission
+        return {
+          chunkId,
+          chunkData: Uint8Array.from(chunkBuffer),
+        };
+      });
+
+      // Emit events in order, waiting for each chunk's write to complete
+      // This ensures events are emitted in order while writes happen in parallel
+      for (const writePromise of writePromises) {
+        const { chunkId, chunkData } = await writePromise;
+
+        streamEmitter.emit(`chunk:${name}` as const, {
+          streamName: name,
+          chunkData,
+          chunkId,
+        });
+      }
     },
 
     async closeStream(name: string, _runId: string | Promise<string>) {
@@ -151,7 +219,7 @@ export function createStreamer(basedir: string): Streamer {
         basedir,
         'streams',
         'chunks',
-        `${name}-${chunkId}.json`
+        `${name}-${chunkId}.bin`
       );
 
       await write(
@@ -239,9 +307,17 @@ export function createStreamer(basedir: string): Streamer {
           streamEmitter.on(`chunk:${name}` as const, chunkListener);
           streamEmitter.on(`close:${name}` as const, closeListener);
 
-          // Now load existing chunks from disk
-          const files = await listJSONFiles(chunksDir);
-          const chunkFiles = files
+          // Now load existing chunks from disk.
+          // List both .bin (current) and .json (legacy) chunk files for
+          // backwards compatibility with streams written before this change.
+          const [binFiles, jsonFiles] = await Promise.all([
+            listFilesByExtension(chunksDir, '.bin'),
+            listFilesByExtension(chunksDir, '.json'),
+          ]);
+          const fileExtMap = new Map<string, string>();
+          for (const f of jsonFiles) fileExtMap.set(f, '.json');
+          for (const f of binFiles) fileExtMap.set(f, '.bin'); // .bin takes precedence
+          const chunkFiles = [...fileExtMap.keys()]
             .filter((file) => file.startsWith(`${name}-`))
             .sort(); // ULID lexicographic sort = chronological order
 
@@ -257,8 +333,9 @@ export function createStreamer(basedir: string): Streamer {
               continue;
             }
 
+            const ext = fileExtMap.get(file) ?? '.bin';
             const chunk = deserializeChunk(
-              await readBuffer(path.join(chunksDir, `${file}.json`))
+              await readBuffer(path.join(chunksDir, `${file}${ext}`))
             );
             if (chunk?.eof === true) {
               isComplete = true;

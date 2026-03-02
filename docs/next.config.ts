@@ -4,10 +4,19 @@ import type { NextConfig } from 'next';
 const withMDX = createMDX();
 
 const config: NextConfig = {
-  reactStrictMode: true,
+  experimental: {
+    turbopackFileSystemCacheForDev: true,
+  },
+
   typescript: {
     ignoreBuildErrors: true,
   },
+
+  outputFileTracingIncludes: {
+    '/og/\\[\\.\\.\\.slug\\]': ['./lib/og/assets/**/*'],
+    '/worlds/\\[id\\]/opengraph-image': ['./lib/og/assets/**/*'],
+  },
+
   async rewrites() {
     return {
       beforeFiles: [
@@ -30,15 +39,10 @@ const config: NextConfig = {
           ],
         },
       ],
-      afterFiles: [
-        {
-          source: '/docs/:path*.(mdx|md)',
-          destination: '/llms.mdx/:path*',
-        },
-      ],
     };
   },
-  redirects: () => {
+
+  async redirects() {
     return [
       {
         source: '/docs',
@@ -48,6 +52,33 @@ const config: NextConfig = {
       {
         source: '/err/:slug',
         destination: '/docs/errors/:slug',
+        permanent: true,
+      },
+      // Redirect old world docs to new /worlds routes
+      {
+        source: '/docs/deploying/world/local-world',
+        destination: '/worlds/local',
+        permanent: true,
+      },
+      {
+        source: '/docs/deploying/world/postgres-world',
+        destination: '/worlds/postgres',
+        permanent: true,
+      },
+      {
+        source: '/docs/deploying/world/vercel-world',
+        destination: '/worlds/vercel',
+        permanent: true,
+      },
+      {
+        source: '/docs/worlds',
+        destination: '/worlds',
+        permanent: true,
+      },
+      // Redirect old control-flow-patterns to common-patterns
+      {
+        source: '/docs/foundations/control-flow-patterns',
+        destination: '/docs/foundations/common-patterns',
         permanent: true,
       },
     ];

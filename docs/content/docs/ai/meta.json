@@ -6,7 +6,8 @@
     "resumable-streams",
     "sleep-and-delays",
     "human-in-the-loop",
-    "defining-tools"
+    "defining-tools",
+    "chat-session-modeling"
   ],
   "defaultOpen": true
 }

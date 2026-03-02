@@ -1,5 +1,5 @@
 import { expect, test, vi } from 'vitest';
-import { hydrateWorkflowReturnValue } from 'workflow/internal/serialization';
+import { hydrateWorkflowReturnValue } from '@workflow/core/serialization';
 import { createFetcher, startServer } from './util.mjs';
 
 export function idempotency(world: string) {
@@ -21,7 +21,11 @@ export function idempotency(world: string) {
       }
     );
 
-    const output = await hydrateWorkflowReturnValue(run.output, [], run.runId);
+    const output = await hydrateWorkflowReturnValue(
+      run.output!,
+      run.runId,
+      undefined
+    );
 
     expect(output).toEqual({
       numbers: Array.from({ length: 20 }, () => expect.any(Number)),

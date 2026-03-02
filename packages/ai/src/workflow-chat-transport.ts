@@ -20,6 +20,7 @@ export interface SendMessagesOptions<UI_MESSAGE extends UIMessage> {
 
 export interface ReconnectToStreamOptions {
   chatId: string;
+  abortSignal?: AbortSignal;
 }
 
 type OnChatSendMessage<UI_MESSAGE extends UIMessage> = (
@@ -165,7 +166,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
   }
 
   private async *sendMessagesIterator(
-    options: SendMessagesOptions<UI_MESSAGE>
+    options: SendMessagesOptions<UI_MESSAGE> & ChatRequestOptions
   ): AsyncGenerator<UIMessageChunk> {
     const { chatId, messages, abortSignal, trigger, messageId } = options;
 
@@ -179,7 +180,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
       ? await this.prepareSendMessagesRequest({
           id: chatId,
           messages,
-          requestMetadata: undefined,
+          requestMetadata: options.metadata,
           body: undefined,
           credentials: undefined,
           headers: undefined,
@@ -265,7 +266,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
     options: ReconnectToStreamOptions & ChatRequestOptions
   ): Promise<ReadableStream<UIMessageChunk> | null> {
     const it = this.reconnectToStreamIterator(options);
-    return iteratorToStream(it);
+    return iteratorToStream(it, { signal: options.abortSignal });
   }
 
   private async *reconnectToStreamIterator(
@@ -281,7 +282,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
     const requestConfig = this.prepareReconnectToStreamRequest
       ? await this.prepareReconnectToStreamRequest({
           id: options.chatId,
-          requestMetadata: undefined,
+          requestMetadata: options.metadata,
           body: undefined,
           credentials: undefined,
           headers: undefined,
@@ -299,6 +300,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
       const res = await this.fetch(url, {
         headers: requestConfig?.headers,
         credentials: requestConfig?.credentials,
+        signal: options.abortSignal,
       });
 
       if (!res.ok || !res.body) {

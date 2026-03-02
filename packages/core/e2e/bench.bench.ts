@@ -1,14 +1,94 @@
-import { withResolvers } from '@workflow/utils';
 import fs from 'fs';
 import path from 'path';
 import { bench, describe } from 'vitest';
-import { dehydrateWorkflowArguments } from '../src/serialization';
-import { getProtectionBypassHeaders } from './utils';
+import type { Run } from '../src/runtime';
+import { start } from '../src/runtime';
+import {
+  getProtectionBypassHeaders,
+  getWorkbenchAppPath,
+  isLocalDeployment,
+} from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
+
+// Configure the World for the bench runner process (same as e2e tests)
+if (isLocalDeployment()) {
+  process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
+  const appPath = getWorkbenchAppPath();
+  const appName = process.env.APP_NAME!;
+  const isNextJs = appName.includes('nextjs') || appName.includes('next-');
+  const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
+  process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+} else if (process.env.WORKFLOW_VERCEL_ENV) {
+  if (!process.env.VERCEL_DEPLOYMENT_ID) {
+    throw new Error(
+      'VERCEL_DEPLOYMENT_ID is required for Vercel benchmarks but is not set'
+    );
+  }
+}
+
+// Manifest type and helpers (same as e2e tests)
+interface WorkflowManifest {
+  version: string;
+  workflows: Record<
+    string,
+    Record<string, { workflowId: string; graph?: unknown }>
+  >;
+  steps: Record<string, Record<string, { stepId: string }>>;
+}
+
+let cachedManifest: WorkflowManifest | null = null;
+
+async function fetchManifest(): Promise<WorkflowManifest> {
+  if (cachedManifest) return cachedManifest;
+  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
+  const res = await fetch(url, {
+    headers: getProtectionBypassHeaders(),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to fetch manifest: ${res.status} ${text}`);
+  }
+  cachedManifest = (await res.json()) as WorkflowManifest;
+  return cachedManifest;
+}
+
+async function getWorkflowMetadata(
+  workflowFile: string,
+  workflowFn: string
+): Promise<{ workflowId: string }> {
+  const manifest = await fetchManifest();
+  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
+    if (
+      manifestFile.endsWith(workflowFile) ||
+      workflowFile.endsWith(manifestFile)
+    ) {
+      const entry = functions[workflowFn];
+      if (entry) return entry;
+    }
+  }
+  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
+    const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
+    if (
+      manifestFileWithoutExt.endsWith(fileWithoutExt) ||
+      fileWithoutExt.endsWith(manifestFileWithoutExt)
+    ) {
+      const entry = functions[workflowFn];
+      if (entry) return entry;
+    }
+  }
+  throw new Error(
+    `Workflow "${workflowFn}" not found in manifest for file "${workflowFile}"`
+  );
+}
+
+const benchWf = (fn: string) =>
+  getWorkflowMetadata('workflows/97_bench.ts', fn);
 
 // Store workflow execution times for each benchmark
 const workflowTimings: Record<
@@ -30,103 +110,21 @@ const bufferedTimings: Map<
   { run: any; extra?: { firstByteTimeMs?: number; slurpTimeMs?: number } }[]
 > = new Map();
 
-async function triggerWorkflow(
-  workflow: string | { workflowFile: string; workflowFn: string },
-  args: any[]
-): Promise<{ runId: string }> {
-  const url = new URL('/api/trigger', deploymentUrl);
-  const workflowFn =
-    typeof workflow === 'string' ? workflow : workflow.workflowFn;
-  const workflowFile =
-    typeof workflow === 'string'
-      ? 'workflows/97_bench.ts'
-      : workflow.workflowFile;
-
-  url.searchParams.set('workflowFile', workflowFile);
-  url.searchParams.set('workflowFn', workflowFn);
-
-  const ops: Promise<void>[] = [];
-  const { promise: runIdPromise, resolve: resolveRunId } =
-    withResolvers<string>();
-  const dehydratedArgs = dehydrateWorkflowArguments(args, ops, runIdPromise);
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: getProtectionBypassHeaders(),
-    body: JSON.stringify(dehydratedArgs),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to trigger workflow: ${res.url} ${
-        res.status
-      }: ${await res.text()}`
-    );
-  }
-  const run = await res.json();
-  resolveRunId(run.runId);
-
-  // Resolve and wait for any stream operations
-  await Promise.all(ops);
-
-  return run;
-}
-
-async function getWorkflowReturnValue(
-  runId: string
-): Promise<{ run: any; value: any }> {
-  const MAX_UNEXPECTED_CONTENT_RETRIES = 3;
-  let unexpectedContentRetries = 0;
-
-  // We need to poll the GET endpoint until the workflow run is completed.
-  while (true) {
-    const url = new URL('/api/trigger', deploymentUrl);
-    url.searchParams.set('runId', runId);
-
-    const res = await fetch(url, { headers: getProtectionBypassHeaders() });
-
-    if (res.status === 202) {
-      // Workflow run is still running, so we need to wait and poll again
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      continue;
-    }
-
-    // Extract run metadata from headers
-    const run = {
-      runId,
-      createdAt: res.headers.get('X-Workflow-Run-Created-At'),
-      startedAt: res.headers.get('X-Workflow-Run-Started-At'),
-      completedAt: res.headers.get('X-Workflow-Run-Completed-At'),
-    };
-
-    const contentType = res.headers.get('Content-Type');
-
-    if (contentType?.includes('application/json')) {
-      return { run, value: await res.json() };
-    }
-
-    if (contentType?.includes('application/octet-stream')) {
-      return { run, value: res.body };
-    }
-
-    // Unexpected content type - log details and retry
-    unexpectedContentRetries++;
-    const responseText = await res.text().catch(() => '<failed to read body>');
-    console.warn(
-      `[bench] Unexpected content type for runId=${runId} (attempt ${unexpectedContentRetries}/${MAX_UNEXPECTED_CONTENT_RETRIES}):\n` +
-        `  Status: ${res.status}\n` +
-        `  Content-Type: ${contentType}\n` +
-        `  Response: ${responseText.slice(0, 500)}${responseText.length > 500 ? '...' : ''}`
-    );
-
-    if (unexpectedContentRetries >= MAX_UNEXPECTED_CONTENT_RETRIES) {
-      throw new Error(
-        `Unexpected content type after ${MAX_UNEXPECTED_CONTENT_RETRIES} retries: ${contentType} (status=${res.status})`
-      );
-    }
-
-    // Wait before retrying
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
+/**
+ * Collect run timing metadata from a completed run.
+ */
+async function getRunTimings(run: Run<any>) {
+  const [createdAt, startedAt, completedAt] = await Promise.all([
+    run.createdAt,
+    run.startedAt,
+    run.completedAt,
+  ]);
+  return {
+    runId: run.runId,
+    createdAt: createdAt?.toISOString(),
+    startedAt: startedAt?.toISOString(),
+    completedAt: completedAt?.toISOString(),
+  };
 }
 
 function getTimingOutputPath() {
@@ -286,9 +284,10 @@ describe('Workflow Performance Benchmarks', () => {
   bench(
     'workflow with no steps',
     async () => {
-      const { runId } = await triggerWorkflow('noStepsWorkflow', [42]);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with no steps', run);
+      const run = await start(await benchWf('noStepsWorkflow'), [42]);
+      await run.returnValue;
+      const timings = await getRunTimings(run);
+      stageTiming('workflow with no steps', timings);
     },
     { time: 5000, warmupIterations: 1, teardown }
   );
@@ -296,28 +295,49 @@ describe('Workflow Performance Benchmarks', () => {
   bench(
     'workflow with 1 step',
     async () => {
-      const { runId } = await triggerWorkflow('oneStepWorkflow', [100]);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with 1 step', run);
+      const run = await start(await benchWf('oneStepWorkflow'), [100]);
+      await run.returnValue;
+      const timings = await getRunTimings(run);
+      stageTiming('workflow with 1 step', timings);
     },
     { time: 5000, warmupIterations: 1, teardown }
   );
 
-  bench(
-    'workflow with 10 sequential steps',
-    async () => {
-      const { runId } = await triggerWorkflow('tenSequentialStepsWorkflow', []);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with 10 sequential steps', run);
-    },
-    { time: 5000, iterations: 5, warmupIterations: 1, teardown }
-  );
+  // Sequential step benchmarks at various scales
+  // Set BENCHMARK_FULL_SUITE=true to run the long benchmarks (100+, 500+ steps)
+  const fullSuite = process.env.BENCHMARK_FULL_SUITE === 'true';
+  const sequentialStepCounts = [
+    { count: 10, skip: false, time: 30000 },
+    { count: 25, skip: false, time: 60000 },
+    { count: 50, skip: false, time: 90000 },
+    { count: 100, skip: !fullSuite, time: 150000 },
+    { count: 500, skip: !fullSuite, time: 600000 },
+  ] as const;
+
+  for (const { count, skip, time } of sequentialStepCounts) {
+    const name = `workflow with ${count} sequential steps`;
+    const benchFn = skip ? bench.skip : bench;
+
+    benchFn(
+      name,
+      async () => {
+        const run = await start(await benchWf('sequentialStepsWorkflow'), [
+          count,
+        ]);
+        await run.returnValue;
+        const timings = await getRunTimings(run);
+        stageTiming(name, timings);
+      },
+      { time, iterations: 1, warmupIterations: 0, teardown }
+    );
+  }
 
   bench(
     'workflow with stream',
     async () => {
-      const { runId } = await triggerWorkflow('streamWorkflow', []);
-      const { run, value } = await getWorkflowReturnValue(runId);
+      const run = await start(await benchWf('streamWorkflow'), []);
+      const value = await run.returnValue;
+      const timings = await getRunTimings(run);
       // Consume the entire stream and track:
       // - firstByteTimeMs: time from workflow start to first byte
       // - slurpTimeMs: time from first byte to stream completion
@@ -329,8 +349,8 @@ describe('Workflow Performance Benchmarks', () => {
         let firstByteTimestamp: number | undefined;
         while (true) {
           const { done } = await reader.read();
-          if (isFirstChunk && !done && run.startedAt) {
-            const startedAt = new Date(run.startedAt).getTime();
+          if (isFirstChunk && !done && timings.startedAt) {
+            const startedAt = new Date(timings.startedAt).getTime();
             firstByteTimestamp = Date.now();
             firstByteTimeMs = firstByteTimestamp - startedAt;
             isFirstChunk = false;
@@ -343,7 +363,7 @@ describe('Workflow Performance Benchmarks', () => {
           }
         }
       }
-      stageTiming('workflow with stream', run, {
+      stageTiming('workflow with stream', timings, {
         firstByteTimeMs,
         slurpTimeMs,
       });
@@ -352,12 +372,14 @@ describe('Workflow Performance Benchmarks', () => {
   );
 
   // Concurrent step benchmarks for Promise.all/Promise.race at various scales
+  // Set BENCHMARK_FULL_SUITE=true to run the long benchmarks (100+, 500+, 1000 steps)
   const concurrentStepCounts = [
     { count: 10, skip: false, time: 30000 },
     { count: 25, skip: false, time: 30000 },
-    { count: 100, skip: true, time: 60000 },
-    { count: 500, skip: true, time: 120000 },
-    { count: 1000, skip: true, time: 180000 },
+    { count: 50, skip: false, time: 30000 },
+    { count: 100, skip: !fullSuite, time: 60000 },
+    { count: 500, skip: !fullSuite, time: 120000 },
+    { count: 1000, skip: true, time: 180000 }, // Always skip 1000 - too slow
   ] as const;
 
   const concurrentStepTypes = [
@@ -373,9 +395,10 @@ describe('Workflow Performance Benchmarks', () => {
       benchFn(
         name,
         async () => {
-          const { runId } = await triggerWorkflow(workflow, [count]);
-          const { run } = await getWorkflowReturnValue(runId);
-          stageTiming(name, run);
+          const run = await start(await benchWf(workflow), [count]);
+          await run.returnValue;
+          const timings = await getRunTimings(run);
+          stageTiming(name, timings);
         },
         { time, iterations: 1, warmupIterations: 0, teardown }
       );

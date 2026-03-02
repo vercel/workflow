@@ -30,10 +30,20 @@ export async function tenSequentialStepsWorkflow() {
   return result;
 }
 
+// Workflow with N sequential steps (parameterized)
+export async function sequentialStepsWorkflow(count: number) {
+  'use workflow';
+  let result = 0;
+  for (let i = 0; i < count; i++) {
+    result = await doWork();
+  }
+  return result;
+}
+
 // Workflow with 10 parallel steps
 export async function tenParallelStepsWorkflow() {
   'use workflow';
-  const promises = [];
+  const promises: Promise<number>[] = [];
   for (let i = 0; i < 10; i++) {
     promises.push(doWork());
   }

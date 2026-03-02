@@ -1,4 +1,4 @@
-/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//input.js//myWorkflow"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"myWorkflow":{"workflowId":"workflow//./input//myWorkflow"}}}}*/;
 // Test case for functions used in default parameter values
 // The createDefaultDownloadFunction should NOT be removed by DCE
 const createDefaultDownloadFunction = (download = defaultDownload)=>(requestedDownloads)=>Promise.all(requestedDownloads.map(async (r)=>r.isUrlSupportedByModel ? null : download(r)));
@@ -22,5 +22,5 @@ export async function myWorkflow(input) {
     });
     return result;
 }
-myWorkflow.workflowId = "workflow//input.js//myWorkflow";
-globalThis.__private_workflows.set("workflow//input.js//myWorkflow", myWorkflow);
+myWorkflow.workflowId = "workflow//./input//myWorkflow";
+globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);

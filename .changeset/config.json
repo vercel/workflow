@@ -2,10 +2,17 @@
   "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
   "changelog": [
     "@changesets/changelog-github",
-    { "repo": "vercel/workflow" }
+    {
+      "repo": "vercel/workflow"
+    }
   ],
   "commit": false,
-  "fixed": [],
+  "fixed": [
+    [
+      "workflow",
+      "@workflow/core"
+    ]
+  ],
   "linked": [],
   "access": "public",
   "baseBranch": "main",
@@ -14,15 +21,9 @@
     "docs",
     "nextjs-turbopack",
     "nextjs-webpack",
-    "@workflow/example-app",
-    "@workflow/example-hono",
-    "@workflow/example-express",
-    "@workflow/example-nitro-v3",
-    "@workflow/example-nitro-v2",
-    "@workflow/example-nuxt",
-    "@workflow/example-vite",
-    "@workflow/example-sveltekit",
-    "@workflow/example-astro",
+    "workflow-devkit-compiler-playground",
+    "@workflow/docs-typecheck",
+    "@workflow/example-*",
     "@workflow/vitest-workbench"
   ]
 }

@@ -5,6 +5,7 @@ import {
   type CSSProperties,
   type ReactNode,
   useCallback,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -20,6 +21,8 @@ type CodeBlockProps = {
   style?: CSSProperties;
   tabIndex?: number;
   title?: string;
+  'data-line-numbers'?: string;
+  'data-line-highlighting'?: string;
 };
 
 export const CodeBlock = ({
@@ -29,9 +32,41 @@ export const CodeBlock = ({
   style,
   tabIndex,
   title,
+  ...rest
 }: CodeBlockProps) => {
   const ref = useRef<HTMLPreElement>(null);
   const [isCopied, setIsCopied] = useState(false);
+  const { 'data-line-numbers': lineNumbers } = rest;
+
+  // Filter out lines marked with `// @setup` using useLayoutEffect
+  // useLayoutEffect runs synchronously after DOM mutations but before paint,
+  // which minimizes the flash of @setup content
+  useLayoutEffect(() => {
+    if (!ref.current) return;
+
+    const lines = Array.from(ref.current.querySelectorAll('.line'));
+
+    // First pass: hide @setup lines
+    for (const line of lines) {
+      if (line.textContent?.includes('// @setup')) {
+        (line as HTMLElement).style.display = 'none';
+      }
+    }
+
+    // Second pass: hide leading empty lines (after @setup lines are hidden)
+    for (const line of lines) {
+      const htmlLine = line as HTMLElement;
+      // Skip already hidden lines
+      if (htmlLine.style.display === 'none') continue;
+      // If this line is empty (no text content), hide it
+      if (!line.textContent?.trim()) {
+        htmlLine.style.display = 'none';
+      } else {
+        // Stop at first non-empty visible line
+        break;
+      }
+    }
+  }, [children]);
 
   const copyToClipboard = useCallback(async () => {
     if (typeof window === 'undefined' || !navigator?.clipboard?.writeText) {
@@ -64,7 +99,7 @@ export const CodeBlock = ({
       <pre
         className={cn(
           'not-prose flex-1 overflow-x-auto rounded-sm border bg-background py-3 text-sm outline-none',
-          '[&>code]:grid',
+          '[&>code]:grid [&>code]:min-w-max',
           className,
           props.className
         )}
@@ -81,12 +116,11 @@ export const CodeBlock = ({
   if (!title) {
     return (
       <div className="relative mb-6">
-        <CodeBlockComponent />
+        <CodeBlockComponent
+          className={cn(lineNumbers ? 'line-numbers' : '', className)}
+        />
         <Button
-          className={cn(
-            'absolute top-[5px] right-[5px] bg-background/80 backdrop-blur-sm',
-            className
-          )}
+          className="absolute top-[5px] right-[5px] bg-background/80 backdrop-blur-sm"
           onClick={copyToClipboard}
           size="icon"
           variant="ghost"
@@ -118,7 +152,13 @@ export const CodeBlock = ({
         </Button>
       </CardHeader>
       <CardContent className="p-0">
-        <CodeBlockComponent className="line-numbers rounded-none border-none" />
+        <CodeBlockComponent
+          className={cn(
+            className,
+            'rounded-none border-none',
+            lineNumbers ? 'line-numbers' : ''
+          )}
+        />
       </CardContent>
     </Card>
   );

@@ -2,12 +2,15 @@ import { runInContext } from 'node:vm';
 import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
+import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
+import type { CryptoKey } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
-import { ENOTSUP } from './global.js';
-import { parseWorkflowName } from './parse-name.js';
+import type { QueueItem } from './global.js';
+import { ENOTSUP, WorkflowSuspension } from './global.js';
+import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -31,12 +34,51 @@ import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
+/**
+ * Logs a warning when a workflow run completes or fails with uncommitted
+ * operations still in the invocations queue. This typically indicates the
+ * user forgot to `await` a step, hook, or sleep call.
+ */
+function warnPendingQueueItems(
+  runId: string,
+  pendingQueue: Map<string, QueueItem>,
+  outcome: 'completed' | 'failed'
+): void {
+  // Filter out hooks that are either already created (alive, waiting for payloads)
+  // or explicitly disposed — both are benign since the backend auto-disposes
+  // all hooks when a run reaches a terminal state
+  const items = [...pendingQueue.values()].filter(
+    (item) => !(item.type === 'hook' && (item.hasCreatedEvent || item.disposed))
+  );
+  if (items.length === 0) return;
+
+  const details = items.map((item) => {
+    switch (item.type) {
+      case 'step':
+        return `step "${item.stepName}"`;
+      case 'hook':
+        return `hook "${item.token}"`;
+      case 'wait':
+        return 'sleep';
+      default:
+        return `unknown (${(item as { type: string }).type})`;
+    }
+  });
+
+  runtimeLogger.warn(
+    `Workflow run ${outcome} with ${items.length} uncommitted operation(s): ${details.join(', ')}. ` +
+      'Did you forget to `await` a step, hook, or sleep call?',
+    { workflowRunId: runId }
+  );
+}
+
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
-  events: Event[]
-): Promise<unknown> {
-  return trace(`WORKFLOW.run ${workflowRun.workflowName}`, async (span) => {
+  events: Event[],
+  encryptionKey: CryptoKey | undefined
+): Promise<Uint8Array | unknown> {
+  return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
       ...Attribute.WorkflowName(workflowRun.workflowName),
       ...Attribute.WorkflowRunId(workflowRun.runId),
@@ -71,10 +113,23 @@ export async function runWorkflow(
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
     );
 
+    const eventsConsumer = new EventsConsumer(events, {
+      onUnconsumedEvent: (event) => {
+        workflowDiscontinuation.reject(
+          new WorkflowRuntimeError(
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`,
+            { slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG }
+          )
+        );
+      },
+    });
+
     const workflowContext: WorkflowOrchestratorContext = {
+      runId: workflowRun.runId,
+      encryptionKey,
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
-      eventsConsumer: new EventsConsumer(events),
+      eventsConsumer,
       generateUlid: () => ulid(+startedAt),
       generateNanoid,
       invocationsQueue: new Map(),
@@ -87,6 +142,27 @@ export async function runWorkflow(
         updateTimestamp(+createdAt);
       }
       // Never consume events - this is only a passive subscriber
+      return EventConsumerResult.NotConsumed;
+    });
+
+    // Consume run lifecycle events - these are structural events that don't
+    // need special handling in the workflow, but must be consumed to advance
+    // past them in the event log
+    workflowContext.eventsConsumer.subscribe((event) => {
+      if (!event) {
+        return EventConsumerResult.NotConsumed;
+      }
+
+      // Consume run_created - every run has exactly one
+      if (event.eventType === 'run_created') {
+        return EventConsumerResult.Consumed;
+      }
+
+      // Consume run_started - every run has exactly one
+      if (event.eventType === 'run_started') {
+        return EventConsumerResult.Consumed;
+      }
+
       return EventConsumerResult.NotConsumed;
     });
 
@@ -587,7 +663,7 @@ export async function runWorkflow(
     // The filename parameter ensures stack traces show a meaningful name
     // (e.g., "example/workflows/99_e2e.ts") instead of "evalmachine.<anonymous>".
     const parsedName = parseWorkflowName(workflowRun.workflowName);
-    const filename = parsedName?.path || workflowRun.workflowName;
+    const filename = parsedName?.moduleSpecifier || workflowRun.workflowName;
 
     const workflowFn = runInContext(
       `${workflowCode}; globalThis.__private_workflows?.get(${JSON.stringify(workflowRun.workflowName)})`,
@@ -603,24 +679,55 @@ export async function runWorkflow(
       );
     }
 
-    const args = hydrateWorkflowArguments(workflowRun.input, vmGlobalThis);
+    const args = await hydrateWorkflowArguments(
+      workflowRun.input,
+      workflowRun.runId,
+      encryptionKey,
+      vmGlobalThis
+    );
 
     span?.setAttributes({
       ...Attribute.WorkflowArgumentsCount(args.length),
     });
 
     // Invoke user workflow
-    const result = await Promise.race([
-      workflowFn(...args),
-      workflowDiscontinuation.promise,
-    ]);
+    try {
+      const result = await Promise.race([
+        workflowFn(...args),
+        workflowDiscontinuation.promise,
+      ]);
 
-    const dehydrated = dehydrateWorkflowReturnValue(result, vmGlobalThis);
+      const dehydrated = await dehydrateWorkflowReturnValue(
+        result,
+        workflowRun.runId,
+        encryptionKey,
+        vmGlobalThis
+      );
 
-    span?.setAttributes({
-      ...Attribute.WorkflowResultType(typeof result),
-    });
+      span?.setAttributes({
+        ...Attribute.WorkflowResultType(typeof result),
+      });
 
-    return dehydrated;
+      warnPendingQueueItems(
+        workflowRun.runId,
+        workflowContext.invocationsQueue,
+        'completed'
+      );
+
+      return dehydrated;
+    } catch (err) {
+      // Let WorkflowSuspension propagate — handled separately by the runtime
+      if (WorkflowSuspension.is(err)) {
+        throw err;
+      }
+
+      warnPendingQueueItems(
+        workflowRun.runId,
+        workflowContext.invocationsQueue,
+        'failed'
+      );
+
+      throw err;
+    }
   });
 }

@@ -23,7 +23,6 @@ import {
   type UIMessageChunk,
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
-import { FatalError } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
 import type { CompatibleLanguageModel } from './types.js';
 
@@ -780,6 +779,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
           step,
           context,
           uiChunks,
+          providerExecutedToolResults,
         } = result.value;
         if (step) {
           // The step result is compatible with StepResult<TTools> since we're using the same tools
@@ -796,8 +796,17 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
         // Only execute tools if there are tool calls
         if (toolCalls.length > 0) {
-          const toolResults = await Promise.all(
-            toolCalls.map(
+          // Separate provider-executed tool calls from client-executed ones
+          const clientToolCalls = toolCalls.filter(
+            (tc) => !tc.providerExecuted
+          );
+          const providerToolCalls = toolCalls.filter(
+            (tc) => tc.providerExecuted
+          );
+
+          // Execute client tools
+          const clientToolResults = await Promise.all(
+            clientToolCalls.map(
               (toolCall): Promise<LanguageModelV2ToolResultPart> =>
                 executeTool(
                   toolCall,
@@ -808,6 +817,86 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
                 )
             )
           );
+
+          // For provider-executed tools, use the results from the stream
+          const providerToolResults: LanguageModelV2ToolResultPart[] =
+            providerToolCalls.map((toolCall) => {
+              const streamResult = providerExecutedToolResults?.get(
+                toolCall.toolCallId
+              );
+              if (streamResult) {
+                // Use the appropriate output type based on the result and error status
+                // AI SDK supports 'text'/'error-text' for strings and 'json'/'error-json' for objects
+                const result = streamResult.result;
+                const isString = typeof result === 'string';
+
+                return {
+                  type: 'tool-result' as const,
+                  toolCallId: toolCall.toolCallId,
+                  toolName: toolCall.toolName,
+                  output: isString
+                    ? streamResult.isError
+                      ? { type: 'error-text' as const, value: result }
+                      : { type: 'text' as const, value: result }
+                    : streamResult.isError
+                      ? {
+                          type: 'error-json' as const,
+                          value:
+                            result as LanguageModelV2ToolResultPart['output'] extends {
+                              type: 'json';
+                              value: infer V;
+                            }
+                              ? V
+                              : never,
+                        }
+                      : {
+                          type: 'json' as const,
+                          value:
+                            result as LanguageModelV2ToolResultPart['output'] extends {
+                              type: 'json';
+                              value: infer V;
+                            }
+                              ? V
+                              : never,
+                        },
+                };
+              }
+              // If no result from stream, return an empty result
+              // This can happen if the provider didn't send a tool-result stream part
+              console.warn(
+                `[DurableAgent] Provider-executed tool "${toolCall.toolName}" (${toolCall.toolCallId}) ` +
+                  `did not receive a result from the stream. This may indicate a provider issue.`
+              );
+              return {
+                type: 'tool-result' as const,
+                toolCallId: toolCall.toolCallId,
+                toolName: toolCall.toolName,
+                output: {
+                  type: 'text' as const,
+                  value: '',
+                },
+              };
+            });
+
+          // Combine results in the original order
+          const toolResults = toolCalls.map((tc) => {
+            const clientResult = clientToolResults.find(
+              (r) => r.toolCallId === tc.toolCallId
+            );
+            if (clientResult) return clientResult;
+            const providerResult = providerToolResults.find(
+              (r) => r.toolCallId === tc.toolCallId
+            );
+            if (providerResult) return providerResult;
+            // This should never happen, but return empty result as fallback
+            return {
+              type: 'tool-result' as const,
+              toolCallId: tc.toolCallId,
+              toolName: tc.toolName,
+              output: { type: 'text' as const, value: '' },
+            };
+          });
+
           result = await iterator.next(toolResults);
         } else {
           // Final step with no tool calls - just advance the iterator
@@ -999,6 +1088,23 @@ async function convertChunksToUIMessages(
   return messages;
 }
 
+// Matches AI SDK's getErrorMessage from @ai-sdk/provider-utils
+function getErrorMessage(error: unknown): string {
+  if (error == null) {
+    return 'unknown error';
+  }
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return JSON.stringify(error);
+}
+
 async function executeTool(
   toolCall: LanguageModelV2ToolCall,
   tools: ToolSet,
@@ -1080,30 +1186,31 @@ async function executeTool(
       experimental_context: experimentalContext,
     });
 
+    // Use the appropriate output type based on the result
+    // AI SDK supports 'text' for strings and 'json' for objects
+    const output =
+      typeof toolResult === 'string'
+        ? { type: 'text' as const, value: toolResult }
+        : { type: 'json' as const, value: toolResult };
+
     return {
       type: 'tool-result' as const,
       toolCallId: toolCall.toolCallId,
       toolName: toolCall.toolName,
-      output: {
-        type: 'text' as const,
-        value: JSON.stringify(toolResult) ?? '',
-      },
+      output,
     };
   } catch (error) {
-    // If it's a FatalError, convert it to a tool error result that gets sent back to the LLM
-    // This mimics AI SDK behavior where tool call failures are propagated back to the model
-    if (FatalError.is(error)) {
-      return {
-        type: 'tool-result',
-        toolCallId: toolCall.toolCallId,
-        toolName: toolCall.toolName,
-        output: {
-          type: 'error-text',
-          value: error.message,
-        },
-      };
-    }
-    // This should technically never happen, since any error that's not FatalError would be caught in the step boundary and re-try the step
-    throw error;
+    // Convert tool errors to error-text results sent back to the model,
+    // allowing the agent to recover rather than killing the entire stream.
+    // This aligns with AI SDK's streamText behavior for individual tool failures.
+    return {
+      type: 'tool-result',
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      output: {
+        type: 'error-text',
+        value: getErrorMessage(error),
+      },
+    };
   }
 }

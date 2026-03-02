@@ -1,5 +1,6 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
+import XDGAppPaths from 'xdg-app-paths';
 import { logger } from './config/log.js';
 
 // Constants
@@ -7,6 +8,22 @@ const PACKAGE_NAME = '@workflow/cli';
 const NPM_REGISTRY = 'https://registry.npmjs.org';
 const CACHE_DURATION_MS = 3 * 24 * 60 * 60 * 1000; // 3 days
 const REQUEST_TIMEOUT_MS = 5000;
+const VERSION_CHECK_CACHE_FILENAME = 'version-check.json';
+
+// Get XDG-compliant cache directory for workflow
+const getXDGAppPaths = (app: string) => {
+  return (
+    XDGAppPaths as unknown as (app: string) => { dataDirs: () => string[] }
+  )(app);
+};
+
+/**
+ * Get the cache file path for version checks.
+ */
+export function getVersionCheckCacheFile(): string {
+  const dirs = getXDGAppPaths('workflow').dataDirs();
+  return join(dirs[0], VERSION_CHECK_CACHE_FILENAME);
+}
 
 interface VersionCheckResult {
   currentVersion: string;
@@ -231,9 +248,10 @@ async function isCacheValid(
  * Cache is valid unless the local version changes
  */
 export async function checkForUpdateCached(
-  currentVersion: string,
-  cacheFile: string
+  currentVersion: string
 ): Promise<VersionCheckResult> {
+  const cacheFile = getVersionCheckCacheFile();
+
   // Check if cache is valid
   if (await isCacheValid(cacheFile, currentVersion)) {
     logger.debug('Using cached version check result');

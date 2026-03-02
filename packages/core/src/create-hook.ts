@@ -18,12 +18,52 @@ export interface RequestWithResponse extends Request {
 /**
  * A hook that can be awaited and/or iterated over to receive
  * a value within a workflow from an external system.
+ *
+ * Hooks implement the TC39 Explicit Resource Management proposal,
+ * allowing them to be used with the `using` keyword for automatic disposal.
  */
 export interface Hook<T = any> extends AsyncIterable<T>, Thenable<T> {
   /**
    * The token used to identify this hook.
    */
   token: string;
+
+  /**
+   * Disposes the hook, releasing its token for reuse by other workflows.
+   *
+   * After calling `dispose()`, the hook will no longer receive any events.
+   * This is useful when you want to explicitly release a hook token before
+   * the workflow completes, allowing another workflow to register a hook
+   * with the same token.
+   *
+   * @example
+   * ```ts
+   * const hook = createHook<{ message: string }>({ token: 'my-token' });
+   *
+   * for await (const payload of hook) {
+   *   if (payload.message === 'done') {
+   *     hook.dispose(); // Release the token early
+   *     break;
+   *   }
+   * }
+   * ```
+   */
+  dispose(): void;
+
+  /**
+   * Implements the TC39 Explicit Resource Management proposal.
+   * Called automatically when using the `using` keyword.
+   *
+   * @example
+   * ```ts
+   * {
+   *   using hook = createHook<{ message: string }>({ token: 'my-token' });
+   *   const payload = await hook;
+   *   // hook is automatically disposed when the block exits
+   * }
+   * ```
+   */
+  [Symbol.dispose](): void;
 }
 
 /**

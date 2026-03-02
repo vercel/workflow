@@ -6,17 +6,23 @@ on:
   push:
     branches: [main]
   workflow_dispatch: # Allow manual triggers
+    inputs:
+      full_suite:
+        description: 'Run full benchmark suite (includes long-running 100+ step benchmarks)'
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Phase 0: Update PR comment to show benchmarks are running
   pr-comment-start:
     name: Create PR Comment
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test')
     timeout-minutes: 2
 
     steps:
@@ -113,6 +119,7 @@ jobs:
   build:
     name: Build Packages
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 30
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
@@ -134,6 +141,7 @@ jobs:
           path: |
             node_modules
             packages/*/dist
+            packages/core/src/version.ts
           retention-days: 1
 
   # Phase 2a: Local benchmarks (no postgres)
@@ -141,6 +149,7 @@ jobs:
     name: Benchmark Local (${{ matrix.app }})
     runs-on: ubuntu-latest
     needs: build
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -151,6 +160,7 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
 
     steps:
       - uses: actions/checkout@v4
@@ -189,6 +199,8 @@ jobs:
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           APP_NAME: ${{ matrix.app }}
+          # Run full suite only when manually triggered with full_suite=true
+          BENCHMARK_FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
         run: |
           cd workbench/${{ matrix.app }}
           pnpm start &
@@ -218,6 +230,7 @@ jobs:
     name: Benchmark Postgres (${{ matrix.app }})
     runs-on: ubuntu-latest
     needs: build
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -243,6 +256,7 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
 
@@ -287,6 +301,8 @@ jobs:
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           APP_NAME: ${{ matrix.app }}
+          # Run full suite only when manually triggered with full_suite=true
+          BENCHMARK_FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
         run: |
           cd workbench/${{ matrix.app }}
           pnpm start &
@@ -316,6 +332,7 @@ jobs:
     name: Benchmark Vercel (${{ matrix.app.name }})
     runs-on: ubuntu-latest
     needs: build
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -376,12 +393,15 @@ jobs:
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
           APP_NAME: ${{ matrix.app.name }}
+          VERCEL_DEPLOYMENT_ID: ${{ steps.waitForDeployment.outputs.deployment-id }}
           WORKFLOW_VERCEL_ENV: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
           WORKFLOW_VERCEL_AUTH_TOKEN: ${{ secrets.VERCEL_LABS_TOKEN }}
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Run full suite only when manually triggered with full_suite=true
+          BENCHMARK_FULL_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
         run: |
           pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app.name }}-vercel.json
 
@@ -405,6 +425,7 @@ jobs:
   getCommunityWorldsMatrix:
     name: Get Community Worlds Matrix
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
@@ -421,6 +442,7 @@ jobs:
 
   benchmark-community:
     name: Benchmark Community World (${{ matrix.world.name }})
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: [build, getCommunityWorldsMatrix]
     strategy:
       fail-fast: false
@@ -433,6 +455,8 @@ jobs:
       service-type: ${{ matrix.world.service-type }}
       env-vars: ${{ matrix.world.env-vars }}
       setup-command: ${{ matrix.world.setup-command }}
+      # Run full suite only when manually triggered with full_suite=true
+      full-suite: ${{ github.event_name == 'workflow_dispatch' && inputs.full_suite }}
     secrets: inherit
 
   # Phase 3: Aggregate all benchmark results and create comparison

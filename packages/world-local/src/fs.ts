@@ -34,8 +34,7 @@ async function withWindowsRetry<T>(
         attempt < maxRetries && retryableErrors.includes(error.code);
       if (!isRetryable) throw error;
       // Exponential backoff with jitter
-      const delay =
-        baseDelayMs * Math.pow(2, attempt) + Math.random() * baseDelayMs;
+      const delay = baseDelayMs * 2 ** attempt + Math.random() * baseDelayMs;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
@@ -75,12 +74,41 @@ interface WriteOptions {
   overwrite?: boolean;
 }
 
+/**
+ * Custom JSON replacer that encodes Uint8Array as base64 strings.
+ * Format: { __type: 'Uint8Array', data: '<base64>' }
+ */
+function jsonReplacer(_key: string, value: unknown): unknown {
+  if (value instanceof Uint8Array) {
+    return {
+      __type: 'Uint8Array',
+      data: Buffer.from(value).toString('base64'),
+    };
+  }
+  return value;
+}
+
+/**
+ * Custom JSON reviver that decodes base64 strings back to Uint8Array.
+ */
+function jsonReviver(_key: string, value: unknown): unknown {
+  if (
+    value !== null &&
+    typeof value === 'object' &&
+    (value as any).__type === 'Uint8Array' &&
+    typeof (value as any).data === 'string'
+  ) {
+    return new Uint8Array(Buffer.from((value as any).data, 'base64'));
+  }
+  return value;
+}
+
 export async function writeJSON(
   filePath: string,
   data: any,
   opts?: WriteOptions
 ): Promise<void> {
-  return write(filePath, JSON.stringify(data, null, 2), opts);
+  return write(filePath, JSON.stringify(data, jsonReplacer, 2), opts);
 }
 
 /**
@@ -148,7 +176,7 @@ export async function readJSON<T>(
 ): Promise<T | null> {
   try {
     const content = await fs.readFile(filePath, 'utf-8');
-    return decoder.parse(JSON.parse(content));
+    return decoder.parse(JSON.parse(content, jsonReviver));
   } catch (error) {
     if ((error as any).code === 'ENOENT') return null;
     throw error;
@@ -169,11 +197,18 @@ export async function deleteJSON(filePath: string): Promise<void> {
 }
 
 export async function listJSONFiles(dirPath: string): Promise<string[]> {
+  return listFilesByExtension(dirPath, '.json');
+}
+
+export async function listFilesByExtension(
+  dirPath: string,
+  extension: string
+): Promise<string[]> {
   try {
     const files = await fs.readdir(dirPath);
     return files
-      .filter((f) => f.endsWith('.json'))
-      .map((f) => f.replace('.json', ''));
+      .filter((f) => f.endsWith(extension))
+      .map((f) => f.slice(0, -extension.length));
   } catch (error) {
     if ((error as any).code === 'ENOENT') return [];
     throw error;

@@ -1,15 +1,26 @@
 import { DocsLayout as FumadocsDocsLayout } from 'fumadocs-ui/layouts/docs';
-import { Folder, Item, Separator } from '@/components/geistdocs/sidebar';
-import { source } from '@/lib/geistdocs/source';
+import type { ComponentProps, CSSProperties, ReactNode } from 'react';
+import {
+  Folder,
+  Item,
+  Separator,
+  Sidebar,
+} from '@/components/geistdocs/sidebar';
+import { i18n } from '@/lib/geistdocs/i18n';
 
-export const DocsLayout = ({
-  children,
-}: Pick<LayoutProps<'/docs'>, 'children'>) => (
+type DocsLayoutProps = {
+  tree: ComponentProps<typeof FumadocsDocsLayout>['tree'];
+  children: ReactNode;
+};
+
+export const DocsLayout = ({ tree, children }: DocsLayoutProps) => (
   <FumadocsDocsLayout
     containerProps={{
-      className:
-        'md:grid md:grid-cols-[286px_1fr_286px] md:pl-0! md:mx-auto! md:w-full md:max-w-(--fd-layout-width)!',
+      style: {
+        '--fd-docs-row-1': '4rem',
+      } as CSSProperties,
     }}
+    i18n={i18n}
     nav={{
       enabled: false,
     }}
@@ -17,9 +28,8 @@ export const DocsLayout = ({
       enabled: false,
     }}
     sidebar={{
-      className:
-        'md:static md:sticky md:top-16 md:max-h-[calc(100vh-4rem)] md:overflow-y-auto md:w-auto! bg-background! md:bg-transparent! border-none transition-none',
       collapsible: false,
+      component: <Sidebar />,
       components: {
         Folder,
         Item,
@@ -30,7 +40,7 @@ export const DocsLayout = ({
     themeSwitch={{
       enabled: false,
     }}
-    tree={source.pageTree}
+    tree={tree}
   >
     {children}
   </FumadocsDocsLayout>

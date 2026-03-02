@@ -1,19 +1,22 @@
 import { type ToolSet, tool, type UIMessageStreamWriter } from 'ai';
 import { initAdvancedSearch } from 'fumadocs-core/search/server';
 import z from 'zod';
+import { i18n } from '@/lib/geistdocs/i18n';
 import { source } from '@/lib/geistdocs/source';
 
-const pages = source.getPages();
+const createSearchServer = (lang: string) => {
+  const pages = source.getPages(lang);
 
-const searchServer = initAdvancedSearch({
-  indexes: pages.map((page) => ({
-    title: page.data.title,
-    description: page.data.description,
-    url: page.url,
-    id: page.url,
-    structuredData: page.data.structuredData,
-  })),
-});
+  return initAdvancedSearch({
+    indexes: pages.map((page) => ({
+      title: page.data.title,
+      description: page.data.description,
+      url: page.url,
+      id: page.url,
+      structuredData: page.data.structuredData,
+    })),
+  });
+};
 
 const log = (message: string) => {
   console.log(`🤖 [Geistdocs] ${message}`);
@@ -24,9 +27,18 @@ const search_docs = (writer: UIMessageStreamWriter) =>
     description: 'Search through documentation content by query',
     inputSchema: z.object({
       query: z.string().describe('Search query to find relevant documentation'),
+      lang: z
+        .string()
+        .describe('The two letter language code of the documentation to search')
+        .optional()
+        .default(i18n.defaultLanguage),
     }),
-    execute: async ({ query }) => {
+    execute: async ({ query, lang }) => {
       try {
+        log(`Creating search server for language: ${lang}`);
+
+        const searchServer = createSearchServer(lang);
+
         log(`Searching docs for ${query}`);
 
         const results = await searchServer.search(query);
@@ -34,14 +46,7 @@ const search_docs = (writer: UIMessageStreamWriter) =>
         log(`Found ${results.length} results`);
 
         if (results.length === 0) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `No documentation found for query: "${query}"`,
-              },
-            ],
-          };
+          return `No documentation found for query: "${query}"`;
         }
 
         log(`Processing ${results.length} results...`);
@@ -56,7 +61,7 @@ const search_docs = (writer: UIMessageStreamWriter) =>
 
           log(`Getting page for ${url}`);
 
-          const result = source.getPageByHref(url);
+          const result = source.getPageByHref(url, { language: lang });
 
           if (!result?.page) {
             log(`No page found for ${url}`);
@@ -142,25 +147,27 @@ const search_docs = (writer: UIMessageStreamWriter) =>
 
 const get_doc_page = tool({
   description:
-    'Get the full content of a specific documentation page or guide by slug. Use the exact URL path from search results (e.g., "/docs/foundations/workflows-and-steps")',
+    'Get the full content of a specific documentation page or guide by slug. Use the exact URL path from search results (e.g., "/docs/vercel-blob/client-upload" or "/guides/how-to-build-ai-app")',
   inputSchema: z.object({
     slug: z
       .string()
       .describe('The slug/path of the documentation page or guide to retrieve'),
+    lang: z
+      .string()
+      .describe('The two letter language code of the documentation to search')
+      .optional()
+      .default(i18n.defaultLanguage),
   }),
   // biome-ignore lint/suspicious/useAwait: "tool calls must be async"
-  execute: async ({ slug }) => {
+  execute: async ({ slug, lang }) => {
+    log(`Getting all pages for language: ${lang}`);
+    const pages = source.getPages(lang);
+
+    log(`Getting doc page for ${slug} in language: ${lang}`);
     const doc = pages.find((d) => d.url === slug || d.url.endsWith(slug));
 
     if (!doc) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: `Documentation page not found: "${slug}"`,
-          },
-        ],
-      };
+      return `Documentation page not found: "${slug}"`;
     }
 
     return `# ${doc.data.title}\n\n${
@@ -170,9 +177,19 @@ const get_doc_page = tool({
 });
 
 const list_docs = tool({
-  description: 'Get a list of all available documentation pages and guides',
-  inputSchema: z.object({}),
-  execute: () => {
+  description: 'Get a list of all available documentation pages',
+  inputSchema: z.object({
+    lang: z
+      .string()
+      .describe('The two letter language code of the documentation to search')
+      .optional()
+      .default(i18n.defaultLanguage),
+  }),
+  // biome-ignore lint/suspicious/useAwait: "tool calls must be async"
+  execute: async ({ lang }) => {
+    log(`Getting all pages for language: ${lang}`);
+    const pages = source.getPages(lang);
+
     const docsList = pages
       .map(
         (doc) => `- **${doc.data.title}** (${doc.url}): ${doc.data.description}`

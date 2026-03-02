@@ -10,7 +10,7 @@ If you want to use any other ORM, query builder or underlying database client, y
 
 ```mermaid
 graph LR
-    Client --> PG[pg-boss queue]
+    Client --> PG[graphile-worker queue]
     PG --> Worker[Embedded Worker]
     Worker --> HTTP[HTTP fetch]
     HTTP --> EW[Local World]
@@ -33,15 +33,15 @@ Real-time data streaming via **PostgreSQL LISTEN/NOTIFY**:
 
 ## Setup
 
-Call `world.start()` to initialize pg-boss workers. When `.start()` is called, workers begin listening to pg-boss queues. When a job arrives, workers make HTTP fetch calls to the local world endpoints (`.well-known/workflow/v1/flow` or `.well-known/workflow/v1/step`) to execute the actual workflow logic.
+Call `world.start()` to initialize graphile-worker workers. When `.start()` is called, workers begin listening to graphile-worker queues. When a job arrives, workers make HTTP fetch calls to the local world endpoints (`.well-known/workflow/v1/flow` or `.well-known/workflow/v1/step`) to execute the actual workflow logic.
 
-In **Next.js**, the `world.setup()` function needs to be added to `instrumentation.ts|js` to ensure workers start before request handling:
+In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):
 
 ```ts
 // instrumentation.ts
 
 if (process.env.NEXT_RUNTIME !== "edge") {
-  import("workflow/api").then(async ({ getWorld }) => {
+  import("workflow/runtime").then(async ({ getWorld }) => {
     // start listening to the jobs.
     await getWorld().start?.();
   });

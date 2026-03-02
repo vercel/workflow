@@ -1,8 +1,9 @@
 import { createRequire } from 'node:module';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { transform } from '@swc/core';
 import { getDecoratorOptionsForDirectory } from './config-helpers.js';
+import { resolveModuleSpecifier } from './module-specifier.js';
 
 const require = createRequire(import.meta.url);
 
@@ -37,12 +38,25 @@ export type WorkflowManifest = {
       };
     };
   };
+  classes?: {
+    [relativeFileName: string]: {
+      [className: string]: {
+        classId: string;
+      };
+    };
+  };
 };
 
 export async function applySwcTransform(
   filename: string,
   source: string,
-  mode: 'workflow' | 'step' | 'client' | false
+  mode: 'workflow' | 'step' | 'client' | false,
+  /**
+   * Optional absolute path to the file being transformed.
+   * Used for module specifier resolution when filename is relative.
+   * If not provided, filename is joined with process.cwd().
+   */
+  absolutePath?: string
 ): Promise<{
   code: string;
   workflowManifest: WorkflowManifest;
@@ -59,6 +73,18 @@ export async function applySwcTransform(
     filename.endsWith('.tsx') ||
     filename.endsWith('.mts') ||
     filename.endsWith('.cts');
+
+  // Resolve module specifier for packages (node_modules or workspace packages)
+  const projectRoot = process.cwd();
+  const absoluteFilename = absolutePath
+    ? absolutePath
+    : isAbsolute(filename)
+      ? filename
+      : join(projectRoot, filename);
+  const { moduleSpecifier } = resolveModuleSpecifier(
+    absoluteFilename,
+    projectRoot
+  );
 
   // Transform with SWC to support syntax esbuild doesn't
   const result = await transform(source, {
@@ -81,7 +107,7 @@ export async function applySwcTransform(
       target: 'es2022',
       experimental: mode
         ? {
-            plugins: [[swcPluginPath, { mode }]],
+            plugins: [[swcPluginPath, { mode, moduleSpecifier }]],
           }
         : undefined,
       transform: {

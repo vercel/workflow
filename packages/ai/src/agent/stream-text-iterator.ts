@@ -12,7 +12,11 @@ import type {
   ToolSet,
   UIMessageChunk,
 } from 'ai';
-import { doStreamStep, type ModelStopCondition } from './do-stream-step.js';
+import {
+  doStreamStep,
+  type ModelStopCondition,
+  type ProviderExecutedToolResult,
+} from './do-stream-step.js';
 import type {
   GenerationSettings,
   PrepareStepCallback,
@@ -22,6 +26,9 @@ import type {
 } from './durable-agent.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 import type { CompatibleLanguageModel } from './types.js';
+
+// Re-export for consumers
+export type { ProviderExecutedToolResult } from './do-stream-step.js';
 
 /**
  * The value yielded by the stream text iterator when tool calls are requested.
@@ -38,6 +45,8 @@ export interface StreamTextIteratorYieldValue {
   context?: unknown;
   /** The UIMessageChunks written during this step (only when collectUIChunks is enabled) */
   uiChunks?: UIMessageChunk[];
+  /** Provider-executed tool results (keyed by tool call ID) */
+  providerExecutedToolResults?: Map<string, ProviderExecutedToolResult>;
 }
 
 // This runs in the workflow context
@@ -251,6 +260,7 @@ export async function* streamTextIterator({
         finish,
         step,
         uiChunks: stepUIChunks,
+        providerExecutedToolResults,
       } = await doStreamStep(
         conversationPrompt,
         currentModel,
@@ -290,28 +300,35 @@ export async function* streamTextIterator({
         // Note: providerMetadata from the tool call is mapped to providerOptions
         // in the prompt format, following the AI SDK convention. This is critical
         // for providers like Gemini that require thoughtSignature to be preserved
-        // across multi-turn tool calls.
+        // across multi-turn tool calls. Some fields are sanitized before mapping.
         conversationPrompt.push({
           role: 'assistant',
-          content: toolCalls.map((toolCall) => ({
-            type: 'tool-call',
-            toolCallId: toolCall.toolCallId,
-            toolName: toolCall.toolName,
-            input: JSON.parse(toolCall.input),
-            ...(toolCall.providerMetadata != null
-              ? { providerOptions: toolCall.providerMetadata }
-              : {}),
-          })),
+          content: toolCalls.map((toolCall) => {
+            const sanitizedMetadata = sanitizeProviderMetadataForToolCall(
+              toolCall.providerMetadata
+            );
+            return {
+              type: 'tool-call',
+              toolCallId: toolCall.toolCallId,
+              toolName: toolCall.toolName,
+              input: JSON.parse(toolCall.input),
+              ...(sanitizedMetadata != null
+                ? { providerOptions: sanitizedMetadata }
+                : {}),
+            };
+          }) as typeof toolCalls,
         });
 
         // Yield the tool calls along with the current conversation messages
         // This allows executeTool to pass the conversation context to tool execute functions
+        // Also include provider-executed tool results so they can be used instead of local execution
         const toolResults = yield {
           toolCalls,
           messages: conversationPrompt,
           step,
           context: currentContext,
           uiChunks: allStepUIChunks,
+          providerExecutedToolResults,
         };
 
         const toolOutputChunks = await writeToolOutputToUI(
@@ -422,7 +439,7 @@ async function writeToolOutputToUI(
       const chunk: UIMessageChunk = {
         type: 'tool-output-available' as const,
         toolCallId: result.toolCallId,
-        output: JSON.stringify(result) ?? '',
+        output: result.output.value,
       };
       if (collectUIChunks) {
         chunks.push(chunk);
@@ -461,4 +478,40 @@ function normalizeFinishReason(raw: unknown): FinishReason | undefined {
     return obj.unified ?? obj.type ?? 'unknown';
   }
   return undefined;
+}
+
+/**
+ * Strip OpenAI's itemId from providerMetadata (requires reasoning items we don't preserve).
+ * Preserves all other provider metadata (e.g., Gemini's thoughtSignature).
+ */
+function sanitizeProviderMetadataForToolCall(
+  metadata: unknown
+): Record<string, unknown> | undefined {
+  if (metadata == null) return undefined;
+
+  const meta = metadata as Record<string, unknown>;
+
+  // Check if OpenAI metadata exists and needs sanitization
+  if ('openai' in meta && meta.openai != null) {
+    const { openai, ...restProviders } = meta;
+    const openaiMeta = openai as Record<string, unknown>;
+
+    // Remove itemId from OpenAI metadata - it requires reasoning items we don't preserve
+    const { itemId: _itemId, ...restOpenai } = openaiMeta;
+
+    // Reconstruct metadata without itemId
+    const hasOtherOpenaiFields = Object.keys(restOpenai).length > 0;
+    const hasOtherProviders = Object.keys(restProviders).length > 0;
+
+    if (hasOtherOpenaiFields && hasOtherProviders) {
+      return { ...restProviders, openai: restOpenai };
+    } else if (hasOtherOpenaiFields) {
+      return { openai: restOpenai };
+    } else if (hasOtherProviders) {
+      return restProviders;
+    }
+    return undefined;
+  }
+
+  return meta;
 }

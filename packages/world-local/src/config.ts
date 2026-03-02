@@ -26,14 +26,21 @@ export const config = once<Config>(() => {
 
 /**
  * Resolves the base URL for queue requests following the priority order:
- * 1. config.baseUrl (highest priority - full override from args or WORKFLOW_LOCAL_BASE_URL env var)
- * 2. config.port (explicit port override from args)
- * 3. PORT env var (explicit configuration)
- * 4. Auto-detected port via getPort (detect actual listening port)
+ * 1. config.baseUrl (highest priority - full override from args)
+ * 2. WORKFLOW_LOCAL_BASE_URL env var (checked directly to handle late env var setting)
+ * 3. config.port (explicit port override from args)
+ * 4. PORT env var (explicit configuration)
+ * 5. Auto-detected port via getPort (detect actual listening port)
  */
 export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   if (config.baseUrl) {
     return config.baseUrl;
+  }
+
+  // Check env var directly in case it was set after the config was cached
+  // This is important for CLI tools that set the env var after module import
+  if (process.env.WORKFLOW_LOCAL_BASE_URL) {
+    return process.env.WORKFLOW_LOCAL_BASE_URL;
   }
 
   if (typeof config.port === 'number') {

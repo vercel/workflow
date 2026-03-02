@@ -1,5 +1,5 @@
+import type { WorkflowWritableStreamOptions } from '../step/writable-stream.js';
 import { STREAM_NAME_SYMBOL, WORKFLOW_GET_STREAM_ID } from '../symbols.js';
-import type { WorkflowWritableStreamOptions } from '../writable-stream.js';
 
 export function getWritable<W = any>(
   options: WorkflowWritableStreamOptions = {}

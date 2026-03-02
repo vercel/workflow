@@ -1,6 +1,13 @@
 import { waitUntil } from '@vercel/functions';
 import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
-import type { Hook, WorkflowInvokePayload } from '@workflow/world';
+import {
+  type Hook,
+  isLegacySpecVersion,
+  SPEC_VERSION_CURRENT,
+  type WorkflowInvokePayload,
+  type WorkflowRun,
+} from '@workflow/world';
+import { type CryptoKey, importKey } from '../encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -9,7 +16,32 @@ import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
+import { getWorkflowQueueName } from './helpers.js';
 import { getWorld } from './world.js';
+
+/**
+ * Internal helper that returns the hook, the associated workflow run,
+ * and the resolved encryption key.
+ */
+async function getHookByTokenWithKey(token: string): Promise<{
+  hook: Hook;
+  run: WorkflowRun;
+  encryptionKey: CryptoKey | undefined;
+}> {
+  const world = getWorld();
+  const hook = await world.hooks.getByToken(token);
+  const run = await world.runs.get(hook.runId);
+  const rawKey = await world.getEncryptionKeyForRun?.(run);
+  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+  if (typeof hook.metadata !== 'undefined') {
+    hook.metadata = await hydrateStepArguments(
+      hook.metadata as any,
+      hook.runId,
+      encryptionKey
+    );
+  }
+  return { hook, run, encryptionKey };
+}
 
 /**
  * Get the hook by token to find the associated workflow run,
@@ -19,11 +51,7 @@ import { getWorld } from './world.js';
  * @param token - The unique token identifying the hook
  */
 export async function getHookByToken(token: string): Promise<Hook> {
-  const world = getWorld();
-  const hook = await world.hooks.getByToken(token);
-  if (typeof hook.metadata !== 'undefined') {
-    hook.metadata = hydrateStepArguments(hook.metadata as any, [], hook.runId);
-  }
+  const { hook } = await getHookByTokenWithKey(token);
   return hook;
 }
 
@@ -58,17 +86,32 @@ export async function getHookByToken(token: string): Promise<Hook> {
  */
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
-  payload: T
+  payload: T,
+  encryptionKeyOverride?: CryptoKey
 ): Promise<Hook> {
   return await waitedUntil(() => {
-    return trace('HOOK.resume', async (span) => {
+    return trace('hook.resume', async (span) => {
       const world = getWorld();
 
       try {
-        const hook =
-          typeof tokenOrHook === 'string'
-            ? await getHookByToken(tokenOrHook)
-            : tokenOrHook;
+        let hook: Hook;
+        let workflowRun: WorkflowRun;
+        let encryptionKey: CryptoKey | undefined;
+        if (typeof tokenOrHook === 'string') {
+          const result = await getHookByTokenWithKey(tokenOrHook);
+          hook = result.hook;
+          workflowRun = result.run;
+          encryptionKey = encryptionKeyOverride ?? result.encryptionKey;
+        } else {
+          hook = tokenOrHook;
+          workflowRun = await world.runs.get(hook.runId);
+          if (encryptionKeyOverride) {
+            encryptionKey = encryptionKeyOverride;
+          } else {
+            const rawKey = await world.getEncryptionKeyForRun?.(workflowRun);
+            encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+          }
+        }
 
         span?.setAttributes({
           ...Attribute.HookToken(hook.token),
@@ -78,10 +121,14 @@ export async function resumeHook<T = any>(
 
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
-        const dehydratedPayload = dehydrateStepReturnValue(
+        const v1Compat = isLegacySpecVersion(hook.specVersion);
+        const dehydratedPayload = await dehydrateStepReturnValue(
           payload,
+          hook.runId,
+          encryptionKey,
           ops,
-          hook.runId
+          globalThis,
+          v1Compat
         );
         // NOTE: Workaround instead of injecting catching undefined unhandled rejections in webhook bundle
         waitUntil(
@@ -91,15 +138,18 @@ export async function resumeHook<T = any>(
         );
 
         // Create a hook_received event with the payload
-        await world.events.create(hook.runId, {
-          eventType: 'hook_received',
-          correlationId: hook.hookId,
-          eventData: {
-            payload: dehydratedPayload,
+        await world.events.create(
+          hook.runId,
+          {
+            eventType: 'hook_received',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: hook.hookId,
+            eventData: {
+              payload: dehydratedPayload,
+            },
           },
-        });
-
-        const workflowRun = await world.runs.get(hook.runId);
+          { v1Compat }
+        );
 
         span?.setAttributes({
           ...Attribute.WorkflowName(workflowRun.workflowName),
@@ -117,7 +167,7 @@ export async function resumeHook<T = any>(
         // Re-trigger the workflow against the deployment ID associated
         // with the workflow run that the hook belongs to
         await world.queue(
-          `__wkf_workflow_${workflowRun.workflowName}`,
+          getWorkflowQueueName(workflowRun.workflowName),
           {
             runId: hook.runId,
             // attach the trace carrier from the workflow run
@@ -182,7 +232,7 @@ export async function resumeWebhook(
   token: string,
   request: Request
 ): Promise<Response> {
-  const hook = await getHookByToken(token);
+  const { hook, encryptionKey } = await getHookByTokenWithKey(token);
 
   let response: Response | undefined;
   let responseReadable: ReadableStream<Response> | undefined;
@@ -211,7 +261,7 @@ export async function resumeWebhook(
     response = new Response(null, { status: 202 });
   }
 
-  await resumeHook(hook, request);
+  await resumeHook(hook, request, encryptionKey);
 
   if (responseReadable) {
     // Wait for the readable stream to emit one chunk,

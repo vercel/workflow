@@ -1,12 +1,18 @@
 {
   "name": "@workflow/core",
-  "version": "4.0.1-beta.40",
+  "version": "4.1.0-beta.62",
   "description": "Core runtime and engine for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
   "files": [
-    "dist"
+    "dist",
+    "docs/**/*",
+    "runtime.js",
+    "runtime.d.ts"
   ],
+  "directories": {
+    "doc": "./docs"
+  },
   "publishConfig": {
     "access": "public"
   },
@@ -22,32 +28,60 @@
       "workflow": "./dist/workflow/index.js",
       "default": "./dist/index.js"
     },
-    "./runtime": "./dist/runtime.js",
-    "./private": "./dist/private.js",
-    "./class-serialization": "./dist/class-serialization.js",
-    "./builtins": "./dist/builtins.js",
-    "./serialization": "./dist/serialization.js",
-    "./observability": {
-      "types": "./dist/observability.d.ts",
-      "node": "./dist/observability.js",
-      "default": "./dist/observability.js"
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
     },
-    "./parse-name": {
-      "types": "./dist/parse-name.d.ts",
-      "default": "./dist/parse-name.js"
+    "./runtime/start": {
+      "types": "./dist/runtime/start.d.ts",
+      "default": "./dist/runtime/start.js"
+    },
+    "./runtime/helpers": {
+      "types": "./dist/runtime/helpers.d.ts",
+      "default": "./dist/runtime/helpers.js"
+    },
+    "./runtime/resume-hook": {
+      "types": "./dist/runtime/resume-hook.d.ts",
+      "default": "./dist/runtime/resume-hook.js"
+    },
+    "./private": {
+      "types": "./dist/private.d.ts",
+      "default": "./dist/private.js"
+    },
+    "./class-serialization": {
+      "types": "./dist/class-serialization.d.ts",
+      "default": "./dist/class-serialization.js"
+    },
+    "./builtins": {
+      "types": "./dist/builtins.d.ts",
+      "default": "./dist/builtins.js"
+    },
+    "./serialization": {
+      "types": "./dist/serialization.d.ts",
+      "default": "./dist/serialization.js"
+    },
+    "./serialization-format": {
+      "types": "./dist/serialization-format.d.ts",
+      "default": "./dist/serialization-format.js"
+    },
+    "./encryption": {
+      "types": "./dist/encryption.d.ts",
+      "default": "./dist/encryption.js"
     },
     "./_workflow": "./dist/workflow/index.js"
   },
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -r dist ||:",
+    "build": "genversion --es6 src/version.ts && tsc",
+    "dev": "genversion --es6 src/version.ts && tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist src/version.ts docs ||:",
     "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run src",
     "test:e2e": "vitest run e2e",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "genversion --es6 src/version.ts && tsc --noEmit",
+    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/foundations ./docs/ && cp -r ../../docs/content/docs/how-it-works ./docs/ && cp -r ../../docs/content/docs/api-reference/workflow ./docs/api-reference",
+    "postpack": "rm -rf docs"
   },
   "dependencies": {
-    "@aws-sdk/credential-provider-web-identity": "3.609.0",
+    "@aws-sdk/credential-provider-web-identity": "3.972.13",
     "@jridgewell/trace-mapping": "0.3.31",
     "@standard-schema/spec": "1.0.0",
     "@types/ms": "2.1.0",
@@ -59,7 +93,7 @@
     "@workflow/world-local": "workspace:*",
     "@workflow/world-vercel": "workspace:*",
     "debug": "4.4.3",
-    "devalue": "5.6.0",
+    "devalue": "5.6.3",
     "ms": "2.1.3",
     "nanoid": "5.1.6",
     "seedrandom": "3.0.5",
@@ -72,7 +106,8 @@
     "@types/node": "catalog:",
     "@types/seedrandom": "3.0.8",
     "@workflow/tsconfig": "workspace:*",
-    "cross-env": "10.1.0"
+    "cross-env": "10.1.0",
+    "genversion": "3.2.0"
   },
   "peerDependencies": {
     "@opentelemetry/api": "1"

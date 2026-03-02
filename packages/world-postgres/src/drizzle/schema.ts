@@ -3,6 +3,9 @@ import {
   type Hook,
   type Step,
   StepStatusSchema,
+  type StructuredError,
+  type Wait,
+  WaitStatusSchema,
   type WorkflowRun,
   WorkflowRunStatusSchema,
 } from '@workflow/world';
@@ -36,6 +39,11 @@ export const stepStatus = pgEnum(
   mustBeMoreThanOne(StepStatusSchema.options)
 );
 
+export const waitStatus = pgEnum(
+  'wait_status',
+  mustBeMoreThanOne(WaitStatusSchema.options)
+);
+
 /**
  * A mapped type that converts all properties of T to Drizzle ORM column definitions,
  * marking them as not nullable if they are not optional in T.
@@ -63,6 +71,7 @@ export const runs = schema.table(
     deploymentId: varchar('deployment_id').notNull(),
     status: workflowRunStatus('status').notNull(),
     workflowName: varchar('name').notNull(),
+    specVersion: integer('spec_version'),
     /** @deprecated */
     executionContextJson:
       jsonb('execution_context').$type<Record<string, any>>(),
@@ -70,7 +79,9 @@ export const runs = schema.table(
     /** @deprecated */
     inputJson: jsonb('input').$type<SerializedContent>(),
     input: Cbor<SerializedContent>()('input_cbor'),
-    error: text('error'),
+    /** @deprecated - use error instead */
+    errorJson: text('error'),
+    error: Cbor<StructuredError>()('error_cbor'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -82,7 +93,7 @@ export const runs = schema.table(
   } satisfies DrizzlishOfType<
     Cborized<
       Omit<WorkflowRun, 'input'> & { input?: unknown },
-      'input' | 'output' | 'executionContext'
+      'input' | 'output' | 'executionContext' | 'error'
     >
   >,
   (tb) => [index().on(tb.workflowName), index().on(tb.status)]
@@ -99,6 +110,7 @@ export const events = schema.table(
     /** @deprecated */
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
+    specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<
     Cborized<Event & { eventData?: undefined }, 'eventData'>
   >,
@@ -118,8 +130,11 @@ export const steps = schema.table(
     /** @deprecated we stream binary data */
     outputJson: jsonb('output').$type<SerializedContent>(),
     output: Cbor<SerializedContent>()('output_cbor'),
-    error: text('error'),
+    /** @deprecated - use error instead */
+    errorJson: text('error'),
+    error: Cbor<StructuredError>()('error_cbor'),
     attempt: integer('attempt').notNull(),
+    /** Maps to startedAt in Step interface */
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -128,8 +143,14 @@ export const steps = schema.table(
       .$onUpdateFn(() => new Date())
       .notNull(),
     retryAfter: timestamp('retry_after'),
+    specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<
-    Cborized<Omit<Step, 'input'> & { input?: unknown }, 'output' | 'input'>
+    Cborized<
+      Omit<Step, 'input'> & {
+        input?: unknown;
+      },
+      'output' | 'input' | 'error'
+    >
   >,
   (tb) => [index().on(tb.runId), index().on(tb.status)]
 );
@@ -147,8 +168,27 @@ export const hooks = schema.table(
     /** @deprecated */
     metadataJson: jsonb('metadata').$type<SerializedContent>(),
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
+    specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
+);
+
+export const waits = schema.table(
+  'workflow_waits',
+  {
+    waitId: varchar('wait_id').primaryKey(),
+    runId: varchar('run_id').notNull(),
+    status: waitStatus('status').notNull(),
+    resumeAt: timestamp('resume_at'),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at')
+      .defaultNow()
+      .$onUpdateFn(() => new Date())
+      .notNull(),
+    specVersion: integer('spec_version'),
+  } satisfies DrizzlishOfType<Wait>,
+  (tb) => [index().on(tb.runId)]
 );
 
 const bytea = customType<{ data: Buffer; notNull: false; default: false }>({

@@ -119,7 +119,7 @@ export async function hookWorkflow(token: string, customData: string) {
 
   type Payload = { message: string; customData: string; done?: boolean };
 
-  const hook = createHook<Payload>({
+  using hook = createHook<Payload>({
     token,
     metadata: { customData },
   });
@@ -155,10 +155,11 @@ export async function webhookWorkflow(
   type Payload = { url: string; method: string; body: string };
   const payloads: Payload[] = [];
 
+  // All webhooks must be created upfront so they're all registered
+  // before the test sends HTTP requests to them
   const webhookWithDefaultResponse = createWebhook({ token });
 
   const res = new Response('Hello from static response!', { status: 402 });
-  console.log('res', res);
   const webhookWithStaticResponse = createWebhook({
     token: token2,
     respondWith: res,
@@ -194,10 +195,18 @@ export async function webhookWorkflow(
 
 //////////////////////////////////////////////////////////
 
-export async function sleepingWorkflow() {
+export async function sleepingWorkflow(durationMs = 10_000) {
   'use workflow';
   const startTime = Date.now();
-  await sleep('10s');
+  await sleep(durationMs);
+  const endTime = Date.now();
+  return { startTime, endTime };
+}
+
+export async function parallelSleepWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  await Promise.all(Array.from({ length: 10 }, () => sleep('1s')));
   const endTime = Date.now();
   return { startTime, endTime };
 }
@@ -381,6 +390,131 @@ export async function promiseRaceStressTestWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+async function stepThatRetriesAndSucceeds() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepThatRetriesAndSucceeds - attempt: ${attempt}`);
+
+  // Fail on attempts 1 and 2, succeed on attempt 3
+  if (attempt < 3) {
+    console.log(`Attempt ${attempt} - throwing error to trigger retry`);
+    throw new Error(`Failed on attempt ${attempt}`);
+  }
+
+  console.log(`Attempt ${attempt} - succeeding`);
+  return attempt;
+}
+
+export async function retryAttemptCounterWorkflow() {
+  'use workflow';
+  console.log('Starting retry attempt counter workflow');
+
+  // This step should fail twice and succeed on the third attempt
+  const finalAttempt = await stepThatRetriesAndSucceeds();
+
+  console.log(`Workflow completed with final attempt: ${finalAttempt}`);
+  return { finalAttempt };
+}
+
+//////////////////////////////////////////////////////////
+
+async function stepThatThrowsRetryableError() {
+  'use step';
+  const { attempt, stepStartedAt } = getStepMetadata();
+  if (attempt === 1) {
+    throw new RetryableError('Retryable error', {
+      retryAfter: '10s',
+    });
+  }
+  return {
+    attempt,
+    stepStartedAt,
+    duration: Date.now() - stepStartedAt.getTime(),
+  };
+}
+
+export async function crossFileErrorWorkflow() {
+  'use workflow';
+  // This will throw an error from the imported helpers.ts file
+  callThrower();
+  return 'never reached';
+}
+
+//////////////////////////////////////////////////////////
+
+export async function retryableAndFatalErrorWorkflow() {
+  'use workflow';
+
+  const retryableResult = await stepThatThrowsRetryableError();
+
+  let gotFatalError = false;
+  try {
+    await stepThatFails();
+  } catch (error: any) {
+    if (FatalError.is(error)) {
+      gotFatalError = true;
+    }
+  }
+
+  return { retryableResult, gotFatalError };
+}
+
+//////////////////////////////////////////////////////////
+
+// Test that maxRetries = 0 means the step runs once but does not retry on failure
+async function stepWithNoRetries() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetries - attempt: ${attempt}`);
+  // Always fail - with maxRetries = 0, this should only run once
+  throw new Error(`Failed on attempt ${attempt}`);
+}
+stepWithNoRetries.maxRetries = 0;
+
+// Test that maxRetries = 0 works when the step succeeds
+async function stepWithNoRetriesThatSucceeds() {
+  'use step';
+  const { attempt } = getStepMetadata();
+  console.log(`stepWithNoRetriesThatSucceeds - attempt: ${attempt}`);
+  return { attempt };
+}
+stepWithNoRetriesThatSucceeds.maxRetries = 0;
+
+export async function maxRetriesZeroWorkflow() {
+  'use workflow';
+  console.log('Starting maxRetries = 0 workflow');
+
+  // First, verify that a step with maxRetries = 0 can still succeed
+  const successResult = await stepWithNoRetriesThatSucceeds();
+
+  // Now test that a failing step with maxRetries = 0 does NOT retry
+  let failedAttempt: number | null = null;
+  let gotError = false;
+  try {
+    await stepWithNoRetries();
+  } catch (error: any) {
+    gotError = true;
+    console.log('Received error', typeof error, error, error.message);
+    // Extract the attempt number from the error message
+    const match = error.message?.match(/attempt (\d+)/);
+    if (match) {
+      failedAttempt = parseInt(match[1], 10);
+    }
+  }
+
+  console.log(
+    `Workflow completed: successResult=${JSON.stringify(successResult)}, gotError=${gotError}, failedAttempt=${failedAttempt}`
+  );
+
+  return {
+    successResult,
+    gotError,
+    failedAttempt,
+  };
+}
+
+//////////////////////////////////////////////////////////
+
 export async function hookCleanupTestWorkflow(
   token: string,
   customData: string
@@ -389,18 +523,60 @@ export async function hookCleanupTestWorkflow(
 
   type Payload = { message: string; customData: string };
 
-  const hook = createHook<Payload>({
+  using hook = createHook<Payload>({
     token,
     metadata: { customData },
   });
 
-  // Wait for exactly one payload
   const payload = await hook;
 
   return {
     message: payload.message,
     customData: payload.customData,
     hookCleanupTestData: 'workflow_completed',
+  };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Workflow for testing early hook disposal - allows another workflow to reuse
+ * the token while this workflow is still running.
+ *
+ * The block scope with `using` releases the token before the sleep, so another
+ * workflow can claim the token while this one continues.
+ */
+export async function hookDisposeTestWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  type Payload = { message: string; customData: string };
+
+  let message: string;
+  let customDataResult: string;
+
+  {
+    // Block scope releases the hook token when exited
+    using hook = createHook<Payload>({
+      token,
+      metadata: { customData },
+    });
+
+    const payload = await hook;
+    message = payload.message;
+    customDataResult = payload.customData;
+  }
+
+  // Token is now available for another workflow while we continue
+  await sleep('5s');
+
+  return {
+    message,
+    customData: customDataResult,
+    disposed: true,
+    hookDisposeTestData: 'workflow_completed',
   };
 }
 
@@ -837,6 +1013,143 @@ export class ChainableService {
 // E2E test for `this` serialization with .call() and .apply()
 //////////////////////////////////////////////////////////
 
+// ============================================================
+// 5XX SERVER ERROR RETRY E2E TEST
+// ============================================================
+// Tests that withServerErrorRetry in the step handler correctly
+// retries transient 5xx errors from workflow-server without
+// consuming step attempts.
+// ============================================================
+
+const FAULT_MAP_SYMBOL = Symbol.for('__test_5xx_fault_map');
+const FAULT_WRAPPER_INSTALLED_SYMBOL = Symbol.for(
+  '__test_5xx_fault_wrapper_installed'
+);
+
+type FaultState = {
+  installStepId: string;
+  targetStepId?: string;
+  remaining: number;
+  triggered: number;
+};
+
+function shouldInjectStepCompletedFault(state: FaultState, data: any): boolean {
+  if (data?.eventType !== 'step_completed') return false;
+
+  const correlationId =
+    typeof data?.correlationId === 'string' ? data.correlationId : null;
+  if (!correlationId) return false;
+
+  // Never inject on the install step itself. This avoids flakiness when
+  // workflow-server transiently retries install step_completed.
+  if (correlationId === state.installStepId) return false;
+
+  // Target exactly one non-install step (the first one encountered).
+  // Retries of that same step share correlationId and are intercepted.
+  state.targetStepId ??= correlationId;
+
+  if (correlationId !== state.targetStepId) return false;
+  if (state.remaining <= 0) return false;
+
+  state.remaining--;
+  state.triggered++;
+  return true;
+}
+
+/**
+ * Step that installs a fault injection patch on world.events.create,
+ * scoped to the current runId. Only intercepts step_completed events
+ * for the target run; all other runs pass through unmodified.
+ */
+async function installServerErrorFaultInjection(failCount: number) {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const { stepId: installStepId } = getStepMetadata();
+  const world = (globalThis as any)[Symbol.for('@workflow/world//cache')];
+
+  // Process-level map for run-scoped fault state
+  (globalThis as any)[FAULT_MAP_SYMBOL] ??= new Map<string, FaultState>();
+  const faultMap = (globalThis as any)[FAULT_MAP_SYMBOL] as Map<
+    string,
+    FaultState
+  >;
+
+  faultMap.set(workflowRunId, {
+    installStepId,
+    remaining: failCount,
+    triggered: 0,
+  });
+
+  // Install the wrapper once per process to avoid nested wrappers across runs.
+  if (!(world.events.create as any)[FAULT_WRAPPER_INSTALLED_SYMBOL]) {
+    const original = world.events.create.bind(world.events);
+
+    const wrappedCreate = async (
+      rid: string,
+      data: any,
+      ...rest: any[]
+    ): Promise<any> => {
+      const state = faultMap.get(rid);
+      if (state && shouldInjectStepCompletedFault(state, data)) {
+        // Create an error that matches WorkflowAPIError.is() check:
+        // isError(value) && value.name === 'WorkflowAPIError'
+        const err: any = new Error('Injected 5xx');
+        err.name = 'WorkflowAPIError';
+        err.status = 500;
+        throw err;
+      }
+
+      return original(rid, data, ...rest);
+    };
+
+    (wrappedCreate as any)[FAULT_WRAPPER_INSTALLED_SYMBOL] = true;
+    world.events.create = wrappedCreate;
+  }
+}
+
+/**
+ * Simple step that does computation (input * 2).
+ * Its step_completed event will be intercepted by the fault injection.
+ */
+async function doWork(input: number) {
+  'use step';
+  return input * 2;
+}
+
+/**
+ * Cleanup step that reads and clears the fault injection state for this run.
+ * Returns how many times the fault was triggered.
+ */
+async function cleanupFaultInjection() {
+  'use step';
+  const { workflowRunId } = getWorkflowMetadata();
+  const faultMap = (globalThis as any)[FAULT_MAP_SYMBOL] as
+    | Map<string, FaultState>
+    | undefined;
+  const state = faultMap?.get(workflowRunId);
+  const triggered = state?.triggered ?? 0;
+  faultMap?.delete(workflowRunId);
+  return triggered;
+}
+
+/**
+ * Workflow that exercises the 5xx retry codepath in the step handler.
+ * 1. Installs fault injection (scoped to this run's step_completed events)
+ * 2. Runs a computation step (its step_completed will fail with 5xx twice)
+ * 3. Cleans up and returns result + retry count for assertions
+ */
+export async function serverError5xxRetryWorkflow(input: number) {
+  'use workflow';
+  await installServerErrorFaultInjection(2);
+  const result = await doWork(input);
+  const retryCount = await cleanupFaultInjection();
+  return { result, retryCount };
+}
+
+//////////////////////////////////////////////////////////
+// E2E test for `this` serialization with .call() and .apply()
+//////////////////////////////////////////////////////////
+
 /**
  * A step function that uses `this` to access properties.
  */
@@ -951,4 +1264,202 @@ export async function customSerializationWorkflow(x: number, y: number) {
     scaledAgain: { x: scaledAgain.x, y: scaledAgain.y },
     sum: { x: sum.x, y: sum.y },
   };
+}
+
+//////////////////////////////////////////////////////////
+// Cross-Context Class Registration E2E Test
+//////////////////////////////////////////////////////////
+
+/**
+ * Import step functions that use Vector - but we do NOT import Vector directly.
+ * This tests that Vector class is registered in the workflow bundle even though
+ * the workflow code never directly references it.
+ */
+import {
+  addVectors,
+  createVector,
+  scaleVector,
+  sumVectors,
+} from './serde-steps.js';
+
+/**
+ * Workflow that tests cross-context class registration.
+ *
+ * IMPORTANT: This workflow does NOT import Vector directly. It only receives
+ * Vector instances through step return values. The cross-context class registration
+ * feature ensures Vector is registered in the workflow bundle even though
+ * the workflow code never imports it.
+ *
+ * Test flow:
+ * 1. Step creates Vector instance and returns it (step serializes)
+ * 2. Workflow receives Vector (workflow deserializes - THIS IS THE KEY TEST)
+ * 3. Workflow passes Vector to another step (workflow serializes)
+ * 4. Step receives Vector and operates on it (step deserializes)
+ * 5. Workflow returns results to client (as plain objects for simplicity)
+ *
+ * Without cross-context class registration, step 2 would fail because the
+ * workflow bundle wouldn't have Vector registered for deserialization.
+ */
+export async function crossContextSerdeWorkflow() {
+  'use workflow';
+
+  // Step 1: Create a vector in the step
+  // Tests: step creating instance -> workflow deserialization
+  // This is the KEY test - workflow must be able to deserialize Vector
+  // even though the workflow code never imports Vector
+  const v1 = await createVector(1, 2, 3);
+
+  // Step 2: Create another vector
+  const v2 = await createVector(10, 20, 30);
+
+  // Step 3: Pass the deserialized vectors back to a step
+  // Tests: workflow serializing Vector instances it received from steps
+  const sum = await addVectors(v1, v2);
+
+  // Step 4: Scale one of the vectors
+  // Tests: workflow passing a single deserialized Vector to step
+  const scaled = await scaleVector(v1, 5);
+
+  // Step 5: Sum an array of vectors
+  // Tests: array serialization with Vector instances
+  const vectors = [v1, v2, scaled];
+  const arraySum = await sumVectors(vectors);
+
+  // Return plain objects (not Vector instances) so the client doesn't need
+  // to deserialize Vector - we're testing workflow deserialization, not client
+  return {
+    v1: { x: v1.x, y: v1.y, z: v1.z },
+    v2: { x: v2.x, y: v2.y, z: v2.z },
+    sum: { x: sum.x, y: sum.y, z: sum.z },
+    scaled: { x: scaled.x, y: scaled.y, z: scaled.z },
+    arraySum: { x: arraySum.x, y: arraySum.y, z: arraySum.z },
+  };
+}
+
+//////////////////////////////////////////////////////////
+// Instance Method Step Tests
+//////////////////////////////////////////////////////////
+
+/**
+ * A class with instance methods that are marked as steps.
+ * This tests the new "use step" support for instance methods.
+ * The class uses custom serialization so the `this` value can be
+ * serialized across the workflow/step boundary.
+ */
+export class Counter {
+  constructor(public value: number) {}
+
+  /** Custom serialization - converts instance to plain object */
+  static [Symbol.for('workflow-serialize')](instance: Counter) {
+    return { value: instance.value };
+  }
+
+  /** Custom deserialization - reconstructs instance from plain object */
+  static [Symbol.for('workflow-deserialize')](data: { value: number }) {
+    return new Counter(data.value);
+  }
+
+  /**
+   * Instance method step: returns the sum of the counter's value and the given amount.
+   * The `this` context (the Counter instance) is serialized and passed
+   * to the step handler, then deserialized before the method is called.
+   */
+  async add(amount: number): Promise<number> {
+    'use step';
+    return this.value + amount;
+  }
+
+  /**
+   * Instance method step: multiplies the counter's value by the given factor.
+   */
+  async multiply(factor: number): Promise<number> {
+    'use step';
+    return this.value * factor;
+  }
+
+  /**
+   * Instance method step: returns an object with both the original and computed values.
+   * This tests that `this` is correctly preserved through the step execution.
+   */
+  async describe(label: string): Promise<{ label: string; value: number }> {
+    'use step';
+    return { label, value: this.value };
+  }
+}
+
+/**
+ * Workflow that tests instance method steps.
+ * Creates Counter instances and calls their instance methods as steps.
+ * The `this` context (the Counter instance) should be serialized and
+ * correctly restored when the step executes.
+ */
+export async function instanceMethodStepWorkflow(initialValue: number) {
+  'use workflow';
+
+  // Create a Counter instance
+  const counter = new Counter(initialValue);
+
+  // Call instance method steps
+  const added = await counter.add(10);
+  const multiplied = await counter.multiply(3);
+  const description = await counter.describe('test counter');
+
+  // Create another counter to verify different instances work
+  const counter2 = new Counter(100);
+  const added2 = await counter2.add(50);
+
+  return {
+    initialValue,
+    added, // initialValue + 10
+    multiplied, // initialValue * 3
+    description, // { label: 'test counter', value: initialValue }
+    added2, // 100 + 50 = 150
+  };
+}
+
+//////////////////////////////////////////////////////////
+// Step Function Reference as start() Argument E2E Test
+//////////////////////////////////////////////////////////
+
+/**
+ * A step function that invokes a step function reference passed to it.
+ * This is called from within the workflow to execute the passed step function.
+ */
+async function invokeStepFn(
+  stepFn: (a: number, b: number) => Promise<number>,
+  x: number,
+  y: number
+): Promise<number> {
+  'use step';
+  // Call the step function reference that was passed in
+  return await stepFn(x, y);
+}
+
+/**
+ * Workflow that receives a step function reference as an argument from start().
+ * This tests that:
+ * 1. Step function references can be serialized in the client bundle (via stepId property)
+ * 2. The serialized step function can be deserialized in the workflow bundle
+ * 3. The deserialized step function can be invoked DIRECTLY from workflow code
+ * 4. The deserialized step function can also be invoked from within another step
+ */
+export async function stepFunctionAsStartArgWorkflow(
+  stepFn: (a: number, b: number) => Promise<number>,
+  x: number,
+  y: number
+): Promise<{ directResult: number; viaStepResult: number; doubled: number }> {
+  'use workflow';
+
+  // CRITICAL TEST: Call the passed step function DIRECTLY from workflow code
+  // This tests that the deserialized step function has the useStep wrapper,
+  // allowing it to be scheduled as a proper step (not executed inline)
+  const directResult = await stepFn(x, y);
+
+  // Also test invoking via another step (this already worked before)
+  const viaStepResult = await invokeStepFn(stepFn, x, y);
+
+  // Do another operation to verify the workflow continues normally
+  const doubled = await stepFn(directResult, directResult);
+
+  return { directResult, viaStepResult, doubled };
 }

@@ -1,4 +1,8 @@
-import type { BaseBuilder } from '@workflow/builders';
+import {
+  type BaseBuilder,
+  detectWorkflowPatterns,
+  isGeneratedWorkflowFile,
+} from '@workflow/builders';
 import type { HotUpdateOptions, Plugin } from 'vite';
 
 interface WorkflowHotUpdatePluginOptions {
@@ -18,7 +22,8 @@ interface WorkflowHotUpdatePluginOptions {
  * Vite plugin that watches for workflow/step file changes and triggers rebuilds.
  *
  * This plugin detects changes to files containing `"use workflow"` or `"use step"`
- * directives and calls the builder to regenerate routes.
+ * directives, or custom serialization patterns (`@workflow/serde` imports or
+ * `Symbol.for('workflow-serialize')`), and calls the builder to regenerate routes.
  */
 export function workflowHotUpdatePlugin(
   options: WorkflowHotUpdatePluginOptions
@@ -48,6 +53,11 @@ export function workflowHotUpdatePlugin(
         return;
       }
 
+      // Skip generated workflow route files to avoid infinite rebuild loops
+      if (isGeneratedWorkflowFile(file)) {
+        return;
+      }
+
       // Read the file to check for workflow/step directives
       let content: string;
       try {
@@ -59,10 +69,10 @@ export function workflowHotUpdatePlugin(
         return;
       }
 
-      const useWorkflowPattern = /^\s*(['"])use workflow\1;?\s*$/m;
-      const useStepPattern = /^\s*(['"])use step\1;?\s*$/m;
+      // Detect workflow patterns using shared utilities
+      const patterns = detectWorkflowPatterns(content);
 
-      if (!useWorkflowPattern.test(content) && !useStepPattern.test(content)) {
+      if (!patterns.hasDirective && !patterns.hasSerde) {
         return;
       }
 

@@ -1,5 +1,12 @@
+import { createHash } from 'node:crypto';
 import { execSync } from 'node:child_process';
-import { copyFileSync, existsSync, readdirSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 
 function runCommand(command) {
   try {
@@ -115,5 +122,16 @@ if (!existsSync(wasmSource)) {
 
 console.log('Copying WASM file...');
 copyFileSync(wasmSource, wasmDest);
+
+// Generate hash of the WASM file for cache invalidation
+console.log('Generating build hash...');
+const wasmContent = readFileSync(wasmDest);
+const buildHash = createHash('sha256')
+  .update(wasmContent)
+  .digest('hex')
+  .slice(0, 16);
+const buildHashPath = new URL('build-hash.json', import.meta.url);
+writeFileSync(buildHashPath, JSON.stringify({ buildHash }, null, 2));
+console.log(`Build hash: ${buildHash}`);
 
 console.log('Build complete!');

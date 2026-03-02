@@ -11,6 +11,7 @@ import {
   jsTsRegex,
   parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
+import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 
 export interface SwcPluginOptions {
   mode: 'step' | 'workflow' | 'client';
@@ -147,6 +148,9 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             loader = 'tsx';
           }
           const source = await readFile(args.path, 'utf8');
+          const normalizedSource = source
+            .replace(/require\(\s*(['"])server-only\1\s*\)/g, 'void 0')
+            .replace(/require\(\s*(['"])client-only\1\s*\)/g, 'void 0');
 
           // Calculate relative path for SWC plugin
           // The filename parameter is used to generate workflowId/stepId, so it must be relative
@@ -184,10 +188,16 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             // Handle files discovered outside the working directory
             // These come back as ../path/to/file, but we want just path/to/file
             if (relativeFilepath.startsWith('../')) {
-              relativeFilepath = relativeFilepath
-                .split('/')
-                .filter((part) => part !== '..')
-                .join('/');
+              const aliasedRelativePath =
+                await resolveWorkflowAliasRelativePath(args.path, workingDir);
+              if (aliasedRelativePath) {
+                relativeFilepath = aliasedRelativePath;
+              } else {
+                relativeFilepath = relativeFilepath
+                  .split('/')
+                  .filter((part) => part !== '..')
+                  .join('/');
+              }
             }
           }
 
@@ -204,7 +214,12 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           }
 
           const { code: transformedCode, workflowManifest } =
-            await applySwcTransform(relativeFilepath, source, options.mode);
+            await applySwcTransform(
+              relativeFilepath,
+              normalizedSource,
+              options.mode,
+              args.path // Pass absolute path for module specifier resolution
+            );
 
           if (!options.workflowManifest) {
             options.workflowManifest = {};
@@ -217,6 +232,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           options.workflowManifest.steps = Object.assign(
             options.workflowManifest.steps || {},
             workflowManifest.steps
+          );
+          options.workflowManifest.classes = Object.assign(
+            options.workflowManifest.classes || {},
+            workflowManifest.classes
           );
 
           return {

@@ -3,19 +3,27 @@
 /**
  * Auto-generates _workflows.ts registry file for workbenches
  *
- * Usage: node generate-workflows-registry.js [workflowsDir] [outputPath]
+ * Usage: node generate-workflows-registry.js [workflowsDir] [outputPath] [--esm]
  *
  * Defaults:
  *   workflowsDir: ./workflows
  *   outputPath: ./_workflows.ts
+ *
+ * Options:
+ *   --esm: Add .js extension to imports (required for ESM with NodeNext moduleResolution)
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
 
+// Parse arguments
+const args = process.argv.slice(2);
+const esmMode = args.includes('--esm');
+const nonFlagArgs = args.filter((arg) => !arg.startsWith('--'));
+
 // Get arguments or use defaults
-const workflowsDir = process.argv[2] || './workflows';
-const outputPath = process.argv[3] || './_workflows.ts';
+const workflowsDir = nonFlagArgs[0] || './workflows';
+const outputPath = nonFlagArgs[1] || './_workflows.ts';
 
 // Calculate relative path from output to workflows directory
 const outputDir = path.dirname(outputPath);
@@ -59,17 +67,20 @@ function generateRegistry() {
     console.warn('Warning: No workflow files found to register');
   }
 
+  // Determine file extension for imports
+  const importExtension = esmMode ? '.js' : '';
+
   // Generate imports
   const imports = files
     .map((file) => {
       const identifier = generateSafeIdentifier(file);
       // Use relative path from output directory to workflows directory
-      // Don't add .js extension - let the bundler resolve it
       let importPath;
+      const baseName = file.replace(/\.tsx?$/, '');
       if (relativeWorkflowsPath && relativeWorkflowsPath !== 'workflows') {
-        importPath = `${relativeWorkflowsPath}/${file.replace(/\.tsx?$/, '')}`;
+        importPath = `${relativeWorkflowsPath}/${baseName}${importExtension}`;
       } else {
-        importPath = `./workflows/${file.replace(/\.tsx?$/, '')}`;
+        importPath = `./workflows/${baseName}${importExtension}`;
       }
       return `import * as ${identifier} from '${importPath}';`;
     })

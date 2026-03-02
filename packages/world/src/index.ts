@@ -24,10 +24,24 @@ export {
   WorkflowRunSchema,
   WorkflowRunStatusSchema,
 } from './runs.js';
+export type { SerializedData } from './serialization.js';
+export {
+  LegacySerializedDataSchemaV1,
+  SerializedDataSchema,
+} from './serialization.js';
 export type * from './shared.js';
 export {
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
+export type { SpecVersion } from './spec-version.js';
+export {
+  isLegacySpecVersion,
+  requiresNewerWorld,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+} from './spec-version.js';
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';
+export type * from './waits.js';
+export { WaitSchema, WaitStatusSchema } from './waits.js';

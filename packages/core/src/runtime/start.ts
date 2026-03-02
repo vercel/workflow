@@ -1,14 +1,21 @@
 import { waitUntil } from '@vercel/functions';
 import { WorkflowRuntimeError } from '@workflow/errors';
-import { withResolvers } from '@workflow/utils';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
-import { Run } from '../runtime.js';
+import { isLegacySpecVersion, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { monotonicFactory } from 'ulid';
+import { importKey } from '../encryption.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
+import { version as workflowCoreVersion } from '../version.js';
+import { getWorkflowQueueName } from './helpers.js';
+import { Run } from './run.js';
 import { getWorld } from './world.js';
+
+/** ULID generator for client-side runId generation */
+const ulid = monotonicFactory();
 
 export interface StartOptions {
   /**
@@ -25,6 +32,11 @@ export interface StartOptions {
    * by default the world is inferred from the environment variables.
    */
   world?: World;
+
+  /**
+   * The spec version to use for the workflow run. Defaults to the latest version.
+   */
+  specVersion?: number;
 }
 
 /**
@@ -74,7 +86,7 @@ export async function start<TArgs extends unknown[], TResult>(
       );
     }
 
-    return trace(`WORKFLOW.start ${workflowName}`, async (span) => {
+    return trace(`workflow.start ${workflowName}`, async (span) => {
       span?.setAttributes({
         ...Attribute.WorkflowName(workflowName),
         ...Attribute.WorkflowOperation('start'),
@@ -95,25 +107,64 @@ export async function start<TArgs extends unknown[], TResult>(
       const world = opts?.world ?? getWorld();
       const deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
       const ops: Promise<void>[] = [];
-      const { promise: runIdPromise, resolve: resolveRunId } =
-        withResolvers<string>();
 
-      const workflowArguments = dehydrateWorkflowArguments(
-        args,
-        ops,
-        runIdPromise
-      );
+      // Generate runId client-side so we have it before serialization
+      // (required for future E2E encryption where runId is part of the encryption context)
+      const runId = `wrun_${ulid()}`;
+
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      const runResponse = await world.runs.create({
-        deploymentId: deploymentId,
-        workflowName: workflowName,
-        input: workflowArguments,
-        executionContext: { traceCarrier },
-      });
+      const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
+      const v1Compat = isLegacySpecVersion(specVersion);
 
-      resolveRunId(runResponse.runId);
+      // Resolve encryption key for the new run. The runId has already been
+      // generated above (client-generated ULID) and will be used for both
+      // key derivation and the run_created event. The World implementation
+      // uses the runId for per-run HKDF key derivation. The opts object is
+      // passed as opaque context so the World can read world-specific fields
+      // (e.g., deploymentId for world-vercel) needed for key resolution.
+      const rawKey = await world.getEncryptionKeyForRun?.(runId, { ...opts });
+      const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+
+      // Create run via run_created event (event-sourced architecture)
+      // Pass client-generated runId - server will accept and use it
+      const workflowArguments = await dehydrateWorkflowArguments(
+        args,
+        runId,
+        encryptionKey,
+        ops,
+        globalThis,
+        v1Compat
+      );
+      const result = await world.events.create(
+        runId,
+        {
+          eventType: 'run_created',
+          specVersion,
+          eventData: {
+            deploymentId: deploymentId,
+            workflowName: workflowName,
+            input: workflowArguments,
+            executionContext: { traceCarrier, workflowCoreVersion },
+          },
+        },
+        { v1Compat }
+      );
+
+      // Assert that the run was created
+      if (!result.run) {
+        throw new WorkflowRuntimeError(
+          "Missing 'run' in server response for 'run_created' event"
+        );
+      }
+
+      // Verify server accepted our runId
+      if (!v1Compat && result.run.runId !== runId) {
+        throw new WorkflowRuntimeError(
+          `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
+        );
+      }
 
       waitUntil(
         Promise.all(ops).catch((err) => {
@@ -125,15 +176,15 @@ export async function start<TArgs extends unknown[], TResult>(
       );
 
       span?.setAttributes({
-        ...Attribute.WorkflowRunId(runResponse.runId),
-        ...Attribute.WorkflowRunStatus(runResponse.status),
+        ...Attribute.WorkflowRunId(runId),
+        ...Attribute.WorkflowRunStatus(result.run.status),
         ...Attribute.DeploymentId(deploymentId),
       });
 
       await world.queue(
-        `__wkf_workflow_${workflowName}`,
+        getWorkflowQueueName(workflowName),
         {
-          runId: runResponse.runId,
+          runId,
           traceCarrier,
         } satisfies WorkflowInvokePayload,
         {
@@ -141,7 +192,7 @@ export async function start<TArgs extends unknown[], TResult>(
         }
       );
 
-      return new Run<TResult>(runResponse.runId);
+      return new Run<TResult>(runId);
     });
   });
 }

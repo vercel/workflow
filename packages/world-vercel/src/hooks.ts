@@ -8,11 +8,7 @@ import type {
 import { HookSchema, PaginatedResponseSchema } from '@workflow/world';
 import z from 'zod';
 import type { APIConfig } from './utils.js';
-import {
-  DEFAULT_RESOLVE_DATA_OPTION,
-  dateToStringReplacer,
-  makeRequest,
-} from './utils.js';
+import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
 
 // Helper to filter hook data based on resolveData setting
 function filterHookData(hook: any, resolveData: 'none' | 'all'): Hook {
@@ -52,7 +48,7 @@ export async function listHooks(
   if (runId) searchParams.set('runId', runId);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/hooks${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/hooks${queryString ? `?${queryString}` : ''}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -75,7 +71,7 @@ export async function getHook(
   config?: APIConfig
 ): Promise<Hook> {
   const resolveData = params?.resolveData || 'all';
-  const endpoint = `/v1/hooks/${hookId}`;
+  const endpoint = `/v2/hooks/${hookId}`;
 
   const hook = await makeRequest({
     endpoint,
@@ -93,17 +89,9 @@ export async function createHook(
   config?: APIConfig
 ): Promise<Hook> {
   return makeRequest({
-    endpoint: `/v1/hooks/create`,
-    options: {
-      method: 'POST',
-      body: JSON.stringify(
-        {
-          runId,
-          ...data,
-        },
-        dateToStringReplacer
-      ),
-    },
+    endpoint: `/v2/hooks/create`,
+    options: { method: 'POST' },
+    data: { runId, ...data },
     config,
     schema: HookSchema,
   });
@@ -114,7 +102,7 @@ export async function getHookByToken(
   config?: APIConfig
 ): Promise<Hook> {
   return makeRequest({
-    endpoint: `/v1/hooks/by-token?token=${encodeURIComponent(token)}`,
+    endpoint: `/v2/hooks/by-token?token=${encodeURIComponent(token)}`,
     options: {
       method: 'GET',
     },
@@ -128,7 +116,7 @@ export async function disposeHook(
   config?: APIConfig
 ): Promise<Hook> {
   return makeRequest({
-    endpoint: `/v1/hooks/${hookId}`,
+    endpoint: `/v2/hooks/${hookId}`,
     options: { method: 'DELETE' },
     config,
     schema: HookSchema,

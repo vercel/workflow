@@ -28,6 +28,16 @@ export type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 export type ModelStopCondition = StopCondition<NoInfer<ToolSet>>;
 
 /**
+ * Provider-executed tool result captured from the stream.
+ */
+export interface ProviderExecutedToolResult {
+  toolCallId: string;
+  toolName: string;
+  result: unknown;
+  isError?: boolean;
+}
+
+/**
  * Convert a Uint8Array to a base64 string safely.
  * Uses a loop instead of spread operator to avoid stack overflow on large arrays.
  */
@@ -161,6 +171,11 @@ export async function doStreamStep(
 
   let finish: FinishPart | undefined;
   const toolCalls: LanguageModelV2ToolCall[] = [];
+  // Map of tool call ID to provider-executed tool result
+  const providerExecutedToolResults = new Map<
+    string,
+    ProviderExecutedToolResult
+  >();
   const chunks: LanguageModelV2StreamPart[] = [];
   const includeRawChunks = options?.includeRawChunks ?? false;
   const collectUIChunks = options?.collectUIChunks ?? false;
@@ -197,6 +212,16 @@ export async function doStreamStep(
               ...chunk,
               input: chunk.input || '{}',
             });
+          } else if (chunk.type === 'tool-result') {
+            // Capture provider-executed tool results
+            if (chunk.providerExecuted) {
+              providerExecutedToolResults.set(chunk.toolCallId, {
+                toolCallId: chunk.toolCallId,
+                toolName: chunk.toolName,
+                result: chunk.result,
+                isError: chunk.isError,
+              });
+            }
           } else if (chunk.type === 'finish') {
             finish = chunk;
           }
@@ -473,6 +498,7 @@ export async function doStreamStep(
     finish,
     step,
     uiChunks: collectUIChunks ? uiChunks : undefined,
+    providerExecutedToolResults,
   };
 }
 

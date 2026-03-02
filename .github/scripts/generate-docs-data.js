@@ -261,11 +261,26 @@ function parseBenchmarkResults(files) {
         if (content.summary) {
           for (const [benchName, timing] of Object.entries(content.summary)) {
             if (worldResults[worldId].metrics[benchName]) {
-              worldResults[worldId].metrics[benchName].workflowTime =
-                timing.avgExecutionTimeMs;
+              // Store workflow time metrics separately from wall time
+              if (timing.avgExecutionTimeMs !== undefined) {
+                worldResults[worldId].metrics[benchName].workflowTime =
+                  timing.avgExecutionTimeMs;
+              }
+              if (timing.minExecutionTimeMs !== undefined) {
+                worldResults[worldId].metrics[benchName].workflowMin =
+                  timing.minExecutionTimeMs;
+              }
+              if (timing.maxExecutionTimeMs !== undefined) {
+                worldResults[worldId].metrics[benchName].workflowMax =
+                  timing.maxExecutionTimeMs;
+              }
               if (timing.avgFirstByteTimeMs !== undefined) {
                 worldResults[worldId].metrics[benchName].ttfb =
                   timing.avgFirstByteTimeMs;
+              }
+              if (timing.avgSlurpTimeMs !== undefined) {
+                worldResults[worldId].metrics[benchName].slurp =
+                  timing.avgSlurpTimeMs;
               }
             }
           }

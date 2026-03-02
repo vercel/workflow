@@ -1,7 +1,7 @@
 {
   "name": "@workflow/utils",
   "description": "Utility functions for Workflow DevKit",
-  "version": "4.0.1-beta.10",
+  "version": "4.1.0-beta.13",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -28,6 +28,10 @@
     "./check-data-dir": {
       "types": "./dist/check-data-dir.d.ts",
       "default": "./dist/check-data-dir.js"
+    },
+    "./parse-name": {
+      "types": "./dist/parse-name.d.ts",
+      "default": "./dist/parse-name.js"
     }
   },
   "scripts": {

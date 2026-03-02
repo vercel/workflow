@@ -31,6 +31,8 @@ export const ERROR_SLUGS = {
   WEBHOOK_RESPONSE_NOT_SENT: 'webhook-response-not-sent',
   FETCH_IN_WORKFLOW_FUNCTION: 'fetch-in-workflow',
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
+  HOOK_CONFLICT: 'hook-conflict',
+  CORRUPTED_EVENT_LOG: 'corrupted-event-log',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -100,10 +102,18 @@ export class WorkflowAPIError extends WorkflowError {
   status?: number;
   code?: string;
   url?: string;
+  /** Retry-After value in seconds, present on 429 responses */
+  retryAfter?: number;
 
   constructor(
     message: string,
-    options?: { status?: number; url?: string; code?: string; cause?: unknown }
+    options?: {
+      status?: number;
+      url?: string;
+      code?: string;
+      retryAfter?: number;
+      cause?: unknown;
+    }
   ) {
     super(message, {
       cause: options?.cause,
@@ -112,6 +122,7 @@ export class WorkflowAPIError extends WorkflowError {
     this.status = options?.status;
     this.code = options?.code;
     this.url = options?.url;
+    this.retryAfter = options?.retryAfter;
   }
 
   static is(value: unknown): value is WorkflowAPIError {
@@ -232,6 +243,31 @@ export class WorkflowRunCancelledError extends WorkflowError {
 }
 
 /**
+ * Thrown when attempting to operate on a workflow run that requires a newer World version.
+ *
+ * This error occurs when a run was created with a newer spec version than the
+ * current World implementation supports. Users should upgrade their @workflow packages.
+ */
+export class RunNotSupportedError extends WorkflowError {
+  readonly runSpecVersion: number;
+  readonly worldSpecVersion: number;
+
+  constructor(runSpecVersion: number, worldSpecVersion: number) {
+    super(
+      `Run requires spec version ${runSpecVersion}, but world supports version ${worldSpecVersion}. ` +
+        `Please upgrade 'workflow' package.`
+    );
+    this.name = 'RunNotSupportedError';
+    this.runSpecVersion = runSpecVersion;
+    this.worldSpecVersion = worldSpecVersion;
+  }
+
+  static is(value: unknown): value is RunNotSupportedError {
+    return isError(value) && value.name === 'RunNotSupportedError';
+  }
+}
+
+/**
  * A fatal error is an error that cannot be retried.
  * It will cause the step to fail and the error will
  * be bubbled up to the workflow logic.
@@ -286,4 +322,4 @@ export class RetryableError extends Error {
 }
 
 export const VERCEL_403_ERROR_MESSAGE =
-  'Your current vercel account does not have access to this resource. Use `vercel login` or `vercel switch` to ensure you are linked to the right account. You might need to run `vercel env pull` to use the latest environment variables.';
+  'Your current vercel account does not have access to this resource. Use `vercel login` or `vercel switch` to ensure you are linked to the right account.';

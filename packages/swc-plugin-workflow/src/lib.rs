@@ -12,6 +12,18 @@ use swc_workflow::{StepTransform, TransformMode};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WasmConfig {
     mode: TransformMode,
+    /// The module specifier to use for ID generation.
+    ///
+    /// This should be the canonical import specifier for this file, for example:
+    /// - "point@0.0.1" for a class from the `point` npm package
+    /// - "@myorg/shared@1.2.3" for a scoped package
+    ///
+    /// If not provided, the plugin will use "./{relative_path}" format (e.g., "./src/models/Point").
+    ///
+    /// This enables stable IDs across different export conditions in package.json,
+    /// where the same package specifier may resolve to different files depending on
+    /// the condition (e.g., "workflow" vs "default").
+    module_specifier: Option<String>,
 }
 
 #[plugin_transform]
@@ -69,7 +81,11 @@ pub fn process_transform(
     // Normalize path separators to forward slashes for consistent workflow IDs across platforms
     let normalized_filename = relative_filename.replace('\\', "/");
 
-    let mut visitor = StepTransform::new(plugin_config.mode, normalized_filename);
+    let mut visitor = StepTransform::new(
+        plugin_config.mode,
+        normalized_filename,
+        plugin_config.module_specifier,
+    );
     program.visit_mut_with(&mut visitor);
     program
 }

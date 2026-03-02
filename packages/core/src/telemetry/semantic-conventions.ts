@@ -179,19 +179,31 @@ export const StepRetryWillRetry = SemanticConvention<boolean>(
   'step.retry.will_retry'
 );
 
-// Queue attributes
+// Queue/Messaging attributes - Standard OTEL messaging conventions
+// See: https://opentelemetry.io/docs/specs/semconv/messaging/messaging-spans/
 
-/** Name of the queue being used for message processing */
-export const QueueName = SemanticConvention<string>('queue.name');
+/** Messaging system identifier (standard OTEL: messaging.system) */
+export const MessagingSystem = SemanticConvention<string>('messaging.system');
 
-/** The message id being handled */
-export const QueueMessageId = SemanticConvention<MessageId>(
-  'messaging.message.id',
-  'queue.message.id'
+/** Destination name/queue name (standard OTEL: messaging.destination.name) */
+export const MessagingDestinationName = SemanticConvention<string>(
+  'messaging.destination.name'
 );
 
-/** Time taken to enqueue the message in milliseconds */
-export const QueueOverheadMs = SemanticConvention<number>('queue.overhead_ms');
+/** The message id being handled (standard OTEL: messaging.message.id) */
+export const MessagingMessageId = SemanticConvention<MessageId>(
+  'messaging.message.id'
+);
+
+/** Operation type (standard OTEL: messaging.operation.type) */
+export const MessagingOperationType = SemanticConvention<
+  'publish' | 'receive' | 'process'
+>('messaging.operation.type');
+
+/** Time taken to enqueue the message in milliseconds (workflow-specific) */
+export const QueueOverheadMs = SemanticConvention<number>(
+  'workflow.queue.overhead_ms'
+);
 
 // Deployment attributes
 
@@ -230,3 +242,85 @@ export const WorkflowSuspensionStepCount = SemanticConvention<number>(
 export const WorkflowSuspensionWaitCount = SemanticConvention<number>(
   'workflow.suspension.wait_count'
 );
+
+// World/Storage attributes - Standard OTEL HTTP conventions
+// See: https://opentelemetry.io/docs/specs/semconv/http/http-spans/
+
+/** HTTP request method (standard OTEL: http.request.method) */
+export const HttpRequestMethod = SemanticConvention<string>(
+  'http.request.method'
+);
+
+/** Full URL of the request (standard OTEL: url.full) */
+export const UrlFull = SemanticConvention<string>('url.full');
+
+/** Server hostname (standard OTEL: server.address) */
+export const ServerAddress = SemanticConvention<string>('server.address');
+
+/** Server port (standard OTEL: server.port) */
+export const ServerPort = SemanticConvention<number>('server.port');
+
+/** HTTP response status code (standard OTEL: http.response.status_code) */
+export const HttpResponseStatusCode = SemanticConvention<number>(
+  'http.response.status_code'
+);
+
+/** Error type when request fails (standard OTEL: error.type) */
+export const ErrorType = SemanticConvention<string>('error.type');
+
+// World-specific custom attributes (for workflow-specific context)
+
+/** Format used for parsing response body (cbor or json) */
+export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
+  'workflow.world.parse.format'
+);
+
+// Event loading attributes
+
+/** Number of pagination pages loaded when fetching workflow events */
+export const WorkflowEventsPagesLoaded = SemanticConvention<number>(
+  'workflow.events.pages_loaded'
+);
+
+// Queue timing breakdown attributes (workflow-specific)
+
+/** Time spent deserializing the queue message in milliseconds */
+export const QueueDeserializeTimeMs = SemanticConvention<number>(
+  'workflow.queue.deserialize_time_ms'
+);
+
+/** Time spent executing the handler logic in milliseconds */
+export const QueueExecutionTimeMs = SemanticConvention<number>(
+  'workflow.queue.execution_time_ms'
+);
+
+/** Time spent serializing the response in milliseconds */
+export const QueueSerializeTimeMs = SemanticConvention<number>(
+  'workflow.queue.serialize_time_ms'
+);
+
+// RPC/Peer Service attributes - For service maps and dependency tracking
+// See: https://opentelemetry.io/docs/specs/semconv/rpc/rpc-spans/
+
+/** The remote service name for Datadog service maps (Datadog-specific: peer.service) */
+export const PeerService = SemanticConvention<string>('peer.service');
+
+/** RPC system identifier (standard OTEL: rpc.system) */
+export const RpcSystem = SemanticConvention<string>('rpc.system');
+
+/** RPC service name (standard OTEL: rpc.service) */
+export const RpcService = SemanticConvention<string>('rpc.service');
+
+/** RPC method name (standard OTEL: rpc.method) */
+export const RpcMethod = SemanticConvention<string>('rpc.method');
+
+// Error attributes - Standard OTEL error conventions
+// See: https://opentelemetry.io/docs/specs/semconv/exceptions/exceptions-spans/
+
+/** Whether the error is retryable (workflow-specific) */
+export const ErrorRetryable = SemanticConvention<boolean>('error.retryable');
+
+/** Error category (workflow-specific: fatal, retryable, transient) */
+export const ErrorCategory = SemanticConvention<
+  'fatal' | 'retryable' | 'transient'
+>('error.category');

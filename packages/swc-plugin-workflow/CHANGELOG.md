@@ -1,5 +1,63 @@
 # @workflow/swc-plugin
 
+## 4.1.0-beta.18
+
+### Patch Changes
+
+- [#991](https://github.com/vercel/workflow/pull/991) [`054e40c`](https://github.com/vercel/workflow/commit/054e40c91be615809c71d3ad29573c78c4491825) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix anonymous class expression names for serialization classes
+
+## 4.1.0-beta.17
+
+### Patch Changes
+
+- [#923](https://github.com/vercel/workflow/pull/923) [`ef23b0b`](https://github.com/vercel/workflow/commit/ef23b0be770bbb5ccca015fb2564953fe6a761d7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix step functions nested multiple levels deep in an object
+
+- [#924](https://github.com/vercel/workflow/pull/924) [`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Set `stepId` property on step functions in "client" mode for serialization support
+
+## 4.1.0-beta.16
+
+### Patch Changes
+
+- [#901](https://github.com/vercel/workflow/pull/901) [`35a9f0c`](https://github.com/vercel/workflow/commit/35a9f0cb0360ffc48c8a8e7db3a299924ab48375) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix module specifier cache bug and add subpath export resolution for package IDs
+
+- [#872](https://github.com/vercel/workflow/pull/872) [`b9c782d`](https://github.com/vercel/workflow/commit/b9c782d75f5452265764cd36d5e306060f8703c3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix class ID generation when class is bound to a variable
+
+- [#874](https://github.com/vercel/workflow/pull/874) [`b5296a7`](https://github.com/vercel/workflow/commit/b5296a7a32b9037aa03c71d87e785fa2d5384a11) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add discovered serializable classes in all context modes
+
+- [#777](https://github.com/vercel/workflow/pull/777) [`c1d7c8d`](https://github.com/vercel/workflow/commit/c1d7c8dbb44afb7434acb07fee500ecaa1224fb0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for "use step" functions in class instance methods
+
+- [#899](https://github.com/vercel/workflow/pull/899) [`73bf7be`](https://github.com/vercel/workflow/commit/73bf7be925a8ffc0c6fce0cc75b6092243882088) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Change compiler ID generation logic to use Node.js import specifiers
+
+  IDs for workflows, steps, and classes now use module specifiers:
+
+  - Local files use `./path/to/file` format instead of `path/to/file.ext`
+  - Package files use `packageName@version` format (e.g., `workflow@4.0.1`)
+
+  This enables stable IDs across different package.json export conditions.
+
+- [#859](https://github.com/vercel/workflow/pull/859) [`8114792`](https://github.com/vercel/workflow/commit/8114792600a851fbf14cf41f8340e646aef36368) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add discovery for custom classes with workflow serialization
+
+## 4.1.0-beta.15
+
+### Minor Changes
+
+- [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
+
+  - Remove `cancel`, `pause`, `resume` from `runs`
+  - Remove `create`, `update` from `runs`, `steps`, `hooks`
+  - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
+  - Add `step_created` event type
+  - Remove `fatal` field from `step_failed` (terminal failure is now implicit)
+  - Add `step_retrying` event with error info for retriable failures
+
+### Patch Changes
+
+- [#866](https://github.com/vercel/workflow/pull/866) [`244b94a`](https://github.com/vercel/workflow/commit/244b94a0665087ece694ae881a17d6aaa0ca0a7f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add support for top-level `using` declarations inside of step / workflow functions
+
+- [#864](https://github.com/vercel/workflow/pull/864) [`81c5a83`](https://github.com/vercel/workflow/commit/81c5a835ae647cd94d88ccec8c3b037acdfb6598) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add "classes" object to `manifest.json` file
+
+- [#860](https://github.com/vercel/workflow/pull/860) [`b4113da`](https://github.com/vercel/workflow/commit/b4113da9541f3cebf1605d753374025f95259bf8) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Enable custom class serialization transformations for "client" mode
+
 ## 4.0.1-beta.14
 
 ### Patch Changes

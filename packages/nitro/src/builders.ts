@@ -13,6 +13,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
       ...createBaseBuilderConfig({
         workingDir: nitro.options.rootDir,
         dirs: ['.'], // Different apps that use nitro have different directories
+        runtime: nitro.options.workflow?.runtime,
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -49,14 +50,14 @@ export class LocalBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    await this.createWorkflowsBundle({
+    const { manifest: workflowsManifest } = await this.createWorkflowsBundle({
       outfile: join(this.#outDir, 'workflows.mjs'),
       bundleFinalOutput: false,
       format: 'esm',
       inputFiles,
     });
 
-    const { manifest } = await this.createStepsBundle({
+    const { manifest: stepsManifest } = await this.createStepsBundle({
       outfile: join(this.#outDir, 'steps.mjs'),
       externalizeNonSteps: true,
       format: 'esm',
@@ -69,6 +70,13 @@ export class LocalBuilder extends BaseBuilder {
       outfile: webhookRouteFile,
       bundle: false,
     });
+
+    // Merge manifests from both bundles
+    const manifest = {
+      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
+      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
+      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
+    };
 
     // Generate manifest
     const workflowBundlePath = join(this.#outDir, 'workflows.mjs');

@@ -6,31 +6,39 @@ import {
   PaginatedResponseSchema,
   type Step,
   StepSchema,
+  type StepWithoutData,
   type UpdateStepRequest,
 } from '@workflow/world';
 import { z } from 'zod';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
-  dateToStringReplacer,
-  deserializeError,
   makeRequest,
   serializeError,
 } from './utils.js';
 
 /**
  * Wire format schema for steps coming from the backend.
- * The backend returns error as a JSON string, not an object, so we need
- * a schema that accepts the wire format before deserialization.
- *
- * This is used for validation in makeRequest(), then deserializeStepError()
- * transforms the string into the expected StructuredError object.
+ * Handles error deserialization from wire format.
  */
-const StepWireSchema = StepSchema.omit({
+export const StepWireSchema = StepSchema.omit({
   error: true,
 }).extend({
-  // Backend returns error as a JSON string, not an object
-  error: z.string().optional(),
+  // Backend returns error either as:
+  // - A JSON string (legacy/lazy mode)
+  // - An object {message, stack} (when errorRef is resolved)
+  // This will be deserialized and mapped to error
+  error: z
+    .union([
+      z.string(),
+      z.object({
+        message: z.string(),
+        stack: z.string().optional(),
+        code: z.string().optional(),
+      }),
+    ])
+    .optional(),
+  errorRef: z.any().optional(),
 });
 
 // Wire schema for lazy mode with refs instead of data
@@ -41,29 +49,101 @@ const StepWireWithRefsSchema = StepWireSchema.omit({
   // We discard the results of the refs, so we don't care about the type here
   inputRef: z.any().optional(),
   outputRef: z.any().optional(),
-  input: z.array(z.any()).optional(),
-  output: z.any().optional(),
+  input: z.instanceof(Uint8Array).optional(),
+  output: z.instanceof(Uint8Array).optional(),
 });
 
-// Helper to filter step data based on resolveData setting
-function filterStepData(step: any, resolveData: 'none' | 'all'): Step {
+/**
+ * Transform step from wire format to Step interface format.
+ * Maps:
+ * - error/errorRef → error (deserializing JSON string to StructuredError)
+ */
+export function deserializeStep(wireStep: any): Step {
+  const { error, errorRef, ...rest } = wireStep;
+
+  const result: any = {
+    ...rest,
+  };
+
+  // Deserialize error to StructuredError
+  // The backend returns error as:
+  // - error: JSON string (legacy) or object (when resolved)
+  // - errorRef: resolved object {message, stack} when remoteRefBehavior=resolve
+  const errorSource = error ?? errorRef;
+  if (errorSource) {
+    if (typeof errorSource === 'string') {
+      try {
+        const parsed = JSON.parse(errorSource);
+        if (typeof parsed === 'object' && parsed.message !== undefined) {
+          result.error = {
+            message: parsed.message,
+            stack: parsed.stack,
+            code: parsed.code,
+          };
+        } else {
+          // Parsed but not an object with message
+          result.error = { message: String(parsed) };
+        }
+      } catch {
+        // Not JSON, treat as plain string
+        result.error = { message: errorSource };
+      }
+    } else if (typeof errorSource === 'object' && errorSource !== null) {
+      // Already an object (from resolved ref)
+      result.error = {
+        message: errorSource.message ?? 'Unknown error',
+        stack: errorSource.stack,
+        code: errorSource.code,
+      };
+    }
+  }
+
+  return result as Step;
+}
+
+// Overloaded function signatures for filterStepData
+function filterStepData(step: any, resolveData: 'none'): StepWithoutData;
+function filterStepData(step: any, resolveData: 'all'): Step;
+function filterStepData(
+  step: any,
+  resolveData: 'none' | 'all'
+): Step | StepWithoutData;
+
+// Implementation - when resolveData='none', returns Step with input/output set to undefined
+// to match other World implementations (world-local, world-postgres)
+function filterStepData(
+  step: any,
+  resolveData: 'none' | 'all'
+): Step | StepWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = step;
-    const deserialized = deserializeError<Step>(rest);
+    const deserialized = deserializeStep(rest);
     return {
       ...deserialized,
-      input: [],
+      input: undefined,
       output: undefined,
-    };
+    } as StepWithoutData;
   }
-  return deserializeError<Step>(step);
+  return deserializeStep(step);
 }
 
 // Functions
 export async function listWorkflowRunSteps(
+  params: ListWorkflowRunStepsParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<PaginatedResponse<StepWithoutData>>;
+export async function listWorkflowRunSteps(
+  params: ListWorkflowRunStepsParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<PaginatedResponse<Step>>;
+export async function listWorkflowRunSteps(
   params: ListWorkflowRunStepsParams,
   config?: APIConfig
-): Promise<PaginatedResponse<Step>> {
+): Promise<PaginatedResponse<Step | StepWithoutData>>;
+export async function listWorkflowRunSteps(
+  params: ListWorkflowRunStepsParams,
+  config?: APIConfig
+): Promise<PaginatedResponse<Step | StepWithoutData>> {
   const {
     runId,
     pagination,
@@ -82,7 +162,7 @@ export async function listWorkflowRunSteps(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${runId}/steps${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${runId}/steps${queryString ? `?${queryString}` : ''}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -105,15 +185,13 @@ export async function createStep(
   config?: APIConfig
 ): Promise<Step> {
   const step = await makeRequest({
-    endpoint: `/v1/runs/${runId}/steps`,
-    options: {
-      method: 'POST',
-      body: JSON.stringify(data, dateToStringReplacer),
-    },
+    endpoint: `/v2/runs/${runId}/steps`,
+    options: { method: 'POST' },
+    data,
     config,
     schema: StepWireSchema,
   });
-  return deserializeError<Step>(step);
+  return deserializeStep(step);
 }
 
 export async function updateStep(
@@ -124,23 +202,39 @@ export async function updateStep(
 ): Promise<Step> {
   const serialized = serializeError(data);
   const step = await makeRequest({
-    endpoint: `/v1/runs/${runId}/steps/${stepId}`,
-    options: {
-      method: 'PUT',
-      body: JSON.stringify(serialized, dateToStringReplacer),
-    },
+    endpoint: `/v2/runs/${runId}/steps/${stepId}`,
+    options: { method: 'PUT' },
+    data: serialized,
     config,
     schema: StepWireSchema,
   });
-  return deserializeError<Step>(step);
+  return deserializeStep(step);
 }
 
 export async function getStep(
   runId: string | undefined,
   stepId: string,
+  params: GetStepParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<StepWithoutData>;
+export async function getStep(
+  runId: string | undefined,
+  stepId: string,
+  params?: GetStepParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<Step>;
+export async function getStep(
+  runId: string | undefined,
+  stepId: string,
   params?: GetStepParams,
   config?: APIConfig
-): Promise<Step> {
+): Promise<Step | StepWithoutData>;
+export async function getStep(
+  runId: string | undefined,
+  stepId: string,
+  params?: GetStepParams,
+  config?: APIConfig
+): Promise<Step | StepWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
 
@@ -149,8 +243,8 @@ export async function getStep(
 
   const queryString = searchParams.toString();
   const endpoint = runId
-    ? `/v1/runs/${runId}/steps/${stepId}${queryString ? `?${queryString}` : ''}`
-    : `/v1/steps/${stepId}${queryString ? `?${queryString}` : ''}`;
+    ? `/v2/runs/${runId}/steps/${stepId}${queryString ? `?${queryString}` : ''}`
+    : `/v2/steps/${stepId}${queryString ? `?${queryString}` : ''}`;
 
   const step = await makeRequest({
     endpoint,

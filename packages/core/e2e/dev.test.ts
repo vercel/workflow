@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { getWorkbenchAppPath } from './utils';
 
 export interface DevTestConfig {
@@ -35,6 +35,7 @@ export function createDevTests(config?: DevTestConfig) {
   }
   describe('dev e2e', () => {
     const appPath = getWorkbenchAppPath();
+    const deploymentUrl = process.env.DEPLOYMENT_URL;
     const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
     const generatedWorkflow = path.join(
       appPath,
@@ -43,6 +44,28 @@ export function createDevTests(config?: DevTestConfig) {
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
     const restoreFiles: Array<{ path: string; content: string }> = [];
+
+    const fetchWithTimeout = (pathname: string) => {
+      if (!deploymentUrl) {
+        return Promise.resolve();
+      }
+
+      return fetch(new URL(pathname, deploymentUrl), {
+        signal: AbortSignal.timeout(5_000),
+      });
+    };
+
+    const prewarm = async () => {
+      // Pre-warm the app with bounded requests so cleanup hooks cannot hang.
+      await Promise.all([
+        fetchWithTimeout('/').catch(() => {}),
+        fetchWithTimeout('/api/chat').catch(() => {}),
+      ]);
+    };
+
+    beforeAll(async () => {
+      await prewarm();
+    });
 
     afterEach(async () => {
       await Promise.all(
@@ -54,6 +77,7 @@ export function createDevTests(config?: DevTestConfig) {
           }
         })
       );
+      await prewarm();
       restoreFiles.length = 0;
     });
 
@@ -101,11 +125,35 @@ export async function myNewStep() {
 `
       );
       restoreFiles.push({ path: stepFile, content });
+      const copiedStepDir = path.join(
+        path.dirname(generatedStep),
+        '__workflow_step_files__'
+      );
 
       while (true) {
         try {
-          const workflowContent = await fs.readFile(generatedStep, 'utf8');
-          expect(workflowContent).toContain('myNewStep');
+          const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
+          if (stepRouteContent.includes('myNewStep')) {
+            break;
+          }
+
+          const copiedStepFileNames = await fs.readdir(copiedStepDir);
+          const copiedStepContents = await Promise.all(
+            copiedStepFileNames.map(async (copiedStepFileName) => {
+              const copiedStepFilePath = path.join(
+                copiedStepDir,
+                copiedStepFileName
+              );
+              const copiedStepStats = await fs.stat(copiedStepFilePath);
+              if (!copiedStepStats.isFile()) {
+                return '';
+              }
+              return await fs.readFile(copiedStepFilePath, 'utf8');
+            })
+          );
+          expect(
+            copiedStepContents.some((content) => content.includes('myNewStep'))
+          ).toBe(true);
           break;
         } catch (_) {
           await new Promise((res) => setTimeout(res, 1_000));
@@ -145,6 +193,7 @@ ${apiFileContent}`
 
         while (true) {
           try {
+            await fetchWithTimeout('/api/chat');
             const workflowContent = await fs.readFile(
               generatedWorkflow,
               'utf8'

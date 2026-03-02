@@ -8,6 +8,8 @@ export type WorkflowDefinition = {
   defaultArgs: unknown[];
 };
 
+const RANDOM_ARG_PLACEHOLDER = '<random-id>';
+
 // Default arguments for workflows that require them
 // Based on e2e test arguments from packages/core/e2e/e2e.test.ts
 const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
@@ -26,21 +28,40 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   // 98_duplicate_case.ts
   addTenWorkflow: [123],
   // 99_e2e.ts
-  hookWorkflow: [
-    Math.random().toString(36).slice(2),
-    Math.random().toString(36).slice(2),
-  ],
+  hookWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
   webhookWorkflow: [
-    Math.random().toString(36).slice(2),
-    Math.random().toString(36).slice(2),
-    Math.random().toString(36).slice(2),
+    RANDOM_ARG_PLACEHOLDER,
+    RANDOM_ARG_PLACEHOLDER,
+    RANDOM_ARG_PLACEHOLDER,
   ],
-  hookCleanupTestWorkflow: [
-    Math.random().toString(36).slice(2),
-    Math.random().toString(36).slice(2),
-  ],
+  hookCleanupTestWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
   closureVariableWorkflow: [7],
 };
+
+function resolveRandomArgPlaceholders(value: unknown): unknown {
+  if (value === RANDOM_ARG_PLACEHOLDER) {
+    return Math.random().toString(36).slice(2);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => resolveRandomArgPlaceholders(entry));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        resolveRandomArgPlaceholders(entry),
+      ])
+    );
+  }
+
+  return value;
+}
+
+export function materializeWorkflowArgs(args: unknown[]): unknown[] {
+  return args.map((arg) => resolveRandomArgPlaceholders(arg));
+}
 
 // Dynamically generate workflow definitions from allWorkflows
 export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = Object.entries(

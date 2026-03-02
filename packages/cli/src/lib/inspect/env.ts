@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import { logger } from '../config/log.js';
 import { getWorkflowConfig } from '../config/workflow-config.js';
-import { getAuth } from './auth.js';
+import { getAuthToken } from './auth.js';
 import { fetchTeamInfo } from './vercel-api.js';
 import {
   findRepoRoot,
@@ -40,8 +40,8 @@ export const getEnvVars = (): Record<string, string> => {
     WORKFLOW_VERCEL_ENV: env.WORKFLOW_VERCEL_ENV || '',
     WORKFLOW_VERCEL_AUTH_TOKEN: env.WORKFLOW_VERCEL_AUTH_TOKEN || '',
     WORKFLOW_VERCEL_PROJECT: env.WORKFLOW_VERCEL_PROJECT || '',
+    WORKFLOW_VERCEL_PROJECT_NAME: env.WORKFLOW_VERCEL_PROJECT_NAME || '',
     WORKFLOW_VERCEL_TEAM: env.WORKFLOW_VERCEL_TEAM || '',
-    WORKFLOW_VERCEL_BACKEND_URL: env.WORKFLOW_VERCEL_BACKEND_URL || '',
     WORKFLOW_LOCAL_UI: env.WORKFLOW_LOCAL_UI || '',
     PORT: env.PORT || '',
     WORKFLOW_LOCAL_DATA_DIR: env.WORKFLOW_LOCAL_DATA_DIR || '',
@@ -88,11 +88,14 @@ export const inferLocalWorldEnvVars = async () => {
     writeEnvVars({ WORKFLOW_OBSERVABILITY_CWD: cwd });
   }
 
-  if (!envVars.PORT) {
+  // Set default base URL for local queue if not already configured
+  // We use WORKFLOW_LOCAL_BASE_URL instead of PORT to avoid conflicts
+  // with other tools (like Next.js) that also use the PORT env var
+  if (!envVars.WORKFLOW_LOCAL_BASE_URL && !envVars.PORT) {
     logger.debug(
-      'Trying to connect to queue on default port 3000, set PORT environment variable to override.'
+      'Using default queue target http://localhost:3000, set WORKFLOW_LOCAL_BASE_URL or PORT to override.'
     );
-    envVars.PORT = '3000';
+    envVars.WORKFLOW_LOCAL_BASE_URL = 'http://localhost:3000';
     writeEnvVars(envVars);
   }
 
@@ -182,13 +185,27 @@ export const inferVercelProjectAndTeam = async () => {
 export const inferVercelEnvVars = async () => {
   const envVars = getEnvVars();
 
-  if (!envVars.WORKFLOW_VERCEL_PROJECT || !envVars.WORKFLOW_VERCEL_TEAM) {
+  // Infer project/team from .vercel folder when:
+  // - WORKFLOW_VERCEL_PROJECT or WORKFLOW_VERCEL_TEAM is missing, OR
+  // - WORKFLOW_VERCEL_PROJECT is set but doesn't look like a real project ID
+  //   (e.g., user passed a slug via --project flag), OR
+  // - WORKFLOW_VERCEL_PROJECT_NAME is missing (need to populate the slug)
+  const needsInference =
+    !envVars.WORKFLOW_VERCEL_PROJECT ||
+    !envVars.WORKFLOW_VERCEL_TEAM ||
+    !envVars.WORKFLOW_VERCEL_PROJECT_NAME ||
+    !envVars.WORKFLOW_VERCEL_PROJECT.startsWith('prj_');
+
+  if (needsInference) {
     logger.debug('Inferring vercel project and team from .vercel folder');
     const inferredProject = await inferVercelProjectAndTeam();
     if (inferredProject) {
       const { projectId, projectName, teamId } = inferredProject;
-      envVars.WORKFLOW_VERCEL_PROJECT = projectName || projectId;
-      envVars.WORKFLOW_VERCEL_TEAM = teamId;
+      // WORKFLOW_VERCEL_PROJECT is the real project ID (e.g., prj_xxx)
+      envVars.WORKFLOW_VERCEL_PROJECT = projectId;
+      // WORKFLOW_VERCEL_PROJECT_NAME is the project slug (e.g., my-app)
+      envVars.WORKFLOW_VERCEL_PROJECT_NAME = projectName || projectId;
+      envVars.WORKFLOW_VERCEL_TEAM = envVars.WORKFLOW_VERCEL_TEAM || teamId;
       writeEnvVars(envVars);
     } else {
       logger.warn(
@@ -199,11 +216,11 @@ export const inferVercelEnvVars = async () => {
 
   if (!envVars.WORKFLOW_VERCEL_AUTH_TOKEN) {
     logger.debug('Inferring vercel auth token from CLI auth file');
-    const auth = getAuth();
-    if (!auth) {
+    const token = await getAuthToken();
+    if (!token) {
       throw new Error('Could not find credentials. Run `vc login` to log in.');
     }
-    envVars.WORKFLOW_VERCEL_AUTH_TOKEN = auth.token;
+    envVars.WORKFLOW_VERCEL_AUTH_TOKEN = token;
     writeEnvVars(envVars);
   }
 

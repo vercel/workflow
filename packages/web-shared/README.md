@@ -1,67 +1,41 @@
 # @workflow/web-shared
 
-Workflow Observability tools for NextJS. See [Workflow DevKit](https://useworkflow.dev/docs/observability) for more information.
+Workflow Observability UI primitives. See [Workflow DevKit](https://useworkflow.dev/docs/observability) for more information.
 
 ## Usage
 
-This package contains client and server code to interact with the Workflow API, as well as some pre-styled components.
-If you want to deploy a full observability experience with your NextJS app, take a look at [`@workflow/web`](../web/README.md) instead, which can be self-hosted.
+This package contains:
+- pre-styled, prop-driven UI components (no data fetching)
 
-You can use the API to create your own display UI, like so:
+If you want a full observability experience with server actions already wired, take a look at
+[`@workflow/web`](../web/README.md) instead.
+
+It comes with pre-styled UI components that accept data + callbacks:
 
 ```tsx
-import { useWorkflowRuns } from '@workflow/web-shared';
+import { WorkflowTraceViewer } from '@workflow/web-shared';
 
-export default function MyRunsList() {
-  const {
-    data,
-    error,
-    nextPage,
-    previousPage,
-    hasNextPage,
-    hasPreviousPage,
-    reload,
-    pageInfo,
-  } = useWorkflowRuns(env, {
-    sortOrder,
-    workflowName: workflowNameFilter === 'all' ? undefined : workflowNameFilter,
-    status: status === 'all' ? undefined : status,
-  });
-
-  // Shows an interactive trace viewer for the given run
-  return <div>{runs.map((run) => (
-    <div key={run.runId}>
-      {run.workflowName}
-      {run.status}
-      {run.startedAt}
-      {run.completedAt}
-    </div>
-  ))}</div>;
+export default function MyRunDetailView({
+  run,
+  steps,
+  hooks,
+  events,
+  onSpanSelect,
+}) {
+  return (
+    <WorkflowTraceViewer
+      run={run}
+      steps={steps}
+      hooks={hooks}
+      events={events}
+      onSpanSelect={onSpanSelect}
+    />
+  );
 }
 ```
 
-It also comes with a pre-styled interactive trace viewer that you can use to display the trace for a given run:
-
-```tsx
-import { RunTraceView } from '@workflow/web-shared';
-
-export default function MyRunDetailView({ env, runId }: { env: EnvMap, runId: string }) {
-  // ... your other code
-
-  // Shows an interactive trace viewer for the given run
-  return <RunTraceView env={env} runId={runId} />;
-}
-```
-
-## Environment Variables
-
-For API calls to work, you'll need to pass the same environment variables that are used by the Workflow CLI.
-See `npx workflow inspect --help` for more information.
-
-If you're deploying this as part of your Vercel NextJS app, setting `WORKFLOW_TARGET_WORLD` to `vercel` is enough
-to infer your other project details from the Vercel environment variables.
-
-**Important:** When using the UI to inspect different worlds, all relevant environment variables should be passed via the `EnvMap` parameter to the hooks and components, rather than setting them directly on your Next.js instance via `process.env`. The server-side World caching is based on the `EnvMap` configuration, so setting environment variables directly on `process.env` may cause cached World instances to operate with incorrect environment configuration.
+Server actions and data fetching are intentionally **not** part of `web-shared`. Implement those in your app
+and pass data + callbacks into these components. If you need world run helpers, use `@workflow/core/runtime`.
 
 ## Styling
 

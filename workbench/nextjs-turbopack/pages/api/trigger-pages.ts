@@ -4,7 +4,6 @@ import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
-import { hydrateWorkflowArguments } from 'workflow/internal/serialization';
 import { allWorkflows } from '@/_workflows';
 
 export default async function handler(
@@ -61,9 +60,11 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
       const num = parseFloat(arg);
       return Number.isNaN(num) ? arg.trim() : num;
     });
+  } else if (req.body && Array.isArray(req.body)) {
+    // Args from JSON body
+    args = req.body;
   } else {
-    // Args from body
-    args = hydrateWorkflowArguments(JSON.parse(req.body), globalThis);
+    args = [];
   }
   console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
 

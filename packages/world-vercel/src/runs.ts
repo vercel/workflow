@@ -6,39 +6,43 @@ import {
   type ListWorkflowRunsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
-  type UpdateWorkflowRunRequest,
+  StructuredErrorSchema,
   type WorkflowRun,
   WorkflowRunBaseSchema,
+  type WorkflowRunWithoutData,
 } from '@workflow/world';
 import { z } from 'zod';
 import type { APIConfig } from './utils.js';
 import {
   DEFAULT_RESOLVE_DATA_OPTION,
-  dateToStringReplacer,
   deserializeError,
   makeRequest,
-  serializeError,
 } from './utils.js';
 
 /**
  * Wire format schema for workflow runs coming from the backend.
- * The backend returns error as a JSON string, not an object, so we need
- * a schema that accepts the wire format before deserialization.
+ * The backend may return error either as:
+ * - A JSON string (legacy format) that needs deserialization
+ * - An already structured object (new format) with { message, stack?, code? }
  *
  * This is used for validation in makeRequest(), then deserializeError()
- * transforms the string into the expected StructuredError object.
+ * normalizes both formats into the expected StructuredError object.
  */
 const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
   error: true,
 }).extend({
-  // Backend returns error as a JSON string, not an object
-  error: z.string().optional(),
+  // Backend returns error as either a JSON string or structured object
+  error: z.union([z.string(), StructuredErrorSchema]).optional(),
+  // Not part of the World interface, but passed through for direct consumers and debugging
+  blobStorageBytes: z.number().optional(),
+  streamStorageBytes: z.number().optional(),
 });
 
 // Wire schema for resolved data (full input/output)
 const WorkflowRunWireSchema = WorkflowRunWireBaseSchema;
 
 // Wire schema for lazy mode with refs instead of data
+// input/output can be Uint8Array (v2) or any JSON (legacy v1)
 const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
   input: true,
   output: true,
@@ -46,22 +50,32 @@ const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
   // We discard the results of the refs, so we don't care about the type here
   inputRef: z.any().optional(),
   outputRef: z.any().optional(),
-  input: z.array(z.any()).optional(),
-  output: z.any().optional(),
-  blobStorageBytes: z.number().optional(),
-  streamStorageBytes: z.number().optional(),
+  // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
+  input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
+  output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
 });
 
-// Helper to filter run data based on resolveData setting
-function filterRunData(run: any, resolveData: 'none' | 'all'): WorkflowRun {
+// Overloaded function signatures for filterRunData
+function filterRunData(run: any, resolveData: 'none'): WorkflowRunWithoutData;
+function filterRunData(run: any, resolveData: 'all'): WorkflowRun;
+function filterRunData(
+  run: any,
+  resolveData: 'none' | 'all'
+): WorkflowRun | WorkflowRunWithoutData;
+
+// Implementation
+function filterRunData(
+  run: any,
+  resolveData: 'none' | 'all'
+): WorkflowRun | WorkflowRunWithoutData {
   if (resolveData === 'none') {
     const { inputRef: _inputRef, outputRef: _outputRef, ...rest } = run;
     const deserialized = deserializeError<WorkflowRun>(rest);
     return {
       ...deserialized,
-      input: [],
+      input: undefined,
       output: undefined,
-    };
+    } as WorkflowRunWithoutData;
   }
   return deserializeError<WorkflowRun>(run);
 }
@@ -73,9 +87,21 @@ function filterRunData(run: any, resolveData: 'none' | 'all'): WorkflowRun {
  * uses CH to resolve this instead of scanning a dynamo table.
  */
 export async function listWorkflowRuns(
+  params: ListWorkflowRunsParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<PaginatedResponse<WorkflowRunWithoutData>>;
+export async function listWorkflowRuns(
+  params?: ListWorkflowRunsParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<PaginatedResponse<WorkflowRun>>;
+export async function listWorkflowRuns(
+  params?: ListWorkflowRunsParams,
+  config?: APIConfig
+): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>>;
+export async function listWorkflowRuns(
   params: ListWorkflowRunsParams = {},
   config?: APIConfig
-): Promise<PaginatedResponse<WorkflowRun>> {
+): Promise<PaginatedResponse<WorkflowRun | WorkflowRunWithoutData>> {
   const {
     workflowName,
     status,
@@ -97,7 +123,7 @@ export async function listWorkflowRuns(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs${queryString ? `?${queryString}` : ''}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -116,16 +142,14 @@ export async function listWorkflowRuns(
   };
 }
 
-export async function createWorkflowRun(
+export async function createWorkflowRunV1(
   data: CreateWorkflowRunRequest,
   config?: APIConfig
 ): Promise<WorkflowRun> {
   const run = await makeRequest({
     endpoint: '/v1/runs/create',
-    options: {
-      method: 'POST',
-      body: JSON.stringify(data, dateToStringReplacer),
-    },
+    options: { method: 'POST' },
+    data,
     config,
     schema: WorkflowRunWireSchema,
   });
@@ -134,9 +158,24 @@ export async function createWorkflowRun(
 
 export async function getWorkflowRun(
   id: string,
+  params: GetWorkflowRunParams & { resolveData: 'none' },
+  config?: APIConfig
+): Promise<WorkflowRunWithoutData>;
+export async function getWorkflowRun(
+  id: string,
+  params?: GetWorkflowRunParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<WorkflowRun>;
+export async function getWorkflowRun(
+  id: string,
   params?: GetWorkflowRunParams,
   config?: APIConfig
-): Promise<WorkflowRun> {
+): Promise<WorkflowRun | WorkflowRunWithoutData>;
+export async function getWorkflowRun(
+  id: string,
+  params?: GetWorkflowRunParams,
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
 
@@ -144,7 +183,7 @@ export async function getWorkflowRun(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${id}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${id}${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({
@@ -165,36 +204,26 @@ export async function getWorkflowRun(
   }
 }
 
-export async function updateWorkflowRun(
+export async function cancelWorkflowRunV1(
   id: string,
-  data: UpdateWorkflowRunRequest,
+  params: CancelWorkflowRunParams & { resolveData: 'none' },
   config?: APIConfig
-): Promise<WorkflowRun> {
-  try {
-    const serialized = serializeError(data);
-    const run = await makeRequest({
-      endpoint: `/v1/runs/${id}`,
-      options: {
-        method: 'PUT',
-        body: JSON.stringify(serialized, dateToStringReplacer),
-      },
-      config,
-      schema: WorkflowRunWireSchema,
-    });
-    return deserializeError<WorkflowRun>(run);
-  } catch (error) {
-    if (error instanceof WorkflowAPIError && error.status === 404) {
-      throw new WorkflowRunNotFoundError(id);
-    }
-    throw error;
-  }
-}
-
-export async function cancelWorkflowRun(
+): Promise<WorkflowRunWithoutData>;
+export async function cancelWorkflowRunV1(
+  id: string,
+  params?: CancelWorkflowRunParams & { resolveData?: 'all' },
+  config?: APIConfig
+): Promise<WorkflowRun>;
+export async function cancelWorkflowRunV1(
   id: string,
   params?: CancelWorkflowRunParams,
   config?: APIConfig
-): Promise<WorkflowRun> {
+): Promise<WorkflowRun | WorkflowRunWithoutData>;
+export async function cancelWorkflowRunV1(
+  id: string,
+  params?: CancelWorkflowRunParams,
+  config?: APIConfig
+): Promise<WorkflowRun | WorkflowRunWithoutData> {
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
   const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
 

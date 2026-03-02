@@ -1,15 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { pluralize, usesVercelWorld } from '@workflow/utils';
 import chalk from 'chalk';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
 import { findUp } from 'find-up';
 import { glob } from 'tinyglobby';
-import type { WorkflowManifest } from './apply-swc-transform.js';
+import {
+  applySwcTransform,
+  type WorkflowManifest,
+} from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
+import { getImportPath } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
+import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
 import type { WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
@@ -18,6 +24,12 @@ const enhancedResolve = promisify(enhancedResolveOriginal);
 
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
+
+export interface DiscoveredEntries {
+  discoveredSteps: string[];
+  discoveredWorkflows: string[];
+  discoveredSerdeFiles: string[];
+}
 
 /**
  * Base class for workflow builders. Provides common build logic for transforming
@@ -30,6 +42,38 @@ export abstract class BaseBuilder {
 
   constructor(config: WorkflowConfig) {
     this.config = config;
+  }
+
+  /**
+   * Whether informational BaseBuilder logs should be printed.
+   * Subclasses can override this to silence progress logs while keeping warnings/errors.
+   */
+  protected get shouldLogBaseBuilderInfo(): boolean {
+    return true;
+  }
+
+  protected logBaseBuilderInfo(...args: unknown[]): void {
+    if (this.shouldLogBaseBuilderInfo) {
+      console.log(...args);
+    }
+  }
+
+  private logCreateWorkflowsBundleInfo(...args: unknown[]): void {
+    if (!this.config.suppressCreateWorkflowsBundleLogs) {
+      this.logBaseBuilderInfo(...args);
+    }
+  }
+
+  private logCreateWebhookBundleInfo(...args: unknown[]): void {
+    if (!this.config.suppressCreateWebhookBundleLogs) {
+      this.logBaseBuilderInfo(...args);
+    }
+  }
+
+  private logCreateManifestInfo(...args: unknown[]): void {
+    if (!this.config.suppressCreateManifestLogs) {
+      this.logBaseBuilderInfo(...args);
+    }
   }
 
   /**
@@ -87,16 +131,14 @@ export abstract class BaseBuilder {
     {
       discoveredSteps: string[];
       discoveredWorkflows: string[];
+      discoveredSerdeFiles: string[];
     }
   > = new WeakMap();
 
   protected async discoverEntries(
     inputs: string[],
     outdir: string
-  ): Promise<{
-    discoveredSteps: string[];
-    discoveredWorkflows: string[];
-  }> {
+  ): Promise<DiscoveredEntries> {
     const previousResult = this.discoveredEntries.get(inputs);
 
     if (previousResult) {
@@ -105,9 +147,11 @@ export abstract class BaseBuilder {
     const state: {
       discoveredSteps: string[];
       discoveredWorkflows: string[];
+      discoveredSerdeFiles: string[];
     } = {
       discoveredSteps: [],
       discoveredWorkflows: [],
+      discoveredSerdeFiles: [],
     };
 
     const discoverStart = Date.now();
@@ -128,7 +172,7 @@ export abstract class BaseBuilder {
       });
     } catch (_) {}
 
-    console.log(
+    this.logBaseBuilderInfo(
       `Discovering workflow directives`,
       `${Date.now() - discoverStart}ms`
     );
@@ -192,7 +236,10 @@ export abstract class BaseBuilder {
   private logEsbuildMessages(
     result: { errors?: any[]; warnings?: any[] },
     phase: string,
-    throwOnError = true
+    throwOnError = true,
+    options?: {
+      suppressWarnings?: boolean;
+    }
   ): void {
     if (result.errors && result.errors.length > 0) {
       console.error(`❌ esbuild errors in ${phase}:`);
@@ -214,7 +261,11 @@ export abstract class BaseBuilder {
       }
     }
 
-    if (result.warnings && result.warnings.length > 0) {
+    if (
+      !options?.suppressWarnings &&
+      result.warnings &&
+      result.warnings.length > 0
+    ) {
       console.warn(`!  esbuild warnings in ${phase}:`);
       for (const warning of result.warnings) {
         console.warn(`  ${warning.text}`);
@@ -225,6 +276,26 @@ export abstract class BaseBuilder {
         }
       }
     }
+  }
+
+  /**
+   * Converts an absolute file path to a normalized relative path for the manifest.
+   */
+  private getRelativeFilepath(absolutePath: string): string {
+    const normalizedFile = absolutePath.replace(/\\/g, '/');
+    const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+    let relativePath = relative(normalizedWorkingDir, normalizedFile).replace(
+      /\\/g,
+      '/'
+    );
+    // Handle files discovered outside the working directory
+    if (relativePath.startsWith('../')) {
+      relativePath = relativePath
+        .split('/')
+        .filter((part) => part !== '..')
+        .join('/');
+    }
+    return relativePath;
   }
 
   /**
@@ -240,23 +311,39 @@ export abstract class BaseBuilder {
     outfile,
     externalizeNonSteps,
     tsconfigPath,
+    discoveredEntries,
   }: {
     tsconfigPath?: string;
     inputFiles: string[];
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
+    discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     context: esbuild.BuildContext | undefined;
     manifest: WorkflowManifest;
   }> {
     // These need to handle watching for dev to scan for
     // new entries and changes to existing ones
-    const { discoveredSteps: stepFiles, discoveredWorkflows: workflowFiles } =
-      await this.discoverEntries(inputFiles, dirname(outfile));
+    const discovered =
+      discoveredEntries ??
+      (await this.discoverEntries(inputFiles, dirname(outfile)));
+    const stepFiles = [...discovered.discoveredSteps].sort();
+    const workflowFiles = [...discovered.discoveredWorkflows].sort();
+    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
+
+    // Include serde files that aren't already step files for cross-context class registration.
+    // Classes need to be registered in the step bundle so they can be deserialized
+    // when receiving data from workflows and serialized when returning data to workflows.
+    const stepFilesSet = new Set(stepFiles);
+    const serdeOnlyFiles = serdeFiles.filter((f) => !stepFilesSet.has(f));
 
     // log the step files for debugging
-    await this.writeDebugFile(outfile, { stepFiles, workflowFiles });
+    await this.writeDebugFile(outfile, {
+      stepFiles,
+      workflowFiles,
+      serdeOnlyFiles,
+    });
 
     const stepsBundleStart = Date.now();
     const workflowManifest: WorkflowManifest = {};
@@ -276,36 +363,80 @@ export abstract class BaseBuilder {
       );
     });
 
+    // Helper to create import statement from file path
+    // For workspace/node_modules packages, uses the package name so esbuild
+    // will resolve through package.json exports with the appropriate conditions
+    const createImport = (file: string) => {
+      const { importPath, isPackage } = getImportPath(
+        file,
+        this.config.workingDir
+      );
+
+      if (isPackage) {
+        // Use package name - esbuild will resolve via package.json exports
+        return `import '${importPath}';`;
+      }
+
+      // Local app file - use relative path
+      // Normalize both paths to forward slashes before calling relative()
+      // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+      const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+      const normalizedFile = file.replace(/\\/g, '/');
+      // Calculate relative path from working directory to the file
+      let relativePath = relative(normalizedWorkingDir, normalizedFile).replace(
+        /\\/g,
+        '/'
+      );
+      // Ensure relative paths start with ./ so esbuild resolves them correctly
+      if (!relativePath.startsWith('.')) {
+        relativePath = `./${relativePath}`;
+      }
+      return `import '${relativePath}';`;
+    };
+
     // Create a virtual entry that imports all files. All step definitions
     // will get registered thanks to the swc transform.
-    const imports = stepFiles
-      .map((file) => {
-        // Normalize both paths to forward slashes before calling relative()
-        // This is critical on Windows where relative() can produce unexpected results with mixed path formats
-        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
-        const normalizedFile = file.replace(/\\/g, '/');
-        // Calculate relative path from working directory to the file
-        let relativePath = relative(
-          normalizedWorkingDir,
-          normalizedFile
-        ).replace(/\\/g, '/');
-        // Ensure relative paths start with ./ so esbuild resolves them correctly
-        if (!relativePath.startsWith('.')) {
-          relativePath = `./${relativePath}`;
-        }
-        return `import '${relativePath}';`;
-      })
-      .join('\n');
+    const stepImports = stepFiles.map(createImport).join('\n');
+
+    // Include serde-only files for class registration side effects
+    const serdeImports = serdeOnlyFiles.map(createImport).join('\n');
 
     const entryContent = `
     // Built in steps
     import '${builtInSteps}';
     // User steps
-    ${imports}
+    ${stepImports}
+    // Serde files for cross-context class registration
+    ${serdeImports}
     // API entrypoint
     export { stepEntrypoint as POST } from 'workflow/runtime';`;
 
     // Bundle with esbuild and our custom SWC plugin
+    const entriesToBundle = externalizeNonSteps
+      ? [
+          ...stepFiles,
+          ...serdeFiles,
+          ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
+        ]
+      : undefined;
+    const normalizedEntriesToBundle = entriesToBundle
+      ? Array.from(
+          new Set(
+            (
+              await Promise.all(
+                entriesToBundle.map(async (entryToBundle) => {
+                  const resolvedEntry = await realpath(entryToBundle).catch(
+                    () => undefined
+                  );
+                  return resolvedEntry
+                    ? [entryToBundle, resolvedEntry]
+                    : [entryToBundle];
+                })
+              )
+            ).flat()
+          )
+        )
+      : undefined;
     const esbuildCtx = await esbuild.context({
       banner: {
         js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
@@ -347,14 +478,12 @@ export abstract class BaseBuilder {
       // occur in deeply nested function calls across multiple files.
       sourcemap: 'inline',
       plugins: [
+        // Handle pseudo-packages like 'server-only' and 'client-only' by providing
+        // empty modules. Must run first to intercept these before other resolution.
+        createPseudoPackagePlugin(),
         createSwcPlugin({
           mode: 'step',
-          entriesToBundle: externalizeNonSteps
-            ? [
-                ...stepFiles,
-                ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
-              ]
-            : undefined,
+          entriesToBundle: normalizedEntriesToBundle,
           outdir: outfile ? dirname(outfile) : undefined,
           workflowManifest,
         }),
@@ -367,7 +496,48 @@ export abstract class BaseBuilder {
     const stepsResult = await esbuildCtx.rebuild();
 
     this.logEsbuildMessages(stepsResult, 'steps bundle creation');
-    console.log('Created steps bundle', `${Date.now() - stepsBundleStart}ms`);
+    this.logBaseBuilderInfo(
+      'Created steps bundle',
+      `${Date.now() - stepsBundleStart}ms`
+    );
+
+    // Handle workflow-only files that may have been tree-shaken from the bundle.
+    // These files have no steps, so esbuild removes them, but we still need their
+    // workflow metadata for the manifest. Transform them separately.
+    const workflowOnlyFiles = workflowFiles.filter(
+      (f) => !stepFiles.includes(f)
+    );
+    await Promise.all(
+      workflowOnlyFiles.map(async (workflowFile) => {
+        try {
+          const source = await readFile(workflowFile, 'utf8');
+          const relativeFilepath = this.getRelativeFilepath(workflowFile);
+          const { workflowManifest: fileManifest } = await applySwcTransform(
+            relativeFilepath,
+            source,
+            'workflow'
+          );
+          if (fileManifest.workflows) {
+            workflowManifest.workflows = Object.assign(
+              workflowManifest.workflows || {},
+              fileManifest.workflows
+            );
+          }
+          if (fileManifest.classes) {
+            workflowManifest.classes = Object.assign(
+              workflowManifest.classes || {},
+              fileManifest.classes
+            );
+          }
+        } catch (error) {
+          // Log warning but continue - don't fail build for workflow-only file issues
+          console.warn(
+            `Warning: Failed to extract workflow metadata from ${workflowFile}:`,
+            error instanceof Error ? error.message : String(error)
+          );
+        }
+      })
+    );
 
     // Create .gitignore in .swc directory
     await this.createSwcGitignore();
@@ -391,45 +561,77 @@ export abstract class BaseBuilder {
     outfile,
     bundleFinalOutput = true,
     tsconfigPath,
+    discoveredEntries,
   }: {
     tsconfigPath?: string;
     inputFiles: string[];
     outfile: string;
     format?: 'cjs' | 'esm';
     bundleFinalOutput?: boolean;
-  }): Promise<void | {
-    interimBundleCtx: esbuild.BuildContext;
-    bundleFinal: (interimBundleResult: string) => Promise<void>;
+    discoveredEntries?: DiscoveredEntries;
+  }): Promise<{
+    manifest: WorkflowManifest;
+    interimBundleCtx?: esbuild.BuildContext;
+    bundleFinal?: (interimBundleResult: string) => Promise<void>;
   }> {
-    const { discoveredWorkflows: workflowFiles } = await this.discoverEntries(
-      inputFiles,
-      dirname(outfile)
-    );
+    const discovered =
+      discoveredEntries ??
+      (await this.discoverEntries(inputFiles, dirname(outfile)));
+    const workflowFiles = [...discovered.discoveredWorkflows].sort();
+    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
+
+    // Include serde files that aren't already workflow files for cross-context class registration.
+    // Classes need to be registered in the workflow bundle so they can be deserialized
+    // when receiving data from steps or when serializing data to send to steps.
+    const workflowFilesSet = new Set(workflowFiles);
+    const serdeOnlyFiles = serdeFiles.filter((f) => !workflowFilesSet.has(f));
 
     // log the workflow files for debugging
-    await this.writeDebugFile(outfile, { workflowFiles });
+    await this.writeDebugFile(outfile, { workflowFiles, serdeOnlyFiles });
+
+    // Helper to create import statement from file path
+    // For packages, uses the package name so esbuild will resolve through
+    // package.json exports with conditions: ['workflow']
+    const createImport = (file: string) => {
+      const { importPath, isPackage } = getImportPath(
+        file,
+        this.config.workingDir
+      );
+
+      if (isPackage) {
+        // Use package name - esbuild will resolve via package.json exports
+        // and apply the 'workflow' condition
+        return `import '${importPath}';`;
+      }
+
+      // Local app file - use relative path
+      // Normalize both paths to forward slashes before calling relative()
+      // This is critical on Windows where relative() can produce unexpected results with mixed path formats
+      const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+      const normalizedFile = file.replace(/\\/g, '/');
+      // Calculate relative path from working directory to the file
+      let relativePath = relative(normalizedWorkingDir, normalizedFile).replace(
+        /\\/g,
+        '/'
+      );
+      // Ensure relative paths start with ./ so esbuild resolves them correctly
+      if (!relativePath.startsWith('.')) {
+        relativePath = `./${relativePath}`;
+      }
+      return `import '${relativePath}';`;
+    };
 
     // Create a virtual entry that imports all workflow files
     // The SWC plugin in workflow mode emits `globalThis.__private_workflows.set(workflowId, fn)`
     // calls directly, so we just need to import the files (Map is initialized via banner)
-    const imports = workflowFiles
-      .map((file) => {
-        // Normalize both paths to forward slashes before calling relative()
-        // This is critical on Windows where relative() can produce unexpected results with mixed path formats
-        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
-        const normalizedFile = file.replace(/\\/g, '/');
-        // Calculate relative path from working directory to the file
-        let relativePath = relative(
-          normalizedWorkingDir,
-          normalizedFile
-        ).replace(/\\/g, '/');
-        // Ensure relative paths start with ./ so esbuild resolves them correctly
-        if (!relativePath.startsWith('.')) {
-          relativePath = `./${relativePath}`;
-        }
-        return `import '${relativePath}';`;
-      })
-      .join('\n');
+    const workflowImports = workflowFiles.map(createImport).join('\n');
+
+    // Include serde-only files for class registration side effects
+    const serdeImports = serdeOnlyFiles.map(createImport).join('\n');
+
+    const imports = serdeImports
+      ? `${workflowImports}\n// Serde files for cross-context class registration\n${serdeImports}`
+      : workflowImports;
 
     const bundleStartTime = Date.now();
     const workflowManifest: WorkflowManifest = {};
@@ -477,6 +679,9 @@ export abstract class BaseBuilder {
         '.cjs',
       ],
       plugins: [
+        // Handle pseudo-packages like 'server-only' and 'client-only' by providing
+        // empty modules. Must run first to intercept these before other resolution.
+        createPseudoPackagePlugin(),
         createSwcPlugin({
           mode: 'workflow',
           workflowManifest,
@@ -485,13 +690,26 @@ export abstract class BaseBuilder {
         // happens first, preventing false positives on Node.js imports in unused code paths
         createNodeModuleErrorPlugin(),
       ],
-      // External packages that should not be bundled (e.g., server-only, client-only for Next.js)
-      external: this.config.externalPackages || [],
+      // NOTE: We intentionally do NOT use the external option here for workflow bundles.
+      // When packages are marked external with format: 'cjs', esbuild generates require() calls.
+      // However, the workflow VM (vm.runInContext) does not have require() defined - it only
+      // provides module.exports and exports. External packages would fail at runtime with:
+      //   ReferenceError: require is not defined
+      // Instead, we bundle everything and rely on:
+      // - createPseudoPackagePlugin() to handle server-only/client-only with empty modules
+      // - createNodeModuleErrorPlugin() to catch Node.js builtin imports at build time
     });
     const interimBundle = await interimBundleCtx.rebuild();
 
-    this.logEsbuildMessages(interimBundle, 'intermediate workflow bundle');
-    console.log(
+    this.logEsbuildMessages(
+      interimBundle,
+      'intermediate workflow bundle',
+      true,
+      {
+        suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
+      }
+    );
+    this.logCreateWorkflowsBundleInfo(
       'Created intermediate workflow bundle',
       `${Date.now() - bundleStartTime}ms`
     );
@@ -515,7 +733,7 @@ export abstract class BaseBuilder {
       await mkdir(dirname(resolvedPath), { recursive: true });
       await writeFile(
         resolvedPath,
-        prefix + JSON.stringify(workflowManifest.workflows, null, 2)
+        prefix + JSON.stringify(workflowManifest, null, 2)
       );
     }
 
@@ -583,8 +801,15 @@ export const POST = workflowEntrypoint(workflowCode);`;
         external: ['@aws-sdk/credential-provider-web-identity'],
       });
 
-      this.logEsbuildMessages(finalWorkflowResult, 'final workflow bundle');
-      console.log(
+      this.logEsbuildMessages(
+        finalWorkflowResult,
+        'final workflow bundle',
+        true,
+        {
+          suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
+        }
+      );
+      this.logCreateWorkflowsBundleInfo(
         'Created final workflow bundle',
         `${Date.now() - bundleStartTime}ms`
       );
@@ -593,11 +818,13 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
     if (this.config.watch) {
       return {
+        manifest: workflowManifest,
         interimBundleCtx,
         bundleFinal,
       };
     }
     await interimBundleCtx.dispose();
+    return { manifest: workflowManifest };
   }
 
   /**
@@ -611,8 +838,11 @@ export const POST = workflowEntrypoint(workflowCode);`;
       return;
     }
 
-    console.log('Generating a client library at', this.config.clientBundlePath);
-    console.log(
+    this.logBaseBuilderInfo(
+      'Generating a client library at',
+      this.config.clientBundlePath
+    );
+    this.logBaseBuilderInfo(
       'NOTE: The recommended way to use workflow with a framework like NextJS is using the loader/plugin with webpack/turbobpack/rollup'
     );
 
@@ -622,10 +852,46 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
     const inputFiles = await this.getInputFiles();
 
-    // Create a virtual entry that imports all files
-    const imports = inputFiles
+    // Discover serde files from the input files' dependency tree for cross-context class registration.
+    // Classes need to be registered in the client bundle so they can be serialized
+    // when passing data to workflows via start() and deserialized when receiving workflow results.
+    const { discoveredSerdeFiles } = await this.discoverEntries(
+      inputFiles,
+      outputDir
+    );
+
+    // Identify serde files that aren't in the inputFiles (deduplicated)
+    const inputFilesNormalized = new Set(
+      inputFiles.map((f) => f.replace(/\\/g, '/'))
+    );
+    const serdeOnlyFiles = discoveredSerdeFiles.filter(
+      (f) => !inputFilesNormalized.has(f)
+    );
+
+    // Re-exports for input files (user's workflow/step definitions)
+    const reexports = inputFiles
       .map((file) => `export * from '${file}';`)
       .join('\n');
+
+    // Side-effect imports for serde files not in inputFiles (for class registration)
+    const serdeImports = serdeOnlyFiles
+      .map((file) => {
+        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+        let relativePath = relative(normalizedWorkingDir, file).replace(
+          /\\/g,
+          '/'
+        );
+        if (!relativePath.startsWith('.')) {
+          relativePath = `./${relativePath}`;
+        }
+        return `import '${relativePath}';`;
+      })
+      .join('\n');
+
+    // Combine: serde imports (for registration side effects) + re-exports
+    const entryContent = serdeImports
+      ? `// Serde files for cross-context class registration\n${serdeImports}\n${reexports}`
+      : reexports;
 
     // Bundle with esbuild and our custom SWC plugin
     const clientResult = await esbuild.build({
@@ -633,7 +899,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
         js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
       },
       stdin: {
-        contents: imports,
+        contents: entryContent,
         resolveDir: this.config.workingDir,
         sourcefile: 'virtual-entry.js',
         loader: 'js',
@@ -678,7 +944,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     outfile: string;
     bundle?: boolean;
   }): Promise<void> {
-    console.log('Creating webhook route');
+    this.logCreateWebhookBundleInfo('Creating webhook route');
     await mkdir(dirname(outfile), { recursive: true });
 
     // Create a static route that calls resumeWebhook
@@ -761,7 +1027,7 @@ export const OPTIONS = handler;`;
     });
 
     this.logEsbuildMessages(result, 'webhook bundle creation');
-    console.log(
+    this.logCreateWebhookBundleInfo(
       'Created webhook bundle',
       `${Date.now() - webhookBundleStart}ms`
     );
@@ -794,7 +1060,7 @@ export const OPTIONS = handler;`;
       shouldAddHelpers?: boolean;
       shouldAddSourcemapSupport?: boolean;
       experimentalTriggers?: Array<{
-        type: string;
+        type: 'queue/v2beta';
         topic: string;
         consumer: string;
         maxDeliveries?: number;
@@ -849,8 +1115,28 @@ export const OPTIONS = handler;`;
   }
 
   /**
-   * Creates a manifest JSON file containing step/workflow metadata
+   * Whether the manifest should be exposed as a public HTTP route.
+   * Controlled by the `WORKFLOW_PUBLIC_MANIFEST` environment variable.
+   */
+  protected get shouldExposePublicManifest(): boolean {
+    return process.env.WORKFLOW_PUBLIC_MANIFEST === '1';
+  }
+
+  /**
+   * Whether diagnostics artifacts should be emitted to Vercel output.
+   * This is enabled when the resolved world target is Vercel.
+   */
+  protected get shouldEmitVercelDiagnostics(): boolean {
+    return (
+      usesVercelWorld() || this.config.buildTarget === 'vercel-build-output-api'
+    );
+  }
+
+  /**
+   * Creates a manifest JSON file containing step/workflow/class metadata
    * and graph data for visualization.
+   *
+   * @returns The manifest JSON string, or undefined if manifest creation failed.
    */
   protected async createManifest({
     workflowBundlePath,
@@ -860,9 +1146,9 @@ export const OPTIONS = handler;`;
     workflowBundlePath: string;
     manifestDir: string;
     manifest: WorkflowManifest;
-  }): Promise<void> {
+  }): Promise<string | undefined> {
     const buildStart = Date.now();
-    console.log('Creating manifest...');
+    this.logCreateManifestInfo('Creating manifest...');
 
     try {
       const workflowGraphs = await extractWorkflowGraphs(workflowBundlePath);
@@ -872,14 +1158,20 @@ export const OPTIONS = handler;`;
         manifest.workflows,
         workflowGraphs
       );
+      const classes = this.convertClassesManifest(manifest.classes);
 
-      const output = { version: '1.0.0', steps, workflows };
+      const output = { version: '1.0.0', steps, workflows, classes };
+      const manifestJson = JSON.stringify(output, null, 2);
 
       await mkdir(manifestDir, { recursive: true });
-      await writeFile(
-        join(manifestDir, 'manifest.json'),
-        JSON.stringify(output, null, 2)
-      );
+      await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
+      if (this.shouldEmitVercelDiagnostics) {
+        const diagnosticsManifestPath = this.resolvePath(
+          '.vercel/output/diagnostics/workflows-manifest.json'
+        );
+        await this.ensureDirectory(diagnosticsManifestPath);
+        await writeFile(diagnosticsManifestPath, manifestJson);
+      }
 
       const stepCount = Object.values(steps).reduce(
         (acc, s) => acc + Object.keys(s).length,
@@ -889,16 +1181,23 @@ export const OPTIONS = handler;`;
         (acc, w) => acc + Object.keys(w).length,
         0
       );
+      const classCount = Object.values(classes).reduce(
+        (acc, c) => acc + Object.keys(c).length,
+        0
+      );
 
-      console.log(
-        `Created manifest with ${stepCount} step(s) and ${workflowCount} workflow(s)`,
+      this.logCreateManifestInfo(
+        `Created manifest with ${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, and ${classCount} ${pluralize('class', 'classes', classCount)}`,
         `${Date.now() - buildStart}ms`
       );
+
+      return manifestJson;
     } catch (error) {
       console.warn(
         'Failed to create manifest:',
         error instanceof Error ? error.message : String(error)
       );
+      return undefined;
     }
   }
 
@@ -939,13 +1238,51 @@ export const OPTIONS = handler;`;
     > = {};
     if (!workflows) return result;
 
+    // Build a normalized lookup for graphs since the graph extractor uses
+    // paths from workflowId (e.g. "./workflows/hello-agent") while the
+    // manifest uses source file paths (e.g. "workflows/hello-agent.ts").
+    // Normalize by stripping leading "./" and file extensions.
+    const normalizedGraphs = new Map<
+      string,
+      Record<string, { graph: { nodes: any[]; edges: any[] } }>
+    >();
+    for (const [graphPath, graphEntries] of Object.entries(graphs)) {
+      const normalized = graphPath
+        .replace(/^\.\//, '')
+        .replace(/\.[^/.]+$/, '');
+      normalizedGraphs.set(normalized, graphEntries);
+    }
+
     for (const [filePath, entries] of Object.entries(workflows)) {
       result[filePath] = {};
+      // Normalize the manifest file path for lookup
+      const normalizedFilePath = filePath
+        .replace(/^\.\//, '')
+        .replace(/\.[^/.]+$/, '');
+
+      const graphEntries =
+        graphs[filePath] || normalizedGraphs.get(normalizedFilePath);
+
       for (const [name, data] of Object.entries(entries)) {
         result[filePath][name] = {
           workflowId: data.workflowId,
-          graph: graphs[filePath]?.[name]?.graph || { nodes: [], edges: [] },
+          graph: graphEntries?.[name]?.graph || { nodes: [], edges: [] },
         };
+      }
+    }
+    return result;
+  }
+
+  private convertClassesManifest(
+    classes: WorkflowManifest['classes']
+  ): Record<string, Record<string, { classId: string }>> {
+    const result: Record<string, Record<string, { classId: string }>> = {};
+    if (!classes) return result;
+
+    for (const [filePath, entries] of Object.entries(classes)) {
+      result[filePath] = {};
+      for (const [name, data] of Object.entries(entries)) {
+        result[filePath][name] = { classId: data.classId };
       }
     }
     return result;

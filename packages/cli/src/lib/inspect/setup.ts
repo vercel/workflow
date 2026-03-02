@@ -1,8 +1,6 @@
-import { join } from 'node:path';
-import { createWorld } from '@workflow/core/runtime';
+import { getWorld } from '@workflow/core/runtime';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
-import XDGAppPaths from 'xdg-app-paths';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
 import { checkForUpdateCached } from '../update-check.js';
 import {
@@ -10,18 +8,6 @@ import {
   inferVercelEnvVars,
   writeEnvVars,
 } from './env.js';
-
-// Get XDG-compliant cache directory for workflow
-const getXDGAppPaths = (app: string) => {
-  return (
-    XDGAppPaths as unknown as (app: string) => { dataDirs: () => string[] }
-  )(app);
-};
-
-const getWorkflowCacheDir = (): string => {
-  const dirs = getXDGAppPaths('workflow').dataDirs();
-  return dirs[0];
-};
 
 /**
  * Setup CLI world configuration.
@@ -40,13 +26,12 @@ export const setupCliWorld = async (
   },
   version: string,
   ignoreLocalWorldConfigError = false
-): Promise<Awaited<ReturnType<typeof createWorld>> | null> => {
+) => {
   setJsonMode(Boolean(flags.json));
   setVerboseMode(Boolean(flags.verbose));
 
   // Check for updates
-  const cacheFile = join(getWorkflowCacheDir(), 'version-check.json');
-  const updateCheck = await checkForUpdateCached(version, cacheFile);
+  const updateCheck = await checkForUpdateCached(version);
 
   const withAnsiLinks = flags.json ? false : true;
   const docsUrl = withAnsiLinks
@@ -92,7 +77,6 @@ export const setupCliWorld = async (
     WORKFLOW_VERCEL_AUTH_TOKEN: flags.authToken,
     WORKFLOW_VERCEL_PROJECT: flags.project,
     WORKFLOW_VERCEL_TEAM: flags.team,
-    WORKFLOW_VERCEL_BACKEND_URL: 'https://api.vercel.com/v1/workflow',
   });
 
   if (
@@ -123,6 +107,8 @@ export const setupCliWorld = async (
   }
 
   logger.debug('Initializing world');
-  const world = await createWorld();
+  // Use getWorld() instead of createWorld() so the world is stored in the
+  // global cache. This allows BaseCommand.finally() to find and close it.
+  const world = getWorld();
   return world;
 };
