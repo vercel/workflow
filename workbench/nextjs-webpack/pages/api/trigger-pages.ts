@@ -31,7 +31,15 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
     return res.status(400).send(`Workflow file "${workflowFile}" not found`);
   }
 
-  const workflowFn = (req.query.workflowFn as string) || 'simple';
+  const rawWorkflowFn = req.query.workflowFn;
+  if (Array.isArray(rawWorkflowFn)) {
+    return res
+      .status(400)
+      .send('Invalid workflowFn query parameter: multiple values are not allowed');
+  }
+  const workflowFn = (typeof rawWorkflowFn === 'string' && rawWorkflowFn.trim() !== '')
+    ? rawWorkflowFn.trim()
+    : 'simple';
   if (!workflowFn) {
     return res.status(400).send('No workflow query parameter provided');
   }
