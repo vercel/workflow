@@ -262,20 +262,24 @@ const getModuleSpecifierFromName = (value: unknown): string => {
   return raw;
 };
 
-export const localMillisecondTime = (value: unknown): string => {
-  let date: Date;
+const parseDateValue = (value: unknown): Date | null => {
+  if (value == null) {
+    return null;
+  }
   if (value instanceof Date) {
-    date = value;
-  } else if (typeof value === 'number') {
-    date = new Date(value);
-  } else if (typeof value === 'string') {
-    date = new Date(value);
-  } else {
-    date = new Date(String(value));
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === 'string' && value.trim().length === 0) {
+    return null;
   }
 
-  // e.g. 12/17/2025, 9:08:55.182 AM
-  return date.toLocaleString(undefined, {
+  const date =
+    typeof value === 'number' ? new Date(value) : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const formatLocalMillisecondTime = (date: Date): string =>
+  date.toLocaleString(undefined, {
     year: 'numeric',
     month: 'numeric',
     day: 'numeric',
@@ -284,6 +288,23 @@ export const localMillisecondTime = (value: unknown): string => {
     second: 'numeric',
     fractionalSecondDigits: 3,
   });
+
+export const localMillisecondTime = (value: unknown): string => {
+  const date = parseDateValue(value);
+  if (!date) {
+    return '-';
+  }
+
+  // e.g. 12/17/2025, 9:08:55.182 AM
+  return formatLocalMillisecondTime(date);
+};
+
+const localMillisecondTimeOrNull = (value: unknown): string | null => {
+  const date = parseDateValue(value);
+  if (!date) {
+    return null;
+  }
+  return formatLocalMillisecondTime(date);
 };
 
 interface DisplayContext {
@@ -323,13 +344,13 @@ const attributeToDisplayFn: Record<
   executionContext: (_value: unknown) => null,
   // Dates
   // TODO: relative time with tooltips for ISO times
-  createdAt: localMillisecondTime,
-  startedAt: localMillisecondTime,
-  updatedAt: localMillisecondTime,
-  completedAt: localMillisecondTime,
-  expiredAt: localMillisecondTime,
-  retryAfter: localMillisecondTime,
-  resumeAt: localMillisecondTime,
+  createdAt: localMillisecondTimeOrNull,
+  startedAt: localMillisecondTimeOrNull,
+  updatedAt: localMillisecondTimeOrNull,
+  completedAt: localMillisecondTimeOrNull,
+  expiredAt: localMillisecondTimeOrNull,
+  retryAfter: localMillisecondTimeOrNull,
+  resumeAt: localMillisecondTimeOrNull,
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
