@@ -2,4 +2,4 @@
 "@workflow/web-shared": patch
 ---
 
-Fix date parsing error in the detail panel
+Fix span detail panel showing "Invalid Date" in some cases
