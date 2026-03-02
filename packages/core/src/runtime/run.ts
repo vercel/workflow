@@ -14,6 +14,11 @@ import {
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import {
+  type StopSleepOptions,
+  type StopSleepResult,
+  wakeUpRun,
+} from './runs.js';
 import { getWorld } from './world.js';
 
 /**
@@ -61,6 +66,17 @@ export class Run<TResult> {
   constructor(runId: string) {
     this.runId = runId;
     this.world = getWorld();
+  }
+
+  /**
+   * Interrupts pending `sleep()` calls, resuming the workflow early.
+   *
+   * @param options - Optional settings to target specific sleep calls by correlation ID.
+   *   If not provided, all pending sleep calls will be interrupted.
+   * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
+   */
+  async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
+    return wakeUpRun(this.world, this.runId, options);
   }
 
   /**
