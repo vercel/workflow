@@ -19,6 +19,7 @@ import {
   relative,
   resolve,
 } from 'node:path';
+import Watchpack from 'watchpack';
 import {
   createSocketServer,
   type SocketIO,
@@ -39,6 +40,11 @@ interface DeferredDiscoveredEntries {
   discoveredWorkflows: string[];
   discoveredSerdeFiles: string[];
 }
+
+type WatchpackTimeInfoEntry = {
+  timestamp?: number;
+  safeTime?: number;
+};
 
 let CachedNextBuilderDeferred: any;
 
@@ -74,6 +80,10 @@ export async function getNextBuilderDeferred() {
     private cacheInitialized = false;
     private cacheWriteTimer: NodeJS.Timeout | null = null;
     private deferredRebuildTimer: NodeJS.Timeout | null = null;
+    private dependencyWatcher: Watchpack | null = null;
+    private watchedDependencyFiles = new Set<string>();
+    private previousDependencyWatcherEntries = new Map<string, number>();
+    private skipNextDependencyWatcherEvent = false;
     private lastDeferredBuildSignature: string | null = null;
 
     async build() {
@@ -448,7 +458,7 @@ export async function getNextBuilderDeferred() {
         discoveredEntries,
       };
 
-      const { manifest: stepsManifest } =
+      const { manifest: stepsManifest, stepFiles: builtStepFiles } =
         await this.buildStepsFunction(options);
       const workflowsBundle = await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({
@@ -459,6 +469,12 @@ export async function getNextBuilderDeferred() {
         workflowGeneratedDir,
         tempRouteFileName
       );
+      this.updateDependencyWatcher([
+        ...builtStepFiles,
+        ...discoveredWorkflowFiles,
+        ...discoveredSerdeFiles,
+        ...this.trackedDependencyFiles,
+      ]);
 
       // Merge manifests from both bundles
       const manifest = {
@@ -700,6 +716,7 @@ export async function getNextBuilderDeferred() {
           ...inputFiles.map((filePath) =>
             this.normalizeDiscoveredFilePath(filePath)
           ),
+          ...this.watchedDependencyFiles,
           ...this.trackedDependencyFiles,
         ])
       ).sort();
@@ -885,6 +902,120 @@ export async function getNextBuilderDeferred() {
           );
         });
       }, 75);
+    }
+
+    private ensureDependencyWatcher(): void {
+      if (!this.config.watch || this.dependencyWatcher) {
+        return;
+      }
+
+      this.dependencyWatcher = new Watchpack({
+        aggregateTimeout: 25,
+      });
+
+      this.dependencyWatcher.on('aggregated', () => {
+        const currentEntries = this.readDependencyWatcherEntries();
+
+        if (this.skipNextDependencyWatcherEvent) {
+          this.skipNextDependencyWatcherEvent = false;
+          this.previousDependencyWatcherEntries = currentEntries;
+          return;
+        }
+
+        if (this.haveWatchedDependenciesChanged(currentEntries)) {
+          this.scheduleDeferredRebuild();
+        }
+
+        this.previousDependencyWatcherEntries = currentEntries;
+      });
+    }
+
+    private readDependencyWatcherEntries(): Map<string, number> {
+      if (!this.dependencyWatcher) {
+        return new Map();
+      }
+
+      const rawEntries = this.dependencyWatcher.getTimeInfoEntries() as Map<
+        string,
+        WatchpackTimeInfoEntry
+      >;
+      const normalizedEntries = new Map<string, number>();
+
+      for (const [entryPath, info] of rawEntries) {
+        const normalizedPath = this.normalizeDiscoveredFilePath(entryPath);
+        if (!this.watchedDependencyFiles.has(normalizedPath)) {
+          continue;
+        }
+
+        const comparableTimestamp = info.timestamp ?? info.safeTime;
+        if (typeof comparableTimestamp === 'number') {
+          normalizedEntries.set(normalizedPath, comparableTimestamp);
+        }
+      }
+
+      return normalizedEntries;
+    }
+
+    private haveWatchedDependenciesChanged(
+      currentEntries: Map<string, number>
+    ): boolean {
+      for (const filePath of this.watchedDependencyFiles) {
+        const currentTimestamp = currentEntries.get(filePath);
+        const previousTimestamp =
+          this.previousDependencyWatcherEntries.get(filePath);
+
+        if (currentTimestamp === undefined && previousTimestamp !== undefined) {
+          return true;
+        }
+        if (currentTimestamp !== undefined && previousTimestamp === undefined) {
+          return true;
+        }
+        if (
+          currentTimestamp !== undefined &&
+          previousTimestamp !== undefined &&
+          currentTimestamp !== previousTimestamp
+        ) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    private updateDependencyWatcher(dependencyFiles: Iterable<string>): void {
+      if (!this.config.watch) {
+        return;
+      }
+
+      this.ensureDependencyWatcher();
+      if (!this.dependencyWatcher) {
+        return;
+      }
+
+      const normalizedDependencyFiles = new Set<string>();
+      for (const filePath of dependencyFiles) {
+        normalizedDependencyFiles.add(
+          this.normalizeDiscoveredFilePath(filePath)
+        );
+      }
+
+      if (
+        this.areFileSetsEqual(
+          this.watchedDependencyFiles,
+          normalizedDependencyFiles
+        )
+      ) {
+        return;
+      }
+
+      this.watchedDependencyFiles = normalizedDependencyFiles;
+      this.previousDependencyWatcherEntries = new Map();
+      this.skipNextDependencyWatcherEvent = true;
+
+      this.dependencyWatcher.watch({
+        files: Array.from(normalizedDependencyFiles),
+        startTime: 0,
+      });
     }
 
     private async readWorkflowsCache(): Promise<{
@@ -1758,7 +1889,11 @@ export async function getNextBuilderDeferred() {
       workflowGeneratedDir: string;
       routeFileName?: string;
       discoveredEntries: DeferredDiscoveredEntries;
-    }) {
+    }): Promise<{
+      context: undefined;
+      manifest: WorkflowManifest;
+      stepFiles: string[];
+    }> {
       const stepsRouteDir = join(workflowGeneratedDir, 'step');
       await mkdir(stepsRouteDir, { recursive: true });
       const discovered = discoveredEntries;
@@ -1839,6 +1974,7 @@ export async function getNextBuilderDeferred() {
       return {
         context: undefined,
         manifest,
+        stepFiles,
       };
     }
 
