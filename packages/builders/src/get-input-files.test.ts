@@ -28,6 +28,15 @@ class TestBuilder extends BaseBuilder {
 // Resolve symlinks in tmpdir to avoid macOS /var -> /private/var issues
 const realTmpdir = realpathSync(tmpdir());
 
+/**
+ * Normalize a path to forward slashes for cross-platform comparison.
+ * tinyglobby always returns forward-slash paths, even on Windows,
+ * while Node's `path.join()` uses backslashes on Windows.
+ */
+function normalize(p: string): string {
+  return p.replace(/\\/g, '/');
+}
+
 function writeFile(dir: string, relativePath: string, content = ''): string {
   const fullPath = join(dir, relativePath);
   mkdirSync(join(fullPath, '..'), { recursive: true });
@@ -65,11 +74,11 @@ describe('getInputFiles', () => {
     writeFile(srcDir, 'regular/step.ts', "'use step';");
 
     const builder = createBuilder(testRoot, ['src']);
-    const files = await builder.getInputFiles();
+    const files = (await builder.getInputFiles()).map(normalize);
 
-    expect(files).toContain(join(srcDir, '.hidden/step.ts'));
-    expect(files).toContain(join(srcDir, '.config/workflow.ts'));
-    expect(files).toContain(join(srcDir, 'regular/step.ts'));
+    expect(files).toContain(normalize(join(srcDir, '.hidden/step.ts')));
+    expect(files).toContain(normalize(join(srcDir, '.config/workflow.ts')));
+    expect(files).toContain(normalize(join(srcDir, 'regular/step.ts')));
   });
 
   it('discovers dot-prefixed files', async () => {
@@ -78,10 +87,10 @@ describe('getInputFiles', () => {
     writeFile(srcDir, 'visible-step.ts', "'use step';");
 
     const builder = createBuilder(testRoot, ['src']);
-    const files = await builder.getInputFiles();
+    const files = (await builder.getInputFiles()).map(normalize);
 
-    expect(files).toContain(join(srcDir, '.hidden-step.ts'));
-    expect(files).toContain(join(srcDir, 'visible-step.ts'));
+    expect(files).toContain(normalize(join(srcDir, '.hidden-step.ts')));
+    expect(files).toContain(normalize(join(srcDir, 'visible-step.ts')));
   });
 
   it('still excludes explicitly ignored dot-directories', async () => {
@@ -97,16 +106,30 @@ describe('getInputFiles', () => {
     writeFile(srcDir, '.custom/step.ts', "'use step';");
 
     const builder = createBuilder(testRoot, ['src']);
-    const files = await builder.getInputFiles();
+    const files = (await builder.getInputFiles()).map(normalize);
 
-    expect(files).not.toContain(join(srcDir, '.git/hooks/pre-commit.ts'));
-    expect(files).not.toContain(join(srcDir, '.next/server/page.ts'));
-    expect(files).not.toContain(join(srcDir, '.vercel/output/step.ts'));
-    expect(files).not.toContain(join(srcDir, '.svelte-kit/output/step.ts'));
-    expect(files).not.toContain(join(srcDir, '.workflow-data/state.ts'));
-    expect(files).not.toContain(join(srcDir, '.well-known/workflow/route.ts'));
-    expect(files).not.toContain(join(srcDir, 'node_modules/pkg/index.ts'));
-    expect(files).toContain(join(srcDir, '.custom/step.ts'));
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.git/hooks/pre-commit.ts'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.next/server/page.ts'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.vercel/output/step.ts'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.svelte-kit/output/step.ts'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.workflow-data/state.ts'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, '.well-known/workflow/route.ts'))
+    );
+    expect(files).not.toContain(
+      normalize(join(srcDir, 'node_modules/pkg/index.ts'))
+    );
+    expect(files).toContain(normalize(join(srcDir, '.custom/step.ts')));
   });
 
   it('discovers files with various supported extensions in dot-directories', async () => {
@@ -117,11 +140,11 @@ describe('getInputFiles', () => {
     writeFile(srcDir, '.api/config.cjs');
 
     const builder = createBuilder(testRoot, ['src']);
-    const files = await builder.getInputFiles();
+    const files = (await builder.getInputFiles()).map(normalize);
 
-    expect(files).toContain(join(srcDir, '.api/route.tsx'));
-    expect(files).toContain(join(srcDir, '.api/handler.mts'));
-    expect(files).toContain(join(srcDir, '.api/utils.js'));
-    expect(files).toContain(join(srcDir, '.api/config.cjs'));
+    expect(files).toContain(normalize(join(srcDir, '.api/route.tsx')));
+    expect(files).toContain(normalize(join(srcDir, '.api/handler.mts')));
+    expect(files).toContain(normalize(join(srcDir, '.api/utils.js')));
+    expect(files).toContain(normalize(join(srcDir, '.api/config.cjs')));
   });
 });
