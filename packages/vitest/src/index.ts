@@ -121,6 +121,13 @@ let world: LocalWorld | undefined;
 export async function setupWorkflowTests(
   options?: WorkflowTestOptions
 ): Promise<void> {
+  // Clean up previous world if re-initialized (e.g. across test files)
+  if (world) {
+    setWorld(undefined);
+    await world.close?.();
+    world = undefined;
+  }
+
   const cwd = options?.cwd ?? process.cwd();
   const outDir = getOutDir(cwd);
 
