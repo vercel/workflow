@@ -5,7 +5,6 @@ import {
   type CSSProperties,
   type ReactNode,
   useCallback,
-  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -14,16 +13,16 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 
-type CodeBlockProps = {
+interface CodeBlockProps {
   children: ReactNode;
   className?: string;
+  'data-line-highlighting'?: string;
+  'data-line-numbers'?: string;
   icon?: ReactNode;
   style?: CSSProperties;
   tabIndex?: number;
   title?: string;
-  'data-line-numbers'?: string;
-  'data-line-highlighting'?: string;
-};
+}
 
 export const CodeBlock = ({
   children,
@@ -37,36 +36,6 @@ export const CodeBlock = ({
   const ref = useRef<HTMLPreElement>(null);
   const [isCopied, setIsCopied] = useState(false);
   const { 'data-line-numbers': lineNumbers } = rest;
-
-  // Filter out lines marked with `// @setup` using useLayoutEffect
-  // useLayoutEffect runs synchronously after DOM mutations but before paint,
-  // which minimizes the flash of @setup content
-  useLayoutEffect(() => {
-    if (!ref.current) return;
-
-    const lines = Array.from(ref.current.querySelectorAll('.line'));
-
-    // First pass: hide @setup lines
-    for (const line of lines) {
-      if (line.textContent?.includes('// @setup')) {
-        (line as HTMLElement).style.display = 'none';
-      }
-    }
-
-    // Second pass: hide leading empty lines (after @setup lines are hidden)
-    for (const line of lines) {
-      const htmlLine = line as HTMLElement;
-      // Skip already hidden lines
-      if (htmlLine.style.display === 'none') continue;
-      // If this line is empty (no text content), hide it
-      if (!line.textContent?.trim()) {
-        htmlLine.style.display = 'none';
-      } else {
-        // Stop at first non-empty visible line
-        break;
-      }
-    }
-  }, [children]);
 
   const copyToClipboard = useCallback(async () => {
     if (typeof window === 'undefined' || !navigator?.clipboard?.writeText) {
@@ -135,7 +104,7 @@ export const CodeBlock = ({
     <Card className="not-prose mb-6 gap-0 overflow-hidden rounded-sm p-0 shadow-none">
       <CardHeader className="flex items-center gap-2 border-b bg-sidebar py-1.5! pr-1.5 pl-4 text-muted-foreground">
         <div
-          className="size-3.5 shrink-0"
+          className="flex size-3.5 shrink-0"
           // biome-ignore lint/security/noDangerouslySetInnerHtml: "Required for icon prop."
           dangerouslySetInnerHTML={{ __html: icon as unknown as TrustedHTML }}
         />

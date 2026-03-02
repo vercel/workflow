@@ -1,9 +1,6 @@
-import { Step, Steps } from 'fumadocs-ui/components/steps';
-import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { AgentTraces } from '@/components/custom/agent-traces';
 import { AskAI } from '@/components/geistdocs/ask-ai';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
@@ -17,19 +14,11 @@ import { Feedback } from '@/components/geistdocs/feedback';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { OpenInChat } from '@/components/geistdocs/open-in-chat';
 import { ScrollTop } from '@/components/geistdocs/scroll-top';
-import * as AccordionComponents from '@/components/ui/accordion';
-import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { getLLMText, getPageImage, source } from '@/lib/geistdocs/source';
-import { TSDoc } from '@/lib/tsdoc';
-
-// No-op component for world MDX files rendered outside /worlds/ context
-// These pages redirect to /worlds/[id] but still get statically generated
-const WorldTestingPerformanceNoop = () => null;
 
 const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
   const { slug, lang } = await params;
-
   const page = source.getPage(slug, lang);
 
   if (!page) {
@@ -66,16 +55,6 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
             a: createRelativeLink(source, page),
 
             // Add your custom components here
-            AgentTraces,
-            Badge,
-            TSDoc,
-            Step,
-            Steps,
-            ...AccordionComponents,
-            Tabs,
-            Tab,
-            // No-op for world MDX files (they redirect to /worlds/[id])
-            WorldTestingPerformance: WorldTestingPerformanceNoop,
           })}
         />
       </DocsBody>
@@ -102,9 +81,8 @@ export const generateMetadata = async ({
       images: getPageImage(page).url,
     },
     alternates: {
-      canonical: page.url,
       types: {
-        'text/markdown': `${page.url}.md`,
+        'text/markdown': slug ? `/docs/${slug}.md` : '/docs.md',
       },
     },
   };

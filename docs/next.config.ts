@@ -8,80 +8,14 @@ const config: NextConfig = {
     turbopackFileSystemCacheForDev: true,
   },
 
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-
-  outputFileTracingIncludes: {
-    '/og/\\[\\.\\.\\.slug\\]': ['./lib/og/assets/**/*'],
-    '/worlds/\\[id\\]/opengraph-image': ['./lib/og/assets/**/*'],
-  },
-
-  async rewrites() {
-    return {
-      beforeFiles: [
-        {
-          source: '/sitemap.xml',
-          destination: 'https://crawled-sitemap.vercel.sh/useworkflow.dev-.xml',
-        },
-        {
-          source: '/docs/:path*',
-          destination: '/llms.mdx/:path*',
-          has: [
-            {
-              type: 'header',
-              key: 'Accept',
-              // Have text/markdown or text/plain but before any text/html
-              // Note, that Claude Code currently requests text/plain
-              value:
-                '(?=.*(?:text/plain|text/markdown))(?!.*text/html.*(?:text/plain|text/markdown)).*',
-            },
-          ],
-        },
-      ],
-    };
-  },
-
-  async redirects() {
-    return [
+  images: {
+    formats: ['image/avif', 'image/webp'],
+    remotePatterns: [
       {
-        source: '/docs',
-        destination: '/docs/getting-started',
-        permanent: true,
+        protocol: 'https',
+        hostname: 'placehold.co',
       },
-      {
-        source: '/err/:slug',
-        destination: '/docs/errors/:slug',
-        permanent: true,
-      },
-      // Redirect old world docs to new /worlds routes
-      {
-        source: '/docs/deploying/world/local-world',
-        destination: '/worlds/local',
-        permanent: true,
-      },
-      {
-        source: '/docs/deploying/world/postgres-world',
-        destination: '/worlds/postgres',
-        permanent: true,
-      },
-      {
-        source: '/docs/deploying/world/vercel-world',
-        destination: '/worlds/vercel',
-        permanent: true,
-      },
-      {
-        source: '/docs/worlds',
-        destination: '/worlds',
-        permanent: true,
-      },
-      // Redirect old control-flow-patterns to common-patterns
-      {
-        source: '/docs/foundations/control-flow-patterns',
-        destination: '/docs/foundations/common-patterns',
-        permanent: true,
-      },
-    ];
+    ],
   },
 };
 

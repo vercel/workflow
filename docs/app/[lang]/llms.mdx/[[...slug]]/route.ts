@@ -1,6 +1,5 @@
 import { notFound } from 'next/navigation';
 import { getLLMText, source } from '@/lib/geistdocs/source';
-import { i18n } from '@/lib/geistdocs/i18n';
 
 export const revalidate = false;
 
@@ -15,19 +14,11 @@ export async function GET(
     notFound();
   }
 
-  const sitemapPath =
-    lang === i18n.defaultLanguage ? '/sitemap.md' : `/${lang}/sitemap.md`;
-
-  return new Response(
-    (await getLLMText(page)) +
-      `\n\n## Sitemap
-[Overview of all docs pages](${sitemapPath})\n`,
-    {
-      headers: {
-        'Content-Type': 'text/markdown',
-      },
-    }
-  );
+  return new Response(await getLLMText(page), {
+    headers: {
+      'Content-Type': 'text/markdown',
+    },
+  });
 }
 
 export const generateStaticParams = async ({
