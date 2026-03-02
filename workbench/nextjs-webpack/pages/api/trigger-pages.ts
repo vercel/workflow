@@ -23,9 +23,6 @@ export default async function handler(
 async function handlePost(req: NextApiRequest, res: NextApiResponse) {
   const workflowFile =
     (req.query.workflowFile as string) || 'workflows/99_e2e.ts';
-  if (!workflowFile) {
-    return res.status(400).send('No workflowFile query parameter provided');
-  }
   const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
   if (!workflows) {
     return res.status(400).send(`Workflow file "${workflowFile}" not found`);
@@ -40,9 +37,6 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
   const workflowFn = (typeof rawWorkflowFn === 'string' && rawWorkflowFn.trim() !== '')
     ? rawWorkflowFn.trim()
     : 'simple';
-  if (!workflowFn) {
-    return res.status(400).send('No workflow query parameter provided');
-  }
 
   // Handle static method lookups (e.g., "Calculator.calculate")
   let workflow: unknown;
@@ -59,7 +53,7 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
     return res.status(400).send(`Workflow "${workflowFn}" not found`);
   }
 
-  let args: any[] = [];
+  let args: unknown[] = [];
 
   // Args from query string
   const argsParam = req.query.args as string | undefined;
@@ -170,11 +164,14 @@ async function handleGet(req: NextApiRequest, res: NextApiResponse) {
           ...error,
           name: error.name,
           message: error.message,
-          cause: {
-            message: cause.message,
-            stack: cause.stack,
-            code: cause.code,
-          },
+          cause:
+            cause && typeof cause === 'object'
+              ? {
+                  message: (cause as any).message,
+                  stack: (cause as any).stack,
+                  code: (cause as any).code,
+                }
+              : null,
         });
       }
     }
