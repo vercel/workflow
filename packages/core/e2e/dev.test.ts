@@ -61,6 +61,36 @@ export function createDevTests(config?: DevTestConfig) {
       });
     };
 
+    const triggerWorkflowRun = async (
+      workflowName: string,
+      args: unknown[] = []
+    ) => {
+      if (!deploymentUrl) {
+        return;
+      }
+
+      const response = await fetch(
+        new URL('/api/workflows/start', deploymentUrl),
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            workflowName,
+            args,
+          }),
+          signal: AbortSignal.timeout(5_000),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `Failed to trigger workflow "${workflowName}": ${response.status}`
+        );
+      }
+    };
+
     const prewarm = async () => {
       // Pre-warm the app with bounded requests so cleanup hooks cannot hang.
       await Promise.all([
@@ -166,6 +196,65 @@ export async function myNewStep() {
         }
       }
     });
+
+    test.skipIf(!supportsDeferredStepCopies)(
+      'should rebuild on imported step dependency change',
+      { timeout: 60_000 },
+      async () => {
+        const importedStepFile = path.join(
+          appPath,
+          workflowsDir,
+          '_imported_step_only.ts'
+        );
+        const content = await fs.readFile(importedStepFile, 'utf8');
+        const marker = 'importedStepOnlyHotReloadMarker';
+
+        await fs.writeFile(
+          importedStepFile,
+          `${content}
+
+export async function ${marker}() {
+  'use step'
+  return 'updated'
+}
+`
+        );
+        restoreFiles.push({ path: importedStepFile, content });
+
+        const copiedStepDir = path.join(
+          path.dirname(generatedStep),
+          '__workflow_step_files__'
+        );
+
+        while (true) {
+          try {
+            await triggerWorkflowRun('importedStepOnlyWorkflow');
+            const copiedStepFileNames = await fs.readdir(copiedStepDir);
+            const copiedStepContents = await Promise.all(
+              copiedStepFileNames.map(async (copiedStepFileName) => {
+                const copiedStepFilePath = path.join(
+                  copiedStepDir,
+                  copiedStepFileName
+                );
+                const copiedStepStats = await fs.stat(copiedStepFilePath);
+                if (!copiedStepStats.isFile()) {
+                  return '';
+                }
+                return await fs.readFile(copiedStepFilePath, 'utf8');
+              })
+            );
+            expect(
+              copiedStepContents.some((copiedStepContent) =>
+                copiedStepContent.includes(marker)
+              )
+            ).toBe(true);
+            break;
+          } catch (_) {
+            await new Promise((res) => setTimeout(res, 1_000));
+          }
+        }
+      }
+    );
 
     test(
       'should rebuild on adding workflow file',

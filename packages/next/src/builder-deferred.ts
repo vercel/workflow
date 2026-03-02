@@ -73,6 +73,7 @@ export async function getNextBuilderDeferred() {
     private deferredBuildQueue = Promise.resolve();
     private cacheInitialized = false;
     private cacheWriteTimer: NodeJS.Timeout | null = null;
+    private deferredRebuildTimer: NodeJS.Timeout | null = null;
     private lastDeferredBuildSignature: string | null = null;
 
     async build() {
@@ -596,6 +597,8 @@ export async function getNextBuilderDeferred() {
         ) => {
           const normalizedFilePath = this.normalizeDiscoveredFilePath(filePath);
           let hasCacheTrackingChange = false;
+          const wasTrackedDependency =
+            this.trackedDependencyFiles.has(normalizedFilePath);
 
           if (hasWorkflow) {
             if (!this.discoveredWorkflowFiles.has(normalizedFilePath)) {
@@ -620,17 +623,32 @@ export async function getNextBuilderDeferred() {
           }
 
           if (hasSerde) {
+            if (!this.discoveredSerdeFiles.has(normalizedFilePath)) {
+              hasCacheTrackingChange = true;
+            }
             this.discoveredSerdeFiles.add(normalizedFilePath);
           } else {
-            this.discoveredSerdeFiles.delete(normalizedFilePath);
+            const wasDeleted =
+              this.discoveredSerdeFiles.delete(normalizedFilePath);
+            hasCacheTrackingChange = wasDeleted || hasCacheTrackingChange;
           }
 
           if (hasCacheTrackingChange) {
             this.scheduleWorkflowsCacheWrite();
           }
+
+          if (
+            hasWorkflow ||
+            hasStep ||
+            hasSerde ||
+            hasCacheTrackingChange ||
+            wasTrackedDependency
+          ) {
+            this.scheduleDeferredRebuild();
+          }
         },
         onTriggerBuild: () => {
-          // Deferred builder builds via onBeforeDeferredEntries callback.
+          this.scheduleDeferredRebuild();
         },
       };
 
@@ -847,6 +865,26 @@ export async function getNextBuilderDeferred() {
           console.warn('Failed to write workflow discovery cache', error);
         });
       }, 50);
+    }
+
+    private scheduleDeferredRebuild(): void {
+      if (!this.config.watch) {
+        return;
+      }
+
+      if (this.deferredRebuildTimer) {
+        clearTimeout(this.deferredRebuildTimer);
+      }
+
+      this.deferredRebuildTimer = setTimeout(() => {
+        this.deferredRebuildTimer = null;
+        void this.onBeforeDeferredEntries().catch((error) => {
+          console.warn(
+            '[workflow] Deferred rebuild after source update failed.',
+            error
+          );
+        });
+      }, 75);
     }
 
     private async readWorkflowsCache(): Promise<{
