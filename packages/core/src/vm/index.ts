@@ -98,6 +98,10 @@ export function createContext(options: CreateContextOptions) {
   g.URLSearchParams = globalThis.URLSearchParams;
   g.structuredClone = globalThis.structuredClone;
 
+  // TC39 Explicit Resource Management polyfill for `using` keyword
+  (g.Symbol as any).dispose ??= Symbol.for('Symbol.dispose');
+  (g.Symbol as any).asyncDispose ??= Symbol.for('Symbol.asyncDispose');
+
   // HACK: Shim `exports` for the bundle
   g.exports = {};
   (g as any).module = { exports: g.exports };

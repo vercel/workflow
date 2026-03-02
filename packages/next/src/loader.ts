@@ -1,6 +1,6 @@
 import { connect, type Socket } from 'node:net';
-import { createRequire } from 'node:module';
-import { relative } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
 import { type SocketMessage, serializeMessage } from './socket-server.js';
 import {
@@ -39,6 +39,12 @@ function registerFileDependency(
   loaderContext.addBuildDependency?.(dependencyPath);
 }
 
+function addIfExists(files: Set<string>, dependencyPath: string): void {
+  if (existsSync(dependencyPath)) {
+    files.add(dependencyPath);
+  }
+}
+
 function resolveLoaderStaticDependencies(): LoaderStaticDependencies {
   if (cachedLoaderStaticDependencies) {
     return cachedLoaderStaticDependencies;
@@ -49,11 +55,14 @@ function resolveLoaderStaticDependencies(): LoaderStaticDependencies {
     '@workflow/swc-plugin/build-hash.json'
   );
   const workflowBuildersPath = require.resolve('@workflow/builders');
-  const swcPluginRequire = createRequire(swcPluginPath);
-  const workflowBuildersRequire = createRequire(workflowBuildersPath);
-  const swcPluginPackageJsonPath = swcPluginRequire.resolve('./package.json');
-  const workflowBuildersPackageJsonPath =
-    workflowBuildersRequire.resolve('../package.json');
+
+  // Derive package.json paths from resolved entrypoints to avoid
+  // Turbopack loader-eval failures around ../package.json resolution.
+  const swcPluginPackageJsonPath = join(dirname(swcPluginPath), 'package.json');
+  const workflowBuildersPackageJsonPath = join(
+    dirname(workflowBuildersPath),
+    '../package.json'
+  );
 
   const files = new Set<string>([
     __filename,
@@ -61,10 +70,10 @@ function resolveLoaderStaticDependencies(): LoaderStaticDependencies {
     require.resolve('./step-copy-utils'),
     swcPluginPath,
     swcPluginBuildHashPath,
-    swcPluginPackageJsonPath,
     workflowBuildersPath,
-    workflowBuildersPackageJsonPath,
   ]);
+  addIfExists(files, swcPluginPackageJsonPath);
+  addIfExists(files, workflowBuildersPackageJsonPath);
 
   cachedLoaderStaticDependencies = {
     swcPluginPath,

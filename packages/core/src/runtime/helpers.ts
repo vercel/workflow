@@ -383,7 +383,9 @@ export async function queueMessage(
     },
     async (span) => {
       const { messageId } = await world.queue(...args);
-      span?.setAttributes(Attribute.MessagingMessageId(messageId));
+      if (messageId) {
+        span?.setAttributes(Attribute.MessagingMessageId(messageId));
+      }
     }
   );
 }

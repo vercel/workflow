@@ -80,7 +80,7 @@ export interface Queue {
     queueName: ValidQueueName,
     message: QueuePayload,
     opts?: QueueOptions
-  ): Promise<{ messageId: MessageId }>;
+  ): Promise<{ messageId: MessageId | null }>;
 
   /**
    * Creates an HTTP queue handler for processing messages from a specific queue.

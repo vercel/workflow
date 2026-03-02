@@ -1,5 +1,31 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.38
+
+### Patch Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- Updated dependencies [[`1cfb8b1`](https://github.com/vercel/workflow/commit/1cfb8b12e7d40e372d6e223add1518cd62fa0b5f), [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - @workflow/world-local@4.1.0-beta.36
+  - @workflow/world@4.1.0-beta.8
+  - @workflow/errors@4.1.0-beta.17
+
+## 4.1.0-beta.37
+
+### Patch Changes
+
+- [#1002](https://github.com/vercel/workflow/pull/1002) [`0735b2a`](https://github.com/vercel/workflow/commit/0735b2a55b75df2cc82dadbd2aa558b0f7ddc225) Thanks [@rovo89](https://github.com/rovo89)! - Fix racing conditions in Postgres streamer
+
+- [#1171](https://github.com/vercel/workflow/pull/1171) [`79a730a`](https://github.com/vercel/workflow/commit/79a730aa68b4c9b4e2a8599fbdb154184f7d8b71) Thanks [@rovo89](https://github.com/rovo89)! - Hide also "info" logs from Graphile Worker by default
+
+- [#1124](https://github.com/vercel/workflow/pull/1124) [`1f9a67c`](https://github.com/vercel/workflow/commit/1f9a67c759fa6444f6f652692871e8bc7e65ea71) Thanks [@kschmelter13](https://github.com/kschmelter13)! - Replace queue `pg-boss`-based implementation with `graphile-worker`
+
+- Updated dependencies [[`b06e491`](https://github.com/vercel/workflow/commit/b06e491a4769724435afff66724ac9e275fe11df)]:
+  - @workflow/world@4.1.0-beta.7
+  - @workflow/errors@4.1.0-beta.16
+  - @workflow/world-local@4.1.0-beta.35
+
 ## 4.1.0-beta.36
 
 ### Patch Changes
