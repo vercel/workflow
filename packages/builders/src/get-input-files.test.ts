@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { BaseBuilder } from './base-builder.js';
 import type { StandaloneConfig } from './types.js';
@@ -39,7 +39,7 @@ function normalize(p: string): string {
 
 function writeFile(dir: string, relativePath: string, content = ''): string {
   const fullPath = join(dir, relativePath);
-  mkdirSync(join(fullPath, '..'), { recursive: true });
+  mkdirSync(dirname(fullPath), { recursive: true });
   writeFileSync(fullPath, content, 'utf-8');
   return fullPath;
 }
