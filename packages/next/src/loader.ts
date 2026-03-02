@@ -462,30 +462,42 @@ export default function workflowLoader(
           sourceMap: null,
         };
     const sourceForTransform = deferredSourceMapResult.sourceWithoutMapComment;
+    const discoveryFilePath =
+      deferredStepSourceMetadata?.absolutePath || filename;
+
+    if (deferredStepSourceMetadata?.absolutePath) {
+      // Ensure edits to the original source invalidate deferred step copies.
+      registerFileDependency(this, deferredStepSourceMetadata.absolutePath);
+    }
 
     // Skip generated workflow route files to avoid re-processing them
     if ((await checkGeneratedFile(filename)) && !isDeferredStepCopyFile) {
       return { code: normalizedSource, map: sourceMap };
     }
 
-    // Detect workflow patterns in the source code
-    const patterns = await detectPatterns(normalizedSource);
+    // Detect workflow patterns in the source code.
+    const patterns = await detectPatterns(sourceForTransform);
     // Always notify discovery tracking, even for `false/false`, so files that
     // previously had workflow/step usage are removed from the tracked sets.
-    if (!isDeferredStepCopyFile) {
+    // Deferred step copy files must report using their original source path so
+    // deferred rebuilds can react to source edits outside generated artifacts.
+    if (!isDeferredStepCopyFile || deferredStepSourceMetadata?.absolutePath) {
       // For @workflow SDK packages, do not report serde-only matches for
       // discovery, otherwise deferred mode can incorrectly treat SDK internals
       // as app serde entrypoints.
-      const isSdkFile = await checkSdkFile(filename);
+      const isSdkFile = await checkSdkFile(discoveryFilePath);
       await notifySocketServer(
-        filename,
+        discoveryFilePath,
         patterns.hasUseWorkflow,
         patterns.hasUseStep,
         patterns.hasSerde && !isSdkFile
       );
+    }
 
+    if (!isDeferredStepCopyFile) {
       // For @workflow SDK packages, only transform files with actual directives,
       // not files that just match serde patterns (which are internal SDK implementation files)
+      const isSdkFile = await checkSdkFile(filename);
       if (isSdkFile && !patterns.hasDirective) {
         return { code: normalizedSource, map: sourceMap };
       }
