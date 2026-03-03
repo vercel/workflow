@@ -156,10 +156,12 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     function createHookPromise(): Promise<T> {
       const resolvers = withResolvers<T>();
 
-      // If we have a conflict, reject immediately
-      // This handles the iterator case where each await should reject
+      // If we have a conflict, reject through the promiseQueue to maintain
+      // deterministic ordering with any prior queued resolutions.
       if (hasConflict && conflictErrorRef) {
-        resolvers.reject(conflictErrorRef);
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          resolvers.reject(conflictErrorRef);
+        });
         return resolvers.promise;
       }
 
