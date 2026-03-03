@@ -1,5 +1,23 @@
 # workflow
 
+## 4.1.0-beta.63
+
+### Patch Changes
+
+- [#1232](https://github.com/vercel/workflow/pull/1232) [`4ab4412`](https://github.com/vercel/workflow/commit/4ab4412ae6f4a64eb29fcb0e445f0b3314aa3b9b) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `Run.wakeUp()` method to programmatically interrupt pending `sleep()` calls
+
+- Updated dependencies [[`4ab4412`](https://github.com/vercel/workflow/commit/4ab4412ae6f4a64eb29fcb0e445f0b3314aa3b9b), [`a9fea91`](https://github.com/vercel/workflow/commit/a9fea9132ef3797dbda7683c36cc86ff2bd82f1f)]:
+  - @workflow/core@4.1.0-beta.63
+  - @workflow/next@4.0.1-beta.59
+  - @workflow/cli@4.1.0-beta.63
+  - @workflow/nitro@4.0.1-beta.58
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/astro@4.0.0-beta.37
+  - @workflow/nest@0.0.0-beta.12
+  - @workflow/rollup@4.0.0-beta.20
+  - @workflow/sveltekit@4.0.0-beta.52
+  - @workflow/nuxt@4.0.1-beta.47
+
 ## 4.1.0-beta.62
 
 ### Patch Changes

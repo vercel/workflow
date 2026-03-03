@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.1.0-beta.37
+
+### Patch Changes
+
+- [#1222](https://github.com/vercel/workflow/pull/1222) [`2b1c2bd`](https://github.com/vercel/workflow/commit/2b1c2bd8e6b384334fbeb7ede8f517a5ca683716) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `run_failed` event schema validation failure in lazy ref mode
+
 ## 4.1.0-beta.36
 
 ### Patch Changes
