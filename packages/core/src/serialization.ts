@@ -9,7 +9,6 @@ import {
   decrypt as aesGcmDecrypt,
   encrypt as aesGcmEncrypt,
   type CryptoKey,
-  importKey as importEncryptionKey,
 } from './encryption.js';
 import {
   createFlushableState,
@@ -236,18 +235,30 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
 const FRAME_HEADER_SIZE = 4;
 
 export function getSerializeStream(
-  reducers: Reducers
+  reducers: Reducers,
+  cryptoKey?: CryptoKey
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
   const stream = new TransformStream<any, Uint8Array>({
-    transform(chunk, controller) {
+    async transform(chunk, controller) {
       try {
         const serialized = stringify(chunk, reducers);
         const payload = encoder.encode(serialized);
-        const prefixed = encodeWithFormatPrefix(
+        let prefixed = encodeWithFormatPrefix(
           SerializationFormat.DEVALUE_V1,
           payload
         ) as Uint8Array;
+
+        // Encrypt the frame payload if a key is provided.
+        // The length header remains in the clear so the deserializer can
+        // find frame boundaries regardless of transport chunking.
+        if (cryptoKey) {
+          const encrypted = await aesGcmEncrypt(cryptoKey, prefixed);
+          prefixed = encodeWithFormatPrefix(
+            SerializationFormat.ENCRYPTED,
+            encrypted
+          ) as Uint8Array;
+        }
 
         // Write length-prefixed frame: [4-byte length][prefixed data]
         const frame = new Uint8Array(FRAME_HEADER_SIZE + prefixed.length);
@@ -268,7 +279,8 @@ export function getSerializeStream(
 }
 
 export function getDeserializeStream(
-  revivers: Revivers
+  revivers: Revivers,
+  cryptoKey?: CryptoKey
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
@@ -280,7 +292,9 @@ export function getDeserializeStream(
     buffer = newBuffer;
   }
 
-  function processFrames(controller: TransformStreamDefaultController<any>) {
+  async function processFrames(
+    controller: TransformStreamDefaultController<any>
+  ) {
     // Try to extract complete length-prefixed frames
     while (buffer.length >= FRAME_HEADER_SIZE) {
       const frameLength = new DataView(
@@ -300,7 +314,26 @@ export function getDeserializeStream(
       buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
 
       const { format, payload } = decodeFormatPrefix(frameData);
-      if (format === SerializationFormat.DEVALUE_V1) {
+
+      // If the frame payload is encrypted, decrypt it first to reveal
+      // the inner format-prefixed data (e.g., 'devl' + serialized text).
+      if (format === SerializationFormat.ENCRYPTED) {
+        if (!cryptoKey) {
+          controller.error(
+            new WorkflowRuntimeError(
+              'Encrypted stream data encountered but no encryption key is available. ' +
+                'Encryption is not configured or no key was provided for this run.'
+            )
+          );
+          return;
+        }
+        const decrypted = await aesGcmDecrypt(cryptoKey, payload);
+        const inner = decodeFormatPrefix(decrypted);
+        if (inner.format === SerializationFormat.DEVALUE_V1) {
+          const text = decoder.decode(inner.payload);
+          controller.enqueue(parse(text, revivers));
+        }
+      } else if (format === SerializationFormat.DEVALUE_V1) {
         const text = decoder.decode(payload);
         controller.enqueue(parse(text, revivers));
       }
@@ -308,7 +341,7 @@ export function getDeserializeStream(
   }
 
   const stream = new TransformStream<Uint8Array, any>({
-    transform(chunk, controller) {
+    async transform(chunk, controller) {
       // First, try to detect if this is length-prefixed framed data
       // by checking if the first 4 bytes form a plausible length.
       if (buffer.length === 0 && chunk.length >= FRAME_HEADER_SIZE) {
@@ -323,13 +356,13 @@ export function getDeserializeStream(
         ) {
           // Looks like framed data
           appendToBuffer(chunk);
-          processFrames(controller);
+          await processFrames(controller);
           return;
         }
       } else if (buffer.length > 0) {
         // Already in framed mode (have buffered data)
         appendToBuffer(chunk);
-        processFrames(controller);
+        await processFrames(controller);
         return;
       }
 
@@ -342,10 +375,10 @@ export function getDeserializeStream(
         }
       }
     },
-    flush(controller) {
+    async flush(controller) {
       // Process any remaining framed data
       if (buffer.length > 0) {
-        processFrames(controller);
+        await processFrames(controller);
       }
     },
   });
@@ -354,9 +387,8 @@ export function getDeserializeStream(
 
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
-  #cryptoKey?: Awaited<ReturnType<typeof importEncryptionKey>>;
 
-  constructor(name: string, startIndex?: number, runId?: string) {
+  constructor(name: string, startIndex?: number, _runId?: string) {
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error(`"name" is required, got "${name}"`);
     }
@@ -381,41 +413,9 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           this.#reader = undefined;
           controller.close();
         } else {
-          // Decrypt chunk if encrypted
-          let chunk = result.value;
-          if (isEncrypted(chunk)) {
-            if (!runId) {
-              controller.error(
-                new WorkflowRuntimeError(
-                  'Encrypted stream data encountered but no runId provided for decryption context.'
-                )
-              );
-              return;
-            }
-            // Resolve and cache the CryptoKey on first encrypted chunk
-            if (!this.#cryptoKey) {
-              const world = getWorld();
-              const key = await world.getEncryptionKeyForRun?.(runId);
-              if (!key) {
-                controller.error(
-                  new WorkflowRuntimeError(
-                    'Encrypted stream data encountered but no encryption key available. ' +
-                      'Ensure encryption is configured.'
-                  )
-                );
-                return;
-              }
-              this.#cryptoKey = await importEncryptionKey(key);
-            }
-            runtimeLogger.debug('[encryption] stream decrypt', {
-              runId,
-              inputBytes: chunk.byteLength,
-            });
-            // Strip 'encr' prefix — prefix is a core framing concern
-            const { payload } = decodeFormatPrefix(chunk);
-            chunk = await aesGcmDecrypt(this.#cryptoKey, payload);
-          }
-          controller.enqueue(chunk);
+          // Forward raw bytes; encryption/decryption is handled at the
+          // framing level by getSerializeStream/getDeserializeStream.
+          controller.enqueue(result.value);
         }
       },
     });
@@ -438,22 +438,9 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     }
     const world = getWorld();
 
-    // Resolve the encryption key once at construction time, not per flush.
-    // The key is the same for the lifetime of a stream (same run, same deployment).
-    let cryptoKeyPromise: Promise<
-      Awaited<ReturnType<typeof importEncryptionKey>> | undefined
-    > | null = null;
-    async function getCryptoKey() {
-      if (!cryptoKeyPromise) {
-        cryptoKeyPromise = (async () => {
-          const rawKey = await world.getEncryptionKeyForRun?.(runId);
-          return rawKey ? await importEncryptionKey(rawKey) : undefined;
-        })();
-      }
-      return cryptoKeyPromise;
-    }
-
     // Buffering state for batched writes
+    // Encryption/decryption is handled at the framing level by
+    // getSerializeStream/getDeserializeStream, not here.
     let buffer: Uint8Array[] = [];
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let flushPromise: Promise<void> | null = null;
@@ -468,26 +455,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
       // Copy chunks to flush, but don't clear buffer until write succeeds
       // This prevents data loss if the write operation fails
-      let chunksToFlush = buffer.slice();
-
-      // Encrypt chunks if world supports encryption
-      const cryptoKey = await getCryptoKey();
-      if (cryptoKey) {
-        runtimeLogger.debug('[encryption] stream encrypt', {
-          runId,
-          chunks: chunksToFlush.length,
-          totalBytes: chunksToFlush.reduce((sum, c) => sum + c.byteLength, 0),
-        });
-        chunksToFlush = await Promise.all(
-          chunksToFlush.map(async (chunk) => {
-            const encrypted = await aesGcmEncrypt(cryptoKey, chunk);
-            return encodeWithFormatPrefix(
-              SerializationFormat.ENCRYPTED,
-              encrypted
-            ) as Uint8Array;
-          })
-        );
-      }
+      const chunksToFlush = buffer.slice();
 
       // Use writeToStreamMulti if available for batch writes
       if (
@@ -1517,8 +1485,8 @@ export async function maybeDecrypt(
   if (isEncrypted(data)) {
     if (!key) {
       throw new WorkflowRuntimeError(
-        'Encrypted data encountered but no encryption key available. ' +
-          'Ensure VERCEL_DEPLOYMENT_KEY is set.'
+        'Encrypted data encountered but no encryption key is available. ' +
+          'Encryption is not configured or no key was provided for this run.'
       );
     }
     // Strip the 'encr' format prefix — the prefix is a core framing concern
@@ -1580,7 +1548,7 @@ export async function dehydrateWorkflowArguments(
  * arguments from the database at the start of workflow execution.
  *
  * @param value - Binary serialized data (Uint8Array) with format prefix
- * @param runId - Run ID for decryption context
+ * @param _runId - Workflow run ID (reserved for future decryption context; decryption is currently driven solely by the provided key)
  * @param key - Encryption key (undefined to skip decryption)
  * @param global - Global object for deserialization context
  * @param extraRevivers - Additional revivers for custom types
@@ -1592,7 +1560,7 @@ export async function hydrateWorkflowArguments(
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
-): Promise<unknown> {
+) {
   // Decrypt if needed
   const decrypted = await maybeDecrypt(value, key);
 
@@ -1675,7 +1643,7 @@ export async function hydrateWorkflowReturnValue(
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
-): Promise<unknown> {
+) {
   // Decrypt if needed
   const decrypted = await maybeDecrypt(value, key);
 
@@ -1759,7 +1727,7 @@ export async function hydrateStepArguments(
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
-): Promise<unknown> {
+) {
   // Decrypt if needed
   const decrypted = await maybeDecrypt(value, key);
 
@@ -1843,7 +1811,7 @@ export async function hydrateStepReturnValue(
   key: CryptoKey | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
-): Promise<unknown> {
+) {
   // Decrypt if needed
   const decrypted = await maybeDecrypt(value, key);
 

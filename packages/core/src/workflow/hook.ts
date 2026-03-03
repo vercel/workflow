@@ -116,7 +116,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                   ctx.encryptionKey,
                   ctx.globalThis
                 );
-                next.resolve(payload as T);
+                next.resolve(payload);
               } catch (error) {
                 next.reject(error);
               }
@@ -178,7 +178,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                 ctx.encryptionKey,
                 ctx.globalThis
               );
-              resolvers.resolve(payload as T);
+              resolvers.resolve(payload);
             } catch (error) {
               resolvers.reject(error);
             }

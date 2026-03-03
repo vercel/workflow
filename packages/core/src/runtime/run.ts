@@ -172,11 +172,11 @@ export class Run<TResult> {
         if (run.status === 'completed') {
           const rawKey = await this.world.getEncryptionKeyForRun?.(run);
           const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
-          return (await hydrateWorkflowReturnValue(
+          return await hydrateWorkflowReturnValue(
             run.output,
             this.runId,
             encryptionKey
-          )) as TResult;
+          );
         }
 
         if (run.status === 'cancelled') {
