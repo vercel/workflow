@@ -10,6 +10,7 @@ import { WorldInstructions } from '@/components/worlds/WorldInstructions';
 import { WorldTestingPerformance } from '@/components/worlds/WorldTestingPerformance';
 import { WorldDataProvider } from '@/components/worlds/WorldDataProvider';
 import { WorldTestingPerformanceMDX } from '@/components/worlds/WorldTestingPerformanceMDX';
+import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 import { source } from '@/lib/geistdocs/source';
@@ -89,6 +90,7 @@ export default async function WorldDetailPage({ params }: PageProps) {
             Steps,
             Tabs,
             Tab,
+            FluidComputeCallout,
             // MDX-usable component for Testing & Performance section
             WorldTestingPerformance: WorldTestingPerformanceMDX,
           })}

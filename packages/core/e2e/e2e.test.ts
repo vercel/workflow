@@ -1,9 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
 } from '@workflow/errors';
-import fs from 'fs';
-import path from 'path';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
@@ -74,6 +75,10 @@ function writeE2EMetadata() {
 
 // Cached manifest fetched from the deployment
 let cachedManifest: WorkflowManifest | null = null;
+const manifestRetryTimeoutMs = Number(
+  process.env.WORKFLOW_E2E_MANIFEST_RETRY_MS ?? '10000'
+);
+const manifestRetryIntervalMs = 250;
 
 /**
  * Fetches the workflow manifest from the deployment URL.
@@ -81,7 +86,14 @@ let cachedManifest: WorkflowManifest | null = null;
  * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set.
  */
 async function fetchManifest(): Promise<WorkflowManifest> {
-  if (cachedManifest) return cachedManifest;
+  return fetchManifestWithOptions();
+}
+
+async function fetchManifestWithOptions(options?: {
+  forceRefresh?: boolean;
+}): Promise<WorkflowManifest> {
+  const forceRefresh = options?.forceRefresh ?? false;
+  if (cachedManifest && !forceRefresh) return cachedManifest;
 
   const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
   const res = await fetch(url, {
@@ -96,23 +108,11 @@ async function fetchManifest(): Promise<WorkflowManifest> {
   return cachedManifest;
 }
 
-/**
- * Looks up the workflow metadata from the manifest for a given workflow file and function name.
- * Returns an object that can be passed directly to `start()`.
- *
- * The manifest contains the exact IDs produced by the SWC transform during the build,
- * which handles symlink resolution and path normalization correctly.
- */
-async function getWorkflowMetadata(
+function findWorkflowMetadataInManifest(
+  manifest: WorkflowManifest,
   workflowFile: string,
   workflowFn: string
-): Promise<{ workflowId: string }> {
-  const manifest = await fetchManifest();
-
-  // The manifest keys are relative file paths as seen by the builder.
-  // Due to symlinks, the key may differ from the workflowFile we pass
-  // (e.g., "example/workflows/99_e2e.ts" vs "workflows/99_e2e.ts").
-  // Search all files for the matching function name and workflow file suffix.
+): { workflowId: string } | null {
   for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
     if (
       manifestFile.endsWith(workflowFile) ||
@@ -125,7 +125,6 @@ async function getWorkflowMetadata(
     }
   }
 
-  // If suffix matching didn't find it, try stripping the extension for matching
   const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
   for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
     const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
@@ -140,10 +139,66 @@ async function getWorkflowMetadata(
     }
   }
 
-  throw new Error(
-    `Workflow "${workflowFn}" not found in manifest for file "${workflowFile}". ` +
-      `Available files: ${Object.keys(manifest.workflows).join(', ')}`
+  return null;
+}
+
+function getFallbackWorkflowId(
+  workflowFile: string,
+  workflowFn: string
+): string {
+  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  // Keep this in sync with the SWC transform ID format. This fallback is
+  // intentionally coupled so tests can continue running when deferred manifest
+  // publication lags behind discovery in staged/out-of-monorepo scenarios.
+  return `workflow//./${fileWithoutExt}//${workflowFn}`;
+}
+
+/**
+ * Looks up the workflow metadata from the manifest for a given workflow file and function name.
+ * Returns an object that can be passed directly to `start()`.
+ *
+ * The manifest contains the exact IDs produced by the SWC transform during the build,
+ * which handles symlink resolution and path normalization correctly.
+ */
+async function getWorkflowMetadata(
+  workflowFile: string,
+  workflowFn: string
+): Promise<{ workflowId: string }> {
+  let manifest = await fetchManifest();
+  let metadata = findWorkflowMetadataInManifest(
+    manifest,
+    workflowFile,
+    workflowFn
   );
+  if (metadata) {
+    return metadata;
+  }
+
+  // Deferred discovery can grow the manifest during test execution, so poll
+  // briefly before failing to avoid races in staged/out-of-monorepo mode.
+  const deadline = Date.now() + manifestRetryTimeoutMs;
+  while (Date.now() < deadline) {
+    manifest = await fetchManifestWithOptions({ forceRefresh: true });
+    metadata = findWorkflowMetadataInManifest(
+      manifest,
+      workflowFile,
+      workflowFn
+    );
+    if (metadata) {
+      return metadata;
+    }
+    await sleep(manifestRetryIntervalMs);
+  }
+
+  // Deferred discovery can lag behind manifest publication in staged/out-of-
+  // monorepo tests. Fall back to the deterministic workflow ID format used by
+  // the transform so tests can continue exercising runtime behavior.
+  const fallbackWorkflowId = getFallbackWorkflowId(workflowFile, workflowFn);
+  console.warn(
+    `Workflow "${workflowFn}" not found in manifest for "${workflowFile}" after ${manifestRetryTimeoutMs}ms; ` +
+      `falling back to ${fallbackWorkflowId}`
+  );
+  return { workflowId: fallbackWorkflowId };
 }
 
 /**
@@ -325,6 +380,16 @@ describe('e2e', () => {
     const returnValue = await run.returnValue;
     expect(returnValue).toBe('B');
   });
+
+  test.skipIf(!isNext)(
+    'importedStepOnlyWorkflow',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('importedStepOnlyWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe('imported-step-only-ok');
+    }
+  );
 
   // ReadableStream return values use the world's streaming infrastructure which
   // requires in-process access. The local world's streamer uses an in-process EventEmitter

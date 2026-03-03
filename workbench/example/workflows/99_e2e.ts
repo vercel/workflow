@@ -14,6 +14,7 @@ import {
   sleep,
 } from 'workflow';
 import { getRun, start } from 'workflow/api';
+import { importedStepOnly } from './_imported_step_only.js';
 import { callThrower, stepThatThrowsFromHelper } from './helpers.js';
 
 //////////////////////////////////////////////////////////
@@ -82,6 +83,13 @@ export async function promiseAnyWorkflow() {
     specificDelay(3000, 'c'),
   ]);
   return winner;
+}
+
+//////////////////////////////////////////////////////////
+
+export async function importedStepOnlyWorkflow() {
+  'use workflow';
+  return await importedStepOnly();
 }
 
 //////////////////////////////////////////////////////////
