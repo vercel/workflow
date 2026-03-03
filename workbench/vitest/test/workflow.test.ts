@@ -1,8 +1,8 @@
+import { waitForHook, waitForSleep } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
 import { getRun, resumeHook, start } from 'workflow/api';
-import { waitForHook, waitForSleep } from 'workflow/vitest';
-import { calculateWorkflow } from '../workflows/simple.js';
 import { hookWorkflow } from '../workflows/hooks.js';
+import { calculateWorkflow } from '../workflows/simple.js';
 import { multiSleepWorkflow, sleepingWorkflow } from '../workflows/sleeping.js';
 import { webhookWorkflow } from '../workflows/webhook.js';
 

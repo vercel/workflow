@@ -69,7 +69,7 @@ function getOutDir(cwd: string): string {
  * @example
  * ```ts
  * // vitest.config.ts
- * import { workflow } from 'workflow/vitest';
+ * import { workflow } from '@workflow/vitest';
  * import { defineConfig } from 'vitest/config';
  *
  * export default defineConfig({

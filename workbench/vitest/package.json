@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "@workflow/vitest": "workspace:*",
     "vitest": "catalog:",
     "workflow": "workspace:*"
   }
