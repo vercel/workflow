@@ -101,4 +101,11 @@ export interface WorkflowOrchestratorContext {
   onWorkflowError: (error: Error) => void;
   generateUlid: () => string;
   generateNanoid: () => string;
+  /**
+   * Sequential promise chain that ensures async deserialization (e.g., decryption)
+   * of event payloads resolves in event log order. Each hydration + resolve
+   * operation is chained through this promise so that even if individual
+   * deserialization takes variable time, promises resolve deterministically.
+   */
+  deserializationChain: Promise<void>;
 }

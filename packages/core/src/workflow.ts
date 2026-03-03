@@ -133,6 +133,7 @@ export async function runWorkflow(
       generateUlid: () => ulid(+startedAt),
       generateNanoid,
       invocationsQueue: new Map(),
+      deserializationChain: Promise.resolve(),
     };
 
     // Subscribe to the events log to update the timestamp in the vm context

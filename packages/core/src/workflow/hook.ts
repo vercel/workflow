@@ -98,19 +98,24 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         if (promises.length > 0) {
           const next = promises.shift();
           if (next) {
-            // Reconstruct the payload from the event data
-            hydrateStepReturnValue(
-              event.eventData.payload,
-              ctx.runId,
-              ctx.encryptionKey,
-              ctx.globalThis
-            )
-              .then((payload) => {
-                next.resolve(payload);
-              })
-              .catch((error) => {
-                next.reject(error);
-              });
+            // Reconstruct the payload from the event data.
+            // Chain through ctx.deserializationChain to ensure that async
+            // deserialization (e.g., decryption) resolves in event log order.
+            ctx.deserializationChain = ctx.deserializationChain.then(
+              async () => {
+                try {
+                  const payload = await hydrateStepReturnValue(
+                    event.eventData.payload,
+                    ctx.runId,
+                    ctx.encryptionKey,
+                    ctx.globalThis
+                  );
+                  next.resolve(payload);
+                } catch (error) {
+                  next.reject(error);
+                }
+              }
+            );
           }
         } else {
           payloadsQueue.push(event);
@@ -156,18 +161,21 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (payloadsQueue.length > 0) {
         const nextPayload = payloadsQueue.shift();
         if (nextPayload) {
-          hydrateStepReturnValue(
-            nextPayload.eventData.payload,
-            ctx.runId,
-            ctx.encryptionKey,
-            ctx.globalThis
-          )
-            .then((payload) => {
+          // Chain through ctx.deserializationChain to ensure that async
+          // deserialization (e.g., decryption) resolves in event log order.
+          ctx.deserializationChain = ctx.deserializationChain.then(async () => {
+            try {
+              const payload = await hydrateStepReturnValue(
+                nextPayload.eventData.payload,
+                ctx.runId,
+                ctx.encryptionKey,
+                ctx.globalThis
+              );
               resolvers.resolve(payload);
-            })
-            .catch((error) => {
+            } catch (error) {
               resolvers.reject(error);
-            });
+            }
+          });
           return resolvers.promise;
         }
       }

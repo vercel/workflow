@@ -142,12 +142,12 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.invocationsQueue.delete(event.correlationId);
 
           // Step has completed, so resolve the Promise with the cached result.
-          // The hydration is async, so we schedule the resolve via setTimeout
-          // after hydration completes to preserve macrotask timing semantics.
-          // We use a single setTimeout that awaits hydration inside it, keeping
-          // the same scheduling order as the original synchronous code path
-          // (where setTimeout was called synchronously from this callback).
-          setTimeout(async () => {
+          // The hydration is async (e.g., decryption), so we chain it through
+          // ctx.deserializationChain to ensure that even if deserialization
+          // takes variable time, promises resolve in event log order.
+          // Each step's hydration + resolve waits for all prior hydrations
+          // to complete before executing, preserving deterministic ordering.
+          ctx.deserializationChain = ctx.deserializationChain.then(async () => {
             try {
               const hydratedResult = await hydrateStepReturnValue(
                 event.eventData.result,
@@ -159,7 +159,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             } catch (error) {
               reject(error);
             }
-          }, 0);
+          });
           return EventConsumerResult.Finished;
         }
 
