@@ -187,194 +187,181 @@ function getStepNodes(graph: ManifestWorkflow['graph']): ManifestNode[] {
  * `.well-known/agent/` are correctly discovered and included in the manifest.
  * This verifies the fix for tinyglobby's `dot: true` option.
  */
-describe.each(['nextjs-webpack', 'nextjs-turbopack'])(
-  'dot-directory discovery (.well-known/agent)',
-  (project) => {
-    test(
-      `${project}: discovers steps inside .well-known/agent directory`,
-      { timeout: 30_000 },
-      async () => {
-        if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-          return;
-        }
-
-        const manifest = await tryReadManifest(project);
-        if (!manifest) return;
-
-        // Find the step from .well-known/agent/v1/steps.ts
-        const stepFiles = Object.keys(manifest.steps);
-        const wellKnownStepFile = stepFiles.find(
-          (f) =>
-            f.includes('.well-known/agent') || f.includes('well-known/agent')
-        );
-        expect(
-          wellKnownStepFile,
-          `Expected a step file matching ".well-known/agent" in manifest steps. Available: ${stepFiles.join(', ')}`
-        ).toBeDefined();
-
-        const fileSteps = manifest.steps[wellKnownStepFile!];
-        expect(fileSteps.wellKnownAgentStep).toBeDefined();
-        expect(fileSteps.wellKnownAgentStep.stepId).toContain(
-          'wellKnownAgentStep'
-        );
+describe.each([
+  'nextjs-webpack',
+  'nextjs-turbopack',
+])('dot-directory discovery (.well-known/agent)', (project) => {
+  test(
+    `${project}: discovers steps inside .well-known/agent directory`,
+    { timeout: 30_000 },
+    async () => {
+      if (process.env.APP_NAME && project !== process.env.APP_NAME) {
+        return;
       }
-    );
 
-    test(
-      `${project}: discovers workflows inside .well-known/agent directory`,
-      { timeout: 30_000 },
-      async () => {
-        if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-          return;
-        }
+      const manifest = await tryReadManifest(project);
+      if (!manifest) return;
 
-        const manifest = await tryReadManifest(project);
-        if (!manifest) return;
+      // Find the step from .well-known/agent/v1/steps.ts
+      const stepFiles = Object.keys(manifest.steps);
+      const wellKnownStepFile = stepFiles.find(
+        (f) => f.includes('.well-known/agent') || f.includes('well-known/agent')
+      );
+      expect(
+        wellKnownStepFile,
+        `Expected a step file matching ".well-known/agent" in manifest steps. Available: ${stepFiles.join(', ')}`
+      ).toBeDefined();
 
-        // Find the workflow from .well-known/agent/v1/steps.ts
-        const workflowFiles = Object.keys(manifest.workflows);
-        const wellKnownWorkflowFile = workflowFiles.find(
-          (f) =>
-            f.includes('.well-known/agent') || f.includes('well-known/agent')
-        );
-        expect(
-          wellKnownWorkflowFile,
-          `Expected a workflow file matching ".well-known/agent" in manifest workflows. Available: ${workflowFiles.join(', ')}`
-        ).toBeDefined();
+      const fileSteps = manifest.steps[wellKnownStepFile!];
+      expect(fileSteps.wellKnownAgentStep).toBeDefined();
+      expect(fileSteps.wellKnownAgentStep.stepId).toContain(
+        'wellKnownAgentStep'
+      );
+    }
+  );
 
-        const fileWorkflows = manifest.workflows[wellKnownWorkflowFile!];
-        expect(fileWorkflows.wellKnownAgentWorkflow).toBeDefined();
-        expect(fileWorkflows.wellKnownAgentWorkflow.workflowId).toContain(
-          'wellKnownAgentWorkflow'
-        );
+  test(
+    `${project}: discovers workflows inside .well-known/agent directory`,
+    { timeout: 30_000 },
+    async () => {
+      if (process.env.APP_NAME && project !== process.env.APP_NAME) {
+        return;
       }
-    );
-  }
-);
+
+      const manifest = await tryReadManifest(project);
+      if (!manifest) return;
+
+      // Find the workflow from .well-known/agent/v1/steps.ts
+      const workflowFiles = Object.keys(manifest.workflows);
+      const wellKnownWorkflowFile = workflowFiles.find(
+        (f) => f.includes('.well-known/agent') || f.includes('well-known/agent')
+      );
+      expect(
+        wellKnownWorkflowFile,
+        `Expected a workflow file matching ".well-known/agent" in manifest workflows. Available: ${workflowFiles.join(', ')}`
+      ).toBeDefined();
+
+      const fileWorkflows = manifest.workflows[wellKnownWorkflowFile!];
+      expect(fileWorkflows.wellKnownAgentWorkflow).toBeDefined();
+      expect(fileWorkflows.wellKnownAgentWorkflow.workflowId).toContain(
+        'wellKnownAgentWorkflow'
+      );
+    }
+  );
+});
 
 /**
  * Tests for single-statement control flow extraction.
  * These verify that steps inside if/while/for without braces are extracted.
  * Tests are skipped if manifest doesn't exist or workflow isn't found.
  */
-describe.each(Object.keys(MANIFEST_PATHS))(
-  'single-statement control flow extraction',
-  (project) => {
-    test(
-      `${project}: single-statement if extracts steps with conditional metadata`,
-      { timeout: 30_000 },
-      async () => {
-        if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-          return;
-        }
-
-        const manifest = await tryReadManifest(project);
-        if (!manifest) return; // Skip if manifest doesn't exist
-
-        const workflow = findWorkflow(manifest, 'single_statement_if');
-        if (!workflow) return; // Skip if workflow not in this project
-
-        const stepNodes = getStepNodes(workflow.graph);
-
-        // Should have steps extracted (singleStmtStepA and singleStmtStepB)
-        expect(stepNodes.length).toBeGreaterThan(0);
-
-        // Verify steps have stepId containing expected names
-        const stepIds = stepNodes.map((n) => n.data.stepId);
-        expect(stepIds.some((id) => id?.includes('singleStmtStepA'))).toBe(
-          true
-        );
-        expect(stepIds.some((id) => id?.includes('singleStmtStepB'))).toBe(
-          true
-        );
-
-        // Verify conditional metadata is present
-        const conditionalNodes = stepNodes.filter(
-          (n) => n.metadata?.conditionalId
-        );
-        expect(conditionalNodes.length).toBeGreaterThan(0);
-
-        // Verify we have both Then and Else branches
-        const thenNodes = stepNodes.filter(
-          (n) => n.metadata?.conditionalBranch === 'Then'
-        );
-        const elseNodes = stepNodes.filter(
-          (n) => n.metadata?.conditionalBranch === 'Else'
-        );
-        expect(thenNodes.length).toBeGreaterThan(0);
-        expect(elseNodes.length).toBeGreaterThan(0);
+describe.each(
+  Object.keys(MANIFEST_PATHS)
+)('single-statement control flow extraction', (project) => {
+  test(
+    `${project}: single-statement if extracts steps with conditional metadata`,
+    { timeout: 30_000 },
+    async () => {
+      if (process.env.APP_NAME && project !== process.env.APP_NAME) {
+        return;
       }
-    );
 
-    test(
-      `${project}: single-statement while extracts steps with loop metadata`,
-      { timeout: 30_000 },
-      async () => {
-        if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-          return;
-        }
+      const manifest = await tryReadManifest(project);
+      if (!manifest) return; // Skip if manifest doesn't exist
 
-        const manifest = await tryReadManifest(project);
-        if (!manifest) return; // Skip if manifest doesn't exist
+      const workflow = findWorkflow(manifest, 'single_statement_if');
+      if (!workflow) return; // Skip if workflow not in this project
 
-        const workflow = findWorkflow(manifest, 'single_statement_while');
-        if (!workflow) return; // Skip if workflow not in this project
+      const stepNodes = getStepNodes(workflow.graph);
 
-        const stepNodes = getStepNodes(workflow.graph);
+      // Should have steps extracted (singleStmtStepA and singleStmtStepB)
+      expect(stepNodes.length).toBeGreaterThan(0);
 
-        // Should have step extracted (singleStmtStepA)
-        expect(stepNodes.length).toBeGreaterThan(0);
+      // Verify steps have stepId containing expected names
+      const stepIds = stepNodes.map((n) => n.data.stepId);
+      expect(stepIds.some((id) => id?.includes('singleStmtStepA'))).toBe(true);
+      expect(stepIds.some((id) => id?.includes('singleStmtStepB'))).toBe(true);
 
-        const stepIds = stepNodes.map((n) => n.data.stepId);
-        expect(stepIds.some((id) => id?.includes('singleStmtStepA'))).toBe(
-          true
-        );
+      // Verify conditional metadata is present
+      const conditionalNodes = stepNodes.filter(
+        (n) => n.metadata?.conditionalId
+      );
+      expect(conditionalNodes.length).toBeGreaterThan(0);
 
-        // Verify loop metadata is present
-        const loopNodes = stepNodes.filter((n) => n.metadata?.loopId);
-        expect(loopNodes.length).toBeGreaterThan(0);
+      // Verify we have both Then and Else branches
+      const thenNodes = stepNodes.filter(
+        (n) => n.metadata?.conditionalBranch === 'Then'
+      );
+      const elseNodes = stepNodes.filter(
+        (n) => n.metadata?.conditionalBranch === 'Else'
+      );
+      expect(thenNodes.length).toBeGreaterThan(0);
+      expect(elseNodes.length).toBeGreaterThan(0);
+    }
+  );
 
-        // Verify loop back-edges exist
-        const loopEdges = workflow.graph.edges.filter((e) => e.type === 'loop');
-        expect(loopEdges.length).toBeGreaterThan(0);
+  test(
+    `${project}: single-statement while extracts steps with loop metadata`,
+    { timeout: 30_000 },
+    async () => {
+      if (process.env.APP_NAME && project !== process.env.APP_NAME) {
+        return;
       }
-    );
 
-    test(
-      `${project}: single-statement for extracts steps with loop metadata`,
-      { timeout: 30_000 },
-      async () => {
-        if (process.env.APP_NAME && project !== process.env.APP_NAME) {
-          return;
-        }
+      const manifest = await tryReadManifest(project);
+      if (!manifest) return; // Skip if manifest doesn't exist
 
-        const manifest = await tryReadManifest(project);
-        if (!manifest) return; // Skip if manifest doesn't exist
+      const workflow = findWorkflow(manifest, 'single_statement_while');
+      if (!workflow) return; // Skip if workflow not in this project
 
-        const workflow = findWorkflow(manifest, 'single_statement_for');
-        if (!workflow) return; // Skip if workflow not in this project
+      const stepNodes = getStepNodes(workflow.graph);
 
-        const stepNodes = getStepNodes(workflow.graph);
+      // Should have step extracted (singleStmtStepA)
+      expect(stepNodes.length).toBeGreaterThan(0);
 
-        // Should have steps extracted (singleStmtStepB and singleStmtStepC)
-        expect(stepNodes.length).toBeGreaterThan(0);
+      const stepIds = stepNodes.map((n) => n.data.stepId);
+      expect(stepIds.some((id) => id?.includes('singleStmtStepA'))).toBe(true);
 
-        const stepIds = stepNodes.map((n) => n.data.stepId);
-        expect(stepIds.some((id) => id?.includes('singleStmtStepB'))).toBe(
-          true
-        );
-        expect(stepIds.some((id) => id?.includes('singleStmtStepC'))).toBe(
-          true
-        );
+      // Verify loop metadata is present
+      const loopNodes = stepNodes.filter((n) => n.metadata?.loopId);
+      expect(loopNodes.length).toBeGreaterThan(0);
 
-        // Verify loop metadata is present
-        const loopNodes = stepNodes.filter((n) => n.metadata?.loopId);
-        expect(loopNodes.length).toBeGreaterThan(0);
+      // Verify loop back-edges exist
+      const loopEdges = workflow.graph.edges.filter((e) => e.type === 'loop');
+      expect(loopEdges.length).toBeGreaterThan(0);
+    }
+  );
 
-        // Verify loop back-edges exist
-        const loopEdges = workflow.graph.edges.filter((e) => e.type === 'loop');
-        expect(loopEdges.length).toBeGreaterThan(0);
+  test(
+    `${project}: single-statement for extracts steps with loop metadata`,
+    { timeout: 30_000 },
+    async () => {
+      if (process.env.APP_NAME && project !== process.env.APP_NAME) {
+        return;
       }
-    );
-  }
-);
+
+      const manifest = await tryReadManifest(project);
+      if (!manifest) return; // Skip if manifest doesn't exist
+
+      const workflow = findWorkflow(manifest, 'single_statement_for');
+      if (!workflow) return; // Skip if workflow not in this project
+
+      const stepNodes = getStepNodes(workflow.graph);
+
+      // Should have steps extracted (singleStmtStepB and singleStmtStepC)
+      expect(stepNodes.length).toBeGreaterThan(0);
+
+      const stepIds = stepNodes.map((n) => n.data.stepId);
+      expect(stepIds.some((id) => id?.includes('singleStmtStepB'))).toBe(true);
+      expect(stepIds.some((id) => id?.includes('singleStmtStepC'))).toBe(true);
+
+      // Verify loop metadata is present
+      const loopNodes = stepNodes.filter((n) => n.metadata?.loopId);
+      expect(loopNodes.length).toBeGreaterThan(0);
+
+      // Verify loop back-edges exist
+      const loopEdges = workflow.graph.edges.filter((e) => e.type === 'loop');
+      expect(loopEdges.length).toBeGreaterThan(0);
+    }
+  );
+});
