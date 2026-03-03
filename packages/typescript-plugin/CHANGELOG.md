@@ -1,5 +1,11 @@
 # @workflow/typescript-plugin
 
+## 4.0.1-beta.5
+
+### Patch Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
 ## 4.0.1-beta.4
 
 ### Patch Changes

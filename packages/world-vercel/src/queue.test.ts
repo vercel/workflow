@@ -17,10 +17,12 @@ const {
 
   const mockSend = vi.fn();
   const mockHandleCallback = vi.fn();
-  const MockQueueClient = vi.fn().mockImplementation(() => ({
-    send: mockSend,
-    handleCallback: mockHandleCallback,
-  }));
+  const MockQueueClient = vi.fn().mockImplementation(function () {
+    return {
+      send: mockSend,
+      handleCallback: mockHandleCallback,
+    };
+  });
 
   return {
     mockSend,

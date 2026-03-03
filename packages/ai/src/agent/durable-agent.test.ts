@@ -133,8 +133,8 @@ describe('DurableAgent', () => {
       });
     });
 
-    it('should re-throw non-FatalError errors for retry', async () => {
-      const errorMessage = 'This is a retryable error';
+    it('should convert non-FatalError to tool error result', async () => {
+      const errorMessage = 'This is a generic error';
       const tools: ToolSet = {
         testTool: {
           description: 'A test tool',
@@ -162,31 +162,49 @@ describe('DurableAgent', () => {
         { role: 'user', content: [{ type: 'text', text: 'test' }] },
       ];
       const mockIterator = {
-        next: vi.fn().mockResolvedValueOnce({
-          done: false,
-          value: {
-            toolCalls: [
-              {
-                toolCallId: 'test-call-id',
-                toolName: 'testTool',
-                input: '{}',
-              } as LanguageModelV2ToolCall,
-            ],
-            messages: mockMessages,
-          },
-        }),
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
         mockIterator as unknown as MockIterator
       );
 
-      // Execute should throw because non-FatalErrors are re-thrown
+      // Non-FatalError should be converted to error-text, not re-thrown
       await expect(
         agent.stream({
           messages: [{ role: 'user', content: 'test' }],
           writable: mockWritable,
         })
-      ).rejects.toThrow(errorMessage);
+      ).resolves.not.toThrow();
+
+      // Verify the error was converted to a tool error result
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'test-call-id',
+        toolName: 'testTool',
+        output: {
+          type: 'error-text',
+          value: errorMessage,
+        },
+      });
     });
 
     it('should successfully execute tools that return normally', async () => {
@@ -1375,14 +1393,14 @@ describe('DurableAgent', () => {
       );
     });
 
-    it('should call onError when tool execution fails', async () => {
-      const toolError = new Error('Tool execution failed');
+    it('should convert tool execution error to error-text result instead of failing stream', async () => {
+      const errorMessage = 'Tool execution failed';
       const tools: ToolSet = {
         failingTool: {
           description: 'A tool that fails',
           inputSchema: z.object({}),
           execute: async () => {
-            throw toolError;
+            throw new Error(errorMessage);
           },
         },
       };
@@ -1426,17 +1444,28 @@ describe('DurableAgent', () => {
         mockIterator as unknown as MockIterator
       );
 
-      const onError = vi.fn();
-
+      // Tool errors should be handled gracefully, not reject the stream
       await expect(
         agent.stream({
           messages: [{ role: 'user', content: 'test' }],
           writable: mockWritable,
-          onError,
         })
-      ).rejects.toThrow('Tool execution failed');
+      ).resolves.not.toThrow();
 
-      expect(onError).toHaveBeenCalledWith({ error: toolError });
+      // Verify the error was sent back as an error-text tool result
+      expect(mockIterator.next).toHaveBeenCalledTimes(2);
+      const toolResultsCall = mockIterator.next.mock.calls[1][0];
+      expect(toolResultsCall).toBeDefined();
+      expect(toolResultsCall).toHaveLength(1);
+      expect(toolResultsCall[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'test-call-id',
+        toolName: 'failingTool',
+        output: {
+          type: 'error-text',
+          value: errorMessage,
+        },
+      });
     });
 
     it('should call onFinish with steps and messages when streaming completes', async () => {

@@ -511,6 +511,21 @@ export function getImportPath(
     // Find the package.json for this file
     const pkg = findPackageJson(filePath);
     if (pkg) {
+      const isDirectProjectDependency = getProjectDependencies(projectRoot).has(
+        pkg.name
+      );
+      const canUsePackageSpecifier = inWorkspace || isDirectProjectDependency;
+
+      // For transitive node_modules dependencies under strict package managers
+      // (for example, pnpm), importing by package name can fail. Use a direct
+      // file path import in those cases.
+      if (!canUsePackageSpecifier) {
+        return {
+          importPath: toRelativeImportPath(filePath, projectRoot),
+          isPackage: false,
+        };
+      }
+
       // Prefer a package subpath import when this file maps to an export.
       // This preserves the exact module being bundled while still respecting
       // package export conditions.

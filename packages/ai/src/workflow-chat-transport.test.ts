@@ -206,7 +206,117 @@ describe('WorkflowChatTransport', () => {
       expect(mockFetch).toHaveBeenCalledWith('/custom/reconnect?startIndex=0', {
         headers: { 'X-Custom': 'header' },
         credentials: undefined,
+        signal: undefined,
       });
+    });
+  });
+
+  describe('abort signal propagation', () => {
+    it('should pass abortSignal to reconnect fetch calls', async () => {
+      const controller = new AbortController();
+
+      transport = new WorkflowChatTransport({ fetch: mockFetch });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        body: new ReadableStream({
+          start(streamController) {
+            streamController.enqueue(
+              new TextEncoder().encode('data: {"type":"finish"}\n\n')
+            );
+            streamController.close();
+          },
+        }),
+      });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+        abortSignal: controller.signal,
+      });
+
+      const reader = stream!.getReader();
+      try {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/chat/test-chat/stream?startIndex=0',
+        {
+          headers: undefined,
+          credentials: undefined,
+          signal: controller.signal,
+        }
+      );
+    });
+
+    it('should reuse abortSignal for reconnect fetch after sendMessages interruption', async () => {
+      const controller = new AbortController();
+
+      transport = new WorkflowChatTransport({ fetch: mockFetch });
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers({
+            'x-workflow-run-id': 'test-workflow-reconnect',
+          }),
+          body: new ReadableStream({
+            start(streamController) {
+              streamController.close();
+            },
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          body: new ReadableStream({
+            start(streamController) {
+              streamController.enqueue(
+                new TextEncoder().encode('data: {"type":"finish"}\n\n')
+              );
+              streamController.close();
+            },
+          }),
+        });
+
+      const stream = await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'test-chat',
+        messages: [],
+        abortSignal: controller.signal,
+      });
+
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenNthCalledWith(1, '/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [] }),
+        headers: undefined,
+        credentials: undefined,
+        signal: controller.signal,
+      });
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/chat/test-workflow-reconnect/stream?startIndex=0',
+        {
+          headers: undefined,
+          credentials: undefined,
+          signal: controller.signal,
+        }
+      );
     });
   });
 

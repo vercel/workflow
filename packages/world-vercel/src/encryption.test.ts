@@ -1,4 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const { mockFetch } = vi.hoisted(() => ({
+  mockFetch: vi.fn(),
+}));
+vi.stubGlobal('fetch', mockFetch);
+vi.mock('./http-client.js', () => ({
+  getDispatcher: vi.fn().mockReturnValue({}),
+}));
+
 import { deriveRunKey, fetchRunKey } from './encryption.js';
 
 const testProjectId = 'prj_test123';
@@ -90,10 +99,11 @@ describe('fetchRunKey', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    mockFetch.mockReset();
   });
 
   it('should return undefined when API returns null key', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+    mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ key: null }), { status: 200 })
     );
 
@@ -106,7 +116,7 @@ describe('fetchRunKey', () => {
 
   it('should return a Uint8Array when API returns a valid key', async () => {
     const keyBase64 = Buffer.from(testDeploymentKey).toString('base64');
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+    mockFetch.mockResolvedValueOnce(
       new Response(JSON.stringify({ key: keyBase64 }), { status: 200 })
     );
 
@@ -119,9 +129,7 @@ describe('fetchRunKey', () => {
   });
 
   it('should throw on non-ok response', async () => {
-    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
-      new Response('Not found', { status: 404 })
-    );
+    mockFetch.mockResolvedValueOnce(new Response('Not found', { status: 404 }));
 
     await expect(
       fetchRunKey(deploymentId, testProjectId, testRunId, {

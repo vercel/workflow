@@ -3,9 +3,26 @@ import path, { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const defaultCliTimeoutMs = Number(
+  process.env.WORKFLOW_E2E_CLI_TIMEOUT_MS ?? '20000'
+);
+
+function splitArgs(raw: string): string[] {
+  const value = raw.trim();
+  if (!value) return [];
+  return value.split(/\s+/);
+}
 
 export function getWorkbenchAppPath(overrideAppName?: string): string {
+  const explicitWorkbenchPath = process.env.WORKBENCH_APP_PATH;
   const appName = process.env.APP_NAME ?? overrideAppName;
+  if (
+    explicitWorkbenchPath &&
+    (!overrideAppName || !appName || overrideAppName === appName)
+  ) {
+    return path.resolve(explicitWorkbenchPath);
+  }
+
   if (!appName) {
     throw new Error('`APP_NAME` environment variable is not set');
   }
@@ -106,7 +123,7 @@ const awaitCommand = async (
   command: string,
   args: string[],
   cwd: string,
-  timeout = 5_000,
+  timeout = defaultCliTimeoutMs,
   envOverrides?: Record<string, string | undefined>
 ) => {
   console.log(`[Debug]: Executing ${command} ${args.join(' ')}`);
@@ -115,7 +132,6 @@ const awaitCommand = async (
   return await new Promise<{ stdout: string; stderr: string }>(
     (resolve, reject) => {
       const child = spawn(command, args, {
-        shell: true,
         timeout,
         cwd,
         env: {
@@ -172,12 +188,17 @@ export function getProtectionBypassHeaders(): HeadersInit {
 
 export const cliInspectJson = async (args: string) => {
   const cliAppPath = getWorkbenchAppPath();
-  const cliArgs = getCliArgs();
-
-  const command = `node ./node_modules/workflow/bin/run.js inspect`;
+  const cliArgs = splitArgs(getCliArgs());
+  const inspectArgs = splitArgs(args);
   const result = await awaitCommand(
-    command,
-    ['--json', args, cliArgs],
+    'node',
+    [
+      './node_modules/workflow/bin/run.js',
+      'inspect',
+      '--json',
+      ...inspectArgs,
+      ...cliArgs,
+    ],
     cliAppPath
   );
   try {
@@ -198,12 +219,10 @@ export const cliInspectJson = async (args: string) => {
  */
 export const cliCancel = async (runId: string) => {
   const cliAppPath = getWorkbenchAppPath();
-  const cliArgs = getCliArgs();
-
-  const command = `node ./node_modules/workflow/bin/run.js cancel`;
+  const cliArgs = splitArgs(getCliArgs());
   const result = await awaitCommand(
-    command,
-    [runId, cliArgs],
+    'node',
+    ['./node_modules/workflow/bin/run.js', 'cancel', runId, ...cliArgs],
     cliAppPath,
     10_000
   );
@@ -219,10 +238,9 @@ export const cliHealthJson = async (options?: {
   timeout?: number;
 }) => {
   const cliAppPath = getWorkbenchAppPath();
-  const cliArgs = getCliArgs();
+  const cliArgs = splitArgs(getCliArgs());
 
-  const command = `node ./node_modules/workflow/bin/run.js health`;
-  const args = ['--json'];
+  const args = ['./node_modules/workflow/bin/run.js', 'health', '--json'];
 
   if (options?.endpoint) {
     args.push(`--endpoint=${options.endpoint}`);
@@ -230,9 +248,7 @@ export const cliHealthJson = async (options?: {
   if (options?.timeout) {
     args.push(`--timeout=${options.timeout}`);
   }
-  if (cliArgs) {
-    args.push(cliArgs);
-  }
+  args.push(...cliArgs);
 
   // Build environment overrides for the CLI process
   const envOverrides: Record<string, string> = {};
@@ -244,7 +260,7 @@ export const cliHealthJson = async (options?: {
   }
 
   const result = await awaitCommand(
-    command,
+    'node',
     args,
     cliAppPath,
     45_000,

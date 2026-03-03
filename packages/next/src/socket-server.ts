@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer, type Server, type Socket } from 'node:net';
+import { dirname, join } from 'node:path';
 
 /**
  * Magic preamble that must prefix all messages to authenticate them as workflow messages.
@@ -41,6 +43,7 @@ export interface SocketServerConfig {
     hasSerde: boolean
   ) => void;
   onTriggerBuild: () => void;
+  socketInfoFilePath?: string;
 }
 
 /**
@@ -49,6 +52,10 @@ export interface SocketServerConfig {
 export interface SocketIO {
   emit(event: 'build-complete'): void;
   getAuthToken(): string;
+}
+
+function getDefaultSocketInfoFilePath(): string {
+  return join(process.cwd(), '.next', 'cache', 'workflow-socket.json');
 }
 
 /**
@@ -170,14 +177,38 @@ export async function createSocketServer(
   });
 
   // Listen on random available port (localhost only)
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
       const address = server.address();
       if (address && typeof address === 'object') {
-        process.env.WORKFLOW_SOCKET_PORT = String(address.port);
-        process.env.WORKFLOW_SOCKET_AUTH = authToken;
+        const socketInfoFilePath =
+          config.socketInfoFilePath || getDefaultSocketInfoFilePath();
+        void (async () => {
+          try {
+            await mkdir(dirname(socketInfoFilePath), { recursive: true });
+            await writeFile(
+              socketInfoFilePath,
+              JSON.stringify(
+                {
+                  port: address.port,
+                  authToken,
+                },
+                null,
+                2
+              )
+            );
+            process.env.WORKFLOW_SOCKET_INFO_PATH = socketInfoFilePath;
+            process.env.WORKFLOW_SOCKET_PORT = String(address.port);
+            process.env.WORKFLOW_SOCKET_AUTH = authToken;
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        })();
+        return;
       }
-      resolve();
+      reject(new Error('Failed to obtain workflow socket server address'));
     });
   });
 

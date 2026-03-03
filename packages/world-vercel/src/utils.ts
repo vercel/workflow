@@ -5,6 +5,7 @@ import { WorkflowAPIError } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
+import { getDispatcher } from './http-client.js';
 import {
   ErrorType,
   getSpanKind,
@@ -214,6 +215,7 @@ export async function makeRequest<T>({
   config = {},
   schema,
   data,
+  onResponse,
 }: {
   endpoint: string;
   options?: Omit<RequestInit, 'body'>;
@@ -221,6 +223,8 @@ export async function makeRequest<T>({
   schema: z.ZodSchema<T>;
   /** Request body data - will be CBOR encoded */
   data?: unknown;
+  /** Optional callback invoked with the raw Response before body consumption. Use to read response headers. */
+  onResponse?: (response: Response) => void;
 }): Promise<T> {
   const method = options.method || 'GET';
   const { baseUrl, headers } = await getHttpConfig(config);
@@ -276,7 +280,10 @@ export async function makeRequest<T>({
         body,
         headers,
       });
-      const response = await fetch(request);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+      const response = await fetch(request, {
+        dispatcher: getDispatcher(),
+      } as any);
 
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
@@ -297,6 +304,8 @@ export async function makeRequest<T>({
         }
 
         // Parse Retry-After header for 429 responses (value is in seconds)
+        // Note: RetryAgent handles most 429 retries automatically, but this
+        // catches the case where retries are exhausted.
         let retryAfter: number | undefined;
         if (response.status === 429) {
           const retryAfterHeader = response.headers.get('Retry-After');
@@ -320,6 +329,9 @@ export async function makeRequest<T>({
         span?.recordException?.(error);
         throw error;
       }
+
+      // Expose response headers to caller before consuming the body
+      onResponse?.(response);
 
       // Parse the response body (CBOR or JSON) with tracing
       let parseResult: ParseResult;
@@ -347,7 +359,7 @@ export async function makeRequest<T>({
         const validationResult = schema.safeParse(parseResult.data);
         if (!validationResult.success) {
           throw new WorkflowAPIError(
-            `Schema validation failed for ${request.method} ${endpoint}:\n\n${validationResult.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
+            `Schema validation failed for ${method} ${endpoint}:\n\n${validationResult.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
             { url, cause: validationResult.error }
           );
         }

@@ -23,7 +23,6 @@ import {
   type UIMessageChunk,
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
-import { FatalError } from 'workflow';
 import { streamTextIterator } from './stream-text-iterator.js';
 import type { CompatibleLanguageModel } from './types.js';
 
@@ -1089,6 +1088,23 @@ async function convertChunksToUIMessages(
   return messages;
 }
 
+// Matches AI SDK's getErrorMessage from @ai-sdk/provider-utils
+function getErrorMessage(error: unknown): string {
+  if (error == null) {
+    return 'unknown error';
+  }
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return JSON.stringify(error);
+}
+
 async function executeTool(
   toolCall: LanguageModelV2ToolCall,
   tools: ToolSet,
@@ -1184,20 +1200,17 @@ async function executeTool(
       output,
     };
   } catch (error) {
-    // If it's a FatalError, convert it to a tool error result that gets sent back to the LLM
-    // This mimics AI SDK behavior where tool call failures are propagated back to the model
-    if (FatalError.is(error)) {
-      return {
-        type: 'tool-result',
-        toolCallId: toolCall.toolCallId,
-        toolName: toolCall.toolName,
-        output: {
-          type: 'error-text',
-          value: error.message,
-        },
-      };
-    }
-    // This should technically never happen, since any error that's not FatalError would be caught in the step boundary and re-try the step
-    throw error;
+    // Convert tool errors to error-text results sent back to the model,
+    // allowing the agent to recover rather than killing the entire stream.
+    // This aligns with AI SDK's streamText behavior for individual tool failures.
+    return {
+      type: 'tool-result',
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      output: {
+        type: 'error-text',
+        value: getErrorMessage(error),
+      },
+    };
   }
 }

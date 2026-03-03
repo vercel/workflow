@@ -97,6 +97,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
           defaultRetriesLeft--;
 
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
           const response = await fetch(
             `${baseUrl}/.well-known/workflow/v1/${pathname}`,
             {
@@ -111,7 +112,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                 'x-vqs-message-attempt': String(attempt + 1),
               },
               body,
-            }
+            } as any
           );
 
           if (response.ok) {

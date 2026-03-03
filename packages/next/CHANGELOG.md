@@ -1,5 +1,25 @@
 # @workflow/next
 
+## 4.0.1-beta.58
+
+### Patch Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- Updated dependencies [[`6f2cbcd`](https://github.com/vercel/workflow/commit/6f2cbcda9df55809f2dab15a05b0b72a78095439), [`02681dc`](https://github.com/vercel/workflow/commit/02681dce4a504ff236c81a1ee976d2b04d1a5774), [`028a828`](https://github.com/vercel/workflow/commit/028a828de113f8b07f9bb70d91f75e97162ab37d), [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - @workflow/core@4.1.0-beta.62
+  - @workflow/builders@4.0.1-beta.53
+
+## 4.0.1-beta.57
+
+### Patch Changes
+
+- [#1192](https://github.com/vercel/workflow/pull/1192) [`339c343`](https://github.com/vercel/workflow/commit/339c34392290d4a7e2cfa93bbd8799aac2852326) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix loader dependency tracking to avoid package.json resolution failures.
+
+- Updated dependencies [[`f5ea16f`](https://github.com/vercel/workflow/commit/f5ea16fbf5ba046e0e7a6e7ef95d6305abfd1768), [`70223a9`](https://github.com/vercel/workflow/commit/70223a9091494ba1db56784e29e5bc92c78a89e0), [`d99ca9c`](https://github.com/vercel/workflow/commit/d99ca9cfed4fafd43853f89f8a4939ed3d240e20)]:
+  - @workflow/core@4.1.0-beta.61
+  - @workflow/builders@4.0.1-beta.52
+
 ## 4.0.1-beta.56
 
 ### Patch Changes

@@ -47,7 +47,7 @@
       "type": "official",
       "package": "@workflow/world-vercel",
       "name": "Vercel",
-      "description": "Fully-managed world for Vercel deployments. Zero configuration with automatic storage, queuing, and authentication.",
+      "description": "Fully-managed world for Vercel deployments. Zero config, infinitely scalable, built-in authentication.",
       "docs": "/docs/deploying/world/vercel-world",
       "env": {
         "WORKFLOW_VERCEL_ENV": "production"

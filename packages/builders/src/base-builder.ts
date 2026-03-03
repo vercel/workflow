@@ -97,27 +97,38 @@ export abstract class BaseBuilder {
    * and dependency directories.
    */
   protected async getInputFiles(): Promise<string[]> {
-    const patterns = this.config.dirs.map((dir) => {
-      const resolvedDir = resolve(this.config.workingDir, dir);
-      // Normalize path separators to forward slashes for glob compatibility
-      const normalizedDir = resolvedDir.replace(/\\/g, '/');
-      return `${normalizedDir}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`;
-    });
+    const ignore = [
+      '**/node_modules/**',
+      '**/.git/**',
+      '**/.next/**',
+      '**/.nuxt/**',
+      '**/.vercel/**',
+      '**/.workflow-data/**',
+      '**/.well-known/workflow/**',
+      '**/.svelte-kit/**',
+      '**/.turbo/**',
+      '**/.cache/**',
+      '**/.yarn/**',
+      '**/.pnpm-store/**',
+    ];
 
-    const result = await glob(patterns, {
-      ignore: [
-        '**/node_modules/**',
-        '**/.git/**',
-        '**/.next/**',
-        '**/.vercel/**',
-        '**/.workflow-data/**',
-        '**/.well-known/workflow/**',
-        '**/.svelte-kit/**',
-      ],
-      absolute: true,
-    });
+    // Use relative patterns with `cwd` per directory so that `dot: true`
+    // applies consistently to both the search pattern *and* the ignore
+    // patterns. When absolute patterns are used with tinyglobby, the `**`
+    // in ignore patterns does not match dot-prefixed path segments.
+    const results = await Promise.all(
+      this.config.dirs.map((dir) => {
+        const cwd = resolve(this.config.workingDir, dir);
+        return glob(['**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'], {
+          cwd,
+          ignore,
+          absolute: true,
+          dot: true,
+        });
+      })
+    );
 
-    return result;
+    return results.flat();
   }
 
   /**

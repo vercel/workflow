@@ -136,7 +136,8 @@ export default class Inspect extends BaseCommand {
         this.logError(
           `Unknown resource "${args.resource}": must be one of: run(s), step(s), stream(s), event(s), hook(s), sleep(s)`
         );
-        process.exit(1);
+        process.exitCode = 1;
+        return;
       }
 
       const id = args.id;
@@ -149,7 +150,7 @@ export default class Inspect extends BaseCommand {
       if (isWebMode) {
         const actualResource = resource === 'web' ? 'run' : resource;
         await launchWebUI(actualResource, id, flags, this.config.version);
-        process.exit(0);
+        return;
       }
 
       // For non-web commands, we need a valid world
@@ -168,7 +169,7 @@ export default class Inspect extends BaseCommand {
         } else {
           await listRuns(world, options);
         }
-        process.exit(0);
+        return;
       }
 
       if (resource === 'step') {
@@ -177,7 +178,7 @@ export default class Inspect extends BaseCommand {
         } else {
           await listSteps(world, options);
         }
-        process.exit(0);
+        return;
       }
 
       if (resource === 'stream') {
@@ -186,7 +187,7 @@ export default class Inspect extends BaseCommand {
         } else {
           await listStreamsByRunId(world, options);
         }
-        process.exit(0);
+        return;
       }
 
       if (resource === 'event') {
@@ -194,10 +195,11 @@ export default class Inspect extends BaseCommand {
           this.logError(
             'Event-ID is not supported for events. Filter by run-id or step-id instead. Usage: `workflow inspect events --runId=<id>`'
           );
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         await listEvents(world, options);
-        process.exit(0);
+        return;
       }
 
       if (resource === 'hook') {
@@ -206,7 +208,7 @@ export default class Inspect extends BaseCommand {
         } else {
           await listHooks(world, options);
         }
-        process.exit(0);
+        return;
       }
 
       if (resource === 'sleep') {
@@ -214,22 +216,25 @@ export default class Inspect extends BaseCommand {
           this.logError(
             'Sleep-ID is not supported for sleeps. Filter by run-id instead. Usage: `workflow inspect sleeps --runId=<id>`'
           );
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         if (!flags.runId) {
           this.logError(
             'run-id is required for listing sleeps. Usage: `workflow inspect sleeps --runId=<id>`'
           );
-          process.exit(1);
+          process.exitCode = 1;
+          return;
         }
         await listSleeps(world, options);
-        process.exit(0);
+        return;
       }
 
       this.logError(
         `Unknown resource: ${resource}. Usage: ${Inspect.examples.join('\n')}`
       );
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     } catch (error) {
       // Let the catch handler deal with it, but ensure we exit
       throw error;

@@ -208,4 +208,56 @@ describe('getImportPath', () => {
       isPackage: true,
     });
   });
+
+  it('uses package subpath import for direct node_modules dependencies', () => {
+    const projectRoot = join(testRoot, 'apps/chat');
+    const packageDir = join(testRoot, 'apps/chat/node_modules/@workflow/core');
+    const filePath = join(packageDir, 'dist/serialization.js');
+
+    writeJson(join(projectRoot, 'package.json'), {
+      name: 'chat',
+      dependencies: { '@workflow/core': '1.0.0' },
+    });
+
+    writeJson(join(packageDir, 'package.json'), {
+      name: '@workflow/core',
+      version: '1.0.0',
+      exports: {
+        './serialization': './dist/serialization.js',
+      },
+    });
+
+    writeFile(filePath, `'use workflow';\n`);
+
+    expect(getImportPath(filePath, projectRoot)).toEqual({
+      importPath: '@workflow/core/serialization',
+      isPackage: true,
+    });
+  });
+
+  it('falls back to relative import for transitive node_modules dependencies', () => {
+    const projectRoot = join(testRoot, 'apps/chat');
+    const packageDir = join(testRoot, 'apps/chat/node_modules/@workflow/core');
+    const filePath = join(packageDir, 'dist/serialization.js');
+
+    writeJson(join(projectRoot, 'package.json'), {
+      name: 'chat',
+      dependencies: { workflow: '1.0.0' },
+    });
+
+    writeJson(join(packageDir, 'package.json'), {
+      name: '@workflow/core',
+      version: '1.0.0',
+      exports: {
+        './serialization': './dist/serialization.js',
+      },
+    });
+
+    writeFile(filePath, `'use workflow';\n`);
+
+    expect(getImportPath(filePath, projectRoot)).toEqual({
+      importPath: './node_modules/@workflow/core/dist/serialization.js',
+      isPackage: false,
+    });
+  });
 });

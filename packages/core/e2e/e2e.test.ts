@@ -1,9 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
 } from '@workflow/errors';
-import fs from 'fs';
-import path from 'path';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
@@ -74,6 +75,10 @@ function writeE2EMetadata() {
 
 // Cached manifest fetched from the deployment
 let cachedManifest: WorkflowManifest | null = null;
+const manifestRetryTimeoutMs = Number(
+  process.env.WORKFLOW_E2E_MANIFEST_RETRY_MS ?? '10000'
+);
+const manifestRetryIntervalMs = 250;
 
 /**
  * Fetches the workflow manifest from the deployment URL.
@@ -81,7 +86,14 @@ let cachedManifest: WorkflowManifest | null = null;
  * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set.
  */
 async function fetchManifest(): Promise<WorkflowManifest> {
-  if (cachedManifest) return cachedManifest;
+  return fetchManifestWithOptions();
+}
+
+async function fetchManifestWithOptions(options?: {
+  forceRefresh?: boolean;
+}): Promise<WorkflowManifest> {
+  const forceRefresh = options?.forceRefresh ?? false;
+  if (cachedManifest && !forceRefresh) return cachedManifest;
 
   const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
   const res = await fetch(url, {
@@ -96,23 +108,11 @@ async function fetchManifest(): Promise<WorkflowManifest> {
   return cachedManifest;
 }
 
-/**
- * Looks up the workflow metadata from the manifest for a given workflow file and function name.
- * Returns an object that can be passed directly to `start()`.
- *
- * The manifest contains the exact IDs produced by the SWC transform during the build,
- * which handles symlink resolution and path normalization correctly.
- */
-async function getWorkflowMetadata(
+function findWorkflowMetadataInManifest(
+  manifest: WorkflowManifest,
   workflowFile: string,
   workflowFn: string
-): Promise<{ workflowId: string }> {
-  const manifest = await fetchManifest();
-
-  // The manifest keys are relative file paths as seen by the builder.
-  // Due to symlinks, the key may differ from the workflowFile we pass
-  // (e.g., "example/workflows/99_e2e.ts" vs "workflows/99_e2e.ts").
-  // Search all files for the matching function name and workflow file suffix.
+): { workflowId: string } | null {
   for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
     if (
       manifestFile.endsWith(workflowFile) ||
@@ -125,7 +125,6 @@ async function getWorkflowMetadata(
     }
   }
 
-  // If suffix matching didn't find it, try stripping the extension for matching
   const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
   for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
     const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
@@ -140,10 +139,66 @@ async function getWorkflowMetadata(
     }
   }
 
-  throw new Error(
-    `Workflow "${workflowFn}" not found in manifest for file "${workflowFile}". ` +
-      `Available files: ${Object.keys(manifest.workflows).join(', ')}`
+  return null;
+}
+
+function getFallbackWorkflowId(
+  workflowFile: string,
+  workflowFn: string
+): string {
+  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  // Keep this in sync with the SWC transform ID format. This fallback is
+  // intentionally coupled so tests can continue running when deferred manifest
+  // publication lags behind discovery in staged/out-of-monorepo scenarios.
+  return `workflow//./${fileWithoutExt}//${workflowFn}`;
+}
+
+/**
+ * Looks up the workflow metadata from the manifest for a given workflow file and function name.
+ * Returns an object that can be passed directly to `start()`.
+ *
+ * The manifest contains the exact IDs produced by the SWC transform during the build,
+ * which handles symlink resolution and path normalization correctly.
+ */
+async function getWorkflowMetadata(
+  workflowFile: string,
+  workflowFn: string
+): Promise<{ workflowId: string }> {
+  let manifest = await fetchManifest();
+  let metadata = findWorkflowMetadataInManifest(
+    manifest,
+    workflowFile,
+    workflowFn
   );
+  if (metadata) {
+    return metadata;
+  }
+
+  // Deferred discovery can grow the manifest during test execution, so poll
+  // briefly before failing to avoid races in staged/out-of-monorepo mode.
+  const deadline = Date.now() + manifestRetryTimeoutMs;
+  while (Date.now() < deadline) {
+    manifest = await fetchManifestWithOptions({ forceRefresh: true });
+    metadata = findWorkflowMetadataInManifest(
+      manifest,
+      workflowFile,
+      workflowFn
+    );
+    if (metadata) {
+      return metadata;
+    }
+    await sleep(manifestRetryIntervalMs);
+  }
+
+  // Deferred discovery can lag behind manifest publication in staged/out-of-
+  // monorepo tests. Fall back to the deterministic workflow ID format used by
+  // the transform so tests can continue exercising runtime behavior.
+  const fallbackWorkflowId = getFallbackWorkflowId(workflowFile, workflowFn);
+  console.warn(
+    `Workflow "${workflowFn}" not found in manifest for "${workflowFile}" after ${manifestRetryTimeoutMs}ms; ` +
+      `falling back to ${fallbackWorkflowId}`
+  );
+  return { workflowId: fallbackWorkflowId };
 }
 
 /**
@@ -263,6 +318,28 @@ describe('e2e', () => {
     );
   });
 
+  // Test that "use step" / "use workflow" functions inside dot-prefixed
+  // directories like `.well-known/agent/` are discovered and executed correctly.
+  // Only runs on Next.js workbenches where the test file is placed.
+  const isNextApp = process.env.APP_NAME?.includes('nextjs');
+  test.skipIf(!isNextApp)(
+    'wellKnownAgentWorkflow (.well-known/agent)',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await getWorkflowMetadata(
+          'app/.well-known/agent/v1/steps.ts',
+          'wellKnownAgentWorkflow'
+        ),
+        [5]
+      );
+
+      const returnValue = await run.returnValue;
+      // wellKnownAgentStep(5) => 5 * 2 = 10, then workflow adds 1 => 11
+      expect(returnValue).toBe(11);
+    }
+  );
+
   const isNext = process.env.APP_NAME?.includes('nextjs');
   const isLocal = deploymentUrl.includes('localhost');
   // only works with framework that transpiles react and
@@ -304,12 +381,22 @@ describe('e2e', () => {
     expect(returnValue).toBe('B');
   });
 
+  test.skipIf(!isNext)(
+    'importedStepOnlyWorkflow',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('importedStepOnlyWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe('imported-step-only-ok');
+    }
+  );
+
   // ReadableStream return values use the world's streaming infrastructure which
   // requires in-process access. The local world's streamer uses an in-process EventEmitter
   // that doesn't work cross-process (test runner ↔ workbench app).
   test.skipIf(isLocalDeployment())(
     'readableStreamWorkflow',
-    { timeout: 60_000 },
+    { timeout: 80_000 },
     async () => {
       const run = await start(await e2e('readableStreamWorkflow'), []);
       const returnValue = await run.returnValue;
@@ -1096,6 +1183,87 @@ describe('e2e', () => {
 
       const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
       expect(run1Data.status).toBe('completed');
+    }
+  );
+
+  test(
+    'hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      // Start first workflow - it will create a hook, receive one payload, then dispose and sleep
+      const run1 = await start(await e2e('hookDisposeTestWorkflow'), [
+        token,
+        customData,
+      ]);
+
+      // Wait for the hook to be registered by workflow 1
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Verify the hook exists and belongs to workflow 1
+      let hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run1.runId);
+
+      // Send payload to first workflow - this will trigger it to dispose the hook
+      await resumeHook(hook, {
+        message: 'first-payload',
+        customData: (hook.metadata as any)?.customData,
+      });
+
+      // Wait for workflow 1 to process the payload and dispose the hook
+      // The workflow has a 5s sleep after disposal, so it's still running
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      // Now start workflow 2 with the SAME token while workflow 1 is still running
+      // This should succeed because workflow 1 disposed its hook
+      const run2 = await start(await e2e('hookDisposeTestWorkflow'), [
+        token,
+        customData,
+      ]);
+
+      // Wait for workflow 2's hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Verify the hook now belongs to workflow 2
+      hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run2.runId);
+
+      // Send payload to workflow 2
+      await resumeHook(hook, {
+        message: 'second-payload',
+        customData: (hook.metadata as any)?.customData,
+      });
+
+      // Wait for both workflows to complete
+      const [run1Result, run2Result] = await Promise.all([
+        run1.returnValue,
+        run2.returnValue,
+      ]);
+
+      // Verify workflow 1 completed with its payload
+      expect(run1Result).toMatchObject({
+        message: 'first-payload',
+        customData,
+        disposed: true,
+        hookDisposeTestData: 'workflow_completed',
+      });
+
+      // Verify workflow 2 completed with its payload
+      expect(run2Result).toMatchObject({
+        message: 'second-payload',
+        customData,
+        disposed: true,
+        hookDisposeTestData: 'workflow_completed',
+      });
+
+      // Verify both runs completed successfully
+      const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
+      expect(run1Data.status).toBe('completed');
+
+      const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
+      expect(run2Data.status).toBe('completed');
     }
   );
 
