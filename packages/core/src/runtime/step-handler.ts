@@ -356,6 +356,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   },
                   ops,
                   closureVars: hydratedInput.closureVars,
+                  encryptionKey,
                 },
                 () => stepFn.apply(thisVal, args)
               );

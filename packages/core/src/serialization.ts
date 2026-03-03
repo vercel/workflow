@@ -770,7 +770,8 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
 export function getExternalReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string
+  runId: string,
+  cryptoKey?: CryptoKey
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -794,7 +795,10 @@ export function getExternalReducers(
         ops.push(
           value
             .pipeThrough(
-              getSerializeStream(getExternalReducers(global, ops, runId))
+              getSerializeStream(
+                getExternalReducers(global, ops, runId, cryptoKey),
+                cryptoKey
+              )
             )
             .pipeTo(writable)
         );
@@ -877,7 +881,8 @@ export function getWorkflowReducers(
 function getStepReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string
+  runId: string,
+  cryptoKey?: CryptoKey
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -908,7 +913,10 @@ function getStepReducers(
           ops.push(
             value
               .pipeThrough(
-                getSerializeStream(getStepReducers(global, ops, runId))
+                getSerializeStream(
+                  getStepReducers(global, ops, runId, cryptoKey),
+                  cryptoKey
+                )
               )
               .pipeTo(writable)
           );
@@ -930,7 +938,10 @@ function getStepReducers(
         ops.push(
           new WorkflowServerReadableStream(name)
             .pipeThrough(
-              getDeserializeStream(getStepRevivers(global, ops, runId))
+              getDeserializeStream(
+                getStepRevivers(global, ops, runId, cryptoKey),
+                cryptoKey
+              )
             )
             .pipeTo(value)
         );
@@ -1064,7 +1075,8 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
 export function getExternalRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string
+  runId: string,
+  cryptoKey?: CryptoKey
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -1127,7 +1139,8 @@ export function getExternalRevivers(
         return userReadable;
       } else {
         const transform = getDeserializeStream(
-          getExternalRevivers(global, ops, runId)
+          getExternalRevivers(global, ops, runId, cryptoKey),
+          cryptoKey
         );
         const state = createFlushableState();
         ops.push(state.promise);
@@ -1145,7 +1158,8 @@ export function getExternalRevivers(
     },
     WritableStream: (value) => {
       const serialize = getSerializeStream(
-        getExternalReducers(global, ops, runId)
+        getExternalReducers(global, ops, runId, cryptoKey),
+        cryptoKey
       );
       const serverWritable = new WorkflowServerWritableStream(
         value.name,
@@ -1276,7 +1290,8 @@ export function getWorkflowRevivers(
 function getStepRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
-  runId: string
+  runId: string,
+  cryptoKey?: CryptoKey
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -1394,7 +1409,8 @@ function getStepRevivers(
         return userReadable;
       } else {
         const transform = getDeserializeStream(
-          getStepRevivers(global, ops, runId)
+          getStepRevivers(global, ops, runId, cryptoKey),
+          cryptoKey
         );
         const state = createFlushableState();
         ops.push(state.promise);
@@ -1411,7 +1427,10 @@ function getStepRevivers(
       }
     },
     WritableStream: (value) => {
-      const serialize = getSerializeStream(getStepReducers(global, ops, runId));
+      const serialize = getSerializeStream(
+        getStepReducers(global, ops, runId, cryptoKey),
+        cryptoKey
+      );
       const serverWritable = new WorkflowServerWritableStream(
         value.name,
         runId
@@ -1519,7 +1538,7 @@ export async function dehydrateWorkflowArguments(
   v1Compat = false
 ): Promise<Uint8Array | unknown> {
   try {
-    const str = stringify(value, getExternalReducers(global, ops, runId));
+    const str = stringify(value, getExternalReducers(global, ops, runId, key));
     if (v1Compat) {
       return revive(str);
     }
@@ -1650,7 +1669,7 @@ export async function hydrateWorkflowReturnValue(
   // via devalue's unflatten().
   if (!(decrypted instanceof Uint8Array)) {
     return unflatten(decrypted as any[], {
-      ...getExternalRevivers(global, ops, runId),
+      ...getExternalRevivers(global, ops, runId, key),
       ...extraRevivers,
     });
   }
@@ -1660,7 +1679,7 @@ export async function hydrateWorkflowReturnValue(
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
     const obj = parse(str, {
-      ...getExternalRevivers(global, ops, runId),
+      ...getExternalRevivers(global, ops, runId, key),
       ...extraRevivers,
     });
     return obj;
@@ -1737,7 +1756,7 @@ export async function hydrateStepArguments(
   // via devalue's unflatten().
   if (!(decrypted instanceof Uint8Array)) {
     return unflatten(decrypted as any[], {
-      ...getStepRevivers(global, ops, runId),
+      ...getStepRevivers(global, ops, runId, key),
       ...extraRevivers,
     });
   }
@@ -1747,7 +1766,7 @@ export async function hydrateStepArguments(
   if (format === SerializationFormat.DEVALUE_V1) {
     const str = new TextDecoder().decode(payload);
     const obj = parse(str, {
-      ...getStepRevivers(global, ops, runId),
+      ...getStepRevivers(global, ops, runId, key),
       ...extraRevivers,
     });
     return obj;
@@ -1778,7 +1797,7 @@ export async function dehydrateStepReturnValue(
   v1Compat = false
 ): Promise<Uint8Array | unknown> {
   try {
-    const str = stringify(value, getStepReducers(global, ops, runId));
+    const str = stringify(value, getStepReducers(global, ops, runId, key));
     if (v1Compat) {
       return revive(str);
     }
