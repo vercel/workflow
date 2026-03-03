@@ -1,12 +1,13 @@
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
 import { createContext } from './vm/index.js';
+import { createCreateHook } from './workflow/hook.js';
 
 /**
  * These tests verify that when `hydrateStepReturnValue` performs real async
@@ -43,6 +44,10 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
 }
 
 describe('async deserialization ordering', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('should resolve step promises in event log order even when deserialization takes variable time', async () => {
     // Create two step_completed events with real serialized data.
     // We will mock hydrateStepReturnValue to simulate variable async delays.
@@ -82,16 +87,16 @@ describe('async deserialization ordering', () => {
     const serialization = await import('./serialization.js');
     const originalHydrate = serialization.hydrateStepReturnValue;
     let callCount = 0;
-    const hydrateStub = vi
-      .spyOn(serialization, 'hydrateStepReturnValue')
-      .mockImplementation(async (...args) => {
+    vi.spyOn(serialization, 'hydrateStepReturnValue').mockImplementation(
+      async (...args) => {
         callCount++;
         const thisCall = callCount;
         // First call (step A): slow. Second call (step B): fast.
         const delay = thisCall === 1 ? 50 : 5;
         await new Promise((resolve) => setTimeout(resolve, delay));
         return originalHydrate(...args);
-      });
+      }
+    );
 
     const useStep = createUseStep(ctx);
     const stepA = useStep('stepA');
@@ -116,8 +121,6 @@ describe('async deserialization ordering', () => {
     // The critical assertion: promises must resolve in event log order (A before B),
     // even though A's deserialization is slower than B's.
     expect(resolveOrder).toEqual(['A:result_A', 'B:result_B']);
-
-    hydrateStub.mockRestore();
   });
 
   it('should resolve sequential step promises in order with variable async delays', async () => {
@@ -159,9 +162,8 @@ describe('async deserialization ordering', () => {
     const serialization = await import('./serialization.js');
     const originalHydrate = serialization.hydrateStepReturnValue;
     let callCount = 0;
-    const hydrateStub = vi
-      .spyOn(serialization, 'hydrateStepReturnValue')
-      .mockImplementation(async (...args) => {
+    vi.spyOn(serialization, 'hydrateStepReturnValue').mockImplementation(
+      async (...args) => {
         callCount++;
         const thisCall = callCount;
         // Decreasing delays: 60ms, 30ms, 5ms — maximizes chance of out-of-order resolution
@@ -169,7 +171,8 @@ describe('async deserialization ordering', () => {
         const delay = delays[thisCall - 1] ?? 5;
         await new Promise((resolve) => setTimeout(resolve, delay));
         return originalHydrate(...args);
-      });
+      }
+    );
 
     const useStep = createUseStep(ctx);
     const step1 = useStep('step1');
@@ -197,7 +200,85 @@ describe('async deserialization ordering', () => {
 
     // Must resolve in event log order
     expect(resolveOrder).toEqual([10, 20, 30]);
+  });
 
-    hydrateStub.mockRestore();
+  it('should resolve hook payloads in event log order even when deserialization takes variable time', async () => {
+    const ops: Promise<any>[] = [];
+    // Create hook events: hook_received with payloads that have variable deserialization time
+    const payloadA = await dehydrateStepReturnValue(
+      { message: 'first' },
+      'wrun_test',
+      undefined,
+      ops
+    );
+    const payloadB = await dehydrateStepReturnValue(
+      { message: 'second' },
+      'wrun_test',
+      undefined,
+      ops
+    );
+
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_test',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { payload: payloadA },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_test',
+        eventType: 'hook_received',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: { payload: payloadB },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_2',
+        runId: 'wrun_test',
+        eventType: 'hook_disposed',
+        correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        createdAt: new Date(),
+      },
+    ]);
+
+    // Mock hydrateStepReturnValue with variable delays.
+    // First hook payload: slow (50ms). Second hook payload: fast (5ms).
+    const serialization = await import('./serialization.js');
+    const originalHydrate = serialization.hydrateStepReturnValue;
+    let callCount = 0;
+    vi.spyOn(serialization, 'hydrateStepReturnValue').mockImplementation(
+      async (...args) => {
+        callCount++;
+        const thisCall = callCount;
+        const delay = thisCall === 1 ? 50 : 5;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        return originalHydrate(...args);
+      }
+    );
+
+    const createHook = createCreateHook(ctx);
+    const hook = createHook();
+
+    // Await two payloads from the hook
+    const resolveOrder: string[] = [];
+    const promiseA = hook.then((val: any) => {
+      resolveOrder.push(`A:${val.message}`);
+      return val;
+    });
+    const promiseB = hook.then((val: any) => {
+      resolveOrder.push(`B:${val.message}`);
+      return val;
+    });
+
+    const [valA, valB] = await Promise.all([promiseA, promiseB]);
+
+    expect(valA).toEqual({ message: 'first' });
+    expect(valB).toEqual({ message: 'second' });
+
+    // Hook payloads must resolve in event log order
+    expect(resolveOrder).toEqual(['A:first', 'B:second']);
   });
 });
