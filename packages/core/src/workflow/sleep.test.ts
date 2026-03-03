@@ -35,7 +35,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
     onWorkflowError: vi.fn(),
-    deserializationChain: Promise.resolve(),
+    promiseQueue: Promise.resolve(),
   };
   return ctx;
 }

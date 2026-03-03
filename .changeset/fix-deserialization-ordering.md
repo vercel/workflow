@@ -2,4 +2,4 @@
 "@workflow/core": patch
 ---
 
-Ensure async deserialization resolves step/hook promises in event log order
+Route all event-driven promise resolutions through a sequential queue to ensure deterministic ordering
