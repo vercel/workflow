@@ -196,21 +196,24 @@ async function fetchAllEvents(w: LocalWorld, runId: string): Promise<Event[]> {
  * Wait until the workflow has a pending `sleep()` call.
  *
  * Polls the event log for a `wait_created` event without a corresponding
- * `wait_completed` event. Once a pending sleep is detected, you can call
- * `run.wakeUp()` to skip the sleep and resume the workflow immediately.
+ * `wait_completed` event. Returns the correlation ID of the pending sleep,
+ * which can be passed to `run.wakeUp({ correlationIds: [id] })` to target
+ * a specific sleep call.
+ *
+ * @returns The correlation ID of the first pending sleep.
  *
  * @example
  * ```ts
  * const run = await start(myWorkflow, []);
- * await waitForSleep(run);
- * await run.wakeUp();
+ * const sleepId = await waitForSleep(run);
+ * await run.wakeUp({ correlationIds: [sleepId] });
  * const result = await run.returnValue;
  * ```
  */
 export async function waitForSleep(
   run: Run<any>,
   options?: WaitOptions
-): Promise<void> {
+): Promise<string> {
   const w = getWorldOrThrow();
   const timeout = options?.timeout ?? 30_000;
   const pollInterval = options?.pollInterval ?? 100;
@@ -225,12 +228,12 @@ export async function waitForSleep(
         .map((e) => e.correlationId)
     );
 
-    const hasPendingSleep = events.some(
+    const pendingSleep = events.find(
       (e) =>
         e.eventType === 'wait_created' && !waitCompletedIds.has(e.correlationId)
     );
 
-    if (hasPendingSleep) return;
+    if (pendingSleep?.correlationId) return pendingSleep.correlationId;
 
     await new Promise((resolve) => setTimeout(resolve, pollInterval));
   }

@@ -119,7 +119,7 @@ That's it. The plugin automatically:
 
 1. Transforms `"use workflow"` and `"use step"` directives via SWC
 2. Builds workflow and step bundles before tests run
-3. Sets up an in-process workflow runtime in each test worker
+3. Sets up an in-process workflow runtime using a fresh [Local World](/docs/worlds/local) instance in each test worker
 
 <Callout type="info">
 Use a separate Vitest configuration and a distinct file naming convention (e.g. `*.integration.test.ts`) to keep unit tests and integration tests separate. Unit tests run with a standard Vitest config without the workflow plugin, while integration tests use the config above.
@@ -210,9 +210,11 @@ describe("approvalWorkflow", () => {
       reviewer: "alice", // [!code highlight]
     }); // [!code highlight]
 
-    // Wait for the sleep to be reached, then skip it
-    await waitForSleep(run); // [!code highlight]
-    await getRun(run.runId).wakeUp(); // [!code highlight]
+    // Wait for the sleep to be reached, then skip it.
+    // waitForSleep returns the sleep's correlation ID, which can be
+    // passed to wakeUp() to target a specific sleep in the workflow.
+    const sleepId = await waitForSleep(run); // [!code highlight]
+    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlight]
 
     const result = await run.returnValue;
     expect(result).toEqual({
@@ -407,7 +409,7 @@ Integration tests are the right place to verify that your workflows handle error
 - [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows programmatically
 - [`resumeHook()` API Reference](/docs/api-reference/workflow-api/resume-hook) - Resume hooks with data
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Check workflow run status and wake up sleeping runs
-- [`waitForSleep()` and `waitForHook()`](/docs/api-reference/vitest) - Test helpers for polling workflow state
+- [`waitForSleep()` and `waitForHook()`](#testing-hooks-and-waits) - Test helpers for polling workflow state
 - [Vite Integration](/docs/getting-started/vite) - Set up the Vite plugin
 - [Observability](/docs/observability) - Inspect and debug workflow runs with the CLI and Web UI
 - [Server-based testing](/docs/testing/server-based) - Integration testing with a running server

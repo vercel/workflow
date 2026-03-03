@@ -19,3 +19,14 @@ export async function sleepingWorkflow(input: string) {
 
   return result;
 }
+
+export async function multiSleepWorkflow(input: string) {
+  'use workflow';
+
+  const prepared = await prepareData(input);
+  await sleep('1h');
+  const intermediate = await finalizeData(prepared);
+  await sleep('24h');
+
+  return `done:${intermediate}`;
+}

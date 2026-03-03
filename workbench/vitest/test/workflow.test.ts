@@ -3,7 +3,7 @@ import { getRun, resumeHook, start } from 'workflow/api';
 import { waitForHook, waitForSleep } from 'workflow/vitest';
 import { calculateWorkflow } from '../workflows/simple.js';
 import { hookWorkflow } from '../workflows/hooks.js';
-import { sleepingWorkflow } from '../workflows/sleeping.js';
+import { multiSleepWorkflow, sleepingWorkflow } from '../workflows/sleeping.js';
 import { webhookWorkflow } from '../workflows/webhook.js';
 
 describe('simple workflow', () => {
@@ -27,11 +27,28 @@ describe('sleeping workflow', () => {
   it('should complete after waking up from sleep', async () => {
     const run = await start(sleepingWorkflow, ['test-input']);
 
-    await waitForSleep(run);
-    await getRun(run.runId).wakeUp();
+    const sleepId = await waitForSleep(run);
+    expect(sleepId).toBeTypeOf('string');
+    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] });
 
     const result = await run.returnValue;
     expect(result).toBe('finalized:prepared:test-input');
+  });
+
+  it('should wake up each sleep independently', async () => {
+    const run = await start(multiSleepWorkflow, ['multi']);
+
+    // Wake up the first sleep (1h)
+    const firstSleepId = await waitForSleep(run);
+    await getRun(run.runId).wakeUp({ correlationIds: [firstSleepId] });
+
+    // Wake up the second sleep (24h)
+    const secondSleepId = await waitForSleep(run);
+    expect(secondSleepId).not.toBe(firstSleepId);
+    await getRun(run.runId).wakeUp({ correlationIds: [secondSleepId] });
+
+    const result = await run.returnValue;
+    expect(result).toBe('done:finalized:prepared:multi');
   });
 });
 
