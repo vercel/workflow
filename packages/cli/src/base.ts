@@ -2,10 +2,28 @@ import { Command } from '@oclif/core';
 import { getWorld } from '@workflow/core/runtime';
 
 async function flushStream(stream: NodeJS.WriteStream): Promise<void> {
-  if (!stream.writable) return;
+  if (
+    !stream.writable ||
+    stream.destroyed ||
+    stream.closed ||
+    stream.writableEnded ||
+    stream.writableFinished
+  ) {
+    return;
+  }
 
   await new Promise<void>((resolve) => {
-    stream.write('', () => resolve());
+    const onError = () => resolve();
+    stream.once('error', onError);
+    try {
+      stream.write('', () => {
+        stream.off('error', onError);
+        resolve();
+      });
+    } catch {
+      stream.off('error', onError);
+      resolve();
+    }
   });
 }
 
