@@ -1,13 +1,14 @@
+import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
-import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
 import { type SocketMessage, serializeMessage } from './socket-server.js';
 import {
   DEFERRED_STEP_SOURCE_METADATA_PREFIX,
   isDeferredStepCopyFilePath,
-  parseInlineSourceMapComment,
   parseDeferredStepSourceMetadata,
+  parseInlineSourceMapComment,
 } from './step-copy-utils.js';
 
 type DecoratorOptionsWithConfigPath =
@@ -146,14 +147,14 @@ function getSocketCredentialsFromEnv(): SocketCredentials | null {
   return { port, authToken };
 }
 
-function getSocketCredentialsFromFile(): SocketCredentials | null {
+async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null> {
   const socketInfoFilePath = getSocketInfoFilePath();
   if (!existsSync(socketInfoFilePath)) {
     return null;
   }
 
   try {
-    const raw = readFileSync(socketInfoFilePath, 'utf8');
+    const raw = await readFile(socketInfoFilePath, 'utf8');
     const parsed = JSON.parse(raw) as {
       port?: unknown;
       authToken?: unknown;
@@ -178,12 +179,14 @@ function getSocketCredentialsFromFile(): SocketCredentials | null {
   }
 }
 
-function getSocketCredentials(): SocketCredentials | null {
-  return getSocketCredentialsFromEnv() ?? getSocketCredentialsFromFile();
+async function getSocketCredentials(): Promise<SocketCredentials | null> {
+  return (
+    getSocketCredentialsFromEnv() ?? (await getSocketCredentialsFromFile())
+  );
 }
 
 async function getSocketClient(): Promise<Socket | null> {
-  const socketCredentials = getSocketCredentials();
+  const socketCredentials = await getSocketCredentials();
   if (!socketCredentials) {
     return null;
   }
@@ -261,7 +264,7 @@ async function notifySocketServer(
   hasStep: boolean,
   hasSerde: boolean
 ): Promise<void> {
-  const socketCredentials = getSocketCredentials();
+  const socketCredentials = await getSocketCredentials();
   if (!socketCredentials) {
     return;
   }

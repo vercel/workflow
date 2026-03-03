@@ -1400,6 +1400,9 @@ export async function getNextBuilderDeferred() {
           )
         )
       ).sort();
+      // Intentionally re-validate step seeds against current file contents
+      // instead of blindly trusting callers. This prevents stale/manual seed
+      // paths from persisting when files no longer contain "use step".
       const discoveredStepFiles = new Set<string>();
       const queuedFiles = [...normalizedSeedFiles];
       const visitedFiles = new Set<string>();
@@ -1503,6 +1506,9 @@ export async function getNextBuilderDeferred() {
           )
         )
       ).sort();
+      // Intentionally re-validate serde seeds against source + SDK filtering.
+      // This keeps previously discovered/manual seed entries from sticking when
+      // files no longer match serde patterns or resolve to SDK internals.
       const discoveredSerdeFiles = new Set<string>();
       const queuedFiles = Array.from(
         new Set([...normalizedEntryFiles, ...normalizedSerdeSeedFiles])

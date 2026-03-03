@@ -347,21 +347,9 @@ jobs:
 
       - name: Prepare workbench path
         id: prepare-workbench
-        run: |
-          if [[ "${{ matrix.app.name }}" == "nextjs-turbopack" || "${{ matrix.app.name }}" == "nextjs-webpack" ]]; then
-            STAGE_LOG="$(mktemp)"
-            node scripts/stage-workbench-with-tarballs.mjs workbench/${{ matrix.app.name }} | tee "$STAGE_LOG"
-            WORKBENCH_APP_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
-            if [ -z "$WORKBENCH_APP_PATH" ]; then
-              echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
-              exit 1
-            fi
-          else
-            ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
-            WORKBENCH_APP_PATH="$GITHUB_WORKSPACE/workbench/${{ matrix.app.name }}"
-          fi
-
-          echo "workbench_app_path=$WORKBENCH_APP_PATH" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/prepare-workbench-path
+        with:
+          app-name: ${{ matrix.app.name }}
 
       - name: Run E2E Tests
         run: |
@@ -431,21 +419,9 @@ jobs:
 
       - name: Prepare workbench path
         id: prepare-workbench
-        run: |
-          if [[ "${{ matrix.app.name }}" == "nextjs-turbopack" || "${{ matrix.app.name }}" == "nextjs-webpack" ]]; then
-            STAGE_LOG="$(mktemp)"
-            node scripts/stage-workbench-with-tarballs.mjs workbench/${{ matrix.app.name }} | tee "$STAGE_LOG"
-            WORKBENCH_APP_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
-            if [ -z "$WORKBENCH_APP_PATH" ]; then
-              echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
-              exit 1
-            fi
-          else
-            ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
-            WORKBENCH_APP_PATH="$GITHUB_WORKSPACE/workbench/${{ matrix.app.name }}"
-          fi
-
-          echo "workbench_app_path=$WORKBENCH_APP_PATH" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/prepare-workbench-path
+        with:
+          app-name: ${{ matrix.app.name }}
 
       - name: Run Build Tests
         run: pnpm vitest run packages/core/e2e/local-build.test.ts
@@ -539,21 +515,9 @@ jobs:
 
       - name: Prepare workbench path
         id: prepare-workbench
-        run: |
-          if [[ "${{ matrix.app.name }}" == "nextjs-turbopack" || "${{ matrix.app.name }}" == "nextjs-webpack" ]]; then
-            STAGE_LOG="$(mktemp)"
-            node scripts/stage-workbench-with-tarballs.mjs workbench/${{ matrix.app.name }} | tee "$STAGE_LOG"
-            WORKBENCH_APP_PATH="$(sed -n 's/^Staged workbench: //p' "$STAGE_LOG" | tail -n 1)"
-            if [ -z "$WORKBENCH_APP_PATH" ]; then
-              echo "Failed to parse staged workbench path from stage-workbench-with-tarballs output"
-              exit 1
-            fi
-          else
-            ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
-            WORKBENCH_APP_PATH="$GITHUB_WORKSPACE/workbench/${{ matrix.app.name }}"
-          fi
-
-          echo "workbench_app_path=$WORKBENCH_APP_PATH" >> "$GITHUB_OUTPUT"
+        uses: ./.github/actions/prepare-workbench-path
+        with:
+          app-name: ${{ matrix.app.name }}
 
       - name: Run Build Tests
         run: pnpm vitest run packages/core/e2e/local-build.test.ts

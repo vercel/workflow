@@ -147,6 +147,9 @@ function getFallbackWorkflowId(
   workflowFn: string
 ): string {
   const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  // Keep this in sync with the SWC transform ID format. This fallback is
+  // intentionally coupled so tests can continue running when deferred manifest
+  // publication lags behind discovery in staged/out-of-monorepo scenarios.
   return `workflow//./${fileWithoutExt}//${workflowFn}`;
 }
 
