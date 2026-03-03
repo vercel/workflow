@@ -104,7 +104,7 @@ Create a separate Vitest config for integration tests that includes the `workflo
 
 ```typescript title="vitest.integration.config.ts" lineNumbers
 import { defineConfig } from "vitest/config";
-import { workflow } from "workflow/vitest"; // [!code highlight]
+import { workflow } from "@workflow/vitest"; // [!code highlight]
 
 export default defineConfig({
   plugins: [workflow()], // [!code highlight]
@@ -196,7 +196,7 @@ You can write an integration test that starts the workflow, waits for the hook a
 ```typescript title="workflows/approval.integration.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
 import { start, getRun, resumeHook } from "workflow/api"; // [!code highlight]
-import { waitForHook, waitForSleep } from "workflow/vitest"; // [!code highlight]
+import { waitForHook, waitForSleep } from "@workflow/vitest"; // [!code highlight]
 import { approvalWorkflow } from "./approval";
 
 describe("approvalWorkflow", () => {
@@ -276,7 +276,7 @@ async function parsePayload(body: string) {
 ```typescript title="workflows/ingest.integration.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
 import { start, resumeHook } from "workflow/api"; // [!code highlight]
-import { waitForHook } from "workflow/vitest"; // [!code highlight]
+import { waitForHook } from "@workflow/vitest"; // [!code highlight]
 import { ingestWorkflow } from "./ingest";
 
 describe("ingestWorkflow", () => {
@@ -327,7 +327,7 @@ export default defineConfig({
 ```
 
 ```typescript title="vitest.integration.setup.ts"
-import { buildWorkflowTests } from "workflow/vitest";
+import { buildWorkflowTests } from "@workflow/vitest";
 
 export async function setup() {
   await buildWorkflowTests();
@@ -339,7 +339,7 @@ import { beforeAll, afterAll } from "vitest";
 import {
   setupWorkflowTests,
   teardownWorkflowTests,
-} from "workflow/vitest";
+} from "@workflow/vitest";
 
 beforeAll(async () => {
   await setupWorkflowTests();
