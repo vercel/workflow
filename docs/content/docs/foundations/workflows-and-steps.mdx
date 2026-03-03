@@ -122,6 +122,8 @@ Keep in mind that calling a step function outside of a workflow function will no
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the [event log](/docs/how-it-works/event-sourcing) and no compute resources are used until the workflow resumes execution.
 
+<FluidComputeCallout />
+
 There are multiple ways a workflow can suspend:
 
 - Waiting on a step function: the workflow yields while the step runs in the step runtime.
