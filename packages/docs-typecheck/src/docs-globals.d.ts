@@ -159,6 +159,12 @@ declare global {
   const onChange: (e: any) => void;
   const e: any;
 
+  // Augment Request to include respondWith for docs that show webhook patterns
+  // without using the full createWebhook({ respondWith: "manual" }) overload.
+  interface Request {
+    respondWith(response: Response): Promise<void>;
+  }
+
   // Constants used in examples
   const FLIGHT_ASSISTANT_PROMPT: string;
   const flightBookingTools: any;

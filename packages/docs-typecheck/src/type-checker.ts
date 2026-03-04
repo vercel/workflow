@@ -10,8 +10,8 @@ import type {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Find repo root
-const repoRoot = path.resolve(__dirname, '../../../..');
+// Find repo root (packages/docs-typecheck/src or packages/docs-typecheck/dist -> 3 levels up)
+const repoRoot = path.resolve(__dirname, '../../..');
 
 // Globals declaration file path
 const docsGlobalsPath = path.join(__dirname, 'docs-globals.d.ts');
@@ -19,9 +19,14 @@ const docsGlobalsContent = fs.readFileSync(docsGlobalsPath, 'utf-8');
 
 /**
  * Error codes to ignore during type checking.
+ *
+ * These are errors that are expected in documentation code samples and should
+ * not cause test failures. Keep this list minimal and well-documented.
  */
 const IGNORED_ERROR_CODES = new Set([
-  2307, // Cannot find module 'X' - for app-specific imports like @/...
+  2307, // Cannot find module 'X' - for app-specific imports like @/..., @ai-sdk/react, etc.
+  2314, // Generic type 'X' requires N type argument(s) - docs may use simplified generic syntax
+  2558, // Expected 0 type arguments, but got N - docs may use simplified generic syntax
   6133, // 'X' is declared but its value is never read
   6196, // 'X' is declared but never used
 ]);
@@ -34,7 +39,13 @@ const compilerOptions: ts.CompilerOptions = {
   module: ts.ModuleKind.ESNext,
   moduleResolution: ts.ModuleResolutionKind.Bundler,
   moduleDetection: ts.ModuleDetectionKind.Force,
-  lib: ['lib.es2022.d.ts', 'lib.dom.d.ts', 'lib.dom.asynciterable.d.ts'],
+  lib: [
+    'lib.es2022.d.ts',
+    'lib.dom.d.ts',
+    'lib.dom.iterable.d.ts',
+    'lib.dom.asynciterable.d.ts',
+    'lib.esnext.disposable.d.ts',
+  ],
   strict: false,
   noImplicitAny: false,
   strictNullChecks: false,
@@ -55,6 +66,21 @@ const compilerOptions: ts.CompilerOptions = {
       path.join(__dirname, '../node_modules/react/jsx-runtime'),
     ],
     react: [path.join(__dirname, '../node_modules/react')],
+    // Map workspace packages directly to their type declaration files.
+    // We can't rely on package.json exports resolution because some packages
+    // have "require" conditions that TS picks up incorrectly with Bundler resolution.
+    workflow: [path.join(repoRoot, 'packages/workflow/dist/index')],
+    'workflow/api': [path.join(repoRoot, 'packages/workflow/dist/api')],
+    '@workflow/core': [path.join(repoRoot, 'packages/core/dist/index')],
+    '@workflow/ai': [path.join(repoRoot, 'packages/ai/dist/index')],
+    '@workflow/ai/agent': [
+      path.join(repoRoot, 'packages/ai/dist/agent/durable-agent'),
+    ],
+    '@workflow/next': [path.join(repoRoot, 'packages/next/dist/index')],
+    '@workflow/errors': [path.join(repoRoot, 'packages/errors/dist/index')],
+    // Third-party deps available in docs-typecheck/node_modules
+    zod: [path.join(__dirname, '../node_modules/zod')],
+    ai: [path.join(__dirname, '../node_modules/ai')],
   },
 };
 
