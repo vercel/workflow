@@ -43,6 +43,7 @@ export class EventsConsumer {
   private onUnconsumedEvent: (event: Event) => void;
   private getPromiseQueue: () => Promise<void>;
   private pendingUnconsumedCheck: Promise<void> | null = null;
+  private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
 
   constructor(events: Event[], options: EventsConsumerOptions) {
@@ -65,9 +66,14 @@ export class EventsConsumer {
     this.callbacks.push(fn);
     // Cancel any pending unconsumed check since a new callback may consume the event.
     // Incrementing the version causes any in-flight promise chain check to no-op.
+    // Also clear the pending setTimeout if it hasn't fired yet.
     if (this.pendingUnconsumedCheck !== null) {
       this.unconsumedCheckVersion++;
       this.pendingUnconsumedCheck = null;
+      if (this.pendingUnconsumedTimeout !== null) {
+        clearTimeout(this.pendingUnconsumedTimeout);
+        this.pendingUnconsumedTimeout = null;
+      }
     }
     process.nextTick(this.consume);
   }
@@ -109,14 +115,17 @@ export class EventsConsumer {
     if (currentEvent !== null) {
       const checkVersion = ++this.unconsumedCheckVersion;
       this.pendingUnconsumedCheck = this.getPromiseQueue().then(() => {
-        // Use process.nextTick after the queue drains to give any synchronous
-        // subscribe() calls from the resolved user code a chance to cancel.
-        process.nextTick(() => {
+        // Use setTimeout(0) (macrotask) after the queue drains to ensure
+        // ALL microtasks — including VM promise propagation from resolve()
+        // through to the user code calling subscribe() — have completed
+        // before we declare an event as truly unconsumed.
+        this.pendingUnconsumedTimeout = setTimeout(() => {
+          this.pendingUnconsumedTimeout = null;
           if (this.unconsumedCheckVersion === checkVersion) {
             this.pendingUnconsumedCheck = null;
             this.onUnconsumedEvent(currentEvent);
           }
-        });
+        }, 0);
       });
     }
   };

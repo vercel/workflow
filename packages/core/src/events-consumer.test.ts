@@ -26,6 +26,11 @@ function waitForNextTick(): Promise<void> {
   return new Promise((resolve) => process.nextTick(resolve));
 }
 
+// Helper to wait for setTimeout(0) macrotask
+function waitForMacrotask(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 describe('EventsConsumer', () => {
   describe('constructor', () => {
     it('should initialize with provided events', () => {
@@ -182,9 +187,9 @@ describe('EventsConsumer', () => {
       expect(consumer.eventIndex).toBe(0);
       expect(consumer.callbacks).toEqual([callback1, callback2, callback3]);
 
-      // onUnconsumedEvent is deferred via promise queue + process.nextTick
+      // onUnconsumedEvent is deferred via promise queue .then() + setTimeout(0)
       await waitForNextTick();
-      await waitForNextTick();
+      await waitForMacrotask();
       expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
     });
 
@@ -361,10 +366,10 @@ describe('EventsConsumer', () => {
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
-      // Wait for: nextTick(consume) → .then() microtask → nextTick(unconsumed check)
+      // Wait for: nextTick(consume) → .then() microtask → setTimeout(0) macrotask
       await waitForNextTick();
       await waitForNextTick();
-      await waitForNextTick();
+      await waitForMacrotask();
 
       expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
     });
@@ -380,7 +385,7 @@ describe('EventsConsumer', () => {
       consumer.subscribe(callback);
       await waitForNextTick();
       await waitForNextTick();
-      await waitForNextTick();
+      await waitForMacrotask();
 
       expect(callback).toHaveBeenCalledWith(null);
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
@@ -400,12 +405,12 @@ describe('EventsConsumer', () => {
       consumer.subscribe(callback1);
       await waitForNextTick();
 
-      // Before the unconsumed check fires, subscribe a new callback that consumes the event
+      // Before the macrotask fires, subscribe a new callback that consumes the event
       const callback2 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
       consumer.subscribe(callback2);
       await waitForNextTick();
       await waitForNextTick();
-      await waitForNextTick();
+      await waitForMacrotask();
 
       // The new callback consumed the event, so onUnconsumedEvent should NOT be called
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
