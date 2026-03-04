@@ -64,7 +64,7 @@ jobs:
           FAILED=0
 
           # Parse published packages and add latest tag to each
-          for pkg in $(echo '${{ steps.changesets.outputs.publishedPackages }}' | jq -c '.[]'); do
+          while IFS= read -r pkg; do
             NAME=$(echo "$pkg" | jq -r '.name')
             VERSION=$(echo "$pkg" | jq -r '.version')
             echo "Adding 'latest' dist-tag to ${NAME}@${VERSION}..."
@@ -72,7 +72,7 @@ jobs:
               echo "::error::Failed to add 'latest' dist-tag to ${NAME}@${VERSION}"
               FAILED=1
             fi
-          done
+          done < <(echo '${{ steps.changesets.outputs.publishedPackages }}' | jq -c '.[]')
 
           if [ "$FAILED" -eq 1 ]; then
             exit 1
