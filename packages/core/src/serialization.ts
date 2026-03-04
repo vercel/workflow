@@ -178,7 +178,7 @@ export function decodeFormatPrefix(data: Uint8Array | unknown): {
   // Validate the format is known
   const knownFormats = Object.values(SerializationFormat) as string[];
   if (!knownFormats.includes(format)) {
-    throw new Error(
+    throw new WorkflowRuntimeError(
       `Unknown serialization format: "${format}". Known formats: ${knownFormats.join(', ')}`
     );
   }
@@ -251,6 +251,9 @@ export function getSerializeStream(
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
   // Resolve the key promise once on first use and cache the result.
+  // Note: if the cryptoKey promise rejects (e.g., network error fetching
+  // the derived key), the rejection won't surface until the first chunk
+  // is processed — not at stream construction time.
   const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
   const stream = new TransformStream<any, Uint8Array>({
     async transform(chunk, controller) {
@@ -1505,12 +1508,14 @@ export async function maybeEncrypt(
 
 /**
  * Decrypt data if it has the 'encr' prefix.
- * Throws if encrypted but no key is available.
  *
  * @param data - Data that may be encrypted
  * @param key - Encryption key (undefined if no key available)
- * @param context - Encryption context with runId
  * @returns Decrypted data if encrypted, original data otherwise
+ * @throws {WorkflowRuntimeError} If the data is encrypted but no key is
+ *   available. Callers (e.g., `Run.pollReturnValue()`, `hydrateStepReturnValue`)
+ *   should be aware this can surface as a rejected promise during key rotation
+ *   or misconfiguration scenarios.
  */
 export async function maybeDecrypt(
   data: Uint8Array | unknown,
