@@ -200,7 +200,7 @@ function replaceEncryptedWithMarkers<T>(resource: T): T {
   const r = resource as Record<string, unknown>;
   const result = { ...r };
 
-  for (const key of ['input', 'output', 'metadata']) {
+  for (const key of ['input', 'output', 'metadata', 'error']) {
     if (isEncryptedData(result[key])) {
       result[key] = createEncryptedMarker(result[key] as Uint8Array);
     }

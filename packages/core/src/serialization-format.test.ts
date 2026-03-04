@@ -6,6 +6,7 @@ import {
   encodeWithFormatPrefix,
   extractStreamIds,
   hydrateData,
+  hydrateDataWithKey,
   hydrateResourceIO,
   isClassInstanceRef,
   isEncryptedData,
@@ -557,6 +558,84 @@ describe('encrypted data handling', () => {
       const result = hydrateResourceIO(run, {});
       expect(result.input).toEqual({ greeting: 'hello' });
       expect(isEncryptedData(result.output)).toBe(true);
+    });
+  });
+
+  describe('hydrateDataWithKey', () => {
+    // Real 32-byte AES-256 test key
+    const testKeyRaw = new Uint8Array([
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+      0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+      0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    ]);
+
+    async function getTestKey() {
+      const { importKey } = await import('./encryption.js');
+      return importKey(testKeyRaw);
+    }
+
+    async function encryptPayload(value: unknown) {
+      const { encrypt, importKey } = await import('./encryption.js');
+      const key = await importKey(testKeyRaw);
+      const inner = makeDevlPayload(value);
+      const encrypted = await encrypt(key, inner);
+      return encodeWithFormatPrefix(
+        SerializationFormat.ENCRYPTED,
+        encrypted
+      ) as Uint8Array;
+    }
+
+    it('should decrypt and hydrate encrypted payload with correct key', async () => {
+      const original = { message: 'secret', count: 42 };
+      const encrypted = await encryptPayload(original);
+      const key = await getTestKey();
+
+      const result = await hydrateDataWithKey(
+        encrypted,
+        observabilityRevivers,
+        key
+      );
+      expect(result).toEqual(original);
+    });
+
+    it('should return original Uint8Array when key is undefined', async () => {
+      const original = { data: 'test' };
+      const encrypted = await encryptPayload(original);
+
+      const result = await hydrateDataWithKey(
+        encrypted,
+        observabilityRevivers,
+        undefined
+      );
+      // Without a key, encrypted data is returned as-is
+      expect(result).toBeInstanceOf(Uint8Array);
+      expect(isEncryptedData(result)).toBe(true);
+    });
+
+    it('should hydrate non-encrypted payloads normally', async () => {
+      const original = { hello: 'world' };
+      const payload = makeDevlPayload(original);
+      const key = await getTestKey();
+
+      const result = await hydrateDataWithKey(
+        payload,
+        observabilityRevivers,
+        key
+      );
+      expect(result).toEqual(original);
+    });
+
+    it('should handle non-Uint8Array values (legacy specVersion 1 data)', async () => {
+      // Legacy specVersion 1 stored data as plain JSON (not binary).
+      // hydrateData passes these through devalue unflatten.
+      const legacyValue = 'plain string value';
+
+      const result = await hydrateDataWithKey(
+        legacyValue,
+        observabilityRevivers,
+        undefined
+      );
+      expect(result).toBe(legacyValue);
     });
   });
 });

@@ -410,7 +410,8 @@ export function RunDetailView({
           spanSelection?.resourceId &&
           spanSelection.resource !== 'hook'
       ),
-      encryptionKey: encryptionKey ?? undefined,
+      // TODO: thread encryptionKey through useWorkflowResourceData to
+      // enable span detail decryption once the hook supports it
     }
   );
 

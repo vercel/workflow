@@ -214,8 +214,9 @@ async function maybeDecryptFields<
   // Decrypt eventData fields (Event)
   if (result.eventData && typeof result.eventData === 'object') {
     const eventData = { ...result.eventData };
-    eventData.result = await maybeDecrypt(eventData.result, k);
-    eventData.input = await maybeDecrypt(eventData.input, k);
+    for (const field of ['result', 'input', 'output', 'metadata', 'payload']) {
+      eventData[field] = await maybeDecrypt(eventData[field], k);
+    }
     result.eventData = eventData;
   }
 
@@ -235,7 +236,7 @@ function replaceEncryptedWithRef<T>(resource: T): T {
   const r = resource as Record<string, unknown>;
   const result = { ...r };
 
-  for (const key of ['input', 'output', 'metadata']) {
+  for (const key of ['input', 'output', 'metadata', 'error']) {
     if (isEncryptedData(result[key])) {
       result[key] = ENCRYPTED_REF;
     }
@@ -243,7 +244,7 @@ function replaceEncryptedWithRef<T>(resource: T): T {
 
   if (result.eventData && typeof result.eventData === 'object') {
     const ed = { ...(result.eventData as Record<string, unknown>) };
-    for (const key of ['result', 'input']) {
+    for (const key of ['result', 'input', 'output', 'metadata', 'payload']) {
       if (isEncryptedData(ed[key])) {
         ed[key] = ENCRYPTED_REF;
       }

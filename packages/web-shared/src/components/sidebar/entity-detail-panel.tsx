@@ -460,6 +460,7 @@ export function EntityDetailPanel({
               <EventsList
                 events={rawEvents}
                 onLoadEventData={onLoadEventData}
+                encryptionKey={encryptionKey}
               />
             </section>
           )}
@@ -473,23 +474,6 @@ export function EntityDetailPanel({
         onSubmit={handleResolveHook}
         isSubmitting={resolvingHook}
       />
-
-      {/* Content display */}
-      <AttributePanel
-        data={displayData}
-        moduleSpecifier={moduleSpecifier}
-        expiredAt={run.expiredAt}
-        isLoading={loading}
-        error={error ?? undefined}
-        onStreamClick={onStreamClick}
-      />
-      {resource !== 'run' && rawEvents && (
-        <EventsList
-          events={rawEvents}
-          onLoadEventData={onLoadEventData}
-          encryptionKey={encryptionKey}
-        />
-      )}
     </div>
   );
 }

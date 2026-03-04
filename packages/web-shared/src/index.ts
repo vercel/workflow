@@ -29,7 +29,10 @@ export {
   getWebRevivers,
   hydrateResourceIO,
   hydrateResourceIOWithKey,
+  isClassInstanceRef,
   isEncryptedMarker,
+  isStreamId,
+  isStreamRef,
   STREAM_REF_TYPE,
   truncateId,
 } from './lib/hydration';
