@@ -312,8 +312,8 @@ describe('createSleep', () => {
     const sleep = createSleep(ctx);
     await sleep('1s');
 
-    // Wait for the duplicate event to be processed
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Wait for the unconsumed event check (promiseQueue .then() + setTimeout(100ms))
+    await new Promise((resolve) => setTimeout(resolve, 200));
 
     // The duplicate wait_completed at index 2 is orphaned and triggers the error
     expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);

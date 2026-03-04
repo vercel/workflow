@@ -115,17 +115,21 @@ export class EventsConsumer {
     if (currentEvent !== null) {
       const checkVersion = ++this.unconsumedCheckVersion;
       this.pendingUnconsumedCheck = this.getPromiseQueue().then(() => {
-        // Use setTimeout(0) (macrotask) after the queue drains to ensure
-        // ALL microtasks — including VM promise propagation from resolve()
-        // through to the user code calling subscribe() — have completed
-        // before we declare an event as truly unconsumed.
+        // Use a delayed setTimeout after the queue drains. The delay must be
+        // long enough for promise chains to propagate across the VM boundary
+        // (from resolve() in the host context through to the workflow code
+        // calling subscribe() in the VM context). Node.js does not guarantee
+        // that setTimeout(0) fires after all cross-context microtasks settle,
+        // so we use a small but non-zero delay. Any subscribe() call that
+        // arrives during this window will cancel the check via version
+        // invalidation + clearTimeout.
         this.pendingUnconsumedTimeout = setTimeout(() => {
           this.pendingUnconsumedTimeout = null;
           if (this.unconsumedCheckVersion === checkVersion) {
             this.pendingUnconsumedCheck = null;
             this.onUnconsumedEvent(currentEvent);
           }
-        }, 0);
+        }, 100);
       });
     }
   };

@@ -26,9 +26,9 @@ function waitForNextTick(): Promise<void> {
   return new Promise((resolve) => process.nextTick(resolve));
 }
 
-// Helper to wait for setTimeout(0) macrotask
-function waitForMacrotask(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+// Helper to wait for the unconsumed event check (promiseQueue .then() + setTimeout(100ms))
+function waitForUnconsumedCheck(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 150));
 }
 
 describe('EventsConsumer', () => {
@@ -189,7 +189,7 @@ describe('EventsConsumer', () => {
 
       // onUnconsumedEvent is deferred via promise queue .then() + setTimeout(0)
       await waitForNextTick();
-      await waitForMacrotask();
+      await waitForUnconsumedCheck();
       expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
     });
 
@@ -369,7 +369,7 @@ describe('EventsConsumer', () => {
       // Wait for: nextTick(consume) → .then() microtask → setTimeout(0) macrotask
       await waitForNextTick();
       await waitForNextTick();
-      await waitForMacrotask();
+      await waitForUnconsumedCheck();
 
       expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
     });
@@ -385,7 +385,7 @@ describe('EventsConsumer', () => {
       consumer.subscribe(callback);
       await waitForNextTick();
       await waitForNextTick();
-      await waitForMacrotask();
+      await waitForUnconsumedCheck();
 
       expect(callback).toHaveBeenCalledWith(null);
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
@@ -410,7 +410,7 @@ describe('EventsConsumer', () => {
       consumer.subscribe(callback2);
       await waitForNextTick();
       await waitForNextTick();
-      await waitForMacrotask();
+      await waitForUnconsumedCheck();
 
       // The new callback consumed the event, so onUnconsumedEvent should NOT be called
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
