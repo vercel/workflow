@@ -3934,4 +3934,340 @@ describe('runWorkflow', () => {
       }
     });
   });
+
+  it('should not trigger unconsumed event error when parallel steps complete and a sequential step follows with async deserialization', async () => {
+    // Reproduces the production bug: two parallel steps (A, B) launched via
+    // Promise.all, followed by a sequential step C that depends on A and B.
+    // When A and B complete, their hydrateStepReturnValue calls do real async
+    // work (simulated via mock). The promiseQueue chains the deserialization,
+    // but the EventsConsumer's process.nextTick(consume) advances to step C's
+    // step_created before the promise chain resolves A+B and the user code
+    // calls stepC(). The setTimeout(0) unconsumed check fires, falsely
+    // flagging step_created(C) as orphaned.
+    //
+    // Event log pattern (from production):
+    //   run_created, run_started,
+    //   step_created(A), step_created(B),   ← parallel
+    //   step_started(B), step_completed(B),
+    //   step_started(A), step_completed(A),
+    //   step_created(C),                     ← sequential, depends on A+B
+    //   step_started(C), step_completed(C)
+    const ops: Promise<any>[] = [];
+    const workflowRunId = 'wrun_123';
+    const workflowRun: WorkflowRun = {
+      runId: workflowRunId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        workflowRunId,
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    // Correlation IDs match the deterministic ULID generator for this seed
+    const stepA = 'step_01HK153X00Y11PCQTCHQRK34HF';
+    const stepB = 'step_01HK153X00Y11PCQTCHQRK34HG';
+    const stepC = 'step_01HK153X00Y11PCQTCHQRK34HH';
+
+    const events: Event[] = [
+      {
+        eventId: 'evnt-0',
+        runId: workflowRunId,
+        eventType: 'run_created',
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      },
+      {
+        eventId: 'evnt-1',
+        runId: workflowRunId,
+        eventType: 'run_started',
+        createdAt: new Date('2024-01-01T00:00:00.500Z'),
+      },
+      // Both parallel steps created at nearly the same time
+      {
+        eventId: 'evnt-2',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: stepA,
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      },
+      {
+        eventId: 'evnt-3',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: stepB,
+        createdAt: new Date('2024-01-01T00:00:01.020Z'),
+      },
+      // B finishes first
+      {
+        eventId: 'evnt-4',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: stepB,
+        createdAt: new Date('2024-01-01T00:00:02.000Z'),
+      },
+      {
+        eventId: 'evnt-5',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: stepB,
+        eventData: {
+          result: await dehydrateStepReturnValue(
+            'resultB',
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:02.500Z'),
+      },
+      // Then A finishes
+      {
+        eventId: 'evnt-6',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: stepA,
+        createdAt: new Date('2024-01-01T00:00:03.000Z'),
+      },
+      {
+        eventId: 'evnt-7',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: stepA,
+        eventData: {
+          result: await dehydrateStepReturnValue(
+            'resultA',
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:03.500Z'),
+      },
+      // Sequential step C depends on A+B
+      {
+        eventId: 'evnt-8',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: stepC,
+        createdAt: new Date('2024-01-01T00:00:04.000Z'),
+      },
+      {
+        eventId: 'evnt-9',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: stepC,
+        createdAt: new Date('2024-01-01T00:00:04.500Z'),
+      },
+      {
+        eventId: 'evnt-10',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: stepC,
+        eventData: {
+          result: await dehydrateStepReturnValue(
+            'resultC',
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:05.000Z'),
+      },
+    ];
+
+    // Mock hydrateStepReturnValue to simulate real async deserialization
+    // (e.g., decryption). The delay causes the promiseQueue.then() to take
+    // real time, allowing the EventsConsumer to advance ahead of the resolve.
+    const serialization = await import('./serialization.js');
+    const originalHydrate = serialization.hydrateStepReturnValue;
+    const spy = vi
+      .spyOn(serialization, 'hydrateStepReturnValue')
+      .mockImplementation(async (...args) => {
+        // Simulate 10ms of async decryption work
+        await new Promise((r) => setTimeout(r, 10));
+        return originalHydrate(...args);
+      });
+
+    try {
+      const result = await runWorkflow(
+        `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
+              async function workflow() {
+                const [a, b] = await Promise.all([doWork(1), doWork(2)]);
+                const c = await doWork(a, b);
+                return c;
+              }${getWorkflowTransformCode('workflow')}`,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
+
+      expect(result).not.toBeInstanceOf(Error);
+      const hydrated = await hydrateWorkflowReturnValue(
+        result,
+        workflowRunId,
+        noEncryptionKey
+      );
+      expect(hydrated).toBe('resultC');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('should not trigger unconsumed event error for step_created with 3 sequential steps', async () => {
+    // Extended version: 3 sequential steps to increase the chance of
+    // the timing race manifesting. Each step_created immediately follows
+    // the previous step's step_completed.
+    //
+    // Uses the same runId and correlationIds as the "should update the
+    // timestamp" test which has 3 sequential steps.
+    const ops: Promise<any>[] = [];
+    const workflowRunId = 'wrun_123';
+    const workflowRun: WorkflowRun = {
+      runId: workflowRunId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        workflowRunId,
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+      startedAt: new Date('2024-01-01T00:00:00.000Z'),
+      deploymentId: 'test-deployment',
+    };
+
+    const events: Event[] = [
+      {
+        eventId: 'evnt-run-created',
+        runId: workflowRunId,
+        eventType: 'run_created',
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+      },
+      {
+        eventId: 'evnt-run-started',
+        runId: workflowRunId,
+        eventType: 'run_started',
+        createdAt: new Date('2024-01-01T00:00:00.500Z'),
+      },
+      // Step 1
+      {
+        eventId: 'evnt-s1-created',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HF',
+        createdAt: new Date('2024-01-01T00:00:01.000Z'),
+      },
+      {
+        eventId: 'evnt-s1-started',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HF',
+        createdAt: new Date('2024-01-01T00:00:01.500Z'),
+      },
+      {
+        eventId: 'evnt-s1-completed',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HF',
+        eventData: {
+          result: await dehydrateStepReturnValue(
+            'first',
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:02.000Z'),
+      },
+      // Step 2
+      {
+        eventId: 'evnt-s2-created',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HG',
+        createdAt: new Date('2024-01-01T00:00:02.100Z'),
+      },
+      {
+        eventId: 'evnt-s2-started',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HG',
+        createdAt: new Date('2024-01-01T00:00:02.500Z'),
+      },
+      {
+        eventId: 'evnt-s2-completed',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HG',
+        eventData: {
+          result: await dehydrateStepReturnValue(
+            'second',
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:03.000Z'),
+      },
+      // Step 3
+      {
+        eventId: 'evnt-s3-created',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HH',
+        createdAt: new Date('2024-01-01T00:00:03.100Z'),
+      },
+      {
+        eventId: 'evnt-s3-started',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HH',
+        createdAt: new Date('2024-01-01T00:00:03.500Z'),
+      },
+      {
+        eventId: 'evnt-s3-completed',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: 'step_01HK153X00Y11PCQTCHQRK34HH',
+        eventData: {
+          result: await dehydrateStepReturnValue(
+            'third',
+            workflowRunId,
+            noEncryptionKey,
+            ops
+          ),
+        },
+        createdAt: new Date('2024-01-01T00:00:04.000Z'),
+      },
+    ];
+
+    const result = await runWorkflow(
+      `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
+            async function workflow() {
+              const a = await add(1, 2);
+              const b = await add(3, 4);
+              const c = await add(5, 6);
+              return c;
+            }${getWorkflowTransformCode('workflow')}`,
+      workflowRun,
+      events,
+      noEncryptionKey
+    );
+
+    expect(result).not.toBeInstanceOf(Error);
+    const hydrated = await hydrateWorkflowReturnValue(
+      result,
+      workflowRunId,
+      noEncryptionKey
+    );
+    expect(hydrated).toBe('third');
+  });
 });

@@ -30,6 +30,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
           )
         );
       },
+      getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),

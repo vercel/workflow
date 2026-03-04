@@ -113,6 +113,11 @@ export async function runWorkflow(
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
     );
 
+    // Create a mutable holder for the promise queue so the EventsConsumer
+    // can access the current queue state via a getter. The queue is mutated
+    // by step/hook/sleep callbacks as events are processed.
+    const promiseQueueHolder = { current: Promise.resolve() };
+
     const eventsConsumer = new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
@@ -122,6 +127,7 @@ export async function runWorkflow(
           )
         );
       },
+      getPromiseQueue: () => promiseQueueHolder.current,
     });
 
     const workflowContext: WorkflowOrchestratorContext = {
@@ -133,7 +139,14 @@ export async function runWorkflow(
       generateUlid: () => ulid(+startedAt),
       generateNanoid,
       invocationsQueue: new Map(),
-      promiseQueue: Promise.resolve(),
+      // Use getter/setter so the EventsConsumer's getPromiseQueue() always
+      // sees the latest queue state as it's mutated by step/hook/sleep callbacks.
+      get promiseQueue() {
+        return promiseQueueHolder.current;
+      },
+      set promiseQueue(value: Promise<void>) {
+        promiseQueueHolder.current = value;
+      },
     };
 
     // Subscribe to the events log to update the timestamp in the vm context

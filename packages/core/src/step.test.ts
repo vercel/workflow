@@ -24,6 +24,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},
+      getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt), // All generated ulids use the workflow's started at time
