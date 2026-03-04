@@ -236,7 +236,7 @@ const FRAME_HEADER_SIZE = 4;
 
 export function getSerializeStream(
   reducers: Reducers,
-  cryptoKey?: CryptoKey
+  cryptoKey: CryptoKey | undefined
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
   const stream = new TransformStream<any, Uint8Array>({
@@ -280,7 +280,7 @@ export function getSerializeStream(
 
 export function getDeserializeStream(
   revivers: Revivers,
-  cryptoKey?: CryptoKey
+  cryptoKey: CryptoKey | undefined
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
@@ -771,7 +771,7 @@ export function getExternalReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey?: CryptoKey
+  cryptoKey: CryptoKey | undefined
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -882,7 +882,7 @@ function getStepReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey?: CryptoKey
+  cryptoKey: CryptoKey | undefined
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -1076,7 +1076,7 @@ export function getExternalRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey?: CryptoKey
+  cryptoKey: CryptoKey | undefined
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -1291,7 +1291,7 @@ function getStepRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey?: CryptoKey
+  cryptoKey: CryptoKey | undefined
 ): Revivers {
   return {
     ...getCommonRevivers(global),

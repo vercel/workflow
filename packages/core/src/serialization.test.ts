@@ -3372,7 +3372,7 @@ describe('getSerializeStream', () => {
 
   /** Write values and collect output concurrently (avoids backpressure deadlock) */
   async function serializeValues(values: unknown[]): Promise<Uint8Array[]> {
-    const serialize = getSerializeStream(reducers);
+    const serialize = getSerializeStream(reducers, undefined);
     const results: Uint8Array[] = [];
 
     // Start reading before writing to avoid backpressure deadlock
@@ -3399,7 +3399,7 @@ describe('getSerializeStream', () => {
     chunks: Uint8Array[],
     revivers: any
   ): Promise<unknown[]> {
-    const deserialize = getDeserializeStream(revivers);
+    const deserialize = getDeserializeStream(revivers, undefined);
     const results: unknown[] = [];
 
     const readPromise = (async () => {
@@ -3505,7 +3505,7 @@ describe('getDeserializeStream legacy fallback', () => {
 
   /** Feed Uint8Array chunks into a deserialize stream and collect results */
   async function deserializeChunks(chunks: Uint8Array[]): Promise<unknown[]> {
-    const deserialize = getDeserializeStream(revivers);
+    const deserialize = getDeserializeStream(revivers, undefined);
     const results: unknown[] = [];
 
     const readPromise = (async () => {
@@ -3551,6 +3551,208 @@ describe('getDeserializeStream legacy fallback', () => {
     expect(results).toHaveLength(2);
     expect(results[0]).toBe('hello');
     expect(results[1]).toBe('world');
+  });
+});
+
+describe('stream encryption round-trip', () => {
+  // Real 32-byte AES-256 test key
+  const testKeyRaw = new Uint8Array([
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+    0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+  ]);
+  let cryptoKey: CryptoKey;
+  beforeAll(async () => {
+    cryptoKey = await importKey(testKeyRaw);
+  });
+
+  const reducers = {} as any;
+  const revivers = getCommonRevivers(globalThis) as any;
+
+  /** Serialize values through an encrypted stream */
+  async function encryptedSerialize(values: unknown[]): Promise<Uint8Array[]> {
+    const serialize = getSerializeStream(reducers, cryptoKey);
+    const results: Uint8Array[] = [];
+    const readPromise = (async () => {
+      const reader = serialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+    const writer = serialize.writable.getWriter();
+    for (const value of values) {
+      await writer.write(value);
+    }
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  /** Deserialize chunks through a decrypting stream */
+  async function encryptedDeserialize(
+    chunks: Uint8Array[],
+    key: CryptoKey | undefined
+  ): Promise<unknown[]> {
+    const deserialize = getDeserializeStream(revivers, key);
+    const results: unknown[] = [];
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+    const writer = deserialize.writable.getWriter();
+    for (const chunk of chunks) {
+      await writer.write(chunk);
+    }
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  it('should produce encrypted frames with encr prefix inside length header', async () => {
+    const chunks = await encryptedSerialize([{ hello: 'world' }]);
+    expect(chunks).toHaveLength(1);
+
+    const chunk = chunks[0];
+    // Frame structure: [4-byte length][encr...encrypted payload...]
+    expect(chunk.length).toBeGreaterThan(8);
+
+    // Length header should be valid
+    const view = new DataView(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+    const frameLength = view.getUint32(0, false);
+    expect(frameLength).toBe(chunk.length - 4);
+
+    // Format prefix should be 'encr' (not 'devl')
+    const prefix = new TextDecoder().decode(chunk.subarray(4, 8));
+    expect(prefix).toBe('encr');
+  });
+
+  it('should round-trip encrypted serialize -> deserialize with correct key', async () => {
+    const original = [
+      { message: 'secret', count: 42 },
+      [1, 2, 3],
+      'plain string',
+      null,
+      true,
+    ];
+
+    const encrypted = await encryptedSerialize(original);
+    const results = await encryptedDeserialize(encrypted, cryptoKey);
+
+    expect(results).toHaveLength(5);
+    expect(results[0]).toEqual({ message: 'secret', count: 42 });
+    expect(results[1]).toEqual([1, 2, 3]);
+    expect(results[2]).toBe('plain string');
+    expect(results[3]).toBe(null);
+    expect(results[4]).toBe(true);
+  });
+
+  it('should handle multiple encrypted frames concatenated into a single chunk', async () => {
+    const encrypted = await encryptedSerialize([{ a: 1 }, { b: 2 }, { c: 3 }]);
+
+    // Concatenate all frames into one big chunk (simulating transport coalescing)
+    const totalLength = encrypted.reduce((sum, c) => sum + c.length, 0);
+    const concatenated = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of encrypted) {
+      concatenated.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    const results = await encryptedDeserialize([concatenated], cryptoKey);
+    expect(results).toHaveLength(3);
+    expect(results[0]).toEqual({ a: 1 });
+    expect(results[1]).toEqual({ b: 2 });
+    expect(results[2]).toEqual({ c: 3 });
+  });
+
+  it('should handle encrypted frames split across multiple transport chunks', async () => {
+    const encrypted = await encryptedSerialize([{ data: 'split me' }]);
+    const frame = encrypted[0];
+
+    // Split the single frame into two chunks at an arbitrary point
+    const splitPoint = Math.floor(frame.length / 2);
+    const chunk1 = frame.slice(0, splitPoint);
+    const chunk2 = frame.slice(splitPoint);
+
+    const results = await encryptedDeserialize([chunk1, chunk2], cryptoKey);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual({ data: 'split me' });
+  });
+
+  it('should error when encrypted data is encountered without a key', async () => {
+    const encrypted = await encryptedSerialize([{ secret: true }]);
+
+    // Try to deserialize without a key — should error
+    const deserialize = getDeserializeStream(revivers, undefined);
+
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      const results: unknown[] = [];
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+      return results;
+    })();
+
+    const writer = deserialize.writable.getWriter();
+    for (const chunk of encrypted) {
+      // The write or close may throw because controller.error() aborts the stream
+      await writer.write(chunk).catch(() => {});
+    }
+    await writer.close().catch(() => {});
+
+    await expect(readPromise).rejects.toThrow(
+      'Encrypted stream data encountered but no encryption key is available'
+    );
+  });
+
+  it('should not encrypt when cryptoKey is undefined', async () => {
+    // Serialize without encryption
+    const serialize = getSerializeStream(reducers, undefined);
+    const results: Uint8Array[] = [];
+    const readPromise = (async () => {
+      const reader = serialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+    const writer = serialize.writable.getWriter();
+    await writer.write({ hello: 'world' });
+    await writer.close();
+    await readPromise;
+
+    // Should have 'devl' prefix (not 'encr')
+    const prefix = new TextDecoder().decode(results[0].subarray(4, 8));
+    expect(prefix).toBe('devl');
+
+    // Should be deserializable without a key
+    const deserialized = await encryptedDeserialize(results, undefined);
+    expect(deserialized[0]).toEqual({ hello: 'world' });
+  });
+
+  it('should handle large payloads with encryption', async () => {
+    // Create a large object that produces a significant serialized payload
+    const largeArray = Array.from({ length: 1000 }, (_, i) => ({
+      index: i,
+      value: `item-${i}`,
+      nested: { a: i * 2, b: i * 3 },
+    }));
+
+    const encrypted = await encryptedSerialize([largeArray]);
+    const results = await encryptedDeserialize(encrypted, cryptoKey);
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual(largeArray);
   });
 });
 
