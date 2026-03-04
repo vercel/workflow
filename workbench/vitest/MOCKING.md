@@ -2,7 +2,9 @@
 
 ## Summary
 
-`vi.mock()` cannot intercept imports inside step functions when using the `workflow()` Vitest plugin. Step dependencies (e.g. an email client, a database module) are inlined into a pre-built bundle at build time, completely bypassing Vitest's module system. To mock step dependencies, use unit tests instead.
+`vi.mock()` cannot intercept imports inside step functions when using the `workflow()` Vitest plugin. This applies to both first-party code (your own modules) and third-party npm packages. Step dependencies are inlined into a pre-built bundle at build time, completely bypassing Vitest's module system. To mock step dependencies, use unit tests instead.
+
+**Confirmed:** A test in `test/mock.test.ts` verifies that mocking the `ms` npm package via `vi.mock('ms', ...)` does not take effect — the real `ms()` function is called inside the step, not the mock.
 
 ## Root causes
 

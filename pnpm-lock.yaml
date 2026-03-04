@@ -970,6 +970,9 @@ importers:
       '@workflow/world-local':
         specifier: workspace:*
         version: link:../world-local
+      vitest:
+        specifier: '>=3.0.0'
+        version: 3.2.4(@types/debug@4.1.12)(@types/node@22.19.0)(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -2246,6 +2249,9 @@ importers:
       '@workflow/vitest':
         specifier: workspace:*
         version: link:../../packages/vitest
+      ms:
+        specifier: 2.1.3
+        version: 2.1.3
       vitest:
         specifier: 'catalog:'
         version: 4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.19.0)(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)

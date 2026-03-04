@@ -76,10 +76,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
     const body = transport.serialize(message);
     let pathname: string;
+    let prefix: '__wkf_step_' | '__wkf_workflow_';
     if (queueName.startsWith('__wkf_step_')) {
       pathname = `step`;
+      prefix = '__wkf_step_';
     } else if (queueName.startsWith('__wkf_workflow_')) {
       pathname = `flow`;
+      prefix = '__wkf_workflow_';
     } else {
       throw new Error('Unknown queue name prefix');
     }
@@ -103,9 +106,6 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
       try {
         let defaultRetriesLeft = 3;
-        const prefix = queueName.startsWith('__wkf_step_')
-          ? '__wkf_step_'
-          : '__wkf_workflow_';
         const directHandler = directHandlers.get(prefix);
         for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
           defaultRetriesLeft--;

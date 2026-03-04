@@ -1,12 +1,12 @@
 # @workflow/vitest-workbench
 
-This workbench demonstrates how to test workflows with Vitest using `start()`.
+This workbench demonstrates how to test workflows with Vitest using the `@workflow/vitest` plugin.
 
 ## How It Works
 
-1. **Nitro Server**: A Nitro dev server is started via `globalSetup` before tests run
-2. **Vite Plugin**: Uses `workflow/vite` plugin to transform workflow imports
-3. **Tests**: Use `start(workflow, args)` and await `run.returnValue`
+1. **Vitest Plugin**: The `workflow()` plugin from `@workflow/vitest` handles SWC transforms, bundle building, and in-process handler registration automatically.
+2. **No Server Required**: Workflows execute entirely in-process using a [Local World](/docs/worlds/local) instance — no HTTP server needed.
+3. **Tests**: Use `start(workflow, args)` and await `run.returnValue`, plus helpers like `waitForSleep()` and `waitForHook()`.
 
 ## Usage
 
@@ -14,39 +14,26 @@ This workbench demonstrates how to test workflows with Vitest using `start()`.
 pnpm test
 ```
 
-## Example Test
-
-```ts
-import { describe, expect, it } from 'vitest';
-import { start } from 'workflow/api';
-import { calculateWorkflow } from '../workflows/simple.js';
-
-describe('workflow with start()', () => {
-  it('should run calculateWorkflow', async () => {
-    const run = await start(calculateWorkflow, [2, 7]);
-
-    expect(run.runId).toMatch(/^wrun_/);
-
-    const result = await run.returnValue;
-
-    expect(result).toEqual({
-      sum: 9,
-      product: 14,
-      combined: 23,
-    });
-  });
-});
-```
-
 ## Project Structure
 
 ```
 workbench/vitest/
 ├── workflows/
-│   └── simple.ts        # Example workflow with steps
+│   ├── simple.ts          # Basic workflow with arithmetic steps
+│   ├── sleeping.ts        # Workflows with sleep() calls
+│   ├── hooks.ts           # Workflow with createHook() for external data
+│   └── webhook.ts         # Workflow with createWebhook() for HTTP payloads
 ├── test/
-│   └── workflow.test.ts # Tests using start()
-├── nitro.config.ts      # Nitro config with workflow module
-├── vitest.config.ts     # Vitest config with workflow plugin
-└── vitest.setup.ts      # Global setup to start Nitro server
+│   └── workflow.test.ts   # Integration tests for all workflow types
+├── vitest.config.ts       # Vitest config with workflow() plugin
+├── MOCKING.md             # Analysis of mocking limitations
+└── package.json
 ```
+
+## Test Coverage
+
+- **Simple workflow**: Start and await return value
+- **Sleep workflow**: `waitForSleep()` → `wakeUp()` to skip sleep
+- **Multi-sleep workflow**: Targeted `wakeUp()` with correlation IDs
+- **Hook workflow**: `waitForHook()` → `resumeHook()` with approval/rejection
+- **Webhook workflow**: `waitForHook()` → `resumeWebhook()` with Request payload

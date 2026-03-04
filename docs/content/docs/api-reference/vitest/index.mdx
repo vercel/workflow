@@ -1,0 +1,148 @@
+---
+title: "@workflow/vitest"
+description: Vitest plugin and test helpers for integration testing workflows in-process.
+---
+
+The `@workflow/vitest` package provides a Vitest plugin and test helpers for running full workflow integration tests in-process — no server required.
+
+## Plugin
+
+### `workflow()`
+
+Returns a Vite plugin array that handles SWC transforms, bundle building, and in-process handler registration automatically.
+
+```typescript
+import { defineConfig } from "vitest/config";
+import { workflow } from "@workflow/vitest"; // [!code highlight]
+
+export default defineConfig({
+  plugins: [workflow()], // [!code highlight]
+});
+```
+
+## Setup Functions
+
+### `buildWorkflowTests()`
+
+Builds workflow and step bundles to disk. Called automatically by the `workflow()` plugin in `globalSetup`. Use directly only for [manual setup](/docs/testing#manual-setup).
+
+```typescript
+import { buildWorkflowTests } from "@workflow/vitest";
+
+export async function setup() {
+  await buildWorkflowTests();
+}
+```
+
+<TSDoc
+definition={`
+import { buildWorkflowTests } from "@workflow/vitest";
+export default buildWorkflowTests;`}
+showSections={["parameters"]}
+/>
+
+### `setupWorkflowTests()`
+
+Sets up an in-process workflow runtime in each test worker. Imports pre-built bundles, creates a [Local World](/docs/worlds/local) instance with direct handlers, and sets it as the global world. Clears all workflow data on each invocation for full test isolation.
+
+Called automatically by the `workflow()` plugin in `setupFiles`. Use directly only for [manual setup](/docs/testing#manual-setup).
+
+```typescript
+import { beforeAll, afterAll } from "vitest";
+import { setupWorkflowTests, teardownWorkflowTests } from "@workflow/vitest";
+
+beforeAll(async () => {
+  await setupWorkflowTests();
+});
+
+afterAll(async () => {
+  await teardownWorkflowTests();
+});
+```
+
+<TSDoc
+definition={`
+import { setupWorkflowTests } from "@workflow/vitest";
+export default setupWorkflowTests;`}
+showSections={["parameters"]}
+/>
+
+### `teardownWorkflowTests()`
+
+Tears down the workflow test world. Clears the global world and closes the Local World instance. Called automatically by the `workflow()` plugin.
+
+<TSDoc
+definition={`
+import { teardownWorkflowTests } from "@workflow/vitest";
+export default teardownWorkflowTests;`}
+/>
+
+## Test Helpers
+
+### `waitForSleep()`
+
+Polls the event log until the workflow has a pending `sleep()` call — one with a `wait_created` event but no corresponding `wait_completed` event. Returns the correlation ID of the pending sleep, which can be passed to [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to target a specific sleep.
+
+```typescript
+import { waitForSleep } from "@workflow/vitest"; // [!code highlight]
+import { start, getRun } from "workflow/api";
+
+const run = await start(myWorkflow, []);
+const sleepId = await waitForSleep(run); // [!code highlight]
+await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlight]
+```
+
+<TSDoc
+definition={`
+import { waitForSleep } from "@workflow/vitest";
+export default waitForSleep;`}
+showSections={["parameters"]}
+/>
+
+#### Returns
+
+`Promise<string>` — The correlation ID of the first pending sleep. Pass this to `wakeUp({ correlationIds: [id] })` to target a specific sleep.
+
+#### Behavior with Multiple Sleeps
+
+- **Sequential sleeps**: `waitForSleep()` returns each sleep as the workflow reaches it. After waking one, call `waitForSleep()` again for the next.
+- **Parallel sleeps**: `waitForSleep()` returns whichever pending sleep is found first. After waking it, call `waitForSleep()` again to get the next one.
+
+### `waitForHook()`
+
+Polls the hook list and event log until a hook matching the optional `token` filter exists that hasn't been received yet. Returns the matching hook object.
+
+```typescript
+import { waitForHook } from "@workflow/vitest"; // [!code highlight]
+import { start, resumeHook } from "workflow/api";
+
+const run = await start(myWorkflow, ["doc-1"]);
+const hook = await waitForHook(run, { token: "approval:doc-1" }); // [!code highlight]
+await resumeHook(hook.token, { approved: true }); // [!code highlight]
+```
+
+<TSDoc
+definition={`
+import { waitForHook } from "@workflow/vitest";
+export default waitForHook;`}
+showSections={["parameters"]}
+/>
+
+#### Returns
+
+`Promise<Hook>` — The first pending hook matching the filter. The hook object includes `token`, `hookId`, and `runId`.
+
+### `WaitOptions`
+
+Both `waitForSleep()` and `waitForHook()` accept options for controlling polling behavior:
+
+<TSDoc
+definition={`
+import type { WaitOptions } from "@workflow/vitest";
+export default WaitOptions;`}
+/>
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `timeout` | `number` | `30000` | Maximum time to wait in milliseconds |
+| `pollInterval` | `number` | `100` | Polling interval in milliseconds |

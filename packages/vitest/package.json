@@ -39,5 +39,17 @@
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
     "vite": "7.1.12"
+  },
+  "peerDependencies": {
+    "vite": ">=6.0.0",
+    "vitest": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    },
+    "vitest": {
+      "optional": true
+    }
   }
 }

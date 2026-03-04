@@ -1,6 +1,6 @@
 import { waitForHook, waitForSleep } from '@workflow/vitest';
 import { describe, expect, it } from 'vitest';
-import { getRun, resumeHook, start } from 'workflow/api';
+import { getRun, resumeHook, resumeWebhook, start } from 'workflow/api';
 import { hookWorkflow } from '../workflows/hooks.js';
 import { calculateWorkflow } from '../workflows/simple.js';
 import { multiSleepWorkflow, sleepingWorkflow } from '../workflows/sleeping.js';
@@ -84,14 +84,12 @@ describe('hook workflow', () => {
 });
 
 describe('webhook workflow', () => {
-  it('should resume when webhook receives data via resumeHook', async () => {
+  it('should resume when webhook receives data via resumeWebhook', async () => {
     const run = await start(webhookWorkflow, ['endpoint-1']);
 
     await waitForHook(run, { token: 'webhook:endpoint-1' });
 
-    // In vitest, webhooks are resumed using resumeHook with a Request object.
-    // The webhook is fundamentally a hook with Request as its payload type.
-    await resumeHook(
+    await resumeWebhook(
       'webhook:endpoint-1',
       new Request('https://example.com/webhook', {
         method: 'POST',

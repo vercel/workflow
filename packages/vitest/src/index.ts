@@ -143,7 +143,9 @@ export async function setupWorkflowTests(
   ) => Promise<Response>;
   const stepHandler = stepsModule.POST as (req: Request) => Promise<Response>;
 
-  world = createLocalWorld({ dataDir: join(outDir, 'data') });
+  // Each vitest worker gets its own data directory to avoid race conditions
+  const poolId = process.env.VITEST_POOL_ID ?? '0';
+  world = createLocalWorld({ dataDir: join(outDir, 'data', poolId) });
   await world.start?.();
   await world.clear();
 
