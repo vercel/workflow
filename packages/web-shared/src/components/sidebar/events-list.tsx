@@ -2,7 +2,6 @@
 
 import type { Event } from '@workflow/world';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { DataInspector } from '../ui/data-inspector';
 import {
   ErrorStackBlock,
   isStructuredErrorWithStack,
