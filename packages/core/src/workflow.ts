@@ -693,12 +693,22 @@ export async function runWorkflow(
       );
     }
 
-    const args = await hydrateWorkflowArguments(
-      workflowRun.input,
-      workflowRun.runId,
-      encryptionKey,
-      vmGlobalThis
+    // Chain workflow argument hydration onto the promiseQueue so that the
+    // unconsumed event check (which waits for the queue to drain) doesn't
+    // fire during the async gap between run_started consumption and the
+    // workflow function subscribing its first step callbacks.
+    let args: unknown[] = [];
+    workflowContext.promiseQueue = workflowContext.promiseQueue.then(
+      async () => {
+        args = await hydrateWorkflowArguments(
+          workflowRun.input,
+          workflowRun.runId,
+          encryptionKey,
+          vmGlobalThis
+        );
+      }
     );
+    await workflowContext.promiseQueue;
 
     span?.setAttributes({
       ...Attribute.WorkflowArgumentsCount(args.length),
