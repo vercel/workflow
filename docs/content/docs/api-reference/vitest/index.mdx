@@ -85,6 +85,8 @@ Tears down the workflow test world. Clears the global world and closes the Local
 
 Polls the event log until the workflow has a pending `sleep()` call — one with a `wait_created` event but no corresponding `wait_completed` event. Returns the correlation ID of the pending sleep, which can be passed to [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to target a specific sleep.
 
+<!-- @skip-typecheck - @workflow/vitest not available in docs-typecheck -->
+
 ```typescript
 import { waitForSleep } from "@workflow/vitest"; // [!code highlight]
 import { start, getRun } from "workflow/api";
@@ -111,6 +113,8 @@ await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlig
 ### `waitForHook()`
 
 Polls the hook list and event log until a hook matching the optional `token` filter exists that hasn't been received yet. Returns the matching hook object.
+
+<!-- @skip-typecheck - @workflow/vitest not available in docs-typecheck -->
 
 ```typescript
 import { waitForHook } from "@workflow/vitest"; // [!code highlight]
