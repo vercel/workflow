@@ -23,10 +23,13 @@ interface RepoProjectConfig {
   id: string;
   name: string;
   directory: string;
+  /** Per-project orgId — added in vercel/vercel#14967. Prefer this over root-level orgId. */
+  orgId?: string;
 }
 
 interface RepoProjectsConfig {
-  orgId: string;
+  /** Legacy root-level orgId — older Vercel CLI versions put orgId here. */
+  orgId?: string;
   remoteName: string;
   projects: RepoProjectConfig[];
 }
@@ -195,9 +198,16 @@ async function getProjectLinkFromRepoLink(
   logger.debug(`Found matching repo projects: ${JSON.stringify(projects)}`);
   if (projects.length === 1) {
     const project = projects[0];
+    // Prefer per-project orgId (vercel/vercel#14967), fall back to
+    // root-level orgId for older Vercel CLI versions.
+    const orgId = project.orgId ?? repoLink.repoConfig?.orgId;
+    if (!orgId) {
+      logger.debug('No orgId found in repo link project or root config');
+      return null;
+    }
     return {
       repoRoot: repoLink.rootPath,
-      orgId: repoLink.repoConfig.orgId,
+      orgId,
       projectId: project.id,
       projectName: project.name,
       projectRootDirectory: project.directory,
