@@ -959,8 +959,8 @@ export async function readStreamServerAction(
     // feature, to allow for testing World behavior.
     const stream = await world.readFromStream(streamId, startIndex);
 
-    const revivers = getExternalRevivers(globalThis, [], '');
-    const transform = getDeserializeStream(revivers);
+    const revivers = getExternalRevivers(globalThis, [], '', undefined);
+    const transform = getDeserializeStream(revivers, undefined);
 
     return stream.pipeThrough(transform);
   } catch (error) {

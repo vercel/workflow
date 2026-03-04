@@ -813,15 +813,18 @@ export const showStream = async (
   }
   const rawStream = await world.readFromStream(streamId);
 
-  // Resolve the encryption key if a runId is provided (needed for encrypted streams).
-  // The key is passed as a promise so stream construction is synchronous —
-  // it will be resolved lazily on the first encrypted frame.
+  // Only resolve the encryption key when --decrypt is passed and a runId is available.
+  // Without --decrypt, encrypted frames will pass through as-is.
   let encryptionKey: EncryptionKeyParam;
-  if (opts.runId) {
+  if (opts.decrypt && opts.runId) {
     encryptionKey = (async () => {
       const rawKey = await world.getEncryptionKeyForRun?.(opts.runId!);
       return rawKey ? await importKey(rawKey) : undefined;
     })();
+  } else if (opts.decrypt && !opts.runId) {
+    logger.warn(
+      'Cannot decrypt stream content without a run ID. Use --run=<run-id> with --decrypt.'
+    );
   }
 
   // Deserialize the stream to get JavaScript objects
@@ -901,6 +904,7 @@ export const listEvents = async (
   world: World,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
   if (opts.workflowName) {
     logger.warn(
       'Filtering by workflow-name is not supported for events, ignoring filter.'
@@ -949,7 +953,10 @@ export const listEvents = async (
     logger.debug(`Fetching events for run ${filterId}`);
     try {
       const events = await listCall(filterId, {});
-      showJson(events.data);
+      const hydratedEvents = await Promise.all(
+        events.data.map((e) => hydrateResourceIO(e, resolveKey))
+      );
+      showJson(hydratedEvents);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -979,7 +986,10 @@ export const listEvents = async (
       }
     },
     displayPage: async (events) => {
-      logger.log(showTable(events, props, opts));
+      const hydratedEvents = await Promise.all(
+        events.map((e) => hydrateResourceIO(e, resolveKey))
+      );
+      logger.log(showTable(hydratedEvents, props, opts));
       showInspectInfoBox('event');
     },
   });

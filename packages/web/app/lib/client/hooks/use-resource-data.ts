@@ -110,7 +110,15 @@ export function useWorkflowResourceData(
         setError(error);
         return;
       }
-      setData(await hydrate(result));
+      try {
+        setData(await hydrate(result));
+      } catch (hydrateError) {
+        setError(
+          hydrateError instanceof Error
+            ? hydrateError
+            : new Error(String(hydrateError))
+        );
+      }
       return;
     }
     if (resource === 'sleep') {
@@ -125,19 +133,27 @@ export function useWorkflowResourceData(
         setError(error);
         return;
       }
-      const events = await Promise.all(
-        (result.data as unknown as Event[]).map(hydrate)
-      );
-      const data = waitEventsToWaitEntity(events);
-      if (data === null) {
-        setError(
-          new Error(
-            `Failed to load ${resource} details: missing required event data`
-          )
+      try {
+        const events = await Promise.all(
+          (result.data as unknown as Event[]).map(hydrate)
         );
-        return;
+        const data = waitEventsToWaitEntity(events);
+        if (data === null) {
+          setError(
+            new Error(
+              `Failed to load ${resource} details: missing required event data`
+            )
+          );
+          return;
+        }
+        setData(data as unknown as Hook | Event);
+      } catch (hydrateError) {
+        setError(
+          hydrateError instanceof Error
+            ? hydrateError
+            : new Error(String(hydrateError))
+        );
       }
-      setData(data as unknown as Hook | Event);
       return;
     }
     setLoading(true);

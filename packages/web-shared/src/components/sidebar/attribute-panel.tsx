@@ -496,6 +496,7 @@ const attributeToDisplayFn: Record<
     );
   },
   error: (value: unknown) => {
+    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
     if (!hasDisplayContent(value)) return null;
 
     // If the error object has a `stack` field, render it as readable
@@ -523,8 +524,8 @@ const attributeToDisplayFn: Record<
     );
   },
   eventData: (value: unknown) => {
-    if (!hasDisplayContent(value)) return null;
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (!hasDisplayContent(value)) return null;
     return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
   },
 };

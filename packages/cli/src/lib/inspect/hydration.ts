@@ -200,24 +200,41 @@ async function maybeDecryptFields<
   if (!runId) return resource;
 
   const result = { ...resource };
-  const rawKey = await resolver(runId);
-  const { importKey } = await import('@workflow/core/encryption');
-  const k = rawKey ? await importKey(rawKey) : undefined;
 
-  // Decrypt input/output fields (WorkflowRun, Step)
-  result.input = await maybeDecrypt(result.input, k);
-  result.output = await maybeDecrypt(result.output, k);
+  try {
+    const rawKey = await resolver(runId);
+    const { importKey } = await import('@workflow/core/encryption');
+    const k = rawKey ? await importKey(rawKey) : undefined;
 
-  // Decrypt metadata field (Hook)
-  result.metadata = await maybeDecrypt(result.metadata, k);
+    // Decrypt input/output/error fields (WorkflowRun, Step)
+    result.input = await maybeDecrypt(result.input, k);
+    result.output = await maybeDecrypt(result.output, k);
+    (result as any).error = await maybeDecrypt((result as any).error, k);
 
-  // Decrypt eventData fields (Event)
-  if (result.eventData && typeof result.eventData === 'object') {
-    const eventData = { ...result.eventData };
-    for (const field of ['result', 'input', 'output', 'metadata', 'payload']) {
-      eventData[field] = await maybeDecrypt(eventData[field], k);
+    // Decrypt metadata field (Hook)
+    result.metadata = await maybeDecrypt(result.metadata, k);
+
+    // Decrypt eventData fields (Event)
+    if (result.eventData && typeof result.eventData === 'object') {
+      const eventData = { ...result.eventData };
+      for (const field of [
+        'result',
+        'input',
+        'output',
+        'metadata',
+        'payload',
+      ]) {
+        eventData[field] = await maybeDecrypt(eventData[field], k);
+      }
+      result.eventData = eventData;
     }
-    result.eventData = eventData;
+  } catch (err) {
+    // Decryption failed (bad key, corrupted ciphertext, etc.) — fall back
+    // to showing encrypted placeholders instead of crashing the CLI.
+    const { logger } = await import('../config/log.js');
+    logger.warn(
+      `Decryption failed for resource ${runId}: ${err instanceof Error ? err.message : String(err)}`
+    );
   }
 
   return result;

@@ -18,6 +18,7 @@ import {
   ObjectValue,
 } from 'react-inspector';
 import { useDarkMode } from '../../hooks/use-dark-mode';
+import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
 import {
   type InspectorThemeExtended,
   inspectorThemeDark,
@@ -135,7 +136,7 @@ function NodeRenderer({
   if (
     data !== null &&
     typeof data === 'object' &&
-    data.constructor?.name === 'Encrypted'
+    data.constructor?.name === ENCRYPTED_DISPLAY_NAME
   ) {
     const label = (
       <span style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>

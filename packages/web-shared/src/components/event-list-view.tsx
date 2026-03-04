@@ -701,12 +701,16 @@ function EventRow({
     if (encryptionKey && hasAttemptedLoad && onLoadEventData) {
       setLoadedEventData(null);
       setHasAttemptedLoad(false);
-      onLoadEventData(event).then((data) => {
-        if (data !== null && data !== undefined) {
-          setLoadedEventData(data);
-        }
-        setHasAttemptedLoad(true);
-      });
+      onLoadEventData(event)
+        .then((data) => {
+          if (data !== null && data !== undefined) {
+            setLoadedEventData(data);
+          }
+          setHasAttemptedLoad(true);
+        })
+        .catch(() => {
+          setHasAttemptedLoad(true);
+        });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encryptionKey]);

@@ -424,11 +424,11 @@ export function RunDetailView({
     const { error: keyError, result: keyResult } =
       await unwrapServerActionResult(getEncryptionKeyForRun(env, runId));
     if (keyError) {
-      console.error('Failed to fetch encryption key:', keyError);
+      toast.error(`Failed to fetch encryption key: ${keyError.message}`);
       return;
     }
     if (!keyResult) {
-      console.error('Encryption is not configured for this deployment.');
+      toast.error('Encryption is not configured for this deployment.');
       return;
     }
     setEncryptionKey(keyResult);
@@ -602,9 +602,14 @@ export function RunDetailView({
 
               <div className="flex items-center justify-between gap-2">
                 <LiveStatus hasError={hasError} errorMessage={errorMessage} />
-                {/* Decrypt button — shown when run has encrypted data */}
+                {/* Decrypt button — shown when any run/step data is encrypted */}
                 {(isEncryptedMarker(run.input) ||
-                  isEncryptedMarker(run.output)) && (
+                  isEncryptedMarker(run.output) ||
+                  isEncryptedMarker(run.error) ||
+                  allSteps.some(
+                    (s) =>
+                      isEncryptedMarker(s.input) || isEncryptedMarker(s.output)
+                  )) && (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span>
