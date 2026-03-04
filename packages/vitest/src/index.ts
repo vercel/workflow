@@ -145,6 +145,7 @@ export async function setupWorkflowTests(
 
   world = createLocalWorld({ dataDir: join(outDir, 'data') });
   await world.start?.();
+  await world.clear();
 
   world.registerHandler('__wkf_workflow_', workflowHandler);
   world.registerHandler('__wkf_step_', stepHandler);

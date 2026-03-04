@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import type { World } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
@@ -24,6 +25,8 @@ export type LocalWorld = World & {
     prefix: '__wkf_step_' | '__wkf_workflow_',
     handler: DirectHandler
   ): void;
+  /** Clear all workflow data (runs, steps, events, hooks, streams). */
+  clear(): Promise<void>;
 };
 
 /**
@@ -53,6 +56,10 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
     },
     async close() {
       await queue.close();
+    },
+    async clear() {
+      await rm(mergedConfig.dataDir, { recursive: true, force: true });
+      await initDataDir(mergedConfig.dataDir);
     },
   };
 }
