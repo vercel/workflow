@@ -161,7 +161,7 @@ export class Run<TResult> {
   /**
    * The readable stream of the workflow run.
    */
-  get readable(): Promise<ReadableStream> {
+  get readable(): ReadableStream {
     return this.getReadable();
   }
 
@@ -172,12 +172,14 @@ export class Run<TResult> {
    * @param options - The options for the readable stream.
    * @returns The `ReadableStream` for the workflow run.
    */
-  async getReadable<R = any>(
+  getReadable<R = any>(
     options: WorkflowReadableStreamOptions = {}
-  ): Promise<ReadableStream<R>> {
+  ): ReadableStream<R> {
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
-    const encryptionKey = await this.getEncryptionKey();
+    // Pass the key as a promise — it will be resolved lazily inside
+    // the first async transform() call of the deserialize stream.
+    const encryptionKey = this.getEncryptionKey();
     return getExternalRevivers(
       global,
       ops,

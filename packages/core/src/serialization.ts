@@ -10,6 +10,18 @@ import {
   encrypt as aesGcmEncrypt,
   type CryptoKey,
 } from './encryption.js';
+
+/**
+ * Encryption key parameter type. Accepts a resolved key, undefined (no encryption),
+ * or a promise that resolves to either. This allows synchronous function signatures
+ * (e.g., getReadable()) to thread the key through without awaiting it — the promise
+ * is resolved lazily inside the first async transform() call.
+ */
+export type EncryptionKeyParam =
+  | CryptoKey
+  | undefined
+  | Promise<CryptoKey | undefined>;
+
 import {
   createFlushableState,
   flushablePipe,
@@ -236,12 +248,18 @@ const FRAME_HEADER_SIZE = 4;
 
 export function getSerializeStream(
   reducers: Reducers,
-  cryptoKey: CryptoKey | undefined
+  cryptoKey: EncryptionKeyParam
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
+  // Resolve the key promise once on first use and cache the result.
+  const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
   const stream = new TransformStream<any, Uint8Array>({
     async transform(chunk, controller) {
       try {
+        if (!keyState.resolved) {
+          keyState.key = await cryptoKey;
+          keyState.resolved = true;
+        }
         const serialized = stringify(chunk, reducers);
         const payload = encoder.encode(serialized);
         let prefixed = encodeWithFormatPrefix(
@@ -252,8 +270,8 @@ export function getSerializeStream(
         // Encrypt the frame payload if a key is provided.
         // The length header remains in the clear so the deserializer can
         // find frame boundaries regardless of transport chunking.
-        if (cryptoKey) {
-          const encrypted = await aesGcmEncrypt(cryptoKey, prefixed);
+        if (keyState.key) {
+          const encrypted = await aesGcmEncrypt(keyState.key, prefixed);
           prefixed = encodeWithFormatPrefix(
             SerializationFormat.ENCRYPTED,
             encrypted
@@ -280,10 +298,12 @@ export function getSerializeStream(
 
 export function getDeserializeStream(
   revivers: Revivers,
-  cryptoKey: CryptoKey | undefined
+  cryptoKey: EncryptionKeyParam
 ): TransformStream<Uint8Array, any> {
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
+  // Resolve the key promise once on first use and cache the result.
+  const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
 
   function appendToBuffer(data: Uint8Array) {
     const newBuffer = new Uint8Array(buffer.length + data.length);
@@ -295,6 +315,12 @@ export function getDeserializeStream(
   async function processFrames(
     controller: TransformStreamDefaultController<any>
   ) {
+    // Resolve the key promise once on first use and cache the result
+    if (!keyState.resolved) {
+      keyState.key = await cryptoKey;
+      keyState.resolved = true;
+    }
+
     // Try to extract complete length-prefixed frames
     while (buffer.length >= FRAME_HEADER_SIZE) {
       const frameLength = new DataView(
@@ -319,7 +345,7 @@ export function getDeserializeStream(
       // the inner format-prefixed data (e.g., 'devl' + serialized text),
       // then fall through to the normal deserialization path.
       if (format === SerializationFormat.ENCRYPTED) {
-        if (!cryptoKey) {
+        if (!keyState.key) {
           controller.error(
             new WorkflowRuntimeError(
               'Encrypted stream data encountered but no encryption key is available. ' +
@@ -328,7 +354,7 @@ export function getDeserializeStream(
           );
           return;
         }
-        const decrypted = await aesGcmDecrypt(cryptoKey, payload);
+        const decrypted = await aesGcmDecrypt(keyState.key, payload);
         ({ format, payload } = decodeFormatPrefix(decrypted));
       }
 
@@ -771,7 +797,7 @@ export function getExternalReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: CryptoKey | undefined
+  cryptoKey: EncryptionKeyParam
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -882,7 +908,7 @@ function getStepReducers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: CryptoKey | undefined
+  cryptoKey: EncryptionKeyParam
 ): Reducers {
   return {
     ...getCommonReducers(global),
@@ -1076,7 +1102,7 @@ export function getExternalRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: CryptoKey | undefined
+  cryptoKey: EncryptionKeyParam
 ): Revivers {
   return {
     ...getCommonRevivers(global),
@@ -1291,7 +1317,7 @@ function getStepRevivers(
   global: Record<string, any> = globalThis,
   ops: Promise<void>[],
   runId: string,
-  cryptoKey: CryptoKey | undefined
+  cryptoKey: EncryptionKeyParam
 ): Revivers {
   return {
     ...getCommonRevivers(global),

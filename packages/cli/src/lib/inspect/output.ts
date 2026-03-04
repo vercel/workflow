@@ -1,4 +1,6 @@
+import { importKey } from '@workflow/core/encryption';
 import {
+  type EncryptionKeyParam,
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
@@ -780,16 +782,32 @@ export const showStream = async (
   streamId: string,
   opts: InspectCLIOptions = {}
 ) => {
-  if (opts.runId || opts.stepId) {
+  if (opts.stepId) {
     logger.warn(
-      'Filtering by run-id or step-id is not supported when showing a stream, ignoring filter.'
+      'Filtering by step-id is not supported when showing a stream, ignoring filter.'
     );
   }
   const rawStream = await world.readFromStream(streamId);
 
+  // Resolve the encryption key if a runId is provided (needed for encrypted streams).
+  // The key is passed as a promise so stream construction is synchronous —
+  // it will be resolved lazily on the first encrypted frame.
+  let encryptionKey: EncryptionKeyParam;
+  if (opts.runId) {
+    encryptionKey = (async () => {
+      const rawKey = await world.getEncryptionKeyForRun?.(opts.runId!);
+      return rawKey ? await importKey(rawKey) : undefined;
+    })();
+  }
+
   // Deserialize the stream to get JavaScript objects
-  const revivers = getExternalRevivers(globalThis, [], '');
-  const transform = getDeserializeStream(revivers);
+  const revivers = getExternalRevivers(
+    globalThis,
+    [],
+    opts.runId ?? '',
+    encryptionKey
+  );
+  const transform = getDeserializeStream(revivers, encryptionKey);
   const stream = rawStream.pipeThrough(transform);
 
   logger.info('Streaming to stdout, press CTRL+C to abort.');
