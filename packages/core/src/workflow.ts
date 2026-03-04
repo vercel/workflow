@@ -102,7 +102,7 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       updateTimestamp,
     } = createContext({
-      seed: workflowRun.runId,
+      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${+startedAt}`,
       fixedTimestamp: +startedAt,
     });
 
