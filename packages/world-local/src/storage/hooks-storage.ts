@@ -1,5 +1,5 @@
-import { HookNotFoundError } from '@workflow/errors';
 import path from 'node:path';
+import { HookNotFoundError } from '@workflow/errors';
 import type {
   GetHookParams,
   Hook,
@@ -68,7 +68,7 @@ export function createHooksStorage(basedir: string): Storage['hooks'] {
     const result = await paginatedFileSystemQuery({
       directory: hooksDir,
       schema: HookSchema,
-      sortOrder: params.pagination?.sortOrder,
+      sortOrder: params.pagination?.sortOrder ?? 'asc',
       limit: params.pagination?.limit,
       cursor: params.pagination?.cursor,
       filePrefix: undefined, // Hooks don't have ULIDs, so we can't optimize by filename
@@ -80,11 +80,10 @@ export function createHooksStorage(basedir: string): Storage['hooks'] {
         return true;
       },
       getCreatedAt: () => {
-        // Hook files don't have ULID timestamps in filename
-        // We need to read the file to get createdAt, but that's inefficient
-        // So we return the hook's createdAt directly (item.createdAt will be used for sorting)
-        // Return a dummy date to pass the null check, actual sorting uses item.createdAt
-        return new Date(0);
+        // Hook files don't have ULID timestamps in filename, so return null
+        // to skip the filename-based optimization and defer to JSON-based
+        // cursor filtering which uses the actual createdAt from the file.
+        return null;
       },
       getId: (hook) => hook.hookId,
     });
