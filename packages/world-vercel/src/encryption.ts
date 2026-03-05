@@ -113,59 +113,36 @@ export async function fetchRunKey(
   if (options?.teamId) {
     params.set('teamId', options.teamId);
   }
-  const url = `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`;
-  const headers = { authorization: `Bearer ${token}` };
-
-  const MAX_RETRIES = 5;
-  const BASE_DELAY_MS = 1000;
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    const response = await fetch(url, {
+  // 429/5xx retries are handled by the shared RetryAgent from getDispatcher()
+  const response = await fetch(
+    `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
+    {
       method: 'GET',
-      headers,
+      headers: {
+        authorization: `Bearer ${token}`,
+      },
       dispatcher: getDispatcher(),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-    } as any);
+    } as any
+  );
 
-    if (response.status === 429) {
-      if (attempt === MAX_RETRIES) {
-        throw new Error(
-          `Failed to fetch run key for ${runId} (deployment ${deploymentId}): rate limited after ${MAX_RETRIES + 1} attempts`
-        );
-      }
-      // Exponential backoff with jitter: 1s, 2s, 4s, 8s, 16s
-      const retryAfterHeader = response.headers.get('retry-after');
-      const parsedRetryAfter = retryAfterHeader
-        ? Number.parseInt(retryAfterHeader, 10)
-        : NaN;
-      const delay = !Number.isNaN(parsedRetryAfter)
-        ? parsedRetryAfter * 1000
-        : BASE_DELAY_MS * 2 ** attempt + Math.random() * 500;
-      await new Promise((r) => setTimeout(r, delay));
-      continue;
-    }
-
-    if (!response.ok) {
-      throw new Error(
-        `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${response.status}`
-      );
-    }
-
-    const data = await response.json();
-    const result = z.object({ key: z.string().nullable() }).safeParse(data);
-    if (!result.success) {
-      throw new Error(
-        `Invalid response from Vercel API: expected { key: string | null }. Zod error: ${result.error.message}`
-      );
-    }
-    if (result.data.key === null) {
-      return undefined;
-    }
-    return Buffer.from(result.data.key, 'base64');
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${response.status}`
+    );
   }
 
-  // Should not be reached, but TypeScript needs it
-  throw new Error('Unreachable');
+  const data = await response.json();
+  const result = z.object({ key: z.string().nullable() }).safeParse(data);
+  if (!result.success) {
+    throw new Error(
+      `Invalid response from Vercel API: expected { key: string | null }. Zod error: ${result.error.message}`
+    );
+  }
+  if (result.data.key === null) {
+    return undefined;
+  }
+  return Buffer.from(result.data.key, 'base64');
 }
 
 /**
