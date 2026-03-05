@@ -32,7 +32,7 @@ import { and, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
-import { compact } from './util.js';
+import { compact, validateUlidTimestamp } from './util.js';
 
 /**
  * Parse legacy errorJson (text column with JSON-stringified StructuredError).
@@ -312,6 +312,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         throw new Error('runId is required for non-run_created events');
       } else {
         effectiveRunId = runId;
+      }
+
+      // Validate client-provided runId timestamp is within acceptable threshold
+      if (data.eventType === 'run_created' && runId && runId !== '') {
+        const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
+        if (validationError) {
+          throw new WorkflowAPIError(validationError, { status: 400 });
+        }
       }
 
       // specVersion is always sent by the runtime, but we provide a fallback for safety
