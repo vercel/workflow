@@ -1,3 +1,4 @@
+import { WorkflowAPIError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   type CreateEventParams,
@@ -10,6 +11,7 @@ import {
   type ListEventsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  validateUlidTimestamp,
   type WorkflowRun,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -364,6 +366,14 @@ export async function createWorkflowRunEvent(
     });
 
     return { event: wireResult };
+  }
+
+  // Validate client-provided runId timestamp is within acceptable threshold
+  if (data.eventType === 'run_created' && id) {
+    const validationError = validateUlidTimestamp(id, 'wrun_');
+    if (validationError) {
+      throw new WorkflowAPIError(validationError, { status: 400 });
+    }
   }
 
   // For run_created events, runId may be client-provided or null

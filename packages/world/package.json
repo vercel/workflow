@@ -22,6 +22,9 @@
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist"
   },
+  "dependencies": {
+    "ulid": "catalog:"
+  },
   "peerDependencies": {
     "zod": "catalog:"
   },
