@@ -629,7 +629,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           createdAt: now,
           // Propagate specVersion from the event to the hook entity
           specVersion: effectiveSpecVersion,
-          isWebhook: hookData.isWebhook,
+          isWebhook: hookData.isWebhook ?? false,
         };
         const hookPath = path.join(
           basedir,

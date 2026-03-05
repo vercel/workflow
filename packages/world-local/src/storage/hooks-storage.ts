@@ -31,7 +31,7 @@ export function createHooksStorage(basedir: string): Storage['hooks'] {
       const hookPath = path.join(hooksDir, `${file}.json`);
       const hook = await readJSON(hookPath, HookSchema);
       if (hook && hook.token === token) {
-        return { ...hook, isWebhook: hook.isWebhook ?? true };
+        return { ...hook, isWebhook: hook.isWebhook ?? false };
       }
     }
 
@@ -46,7 +46,7 @@ export function createHooksStorage(basedir: string): Storage['hooks'] {
     }
     const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
     return filterHookData(
-      { ...hook, isWebhook: hook.isWebhook ?? true },
+      { ...hook, isWebhook: hook.isWebhook ?? false },
       resolveData
     );
   }

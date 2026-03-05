@@ -1314,7 +1314,7 @@ describe('Storage', () => {
 
       it('should throw error for non-existent hook', async () => {
         await expect(storage.hooks.get('nonexistent_hook')).rejects.toThrow(
-          'Hook nonexistent_hook not found'
+          'Hook not found'
         );
       });
 
@@ -1354,7 +1354,7 @@ describe('Storage', () => {
       it('should throw error for non-existent token', async () => {
         await expect(
           storage.hooks.getByToken('nonexistent-token')
-        ).rejects.toThrow('Hook with token nonexistent-token not found');
+        ).rejects.toThrow('Hook not found');
       });
 
       it('should find the correct hook when multiple hooks exist', async () => {
