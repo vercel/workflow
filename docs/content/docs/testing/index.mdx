@@ -204,10 +204,11 @@ describe("approvalWorkflow", () => {
       reviewer: "alice", // [!code highlight]
     }); // [!code highlight]
 
-    // Wait for the sleep to be reached, then skip it.
-    // waitForSleep returns the sleep's correlation ID, which can be
-    // passed to wakeUp() to target a specific sleep in the workflow.
+    // Wait for the first pending sleep to be reached.
+    // waitForSleep() returns the sleep's correlation ID, which can be
+    // passed to wakeUp() later to target a specific sleep in the workflow.
     const sleepId = await waitForSleep(run); // [!code highlight]
+
     // Calling wakeUp() without correlationIds would resume all active sleeps
     await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlight]
 
