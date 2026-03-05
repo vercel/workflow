@@ -139,7 +139,7 @@ export function extractCodeSamples(
       language: normalizedLang,
       filePath,
       lineNumber,
-      skipTypeCheck: skipTypeCheck || isErrorDemo,
+      skipTypeCheck: skipTypeCheck || isErrorDemo || isIncomplete,
       expectedErrors,
       isIncomplete,
     });

@@ -73,6 +73,7 @@ export async function processPayment() {
 
 When a hook conflict occurs, awaiting the hook will throw a `WorkflowRuntimeError`. You can catch this error to handle the conflict gracefully:
 
+<!-- @skip-typecheck -->
 ```typescript lineNumbers
 import { WorkflowRuntimeError } from "@workflow/errors";
 

@@ -120,7 +120,7 @@ import { streamProcessingWorkflow } from "./workflows/streaming";
 export async function POST(request: Request) {
   // Streams can be passed as workflow arguments
   const run = await start(streamProcessingWorkflow, [request.body]); // [!code highlight]
-  await run.result();
+  await run.returnValue;
 
   return Response.json({ status: "complete" });
 }

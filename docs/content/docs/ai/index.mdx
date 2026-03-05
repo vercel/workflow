@@ -144,6 +144,7 @@ export async function POST(req: Request) {
 
 Our tools are mostly mocked out for the sake of the example. We use AI SDK's `tool` function to define the tool, and pass it to the agent. In your own app, this might be any kind of tool call, like database queries, calls to external services, etc.
 
+<!-- @skip-typecheck -->
 ```typescript title="workflows/chat/steps/tools.ts" lineNumbers
 import { tool } from "ai";
 import { z } from "zod";

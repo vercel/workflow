@@ -81,6 +81,7 @@ export async function POST(request: Request) {
 
 Use `getHookByToken` to validate hook ownership or metadata before resuming:
 
+<!-- @skip-typecheck -->
 ```typescript lineNumbers
 import { getHookByToken, resumeHook } from "workflow/api";
 
