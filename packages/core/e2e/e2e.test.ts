@@ -1066,6 +1066,34 @@ describe('e2e', () => {
   );
 
   test(
+    'stepDirectCallWithImports - step function with external imports called directly',
+    { timeout: 60_000 },
+    async () => {
+      const url = new URL('/api/test-direct-step-with-imports', deploymentUrl);
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getProtectionBypassHeaders(),
+        },
+        body: JSON.stringify({ a: 3, b: 5 }),
+      });
+
+      if (!res.ok) {
+        throw new Error(
+          `Failed to call step function with imports directly: ${res.url} ${
+            res.status
+          }: ${await res.text()}`
+        );
+      }
+
+      const { result } = await res.json();
+
+      expect(result).toBe('sum: 8');
+    }
+  );
+
+  test(
     'hookCleanupTestWorkflow - hook token reuse after workflow completion',
     { timeout: 60_000 },
     async () => {

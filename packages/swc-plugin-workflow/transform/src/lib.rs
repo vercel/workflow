@@ -3250,6 +3250,8 @@ impl StepTransform {
     fn analyze_usage_comprehensive(&self, module: &Module) -> HashSet<String> {
         let mut used_identifiers = HashSet::new();
 
+        let skip_step_bodies = matches!(self.mode, TransformMode::Workflow);
+
         // First, mark exported identifiers as used
         for item in &module.body {
             if let ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export_decl)) = item {
@@ -3257,7 +3259,10 @@ impl StepTransform {
                     Decl::Fn(fn_decl) => {
                         let fn_name = fn_decl.ident.sym.to_string();
                         // Exported functions are considered used unless they're step functions
-                        if !self.step_function_names.contains(&fn_name) {
+                        // whose bodies will be replaced (workflow mode only)
+                        if !self.step_function_names.contains(&fn_name)
+                            || !skip_step_bodies
+                        {
                             used_identifiers.insert(fn_name);
                         }
                     }
@@ -3278,6 +3283,7 @@ impl StepTransform {
             used_identifiers: &mut used_identifiers,
             step_function_names: &self.step_function_names,
             current_function: None,
+            skip_step_bodies,
         };
 
         // Visit the module directly (not clones) to analyze the already-transformed code
@@ -3496,6 +3502,7 @@ struct ComprehensiveUsageCollector<'a> {
     used_identifiers: &'a mut HashSet<String>,
     step_function_names: &'a HashSet<String>,
     current_function: Option<String>,
+    skip_step_bodies: bool,
 }
 
 impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
@@ -3524,8 +3531,7 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
         let fn_name = fn_decl.ident.sym.to_string();
         let is_step_function = self.step_function_names.contains(&fn_name);
 
-        if is_step_function {
-            // Step functions have their bodies replaced, so don't analyze their original content
+        if is_step_function && self.skip_step_bodies {
             return;
         }
 
@@ -3577,8 +3583,7 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
         match &mut export_decl.decl {
             Decl::Fn(fn_decl) => {
                 let fn_name = fn_decl.ident.sym.to_string();
-                if self.step_function_names.contains(&fn_name) {
-                    // Step functions have their bodies replaced
+                if self.step_function_names.contains(&fn_name) && self.skip_step_bodies {
                     return;
                 }
 
@@ -3599,18 +3604,19 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
 
     fn visit_mut_var_declarator(&mut self, var_decl: &mut VarDeclarator) {
         // Check if this is a step function assigned to a variable
-        if let Some(init) = &var_decl.init {
-            if let Pat::Ident(binding) = &var_decl.name {
-                let name = binding.id.sym.to_string();
+        if self.skip_step_bodies {
+            if let Some(init) = &var_decl.init {
+                if let Pat::Ident(binding) = &var_decl.name {
+                    let name = binding.id.sym.to_string();
 
-                let is_step_fn = match &**init {
-                    Expr::Fn(_) | Expr::Arrow(_) => self.step_function_names.contains(&name),
-                    _ => false,
-                };
+                    let is_step_fn = match &**init {
+                        Expr::Fn(_) | Expr::Arrow(_) => self.step_function_names.contains(&name),
+                        _ => false,
+                    };
 
-                if is_step_fn {
-                    // Don't visit the initializer if it's a step function
-                    return;
+                    if is_step_fn {
+                        return;
+                    }
                 }
             }
         }
