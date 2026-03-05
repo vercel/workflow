@@ -19,4 +19,17 @@ export class AppController {
 
     return { result };
   }
+
+  @Post('test-direct-step-with-imports')
+  async invokeStepWithImports(@Body() body: { a: number; b: number }) {
+    const { stepWithImportedHelper } = await import(
+      './workflows/_direct_call_step.js'
+    );
+
+    const { a, b } = body;
+
+    const result = await stepWithImportedHelper(a, b);
+
+    return { result };
+  }
 }

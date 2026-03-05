@@ -23,4 +23,17 @@ app.post('/api/test-direct-step-call', async ({ req }) => {
   return Response.json({ result });
 });
 
+app.post('/api/test-direct-step-with-imports', async ({ req }) => {
+  const { stepWithImportedHelper } = await import(
+    '../workflows/_direct_call_step.js'
+  );
+
+  const body = await req.json();
+  const { a, b } = body;
+
+  const result = await stepWithImportedHelper(a, b);
+
+  return Response.json({ result });
+});
+
 export default app;
