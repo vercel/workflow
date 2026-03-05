@@ -11,6 +11,8 @@ The `@workflow/vitest` package provides a Vitest plugin and test helpers for run
 
 Returns a Vite plugin array that handles SWC transforms, bundle building, and in-process handler registration automatically.
 
+{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
+
 ```typescript
 import { defineConfig } from "vitest/config";
 import { workflow } from "@workflow/vitest"; // [!code highlight]
@@ -27,6 +29,8 @@ export default defineConfig({
 ### `buildWorkflowTests()`
 
 Builds workflow and step bundles to disk. Called automatically by the `workflow()` plugin in `globalSetup`. Use directly only for [manual setup](/docs/testing#manual-setup).
+
+{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
 
 ```typescript
 import { buildWorkflowTests } from "@workflow/vitest";
@@ -47,6 +51,8 @@ export async function setup() {
 Sets up an in-process workflow runtime in each test worker. Imports pre-built bundles, creates a [Local World](/docs/worlds/local) instance with direct handlers, and sets it as the global world. Clears all workflow data on each invocation for full test isolation.
 
 Called automatically by the `workflow()` plugin in `setupFiles`. Use directly only for [manual setup](/docs/testing#manual-setup).
+
+{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
 
 ```typescript
 import { beforeAll, afterAll } from "vitest";

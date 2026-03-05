@@ -87,10 +87,11 @@ describe('webhook workflow', () => {
   it('should resume when webhook receives data via resumeWebhook', async () => {
     const run = await start(webhookWorkflow, ['endpoint-1']);
 
-    await waitForHook(run, { token: 'webhook:endpoint-1' });
+    // Webhook tokens are randomly generated, so discover via waitForHook
+    const hook = await waitForHook(run);
 
     await resumeWebhook(
-      'webhook:endpoint-1',
+      hook.token,
       new Request('https://example.com/webhook', {
         method: 'POST',
         body: JSON.stringify({ event: 'payment.completed', amount: 99 }),

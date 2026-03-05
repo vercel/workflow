@@ -47,9 +47,6 @@
   "peerDependenciesMeta": {
     "vite": {
       "optional": true
-    },
-    "vitest": {
-      "optional": true
     }
   }
 }

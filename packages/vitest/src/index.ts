@@ -18,6 +18,8 @@ class VitestBuilder extends BaseBuilder {
         workingDir,
         dirs: ['.'],
       }),
+      // 'next' target produces ESM bundles with Node.js-compatible output,
+      // which is what we need for in-process vitest execution.
       buildTarget: 'next',
       suppressCreateWorkflowsBundleLogs: true,
       suppressCreateWebhookBundleLogs: true,

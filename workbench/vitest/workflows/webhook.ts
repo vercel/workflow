@@ -8,9 +8,9 @@ async function processPayload(body: string) {
 export async function webhookWorkflow(endpointId: string) {
   'use workflow';
 
-  using webhook = createWebhook({
-    token: `webhook:${endpointId}`,
-  });
+  // createWebhook() does not accept a token — tokens are randomly generated.
+  // Use waitForHook() in tests to discover the token.
+  using webhook = createWebhook();
 
   const request = await webhook;
   const body = await request.text();
