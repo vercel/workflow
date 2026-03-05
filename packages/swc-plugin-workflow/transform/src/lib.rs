@@ -3290,6 +3290,22 @@ impl StepTransform {
         let mut module_clone = module.clone();
         module_clone.visit_mut_with(&mut visitor);
 
+        // In client mode, also analyze pending hoisted step function bodies.
+        // These are extracted from object properties / nested workflow scopes during
+        // the first pass but aren't inserted into the module until visit_mut_program
+        // (after remove_dead_code has already run). Without this, imports referenced
+        // only inside those bodies would be incorrectly removed as dead code.
+        if !skip_step_bodies {
+            for (_, _, fn_expr, _, _, _) in &self.object_property_step_functions {
+                let mut fn_clone = fn_expr.clone();
+                fn_clone.visit_mut_with(&mut visitor);
+            }
+            for (_, fn_expr, _, _, _, _) in &self.nested_step_functions {
+                let mut fn_clone = fn_expr.clone();
+                fn_clone.visit_mut_with(&mut visitor);
+            }
+        }
+
         used_identifiers
     }
 

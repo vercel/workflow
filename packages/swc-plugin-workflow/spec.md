@@ -491,7 +491,7 @@ In client mode, step function bodies are preserved as-is (allowing local testing
 
 Unlike step mode, client mode does **not** import `registerStepFunction` from `workflow/internal/private` because that module contains server-side dependencies. Instead, the `stepId` property is set directly on the function, similar to how `workflowId` is set on workflow functions.
 
-Dead code elimination in client mode preserves imports and local declarations referenced by step function bodies, since those bodies are kept intact and may be called directly from server-side code (e.g., route handlers). In contrast, workflow mode replaces step bodies with stubs and can safely remove imports only referenced by the original step bodies. In both modes, code that is truly unreferenced (not used by any remaining live code) is still removed.
+Dead code elimination in client mode preserves imports and local declarations referenced by step function bodies, since those bodies are kept intact and may be called directly from server-side code (e.g., route handlers). This includes step functions that were hoisted from object properties or nested scopes — their bodies are analyzed for identifier usage even though the hoisted declarations are inserted into the module after dead code elimination runs. In contrast, workflow mode replaces step bodies with stubs and can safely remove imports only referenced by the original step bodies. In both modes, code that is truly unreferenced (not used by any remaining live code) is still removed.
 
 Note: Step functions nested inside other functions (whether workflow functions or regular functions) do NOT get `stepId` assignments in client mode because they are not accessible at module level.
 
