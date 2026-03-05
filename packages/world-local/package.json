@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-local",
-  "version": "4.1.0-beta.36",
+  "version": "4.1.0-beta.37",
   "description": "Local development World implementation for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -35,7 +35,7 @@
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "async-sema": "3.1.1",
-    "ulid": "3.0.1",
+    "ulid": "catalog:",
     "undici": "catalog:",
     "zod": "catalog:"
   },

@@ -8,7 +8,7 @@ import { config } from 'dotenv';
 // Load .env file if it exists
 const envPath = resolve(process.cwd(), '.env');
 if (existsSync(envPath)) {
-  const envResult = config({ path: envPath });
+  const envResult = config({ path: envPath, quiet: true });
   if (envResult.error && envResult.error.code !== 'ENOENT') {
     console.warn(
       `Warning: Failed to load .env file: ${envResult.error.message}`
@@ -19,7 +19,11 @@ if (existsSync(envPath)) {
 // Load .env.local file if it exists (overrides .env)
 const envLocalPath = resolve(process.cwd(), '.env.local');
 if (existsSync(envLocalPath)) {
-  const envLocalResult = config({ path: envLocalPath, override: true });
+  const envLocalResult = config({
+    path: envLocalPath,
+    override: true,
+    quiet: true,
+  });
   if (envLocalResult.error && envLocalResult.error.code !== 'ENOENT') {
     console.warn(
       `Warning: Failed to load .env.local file: ${envLocalResult.error.message}`

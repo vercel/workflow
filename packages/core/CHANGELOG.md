@@ -1,5 +1,33 @@
 # @workflow/core
 
+## 4.2.0-beta.64
+
+### Minor Changes
+
+- [`30e24d4`](https://github.com/vercel/workflow/commit/30e24d441e735635ffa4522198e6905d0e51e175) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING CHANGE**: `createWebhook()` no longer accepts a `token` option. Webhook tokens are always randomly generated to prevent unauthorized access to the public webhook endpoint. Use `createHook()` with `resumeHook()` for deterministic server-side token patterns.
+
+### Patch Changes
+
+- [#1270](https://github.com/vercel/workflow/pull/1270) [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `HookNotFoundError` to `@workflow/errors` and adopt it across all world backends
+
+- [#1270](https://github.com/vercel/workflow/pull/1270) [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent hooks from being resumed via the public webhook endpoint by default. Add `isWebhook` option to `createHook()` to opt-in to public resumption. `createWebhook()` always sets `isWebhook: true`.
+
+- [#1251](https://github.com/vercel/workflow/pull/1251) [`7618ac3`](https://github.com/vercel/workflow/commit/7618ac36c203d04e39513953e3b22a13b0c70829) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Wire AES-GCM encryption into serialization layer with stream support
+
+- [#1246](https://github.com/vercel/workflow/pull/1246) [`860531d`](https://github.com/vercel/workflow/commit/860531d182d74547acd12784cb825bb41c1a9342) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Route all event-driven promise resolutions through a sequential queue to ensure deterministic ordering
+
+- [#1254](https://github.com/vercel/workflow/pull/1254) [`60bc9d5`](https://github.com/vercel/workflow/commit/60bc9d5cb1022e169266884f4bcdd0fb99c45679) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix false positive unconsumed event detection during async deserialization and cross-VM promise propagation
+
+- [#1256](https://github.com/vercel/workflow/pull/1256) [`bbe40ff`](https://github.com/vercel/workflow/commit/bbe40ff00a5e372b040aec8fc7640c54d08c5636) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add encryption-aware o11y for CLI and web UI
+
+- [#1269](https://github.com/vercel/workflow/pull/1269) [`a7ae7e9`](https://github.com/vercel/workflow/commit/a7ae7e9a612905c911a59b631d62856d31333aeb) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve deterministic VM context seed derivation to incorporate additional run metadata
+
+- Updated dependencies [[`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`02f706f`](https://github.com/vercel/workflow/commit/02f706fb99d2ffa3f862698092d17cedbdb8ba02)]:
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/world-local@4.1.0-beta.37
+  - @workflow/world-vercel@4.1.0-beta.38
+  - @workflow/world@4.1.0-beta.9
+
 ## 4.1.0-beta.63
 
 ### Patch Changes

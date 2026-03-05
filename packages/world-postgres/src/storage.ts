@@ -26,9 +26,10 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { and, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
@@ -312,6 +313,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         throw new Error('runId is required for non-run_created events');
       } else {
         effectiveRunId = runId;
+      }
+
+      // Validate client-provided runId timestamp is within acceptable threshold
+      if (data.eventType === 'run_created' && runId && runId !== '') {
+        const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
+        if (validationError) {
+          throw new WorkflowAPIError(validationError, { status: 400 });
+        }
       }
 
       // specVersion is always sent by the runtime, but we provide a fallback for safety
@@ -1159,16 +1168,19 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
     async list(params: ListHooksParams) {
       const limit = params?.pagination?.limit ?? 100;
       const fromCursor = params?.pagination?.cursor;
+      const sortOrder = params?.pagination?.sortOrder ?? 'asc';
+      const orderFn = sortOrder === 'asc' ? asc : desc;
+      const cursorFn = sortOrder === 'asc' ? gt : lt;
       const all = await drizzle
         .select()
         .from(hooks)
         .where(
           and(
             map(params.runId, (id) => eq(hooks.runId, id)),
-            map(fromCursor, (c) => lt(hooks.hookId, c))
+            map(fromCursor, (c) => cursorFn(hooks.hookId, c))
           )
         )
-        .orderBy(desc(hooks.hookId))
+        .orderBy(orderFn(hooks.hookId))
         .limit(limit + 1);
       const values = all.slice(0, limit);
       const hasMore = all.length > limit;
