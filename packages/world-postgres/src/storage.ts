@@ -26,13 +26,14 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
 import { and, asc, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
-import { compact, validateUlidTimestamp } from './util.js';
+import { compact } from './util.js';
 
 /**
  * Parse legacy errorJson (text column with JSON-stringified StructuredError).

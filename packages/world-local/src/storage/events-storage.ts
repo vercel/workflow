@@ -17,6 +17,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  validateUlidTimestamp,
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -26,7 +27,6 @@ import {
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSON,
-  validateUlidTimestamp,
   writeJSON,
 } from '../fs.js';
 import { filterEventData } from './filters.js';

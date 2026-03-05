@@ -1230,6 +1230,10 @@ importers:
         version: link:../tsconfig
 
   packages/world:
+    dependencies:
+      ulid:
+        specifier: 3.0.1
+        version: 3.0.1
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
