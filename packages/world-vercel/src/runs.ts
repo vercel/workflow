@@ -28,7 +28,7 @@ import {
  * This is used for validation in makeRequest(), then deserializeError()
  * normalizes both formats into the expected StructuredError object.
  */
-const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
+export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
   error: true,
 }).extend({
   // Backend returns error as either a JSON string or structured object

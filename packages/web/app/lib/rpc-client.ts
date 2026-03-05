@@ -209,5 +209,12 @@ export async function runHealthCheck(
   return rpc('runHealthCheck', { worldEnv, endpoint, options });
 }
 
+export async function getEncryptionKeyForRun(
+  worldEnv: EnvMap,
+  runId: string
+): Promise<ServerActionResult<Uint8Array | null>> {
+  return rpc('getEncryptionKeyForRun', { worldEnv, runId });
+}
+
 // Note: readStreamServerAction returns a ReadableStream which can't go through CBOR RPC.
 // Stream reading uses a dedicated resource route at /api/stream/:streamId.

@@ -1,5 +1,42 @@
 # workflow
 
+## 4.2.0-beta.64
+
+### Patch Changes
+
+- [#1270](https://github.com/vercel/workflow/pull/1270) [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent hooks from being resumed via the public webhook endpoint by default. Add `isWebhook` option to `createHook()` to opt-in to public resumption. `createWebhook()` always sets `isWebhook: true`.
+
+- Updated dependencies [[`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`7618ac3`](https://github.com/vercel/workflow/commit/7618ac36c203d04e39513953e3b22a13b0c70829), [`b68ed63`](https://github.com/vercel/workflow/commit/b68ed630ec2fadd9d6ed9935cafeead64aed5071), [`860531d`](https://github.com/vercel/workflow/commit/860531d182d74547acd12784cb825bb41c1a9342), [`60bc9d5`](https://github.com/vercel/workflow/commit/60bc9d5cb1022e169266884f4bcdd0fb99c45679), [`bbe40ff`](https://github.com/vercel/workflow/commit/bbe40ff00a5e372b040aec8fc7640c54d08c5636), [`30e24d4`](https://github.com/vercel/workflow/commit/30e24d441e735635ffa4522198e6905d0e51e175), [`a7ae7e9`](https://github.com/vercel/workflow/commit/a7ae7e9a612905c911a59b631d62856d31333aeb)]:
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/core@4.2.0-beta.64
+  - @workflow/cli@4.2.0-beta.64
+  - @workflow/next@4.0.1-beta.60
+  - @workflow/nitro@4.0.1-beta.59
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/astro@4.0.0-beta.38
+  - @workflow/nest@0.0.0-beta.13
+  - @workflow/rollup@4.0.0-beta.21
+  - @workflow/sveltekit@4.0.0-beta.53
+  - @workflow/nuxt@4.0.1-beta.48
+
+## 4.1.0-beta.63
+
+### Patch Changes
+
+- [#1232](https://github.com/vercel/workflow/pull/1232) [`4ab4412`](https://github.com/vercel/workflow/commit/4ab4412ae6f4a64eb29fcb0e445f0b3314aa3b9b) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `Run.wakeUp()` method to programmatically interrupt pending `sleep()` calls
+
+- Updated dependencies [[`4ab4412`](https://github.com/vercel/workflow/commit/4ab4412ae6f4a64eb29fcb0e445f0b3314aa3b9b), [`a9fea91`](https://github.com/vercel/workflow/commit/a9fea9132ef3797dbda7683c36cc86ff2bd82f1f)]:
+  - @workflow/core@4.1.0-beta.63
+  - @workflow/next@4.0.1-beta.59
+  - @workflow/cli@4.1.0-beta.63
+  - @workflow/nitro@4.0.1-beta.58
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/astro@4.0.0-beta.37
+  - @workflow/nest@0.0.0-beta.12
+  - @workflow/rollup@4.0.0-beta.20
+  - @workflow/sveltekit@4.0.0-beta.52
+  - @workflow/nuxt@4.0.1-beta.47
+
 ## 4.1.0-beta.62
 
 ### Patch Changes

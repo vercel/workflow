@@ -893,6 +893,7 @@ export const WorkflowTraceViewer = ({
   onLoadMoreSpans,
   hasMoreSpans = false,
   isLoadingMoreSpans = false,
+  encryptionKey,
 }: {
   run: WorkflowRun;
   steps: Step[];
@@ -929,6 +930,8 @@ export const WorkflowTraceViewer = ({
   hasMoreSpans?: boolean;
   /** Whether trace pagination is currently fetching another page. */
   isLoadingMoreSpans?: boolean;
+  /** Encryption key (available after Decrypt), threaded to event list for re-loading */
+  encryptionKey?: Uint8Array;
 }) => {
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
     null
@@ -1252,6 +1255,7 @@ export const WorkflowTraceViewer = ({
                 onWakeUpSleep={onWakeUpSleep}
                 onLoadEventData={onLoadEventData}
                 onResolveHook={onResolveHook}
+                encryptionKey={encryptionKey}
                 selectedSpan={selectedSpan}
               />
             </ErrorBoundary>

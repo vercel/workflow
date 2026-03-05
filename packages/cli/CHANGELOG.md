@@ -1,5 +1,34 @@
 # @workflow/cli
 
+## 4.2.0-beta.64
+
+### Patch Changes
+
+- [#1263](https://github.com/vercel/workflow/pull/1263) [`b68ed63`](https://github.com/vercel/workflow/commit/b68ed630ec2fadd9d6ed9935cafeead64aed5071) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix CLI 401 errors by reading orgId from per-project entry in repo.json for newer Vercel CLI versions
+
+- [#1256](https://github.com/vercel/workflow/pull/1256) [`bbe40ff`](https://github.com/vercel/workflow/commit/bbe40ff00a5e372b040aec8fc7640c54d08c5636) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add encryption-aware o11y for CLI and web UI
+
+- Updated dependencies [[`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`7618ac3`](https://github.com/vercel/workflow/commit/7618ac36c203d04e39513953e3b22a13b0c70829), [`860531d`](https://github.com/vercel/workflow/commit/860531d182d74547acd12784cb825bb41c1a9342), [`02f706f`](https://github.com/vercel/workflow/commit/02f706fb99d2ffa3f862698092d17cedbdb8ba02), [`60bc9d5`](https://github.com/vercel/workflow/commit/60bc9d5cb1022e169266884f4bcdd0fb99c45679), [`bbe40ff`](https://github.com/vercel/workflow/commit/bbe40ff00a5e372b040aec8fc7640c54d08c5636), [`30e24d4`](https://github.com/vercel/workflow/commit/30e24d441e735635ffa4522198e6905d0e51e175), [`a7ae7e9`](https://github.com/vercel/workflow/commit/a7ae7e9a612905c911a59b631d62856d31333aeb)]:
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/core@4.2.0-beta.64
+  - @workflow/world-local@4.1.0-beta.37
+  - @workflow/world-vercel@4.1.0-beta.38
+  - @workflow/world@4.1.0-beta.9
+  - @workflow/web@4.1.0-beta.37
+  - @workflow/builders@4.0.1-beta.55
+
+## 4.1.0-beta.63
+
+### Patch Changes
+
+- [#1230](https://github.com/vercel/workflow/pull/1230) [`a9fea91`](https://github.com/vercel/workflow/commit/a9fea9132ef3797dbda7683c36cc86ff2bd82f1f) Thanks [@ijjk](https://github.com/ijjk)! - Fix deferred build mode for Next.js
+
+- Updated dependencies [[`4ab4412`](https://github.com/vercel/workflow/commit/4ab4412ae6f4a64eb29fcb0e445f0b3314aa3b9b), [`809339b`](https://github.com/vercel/workflow/commit/809339ba1c8362529c9fc198f7921f19fe91f233), [`2b1c2bd`](https://github.com/vercel/workflow/commit/2b1c2bd8e6b384334fbeb7ede8f517a5ca683716), [`a9fea91`](https://github.com/vercel/workflow/commit/a9fea9132ef3797dbda7683c36cc86ff2bd82f1f)]:
+  - @workflow/core@4.1.0-beta.63
+  - @workflow/builders@4.0.1-beta.54
+  - @workflow/world-vercel@4.1.0-beta.37
+  - @workflow/web@4.1.0-beta.36
+
 ## 4.1.0-beta.62
 
 ### Patch Changes

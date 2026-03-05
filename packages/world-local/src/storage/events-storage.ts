@@ -565,6 +565,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         const hookData = data.eventData as {
           token: string;
           metadata?: any;
+          isWebhook?: boolean;
         };
 
         // Check for duplicate token before creating hook
@@ -628,6 +629,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           createdAt: now,
           // Propagate specVersion from the event to the hook entity
           specVersion: effectiveSpecVersion,
+          isWebhook: hookData.isWebhook ?? false,
         };
         const hookPath = path.join(
           basedir,

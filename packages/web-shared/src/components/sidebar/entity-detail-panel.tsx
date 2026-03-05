@@ -62,6 +62,7 @@ export function EntityDetailPanel({
   onWakeUpSleep,
   onLoadEventData,
   onResolveHook,
+  encryptionKey,
   selectedSpan,
 }: {
   run: WorkflowRun;
@@ -93,6 +94,8 @@ export function EntityDetailPanel({
     payload: unknown,
     hook?: Hook
   ) => Promise<void>;
+  /** Encryption key (available after Decrypt is clicked), used to re-load event data */
+  encryptionKey?: Uint8Array;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
 }): React.JSX.Element | null {
@@ -457,6 +460,7 @@ export function EntityDetailPanel({
               <EventsList
                 events={rawEvents}
                 onLoadEventData={onLoadEventData}
+                encryptionKey={encryptionKey}
               />
             </section>
           )}

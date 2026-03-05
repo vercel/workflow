@@ -100,7 +100,7 @@ export async function slackBotWorkflow(channelId: string) {
 
   // Token constructed from channel ID
   using hook = createHook<SlackMessage>({ // [!code highlight]
-    token: `slack_webhook:${channelId}`, // [!code highlight]
+    token: `slack_messages:${channelId}`, // [!code highlight]
   }); // [!code highlight]
 
   for await (const message of hook) {

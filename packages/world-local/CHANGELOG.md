@@ -1,5 +1,19 @@
 # @workflow/world-local
 
+## 4.1.0-beta.37
+
+### Patch Changes
+
+- [#1270](https://github.com/vercel/workflow/pull/1270) [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `HookNotFoundError` to `@workflow/errors` and adopt it across all world backends
+
+- [#1270](https://github.com/vercel/workflow/pull/1270) [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent hooks from being resumed via the public webhook endpoint by default. Add `isWebhook` option to `createHook()` to opt-in to public resumption. `createWebhook()` always sets `isWebhook: true`.
+
+- [#1275](https://github.com/vercel/workflow/pull/1275) [`02f706f`](https://github.com/vercel/workflow/commit/02f706fb99d2ffa3f862698092d17cedbdb8ba02) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `hooks.list()` default sort order to ascending (creation order) in world-local and world-postgres, matching world-vercel behavior. Also fix world-postgres `hooks.list()` to respect the `sortOrder` pagination parameter instead of hardcoding descending order.
+
+- Updated dependencies [[`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d)]:
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/world@4.1.0-beta.9
+
 ## 4.1.0-beta.36
 
 ### Patch Changes

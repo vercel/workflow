@@ -124,6 +124,14 @@ export default class Inspect extends BaseCommand {
       helpGroup: 'Display',
       helpLabel: '-d, --withData',
     }),
+    decrypt: Flags.boolean({
+      description:
+        'decrypt encrypted values (triggers audit-logged key retrieval)',
+      required: false,
+      default: false,
+      helpGroup: 'Display',
+      helpLabel: '--decrypt',
+    }),
     ...cliFlags,
   } as const;
 
@@ -252,6 +260,7 @@ function toInspectOptions(flags: any): InspectCLIOptions {
     limit: flags.limit,
     workflowName: flags.workflowName,
     withData: flags.withData,
+    decrypt: flags.decrypt,
     backend: flags.backend,
     interactive: flags.interactive,
   };

@@ -18,6 +18,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   const ctx: WorkflowOrchestratorContext = {
+    runId: 'wrun_test',
+    encryptionKey: undefined,
     globalThis: context.globalThis,
     // ctx.onWorkflowError is accessed via closure — it's defined below on the same object
     eventsConsumer: new EventsConsumer(events, {
@@ -28,6 +30,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
           )
         );
       },
+      getPromiseQueue: () => Promise.resolve(),
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
@@ -35,6 +38,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
     onWorkflowError: vi.fn(),
+    promiseQueue: Promise.resolve(),
   };
   return ctx;
 }
@@ -308,8 +312,8 @@ describe('createSleep', () => {
     const sleep = createSleep(ctx);
     await sleep('1s');
 
-    // Wait for the duplicate event to be processed
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Wait for the unconsumed event check (promiseQueue .then() + setTimeout(100ms))
+    await new Promise((resolve) => setTimeout(resolve, 200));
 
     // The duplicate wait_completed at index 2 is orphaned and triggers the error
     expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);

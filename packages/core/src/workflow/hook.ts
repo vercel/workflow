@@ -15,11 +15,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     const token = options.token ?? ctx.generateNanoid();
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
+    const isWebhook = options.isWebhook ?? false;
+
     ctx.invocationsQueue.set(correlationId, {
       type: 'hook',
       correlationId,
       token,
       metadata: options.metadata,
+      isWebhook,
     });
 
     // Queue of hook events that have been received but not yet processed
@@ -46,11 +49,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         eventLogEmpty = true;
 
         if (promises.length > 0) {
-          setTimeout(() => {
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
-          }, 0);
+          });
         }
         return EventConsumerResult.NotConsumed;
       }
@@ -74,22 +77,29 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Remove this hook from the invocations queue
         ctx.invocationsQueue.delete(correlationId);
 
-        // Store the conflict event so we can reject any awaited promises
+        // Store the conflict event so we can reject any awaited promises.
+        // Chain through promiseQueue to ensure deterministic ordering.
         const conflictEvent = event as HookConflictEvent;
         const conflictError = new WorkflowRuntimeError(
           `Hook token "${conflictEvent.eventData.token}" is already in use by another workflow`,
           { slug: ERROR_SLUGS.HOOK_CONFLICT }
         );
 
-        // Reject any pending promises
-        for (const resolver of promises) {
-          resolver.reject(conflictError);
-        }
-        promises.length = 0;
-
         // Mark that we have a conflict so future awaits also reject
         hasConflict = true;
         conflictErrorRef = conflictError;
+
+        // Capture and drain pending promises synchronously so the null event
+        // handler won't see them and trigger a spurious WorkflowSuspension.
+        // The actual rejections are deferred through promiseQueue for ordering.
+        const pendingPromises = promises.slice();
+        promises.length = 0;
+
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          for (const resolver of pendingPromises) {
+            resolver.reject(conflictError);
+          }
+        });
 
         return EventConsumerResult.Consumed;
       }
@@ -98,19 +108,22 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         if (promises.length > 0) {
           const next = promises.shift();
           if (next) {
-            // Reconstruct the payload from the event data
-            hydrateStepReturnValue(
-              event.eventData.payload,
-              ctx.runId,
-              ctx.encryptionKey,
-              ctx.globalThis
-            )
-              .then((payload) => {
-                next.resolve(payload);
-              })
-              .catch((error) => {
+            // Reconstruct the payload from the event data.
+            // Chain through ctx.promiseQueue to ensure that async
+            // deserialization (e.g., decryption) resolves in event log order.
+            ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+              try {
+                const payload = await hydrateStepReturnValue(
+                  event.eventData.payload,
+                  ctx.runId,
+                  ctx.encryptionKey,
+                  ctx.globalThis
+                );
+                next.resolve(payload as T);
+              } catch (error) {
                 next.reject(error);
-              });
+              }
+            });
           }
         } else {
           payloadsQueue.push(event);
@@ -129,13 +142,13 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
-      setTimeout(() => {
+      ctx.promiseQueue = ctx.promiseQueue.then(() => {
         ctx.onWorkflowError(
           new WorkflowRuntimeError(
             `Unexpected event type for hook ${correlationId} (token: ${token}) "${event.eventType}"`
           )
         );
-      }, 0);
+      });
       return EventConsumerResult.Finished;
     });
 
@@ -146,28 +159,33 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     function createHookPromise(): Promise<T> {
       const resolvers = withResolvers<T>();
 
-      // If we have a conflict, reject immediately
-      // This handles the iterator case where each await should reject
+      // If we have a conflict, reject through the promiseQueue to maintain
+      // deterministic ordering with any prior queued resolutions.
       if (hasConflict && conflictErrorRef) {
-        resolvers.reject(conflictErrorRef);
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          resolvers.reject(conflictErrorRef);
+        });
         return resolvers.promise;
       }
 
       if (payloadsQueue.length > 0) {
         const nextPayload = payloadsQueue.shift();
         if (nextPayload) {
-          hydrateStepReturnValue(
-            nextPayload.eventData.payload,
-            ctx.runId,
-            ctx.encryptionKey,
-            ctx.globalThis
-          )
-            .then((payload) => {
-              resolvers.resolve(payload);
-            })
-            .catch((error) => {
+          // Chain through ctx.promiseQueue to ensure that async
+          // deserialization (e.g., decryption) resolves in event log order.
+          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+            try {
+              const payload = await hydrateStepReturnValue(
+                nextPayload.eventData.payload,
+                ctx.runId,
+                ctx.encryptionKey,
+                ctx.globalThis
+              );
+              resolvers.resolve(payload as T);
+            } catch (error) {
               resolvers.reject(error);
-            });
+            }
+          });
           return resolvers.promise;
         }
       }
@@ -175,11 +193,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (eventLogEmpty) {
         // If the event log is already empty then we know the hook will not be resolved.
         // Treat this case as a "step not run" scenario and suspend the workflow.
-        setTimeout(() => {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
-        }, 0);
+        });
       }
 
       promises.push(resolvers);
@@ -211,11 +229,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // never deliver another hook_received after disposal.
       if (promises.length > 0) {
         promises.length = 0;
-        setTimeout(() => {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
-        }, 0);
+        });
       }
 
       webhookLogger.debug('Hook disposed', { correlationId, token });

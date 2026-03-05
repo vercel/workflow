@@ -9,6 +9,7 @@
 import {
   extractClassName,
   hydrateResourceIO as hydrateResourceIOGeneric,
+  isEncryptedData,
   observabilityRevivers,
   type Revivers,
 } from '@workflow/core/serialization-format';
@@ -17,8 +18,10 @@ import {
 export {
   CLASS_INSTANCE_REF_TYPE,
   ClassInstanceRef,
+  ENCRYPTED_PLACEHOLDER,
   extractStreamIds,
   isClassInstanceRef,
+  isEncryptedData,
   isStreamId,
   isStreamRef,
   type Revivers,
@@ -142,5 +145,152 @@ function getRevivers(): Revivers {
  * from the server before passing it to UI components.
  */
 export function hydrateResourceIO<T>(resource: T): T {
-  return hydrateResourceIOGeneric(resource as any, getRevivers()) as T;
+  const hydrated = hydrateResourceIOGeneric(
+    resource as any,
+    getRevivers()
+  ) as T;
+  return replaceEncryptedWithMarkers(hydrated);
+}
+
+// ---------------------------------------------------------------------------
+// Encrypted data display markers
+// ---------------------------------------------------------------------------
+
+export const ENCRYPTED_DISPLAY_NAME = 'Encrypted';
+
+/**
+ * Create a display-friendly object for encrypted data.
+ *
+ * Uses the same named-constructor trick as the Instance reviver so that
+ * ObjectInspector renders the constructor name ("🔒 Encrypted") with no
+ * expandable children. The original encrypted bytes are stored in a
+ * non-enumerable property for later decryption.
+ */
+function createEncryptedMarker(data: Uint8Array): object {
+  // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+  const ctor = { [ENCRYPTED_DISPLAY_NAME]: function () {} }[
+    ENCRYPTED_DISPLAY_NAME
+  ]!;
+  const obj = Object.create(ctor.prototype);
+  // Store original bytes for decryption, but non-enumerable so
+  // ObjectInspector doesn't show them as children
+  Object.defineProperty(obj, '__encryptedData', {
+    value: data,
+    enumerable: false,
+    configurable: false,
+  });
+  return obj;
+}
+
+/** Check if a value is an encrypted display marker */
+export function isEncryptedMarker(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    value.constructor?.name === ENCRYPTED_DISPLAY_NAME
+  );
+}
+
+/**
+ * Post-process hydrated resource data: replace encrypted Uint8Array values
+ * with display-friendly marker objects in known data fields.
+ */
+function replaceEncryptedWithMarkers<T>(resource: T): T {
+  if (!resource || typeof resource !== 'object') return resource;
+  const r = resource as Record<string, unknown>;
+  const result = { ...r };
+
+  for (const key of ['input', 'output', 'metadata', 'error']) {
+    if (isEncryptedData(result[key])) {
+      result[key] = createEncryptedMarker(result[key] as Uint8Array);
+    }
+  }
+
+  if (result.eventData && typeof result.eventData === 'object') {
+    const ed = { ...(result.eventData as Record<string, unknown>) };
+    for (const key of EVENT_DATA_SERIALIZED_FIELDS) {
+      if (isEncryptedData(ed[key])) {
+        ed[key] = createEncryptedMarker(ed[key] as Uint8Array);
+      }
+    }
+    result.eventData = ed;
+  }
+
+  return result as T;
+}
+
+/** Known serialized subfields within eventData, matching hydrateEventData in core */
+const EVENT_DATA_SERIALIZED_FIELDS = [
+  'result',
+  'input',
+  'output',
+  'metadata',
+  'payload',
+];
+
+/**
+ * Hydrate resource data with decryption support.
+ *
+ * When a key is provided, encrypted fields are decrypted before hydration.
+ * This is the async version used when the user clicks "Decrypt" in the web UI.
+ *
+ * Handles both top-level fields (input, output, metadata) and nested
+ * eventData subfields (result, input, output, metadata, payload).
+ */
+export async function hydrateResourceIOWithKey<T>(
+  resource: T,
+  key: Uint8Array
+): Promise<T> {
+  const { hydrateDataWithKey } = await import(
+    '@workflow/core/serialization-format'
+  );
+  const { importKey } = await import('@workflow/core/encryption');
+  const cryptoKey = await importKey(key);
+  const revivers = getRevivers();
+
+  /** Extract original encrypted bytes from a marker or raw Uint8Array, then decrypt + hydrate */
+  async function decryptField(
+    value: unknown,
+    rev: Revivers,
+    k: Awaited<ReturnType<typeof importKey>>
+  ): Promise<unknown> {
+    // Already-hydrated: encrypted marker with stored bytes
+    if (isEncryptedMarker(value)) {
+      const raw = (value as any).__encryptedData as Uint8Array;
+      return hydrateDataWithKey(raw, rev, k);
+    }
+    // Raw encrypted Uint8Array (not yet hydrated)
+    if (value instanceof Uint8Array) {
+      return hydrateDataWithKey(value, rev, k);
+    }
+    // Not encrypted — return as-is
+    return value;
+  }
+
+  const r = resource as Record<string, unknown>;
+  const result = { ...r };
+
+  // Decrypt + hydrate top-level serialized fields (runs, steps, hooks)
+  for (const field of ['input', 'output', 'metadata', 'error']) {
+    if (field in result) {
+      result[field] = await decryptField(result[field], revivers, cryptoKey);
+    }
+  }
+
+  // Decrypt + hydrate eventData subfields (events)
+  if (result.eventData && typeof result.eventData === 'object') {
+    const eventData = { ...(result.eventData as Record<string, unknown>) };
+    for (const field of EVENT_DATA_SERIALIZED_FIELDS) {
+      if (field in eventData) {
+        eventData[field] = await decryptField(
+          eventData[field],
+          revivers,
+          cryptoKey
+        );
+      }
+    }
+    result.eventData = eventData;
+  }
+
+  return result as T;
 }

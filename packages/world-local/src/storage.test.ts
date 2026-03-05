@@ -1314,7 +1314,7 @@ describe('Storage', () => {
 
       it('should throw error for non-existent hook', async () => {
         await expect(storage.hooks.get('nonexistent_hook')).rejects.toThrow(
-          'Hook nonexistent_hook not found'
+          'Hook not found'
         );
       });
 
@@ -1354,7 +1354,7 @@ describe('Storage', () => {
       it('should throw error for non-existent token', async () => {
         await expect(
           storage.hooks.getByToken('nonexistent-token')
-        ).rejects.toThrow('Hook with token nonexistent-token not found');
+        ).rejects.toThrow('Hook not found');
       });
 
       it('should find the correct hook when multiple hooks exist', async () => {
@@ -1396,10 +1396,10 @@ describe('Storage', () => {
         const result = await storage.hooks.list({});
 
         expect(result.data).toHaveLength(2);
-        // Should be in descending order (most recent first)
-        expect(result.data[0].hookId).toBe(hook2.hookId);
-        expect(result.data[1].hookId).toBe(hook1.hookId);
-        expect(result.data[0].createdAt.getTime()).toBeGreaterThanOrEqual(
+        // Should be in ascending order (oldest first) by default
+        expect(result.data[0].hookId).toBe(hook1.hookId);
+        expect(result.data[1].hookId).toBe(hook2.hookId);
+        expect(result.data[0].createdAt.getTime()).toBeLessThanOrEqual(
           result.data[1].createdAt.getTime()
         );
       });

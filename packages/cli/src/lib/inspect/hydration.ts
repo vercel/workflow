@@ -6,21 +6,35 @@
  */
 
 import { inspect } from 'node:util';
+import { maybeDecrypt } from '@workflow/core/serialization';
 import {
   ClassInstanceRef,
   extractClassName,
   hydrateResourceIO as hydrateResourceIOGeneric,
+  isEncryptedData,
   observabilityRevivers,
   type Revivers,
 } from '@workflow/core/serialization-format';
 import { parseClassName } from '@workflow/utils/parse-name';
+import chalk from 'chalk';
+
+/**
+ * A function that resolves an encryption key for a run, or null to skip
+ * decryption. Accepts a runId — the resolver is responsible for looking
+ * up the WorkflowRun internally (with caching) if the World needs it.
+ */
+export type EncryptionKeyResolver =
+  | ((runId: string) => Promise<Uint8Array | undefined>)
+  | null;
 
 // Re-export types and utilities that consumers need
 export {
   CLASS_INSTANCE_REF_TYPE,
   ClassInstanceRef,
+  ENCRYPTED_PLACEHOLDER,
   extractStreamIds,
   isClassInstanceRef,
+  isEncryptedData,
   isStreamId,
   isStreamRef,
   type Revivers,
@@ -51,6 +65,39 @@ class CLIClassInstanceRef extends ClassInstanceRef {
       : `@${fileName}`;
     return `${this.className}${styledFileName} ${dataStr}`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// CLI encrypted data placeholder with custom inspect
+// ---------------------------------------------------------------------------
+
+/**
+ * Placeholder object for encrypted data fields in CLI output.
+ *
+ * Uses `util.inspect.custom` to render as a styled, unquoted string
+ * (e.g., dim yellow "🔒 Encrypted") instead of a plain quoted string.
+ * Also provides `toJSON()` for `--json` output.
+ */
+class EncryptedDataRef {
+  [inspect.custom](): string {
+    return chalk.dim.yellow('\u{1F512} Encrypted');
+  }
+
+  toJSON(): string {
+    return '\u{1F512} Encrypted';
+  }
+
+  toString(): string {
+    return '\u{1F512} Encrypted';
+  }
+}
+
+/** Singleton encrypted data placeholder for CLI display */
+const ENCRYPTED_REF = new EncryptedDataRef();
+
+/** Check if a value is an EncryptedDataRef (for custom table formatting in CLI) */
+export function isEncryptedRef(value: unknown): value is EncryptedDataRef {
+  return value instanceof EncryptedDataRef;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,23 +172,125 @@ function getRevivers(): Revivers {
 }
 
 // ---------------------------------------------------------------------------
+// Decryption helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Pre-process a resource's data fields: if the resolver is provided and
+ * the field is encrypted, decrypt it before generic hydration.
+ *
+ * Uses core's `maybeDecrypt()` which handles the 'encr' prefix stripping
+ * and AES-GCM decryption transparently.
+ *
+ * When the resolver is null (no --decrypt flag), encrypted fields pass
+ * through as Uint8Array and are replaced with EncryptedDataRef in post-processing.
+ */
+async function maybeDecryptFields<
+  T extends {
+    runId?: string;
+    input?: any;
+    output?: any;
+    metadata?: any;
+    eventData?: any;
+  },
+>(resource: T, resolver: EncryptionKeyResolver): Promise<T> {
+  if (!resolver) return resource;
+
+  const runId = (resource as any).runId as string | undefined;
+  if (!runId) return resource;
+
+  const result = { ...resource };
+
+  try {
+    const rawKey = await resolver(runId);
+    const { importKey } = await import('@workflow/core/encryption');
+    const k = rawKey ? await importKey(rawKey) : undefined;
+
+    // Decrypt input/output/error fields (WorkflowRun, Step)
+    result.input = await maybeDecrypt(result.input, k);
+    result.output = await maybeDecrypt(result.output, k);
+    (result as any).error = await maybeDecrypt((result as any).error, k);
+
+    // Decrypt metadata field (Hook)
+    result.metadata = await maybeDecrypt(result.metadata, k);
+
+    // Decrypt eventData fields (Event)
+    if (result.eventData && typeof result.eventData === 'object') {
+      const eventData = { ...result.eventData };
+      for (const field of [
+        'result',
+        'input',
+        'output',
+        'metadata',
+        'payload',
+      ]) {
+        eventData[field] = await maybeDecrypt(eventData[field], k);
+      }
+      result.eventData = eventData;
+    }
+  } catch (err) {
+    // Decryption failed (bad key, corrupted ciphertext, etc.) — fall back
+    // to showing encrypted placeholders instead of crashing the CLI.
+    const { logger } = await import('../config/log.js');
+    logger.warn(
+      `Decryption failed for resource ${runId}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
-/** Resolver function that retrieves the encryption key for a given run ID. */
-export type EncryptionKeyResolver =
-  | ((runId: string) => Promise<Uint8Array | undefined>)
-  | null;
+/**
+ * Replace encrypted Uint8Array values with EncryptedDataRef objects
+ * in known data fields so they render with custom inspect styling.
+ */
+function replaceEncryptedWithRef<T>(resource: T): T {
+  if (!resource || typeof resource !== 'object') return resource;
+  const r = resource as Record<string, unknown>;
+  const result = { ...r };
+
+  for (const key of ['input', 'output', 'metadata', 'error']) {
+    if (isEncryptedData(result[key])) {
+      result[key] = ENCRYPTED_REF;
+    }
+  }
+
+  if (result.eventData && typeof result.eventData === 'object') {
+    const ed = { ...(result.eventData as Record<string, unknown>) };
+    for (const key of ['result', 'input', 'output', 'metadata', 'payload']) {
+      if (isEncryptedData(ed[key])) {
+        ed[key] = ENCRYPTED_REF;
+      }
+    }
+    result.eventData = ed;
+  }
+
+  return result as T;
+}
 
 /**
  * Hydrate the serialized data fields of a resource for CLI display.
  *
- * The optional `_encryptionKeyResolver` parameter is accepted for forward
- * compatibility with encryption support but is not yet used.
+ * When `encryptorResolver` is null (default / no --decrypt flag), encrypted
+ * fields are shown as styled "🔒 Encrypted" placeholders via EncryptedDataRef.
+ *
+ * When `encryptorResolver` is provided (--decrypt flag), encrypted fields
+ * are decrypted before hydration so the actual user data is displayed.
  */
-export function hydrateResourceIO<T>(
+export async function hydrateResourceIO<T>(
   resource: T,
-  _encryptionKeyResolver?: EncryptionKeyResolver
-): T {
-  return hydrateResourceIOGeneric(resource as any, getRevivers()) as T;
+  keyResolver?: EncryptionKeyResolver
+): Promise<T> {
+  // Pre-process: decrypt any encrypted fields when a resolver is provided
+  const preprocessed = await maybeDecryptFields(
+    resource as any,
+    keyResolver ?? null
+  );
+  const hydrated = hydrateResourceIOGeneric(preprocessed, getRevivers()) as T;
+  // Post-process: swap encrypted Uint8Arrays for CLI-styled objects
+  return replaceEncryptedWithRef(hydrated);
 }

@@ -109,6 +109,7 @@ export async function handleSuspension({
         eventData: {
           token: queueItem.token,
           metadata: hookMetadata,
+          isWebhook: queueItem.isWebhook ?? false,
         },
       };
     })

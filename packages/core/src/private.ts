@@ -101,4 +101,12 @@ export interface WorkflowOrchestratorContext {
   onWorkflowError: (error: Error) => void;
   generateUlid: () => string;
   generateNanoid: () => string;
+  /**
+   * Sequential promise queue that ensures all event-driven promise resolutions
+   * (step results, hook payloads, failures, suspensions) happen in event log
+   * order. Every resolve, reject, or workflow error is chained through this
+   * queue so that even if individual operations take variable time (e.g.,
+   * async decryption), promises resolve deterministically.
+   */
+  promiseQueue: Promise<void>;
 }

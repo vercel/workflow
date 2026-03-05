@@ -339,53 +339,36 @@ Like hooks, webhooks support iteration:
 ```typescript lineNumbers
 import { createWebhook, type RequestWithResponse } from "workflow";
 
-async function respondToSlack(request: RequestWithResponse, text: string) {
+async function sendAck(request: RequestWithResponse, message: string) {
   "use step";
 
   await request.respondWith(
-    new Response(
-      JSON.stringify({ response_type: "in_channel", text }),
-      { headers: { "Content-Type": "application/json" } }
-    )
+    Response.json({ received: true, message })
   );
 }
 
-export async function slackCommandWorkflow(channelId: string) {
+async function processEvent(data: any) {
+  "use step";
+  console.log("Processing event:", data);
+}
+
+export async function eventCollectorWorkflow() {
   "use workflow";
 
-  using webhook = createWebhook({
-    token: `slack_command:${channelId}`,
-    respondWith: "manual"
-  });
-
-  console.log("Configure Slack command webhook:", webhook.url);
+  using webhook = createWebhook({ respondWith: "manual" });
+  console.log("Send events to:", webhook.url);
 
   for await (const request of webhook) {
-    const formData = await request.formData();
-    const command = formData.get("command");
-    const text = formData.get("text");
+    const data = await request.json();
 
-    if (command === "/status") {
-      await respondToSlack(request, "Checking status...");
-      const status = await checkSystemStatus();
-      await postToSlack(channelId, `Status: ${status}`);
-    }
-
-    if (text === "stop") {
-      await respondToSlack(request, "Stopping workflow...");
+    if (data.type === "done") {
+      await sendAck(request, "Workflow complete");
       break;
     }
+
+    await sendAck(request, "Event received");
+    await processEvent(data);
   }
-}
-
-async function checkSystemStatus() {
-  "use step";
-  return "All systems operational";
-}
-
-async function postToSlack(channelId: string, message: string) {
-  "use step";
-  // Post message to Slack
 }
 ```
 
@@ -464,7 +447,9 @@ This pattern is especially valuable in larger applications where the workflow an
 
 ### Token Design
 
-When using custom tokens:
+Custom tokens are available for `createHook()` with server-side `resumeHook()` only. Webhooks (`createWebhook()`) always use randomly generated tokens to prevent unauthorized access to public webhook endpoints.
+
+When using custom tokens with `createHook()`:
 
 - **Make them deterministic**: Base them on data the external system can reconstruct (like channel IDs, user IDs, etc.)
 - **Use namespacing**: Prefix tokens to avoid conflicts (e.g., `slack:${channelId}`, `github:${repoId}`)

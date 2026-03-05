@@ -454,6 +454,11 @@ function deepParseJson(value: unknown): unknown {
     return value.map(deepParseJson);
   }
   if (value !== null && typeof value === 'object') {
+    // Preserve objects with custom constructors (e.g., encrypted markers,
+    // class instance refs) — don't destructure them into plain objects
+    if (value.constructor !== Object) {
+      return value;
+    }
     const result: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value)) {
       result[k] = deepParseJson(v);
@@ -584,6 +589,8 @@ interface EventsListProps {
   hasMoreEvents?: boolean;
   isLoadingMoreEvents?: boolean;
   onLoadMoreEvents?: () => Promise<void> | void;
+  /** When provided, signals that decryption is active (triggers re-load of expanded events) */
+  encryptionKey?: Uint8Array;
 }
 
 function EventRow({
@@ -600,6 +607,7 @@ function EventRow({
   onSelectGroup,
   onHoverGroup,
   onLoadEventData,
+  encryptionKey,
 }: {
   event: Event;
   index: number;
@@ -614,6 +622,7 @@ function EventRow({
   onSelectGroup: (groupKey: string | undefined) => void;
   onHoverGroup: (groupKey: string | undefined) => void;
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
+  encryptionKey?: Uint8Array;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -685,6 +694,26 @@ function EventRow({
       setHasAttemptedLoad(true);
     }
   }, [event, loadedEventData, hasExistingEventData, onLoadEventData]);
+
+  // When encryption key changes and this event was previously loaded,
+  // re-load to get decrypted data
+  useEffect(() => {
+    if (encryptionKey && hasAttemptedLoad && onLoadEventData) {
+      setLoadedEventData(null);
+      setHasAttemptedLoad(false);
+      onLoadEventData(event)
+        .then((data) => {
+          if (data !== null && data !== undefined) {
+            setLoadedEventData(data);
+          }
+          setHasAttemptedLoad(true);
+        })
+        .catch(() => {
+          setHasAttemptedLoad(true);
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [encryptionKey]);
 
   const handleExpandToggle = useCallback(
     (e: ReactMouseEvent) => {
@@ -937,6 +966,7 @@ export function EventListView({
   hasMoreEvents = false,
   isLoadingMoreEvents = false,
   onLoadMoreEvents,
+  encryptionKey,
 }: EventsListProps) {
   const sortedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
@@ -1154,6 +1184,7 @@ export function EventListView({
               onSelectGroup={onSelectGroup}
               onHoverGroup={onHoverGroup}
               onLoadEventData={onLoadEventData}
+              encryptionKey={encryptionKey}
             />
           );
         }}

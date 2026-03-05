@@ -102,7 +102,7 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       updateTimestamp,
     } = createContext({
-      seed: workflowRun.runId,
+      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${+startedAt}`,
       fixedTimestamp: +startedAt,
     });
 
@@ -113,6 +113,11 @@ export async function runWorkflow(
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
     );
 
+    // Create a mutable holder for the promise queue so the EventsConsumer
+    // can access the current queue state via a getter. The queue is mutated
+    // by step/hook/sleep callbacks as events are processed.
+    const promiseQueueHolder = { current: Promise.resolve() };
+
     const eventsConsumer = new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
         workflowDiscontinuation.reject(
@@ -122,6 +127,7 @@ export async function runWorkflow(
           )
         );
       },
+      getPromiseQueue: () => promiseQueueHolder.current,
     });
 
     const workflowContext: WorkflowOrchestratorContext = {
@@ -133,6 +139,14 @@ export async function runWorkflow(
       generateUlid: () => ulid(+startedAt),
       generateNanoid,
       invocationsQueue: new Map(),
+      // Use getter/setter so the EventsConsumer's getPromiseQueue() always
+      // sees the latest queue state as it's mutated by step/hook/sleep callbacks.
+      get promiseQueue() {
+        return promiseQueueHolder.current;
+      },
+      set promiseQueue(value: Promise<void>) {
+        promiseQueueHolder.current = value;
+      },
     };
 
     // Subscribe to the events log to update the timestamp in the vm context
@@ -679,12 +693,22 @@ export async function runWorkflow(
       );
     }
 
-    const args = await hydrateWorkflowArguments(
-      workflowRun.input,
-      workflowRun.runId,
-      encryptionKey,
-      vmGlobalThis
+    // Chain workflow argument hydration onto the promiseQueue so that the
+    // unconsumed event check (which waits for the queue to drain) doesn't
+    // fire during the async gap between run_started consumption and the
+    // workflow function subscribing its first step callbacks.
+    let args: unknown[] = [];
+    workflowContext.promiseQueue = workflowContext.promiseQueue.then(
+      async () => {
+        args = await hydrateWorkflowArguments(
+          workflowRun.input,
+          workflowRun.runId,
+          encryptionKey,
+          vmGlobalThis
+        );
+      }
     );
+    await workflowContext.promiseQueue;
 
     span?.setAttributes({
       ...Attribute.WorkflowArgumentsCount(args.length),

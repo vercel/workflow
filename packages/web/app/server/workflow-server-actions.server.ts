@@ -29,12 +29,7 @@ import type {
   WorkflowRunStatus,
   World,
 } from '@workflow/world';
-import {
-  type APIConfig,
-  createQueue,
-  createStorage,
-  createStreamer,
-} from '@workflow/world-vercel';
+import { type APIConfig, createVercelWorld } from '@workflow/world-vercel';
 
 /**
  * Environment variable map for world configuration.
@@ -46,14 +41,6 @@ import {
  * this parameter for backwards compatibility and future extensibility.
  */
 export type EnvMap = Record<string, string | undefined>;
-
-function createVercelWorld(config?: APIConfig): World {
-  return {
-    ...createQueue(config),
-    ...createStorage(config),
-    ...createStreamer(config),
-  };
-}
 
 /**
  * Public configuration info that is safe to send to the client.
@@ -972,8 +959,8 @@ export async function readStreamServerAction(
     // feature, to allow for testing World behavior.
     const stream = await world.readFromStream(streamId, startIndex);
 
-    const revivers = getExternalRevivers(globalThis, [], '');
-    const transform = getDeserializeStream(revivers);
+    const revivers = getExternalRevivers(globalThis, [], '', undefined);
+    const transform = getDeserializeStream(revivers, undefined);
 
     return stream.pipeThrough(transform);
   } catch (error) {
@@ -1131,5 +1118,38 @@ export async function runHealthCheck(
       error: errorMessage,
       latencyMs: undefined,
     });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Encryption key retrieval for client-side decryption
+// ---------------------------------------------------------------------------
+
+/**
+ * Retrieve the encryption key for a specific run.
+ *
+ * The World resolves the per-run AES-256 key (including HKDF derivation
+ * and cross-deployment key retrieval). The raw key bytes are returned
+ * to the browser for client-side decryption via core's AES-GCM.
+ */
+export async function getEncryptionKeyForRun(
+  worldEnv: EnvMap,
+  runId: string
+): Promise<ServerActionResult<Uint8Array | null>> {
+  try {
+    const world = await getWorldFromEnv(worldEnv);
+    if (!world.getEncryptionKeyForRun) {
+      return createResponse(null);
+    }
+    // Fetch the full run so the World can inspect deploymentId etc.
+    const run = await world.runs.get(runId);
+    const key = await world.getEncryptionKeyForRun(run);
+    return createResponse(key ?? null);
+  } catch (error) {
+    return createServerActionError<Uint8Array | null>(
+      error,
+      'getEncryptionKeyForRun',
+      { runId }
+    );
   }
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import type { Event } from '@workflow/world';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ErrorStackBlock,
   isStructuredErrorWithStack,
@@ -35,16 +35,20 @@ const DATA_EVENT_TYPES = new Set([
 function EventItem({
   event,
   onLoadEventData,
+  encryptionKey,
 }: {
   event: Event;
   onLoadEventData?: (
     correlationId: string,
     eventId: string
   ) => Promise<unknown | null>;
+  /** When this changes (e.g., Decrypt was clicked), invalidate cached data */
+  encryptionKey?: Uint8Array;
 }) {
   const [loadedData, setLoadedData] = useState<unknown | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const wasExpandedRef = useRef(false);
 
   // Check if the event already has eventData from the store
   const existingData =
@@ -52,8 +56,7 @@ function EventItem({
   const displayData = existingData ?? loadedData;
   const canHaveData = DATA_EVENT_TYPES.has(event.eventType);
 
-  const handleExpand = useCallback(async () => {
-    if (existingData || loadedData !== null || isLoading) return;
+  const loadEventData = useCallback(async () => {
     if (!onLoadEventData || !event.correlationId || !event.eventId) return;
 
     try {
@@ -66,14 +69,23 @@ function EventItem({
     } finally {
       setIsLoading(false);
     }
-  }, [
-    existingData,
-    loadedData,
-    isLoading,
-    onLoadEventData,
-    event.correlationId,
-    event.eventId,
-  ]);
+  }, [onLoadEventData, event.correlationId, event.eventId]);
+
+  const handleExpand = useCallback(async () => {
+    if (existingData || loadedData !== null || isLoading) return;
+    wasExpandedRef.current = true;
+    await loadEventData();
+  }, [existingData, loadedData, isLoading, loadEventData]);
+
+  // When the encryption key changes and this event was previously expanded,
+  // re-load the data so it gets decrypted
+  useEffect(() => {
+    if (encryptionKey && wasExpandedRef.current && loadedData !== null) {
+      setLoadedData(null); // clear stale data
+      loadEventData();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [encryptionKey]);
 
   const createdAt = new Date(event.createdAt);
 
@@ -226,6 +238,7 @@ export function EventsList({
   isLoading = false,
   error,
   onLoadEventData,
+  encryptionKey,
 }: {
   events: Event[];
   isLoading?: boolean;
@@ -234,6 +247,8 @@ export function EventsList({
     correlationId: string,
     eventId: string
   ) => Promise<unknown | null>;
+  /** When provided, signals that decryption is active (triggers re-load of expanded events) */
+  encryptionKey?: Uint8Array;
 }) {
   // Sort by createdAt
   const sortedEvents = useMemo(
@@ -270,6 +285,7 @@ export function EventsList({
               key={event.eventId}
               event={event}
               onLoadEventData={onLoadEventData}
+              encryptionKey={encryptionKey}
             />
           ))}
         </div>

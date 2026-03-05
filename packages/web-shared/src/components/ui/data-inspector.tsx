@@ -8,6 +8,7 @@
  * and expand behavior.
  */
 
+import { Lock } from 'lucide-react';
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 import {
   ObjectInspector,
@@ -17,6 +18,7 @@ import {
   ObjectValue,
 } from 'react-inspector';
 import { useDarkMode } from '../../hooks/use-dark-mode';
+import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
 import {
   type InspectorThemeExtended,
   inspectorThemeDark,
@@ -129,6 +131,38 @@ function NodeRenderer({
   expanded?: boolean;
 }) {
   const extendedTheme = useContext(ExtendedThemeContext);
+
+  // Encrypted marker → flat label with Lock icon, non-expandable
+  if (
+    data !== null &&
+    typeof data === 'object' &&
+    data.constructor?.name === ENCRYPTED_DISPLAY_NAME
+  ) {
+    const label = (
+      <span style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
+        <Lock
+          className="h-3 w-3"
+          style={{
+            display: 'inline',
+            verticalAlign: 'middle',
+            marginRight: '3px',
+            marginTop: '-1px',
+          }}
+        />
+        Encrypted
+      </span>
+    );
+    if (depth === 0) {
+      return label;
+    }
+    return (
+      <span>
+        {name != null && <ObjectName name={name} />}
+        {name != null && <span>: </span>}
+        {label}
+      </span>
+    );
+  }
 
   // StreamRef → inline clickable badge
   if (isStreamRef(data)) {
@@ -310,7 +344,7 @@ function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
   if (aKeys.length !== bKeys.length) return false;
 
   for (const key of aKeys) {
-    if (!Object.prototype.hasOwnProperty.call(b, key)) return false;
+    if (!Object.hasOwn(b, key)) return false;
     if (!isDeepEqual(a[key], b[key], seen)) return false;
   }
 

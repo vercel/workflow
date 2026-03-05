@@ -6,8 +6,10 @@ import {
   encodeWithFormatPrefix,
   extractStreamIds,
   hydrateData,
+  hydrateDataWithKey,
   hydrateResourceIO,
   isClassInstanceRef,
+  isEncryptedData,
   isStreamId,
   isStreamRef,
   observabilityRevivers,
@@ -467,5 +469,173 @@ describe('hydrateResourceIO with custom class instances', () => {
     expect(parsed.className).toBe('Point');
     expect(parsed.classId).toBe('class//Point');
     expect(parsed.data).toEqual({ x: 1, y: 2 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Encrypted data detection and placeholder handling
+// ---------------------------------------------------------------------------
+
+describe('encrypted data handling', () => {
+  /** Create a fake encrypted payload: "encr" prefix + random bytes */
+  function makeEncryptedPayload(): Uint8Array {
+    const prefix = new TextEncoder().encode('encr');
+    const fakeEncryptedBody = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
+    const result = new Uint8Array(prefix.length + fakeEncryptedBody.length);
+    result.set(prefix, 0);
+    result.set(fakeEncryptedBody, prefix.length);
+    return result;
+  }
+
+  describe('isEncryptedData', () => {
+    it('should detect encr-prefixed Uint8Array', () => {
+      expect(isEncryptedData(makeEncryptedPayload())).toBe(true);
+    });
+
+    it('should not detect devl-prefixed Uint8Array', () => {
+      const devlPayload = makeDevlPayload('hello');
+      expect(isEncryptedData(devlPayload)).toBe(false);
+    });
+
+    it('should return false for non-Uint8Array values', () => {
+      expect(isEncryptedData('hello')).toBe(false);
+      expect(isEncryptedData(42)).toBe(false);
+      expect(isEncryptedData(null)).toBe(false);
+      expect(isEncryptedData(undefined)).toBe(false);
+      expect(isEncryptedData({ foo: 'bar' })).toBe(false);
+    });
+
+    it('should return false for Uint8Array shorter than 4 bytes', () => {
+      expect(isEncryptedData(new Uint8Array([1, 2, 3]))).toBe(false);
+    });
+  });
+
+  describe('hydrateData with encrypted values', () => {
+    it('should pass through encr-prefixed data as Uint8Array', () => {
+      const encrypted = makeEncryptedPayload();
+      const result = hydrateData(encrypted, {});
+      expect(result).toBeInstanceOf(Uint8Array);
+      expect(result).toBe(encrypted);
+      expect(isEncryptedData(result)).toBe(true);
+    });
+
+    it('should still hydrate devl-prefixed data normally', () => {
+      const payload = makeDevlPayload('hello');
+      const result = hydrateData(payload, {});
+      expect(result).toBe('hello');
+    });
+  });
+
+  describe('hydrateResourceIO with encrypted fields', () => {
+    it('should pass through encrypted run input/output as Uint8Array', () => {
+      const run = {
+        runId: 'wrun_test',
+        input: makeEncryptedPayload(),
+        output: makeEncryptedPayload(),
+      };
+      const result = hydrateResourceIO(run, {});
+      expect(isEncryptedData(result.input)).toBe(true);
+      expect(isEncryptedData(result.output)).toBe(true);
+    });
+
+    it('should pass through encrypted step input/output as Uint8Array', () => {
+      const step = {
+        stepId: 'step_test',
+        input: makeEncryptedPayload(),
+        output: makeEncryptedPayload(),
+      };
+      const result = hydrateResourceIO(step, {});
+      expect(isEncryptedData(result.input)).toBe(true);
+      expect(isEncryptedData(result.output)).toBe(true);
+    });
+
+    it('should hydrate normal data alongside encrypted Uint8Array', () => {
+      const run = {
+        runId: 'wrun_test',
+        input: makeDevlPayload({ greeting: 'hello' }),
+        output: makeEncryptedPayload(),
+      };
+      const result = hydrateResourceIO(run, {});
+      expect(result.input).toEqual({ greeting: 'hello' });
+      expect(isEncryptedData(result.output)).toBe(true);
+    });
+  });
+
+  describe('hydrateDataWithKey', () => {
+    // Real 32-byte AES-256 test key
+    const testKeyRaw = new Uint8Array([
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+      0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+      0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    ]);
+
+    async function getTestKey() {
+      const { importKey } = await import('./encryption.js');
+      return importKey(testKeyRaw);
+    }
+
+    async function encryptPayload(value: unknown) {
+      const { encrypt, importKey } = await import('./encryption.js');
+      const key = await importKey(testKeyRaw);
+      const inner = makeDevlPayload(value);
+      const encrypted = await encrypt(key, inner);
+      return encodeWithFormatPrefix(
+        SerializationFormat.ENCRYPTED,
+        encrypted
+      ) as Uint8Array;
+    }
+
+    it('should decrypt and hydrate encrypted payload with correct key', async () => {
+      const original = { message: 'secret', count: 42 };
+      const encrypted = await encryptPayload(original);
+      const key = await getTestKey();
+
+      const result = await hydrateDataWithKey(
+        encrypted,
+        observabilityRevivers,
+        key
+      );
+      expect(result).toEqual(original);
+    });
+
+    it('should return original Uint8Array when key is undefined', async () => {
+      const original = { data: 'test' };
+      const encrypted = await encryptPayload(original);
+
+      const result = await hydrateDataWithKey(
+        encrypted,
+        observabilityRevivers,
+        undefined
+      );
+      // Without a key, encrypted data is returned as-is
+      expect(result).toBeInstanceOf(Uint8Array);
+      expect(isEncryptedData(result)).toBe(true);
+    });
+
+    it('should hydrate non-encrypted payloads normally', async () => {
+      const original = { hello: 'world' };
+      const payload = makeDevlPayload(original);
+      const key = await getTestKey();
+
+      const result = await hydrateDataWithKey(
+        payload,
+        observabilityRevivers,
+        key
+      );
+      expect(result).toEqual(original);
+    });
+
+    it('should handle non-Uint8Array values (legacy specVersion 1 data)', async () => {
+      // Legacy specVersion 1 stored data as plain JSON (not binary).
+      // hydrateData passes these through devalue unflatten.
+      const legacyValue = 'plain string value';
+
+      const result = await hydrateDataWithKey(
+        legacyValue,
+        observabilityRevivers,
+        undefined
+      );
+      expect(result).toBe(legacyValue);
+    });
   });
 });

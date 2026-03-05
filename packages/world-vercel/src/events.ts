@@ -20,11 +20,19 @@ import {
   type RefWithRunId,
   resolveRefDescriptors,
 } from './refs.js';
-import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
+import {
+  cancelWorkflowRunV1,
+  createWorkflowRunV1,
+  WorkflowRunWireBaseSchema,
+} from './runs.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import { trace } from './telemetry.js';
 import type { APIConfig } from './utils.js';
-import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
+import {
+  DEFAULT_RESOLVE_DATA_OPTION,
+  deserializeError,
+  makeRequest,
+} from './utils.js';
 
 // Helper to filter event data based on resolveData setting.
 // Strips both eventData and eventDataRef since the server always returns
@@ -41,11 +49,25 @@ function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
   return event;
 }
 
-// Schema for EventResult wire format returned by events.create
-// Uses wire format schemas for step to handle field name mapping
-const EventResultWireSchema = z.object({
+// Schema for EventResult wire format returned by events.create.
+// Uses wire format schemas for step to handle field name mapping.
+// Two variants are used depending on `remoteRefBehavior`:
+// - 'resolve': the server returns fully resolved data, so we validate the run
+//   with the strict WorkflowRunSchema discriminated union (e.g. status:'failed'
+//   requires error to be present).
+// - 'lazy': the server may omit resolved fields (error may be a string or
+//   undefined), so we use the looser WorkflowRunWireBaseSchema and normalize
+//   the error via deserializeError() afterward.
+const EventResultResolveWireSchema = z.object({
   event: EventSchema,
   run: WorkflowRunSchema.optional(),
+  step: StepWireSchema.optional(),
+  hook: HookSchema.optional(),
+});
+
+const EventResultLazyWireSchema = z.object({
+  event: EventSchema,
+  run: WorkflowRunWireBaseSchema.optional(),
   step: StepWireSchema.optional(),
   hook: HookSchema.optional(),
 });
@@ -351,18 +373,43 @@ export async function createWorkflowRunEvent(
     ? 'resolve'
     : 'lazy';
 
+  // Use the strict schema when the server resolves all refs (preserves the
+  // WorkflowRunSchema discriminated union), and the loose wire schema when
+  // the server returns lazy refs (error may be a string or undefined).
+  if (remoteRefBehavior === 'resolve') {
+    const wireResult = await makeRequest({
+      endpoint: `/v2/runs/${runIdPath}/events`,
+      options: { method: 'POST' },
+      data: { ...data, remoteRefBehavior },
+      config,
+      schema: EventResultResolveWireSchema,
+    });
+
+    return {
+      event: filterEventData(wireResult.event, resolveData),
+      run: wireResult.run,
+      step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
+      hook: wireResult.hook,
+    };
+  }
+
   const wireResult = await makeRequest({
     endpoint: `/v2/runs/${runIdPath}/events`,
     options: { method: 'POST' },
     data: { ...data, remoteRefBehavior },
     config,
-    schema: EventResultWireSchema,
+    schema: EventResultLazyWireSchema,
   });
 
-  // Transform wire format to interface format
+  // Transform wire format to interface format.
+  // The run entity from the wire may have error as a string (legacy) or
+  // undefined (lazy ref mode), so deserializeError normalizes it into the
+  // StructuredError shape expected by WorkflowRun consumers.
   return {
     event: filterEventData(wireResult.event, resolveData),
-    run: wireResult.run,
+    run: wireResult.run
+      ? deserializeError<WorkflowRun>(wireResult.run)
+      : undefined,
     step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
     hook: wireResult.hook,
   };
