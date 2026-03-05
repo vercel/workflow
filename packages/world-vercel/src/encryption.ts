@@ -134,9 +134,12 @@ export async function fetchRunKey(
         );
       }
       // Exponential backoff with jitter: 1s, 2s, 4s, 8s, 16s
-      const retryAfter = response.headers.get('retry-after');
-      const delay = retryAfter
-        ? Number.parseInt(retryAfter, 10) * 1000
+      const retryAfterHeader = response.headers.get('retry-after');
+      const parsedRetryAfter = retryAfterHeader
+        ? Number.parseInt(retryAfterHeader, 10)
+        : NaN;
+      const delay = !Number.isNaN(parsedRetryAfter)
+        ? parsedRetryAfter * 1000
         : BASE_DELAY_MS * 2 ** attempt + Math.random() * 500;
       await new Promise((r) => setTimeout(r, delay));
       continue;
