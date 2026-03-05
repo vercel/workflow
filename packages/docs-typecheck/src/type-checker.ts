@@ -24,7 +24,6 @@ const docsGlobalsContent = fs.readFileSync(docsGlobalsPath, 'utf-8');
  * not cause test failures. Keep this list minimal and well-documented.
  */
 const IGNORED_ERROR_CODES = new Set([
-  2307, // Cannot find module 'X' - for app-specific imports like @/..., @ai-sdk/react, etc.
   2314, // Generic type 'X' requires N type argument(s) - docs may use simplified generic syntax
   2558, // Expected 0 type arguments, but got N - docs may use simplified generic syntax
   6133, // 'X' is declared but its value is never read
@@ -83,6 +82,26 @@ const compilerOptions: ts.CompilerOptions = {
     ai: [path.join(__dirname, '../node_modules/ai')],
   },
 };
+
+/**
+ * Modules that we explicitly resolve via `paths` mappings. A TS2307
+ * ("Cannot find module") error for any of these is a real regression and
+ * must NOT be silenced.
+ */
+const RESOLVED_MODULES = new Set(Object.keys(compilerOptions.paths ?? {}));
+
+/**
+ * Returns true if a TS2307 diagnostic refers to a module we don't expect to
+ * resolve (relative imports, framework deps, app aliases, etc.).
+ * Returns false for modules in our paths mapping — those failures are real.
+ */
+function isExpectedMissingModule(diagnostic: ts.Diagnostic): boolean {
+  const msg = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
+  const match = msg.match(/Cannot find module '([^']+)'/);
+  if (!match) return false;
+  const mod = match[1];
+  return !RESOLVED_MODULES.has(mod);
+}
 
 /**
  * Creates a TypeScript program for type checking multiple code samples at once
@@ -184,7 +203,10 @@ export function typeCheckBatch(
 
     const expectedErrorSet = new Set(sample.expectedErrors);
     const relevantDiagnostics = allDiagnostics.filter(
-      (d) => !IGNORED_ERROR_CODES.has(d.code) && !expectedErrorSet.has(d.code)
+      (d) =>
+        !IGNORED_ERROR_CODES.has(d.code) &&
+        !expectedErrorSet.has(d.code) &&
+        !(d.code === 2307 && isExpectedMissingModule(d))
     );
 
     const diagnostics = relevantDiagnostics.map((d) =>
@@ -334,7 +356,10 @@ export function typeCheck(sample: ProcessedCodeSample): TypeCheckResult {
     // Filter out ignored errors (global + per-sample)
     const expectedErrorSet = new Set(sample.expectedErrors);
     const relevantDiagnostics = allDiagnostics.filter(
-      (d) => !IGNORED_ERROR_CODES.has(d.code) && !expectedErrorSet.has(d.code)
+      (d) =>
+        !IGNORED_ERROR_CODES.has(d.code) &&
+        !expectedErrorSet.has(d.code) &&
+        !(d.code === 2307 && isExpectedMissingModule(d))
     );
 
     const diagnostics = relevantDiagnostics.map((d) =>
