@@ -1,0 +1,1 @@
+ALTER TABLE "workflow"."workflow_hooks" ADD COLUMN "is_webhook" boolean DEFAULT true;

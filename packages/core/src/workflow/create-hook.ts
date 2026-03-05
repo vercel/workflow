@@ -28,13 +28,22 @@ export function createWebhook(options?: WebhookOptions): Webhook<Request>;
 export function createWebhook(
   options?: WebhookOptions
 ): Webhook<Request> | Webhook<RequestWithResponse> {
-  const { respondWith, ...rest } = options ?? {};
+  const { respondWith, token, ...rest } = (options ?? {}) as WebhookOptions & {
+    token?: string;
+  };
+
+  if (token !== undefined) {
+    throw new Error(
+      '`createWebhook()` does not accept a `token` option. Webhook tokens are always randomly generated. Use `createHook()` with `resumeHook()` for deterministic token patterns.'
+    );
+  }
+
   let metadata: Pick<WebhookOptions, 'respondWith'> | undefined;
   if (typeof respondWith !== 'undefined') {
     metadata = { respondWith };
   }
 
-  const hook = createHook({ ...rest, metadata }) as
+  const hook = createHook({ ...rest, metadata, isWebhook: true }) as
     | Webhook<Request>
     | Webhook<RequestWithResponse>;
 

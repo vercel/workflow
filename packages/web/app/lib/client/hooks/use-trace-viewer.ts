@@ -108,7 +108,7 @@ export function useWorkflowTraceViewerData(
 
     const [runResult, stepsResult, hooksResult, eventsResult] =
       await Promise.all([
-        unwrapServerActionResult(fetchRun(env, runId)),
+        unwrapServerActionResult(fetchRun(env, runId, 'none')),
         unwrapServerActionResult(
           fetchSteps(env, runId, {
             sortOrder: 'asc',
@@ -337,12 +337,13 @@ export function useWorkflowTraceViewerData(
       return false;
     }
     const { error, result } = await unwrapServerActionResult(
-      fetchRun(env, runId)
+      fetchRun(env, runId, 'none')
     );
     if (error) {
       setError(error);
       return false;
     }
+    setError(null);
     setRun(hydrateResourceIO(result));
     return true;
   }, [env, runId, run?.completedAt]);

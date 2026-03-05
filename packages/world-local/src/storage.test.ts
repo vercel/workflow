@@ -1,6 +1,8 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { WorkflowAPIError } from '@workflow/errors';
+import { DEFAULT_TIMESTAMP_THRESHOLD_MS } from '@workflow/world';
 import type { Storage } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -1314,7 +1316,7 @@ describe('Storage', () => {
 
       it('should throw error for non-existent hook', async () => {
         await expect(storage.hooks.get('nonexistent_hook')).rejects.toThrow(
-          'Hook nonexistent_hook not found'
+          'Hook not found'
         );
       });
 
@@ -1354,7 +1356,7 @@ describe('Storage', () => {
       it('should throw error for non-existent token', async () => {
         await expect(
           storage.hooks.getByToken('nonexistent-token')
-        ).rejects.toThrow('Hook with token nonexistent-token not found');
+        ).rejects.toThrow('Hook not found');
       });
 
       it('should find the correct hook when multiple hooks exist', async () => {
@@ -1396,10 +1398,10 @@ describe('Storage', () => {
         const result = await storage.hooks.list({});
 
         expect(result.data).toHaveLength(2);
-        // Should be in descending order (most recent first)
-        expect(result.data[0].hookId).toBe(hook2.hookId);
-        expect(result.data[1].hookId).toBe(hook1.hookId);
-        expect(result.data[0].createdAt.getTime()).toBeGreaterThanOrEqual(
+        // Should be in ascending order (oldest first) by default
+        expect(result.data[0].hookId).toBe(hook1.hookId);
+        expect(result.data[1].hookId).toBe(hook2.hookId);
+        expect(result.data[0].createdAt.getTime()).toBeLessThanOrEqual(
           result.data[1].createdAt.getTime()
         );
       });
@@ -2511,6 +2513,120 @@ describe('Storage', () => {
         expect(result.run?.status).toBe('running');
         expect(result.event?.eventType).toBe('run_started');
       });
+    });
+  });
+
+  describe('custom runId validation', () => {
+    const runCreatedEvent = {
+      eventType: 'run_created' as const,
+      eventData: {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      },
+    };
+
+    /**
+     * Encode a timestamp into a Crockford base32 ULID timestamp component (10 chars).
+     */
+    function encodeUlidTime(timeMs: number): string {
+      const chars = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+      let result = '';
+      let remaining = timeMs;
+      for (let i = 0; i < 10; i++) {
+        result = chars[remaining % 32] + result;
+        remaining = Math.floor(remaining / 32);
+      }
+      return result;
+    }
+
+    function makeRunId(timestampMs: number): string {
+      // 10-char encoded timestamp + 16 random chars
+      return `wrun_${encodeUlidTime(timestampMs)}${'0'.repeat(16)}`;
+    }
+
+    it('should accept a client-provided runId with current timestamp', async () => {
+      const runId = makeRunId(Date.now());
+      const result = await storage.events.create(runId, runCreatedEvent);
+
+      expect(result.run).toBeDefined();
+      expect(result.run!.runId).toBe(runId);
+    });
+
+    it('should accept a runId within the threshold', async () => {
+      // 4 minutes ago — within the 5-minute default
+      const runId = makeRunId(Date.now() - 4 * 60 * 1000);
+      const result = await storage.events.create(runId, runCreatedEvent);
+
+      expect(result.run).toBeDefined();
+      expect(result.run!.runId).toBe(runId);
+    });
+
+    it('should accept a runId at the exact threshold boundary', async () => {
+      const runId = makeRunId(Date.now() - DEFAULT_TIMESTAMP_THRESHOLD_MS);
+      const result = await storage.events.create(runId, runCreatedEvent);
+
+      expect(result.run).toBeDefined();
+      expect(result.run!.runId).toBe(runId);
+    });
+
+    it('should reject a runId with a timestamp too far in the past', async () => {
+      // 10 minutes ago — exceeds the 5-minute threshold
+      const runId = makeRunId(Date.now() - 10 * 60 * 1000);
+
+      await expect(
+        storage.events.create(runId, runCreatedEvent)
+      ).rejects.toThrow(WorkflowAPIError);
+
+      await expect(
+        storage.events.create(runId, runCreatedEvent)
+      ).rejects.toThrow(/Invalid runId timestamp/);
+    });
+
+    it('should reject a runId with a timestamp too far in the future', async () => {
+      // 10 minutes from now
+      const runId = makeRunId(Date.now() + 10 * 60 * 1000);
+
+      await expect(
+        storage.events.create(runId, runCreatedEvent)
+      ).rejects.toThrow(WorkflowAPIError);
+
+      await expect(
+        storage.events.create(runId, runCreatedEvent)
+      ).rejects.toThrow(/Invalid runId timestamp/);
+    });
+
+    it('should reject a runId that is not a valid ULID', async () => {
+      await expect(
+        storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)
+      ).rejects.toThrow(WorkflowAPIError);
+
+      await expect(
+        storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)
+      ).rejects.toThrow(/not a valid ULID/);
+    });
+
+    it('should not validate runId for non-run_created events', async () => {
+      // Create a valid run first
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+
+      // run_started with the server-generated runId should work fine
+      const result = await storage.events.create(run.runId, {
+        eventType: 'run_started',
+      });
+
+      expect(result.run?.status).toBe('running');
+    });
+
+    it('should not validate when runId is null (server-generated)', async () => {
+      const result = await storage.events.create(null, runCreatedEvent);
+
+      expect(result.run).toBeDefined();
+      expect(result.run!.runId).toMatch(/^wrun_/);
     });
   });
 });

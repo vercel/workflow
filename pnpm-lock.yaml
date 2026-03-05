@@ -39,6 +39,9 @@ catalogs:
     typescript:
       specifier: ^5.9.3
       version: 5.9.3
+    ulid:
+      specifier: ~3.0.1
+      version: 3.0.1
     undici:
       specifier: 7.22.0
       version: 7.22.0
@@ -580,7 +583,7 @@ importers:
         specifier: 3.0.5
         version: 3.0.5
       ulid:
-        specifier: 3.0.1
+        specifier: 'catalog:'
         version: 3.0.1
       zod:
         specifier: 'catalog:'
@@ -1230,6 +1233,10 @@ importers:
         version: link:../tsconfig
 
   packages/world:
+    dependencies:
+      ulid:
+        specifier: 'catalog:'
+        version: 3.0.1
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -1259,7 +1266,7 @@ importers:
         specifier: 3.1.1
         version: 3.1.1
       ulid:
-        specifier: 3.0.1
+        specifier: 'catalog:'
         version: 3.0.1
       undici:
         specifier: 'catalog:'
@@ -1317,7 +1324,7 @@ importers:
         specifier: 3.4.8
         version: 3.4.8
       ulid:
-        specifier: 3.0.1
+        specifier: 'catalog:'
         version: 3.0.1
       zod:
         specifier: 'catalog:'

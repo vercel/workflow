@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.0-beta.37
+
+### Patch Changes
+
+- [#1256](https://github.com/vercel/workflow/pull/1256) [`bbe40ff`](https://github.com/vercel/workflow/commit/bbe40ff00a5e372b040aec8fc7640c54d08c5636) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add encryption-aware o11y for CLI and web UI
+
 ## 4.1.0-beta.36
 
 ### Patch Changes

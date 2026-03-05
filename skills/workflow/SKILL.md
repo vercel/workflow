@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow DevKit. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow devkit", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.1'
+  version: '1.2'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -216,7 +216,7 @@ export async function parentWorkflow() {
 
 ## Hooks — Pause & Resume with External Events
 
-Hooks let workflows wait for external data. Use `createHook()` inside a workflow and `resumeHook()` from API routes.
+Hooks let workflows wait for external data. Use `createHook()` inside a workflow and `resumeHook()` from API routes. Deterministic tokens are for `createHook()` + `resumeHook()` (server-side) only. `createWebhook()` always generates random tokens — do not pass a `token` option to `createWebhook()`.
 
 ### Single event
 

@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-postgres",
-  "version": "4.1.0-beta.38",
+  "version": "4.1.0-beta.39",
   "description": "A reference World implementation based on PostgreSQL",
   "type": "module",
   "main": "dist/index.js",
@@ -54,7 +54,7 @@
     "drizzle-orm": "0.45.1",
     "graphile-worker": "0.16.6",
     "postgres": "3.4.8",
-    "ulid": "3.0.1",
+    "ulid": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

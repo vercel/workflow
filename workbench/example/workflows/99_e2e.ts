@@ -153,11 +153,7 @@ async function sendWebhookResponse(req: RequestWithResponse) {
   return body;
 }
 
-export async function webhookWorkflow(
-  token: string,
-  token2: string,
-  token3: string
-) {
+export async function webhookWorkflow() {
   'use workflow';
 
   type Payload = { url: string; method: string; body: string };
@@ -165,15 +161,13 @@ export async function webhookWorkflow(
 
   // All webhooks must be created upfront so they're all registered
   // before the test sends HTTP requests to them
-  const webhookWithDefaultResponse = createWebhook({ token });
+  const webhookWithDefaultResponse = createWebhook();
 
   const res = new Response('Hello from static response!', { status: 402 });
   const webhookWithStaticResponse = createWebhook({
-    token: token2,
     respondWith: res,
   });
   const webhookWithManualResponse = createWebhook({
-    token: token3,
     respondWith: 'manual',
   });
 
