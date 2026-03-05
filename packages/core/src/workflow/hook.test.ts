@@ -844,6 +844,30 @@ describe('createCreateHook', () => {
       expect(workflowError.hookCount).toBe(0);
     }
   });
+
+  it('should set isWebhook: false by default on queue item', async () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+    createHook();
+
+    const queueItem = ctx.invocationsQueue.values().next().value;
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.isWebhook).toBe(false);
+    }
+  });
+
+  it('should set isWebhook: true when option is provided', async () => {
+    const ctx = setupWorkflowContext([]);
+    const createHook = createCreateHook(ctx);
+    createHook({ isWebhook: true });
+
+    const queueItem = ctx.invocationsQueue.values().next().value;
+    expect(queueItem?.type).toBe('hook');
+    if (queueItem?.type === 'hook') {
+      expect(queueItem.isWebhook).toBe(true);
+    }
+  });
 });
 
 describe('createWebhook', () => {

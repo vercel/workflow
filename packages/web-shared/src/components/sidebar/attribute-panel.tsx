@@ -352,6 +352,7 @@ const attributeToDisplayFn: Record<
   attempt: (value: unknown) => String(value),
   // Hook details
   token: (value: unknown) => String(value),
+  isWebhook: (value: unknown) => String(value),
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),

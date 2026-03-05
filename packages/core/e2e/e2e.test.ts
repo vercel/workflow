@@ -464,6 +464,49 @@ describe('e2e', () => {
     expect(returnValue[2].done).toBe(true);
   });
 
+  test(
+    'hookWorkflow is not resumable via public webhook endpoint',
+    { timeout: 60_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      const run = await start(await e2e('hookWorkflow'), [token, customData]);
+
+      // Wait for the hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Verify the hook exists via server-side API
+      const hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run.runId);
+
+      // Attempt to resume via the public webhook endpoint — should get 404
+      const res = await fetch(
+        new URL(
+          `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
+          deploymentUrl
+        ),
+        {
+          method: 'POST',
+          headers: getProtectionBypassHeaders(),
+          body: JSON.stringify({ message: 'should-be-rejected' }),
+        }
+      );
+      expect(res.status).toBe(404);
+
+      // Now resume via server-side resumeHook() — should work
+      await resumeHook(hook, {
+        message: 'via-server',
+        customData: (hook.metadata as any)?.customData,
+        done: true,
+      });
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toHaveLength(1);
+      expect(returnValue[0].message).toBe('via-server');
+    }
+  );
+
   test('webhookWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('webhookWorkflow'), []);
 

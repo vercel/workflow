@@ -1555,6 +1555,11 @@ describe('runWorkflow', () => {
       expect(error.message).toEqual('1 hook has not been created yet');
       expect((error as WorkflowSuspension).steps).toHaveLength(1);
       expect((error as WorkflowSuspension).steps[0].type).toEqual('hook');
+      // createHook() should always set isWebhook: false
+      expect((error as WorkflowSuspension).steps[0] as any).toHaveProperty(
+        'isWebhook',
+        false
+      );
     });
 
     it('should resolve `createHook` await upon "hook_received" event', async () => {

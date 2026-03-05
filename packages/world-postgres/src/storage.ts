@@ -1,4 +1,8 @@
-import { RunNotSupportedError, WorkflowAPIError } from '@workflow/errors';
+import {
+  HookNotFoundError,
+  RunNotSupportedError,
+  WorkflowAPIError,
+} from '@workflow/errors';
 import type {
   Event,
   EventResult,
@@ -857,6 +861,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         const eventData = (data as any).eventData as {
           token: string;
           metadata?: any;
+          isWebhook?: boolean;
         };
 
         // Check for duplicate token using prepared statement
@@ -919,6 +924,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             environment: '', // TODO: get from context
             // Propagate specVersion from the event to the hook entity
             specVersion: effectiveSpecVersion,
+            isWebhook: eventData.isWebhook,
           })
           .onConflictDoNothing()
           .returning();
@@ -1135,18 +1141,18 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
         .limit(1);
       value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
+      parsed.isWebhook ??= true;
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
     },
     async getByToken(token, params) {
       const [value] = await getByToken.execute({ token });
       if (!value) {
-        throw new WorkflowAPIError(`Hook not found for token: ${token}`, {
-          status: 404,
-        });
+        throw new HookNotFoundError(token);
       }
       value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
+      parsed.isWebhook ??= true;
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
     },

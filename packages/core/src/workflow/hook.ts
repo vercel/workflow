@@ -15,11 +15,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
     const token = options.token ?? ctx.generateNanoid();
 
     // Add hook creation to invocations queue (using Map for O(1) operations)
+    const isWebhook = options.isWebhook ?? false;
+
     ctx.invocationsQueue.set(correlationId, {
       type: 'hook',
       correlationId,
       token,
       metadata: options.metadata,
+      isWebhook,
     });
 
     // Queue of hook events that have been received but not yet processed

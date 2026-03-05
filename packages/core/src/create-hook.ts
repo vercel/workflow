@@ -121,9 +121,24 @@ export interface HookOptions {
    * ```
    */
   metadata?: Serializable;
+
+  /**
+   * Whether this hook can be resumed via the public webhook endpoint.
+   *
+   * When `true`, the hook can be triggered by sending an HTTP request to the
+   * public `/.well-known/workflow/v1/webhook/{token}` URL. This is automatically
+   * set when using `createWebhook()`.
+   *
+   * When `false` (the default), the hook can only be resumed server-side
+   * via `resumeHook()`.
+   *
+   * @default false
+   */
+  isWebhook?: boolean;
 }
 
-export interface WebhookOptions extends Omit<HookOptions, 'token'> {
+export interface WebhookOptions
+  extends Omit<HookOptions, 'token' | 'isWebhook'> {
   /**
    * If set to a `Response` object, the webhook will automatically
    * respond with the specified response.

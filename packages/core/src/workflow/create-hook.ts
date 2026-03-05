@@ -43,7 +43,7 @@ export function createWebhook(
     metadata = { respondWith };
   }
 
-  const hook = createHook({ ...rest, metadata }) as
+  const hook = createHook({ ...rest, metadata, isWebhook: true }) as
     | Webhook<Request>
     | Webhook<RequestWithResponse>;
 

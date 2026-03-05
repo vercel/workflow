@@ -1,3 +1,4 @@
+import { HookNotFoundError } from '@workflow/errors';
 import path from 'node:path';
 import type {
   GetHookParams,
@@ -30,7 +31,7 @@ export function createHooksStorage(basedir: string): Storage['hooks'] {
       const hookPath = path.join(hooksDir, `${file}.json`);
       const hook = await readJSON(hookPath, HookSchema);
       if (hook && hook.token === token) {
-        return hook;
+        return { ...hook, isWebhook: hook.isWebhook ?? true };
       }
     }
 
@@ -41,16 +42,19 @@ export function createHooksStorage(basedir: string): Storage['hooks'] {
     const hookPath = path.join(basedir, 'hooks', `${hookId}.json`);
     const hook = await readJSON(hookPath, HookSchema);
     if (!hook) {
-      throw new Error(`Hook ${hookId} not found`);
+      throw new HookNotFoundError(hookId);
     }
     const resolveData = params?.resolveData || DEFAULT_RESOLVE_DATA_OPTION;
-    return filterHookData(hook, resolveData);
+    return filterHookData(
+      { ...hook, isWebhook: hook.isWebhook ?? true },
+      resolveData
+    );
   }
 
   async function getByToken(token: string): Promise<Hook> {
     const hook = await findHookByToken(token);
     if (!hook) {
-      throw new Error(`Hook with token ${token} not found`);
+      throw new HookNotFoundError(token);
     }
     return hook;
   }
