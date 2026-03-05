@@ -28,7 +28,7 @@ import {
   StepSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { and, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
@@ -1159,16 +1159,19 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
     async list(params: ListHooksParams) {
       const limit = params?.pagination?.limit ?? 100;
       const fromCursor = params?.pagination?.cursor;
+      const sortOrder = params?.pagination?.sortOrder ?? 'asc';
+      const orderFn = sortOrder === 'asc' ? asc : desc;
+      const cursorFn = sortOrder === 'asc' ? gt : lt;
       const all = await drizzle
         .select()
         .from(hooks)
         .where(
           and(
             map(params.runId, (id) => eq(hooks.runId, id)),
-            map(fromCursor, (c) => lt(hooks.hookId, c))
+            map(fromCursor, (c) => cursorFn(hooks.hookId, c))
           )
         )
-        .orderBy(desc(hooks.hookId))
+        .orderBy(orderFn(hooks.hookId))
         .limit(limit + 1);
       const values = all.slice(0, limit);
       const hasMore = all.length > limit;
