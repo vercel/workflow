@@ -15,10 +15,7 @@ import {
   healthCheck,
 } from '@workflow/core/runtime/helpers';
 import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-hook';
-import {
-  getDeserializeStream,
-  getExternalRevivers,
-} from '@workflow/core/serialization';
+
 import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
@@ -951,18 +948,12 @@ export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,
   startIndex?: number
-): Promise<ReadableStream<unknown> | ServerActionError> {
+): Promise<ReadableStream<Uint8Array> | ServerActionError> {
   try {
     const world = await getWorldFromEnv(env);
-    // We should probably use getRun().getReadable() instead, to make the UI
-    // more consistent with runtime behavior, and also expose a "replay" and "startIndex",
-    // feature, to allow for testing World behavior.
-    const stream = await world.readFromStream(streamId, startIndex);
-
-    const revivers = getExternalRevivers(globalThis, [], '', undefined);
-    const transform = getDeserializeStream(revivers, undefined);
-
-    return stream.pipeThrough(transform);
+    // Return the raw binary stream — deserialization and decryption
+    // happen entirely client-side.
+    return await world.readFromStream(streamId, startIndex);
   } catch (error) {
     const actionError = createServerActionError(error, 'world.readFromStream', {
       streamId,

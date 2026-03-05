@@ -451,7 +451,7 @@ export function RunDetailView({
     chunks: streamChunks,
     isLive: streamIsLive,
     error: streamError,
-  } = useStreamReader(env, selectedStreamId);
+  } = useStreamReader(env, selectedStreamId, runId, encryptionKey);
 
   const handleCancelClick = () => {
     setShowCancelDialog(true);

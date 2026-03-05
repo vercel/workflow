@@ -813,12 +813,14 @@ export const showStream = async (
   }
   const rawStream = await world.readFromStream(streamId);
 
-  // Only resolve the encryption key when --decrypt is passed and a runId is available.
-  // Without --decrypt, encrypted frames will pass through as-is.
+  // Only resolve the encryption key when --decrypt is passed and --run is provided.
+  // We fetch the full WorkflowRun object so that getEncryptionKeyForRun has
+  // access to the deploymentId (needed for API-based key resolution).
   let encryptionKey: EncryptionKeyParam;
   if (opts.decrypt && opts.runId) {
     encryptionKey = (async () => {
-      const rawKey = await world.getEncryptionKeyForRun?.(opts.runId!);
+      const run = await world.runs.get(opts.runId!);
+      const rawKey = await world.getEncryptionKeyForRun?.(run);
       return rawKey ? await importKey(rawKey) : undefined;
     })();
   } else if (opts.decrypt && !opts.runId) {
