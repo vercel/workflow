@@ -1,6 +1,7 @@
 ---
-"@workflow/world-postgres": patch
 "@workflow/world-local": patch
+"@workflow/world-postgres": patch
+"@workflow/world-vercel": patch
 ---
 
-Validate run ID to be ULID when passed by user
+Locally validate run ID to be ULID when passed by user
