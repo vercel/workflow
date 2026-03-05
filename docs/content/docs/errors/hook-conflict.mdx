@@ -73,7 +73,6 @@ export async function processPayment() {
 
 When a hook conflict occurs, awaiting the hook will throw a `WorkflowRuntimeError`. You can catch this error to handle the conflict gracefully:
 
-<!-- @skip-typecheck -->
 ```typescript lineNumbers
 import { WorkflowRuntimeError } from "@workflow/errors";
 
@@ -86,7 +85,7 @@ export async function processPayment(orderId: string) {
     const payment = await hook; // [!code highlight]
     return { success: true, payment };
   } catch (error) {
-    if (error instanceof WorkflowRuntimeError && error.slug === "hook-conflict") { // [!code highlight]
+    if (error instanceof WorkflowRuntimeError && error.message.includes("hook-conflict")) { // [!code highlight]
       // Another workflow is already processing this order
       return { success: false, reason: "duplicate-processing" };
     }
