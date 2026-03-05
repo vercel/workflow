@@ -3858,10 +3858,10 @@ impl VisitMut for StepTransform {
                         let step_id = self.create_id(Some(&step_fn_name), span, false);
 
                         if self.mode == TransformMode::Client {
-                            // In client mode, use stepId property assignment instead of registerStepFunction
                             let step_id_assignment =
                                 self.create_step_id_assignment_with_id(&hoisted_name, &step_id);
-                            self.registration_calls.push(step_id_assignment);
+                            module.body.insert(current_insert_pos, ModuleItem::Stmt(step_id_assignment));
+                            current_insert_pos += 1;
                         } else {
                             // In step mode, use registerStepFunction
                             let registration_call = Stmt::Expr(ExprStmt {
@@ -3959,10 +3959,10 @@ impl VisitMut for StepTransform {
                         current_insert_pos += 1;
 
                         if self.mode == TransformMode::Client {
-                            // In client mode, use stepId property assignment instead of registerStepFunction
                             let step_id_assignment =
                                 self.create_step_id_assignment_with_id(&hoist_var_name, &step_id);
-                            self.registration_calls.push(step_id_assignment);
+                            module.body.insert(current_insert_pos, ModuleItem::Stmt(step_id_assignment));
+                            current_insert_pos += 1;
                         } else {
                             // In step mode, use registerStepFunction
                             let registration_call = Stmt::Expr(ExprStmt {

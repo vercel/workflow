@@ -4,6 +4,7 @@ var dude$myStep = async function(a) {
     something();
     return a + 1;
 };
+dude$myStep.stepId = "step//./input//dude/myStep";
 const dude = {
     myStep: dude$myStep
 };
@@ -12,4 +13,3 @@ export async function main() {
 }
 main.workflowId = "workflow//./input//main";
 dude.myStep();
-dude$myStep.stepId = "step//./input//dude/myStep";

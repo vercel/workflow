@@ -7,17 +7,20 @@ var weatherTool$execute = async function({ location }) {
         temperature: 72 + Math.floor(Math.random() * 21) - 10
     };
 };
+weatherTool$execute.stepId = "step//./input//weatherTool/execute";
 var timeTool$execute = async function timeToolImpl() {
     return {
         time: new Date().toISOString()
     };
 };
+timeTool$execute.stepId = "step//./input//timeTool/execute";
 var weatherTool2$execute = async function({ location }) {
     return {
         location,
         temperature: 72 + Math.floor(Math.random() * 21) - 10
     };
 };
+weatherTool2$execute.stepId = "step//./input//weatherTool2/execute";
 export const weatherTool = tool({
     description: 'Get the weather in a location',
     inputSchema: z.object({
@@ -36,6 +39,3 @@ export const weatherTool2 = tool({
     }),
     execute: weatherTool2$execute
 });
-weatherTool$execute.stepId = "step//./input//weatherTool/execute";
-timeTool$execute.stepId = "step//./input//timeTool/execute";
-weatherTool2$execute.stepId = "step//./input//weatherTool2/execute";
