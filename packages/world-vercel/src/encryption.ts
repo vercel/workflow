@@ -121,9 +121,9 @@ export async function fetchRunKey(
       headers: {
         authorization: `Bearer ${token}`,
       },
+      // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
       dispatcher: getDispatcher(),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-    } as any
+    }
   );
 
   if (!response.ok) {
