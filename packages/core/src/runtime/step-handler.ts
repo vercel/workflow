@@ -351,7 +351,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     workflowStartedAt: new Date(+workflowStartedAt),
                     // TODO: there should be a getUrl method on the world interface itself. This
                     // solution only works for vercel + local worlds.
-                    url: process.env.VERCEL_URL
+                    url: isVercel
                       ? `https://${process.env.VERCEL_URL}`
                       : `http://localhost:${port ?? 3000}`,
                   },
