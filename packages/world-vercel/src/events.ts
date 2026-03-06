@@ -8,6 +8,7 @@ import {
   EventTypeSchema,
   type GetEventParams,
   HookSchema,
+  type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
@@ -274,18 +275,29 @@ export async function getEvent(
 }
 
 export async function getWorkflowRunEvents(
-  params: ListEventsParams,
+  params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig
 ): Promise<PaginatedResponse<Event>> {
   const searchParams = new URLSearchParams();
 
   const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
-  const { runId } = params;
+  let runId: string | undefined;
+  let correlationId: string | undefined;
+  if ('runId' in params) {
+    runId = params.runId;
+  } else {
+    correlationId = params.correlationId;
+  }
+
+  if (!runId && !correlationId) {
+    throw new Error('Either runId or correlationId must be provided');
+  }
 
   if (pagination?.limit) searchParams.set('limit', pagination.limit.toString());
   if (pagination?.cursor) searchParams.set('cursor', pagination.cursor);
   if (pagination?.sortOrder)
     searchParams.set('sortOrder', pagination.sortOrder);
+  if (correlationId) searchParams.set('correlationId', correlationId);
 
   // Always send 'lazy' to the server to avoid memory pressure from resolving
   // all refs in memory. When resolveData is 'all', we hydrate refs client-side
@@ -294,7 +306,9 @@ export async function getWorkflowRunEvents(
 
   const queryString = searchParams.toString();
   const query = queryString ? `?${queryString}` : '';
-  const endpoint = `/v2/runs/${runId}/events${query}`;
+  const endpoint = correlationId
+    ? `/v2/events${query}`
+    : `/v2/runs/${runId}/events${query}`;
 
   let refResolveConcurrency: number | undefined;
   const response = (await makeRequest({

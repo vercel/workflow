@@ -1118,6 +1118,40 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         hasMore: all.length > limit,
       };
     },
+    async listByCorrelationId(params) {
+      const limit = params?.pagination?.limit ?? 100;
+      const sortOrder = params.pagination?.sortOrder || 'asc';
+      const order =
+        sortOrder === 'desc'
+          ? { by: desc(events.eventId), compare: lt }
+          : { by: events.eventId, compare: gt };
+      const all = await drizzle
+        .select()
+        .from(events)
+        .where(
+          and(
+            eq(events.correlationId, params.correlationId),
+            map(params.pagination?.cursor, (c) =>
+              order.compare(events.eventId, c)
+            )
+          )
+        )
+        .orderBy(order.by)
+        .limit(limit + 1);
+
+      const values = all.slice(0, limit);
+
+      const resolveData = params?.resolveData ?? 'all';
+      return {
+        data: values.map((v) => {
+          v.eventData ||= v.eventDataJson;
+          const parsed = EventSchema.parse(compact(v));
+          return filterEventData(parsed, resolveData);
+        }),
+        cursor: values.at(-1)?.eventId ?? null,
+        hasMore: all.length > limit,
+      };
+    },
   };
 }
 
