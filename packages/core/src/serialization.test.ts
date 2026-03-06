@@ -2243,11 +2243,13 @@ describe('step function serialization', () => {
     const result = await contextStorage.run(
       {
         stepMetadata: {
+          stepName: 'step//workflows/test.ts//addNumbers',
           stepId: 'test-step',
           stepStartedAt: new Date(),
           attempt: 1,
         },
         workflowMetadata: {
+          workflowName: 'workflow//workflows/test.ts//testWorkflow',
           workflowRunId: 'test-run',
           workflowStartedAt: new Date(),
           url: 'http://localhost:3000',

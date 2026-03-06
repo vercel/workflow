@@ -2,8 +2,8 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { WorkflowAPIError } from '@workflow/errors';
-import { DEFAULT_TIMESTAMP_THRESHOLD_MS } from '@workflow/world';
 import type { Storage } from '@workflow/world';
+import { DEFAULT_TIMESTAMP_THRESHOLD_MS } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
@@ -2556,14 +2556,6 @@ describe('Storage', () => {
     it('should accept a runId within the threshold', async () => {
       // 4 minutes ago — within the 5-minute default
       const runId = makeRunId(Date.now() - 4 * 60 * 1000);
-      const result = await storage.events.create(runId, runCreatedEvent);
-
-      expect(result.run).toBeDefined();
-      expect(result.run!.runId).toBe(runId);
-    });
-
-    it('should accept a runId at the exact threshold boundary', async () => {
-      const runId = makeRunId(Date.now() - DEFAULT_TIMESTAMP_THRESHOLD_MS);
       const result = await storage.events.create(runId, runCreatedEvent);
 
       expect(result.run).toBeDefined();

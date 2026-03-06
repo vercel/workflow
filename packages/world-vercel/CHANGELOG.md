@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.1.0-beta.40
+
+### Patch Changes
+
+- [#1290](https://github.com/vercel/workflow/pull/1290) [`8b5a388`](https://github.com/vercel/workflow/commit/8b5a388a9451d7c7460481f0889da5037bd90893) Thanks [@pranaygp](https://github.com/pranaygp)! - Support `timeoutSeconds: 0` for immediate re-enqueue without arbitrary delay
+
 ## 4.1.0-beta.39
 
 ### Patch Changes

@@ -651,6 +651,13 @@ describe('e2e', () => {
       returnValue.innerWorkflowMetadata
     );
 
+    // workflow context should have workflowName and stepMetadata shouldn't
+    expect(typeof returnValue.workflowMetadata.workflowName).toBe('string');
+    expect(returnValue.workflowMetadata.workflowName).toBe(
+      returnValue.innerWorkflowMetadata.workflowName
+    );
+    expect(returnValue.stepMetadata.workflowName).toBeUndefined();
+
     // workflow context should have workflowRunId and stepMetadata shouldn't
     expect(returnValue.workflowMetadata.workflowRunId).toBe(run.runId);
     expect(returnValue.innerWorkflowMetadata.workflowRunId).toBe(run.runId);
@@ -680,6 +687,9 @@ describe('e2e', () => {
     expect(returnValue.workflowMetadata.attempt).toBeUndefined();
 
     // step context
+
+    // stepName should be a string
+    expect(typeof returnValue.stepMetadata.stepName).toBe('string');
 
     // Attempt should be atleast 1
     expect(returnValue.stepMetadata.attempt).toBeGreaterThanOrEqual(1);

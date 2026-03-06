@@ -339,7 +339,7 @@ export async function handleSuspension({
   // We do this after processing all other operations (steps, waits) to ensure
   // they are recorded in the event log before the re-execution
   if (hasHookConflict) {
-    return { timeoutSeconds: 1 };
+    return { timeoutSeconds: 0 };
   }
 
   if (minTimeoutSeconds !== null) {
