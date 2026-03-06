@@ -1,6 +1,6 @@
 ---
-"@workflow/core": minor
-"workflow": minor
+"@workflow/core": patch
+"workflow": patch
 ---
 
 Add `workflowName` to `getWorkflowMetadata()` and `stepName` to `getStepMetadata()`
