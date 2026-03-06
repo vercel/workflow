@@ -342,11 +342,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               return await contextStorage.run(
                 {
                   stepMetadata: {
+                    stepName,
                     stepId,
                     stepStartedAt: new Date(+stepStartedAt),
                     attempt,
                   },
                   workflowMetadata: {
+                    workflowName,
                     workflowRunId,
                     workflowStartedAt: new Date(+workflowStartedAt),
                     // TODO: there should be a getUrl method on the world interface itself. This
