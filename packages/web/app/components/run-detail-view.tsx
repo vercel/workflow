@@ -51,11 +51,7 @@ import {
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
-import {
-  fetchEvents,
-  fetchEventsByCorrelationId,
-  getEncryptionKeyForRun,
-} from '~/lib/rpc-client';
+import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
@@ -187,13 +183,6 @@ interface RunDetailViewProps {
 }
 
 type Tab = 'trace' | 'graph' | 'streams' | 'events';
-const RUN_LEVEL_EVENT_TYPES = new Set([
-  'run_created',
-  'run_started',
-  'run_completed',
-  'run_failed',
-  'run_cancelled',
-]);
 
 export function RunDetailView({
   runId,
@@ -277,59 +266,15 @@ export function RunDetailView({
 
   const handleLoadEventData = useCallback(
     async (event: Event) => {
-      const isRunLevelEvent = RUN_LEVEL_EVENT_TYPES.has(event.eventType);
-
-      if (!isRunLevelEvent && event.correlationId) {
-        const { error, result } = await unwrapServerActionResult(
-          fetchEventsByCorrelationId(env, event.correlationId, {
-            sortOrder: 'asc',
-            limit: 100,
-            withData: true,
-          })
-        );
-        if (error) {
-          throw error;
-        }
-        const rawEvent = result.data.find((e) => e.eventId === event.eventId);
-        if (!rawEvent) return null;
-        const fullEvent = encryptionKeyRef.current
-          ? await hydrateResourceIOWithKey(rawEvent, encryptionKeyRef.current)
-          : hydrateResourceIO(rawEvent);
-        if ('eventData' in fullEvent) {
-          return fullEvent.eventData;
-        }
-        return null;
-      }
-
       const { error, result } = await unwrapServerActionResult(
-        fetchEvents(env, event.runId, {
-          sortOrder: 'desc',
-          limit: 1000,
-          withData: true,
-        })
+        fetchEvent(env, event.runId, event.eventId, 'all')
       );
       if (error) {
         throw error;
       }
-      let rawEvent = result.data.find((e) => e.eventId === event.eventId);
-      if (!rawEvent) {
-        const { error: ascError, result: ascResult } =
-          await unwrapServerActionResult(
-            fetchEvents(env, event.runId, {
-              sortOrder: 'asc',
-              limit: 1000,
-              withData: true,
-            })
-          );
-        if (ascError) {
-          throw ascError;
-        }
-        rawEvent = ascResult.data.find((e) => e.eventId === event.eventId);
-      }
-      if (!rawEvent) return null;
       const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(rawEvent, encryptionKeyRef.current)
-        : hydrateResourceIO(rawEvent);
+        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
+        : hydrateResourceIO(result);
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
@@ -340,28 +285,22 @@ export function RunDetailView({
 
   // Callback for sidebar EventsList — takes (correlationId, eventId)
   const handleLoadSidebarEventData = useCallback(
-    async (correlationId: string, eventId: string) => {
+    async (_correlationId: string, eventId: string) => {
       const { error, result } = await unwrapServerActionResult(
-        fetchEventsByCorrelationId(env, correlationId, {
-          sortOrder: 'asc',
-          limit: 100,
-          withData: true,
-        })
+        fetchEvent(env, runId, eventId, 'all')
       );
       if (error) {
         throw error;
       }
-      const rawEvent = result.data.find((e) => e.eventId === eventId);
-      if (!rawEvent) return null;
       const fullEvent = encryptionKeyRef.current
-        ? await hydrateResourceIOWithKey(rawEvent, encryptionKeyRef.current)
-        : hydrateResourceIO(rawEvent);
+        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
+        : hydrateResourceIO(result);
       if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
       return null;
     },
-    [env]
+    [env, runId]
   );
 
   // Only show graph tab for local backend

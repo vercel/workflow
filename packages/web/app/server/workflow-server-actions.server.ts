@@ -710,6 +710,28 @@ export async function fetchEvents(
 }
 
 /**
+ * Fetch a single event by run ID and event ID
+ */
+export async function fetchEvent(
+  worldEnv: EnvMap,
+  runId: string,
+  eventId: string,
+  resolveData: 'none' | 'all' = 'all'
+): Promise<ServerActionResult<Event>> {
+  try {
+    const world = await getWorldFromEnv(worldEnv);
+    const event = await world.events.get(runId, eventId, { resolveData });
+    return createResponse(event as Event);
+  } catch (error) {
+    return createServerActionError<Event>(error, 'world.events.get', {
+      runId,
+      eventId,
+      resolveData,
+    });
+  }
+}
+
+/**
  * Fetch events by correlation ID
  */
 export async function fetchEventsByCorrelationId(
