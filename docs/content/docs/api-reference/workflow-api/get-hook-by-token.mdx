@@ -89,9 +89,10 @@ export async function POST(request: Request) {
 
   try {
     const hook = await getHookByToken(token); // [!code highlight]
+    const metadata = hook.metadata as { allowedUserId?: string } | undefined;
 
     // Validate that the hook metadata matches the user
-    if (hook.metadata?.allowedUserId !== userId) {
+    if (metadata?.allowedUserId !== userId) {
       return Response.json(
         { error: "Unauthorized to resume this hook" },
         { status: 403 }

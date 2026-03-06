@@ -85,7 +85,7 @@ export async function processPayment(orderId: string) {
     const payment = await hook; // [!code highlight]
     return { success: true, payment };
   } catch (error) {
-    if (error instanceof WorkflowRuntimeError && error.slug === "hook-conflict") { // [!code highlight]
+    if (error instanceof WorkflowRuntimeError && error.message.includes("hook-conflict")) { // [!code highlight]
       // Another workflow is already processing this order
       return { success: false, reason: "duplicate-processing" };
     }

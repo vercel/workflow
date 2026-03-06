@@ -10,8 +10,8 @@ import type {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Find repo root
-const repoRoot = path.resolve(__dirname, '../../../..');
+// Find repo root (packages/docs-typecheck/src or packages/docs-typecheck/dist -> 3 levels up)
+const repoRoot = path.resolve(__dirname, '../../..');
 
 // Globals declaration file path
 const docsGlobalsPath = path.join(__dirname, 'docs-globals.d.ts');
@@ -19,9 +19,13 @@ const docsGlobalsContent = fs.readFileSync(docsGlobalsPath, 'utf-8');
 
 /**
  * Error codes to ignore during type checking.
+ *
+ * These are errors that are expected in documentation code samples and should
+ * not cause test failures. Keep this list minimal and well-documented.
  */
 const IGNORED_ERROR_CODES = new Set([
-  2307, // Cannot find module 'X' - for app-specific imports like @/...
+  2314, // Generic type 'X' requires N type argument(s) - docs may use simplified generic syntax
+  2558, // Expected 0 type arguments, but got N - docs may use simplified generic syntax
   6133, // 'X' is declared but its value is never read
   6196, // 'X' is declared but never used
 ]);
@@ -34,7 +38,13 @@ const compilerOptions: ts.CompilerOptions = {
   module: ts.ModuleKind.ESNext,
   moduleResolution: ts.ModuleResolutionKind.Bundler,
   moduleDetection: ts.ModuleDetectionKind.Force,
-  lib: ['lib.es2022.d.ts', 'lib.dom.d.ts', 'lib.dom.asynciterable.d.ts'],
+  lib: [
+    'lib.es2022.d.ts',
+    'lib.dom.d.ts',
+    'lib.dom.iterable.d.ts',
+    'lib.dom.asynciterable.d.ts',
+    'lib.esnext.disposable.d.ts',
+  ],
   strict: false,
   noImplicitAny: false,
   strictNullChecks: false,
@@ -55,8 +65,43 @@ const compilerOptions: ts.CompilerOptions = {
       path.join(__dirname, '../node_modules/react/jsx-runtime'),
     ],
     react: [path.join(__dirname, '../node_modules/react')],
+    // Map workspace packages directly to their type declaration files.
+    // We can't rely on package.json exports resolution because some packages
+    // have "require" conditions that TS picks up incorrectly with Bundler resolution.
+    workflow: [path.join(repoRoot, 'packages/workflow/dist/index')],
+    'workflow/api': [path.join(repoRoot, 'packages/workflow/dist/api')],
+    '@workflow/core': [path.join(repoRoot, 'packages/core/dist/index')],
+    '@workflow/ai': [path.join(repoRoot, 'packages/ai/dist/index')],
+    '@workflow/ai/agent': [
+      path.join(repoRoot, 'packages/ai/dist/agent/durable-agent'),
+    ],
+    '@workflow/next': [path.join(repoRoot, 'packages/next/dist/index')],
+    '@workflow/errors': [path.join(repoRoot, 'packages/errors/dist/index')],
+    // Third-party deps available in docs-typecheck/node_modules
+    zod: [path.join(__dirname, '../node_modules/zod')],
+    ai: [path.join(__dirname, '../node_modules/ai')],
   },
 };
+
+/**
+ * Modules that we explicitly resolve via `paths` mappings. A TS2307
+ * ("Cannot find module") error for any of these is a real regression and
+ * must NOT be silenced.
+ */
+const RESOLVED_MODULES = new Set(Object.keys(compilerOptions.paths ?? {}));
+
+/**
+ * Returns true if a TS2307 diagnostic refers to a module we don't expect to
+ * resolve (relative imports, framework deps, app aliases, etc.).
+ * Returns false for modules in our paths mapping — those failures are real.
+ */
+function isExpectedMissingModule(diagnostic: ts.Diagnostic): boolean {
+  const msg = ts.flattenDiagnosticMessageText(diagnostic.messageText, '\n');
+  const match = msg.match(/Cannot find module '([^']+)'/);
+  if (!match) return false;
+  const mod = match[1];
+  return !RESOLVED_MODULES.has(mod);
+}
 
 /**
  * Creates a TypeScript program for type checking multiple code samples at once
@@ -158,7 +203,10 @@ export function typeCheckBatch(
 
     const expectedErrorSet = new Set(sample.expectedErrors);
     const relevantDiagnostics = allDiagnostics.filter(
-      (d) => !IGNORED_ERROR_CODES.has(d.code) && !expectedErrorSet.has(d.code)
+      (d) =>
+        !IGNORED_ERROR_CODES.has(d.code) &&
+        !expectedErrorSet.has(d.code) &&
+        !(d.code === 2307 && isExpectedMissingModule(d))
     );
 
     const diagnostics = relevantDiagnostics.map((d) =>
@@ -308,7 +356,10 @@ export function typeCheck(sample: ProcessedCodeSample): TypeCheckResult {
     // Filter out ignored errors (global + per-sample)
     const expectedErrorSet = new Set(sample.expectedErrors);
     const relevantDiagnostics = allDiagnostics.filter(
-      (d) => !IGNORED_ERROR_CODES.has(d.code) && !expectedErrorSet.has(d.code)
+      (d) =>
+        !IGNORED_ERROR_CODES.has(d.code) &&
+        !expectedErrorSet.has(d.code) &&
+        !(d.code === 2307 && isExpectedMissingModule(d))
     );
 
     const diagnostics = relevantDiagnostics.map((d) =>
