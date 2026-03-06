@@ -11,6 +11,18 @@ function resolveObservabilityCwd(): string {
   return resolve(process.cwd(), raw);
 }
 
+function parseExternalPackages(): string[] | undefined {
+  const raw = process.env.WORKFLOW_EXTERNAL_PACKAGES;
+  if (!raw) {
+    return undefined;
+  }
+  const parts = raw
+    .split(',')
+    .map((p) => p.trim())
+    .filter(Boolean);
+  return parts.length ? parts : undefined;
+}
+
 export const getWorkflowConfig = (
   {
     buildTarget,
@@ -30,6 +42,7 @@ export const getWorkflowConfig = (
     workflowsBundlePath: './.well-known/workflow/v1/flow.js',
     webhookBundlePath: './.well-known/workflow/v1/webhook.js',
     workflowManifestPath: workflowManifest,
+    externalPackages: parseExternalPackages(),
 
     // WIP: generate a client library to easily execute workflows/steps
     // clientBundlePath: './lib/generated/workflows.js',

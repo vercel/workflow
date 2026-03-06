@@ -809,7 +809,10 @@ export const POST = workflowEntrypoint(workflowCode);`;
         write: true,
         keepNames: true,
         minify: false,
-        external: ['@aws-sdk/credential-provider-web-identity'],
+        external: [
+          '@aws-sdk/credential-provider-web-identity',
+          ...(this.config.externalPackages || []),
+        ],
       });
 
       this.logEsbuildMessages(
