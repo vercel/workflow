@@ -95,7 +95,8 @@ export async function runWorkflow(
 
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
-    const port = await getPort();
+    const isVercel = process.env.VERCEL_URL !== undefined;
+    const port = isVercel ? undefined : await getPort();
 
     const {
       context,
@@ -196,7 +197,7 @@ export async function runWorkflow(
 
     // TODO: there should be a getUrl method on the world interface itself. This
     // solution only works for vercel + local worlds.
-    const url = process.env.VERCEL_URL
+    const url = isVercel
       ? `https://${process.env.VERCEL_URL}`
       : `http://localhost:${port ?? 3000}`;
 
