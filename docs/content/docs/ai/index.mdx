@@ -151,7 +151,7 @@ import { z } from "zod";
 export const tools = {
   searchFlights: tool({
     description: "Search for flights",
-    inputSchema: z.object({ query: z.string() }),
+    inputSchema: z.object({ from: z.string(), to: z.string(), date: z.string() }),
     execute: searchFlights,
   }),
 };
