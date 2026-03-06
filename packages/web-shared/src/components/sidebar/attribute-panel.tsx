@@ -769,6 +769,7 @@ export const AttributePanel = ({
                 attribute as keyof typeof attributeToDisplayFn
               ]?.(displayData[attribute as keyof typeof displayData]);
               const isModuleSpecifier = attribute === 'moduleSpecifier';
+              const shouldCapitalizeLabel = attribute !== 'workflowCoreVersion';
               const moduleSpecifierValue =
                 typeof displayValue === 'string'
                   ? displayValue
@@ -779,7 +780,11 @@ export const AttributePanel = ({
                 <div key={attribute} className="py-1">
                   <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
                     <span
-                      className="text-[14px] first-letter:uppercase"
+                      className={
+                        shouldCapitalizeLabel
+                          ? 'text-[14px] first-letter:uppercase'
+                          : 'text-[14px]'
+                      }
                       style={{ color: 'var(--ds-gray-700)' }}
                     >
                       {getAttributeDisplayName(attribute)}
