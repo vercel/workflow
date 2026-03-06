@@ -8,5 +8,7 @@
 "@workflow/web": patch
 ---
 
-Require runId argument for `world.readFromStream` and `world.steps.get`. Replace `world.events.listByCorrelationId` with `world.events.get(eventId)`.
+**BREAKING CHANGE**: Require `runId` argument for `world.steps.get`. Remove `world.events.listByCorrelationId`.
+
+Refactor trace viewer to build spans entirely from events instead of fetching Steps and Hooks as separate resources. Extract trace-building pipeline into `lib/trace-builder.ts`. Add `stepEventsToStepEntity` for reconstructing step data from events.
 
