@@ -4,9 +4,9 @@ import { z } from 'zod';
 const UlidSchema = z.string().ulid();
 
 /**
- * Default threshold for ULID timestamp validation (10 minutes in milliseconds).
+ * Default threshold for ULID timestamp validation (5 minutes in milliseconds).
  */
-export const DEFAULT_TIMESTAMP_THRESHOLD_MS = 10 * 60 * 1000;
+export const DEFAULT_TIMESTAMP_THRESHOLD_MS = 5 * 60 * 1000;
 
 /**
  * Extracts a Date from a ULID string, or null if the string is not a valid ULID.
