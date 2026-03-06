@@ -112,6 +112,7 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
           status = 'running';
           attempt += 1;
           if (!startedAt) startedAt = e.createdAt;
+          completedAt = undefined;
           updatedAt = e.createdAt;
           break;
         case 'step_completed':
@@ -126,6 +127,7 @@ export function materializeSteps(events: Event[]): MaterializedStep[] {
           break;
         case 'step_retrying':
           status = 'pending';
+          completedAt = undefined;
           updatedAt = e.createdAt;
           break;
       }

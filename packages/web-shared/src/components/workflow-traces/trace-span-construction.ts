@@ -137,21 +137,39 @@ export const stepEventsToStepEntity = (
   if (!createdEvent) {
     return null;
   }
-  const startedEvents = events.filter((e) => e.eventType === 'step_started');
-  const completedEvent = events.find((e) => e.eventType === 'step_completed');
-  const failedEvent = events.find((e) => e.eventType === 'step_failed');
-  const retryingEvents = events.filter((e) => e.eventType === 'step_retrying');
+  // Walk events in order to derive status, attempt count, and timestamps.
+  // Handles both step_retrying and consecutive step_started as retry signals.
+  let status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' =
+    'pending';
+  let attempt = 0;
+  let startedAt: Date | undefined;
+  let completedAt: Date | undefined;
 
-  let status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-  if (completedEvent) {
-    status = 'completed';
-  } else if (failedEvent && retryingEvents.length === 0) {
-    status = 'failed';
-  } else if (startedEvents.length > 0) {
-    status = 'running';
-  } else {
-    status = 'pending';
+  for (const e of events) {
+    switch (e.eventType) {
+      case 'step_started':
+        status = 'running';
+        attempt += 1;
+        if (!startedAt) startedAt = e.createdAt;
+        completedAt = undefined;
+        break;
+      case 'step_completed':
+        status = 'completed';
+        completedAt = e.createdAt;
+        break;
+      case 'step_failed':
+        status = 'failed';
+        completedAt = e.createdAt;
+        break;
+      case 'step_retrying':
+        status = 'pending';
+        completedAt = undefined;
+        break;
+    }
   }
+
+  // Ensure at least attempt 1 if we never saw step_started
+  if (attempt === 0) attempt = 1;
 
   const lastEvent = events[events.length - 1];
   return {
@@ -159,12 +177,11 @@ export const stepEventsToStepEntity = (
     runId: createdEvent.runId,
     stepName: createdEvent.eventData?.stepName ?? '',
     status,
-    attempt: retryingEvents.length + 1,
+    attempt,
     createdAt: createdEvent.createdAt,
     updatedAt: lastEvent?.createdAt ?? createdEvent.createdAt,
-    startedAt: startedEvents[0]?.createdAt,
-    completedAt:
-      completedEvent?.createdAt ?? failedEvent?.createdAt ?? undefined,
+    startedAt,
+    completedAt,
     specVersion: createdEvent.specVersion,
   };
 };
