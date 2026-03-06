@@ -182,12 +182,15 @@ export function createQueue(config?: APIConfig): Queue {
       });
 
       if (typeof result?.timeoutSeconds === 'number') {
-        // Send new message with delay, then acknowledge the current one.
-        // Clamp to max delay (23h) - for longer sleeps, the workflow will chain
+        // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
+        // Otherwise, clamp to max delay (23h) - for longer sleeps, the workflow will chain
         // multiple delayed messages until the full sleep duration has elapsed.
-        const delaySeconds = Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS);
+        const delaySeconds =
+          result.timeoutSeconds > 0
+            ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
+            : undefined;
 
-        // Send new message with delay BEFORE acknowledging current message.
+        // Send new message BEFORE acknowledging current message.
         // This ensures crash safety: if process dies after send but before ack,
         // we may get a duplicate invocation but won't lose the scheduled wakeup.
         await queue(queueName, payload, { deploymentId, delaySeconds });

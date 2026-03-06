@@ -242,7 +242,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           );
         }
 
-        if (timeoutSeconds) {
+        if (timeoutSeconds != null) {
           return Response.json({ timeoutSeconds }, { status: 503 });
         }
 
