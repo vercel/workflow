@@ -1,4 +1,5 @@
 {
   "title": "Testing",
-  "pages": ["testing"]
+  "pages": ["index", "server-based"],
+  "defaultOpen": false
 }

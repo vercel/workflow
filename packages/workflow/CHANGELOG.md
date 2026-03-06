@@ -1,5 +1,24 @@
 # workflow
 
+## 4.2.0-beta.65
+
+### Patch Changes
+
+- [#1237](https://github.com/vercel/workflow/pull/1237) [`456c1aa`](https://github.com/vercel/workflow/commit/456c1aa455d9d391a954b25e3d86ee9b06ad2f30) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `@workflow/vitest` plugin for Vitest for running full workflows inside the test runner
+
+- Updated dependencies [[`97932d3`](https://github.com/vercel/workflow/commit/97932d3086b4b7c339e612fb6cac0ffda74545e3), [`11dcb64`](https://github.com/vercel/workflow/commit/11dcb646d33e7a2b251d9388c2c8ecdd6aca73f7)]:
+  - @workflow/cli@4.2.0-beta.65
+  - @workflow/core@4.2.0-beta.65
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/next@4.0.1-beta.61
+  - @workflow/nitro@4.0.1-beta.60
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/astro@4.0.0-beta.39
+  - @workflow/nest@0.0.0-beta.14
+  - @workflow/rollup@4.0.0-beta.22
+  - @workflow/sveltekit@4.0.0-beta.54
+  - @workflow/nuxt@4.0.1-beta.49
+
 ## 4.2.0-beta.64
 
 ### Patch Changes

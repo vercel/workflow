@@ -1,25 +1,14 @@
 ---
 title: Testing
-description: Unit test individual steps and integration test entire workflows using Vitest and the Vite plugin.
-type: conceptual
-summary: Learn how to unit test steps and integration test workflows using Vitest.
-prerequisites:
-  - /docs/foundations/workflows-and-steps
-  - /docs/getting-started/vite
-related:
-  - /docs/foundations/hooks
-  - /docs/api-reference/workflow-api/start
-  - /docs/api-reference/workflow-api/resume-hook
-  - /docs/api-reference/workflow-api/get-run
-  - /docs/observability
+description: Unit test individual steps and integration test entire workflows using Vitest.
 ---
 
-Testing is a critical part of building reliable workflows. Because steps are just functions annotated with directives, they can be unit tested like any other JavaScript function. Workflow DevKit also provides a [Vite plugin](/docs/getting-started/vite) that integrates with [Vitest](https://vitest.dev), enabling full integration tests against a real workflow runtime.
+Testing is a critical part of building reliable workflows. Because steps are just functions annotated with directives, they can be unit tested like any other JavaScript function. Workflow DevKit also provides a Vitest plugin that runs full workflows in-process — no running server required.
 
 This guide covers two approaches:
 
 1. **Unit testing** - Test individual steps as plain functions, without the workflow runtime.
-2. **Integration testing** - Test entire workflows against a real workflow setup using the Vite plugin. Required for workflows that use [hooks](/docs/foundations/hooks), webhooks, [`sleep()`](/docs/api-reference/workflow/sleep), or retries.
+2. **Integration testing** - Test entire workflows in-process using the `workflow()` Vitest plugin. Required when you want to test workflow specific code paths, like those using [hooks](/docs/foundations/hooks), webhooks, [`sleep()`](/docs/api-reference/workflow/sleep), retries, etc.
 
 ## Unit Testing Steps
 
@@ -88,125 +77,71 @@ describe("sendWelcomeEmail step", () => {
 This approach is ideal for verifying the business logic inside individual steps in isolation.
 
 <Callout type="info">
-Unit testing works well for individual steps. A simple workflow that only calls steps can also be unit tested this way, since `"use workflow"` is similarly a no-op without the compiler. However, any workflow that uses runtime features like [`sleep()`](/docs/api-reference/workflow/sleep), [hooks](/docs/foundations/hooks), or [webhooks](/docs/foundations/hooks#understanding-webhooks) cannot be unit tested directly because those APIs require the workflow runtime. Use [integration testing](#integration-testing-with-the-vite-plugin) for testing entire workflows, especially those that depend on workflow-only features.
+Unit testing works well for individual steps. A simple workflow that only calls steps can also be unit tested this way, since `"use workflow"` is similarly a no-op without the compiler. However, any workflow that uses runtime features like [`sleep()`](/docs/api-reference/workflow/sleep), [hooks](/docs/foundations/hooks), or [webhooks](/docs/foundations/hooks#understanding-webhooks) cannot be unit tested directly because those APIs require the workflow runtime. Use [integration testing](#integration-testing-with-the-vitest-plugin) for testing entire workflows, especially those that depend on workflow-only features.
 </Callout>
 
-## Integration Testing with the Vite Plugin
+## Integration Testing with the Vitest Plugin
 
-For workflows that rely on runtime features like [hooks](/docs/foundations/hooks), [webhooks](/docs/foundations/hooks#understanding-webhooks), [`sleep()`](/docs/api-reference/workflow/sleep), or error retries, you need to test against a real workflow setup. The `workflow/vite` plugin integrates directly with Vitest, compiling your `"use workflow"` and `"use step"` directives so the full workflow runtime is active during tests.
+For workflows that rely on runtime features like [hooks](/docs/foundations/hooks), [webhooks](/docs/foundations/hooks#understanding-webhooks), [`sleep()`](/docs/api-reference/workflow/sleep), or error retries, you need to test against a real workflow setup. The `@workflow/vitest` plugin handles everything automatically — it compiles your workflow directives, builds the runtime bundles, and executes workflows entirely in-process. No server required.
+
+<Callout type="warn">
+Inside integration tests, which run the full workflow runtime, `vi.mock()` and related calls do not work — neither for your own modules nor for third-party npm packages. All step dependencies are inlined into the compiled bundle by esbuild, bypassing Vitest's module system entirely. To test steps with mocked dependencies, use [unit tests](#unit-testing-steps) instead. Consider dependency injection or environment variable-based conditional logic for controlling behavior in integration tests.
+</Callout>
 
 ### Vitest Configuration
 
-Create a separate Vitest config for integration tests that includes the `workflow()` plugin and a `globalSetup` script:
+Create a separate Vitest config for integration tests that includes the `workflow()` plugin:
 
 ```typescript title="vitest.integration.config.ts" lineNumbers
 import { defineConfig } from "vitest/config";
-import { workflow } from "workflow/vite"; // [!code highlight]
+import { workflow } from "@workflow/vitest"; // [!code highlight]
 
 export default defineConfig({
   plugins: [workflow()], // [!code highlight]
   test: {
     include: ["**/*.integration.test.ts"],
     testTimeout: 60_000, // Workflows may take longer than default timeout
-    globalSetup: "./vitest.integration.setup.ts", // [!code highlight]
   },
 });
 ```
+
+That's it. The plugin automatically:
+
+1. Transforms `"use workflow"` and `"use step"` directives via SWC
+2. Builds workflow and step bundles before tests run
+3. Sets up an in-process workflow runtime using a fresh [Local World](/docs/worlds/local) instance in each test worker — all workflow data is cleared automatically between test files for full isolation
 
 <Callout type="info">
 Use a separate Vitest configuration and a distinct file naming convention (e.g. `*.integration.test.ts`) to keep unit tests and integration tests separate. Unit tests run with a standard Vitest config without the workflow plugin, while integration tests use the config above.
 </Callout>
 
-### Global Setup Script
+### Writing Integration Tests
 
-Integration tests need a running server to execute workflow steps. The `globalSetup` script starts a [Nitro](https://v3.nitro.build) server as a sidecar process before tests run, and tears it down afterwards:
+Use [`start()`](/docs/api-reference/workflow-api/start) to trigger a workflow and [`run.returnValue`](/docs/api-reference/workflow-api/start#returnvalue) to get the result. `returnValue` is a promise that blocks until the workflow completes (or throws if it fails):
 
-```typescript title="vitest.integration.setup.ts" lineNumbers
-import { spawn } from "node:child_process";
-import { setTimeout as delay } from "node:timers/promises";
-import type { ChildProcess } from "node:child_process";
+```typescript title="workflows/calculate.integration.test.ts" lineNumbers
+import { describe, it, expect } from "vitest";
+import { start } from "workflow/api"; // [!code highlight]
+import { calculateWorkflow } from "./calculate";
 
-let server: ChildProcess | null = null;
-const PORT = "4000";
+describe("calculateWorkflow", () => {
+  it("should compute the correct result", async () => {
+    const run = await start(calculateWorkflow, [2, 7]); // [!code highlight]
 
-export async function setup() { // [!code highlight]
-  console.log("Starting server for workflow execution...");
+    expect(run.runId).toMatch(/^wrun_/);
 
-  server = spawn("npx", ["nitro", "dev", "--port", PORT], {
-    stdio: "pipe",
-    detached: false,
-    env: process.env,
+    // Blocks until the workflow completes or fails
+    const result = await run.returnValue; // [!code highlight]
+    expect(result).toEqual({
+      sum: 9,
+      product: 14,
+      combined: 23,
+    });
+
+    const status = await run.status; // [!code highlight]
+    expect(status).toEqual("completed");
   });
-
-  // Wait for the server to be ready
-  const ready = await new Promise<boolean>((resolve) => {
-    const timeout = setTimeout(() => resolve(false), 15_000);
-
-    server?.stdout?.on("data", (data) => {
-      const output = data.toString();
-      console.log("[server]", output);
-      if (output.includes("listening") || output.includes("ready")) {
-        clearTimeout(timeout);
-        resolve(true);
-      }
-    });
-
-    server?.stderr?.on("data", (data) => {
-      console.error("[server]", data.toString());
-    });
-
-    server?.on("error", (error) => {
-      console.error("Failed to start server:", error);
-      clearTimeout(timeout);
-      resolve(false);
-    });
-  });
-
-  if (!ready) {
-    throw new Error("Server failed to start within 15 seconds");
-  }
-
-  await delay(2_000); // Allow full initialization
-
-  // Point the workflow runtime at the local server
-  process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${PORT}`; // [!code highlight]
-  process.env.WORKFLOW_LOCAL_DATA_DIR = "./.workflow-data"; // [!code highlight]
-
-  console.log("Server ready for workflow execution");
-}
-
-export async function teardown() { // [!code highlight]
-  if (server) {
-    console.log("Stopping server...");
-    server.kill("SIGTERM");
-    await delay(1_000);
-    if (!server.killed) {
-      server.kill("SIGKILL");
-    }
-  }
-}
-```
-
-The setup script sets two environment variables that the workflow runtime reads:
-
-- `WORKFLOW_LOCAL_BASE_URL` tells the runtime where to send step execution requests
-- `WORKFLOW_LOCAL_DATA_DIR` tells the runtime where to persist workflow state locally
-
-<Callout type="info">
-You can use any server framework that supports the workflow runtime. The example above uses [Nitro](https://v3.nitro.build), but you could also use a [Next.js](https://nextjs.org), [Hono](https://hono.dev), or any other supported server.
-</Callout>
-
-### Running Integration Tests
-
-Add a script to your `package.json`:
-
-```json title="package.json"
-{
-  "scripts": {
-    "test": "vitest",
-    "test:integration": "vitest --config vitest.integration.config.ts"
-  }
-}
+});
 ```
 
 ### Testing Hooks and Waits
@@ -250,29 +185,32 @@ async function publishDocument(doc: { id: string; content: string }) {
 }
 ```
 
-You can write an integration test that starts the workflow, resumes the hook, and uses [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to skip the sleep — so your tests don't have to wait for the full duration:
+You can write an integration test that starts the workflow, waits for the hook and sleep to be reached, then resumes them programmatically:
 
 ```typescript title="workflows/approval.integration.test.ts" lineNumbers
 import { describe, it, expect } from "vitest";
-import { setTimeout as delay } from "node:timers/promises";
 import { start, getRun, resumeHook } from "workflow/api"; // [!code highlight]
+import { waitForHook, waitForSleep } from "@workflow/vitest"; // [!code highlight]
 import { approvalWorkflow } from "./approval";
 
 describe("approvalWorkflow", () => {
   it("should publish when approved", async () => {
     const run = await start(approvalWorkflow, ["doc-123"]); // [!code highlight]
 
-    // Resume the hook programmatically, simulating an external approval
+    // Wait for the hook to be created, then resume it
+    await waitForHook(run, { token: "approval:doc-123" }); // [!code highlight]
     await resumeHook("approval:doc-123", { // [!code highlight]
       approved: true, // [!code highlight]
       reviewer: "alice", // [!code highlight]
     }); // [!code highlight]
 
-    // Wait for the workflow to replay and reach the sleep() call
-    await delay(5_000); // [!code highlight]
+    // Wait for the first pending sleep to be reached.
+    // waitForSleep() returns the sleep's correlation ID, which can be
+    // passed to wakeUp() later to target a specific sleep in the workflow.
+    const sleepId = await waitForSleep(run); // [!code highlight]
 
-    // Skip the 24-hour sleep so the test completes immediately
-    await getRun(run.runId).wakeUp(); // [!code highlight]
+    // Calling wakeUp() without correlationIds would resume all active sleeps
+    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlight]
 
     const result = await run.returnValue;
     expect(result).toEqual({
@@ -284,6 +222,7 @@ describe("approvalWorkflow", () => {
   it("should reject when not approved", async () => {
     const run = await start(approvalWorkflow, ["doc-456"]);
 
+    await waitForHook(run, { token: "approval:doc-456" });
     await resumeHook("approval:doc-456", {
       approved: false,
       reviewer: "bob",
@@ -300,12 +239,124 @@ describe("approvalWorkflow", () => {
 ```
 
 <Callout type="info">
-[`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), and [`getRun().wakeUp()`](/docs/api-reference/workflow-api/get-run) are the key API functions for integration testing. Use `start()` to trigger a workflow, `resumeHook()` to simulate external events, and `wakeUp()` to skip `sleep()` calls so tests run instantly. See the [API Reference](/docs/api-reference/workflow-api) for the full list of available functions.
+[`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), and [`getRun().wakeUp()`](/docs/api-reference/workflow-api/get-run) are the key API functions for integration testing. Use `start()` to trigger a workflow, `resumeHook()` to simulate external events, and `wakeUp()` to skip `sleep()` calls so tests run instantly. [`waitForSleep()`](/docs/api-reference/vitest#waitforsleep) and [`waitForHook()`](/docs/api-reference/vitest#waitforhook) from `@workflow/vitest` let you wait for the workflow to reach a specific point before resuming. See the [API Reference](/docs/api-reference/workflow-api) for the full list of available functions.
+</Callout>
+
+<Callout type="info">
+`waitForSleep()` returns the first **pending** sleep — one that has a `wait_created` event but no corresponding `wait_completed` event. If your workflow has multiple parallel sleeps, `waitForSleep()` returns whichever is found first. After waking one, call `waitForSleep()` again to get the next pending one. For sequential sleeps, `waitForSleep()` naturally returns each one as the workflow reaches it.
+</Callout>
+
+### Testing Webhooks
+
+Webhooks are hooks that receive HTTP `Request` objects. In tests, resume them using [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) with a `Request` payload — no HTTP server needed:
+
+```typescript title="workflows/ingest.ts" lineNumbers
+import { createWebhook } from "workflow";
+
+export async function ingestWorkflow(endpointId: string) {
+  "use workflow";
+
+  // Webhook tokens are always randomly generated
+  using webhook = createWebhook(); // [!code highlight]
+
+  const request = await webhook; // [!code highlight]
+  const body = await request.text();
+  const data = await parsePayload(body);
+
+  return { endpointId, received: data };
+}
+
+async function parsePayload(body: string) {
+  "use step";
+  return JSON.parse(body);
+}
+```
+
+```typescript title="workflows/ingest.integration.test.ts" lineNumbers
+import { describe, it, expect } from "vitest";
+import { start, resumeWebhook } from "workflow/api"; // [!code highlight]
+import { waitForHook } from "@workflow/vitest"; // [!code highlight]
+import { ingestWorkflow } from "./ingest";
+
+describe("ingestWorkflow", () => {
+  it("should process webhook data", async () => {
+    const run = await start(ingestWorkflow, ["ep-1"]);
+
+    // Discover the randomly generated webhook token
+    const hook = await waitForHook(run); // [!code highlight]
+
+    // Resume the webhook with a Request object
+    await resumeWebhook( // [!code highlight]
+      hook.token, // [!code highlight]
+      new Request("https://example.com/webhook", { // [!code highlight]
+        method: "POST", // [!code highlight]
+        body: JSON.stringify({ event: "order.created", orderId: "123" }), // [!code highlight]
+      }) // [!code highlight]
+    ); // [!code highlight]
+
+    const result = await run.returnValue;
+    expect(result).toEqual({
+      endpointId: "ep-1",
+      received: { event: "order.created", orderId: "123" },
+    });
+  });
+});
+```
+
+### Manual Setup
+
+If you need more control over the test lifecycle, the plugin also exports the individual setup functions:
+
+```typescript title="vitest.integration.config.ts" lineNumbers
+import { defineConfig } from "vitest/config";
+import { workflowTransformPlugin } from "@workflow/rollup";
+
+export default defineConfig({
+  plugins: [workflowTransformPlugin()],
+  test: {
+    include: ["**/*.integration.test.ts"],
+    testTimeout: 60_000,
+    globalSetup: "./vitest.integration.setup.ts",
+    setupFiles: ["./vitest.integration.env.ts"],
+  },
+});
+```
+
+```typescript title="vitest.integration.setup.ts"
+import { buildWorkflowTests } from "@workflow/vitest";
+
+export async function setup() {
+  await buildWorkflowTests();
+}
+```
+
+```typescript title="vitest.integration.env.ts"
+import { beforeAll, afterAll } from "vitest";
+import {
+  setupWorkflowTests,
+  teardownWorkflowTests,
+} from "@workflow/vitest";
+
+beforeAll(async () => {
+  await setupWorkflowTests();
+});
+
+afterAll(async () => {
+  await teardownWorkflowTests();
+});
+```
+
+<Callout type="info">
+`setupWorkflowTests()` automatically clears all workflow data (runs, events, hooks) on each invocation, ensuring full test isolation between test files.
+</Callout>
+
+<Callout type="info">
+For advanced setups that require a running server (e.g. testing against your actual framework's HTTP layer), see [Server-based integration testing](/docs/testing/server-based).
 </Callout>
 
 ## Debugging Test Runs
 
-When integration tests fail, the [Workflow DevKit CLI and Web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state to `WORKFLOW_LOCAL_DATA_DIR`, you can use the same observability tools you would use in development.
+When integration tests fail, the [Workflow DevKit CLI and Web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state locally, you can use the same observability tools you would use in development.
 
 Launch the Web UI to visually explore your test workflow runs:
 
@@ -357,9 +408,12 @@ Integration tests are the right place to verify that your workflows handle error
 - [Hooks & Webhooks](/docs/foundations/hooks) - Pausing and resuming workflows with external data
 - [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows programmatically
 - [`resumeHook()` API Reference](/docs/api-reference/workflow-api/resume-hook) - Resume hooks with data
+- [`resumeWebhook()` API Reference](/docs/api-reference/workflow-api/resume-webhook) - Resume webhooks with Request objects
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Check workflow run status and wake up sleeping runs
+- [`@workflow/vitest` API Reference](/docs/api-reference/vitest) - Test helpers: `waitForSleep()`, `waitForHook()`, and plugin setup
 - [Vite Integration](/docs/getting-started/vite) - Set up the Vite plugin
 - [Observability](/docs/observability) - Inspect and debug workflow runs with the CLI and Web UI
+- [Server-based testing](/docs/testing/server-based) - Integration testing with a running server
 
 ---
 

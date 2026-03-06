@@ -28,9 +28,16 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
+export type DirectHandler = (req: Request) => Promise<Response>;
+
 export type LocalQueue = Queue & {
   /** Close the HTTP agent and release resources. */
   close(): Promise<void>;
+  /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
+  registerHandler(
+    prefix: '__wkf_step_' | '__wkf_workflow_',
+    handler: DirectHandler
+  ): void;
 };
 
 export function createQueue(config: Partial<Config>): LocalQueue {
@@ -54,6 +61,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
    */
   const inflightMessages = new Map<string, MessageId>();
 
+  /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
+  const directHandlers = new Map<string, DirectHandler>();
+
   const queue: Queue['queue'] = async (queueName, message, opts) => {
     const cleanup = [] as (() => void)[];
 
@@ -66,10 +76,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
     const body = transport.serialize(message);
     let pathname: string;
+    let prefix: '__wkf_step_' | '__wkf_workflow_';
     if (queueName.startsWith('__wkf_step_')) {
       pathname = `step`;
+      prefix = '__wkf_step_';
     } else if (queueName.startsWith('__wkf_workflow_')) {
       pathname = `flow`;
+      prefix = '__wkf_workflow_';
     } else {
       throw new Error('Unknown queue name prefix');
     }
@@ -93,27 +106,44 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
       try {
         let defaultRetriesLeft = 3;
-        const baseUrl = await resolveBaseUrl(config);
+        const directHandler = directHandlers.get(prefix);
         for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
           defaultRetriesLeft--;
 
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-          const response = await fetch(
-            `${baseUrl}/.well-known/workflow/v1/${pathname}`,
-            {
-              method: 'POST',
-              duplex: 'half',
-              dispatcher: httpAgent,
-              headers: {
-                ...opts?.headers,
-                'content-type': 'application/json',
-                'x-vqs-queue-name': queueName,
-                'x-vqs-message-id': messageId,
-                'x-vqs-message-attempt': String(attempt + 1),
-              },
-              body,
-            } as any
-          );
+          let response: Response;
+          const headers: Record<string, string> = {
+            ...opts?.headers,
+            'content-type': 'application/json',
+            'x-vqs-queue-name': queueName,
+            'x-vqs-message-id': messageId,
+            'x-vqs-message-attempt': String(attempt + 1),
+          };
+
+          if (directHandler) {
+            // Call handler directly in-process, bypassing HTTP
+            const req = new Request(
+              'http://localhost/.well-known/workflow/v1/' + pathname,
+              {
+                method: 'POST',
+                headers,
+                body,
+              }
+            );
+            response = await directHandler(req);
+          } else {
+            const baseUrl = await resolveBaseUrl(config);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+            response = await fetch(
+              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+              {
+                method: 'POST',
+                duplex: 'half',
+                dispatcher: httpAgent,
+                headers,
+                body,
+              } as any
+            );
+          }
 
           if (response.ok) {
             return;
@@ -232,6 +262,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     queue,
     createQueueHandler,
     getDeploymentId,
+    registerHandler(
+      prefix: '__wkf_step_' | '__wkf_workflow_',
+      handler: DirectHandler
+    ) {
+      directHandlers.set(prefix, handler);
+    },
     async close() {
       await httpAgent.close();
     },
