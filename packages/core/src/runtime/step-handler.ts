@@ -70,9 +70,13 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       const stepName = metadata.queueName.slice('__wkf_step_'.length);
       const world = getWorld();
 
-      // Resolve local async values concurrently before entering the trace span
+      // Resolve local async values concurrently before entering the trace span.
+      // Avoid expensive local port detection when we already have a deployment URL.
+      const deploymentUrl = process.env.VERCEL_URL
+        ? `https://${process.env.VERCEL_URL}`
+        : undefined;
       const [port, spanKind] = await Promise.all([
-        getPort(),
+        deploymentUrl ? Promise.resolve(undefined) : getPort(),
         getSpanKind('CONSUMER'),
       ]);
 
@@ -348,11 +352,9 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   workflowMetadata: {
                     workflowRunId,
                     workflowStartedAt: new Date(+workflowStartedAt),
-                    // TODO: there should be a getUrl method on the world interface itself. This
-                    // solution only works for vercel + local worlds.
-                    url: process.env.VERCEL_URL
-                      ? `https://${process.env.VERCEL_URL}`
-                      : `http://localhost:${port ?? 3000}`,
+                    // TODO: there should be a getUrl method on the world interface itself.
+                    // This fallback only works for vercel + local worlds.
+                    url: deploymentUrl ?? `http://localhost:${port ?? 3000}`,
                   },
                   ops,
                   closureVars: hydratedInput.closureVars,
