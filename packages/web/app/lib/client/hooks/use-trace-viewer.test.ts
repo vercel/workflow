@@ -142,6 +142,7 @@ describe('useWorkflowTraceViewerData', () => {
     expect(vi.mocked(fetchEvents)).toHaveBeenCalledWith(env, 'run-1', {
       sortOrder: 'asc',
       limit: 200,
+      withData: true,
     });
   });
 

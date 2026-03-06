@@ -126,10 +126,11 @@ export function EntityDetailPanel({
       return { resource: 'hook', resourceId: data.hookId, runId: undefined };
     }
     if (res === 'sleep') {
+      const waitData = data as { runId?: string } | undefined;
       return {
         resource: 'sleep',
         resourceId: selectedSpan.spanId,
-        runId: undefined,
+        runId: waitData?.runId,
       };
     }
     return { resource: undefined, resourceId: undefined, runId: undefined };

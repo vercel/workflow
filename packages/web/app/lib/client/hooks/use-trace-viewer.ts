@@ -52,6 +52,7 @@ export function useWorkflowTraceViewerData(
         fetchEvents(env, runId, {
           sortOrder: 'asc',
           limit: INITIAL_PAGE_SIZE,
+          withData: true,
         })
       ),
     ]);
@@ -102,6 +103,7 @@ export function useWorkflowTraceViewerData(
           cursor: eventsCursor,
           sortOrder: 'asc',
           limit: LOAD_MORE_PAGE_SIZE,
+          withData: true,
         })
       );
 
@@ -159,6 +161,7 @@ export function useWorkflowTraceViewerData(
               cursor: eventsCursor,
               sortOrder: 'asc',
               limit: LIVE_POLL_LIMIT,
+              withData: true,
             })
           ),
         setItems: setEvents,
