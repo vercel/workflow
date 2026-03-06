@@ -69,10 +69,11 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       // Extract the step name from the topic name
       const stepName = metadata.queueName.slice('__wkf_step_'.length);
       const world = getWorld();
+      const isVercel = process.env.VERCEL_URL !== undefined;
 
       // Resolve local async values concurrently before entering the trace span
       const [port, spanKind] = await Promise.all([
-        getPort(),
+        isVercel ? undefined : getPort(),
         getSpanKind('CONSUMER'),
       ]);
 
