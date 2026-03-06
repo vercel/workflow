@@ -303,12 +303,14 @@ export function EntityDetailPanel({
     return null;
   }
 
-  // For sleep spans, spanDetailData from the host is typically an events array
-  // (not a single entity), so always prefer the inline wait entity from span
-  // attributes which contains waitId, runId, createdAt, resumeAt, completedAt.
-  const displayData = (
-    resource === 'sleep' ? data : (spanDetailData ?? data)
-  ) as WorkflowRun | Step | Hook | Event;
+  // Prefer externally-fetched details when available. For sleep spans, the
+  // host fetches full correlated events (withData=true) and materializes a wait
+  // entity, so this includes resumeAt/completedAt without bloating trace payloads.
+  const displayData = (spanDetailData ?? data) as
+    | WorkflowRun
+    | Step
+    | Hook
+    | Event;
   const moduleSpecifier = useMemo(() => {
     const displayRecord = displayData as Record<string, unknown>;
     const displayStepName = displayRecord.stepName;
