@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.1.0-beta.10
+
+### Patch Changes
+
+- [#1273](https://github.com/vercel/workflow/pull/1273) [`11dcb64`](https://github.com/vercel/workflow/commit/11dcb646d33e7a2b251d9388c2c8ecdd6aca73f7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Locally validate run ID to be ULID when passed by user
+
 ## 4.1.0-beta.9
 
 ### Patch Changes
