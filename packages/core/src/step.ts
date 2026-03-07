@@ -53,11 +53,13 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Crucially, if we got here, then this step Promise does
           // not resolve so that the user workflow code does not proceed any further.
           // Notify the workflow handler that this step has not been run / has not completed yet.
-          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          // Use setTimeout(0) instead of promiseQueue so suspensions fire
+          // AFTER all queued data deliveries (hook payloads, step results).
+          setTimeout(() => {
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
-          });
+          }, 0);
           return EventConsumerResult.NotConsumed;
         }
 

@@ -27,11 +27,16 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
       // If there are no events and we're waiting for wait_completed,
       // suspend the workflow until the wait fires
       if (!event) {
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        // Use setTimeout(0) instead of promiseQueue for suspensions.
+        // Suspensions must fire AFTER all queued data deliveries (e.g.,
+        // hook payloads from promiseQueue) have been processed. Using
+        // promiseQueue would race with buffered payload resolutions,
+        // causing premature termination before hooks can deliver data.
+        setTimeout(() => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
-        });
+        }, 0);
         return EventConsumerResult.NotConsumed;
       }
 

@@ -49,11 +49,14 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         eventLogEmpty = true;
 
         if (promises.length > 0) {
-          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          // Use setTimeout(0) instead of promiseQueue for suspensions.
+          // Suspensions must fire AFTER all queued data deliveries so
+          // buffered hook payloads can be delivered before termination.
+          setTimeout(() => {
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
-          });
+          }, 0);
         }
         return EventConsumerResult.NotConsumed;
       }
@@ -193,11 +196,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (eventLogEmpty) {
         // If the event log is already empty then we know the hook will not be resolved.
         // Treat this case as a "step not run" scenario and suspend the workflow.
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        setTimeout(() => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
-        });
+        }, 0);
       }
 
       promises.push(resolvers);
@@ -229,11 +232,11 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // never deliver another hook_received after disposal.
       if (promises.length > 0) {
         promises.length = 0;
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        setTimeout(() => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
-        });
+        }, 0);
       }
 
       webhookLogger.debug('Hook disposed', { correlationId, token });
