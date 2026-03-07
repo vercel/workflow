@@ -522,18 +522,11 @@ export function TraceViewerTimeline({
                         pointerEvents: 'none',
                         zIndex: 1,
                         maskImage:
-                          'linear-gradient(to right, transparent, black 8%)',
+                          'linear-gradient(to right, transparent 1%, black 3%)',
                         WebkitMaskImage:
-                          'linear-gradient(to right, transparent, black 8%)',
-                        background: `
-                          repeating-linear-gradient(
-                            -45deg,
-                            transparent,
-                            transparent 11px,
-                            var(--ds-gray-200, rgba(128,128,128,0.16)) 11px,
-                            var(--ds-gray-200, rgba(128,128,128,0.16)) 12px
-                          )
-                        `,
+                          'linear-gradient(to right, transparent 1%, black 3%)',
+                        background:
+                          'repeating-linear-gradient(-45deg, transparent, transparent 11px, var(--ds-gray-800) 11px, var(--ds-gray-800) 12px)',
                       }}
                     />
                   );
