@@ -773,7 +773,7 @@ export const WorkflowTraceViewer = ({
   // Build trace only when actual data changes — no timer-driven rebuilds.
   // Active span widths are animated imperatively by useLiveTick at 60fps.
   const trace = useMemo(() => {
-    if (!run) {
+    if (!run?.runId) {
       return undefined;
     }
     return buildTrace(run, events, new Date());
