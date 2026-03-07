@@ -889,7 +889,7 @@ export const WorkflowTraceViewer = ({
     );
   }, [selectedSpan?.data]);
 
-  if (isLoading || !trace) {
+  if (!trace) {
     return (
       <div className="relative w-full h-full">
         <div className="border-b border-gray-alpha-400 w-full" />
@@ -931,6 +931,36 @@ export const WorkflowTraceViewer = ({
               height="100%"
               isLive={isLive}
               trace={trace}
+              footer={
+                hasMoreSpans ? (
+                  <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-500">
+                    <svg
+                      className="h-4 w-4 animate-spin"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+                      />
+                    </svg>
+                    Loading more events…
+                  </div>
+                ) : isLive ? (
+                  <div className="flex items-center justify-center py-4 text-sm text-gray-500">
+                    Waiting for more events…
+                  </div>
+                ) : null
+              }
             />
           </TraceViewerWithContextMenu>
         </TraceViewerContextProvider>

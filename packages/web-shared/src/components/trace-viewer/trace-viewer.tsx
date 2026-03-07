@@ -103,7 +103,10 @@ export function TraceViewerTimeline({
   highlightedSpans,
   eagerRender = false,
   isLive = false,
-}: Omit<TraceViewerProps, 'getQuickLinks'>): ReactNode {
+  footer,
+}: Omit<TraceViewerProps, 'getQuickLinks'> & {
+  footer?: ReactNode;
+}): ReactNode {
   const isSkeleton = trace === skeletonTrace;
   const { state, dispatch } = useTraceViewer();
   const { timelineRef, scrollSnapshotRef } = state;
@@ -489,6 +492,7 @@ export function TraceViewerTimeline({
               />
             </div>
           </div>
+          {footer}
         </div>
         <div className={styles.zoomButtonTraceViewer}>
           <ZoomButton />
