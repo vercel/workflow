@@ -2,7 +2,7 @@ import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
@@ -18,15 +18,12 @@ import { createSleep } from './workflow/sleep.js';
  * when a hook has buffered payloads and another entity (sleep or
  * incomplete step) hasn't completed.
  *
- * The root cause: when the null event fires, ALL subscribers run. Any
- * entity without a terminal event (sleep with no wait_completed, step
- * with no step_completed) queues a WorkflowSuspension through
- * promiseQueue. Hook payloads beyond the first are in payloadsQueue and
- * only get resolved when the workflow code creates a new hook promise
- * after processing the previous payload. These follow-on resolutions
- * are queued AFTER the suspension, so the suspension fires first,
- * terminating execution via Promise.race before the next payload is
- * delivered. On re-invocation the same thing happens → infinite loop.
+ * Each test runs in two modes:
+ * - **sync**: no deserialization delay (encryption disabled)
+ * - **async**: 10ms deserialization delay (simulates encryption/decryption)
+ *
+ * The fix uses two-phase deferral: `promiseQueue.then(() => setTimeout(0))`
+ * so suspensions wait for both async deserialization AND microtask deliveries.
  */
 
 function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
@@ -57,6 +54,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     set promiseQueue(value: Promise<void>) {
       promiseQueueHolder.current = value;
     },
+    pendingDeliveries: 0,
   };
   return ctx;
 }
@@ -92,13 +90,39 @@ async function runWithDiscontinuation(
   return { result, error };
 }
 
-// ─── Bug reproductions: hook + pending entity ──────────
+/**
+ * Defines the full test suite for a given deserialization mode.
+ * In 'async' mode, hydrateStepReturnValue is mocked with a 10ms delay
+ * to simulate encryption/decryption.
+ */
+function defineTests(mode: 'sync' | 'async') {
+  const label = mode === 'async' ? '(async deserialization)' : '(sync)';
 
-describe('promiseQueue suspension ordering', () => {
-  describe('hook + sleep (original bug)', () => {
+  let hydrateSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+  async function setupHydrateMock() {
+    if (mode === 'async') {
+      const serialization = await import('./serialization.js');
+      const originalHydrate = serialization.hydrateStepReturnValue;
+      hydrateSpy = vi
+        .spyOn(serialization, 'hydrateStepReturnValue')
+        .mockImplementation(async (...args) => {
+          await new Promise((r) => setTimeout(r, 10));
+          return originalHydrate(...args);
+        });
+    }
+  }
+
+  afterEach(() => {
+    hydrateSpy?.mockRestore();
+    hydrateSpy = undefined;
+  });
+
+  // ─── Bug reproductions: hook + pending entity ──────────
+
+  describe(`hook + sleep ${label}`, () => {
     it('should deliver all hook payloads before sleep suspension terminates the workflow', async () => {
-      // Pattern: void sleep('1d').then(() => { ... }); for await (msg of hook) { ... await step() }
-      // Event log: hook_created, wait_created, hook_received x3 (no wait_completed)
+      await setupHydrateMock();
       const ops: Promise<any>[] = [];
       const [payload1, payload2, payload3] = await Promise.all([
         dehydrateStepReturnValue(
@@ -184,7 +208,6 @@ describe('promiseQueue suspension ordering', () => {
         }
       });
 
-      // Should suspend, but must include the step in the queue
       expect(error).toBeDefined();
       expect(WorkflowSuspension.is(error)).toBe(true);
 
@@ -198,8 +221,7 @@ describe('promiseQueue suspension ordering', () => {
     });
 
     it('should not prematurely suspend when hook has queued payloads and sleep is pending', async () => {
-      // Minimal repro: hook with 2 payloads + sleep with no wait_completed.
-      // Workflow reads both payloads then returns. Should complete, not suspend.
+      await setupHydrateMock();
       const ops: Promise<any>[] = [];
       const [payload1, payload2] = await Promise.all([
         dehydrateStepReturnValue('first', 'wrun_test', undefined, ops),
@@ -258,22 +280,16 @@ describe('promiseQueue suspension ordering', () => {
     });
   });
 
-  describe('hook + incomplete step', () => {
+  describe(`hook + incomplete step ${label}`, () => {
     it('should deliver all hook payloads when a concurrent step has not completed', async () => {
-      // Same pattern but with an incomplete step instead of sleep:
-      //   void incompleteStep().then(...)
-      //   for await (msg of hook) { ... }
-      // If the step has step_created + step_started but no step_completed,
-      // its null handler also queues a suspension through promiseQueue.
+      await setupHydrateMock();
       const ops: Promise<any>[] = [];
       const [payload1, payload2] = await Promise.all([
         dehydrateStepReturnValue('msg1', 'wrun_test', undefined, ops),
         dehydrateStepReturnValue('msg2', 'wrun_test', undefined, ops),
       ]);
 
-      // ULID generation order: createHook() gets [0], incompleteStep() gets [1]
       const ctx = setupWorkflowContext([
-        // hook created first (createHook runs before incompleteStep is called)
         {
           eventId: 'evnt_0',
           runId: 'wrun_test',
@@ -282,7 +298,6 @@ describe('promiseQueue suspension ordering', () => {
           eventData: { token: 'test-token', isWebhook: false },
           createdAt: new Date(),
         },
-        // incomplete step: created + started, no completed
         {
           eventId: 'evnt_1',
           runId: 'wrun_test',
@@ -299,7 +314,6 @@ describe('promiseQueue suspension ordering', () => {
           eventData: {},
           createdAt: new Date(),
         },
-        // hook payloads
         {
           eventId: 'evnt_3',
           runId: 'wrun_test',
@@ -323,18 +337,15 @@ describe('promiseQueue suspension ordering', () => {
 
       const { result, error } = await runWithDiscontinuation(ctx, async () => {
         const incompleteStep = useStep('incompleteStep');
-        const hook = createHook(); // gets CORR_IDS[0]
+        const hook = createHook();
 
-        // Fire-and-forget step (will not complete — no step_completed event)
-        void incompleteStep().then(() => {}); // gets CORR_IDS[1]
+        void incompleteStep().then(() => {});
 
         const val1 = await hook;
         const val2 = await hook;
         return [val1, val2];
       });
 
-      // Both payloads should be delivered; workflow should complete normally.
-      // The suspension for the incomplete step should not preempt hook delivery.
       expect(error).toBeUndefined();
       expect(result).toEqual(['msg1', 'msg2']);
     });
@@ -342,12 +353,9 @@ describe('promiseQueue suspension ordering', () => {
 
   // ─── Control group: patterns that should work ──────────
 
-  describe('sleep + sequential steps (no hook)', () => {
+  describe(`sleep + sequential steps ${label}`, () => {
     it('should resolve all steps even when sleep has not completed', async () => {
-      // Pattern: void sleep('1d').then(...); await stepA(); await stepB();
-      // All step events exist. Steps resolve from event log; sleep suspends
-      // only after steps are done. This SHOULD work because step resolutions
-      // are fully consumed before null fires.
+      await setupHydrateMock();
       const [resultA, resultB] = await Promise.all([
         dehydrateStepReturnValue(10, 'wrun_test', undefined),
         dehydrateStepReturnValue(20, 'wrun_test', undefined),
@@ -425,15 +433,12 @@ describe('promiseQueue suspension ordering', () => {
         return [a, b];
       });
 
-      // Should complete with both step results; sleep suspension doesn't interfere
       expect(error).toBeUndefined();
       expect(result).toEqual([10, 20]);
     });
 
     it('should correctly suspend with second step in queue when only first step completed', async () => {
-      // Pattern: void sleep('1d').then(...); await stepA(); await stepB();
-      // Only stepA events exist. stepB has no events.
-      // Expected: suspension fires with stepB in the invocations queue.
+      await setupHydrateMock();
       const resultA = await dehydrateStepReturnValue(
         10,
         'wrun_test',
@@ -473,7 +478,6 @@ describe('promiseQueue suspension ordering', () => {
           eventData: { result: resultA },
           createdAt: new Date(),
         },
-        // No stepB events — it hasn't been created/executed yet
       ]);
 
       const sleep = createSleep(ctx);
@@ -489,7 +493,6 @@ describe('promiseQueue suspension ordering', () => {
         return [a, b];
       });
 
-      // Should suspend (stepB has no events) and include stepB in the queue
       expect(error).toBeDefined();
       expect(WorkflowSuspension.is(error)).toBe(true);
 
@@ -503,11 +506,9 @@ describe('promiseQueue suspension ordering', () => {
     });
   });
 
-  describe('incomplete step + sequential steps (no hook)', () => {
+  describe(`incomplete step + sequential steps ${label}`, () => {
     it('should resolve subsequent steps when a fire-and-forget step has not completed', async () => {
-      // Pattern: void incompleteStep().then(...); await stepB(); await stepC();
-      // incompleteStep has created+started but no completed. stepB and stepC have all events.
-      // Expected: stepB and stepC resolve; suspension fires for incomplete step after.
+      await setupHydrateMock();
       const [resultB, resultC] = await Promise.all([
         dehydrateStepReturnValue('B', 'wrun_test', undefined),
         dehydrateStepReturnValue('C', 'wrun_test', undefined),
@@ -530,7 +531,6 @@ describe('promiseQueue suspension ordering', () => {
           eventData: {},
           createdAt: new Date(),
         },
-        // no step_completed for incompleteStep
         {
           eventId: 'evnt_2',
           runId: 'wrun_test',
@@ -594,17 +594,14 @@ describe('promiseQueue suspension ordering', () => {
         return [b, c];
       });
 
-      // stepB and stepC should resolve; workflow should complete.
-      // The incomplete step's suspension fires AFTER the workflow returns.
       expect(error).toBeUndefined();
       expect(result).toEqual(['B', 'C']);
     });
   });
 
-  describe('hook only (no concurrent pending entity)', () => {
+  describe(`hook only (no concurrent pending entity) ${label}`, () => {
     it('should deliver all hook payloads and reach step when no sleep or incomplete step exists', async () => {
-      // Control: hook with 2 payloads + step after. No concurrent sleep/step.
-      // This should always work because no entity queues a premature suspension.
+      await setupHydrateMock();
       const ops: Promise<any>[] = [];
       const [payload1, payload2] = await Promise.all([
         dehydrateStepReturnValue('msg1', 'wrun_test', undefined, ops),
@@ -655,7 +652,6 @@ describe('promiseQueue suspension ordering', () => {
         }
       });
 
-      // Should suspend with step in queue (no step events exist)
       expect(error).toBeDefined();
       expect(WorkflowSuspension.is(error)).toBe(true);
 
@@ -667,5 +663,17 @@ describe('promiseQueue suspension ordering', () => {
         'myStep'
       );
     });
+  });
+}
+
+// ─── Run tests in both modes ────────────────────────────
+
+describe('promiseQueue suspension ordering', () => {
+  describe('sync deserialization (no encryption)', () => {
+    defineTests('sync');
+  });
+
+  describe('async deserialization (with encryption)', () => {
+    defineTests('async');
   });
 });

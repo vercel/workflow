@@ -3,7 +3,10 @@ import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { stepLogger } from './logger.js';
-import type { WorkflowOrchestratorContext } from './private.js';
+import {
+  scheduleWhenIdle,
+  type WorkflowOrchestratorContext,
+} from './private.js';
 import type { Serializable } from './schemas.js';
 import { hydrateStepReturnValue } from './serialization.js';
 
@@ -53,13 +56,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Crucially, if we got here, then this step Promise does
           // not resolve so that the user workflow code does not proceed any further.
           // Notify the workflow handler that this step has not been run / has not completed yet.
-          // Use setTimeout(0) instead of promiseQueue so suspensions fire
-          // AFTER all queued data deliveries (hook payloads, step results).
-          setTimeout(() => {
+          scheduleWhenIdle(ctx, () => {
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
-          }, 0);
+          });
           return EventConsumerResult.NotConsumed;
         }
 
@@ -150,6 +151,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // takes variable time, promises resolve in event log order.
           // Each step's hydration + resolve waits for all prior hydrations
           // to complete before executing, preserving deterministic ordering.
+          ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
               const hydratedResult = await hydrateStepReturnValue(
@@ -161,6 +163,8 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
               resolve(hydratedResult as Result);
             } catch (error) {
               reject(error);
+            } finally {
+              ctx.pendingDeliveries--;
             }
           });
           return EventConsumerResult.Finished;
