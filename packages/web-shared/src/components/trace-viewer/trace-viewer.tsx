@@ -526,7 +526,7 @@ export function TraceViewerTimeline({
                         WebkitMaskImage:
                           'linear-gradient(to right, transparent 1%, black 3%)',
                         background:
-                          'repeating-linear-gradient(-45deg, transparent, transparent 11px, var(--ds-gray-800) 11px, var(--ds-gray-800) 12px)',
+                          'repeating-linear-gradient(-45deg, var(--ds-background-200) 0, var(--ds-background-200) 11px, var(--ds-gray-400) 11px, var(--ds-gray-400) 12px)',
                       }}
                     />
                   );
