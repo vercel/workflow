@@ -1,5 +1,15 @@
 # @workflow/world-local
 
+## 4.1.0-beta.40
+
+### Patch Changes
+
+- [#1287](https://github.com/vercel/workflow/pull/1287) [`d8daa2a`](https://github.com/vercel/workflow/commit/d8daa2a9a95e2d01a4e6fee4e8dde51d82db762d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `world.events.get(runId, eventId)` to the Storage interface for fetching a single event by ID.
+
+- Updated dependencies [[`d8daa2a`](https://github.com/vercel/workflow/commit/d8daa2a9a95e2d01a4e6fee4e8dde51d82db762d)]:
+  - @workflow/world@4.1.0-beta.11
+  - @workflow/errors@4.1.0-beta.18
+
 ## 4.1.0-beta.39
 
 ### Patch Changes
