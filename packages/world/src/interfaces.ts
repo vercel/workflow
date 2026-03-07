@@ -25,35 +25,34 @@ import type {
 } from './steps.js';
 
 export interface Streamer {
-  writeToStream(
-    name: string,
-    runId: string,
-    chunk: string | Uint8Array
-  ): Promise<void>;
+  streams: {
+    write(
+      name: string,
+      runId: string,
+      chunk: string | Uint8Array
+    ): Promise<void>;
 
-  /**
-   * Write multiple chunks to a stream in a single operation.
-   * This is an optional optimization for world implementations that can
-   * batch multiple writes efficiently (e.g., single HTTP request for world-vercel).
-   *
-   * If not implemented, the caller should fall back to sequential writeToStream() calls.
-   *
-   * @param name - The stream name
-   * @param runId - The run ID
-   * @param chunks - Array of chunks to write, in order
-   */
-  writeToStreamMulti?(
-    name: string,
-    runId: string,
-    chunks: (string | Uint8Array)[]
-  ): Promise<void>;
+    /**
+     * Write multiple chunks to a stream in a single operation.
+     * This is an optional optimization for world implementations that can
+     * batch multiple writes efficiently (e.g., single HTTP request for world-vercel).
+     *
+     * If not implemented, the caller should fall back to sequential write() calls.
+     *
+     * @param name - The stream name
+     * @param runId - The run ID
+     * @param chunks - Array of chunks to write, in order
+     */
+    writeMulti?(
+      name: string,
+      runId: string,
+      chunks: (string | Uint8Array)[]
+    ): Promise<void>;
 
-  closeStream(name: string, runId: string): Promise<void>;
-  readFromStream(
-    name: string,
-    startIndex?: number
-  ): Promise<ReadableStream<Uint8Array>>;
-  listStreamsByRunId(runId: string): Promise<string[]>;
+    close(name: string, runId: string): Promise<void>;
+    get(name: string, startIndex?: number): Promise<ReadableStream<Uint8Array>>;
+    list(runId: string): Promise<string[]>;
+  };
 }
 
 /**
@@ -178,7 +177,7 @@ export interface Storage {
 /**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
-export interface World extends Queue, Storage, Streamer {
+export interface World extends Queue, Streamer, Storage {
   /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.

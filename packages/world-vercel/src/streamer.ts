@@ -58,97 +58,99 @@ export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
 
 export function createStreamer(config?: APIConfig): Streamer {
   return {
-    async writeToStream(
-      name: string,
-      runId: string | Promise<string>,
-      chunk: string | Uint8Array
-    ) {
-      // Await runId if it's a promise to ensure proper flushing
-      const resolvedRunId = await runId;
+    streams: {
+      async write(
+        name: string,
+        runId: string | Promise<string>,
+        chunk: string | Uint8Array
+      ) {
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
 
-      const httpConfig = await getHttpConfig(config);
-      const response = await fetch(
-        getStreamUrl(name, resolvedRunId, httpConfig),
-        {
-          method: 'PUT',
-          body: chunk,
-          headers: httpConfig.headers,
+        const httpConfig = await getHttpConfig(config);
+        const response = await fetch(
+          getStreamUrl(name, resolvedRunId, httpConfig),
+          {
+            method: 'PUT',
+            body: chunk,
+            headers: httpConfig.headers,
+          }
+        );
+        await response.text();
+      },
+
+      async writeMulti(
+        name: string,
+        runId: string | Promise<string>,
+        chunks: (string | Uint8Array)[]
+      ) {
+        if (chunks.length === 0) return;
+
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
+
+        const httpConfig = await getHttpConfig(config);
+
+        // Signal to server that this is a multi-chunk batch
+        httpConfig.headers.set('X-Stream-Multi', 'true');
+
+        const body = encodeMultiChunks(chunks);
+        const response = await fetch(
+          getStreamUrl(name, resolvedRunId, httpConfig),
+          {
+            method: 'PUT',
+            body,
+            headers: httpConfig.headers,
+          }
+        );
+        await response.text();
+      },
+
+      async close(name: string, runId: string | Promise<string>) {
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
+
+        const httpConfig = await getHttpConfig(config);
+        httpConfig.headers.set('X-Stream-Done', 'true');
+        const response = await fetch(
+          getStreamUrl(name, resolvedRunId, httpConfig),
+          {
+            method: 'PUT',
+            headers: httpConfig.headers,
+          }
+        );
+        await response.text();
+      },
+
+      async get(name: string, startIndex?: number) {
+        const httpConfig = await getHttpConfig(config);
+        const url = getStreamUrl(name, undefined, httpConfig);
+        if (typeof startIndex === 'number') {
+          url.searchParams.set('startIndex', String(startIndex));
         }
-      );
-      await response.text();
-    },
-
-    async writeToStreamMulti(
-      name: string,
-      runId: string | Promise<string>,
-      chunks: (string | Uint8Array)[]
-    ) {
-      if (chunks.length === 0) return;
-
-      // Await runId if it's a promise to ensure proper flushing
-      const resolvedRunId = await runId;
-
-      const httpConfig = await getHttpConfig(config);
-
-      // Signal to server that this is a multi-chunk batch
-      httpConfig.headers.set('X-Stream-Multi', 'true');
-
-      const body = encodeMultiChunks(chunks);
-      const response = await fetch(
-        getStreamUrl(name, resolvedRunId, httpConfig),
-        {
-          method: 'PUT',
-          body,
+        const response = await fetch(url, {
           headers: httpConfig.headers,
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to fetch stream: ${response.status}`);
         }
-      );
-      await response.text();
-    },
+        if (!response.body) {
+          throw new Error('No response body for stream');
+        }
+        return response.body as ReadableStream<Uint8Array>;
+      },
 
-    async closeStream(name: string, runId: string | Promise<string>) {
-      // Await runId if it's a promise to ensure proper flushing
-      const resolvedRunId = await runId;
-
-      const httpConfig = await getHttpConfig(config);
-      httpConfig.headers.set('X-Stream-Done', 'true');
-      const response = await fetch(
-        getStreamUrl(name, resolvedRunId, httpConfig),
-        {
-          method: 'PUT',
+      async list(runId: string) {
+        const httpConfig = await getHttpConfig(config);
+        const url = new URL(`${httpConfig.baseUrl}/v2/runs/${runId}/streams`);
+        const response = await fetch(url, {
           headers: httpConfig.headers,
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to list streams: ${response.status}`);
         }
-      );
-      await response.text();
-    },
-
-    async readFromStream(name: string, startIndex?: number) {
-      const httpConfig = await getHttpConfig(config);
-      const url = getStreamUrl(name, undefined, httpConfig);
-      if (typeof startIndex === 'number') {
-        url.searchParams.set('startIndex', String(startIndex));
-      }
-      const response = await fetch(url, {
-        headers: httpConfig.headers,
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to fetch stream: ${response.status}`);
-      }
-      if (!response.body) {
-        throw new Error('No response body for stream');
-      }
-      return response.body as ReadableStream<Uint8Array>;
-    },
-
-    async listStreamsByRunId(runId: string) {
-      const httpConfig = await getHttpConfig(config);
-      const url = new URL(`${httpConfig.baseUrl}/v2/runs/${runId}/streams`);
-      const response = await fetch(url, {
-        headers: httpConfig.headers,
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to list streams: ${response.status}`);
-      }
-      return (await response.json()) as string[];
+        return (await response.json()) as string[];
+      },
     },
   };
 }

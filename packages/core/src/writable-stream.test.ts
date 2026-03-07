@@ -7,23 +7,23 @@ vi.mock('./runtime/world.js', () => ({
 }));
 
 describe('WorkflowServerWritableStream', () => {
-  let mockWorld: {
-    writeToStream: ReturnType<typeof vi.fn>;
-    writeToStreamMulti: ReturnType<typeof vi.fn>;
-    closeStream: ReturnType<typeof vi.fn>;
+  let mockStreams: {
+    write: ReturnType<typeof vi.fn>;
+    writeMulti: ReturnType<typeof vi.fn>;
+    close: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(async () => {
     vi.useFakeTimers();
 
-    mockWorld = {
-      writeToStream: vi.fn().mockResolvedValue(undefined),
-      writeToStreamMulti: vi.fn().mockResolvedValue(undefined),
-      closeStream: vi.fn().mockResolvedValue(undefined),
+    mockStreams = {
+      write: vi.fn().mockResolvedValue(undefined),
+      writeMulti: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
     };
 
     const { getWorld } = await import('./runtime/world.js');
-    vi.mocked(getWorld).mockReturnValue(mockWorld as any);
+    vi.mocked(getWorld).mockReturnValue({ streams: mockStreams } as any);
   });
 
   afterEach(() => {
@@ -58,25 +58,25 @@ describe('WorkflowServerWritableStream', () => {
 
       // Write first chunk
       await writer.write(new Uint8Array([1, 2, 3]));
-      expect(mockWorld.writeToStream).not.toHaveBeenCalled();
-      expect(mockWorld.writeToStreamMulti).not.toHaveBeenCalled();
+      expect(mockStreams.write).not.toHaveBeenCalled();
+      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
 
       // Write second chunk
       await writer.write(new Uint8Array([4, 5, 6]));
-      expect(mockWorld.writeToStream).not.toHaveBeenCalled();
-      expect(mockWorld.writeToStreamMulti).not.toHaveBeenCalled();
+      expect(mockStreams.write).not.toHaveBeenCalled();
+      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
 
       // Advance timer to trigger flush
       await vi.advanceTimersByTimeAsync(10);
 
       // Should use writeToStreamMulti for multiple chunks
-      expect(mockWorld.writeToStreamMulti).toHaveBeenCalledTimes(1);
-      expect(mockWorld.writeToStreamMulti).toHaveBeenCalledWith(
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.writeMulti).toHaveBeenCalledWith(
         'test-stream',
         'run-123',
         [new Uint8Array([1, 2, 3]), new Uint8Array([4, 5, 6])]
       );
-      expect(mockWorld.writeToStream).not.toHaveBeenCalled();
+      expect(mockStreams.write).not.toHaveBeenCalled();
 
       await writer.close();
     });
@@ -92,20 +92,20 @@ describe('WorkflowServerWritableStream', () => {
       await vi.advanceTimersByTimeAsync(10);
 
       // Should use writeToStream for single chunk (not writeToStreamMulti)
-      expect(mockWorld.writeToStream).toHaveBeenCalledTimes(1);
-      expect(mockWorld.writeToStream).toHaveBeenCalledWith(
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      expect(mockStreams.write).toHaveBeenCalledWith(
         'test-stream',
         'run-123',
         new Uint8Array([1, 2, 3])
       );
-      expect(mockWorld.writeToStreamMulti).not.toHaveBeenCalled();
+      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
 
       await writer.close();
     });
 
-    it('should fall back to sequential writes when writeToStreamMulti is unavailable', async () => {
-      // Remove writeToStreamMulti from mock world
-      delete (mockWorld as any).writeToStreamMulti;
+    it('should fall back to sequential writes when writeMulti is unavailable', async () => {
+      // Remove writeMulti from mock world
+      delete (mockStreams as any).writeMulti;
 
       const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
       const writer = stream.getWriter();
@@ -118,14 +118,14 @@ describe('WorkflowServerWritableStream', () => {
       await vi.advanceTimersByTimeAsync(10);
 
       // Should fall back to sequential writeToStream calls
-      expect(mockWorld.writeToStream).toHaveBeenCalledTimes(2);
-      expect(mockWorld.writeToStream).toHaveBeenNthCalledWith(
+      expect(mockStreams.write).toHaveBeenCalledTimes(2);
+      expect(mockStreams.write).toHaveBeenNthCalledWith(
         1,
         'test-stream',
         'run-123',
         new Uint8Array([1, 2, 3])
       );
-      expect(mockWorld.writeToStream).toHaveBeenNthCalledWith(
+      expect(mockStreams.write).toHaveBeenNthCalledWith(
         2,
         'test-stream',
         'run-123',
@@ -143,17 +143,14 @@ describe('WorkflowServerWritableStream', () => {
       await writer.write(new Uint8Array([1, 2, 3]));
       await writer.write(new Uint8Array([4, 5, 6]));
 
-      expect(mockWorld.writeToStreamMulti).not.toHaveBeenCalled();
+      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
 
       // Close should flush immediately without waiting for timer
       await writer.close();
 
-      expect(mockWorld.writeToStreamMulti).toHaveBeenCalledTimes(1);
-      expect(mockWorld.closeStream).toHaveBeenCalledTimes(1);
-      expect(mockWorld.closeStream).toHaveBeenCalledWith(
-        'test-stream',
-        'run-123'
-      );
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.close).toHaveBeenCalledTimes(1);
+      expect(mockStreams.close).toHaveBeenCalledWith('test-stream', 'run-123');
     });
 
     it('should not schedule multiple flush timers', async () => {
@@ -169,8 +166,8 @@ describe('WorkflowServerWritableStream', () => {
       await vi.advanceTimersByTimeAsync(10);
 
       // Should only call writeToStreamMulti once with all chunks
-      expect(mockWorld.writeToStreamMulti).toHaveBeenCalledTimes(1);
-      expect(mockWorld.writeToStreamMulti).toHaveBeenCalledWith(
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.writeMulti).toHaveBeenCalledWith(
         'test-stream',
         'run-123',
         [new Uint8Array([1]), new Uint8Array([2]), new Uint8Array([3])]
@@ -187,15 +184,15 @@ describe('WorkflowServerWritableStream', () => {
       await writer.write(new Uint8Array([1, 2]));
       await vi.advanceTimersByTimeAsync(10);
 
-      expect(mockWorld.writeToStream).toHaveBeenCalledTimes(1);
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
 
       // Second batch
       await writer.write(new Uint8Array([3, 4]));
       await writer.write(new Uint8Array([5, 6]));
       await vi.advanceTimersByTimeAsync(10);
 
-      expect(mockWorld.writeToStreamMulti).toHaveBeenCalledTimes(1);
-      expect(mockWorld.writeToStreamMulti).toHaveBeenCalledWith(
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.writeMulti).toHaveBeenCalledWith(
         'test-stream',
         'run-123',
         [new Uint8Array([3, 4]), new Uint8Array([5, 6])]
@@ -207,7 +204,7 @@ describe('WorkflowServerWritableStream', () => {
     it('should wait for in-progress flush before adding to buffer', async () => {
       // Create a slow writeToStreamMulti that we can control
       let resolveWrite: () => void;
-      mockWorld.writeToStreamMulti.mockImplementation(
+      mockStreams.writeMulti.mockImplementation(
         () =>
           new Promise<void>((resolve) => {
             resolveWrite = resolve;
@@ -223,7 +220,7 @@ describe('WorkflowServerWritableStream', () => {
       await vi.advanceTimersByTimeAsync(10);
 
       // Flush started but not completed
-      expect(mockWorld.writeToStreamMulti).toHaveBeenCalledTimes(1);
+      expect(mockStreams.writeMulti).toHaveBeenCalledTimes(1);
 
       // Write more while flush is in progress
       const writePromise = writer.write(new Uint8Array([5, 6]));
@@ -236,8 +233,8 @@ describe('WorkflowServerWritableStream', () => {
       await vi.advanceTimersByTimeAsync(10);
 
       // Second flush should have happened
-      expect(mockWorld.writeToStream).toHaveBeenCalledTimes(1);
-      expect(mockWorld.writeToStream).toHaveBeenCalledWith(
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+      expect(mockStreams.write).toHaveBeenCalledWith(
         'test-stream',
         'run-123',
         new Uint8Array([5, 6])
@@ -262,9 +259,9 @@ describe('WorkflowServerWritableStream', () => {
       // Advance timer - should NOT trigger flush since stream was aborted
       await vi.advanceTimersByTimeAsync(10);
 
-      expect(mockWorld.writeToStream).not.toHaveBeenCalled();
-      expect(mockWorld.writeToStreamMulti).not.toHaveBeenCalled();
-      expect(mockWorld.closeStream).not.toHaveBeenCalled();
+      expect(mockStreams.write).not.toHaveBeenCalled();
+      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
+      expect(mockStreams.close).not.toHaveBeenCalled();
     });
   });
 
@@ -276,16 +273,16 @@ describe('WorkflowServerWritableStream', () => {
       // Close without writing anything
       await writer.close();
 
-      expect(mockWorld.writeToStream).not.toHaveBeenCalled();
-      expect(mockWorld.writeToStreamMulti).not.toHaveBeenCalled();
-      expect(mockWorld.closeStream).toHaveBeenCalledTimes(1);
+      expect(mockStreams.write).not.toHaveBeenCalled();
+      expect(mockStreams.writeMulti).not.toHaveBeenCalled();
+      expect(mockStreams.close).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('error handling', () => {
     it('should propagate write errors from close', async () => {
       // Make writeToStreamMulti fail
-      mockWorld.writeToStreamMulti.mockRejectedValue(new Error('Write failed'));
+      mockStreams.writeMulti.mockRejectedValue(new Error('Write failed'));
 
       const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
       const writer = stream.getWriter();

@@ -427,7 +427,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         let reader = this.#reader;
         if (!reader) {
           const world = getWorld();
-          const stream = await world.readFromStream(name, startIndex);
+          const stream = await world.streams.get(name, startIndex);
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -486,14 +486,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
       // Use writeToStreamMulti if available for batch writes
       if (
-        typeof world.writeToStreamMulti === 'function' &&
+        typeof world.streams.writeMulti === 'function' &&
         chunksToFlush.length > 1
       ) {
-        await world.writeToStreamMulti(name, runId, chunksToFlush);
+        await world.streams.writeMulti(name, runId, chunksToFlush);
       } else {
         // Fall back to sequential writes
         for (const chunk of chunksToFlush) {
-          await world.writeToStream(name, runId, chunk);
+          await world.streams.write(name, runId, chunk);
         }
       }
 
@@ -531,7 +531,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Flush any remaining buffered chunks
         await flush();
 
-        await world.closeStream(name, runId);
+        await world.streams.close(name, runId);
       },
       abort() {
         // Clean up timer to prevent leaks

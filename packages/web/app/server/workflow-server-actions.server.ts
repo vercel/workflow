@@ -975,9 +975,9 @@ export async function readStreamServerAction(
     const world = await getWorldFromEnv(env);
     // Return the raw binary stream — deserialization and decryption
     // happen entirely client-side.
-    return await world.readFromStream(streamId, startIndex);
+    return await world.streams.get(streamId, startIndex);
   } catch (error) {
-    const actionError = createServerActionError(error, 'world.readFromStream', {
+    const actionError = createServerActionError(error, 'world.streams.get', {
       streamId,
       startIndex,
     });
@@ -998,16 +998,12 @@ export async function fetchStreams(
 ): Promise<ServerActionResult<string[]>> {
   try {
     const world = await getWorldFromEnv(env);
-    const streams = await world.listStreamsByRunId(runId);
+    const streams = await world.streams.list(runId);
     return createResponse(streams);
   } catch (error) {
-    return createServerActionError<string[]>(
-      error,
-      'world.listStreamsByRunId',
-      {
-        runId,
-      }
-    );
+    return createServerActionError<string[]>(error, 'world.streams.list', {
+      runId,
+    });
   }
 }
 

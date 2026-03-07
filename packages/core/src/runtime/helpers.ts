@@ -102,8 +102,8 @@ export async function handleHealthCheckMessage(
   // The stream name includes the correlationId for identification.
   // The server skips run validation for health check streams.
   const fakeRunId = generateHealthCheckRunId();
-  await world.writeToStream(streamName, fakeRunId, response);
-  await world.closeStream(streamName, fakeRunId);
+  await world.streams.write(streamName, fakeRunId, response);
+  await world.streams.close(streamName, fakeRunId);
 }
 
 export type HealthCheckEndpoint = 'workflow' | 'step';
@@ -222,7 +222,7 @@ export async function healthCheck(
 
     while (Date.now() - startTime < timeout) {
       try {
-        const stream = await world.readFromStream(streamName);
+        const stream = await world.streams.get(streamName);
         const reader = stream.getReader();
         const { chunks, timedOut } = await readStreamWithTimeout(
           reader,
