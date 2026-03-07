@@ -10,6 +10,7 @@
     }
   ],
   "env": {
-    "WORKFLOW_PUBLIC_MANIFEST": "1"
+    "WORKFLOW_PUBLIC_MANIFEST": "1",
+    "DEBUG": "1"
   }
 }

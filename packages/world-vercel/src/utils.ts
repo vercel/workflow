@@ -153,6 +153,8 @@ export interface HttpConfig {
   usingProxy: boolean;
 }
 
+let httpUrlLogged = false;
+
 export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
@@ -168,6 +170,16 @@ export const getHttpUrl = (
   const baseUrl = usingProxy
     ? customProxyUrl || defaultProxyUrl
     : `${defaultHost}/api`;
+
+  if (!httpUrlLogged) {
+    httpUrlLogged = true;
+    console.log(
+      `[workflow] HTTP routing: usingProxy=${usingProxy}, baseUrl=${baseUrl}, ` +
+        `projectId=${projectConfig?.projectId ? 'set' : 'unset'}, ` +
+        `teamId=${projectConfig?.teamId ? 'set' : 'unset'}`
+    );
+  }
+
   return { baseUrl, usingProxy };
 };
 
@@ -229,6 +241,10 @@ export async function makeRequest<T>({
   const method = options.method || 'GET';
   const { baseUrl, headers } = await getHttpConfig(config);
   const url = `${baseUrl}${endpoint}`;
+
+  if (process.env.DEBUG === '1') {
+    console.debug(`[workflow] makeRequest: ${method} ${url}`);
+  }
 
   // Parse server address and port from URL for OTEL attributes
   let serverAddress: string | undefined;

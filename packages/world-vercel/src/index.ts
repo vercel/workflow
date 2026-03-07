@@ -21,6 +21,14 @@ export function createVercelWorld(config?: APIConfig): World {
   const projectId =
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
+  console.log(
+    `[workflow] Creating Vercel world: ` +
+      `projectId=${config?.projectConfig?.projectId ? 'set' : 'unset'}, ` +
+      `teamId=${config?.projectConfig?.teamId ? 'set' : 'unset'}, ` +
+      `token=${config?.token ? 'set' : 'unset'}, ` +
+      `VERCEL_DEPLOYMENT_ID=${process.env.VERCEL_DEPLOYMENT_ID ? 'set' : 'unset'}`
+  );
+
   return {
     ...createQueue(config),
     ...createStorage(config),

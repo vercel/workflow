@@ -1,4 +1,4 @@
-import { QueueClient, DuplicateMessageError } from '@vercel/queue';
+import { DuplicateMessageError, QueueClient } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
@@ -81,6 +81,11 @@ export function createQueue(config?: APIConfig): Queue {
   const headers = getHeaders(config, { usingProxy });
 
   const region = 'iad1';
+
+  console.log(
+    `[workflow] Queue routing: usingProxy=${usingProxy}, ` +
+      `target=${usingProxy ? `${baseUrl}/queues-proxy` : `default (${region}.vercel-queue.com)`}`
+  );
 
   const clientOptions = {
     region,

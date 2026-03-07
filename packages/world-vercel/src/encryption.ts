@@ -113,6 +113,14 @@ export async function fetchRunKey(
   if (options?.teamId) {
     params.set('teamId', options.teamId);
   }
+
+  if (process.env.DEBUG === '1') {
+    console.debug(
+      `[workflow] fetchRunKey: cross-deployment key fetch for deployment=${deploymentId}, ` +
+        `runId=${runId} -> api.vercel.com`
+    );
+  }
+
   const response = await fetch(
     `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
     {
