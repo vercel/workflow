@@ -521,18 +521,17 @@ export function TraceViewerTimeline({
                         height: '100%',
                         pointerEvents: 'none',
                         zIndex: 1,
-                        // Fade in from transparent on the left to the striped pattern
                         maskImage:
-                          'linear-gradient(to right, transparent, black 30%)',
+                          'linear-gradient(to right, transparent, black 8%)',
                         WebkitMaskImage:
-                          'linear-gradient(to right, transparent, black 30%)',
+                          'linear-gradient(to right, transparent, black 8%)',
                         background: `
                           repeating-linear-gradient(
                             -45deg,
-                            var(--ds-gray-200, rgba(128,128,128,0.08)),
-                            var(--ds-gray-200, rgba(128,128,128,0.08)) 4px,
-                            var(--ds-gray-400, rgba(128,128,128,0.16)) 4px,
-                            var(--ds-gray-400, rgba(128,128,128,0.16)) 8px
+                            transparent,
+                            transparent 11px,
+                            var(--ds-gray-200, rgba(128,128,128,0.16)) 11px,
+                            var(--ds-gray-200, rgba(128,128,128,0.16)) 12px
                           )
                         `,
                       }}
