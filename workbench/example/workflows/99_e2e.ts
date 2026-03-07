@@ -1466,3 +1466,42 @@ export async function stepFunctionAsStartArgWorkflow(
 
   return { directResult, viaStepResult, doubled };
 }
+
+//////////////////////////////////////////////////////////
+
+async function processPayload(payload: { type: string; id?: number }) {
+  'use step';
+  return { processed: true, type: payload.type, id: payload.id };
+}
+
+/**
+ * Workflow that uses a hook with concurrent sleep — tests that multiple
+ * hook payloads are delivered correctly even when a sleep has no wait_completed.
+ *
+ * This is a regression test for a bug where the sleep's WorkflowSuspension
+ * would terminate the workflow before all hook payloads were processed.
+ */
+export async function hookWithSleepWorkflow(token: string) {
+  'use workflow';
+
+  type Payload = { type: string; id?: number; done?: boolean };
+
+  using hook = createHook<Payload>({ token });
+
+  // Concurrent sleep that won't complete during the test
+  void sleep('1d');
+
+  const results: any[] = [];
+
+  for await (const payload of hook) {
+    // Process each payload through a step to prove we reached it
+    const result = await processPayload(payload);
+    results.push(result);
+
+    if (payload.done) {
+      break;
+    }
+  }
+
+  return results;
+}
