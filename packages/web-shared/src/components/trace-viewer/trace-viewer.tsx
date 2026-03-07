@@ -459,7 +459,7 @@ export function TraceViewerTimeline({
             style={{
               position: 'relative',
               width: state.timelineWidth,
-              height: state.timelineHeight - TIMELINE_PADDING * 2,
+              minHeight: state.timelineHeight - TIMELINE_PADDING * 2,
               padding: TIMELINE_PADDING,
               paddingBottom: 0,
             }}
@@ -529,10 +529,10 @@ export function TraceViewerTimeline({
                         background: `
                           repeating-linear-gradient(
                             -45deg,
-                            rgba(0,0,0,0.06),
-                            rgba(0,0,0,0.06) 4px,
-                            rgba(0,0,0,0.12) 4px,
-                            rgba(0,0,0,0.12) 8px
+                            var(--ds-gray-200, rgba(128,128,128,0.08)),
+                            var(--ds-gray-200, rgba(128,128,128,0.08)) 4px,
+                            var(--ds-gray-400, rgba(128,128,128,0.16)) 4px,
+                            var(--ds-gray-400, rgba(128,128,128,0.16)) 8px
                           )
                         `,
                       }}
@@ -541,6 +541,7 @@ export function TraceViewerTimeline({
                 })()}
             </div>
           </div>
+          {footer}
         </div>
         <div className={styles.zoomButtonTraceViewer}>
           <ZoomButton />
@@ -557,23 +558,6 @@ export function TraceViewerTimeline({
           <SpanDetailPanel attached />
         </div>
       ) : null}
-      {footer && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 0,
-            left: 0,
-            right: 0,
-            zIndex: 5,
-            pointerEvents: 'none',
-            background:
-              'linear-gradient(to bottom, transparent, var(--ds-background-200, #fafafa) 40%)',
-            paddingTop: 16,
-          }}
-        >
-          {footer}
-        </div>
-      )}
     </div>
   );
 }
