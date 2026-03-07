@@ -1505,3 +1505,31 @@ export async function hookWithSleepWorkflow(token: string) {
 
   return results;
 }
+
+//////////////////////////////////////////////////////////
+
+async function addNumbers(a: number, b: number) {
+  'use step';
+  return a + b;
+}
+
+/**
+ * Control workflow: sleep + sequential steps (no hooks).
+ * Proves that void sleep().then() does NOT interfere with sequential steps
+ * whose events all exist in the log. This is a control test to show
+ * the promiseQueue regression is specific to hooks.
+ */
+export async function sleepWithSequentialStepsWorkflow() {
+  'use workflow';
+
+  // Fire-and-forget sleep (same pattern as agent-stop)
+  let shouldCancel = false;
+  void sleep('1d').then(() => {
+    shouldCancel = true;
+  });
+
+  const a = await addNumbers(1, 2);
+  const b = await addNumbers(a, 3);
+  const c = await addNumbers(b, 4);
+  return { a, b, c, shouldCancel };
+}

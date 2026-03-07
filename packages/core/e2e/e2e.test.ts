@@ -2019,4 +2019,25 @@ describe('e2e', () => {
       expect(runData.status).toBe('completed');
     }
   );
+
+  test(
+    'sleepWithSequentialStepsWorkflow - sequential steps work with concurrent sleep (control)',
+    { timeout: 60_000 },
+    async () => {
+      // Control test: proves that void sleep('1d').then() does NOT break
+      // sequential step execution. Steps have per-event consumption so the
+      // sleep's pending suspension doesn't interfere. This contrasts with
+      // hookWithSleepWorkflow where the bug manifests.
+      const run = await start(
+        await e2e('sleepWithSequentialStepsWorkflow'),
+        []
+      );
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({ a: 3, b: 6, c: 10, shouldCancel: false });
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
+    }
+  );
 });
