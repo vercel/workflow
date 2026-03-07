@@ -114,6 +114,7 @@ export async function fetchEvents(
     withData?: boolean;
   }
 ): Promise<ServerActionResult<PaginatedResult<Event>>> {
+  await new Promise((resolve) => setTimeout(resolve, 300));
   return rpc('fetchEvents', { worldEnv, runId, params });
 }
 

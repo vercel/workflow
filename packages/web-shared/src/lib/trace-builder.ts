@@ -93,17 +93,41 @@ export function groupEventsByCorrelation(events: Event[]): GroupedEvents {
 // Trace construction
 // ---------------------------------------------------------------------------
 
-function buildSpans(run: WorkflowRun, groupedEvents: GroupedEvents, now: Date) {
+/**
+ * Computes the latest known event time from the events list.
+ * Active (in-progress) child spans are capped at this time instead of `now`,
+ * so they only extend as far as our data goes.
+ */
+function computeLatestKnownTime(events: Event[], run: WorkflowRun): Date {
+  let latest = new Date(run.createdAt).getTime();
+  for (const event of events) {
+    const t = new Date(event.createdAt).getTime();
+    if (t > latest) latest = t;
+  }
+  return new Date(latest);
+}
+
+function buildSpans(
+  run: WorkflowRun,
+  groupedEvents: GroupedEvents,
+  now: Date,
+  latestKnownTime: Date
+) {
+  // Active child spans cap at latestKnownTime so they don't extend into
+  // unknown territory. Even when the run is completed, we may not have loaded
+  // all events yet, so always use the latest event we've actually seen.
+  const childMaxEnd = latestKnownTime;
+
   const stepSpans = Array.from(groupedEvents.eventsByStepId.values())
-    .map((events) => stepToSpan(events, run, now))
+    .map((events) => stepToSpan(events, childMaxEnd))
     .filter((span): span is Span => span !== null);
 
   const hookSpans = Array.from(groupedEvents.hookEvents.values())
-    .map((events) => hookToSpan(events, run, now))
+    .map((events) => hookToSpan(events, childMaxEnd))
     .filter((span): span is Span => span !== null);
 
   const waitSpans = Array.from(groupedEvents.timerEvents.values())
-    .map((events) => waitToSpan(events, run, now))
+    .map((events) => waitToSpan(events, childMaxEnd))
     .filter((span): span is Span => span !== null);
 
   return {
@@ -132,10 +156,33 @@ function cascadeSpans(runSpan: Span, spans: Span[]) {
   });
 }
 
-export function buildTrace(run: WorkflowRun, events: Event[], now: Date) {
+export interface TraceWithMeta {
+  traceId: string;
+  rootSpanId: string;
+  spans: Span[];
+  resources: { name: string; attributes: Record<string, string> }[];
+  /** Duration in ms from trace start to the latest known event. */
+  knownDurationMs: number;
+}
+
+export function buildTrace(
+  run: WorkflowRun,
+  events: Event[],
+  now: Date
+): TraceWithMeta {
   const groupedEvents = groupEventsByCorrelation(events);
-  const { runSpan, spans } = buildSpans(run, groupedEvents, now);
+  const latestKnownTime = computeLatestKnownTime(events, run);
+  const { runSpan, spans } = buildSpans(
+    run,
+    groupedEvents,
+    now,
+    latestKnownTime
+  );
   const sortedCascadingSpans = cascadeSpans(runSpan, spans);
+
+  // Compute known duration relative to trace start
+  const traceStartMs = otelTimeToMs(runSpan.startTime);
+  const knownDurationMs = latestKnownTime.getTime() - traceStartMs;
 
   return {
     traceId: run.runId,
@@ -149,5 +196,6 @@ export function buildTrace(run: WorkflowRun, events: Event[], now: Date) {
         },
       },
     ],
+    knownDurationMs: Math.max(0, knownDurationMs),
   };
 }

@@ -104,8 +104,14 @@ export function TraceViewerTimeline({
   eagerRender = false,
   isLive = false,
   footer,
+  knownDurationMs,
+  hasMoreData = false,
 }: Omit<TraceViewerProps, 'getQuickLinks'> & {
   footer?: ReactNode;
+  /** Duration in ms from trace start to the latest known event. Used to render the unknown-time overlay. */
+  knownDurationMs?: number;
+  /** Whether more data pages are expected. Controls the unknown-data overlay visibility. */
+  hasMoreData?: boolean;
 }): ReactNode {
   const isSkeleton = trace === skeletonTrace;
   const { state, dispatch } = useTraceViewer();
@@ -490,9 +496,51 @@ export function TraceViewerTimeline({
                 scrollSnapshotRef={scrollSnapshotRef}
                 spans={spans}
               />
+              {/* Horizontal "unknown time" overlay — covers the region to the
+                  right of the latest known event, indicating data beyond this
+                  point hasn't been loaded yet. */}
+              {knownDurationMs != null &&
+                knownDurationMs > 0 &&
+                (hasMoreData || isLive) &&
+                state.root.duration > 0 &&
+                (() => {
+                  const knownPx = knownDurationMs * scale;
+                  const totalPx = state.root.duration * scale;
+                  const unknownWidth = totalPx - knownPx;
+                  // Only show if the unknown region is meaningfully wide
+                  if (unknownWidth < 4) return null;
+                  // Offset ~5% into the unknown region so it doesn't touch spans
+                  const insetPx = Math.min(unknownWidth * 0.05, 20);
+                  return (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: knownPx + insetPx,
+                        width: unknownWidth - insetPx,
+                        height: '100%',
+                        pointerEvents: 'none',
+                        zIndex: 1,
+                        // Fade in from transparent on the left to the striped pattern
+                        maskImage:
+                          'linear-gradient(to right, transparent, black 30%)',
+                        WebkitMaskImage:
+                          'linear-gradient(to right, transparent, black 30%)',
+                        background: `
+                          repeating-linear-gradient(
+                            -45deg,
+                            rgba(0,0,0,0.06),
+                            rgba(0,0,0,0.06) 4px,
+                            rgba(0,0,0,0.12) 4px,
+                            rgba(0,0,0,0.12) 8px
+                          )
+                        `,
+                      }}
+                    />
+                  );
+                })()}
             </div>
           </div>
-          {footer}
         </div>
         <div className={styles.zoomButtonTraceViewer}>
           <ZoomButton />
@@ -509,6 +557,23 @@ export function TraceViewerTimeline({
           <SpanDetailPanel attached />
         </div>
       ) : null}
+      {footer && (
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 0,
+            left: 0,
+            right: 0,
+            zIndex: 5,
+            pointerEvents: 'none',
+            background:
+              'linear-gradient(to bottom, transparent, var(--ds-background-200, #fafafa) 40%)',
+            paddingTop: 16,
+          }}
+        >
+          {footer}
+        </div>
+      )}
     </div>
   );
 }

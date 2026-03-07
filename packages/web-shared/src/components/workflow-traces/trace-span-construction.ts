@@ -81,18 +81,13 @@ export const waitEventsToWaitEntity = (
 /**
  * Converts a workflow Wait to an OpenTelemetry Span
  */
-export function waitToSpan(
-  events: Event[],
-  run: WorkflowRun,
-  nowTime: Date
-): Span | null {
+export function waitToSpan(events: Event[], maxEndTime: Date): Span | null {
   const wait = waitEventsToWaitEntity(events);
   if (!wait) {
     return null;
   }
-  const viewerEndTime = new Date(run.completedAt || nowTime) ?? nowTime;
-  const startTime = wait?.createdAt ?? nowTime;
-  const endTime = wait?.completedAt ?? viewerEndTime;
+  const startTime = wait.createdAt;
+  const endTime = wait.completedAt ?? maxEndTime;
   const start = dateToOtelTime(startTime);
   const end = dateToOtelTime(endTime);
   const duration = calculateDuration(startTime, endTime);
@@ -189,16 +184,11 @@ export const stepEventsToStepEntity = (
 /**
  * Converts step events to an OpenTelemetry Span
  */
-export function stepToSpan(
-  stepEvents: Event[],
-  run: WorkflowRun,
-  nowTime?: Date
-): Span | null {
+export function stepToSpan(stepEvents: Event[], maxEndTime: Date): Span | null {
   const step = stepEventsToStepEntity(stepEvents);
   if (!step) {
     return null;
   }
-  const now = nowTime ?? new Date();
   const parsedName = parseStepName(String(step.stepName));
 
   const attributes = {
@@ -207,8 +197,7 @@ export function stepToSpan(
   };
 
   const resource = 'step';
-  const maxEndTime = new Date(run.completedAt || now);
-  const endTime = new Date(step.completedAt ?? maxEndTime ?? now);
+  const endTime = new Date(step.completedAt ?? maxEndTime);
 
   // Include ALL correlated events on the span so the sidebar detail view
   // can display them. The timeline uses the `showVerticalLine` flag to
@@ -289,11 +278,7 @@ export const hookEventsToHookEntity = (
 /**
  * Converts a workflow Hook to an OpenTelemetry Span
  */
-export function hookToSpan(
-  hookEvents: Event[],
-  run: WorkflowRun,
-  nowTime: Date
-): Span | null {
+export function hookToSpan(hookEvents: Event[], maxEndTime: Date): Span | null {
   const hook = hookEventsToHookEntity(hookEvents);
   if (!hook) {
     return null;
@@ -302,10 +287,7 @@ export function hookToSpan(
   // Convert hook-related events to span events
   const events = convertEventsToSpanEvents(hookEvents, false);
 
-  // We display hooks as a minimum span size of 10 seconds, just to ensure
-  // it's clickable even if there is no
-  const viewerEndTime = new Date(run.completedAt || nowTime) ?? nowTime;
-  const endTime = hook.disposedAt || viewerEndTime;
+  const endTime = hook.disposedAt || maxEndTime;
 
   return {
     spanId: String(hook.hookId),

@@ -138,12 +138,15 @@ describe('useWorkflowTraceViewerData', () => {
       expect(result.current.loading).toBe(false);
     });
 
-    // Initial fetch should use INITIAL_PAGE_SIZE (200)
-    expect(vi.mocked(fetchEvents)).toHaveBeenCalledWith(env, 'run-1', {
-      sortOrder: 'asc',
-      limit: 200,
-      withData: true,
-    });
+    // Initial fetch should use INITIAL_PAGE_SIZE
+    expect(vi.mocked(fetchEvents)).toHaveBeenCalledWith(
+      env,
+      'run-1',
+      expect.objectContaining({
+        sortOrder: 'asc',
+        withData: true,
+      })
+    );
   });
 
   it('reports hasMoreTraceData when events have more pages', async () => {

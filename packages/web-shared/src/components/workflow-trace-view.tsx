@@ -35,7 +35,7 @@ import {
   getCustomSpanClassName,
   getCustomSpanEventClassName,
 } from './workflow-traces/trace-colors';
-import { buildTrace } from '../lib/trace-builder';
+import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
 
 /**
  * While a run is live, continuously grow root.duration and rescale so the
@@ -700,6 +700,67 @@ function PanelResizeHandle({
 }
 
 // ---------------------------------------------------------------------------
+// Trace viewer footer — loading / waiting indicator
+// ---------------------------------------------------------------------------
+
+function TraceViewerFooter({
+  hasMore,
+  isLive,
+}: {
+  hasMore: boolean;
+  isLive: boolean;
+}): ReactNode {
+  const style = { color: 'var(--ds-gray-900)' };
+  if (hasMore) {
+    return (
+      <div
+        className="flex items-center justify-center gap-2 py-3 text-xs"
+        style={style}
+      >
+        <svg
+          className="h-3.5 w-3.5 animate-spin"
+          viewBox="0 0 24 24"
+          fill="none"
+        >
+          <circle
+            className="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="4"
+          />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
+          />
+        </svg>
+        Loading more events…
+      </div>
+    );
+  }
+  if (isLive) {
+    return (
+      <div
+        className="flex items-center justify-center py-3 text-xs"
+        style={style}
+      >
+        Waiting for more events…
+      </div>
+    );
+  }
+  return (
+    <div
+      className="flex items-center justify-center py-3 text-xs"
+      style={style}
+    >
+      End of run
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -772,13 +833,14 @@ export const WorkflowTraceViewer = ({
 
   // Build trace only when actual data changes — no timer-driven rebuilds.
   // Active span widths are animated imperatively by useLiveTick at 60fps.
-  const trace = useMemo(() => {
+  const traceWithMeta: TraceWithMeta | undefined = useMemo(() => {
     if (!run?.runId) {
       return undefined;
     }
     return buildTrace(run, events, new Date());
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `new Date()` is intentionally not a dep; useLiveTick handles live growth
   }, [run, events]);
+  const trace = traceWithMeta;
 
   useEffect(() => {
     if (error && !isLoading) {
@@ -931,35 +993,10 @@ export const WorkflowTraceViewer = ({
               height="100%"
               isLive={isLive}
               trace={trace}
+              knownDurationMs={traceWithMeta?.knownDurationMs}
+              hasMoreData={hasMoreSpans}
               footer={
-                hasMoreSpans ? (
-                  <div className="flex items-center justify-center gap-2 py-4 text-sm text-gray-500">
-                    <svg
-                      className="h-4 w-4 animate-spin"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                    >
-                      <circle
-                        className="opacity-25"
-                        cx="12"
-                        cy="12"
-                        r="10"
-                        stroke="currentColor"
-                        strokeWidth="4"
-                      />
-                      <path
-                        className="opacity-75"
-                        fill="currentColor"
-                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                      />
-                    </svg>
-                    Loading more events…
-                  </div>
-                ) : isLive ? (
-                  <div className="flex items-center justify-center py-4 text-sm text-gray-500">
-                    Waiting for more events…
-                  </div>
-                ) : null
+                <TraceViewerFooter hasMore={hasMoreSpans} isLive={isLive} />
               }
             />
           </TraceViewerWithContextMenu>
