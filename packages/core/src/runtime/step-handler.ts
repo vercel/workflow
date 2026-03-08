@@ -478,13 +478,15 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             });
 
             if (WorkflowAPIError.is(err)) {
-              if (err.status === 410) {
-                // Workflow has already completed, so no-op
+              if (err.status === 410 || err.status === 409) {
+                // 410 Gone: Workflow has already completed
+                // 409 Conflict: Workflow has been cancelled or step in terminal state
                 stepLogger.info(
-                  'Workflow run already completed, skipping step',
+                  'Workflow run already finished, skipping step',
                   {
                     workflowRunId,
                     stepId,
+                    status: err.status,
                     message: err.message,
                   }
                 );
