@@ -6,6 +6,7 @@ import {
   type EventResult,
   EventSchema,
   EventTypeSchema,
+  type GetEventParams,
   HookSchema,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
@@ -248,6 +249,31 @@ async function hydrateEventRefs(
 }
 
 // Functions
+export async function getEvent(
+  runId: string,
+  eventId: string,
+  params?: GetEventParams,
+  config?: APIConfig
+): Promise<Event> {
+  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
+
+  const searchParams = new URLSearchParams();
+  searchParams.set('remoteRefBehavior', remoteRefBehavior);
+
+  const queryString = searchParams.toString();
+  const endpoint = `/v2/runs/${runId}/events/${eventId}${queryString ? `?${queryString}` : ''}`;
+
+  const event = await makeRequest({
+    endpoint,
+    options: { method: 'GET' },
+    config,
+    schema: (resolveData === 'none' ? EventWithRefsSchema : EventSchema) as any,
+  });
+
+  return filterEventData(event as any, resolveData);
+}
+
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig

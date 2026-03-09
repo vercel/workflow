@@ -319,6 +319,10 @@ export interface EventResult {
   wait?: import('./waits.js').Wait;
 }
 
+export interface GetEventParams {
+  resolveData?: ResolveData;
+}
+
 export interface ListEventsParams {
   runId: string;
   pagination?: PaginationOptions;

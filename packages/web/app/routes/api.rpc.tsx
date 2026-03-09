@@ -9,6 +9,7 @@
 import { decode, encode } from 'cbor-x';
 import {
   cancelRun,
+  fetchEvent,
   fetchEvents,
   fetchEventsByCorrelationId,
   fetchHook,
@@ -39,6 +40,8 @@ const handlers = {
     fetchStep(p.worldEnv ?? {}, p.runId, p.stepId, p.resolveData),
   fetchEvents: (p: any) =>
     fetchEvents(p.worldEnv ?? {}, p.runId, p.params ?? {}),
+  fetchEvent: (p: any) =>
+    fetchEvent(p.worldEnv ?? {}, p.runId, p.eventId, p.resolveData),
   fetchEventsByCorrelationId: (p: any) =>
     fetchEventsByCorrelationId(
       p.worldEnv ?? {},

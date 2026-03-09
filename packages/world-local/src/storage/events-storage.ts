@@ -732,6 +732,17 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       };
     },
 
+    async get(runId, eventId, params) {
+      const compositeKey = `${runId}-${eventId}`;
+      const eventPath = path.join(basedir, 'events', `${compositeKey}.json`);
+      const event = await readJSON(eventPath, EventSchema);
+      if (!event) {
+        throw new Error(`Event ${eventId} in run ${runId} not found`);
+      }
+      const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+      return filterEventData(event, resolveData);
+    },
+
     async list(params) {
       const { runId } = params;
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;

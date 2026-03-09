@@ -6,6 +6,7 @@ import {
 import type {
   Event,
   EventResult,
+  GetEventParams,
   Hook,
   ListEventsParams,
   ListHooksParams,
@@ -1060,6 +1061,28 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         hook,
         wait,
       };
+    },
+    async get(
+      runId: string,
+      eventId: string,
+      params?: GetEventParams
+    ): Promise<Event> {
+      const [value] = await drizzle
+        .select()
+        .from(events)
+        .where(and(eq(events.runId, runId), eq(events.eventId, eventId)))
+        .limit(1);
+
+      if (!value) {
+        throw new WorkflowAPIError(`Event not found: ${eventId}`, {
+          status: 404,
+        });
+      }
+
+      value.eventData ||= value.eventDataJson;
+      const parsed = EventSchema.parse(compact(value));
+      const resolveData = params?.resolveData ?? 'all';
+      return filterEventData(parsed, resolveData);
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
       const limit = params?.pagination?.limit ?? 100;

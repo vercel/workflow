@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.0-beta.39
+
+### Patch Changes
+
+- [#1288](https://github.com/vercel/workflow/pull/1288) [`5e4ef65`](https://github.com/vercel/workflow/commit/5e4ef657cf34c04d6d12b9823fb7fca8885c2f90) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use `world.events.get(eventId)` instead of `listByCorrelationId` for loading individual event data in run detail view.
+
 ## 4.1.0-beta.38
 
 ### Patch Changes

@@ -5,7 +5,10 @@ import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import { webhookLogger } from '../logger.js';
-import type { WorkflowOrchestratorContext } from '../private.js';
+import {
+  scheduleWhenIdle,
+  type WorkflowOrchestratorContext,
+} from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
@@ -48,8 +51,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (!event) {
         eventLogEmpty = true;
 
-        if (promises.length > 0) {
-          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        if (promises.length > 0 && payloadsQueue.length === 0) {
+          scheduleWhenIdle(ctx, () => {
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
@@ -111,6 +114,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             // Reconstruct the payload from the event data.
             // Chain through ctx.promiseQueue to ensure that async
             // deserialization (e.g., decryption) resolves in event log order.
+            ctx.pendingDeliveries++;
             ctx.promiseQueue = ctx.promiseQueue.then(async () => {
               try {
                 const payload = await hydrateStepReturnValue(
@@ -122,6 +126,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                 next.resolve(payload as T);
               } catch (error) {
                 next.reject(error);
+              } finally {
+                ctx.pendingDeliveries--;
               }
             });
           }
@@ -173,6 +179,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         if (nextPayload) {
           // Chain through ctx.promiseQueue to ensure that async
           // deserialization (e.g., decryption) resolves in event log order.
+          ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
               const payload = await hydrateStepReturnValue(
@@ -184,6 +191,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               resolvers.resolve(payload as T);
             } catch (error) {
               resolvers.reject(error);
+            } finally {
+              ctx.pendingDeliveries--;
             }
           });
           return resolvers.promise;
@@ -191,9 +200,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (eventLogEmpty) {
-        // If the event log is already empty then we know the hook will not be resolved.
-        // Treat this case as a "step not run" scenario and suspend the workflow.
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        scheduleWhenIdle(ctx, () => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
@@ -229,7 +236,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // never deliver another hook_received after disposal.
       if (promises.length > 0) {
         promises.length = 0;
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        scheduleWhenIdle(ctx, () => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
