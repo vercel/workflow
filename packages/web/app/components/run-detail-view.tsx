@@ -6,8 +6,8 @@ import {
   hydrateResourceIO,
   hydrateResourceIOWithKey,
   isEncryptedMarker,
-  stepEventsToStepEntity,
   StreamViewer,
+  stepEventsToStepEntity,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
 import type { Event, WorkflowRun } from '@workflow/world';
@@ -774,6 +774,7 @@ export function RunDetailView({
                     hasMoreSpans={hasMoreTraceData}
                     isLoadingMoreSpans={isLoadingMoreTraceData}
                     encryptionKey={encryptionKey ?? undefined}
+                    onDecrypt={handleDecrypt}
                   />
                 </div>
               </ErrorBoundary>
