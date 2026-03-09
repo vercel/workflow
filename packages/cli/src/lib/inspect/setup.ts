@@ -7,9 +7,9 @@ import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
 import { checkForUpdateCached } from '../update-check.js';
 import {
-  getEnvVars,
   inferLocalWorldEnvVars,
   inferVercelEnvVars,
+  type VercelEnvVars,
   writeEnvVars,
 } from './env.js';
 
@@ -77,14 +77,19 @@ export const setupCliWorld = async (
   writeEnvVars({
     DEBUG: flags.verbose ? '1' : '',
     WORKFLOW_TARGET_WORLD: flags.backend,
-    WORKFLOW_VERCEL_ENV: flags.env,
-    WORKFLOW_VERCEL_AUTH_TOKEN: flags.authToken,
-    WORKFLOW_VERCEL_PROJECT: flags.project,
-    WORKFLOW_VERCEL_TEAM: flags.team,
   });
 
+  let vercelEnvVars: VercelEnvVars | undefined;
   if (isVercelWorldTarget(flags.backend)) {
-    await inferVercelEnvVars();
+    // Seed the initial flags into process.env so inferVercelEnvVars() can
+    // read them via getEnvVars() as starting values before inference.
+    writeEnvVars({
+      WORKFLOW_VERCEL_ENV: flags.env,
+      WORKFLOW_VERCEL_AUTH_TOKEN: flags.authToken,
+      WORKFLOW_VERCEL_PROJECT: flags.project,
+      WORKFLOW_VERCEL_TEAM: flags.team,
+    });
+    vercelEnvVars = await inferVercelEnvVars();
   } else if (
     flags.backend === 'local' ||
     flags.backend === '@workflow/world-local'
@@ -110,18 +115,16 @@ export const setupCliWorld = async (
   logger.debug('Initializing world');
 
   let world: World;
-  if (isVercelWorldTarget(flags.backend)) {
-    // Build the Vercel world config explicitly from the inferred env vars,
-    // rather than relying on createWorld() reading process.env. This keeps
-    // the WORKFLOW_VERCEL_* env vars scoped to CLI/tooling only.
-    const envVars = getEnvVars();
+  if (vercelEnvVars) {
+    // Build the Vercel world directly from the inferred config, rather than
+    // relying on createWorld() reading process.env.
     world = createVercelWorld({
-      token: envVars.WORKFLOW_VERCEL_AUTH_TOKEN || undefined,
+      token: vercelEnvVars.token,
       projectConfig: {
-        environment: envVars.WORKFLOW_VERCEL_ENV || undefined,
-        projectId: envVars.WORKFLOW_VERCEL_PROJECT || undefined,
-        projectName: envVars.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
-        teamId: envVars.WORKFLOW_VERCEL_TEAM || undefined,
+        environment: vercelEnvVars.environment,
+        projectId: vercelEnvVars.projectId,
+        projectName: vercelEnvVars.projectName,
+        teamId: vercelEnvVars.teamId,
       },
     });
   } else {

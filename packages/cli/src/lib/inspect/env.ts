@@ -179,11 +179,22 @@ export const inferVercelProjectAndTeam = async () => {
   };
 };
 
+export interface VercelEnvVars {
+  token?: string;
+  environment?: string;
+  projectId?: string;
+  projectName?: string;
+  teamId?: string;
+}
+
 /**
- * Overwrites process.env variables related to Vercel World configuration,
- * if relevant environment variables aren't set already.
+ * Infers Vercel World configuration from the local environment (`.vercel`
+ * folder, CLI auth file, Vercel API) and returns a resolved config object.
+ *
+ * Also writes the resolved values to `process.env` so the embedded web UI
+ * (which reads `process.env` as a fallback) can pick them up.
  */
-export const inferVercelEnvVars = async () => {
+export const inferVercelEnvVars = async (): Promise<VercelEnvVars> => {
   const envVars = getEnvVars();
 
   // Infer project/team from .vercel folder when:
@@ -207,7 +218,6 @@ export const inferVercelEnvVars = async () => {
       // WORKFLOW_VERCEL_PROJECT_NAME is the project slug (e.g., my-app)
       envVars.WORKFLOW_VERCEL_PROJECT_NAME = projectName || projectId;
       envVars.WORKFLOW_VERCEL_TEAM = envVars.WORKFLOW_VERCEL_TEAM || teamId;
-      writeEnvVars(envVars);
     } else {
       logger.warn(
         'Could not infer vercel project and team from .vercel folder, server authentication might fail.'
@@ -222,7 +232,6 @@ export const inferVercelEnvVars = async () => {
       throw new Error('Could not find credentials. Run `vc login` to log in.');
     }
     envVars.WORKFLOW_VERCEL_AUTH_TOKEN = token;
-    writeEnvVars(envVars);
   }
 
   // Fetch team information from Vercel API to get the team slug
@@ -238,8 +247,19 @@ export const inferVercelEnvVars = async () => {
     );
     if (teamInfo) {
       envVars.WORKFLOW_VERCEL_TEAM = teamInfo.teamSlug;
-      writeEnvVars(envVars);
       logger.debug(`Found team slug: ${teamInfo.teamSlug}`);
     }
   }
+
+  // Write resolved values to process.env for the embedded web UI, which
+  // reads them as fallbacks in its server actions.
+  writeEnvVars(envVars);
+
+  return {
+    token: envVars.WORKFLOW_VERCEL_AUTH_TOKEN || undefined,
+    environment: envVars.WORKFLOW_VERCEL_ENV || undefined,
+    projectId: envVars.WORKFLOW_VERCEL_PROJECT || undefined,
+    projectName: envVars.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
+    teamId: envVars.WORKFLOW_VERCEL_TEAM || undefined,
+  };
 };
