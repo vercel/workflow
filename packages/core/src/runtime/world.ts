@@ -37,12 +37,15 @@ export const createWorld = (): World => {
     // Warn if WORKFLOW_VERCEL_* env vars are set — they have no effect at
     // runtime and likely indicate a misconfiguration (user manually added
     // them as Vercel project env vars, which is not needed).
-    if (
-      process.env.WORKFLOW_VERCEL_PROJECT ||
-      process.env.WORKFLOW_VERCEL_TEAM
-    ) {
+    const staleEnvVars = [
+      'WORKFLOW_VERCEL_PROJECT',
+      'WORKFLOW_VERCEL_TEAM',
+      'WORKFLOW_VERCEL_AUTH_TOKEN',
+      'WORKFLOW_VERCEL_ENV',
+    ].filter((key) => process.env[key]);
+    if (staleEnvVars.length > 0) {
       console.warn(
-        '[workflow] Warning: WORKFLOW_VERCEL_PROJECT and/or WORKFLOW_VERCEL_TEAM env vars ' +
+        `[workflow] Warning: ${staleEnvVars.join(', ')} env var(s) ` +
           'are set but have no effect at runtime. These are only used by the Workflow CLI. ' +
           'Remove them from your Vercel project environment variables.'
       );

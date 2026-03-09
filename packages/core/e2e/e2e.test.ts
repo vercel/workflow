@@ -271,7 +271,7 @@ describe('e2e', () => {
       const isNextJs = appName.includes('nextjs') || appName.includes('next-');
       const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
       process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
-    } else if (process.env.WORKFLOW_VERCEL_AUTH_TOKEN) {
+    } else if (process.env.WORKFLOW_VERCEL_ENV) {
       // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI.
       // Build the Vercel world explicitly with the CI-provided config rather than relying on
       // createWorld() reading these env vars (which no longer happens at runtime).
