@@ -97,68 +97,76 @@ export function useWorkflowResourceData(
     }
     setData(null);
     setError(null);
+    setLoading(true);
     if (resource === 'hook') {
-      const { error, result } = await unwrapServerActionResult(
-        fetchHook(env, resourceId, 'all')
-      );
-      if (error) {
-        setError(error);
-        return;
-      }
       try {
-        setData(await hydrate(result));
-      } catch (hydrateError) {
-        setError(
-          hydrateError instanceof Error
-            ? hydrateError
-            : new Error(String(hydrateError))
+        const { error, result } = await unwrapServerActionResult(
+          fetchHook(env, resourceId, 'all')
         );
+        if (error) {
+          setError(error);
+          return;
+        }
+        try {
+          setData(await hydrate(result));
+        } catch (hydrateError) {
+          setError(
+            hydrateError instanceof Error
+              ? hydrateError
+              : new Error(String(hydrateError))
+          );
+        }
+      } finally {
+        setLoading(false);
       }
       return;
     }
     if (resource === 'sleep') {
-      if (!runId) {
-        setError(new Error('runId is required for loading sleep details'));
-        return;
-      }
-      const { error, result } = await unwrapServerActionResult(
-        fetchEvents(env, runId, {
-          sortOrder: 'asc',
-          limit: 1000,
-          withData: true,
-        })
-      );
-      if (error) {
-        setError(error);
-        return;
-      }
       try {
-        const allEvents = (result.data as unknown as Event[]).map(
-          hydrateResourceIO
-        );
-        const waitEvents = await Promise.all(
-          allEvents.filter((e) => e.correlationId === resourceId).map(hydrate)
-        );
-        const data = waitEventsToWaitEntity(waitEvents);
-        if (data === null) {
-          setError(
-            new Error(
-              `Failed to load ${resource} details: missing required event data`
-            )
-          );
+        if (!runId) {
+          setError(new Error('runId is required for loading sleep details'));
           return;
         }
-        setData(data as unknown as Hook | Event);
-      } catch (hydrateError) {
-        setError(
-          hydrateError instanceof Error
-            ? hydrateError
-            : new Error(String(hydrateError))
+        const { error, result } = await unwrapServerActionResult(
+          fetchEvents(env, runId, {
+            sortOrder: 'asc',
+            limit: 1000,
+            withData: true,
+          })
         );
+        if (error) {
+          setError(error);
+          return;
+        }
+        try {
+          const allEvents = (result.data as unknown as Event[]).map(
+            hydrateResourceIO
+          );
+          const waitEvents = await Promise.all(
+            allEvents.filter((e) => e.correlationId === resourceId).map(hydrate)
+          );
+          const data = waitEventsToWaitEntity(waitEvents);
+          if (data === null) {
+            setError(
+              new Error(
+                `Failed to load ${resource} details: missing required event data`
+              )
+            );
+            return;
+          }
+          setData(data as unknown as Hook | Event);
+        } catch (hydrateError) {
+          setError(
+            hydrateError instanceof Error
+              ? hydrateError
+              : new Error(String(hydrateError))
+          );
+        }
+      } finally {
+        setLoading(false);
       }
       return;
     }
-    setLoading(true);
     // Fetch resource with full data
     try {
       const { data: resourceData } = await fetchResourceWithCorrelationId(

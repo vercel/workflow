@@ -215,7 +215,10 @@ type AttributeKey =
   | 'eventData'
   | 'resumeAt'
   | 'expiredAt'
-  | 'workflowCoreVersion';
+  | 'workflowCoreVersion'
+  | 'receivedCount'
+  | 'lastReceivedAt'
+  | 'disposedAt';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -228,6 +231,9 @@ const attributeOrder: AttributeKey[] = [
   'runId',
   'attempt',
   'token',
+  'receivedCount',
+  'lastReceivedAt',
+  'disposedAt',
   'correlationId',
   'eventType',
   'deploymentId',
@@ -262,6 +268,7 @@ const sortByAttributeOrder = (a: string, b: string): number => {
  */
 const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   workflowCoreVersion: '@workflow/core version',
+  receivedCount: 'times resolved',
 };
 
 /**
@@ -353,6 +360,9 @@ const attributeToDisplayFn: Record<
   // Hook details
   token: (value: unknown) => String(value),
   isWebhook: (value: unknown) => String(value),
+  receivedCount: (value: unknown) => String(value),
+  lastReceivedAt: localMillisecondTimeOrNull,
+  disposedAt: localMillisecondTimeOrNull,
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),
