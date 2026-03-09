@@ -1,3 +1,4 @@
+import { ChevronRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 export function DetailCard({
@@ -42,14 +43,21 @@ export function DetailCard({
       onToggle={(e) => onToggle?.((e.target as HTMLDetailsElement).open)}
     >
       <summary
-        className={`cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 ${summaryClassName ?? ''}`}
+        className={`cursor-pointer rounded-md border px-2.5 py-1.5 text-xs hover:brightness-95 [&::-webkit-details-marker]:hidden ${summaryClassName ?? ''}`}
         style={{
           borderColor: 'var(--ds-gray-300)',
           backgroundColor: 'var(--ds-gray-100)',
           color: 'var(--ds-gray-900)',
+          listStyle: 'none',
         }}
       >
-        {summary}
+        <span className="flex items-center gap-1.5">
+          <ChevronRight
+            size={14}
+            className="shrink-0 transition-transform group-open:rotate-90"
+          />
+          {summary}
+        </span>
       </summary>
       {/* Expanded content with connecting line */}
       <div className={`relative pl-6 mt-3 ${contentClassName ?? ''}`}>
