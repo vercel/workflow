@@ -558,45 +558,6 @@ export function RunDetailView({
 
               <div className="flex items-center justify-between gap-2">
                 <LiveStatus hasError={hasError} errorMessage={errorMessage} />
-                {/* Decrypt button — shown when any run/step data is encrypted */}
-                {(isEncryptedMarker(run.input) ||
-                  isEncryptedMarker(run.output) ||
-                  isEncryptedMarker(run.error)) && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handleDecrypt}
-                          disabled={!!encryptionKey}
-                        >
-                          {encryptionKey ? (
-                            <Unlock className="h-4 w-4" />
-                          ) : (
-                            <Lock className="h-4 w-4" />
-                          )}
-                          {encryptionKey ? 'Decrypted' : 'Decrypt'}
-                        </Button>
-                      </span>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      {encryptionKey ? (
-                        <p>
-                          Data has been decrypted for this workflow run. All
-                          encrypted input, output, and event data is now visible
-                          across all tabs.
-                        </p>
-                      ) : (
-                        <p>
-                          This run&apos;s data is end-to-end encrypted. Decrypt
-                          to reveal input, output, and event data across all
-                          tabs for this workflow run.
-                        </p>
-                      )}
-                    </TooltipContent>
-                  </Tooltip>
-                )}
                 <RunActionsButtons
                   env={env}
                   runId={runId}
