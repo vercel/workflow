@@ -229,12 +229,19 @@ async function maybeDecryptFields<
       result.eventData = eventData;
     }
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+
+    // If the key fetch failed due to an HTTP error (e.g. 429 rate limit,
+    // 500 server error), re-throw so the caller surfaces a clear failure
+    // instead of silently showing encrypted placeholders.
+    if (message.includes('HTTP ')) {
+      throw err;
+    }
+
     // Decryption failed (bad key, corrupted ciphertext, etc.) — fall back
     // to showing encrypted placeholders instead of crashing the CLI.
     const { logger } = await import('../config/log.js');
-    logger.warn(
-      `Decryption failed for resource ${runId}: ${err instanceof Error ? err.message : String(err)}`
-    );
+    logger.warn(`Decryption failed for resource ${runId}: ${message}`);
   }
 
   return result;

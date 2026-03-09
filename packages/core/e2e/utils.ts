@@ -165,7 +165,19 @@ const awaitCommand = async (
       }
 
       child.on('error', (err) => reject(err));
-      child.on('close', () => {
+      child.on('close', (code, signal) => {
+        if (code !== 0) {
+          const exitReason = signal
+            ? `killed by signal ${signal}`
+            : `exited with code ${code}`;
+          const errorMessage = [
+            `CLI command failed (${exitReason}): ${command} ${args.join(' ')}`,
+            stderr ? `\n--- stderr ---\n${stderr}` : '',
+            stdout ? `\n--- stdout ---\n${stdout}` : '',
+          ].join('');
+          reject(new Error(errorMessage));
+          return;
+        }
         resolve({ stdout, stderr });
       });
     }
@@ -202,9 +214,17 @@ export const cliInspectJson = async (args: string) => {
     ],
     cliAppPath
   );
+  if (!result.stdout.trim()) {
+    throw new Error(
+      [
+        'CLI produced no stdout output (expected JSON)',
+        result.stderr ? `\n--- stderr ---\n${result.stderr}` : '',
+      ].join('')
+    );
+  }
   try {
     console.log('Result:', result.stdout);
-    const json = JSON.parse(result.stdout || '{}');
+    const json = JSON.parse(result.stdout);
     return { json, stdout: result.stdout, stderr: result.stderr };
   } catch (err) {
     console.error('Stdout:', result.stdout);
@@ -267,9 +287,17 @@ export const cliHealthJson = async (options?: {
     45_000,
     envOverrides
   );
+  if (!result.stdout.trim()) {
+    throw new Error(
+      [
+        'CLI health check produced no stdout output (expected JSON)',
+        result.stderr ? `\n--- stderr ---\n${result.stderr}` : '',
+      ].join('')
+    );
+  }
   try {
     console.log('Health check result:', result.stdout);
-    const json = JSON.parse(result.stdout || '{}');
+    const json = JSON.parse(result.stdout);
     return { json, stdout: result.stdout, stderr: result.stderr };
   } catch (err) {
     console.error('Stdout:', result.stdout);

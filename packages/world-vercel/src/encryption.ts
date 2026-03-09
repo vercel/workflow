@@ -127,8 +127,14 @@ export async function fetchRunKey(
   );
 
   if (!response.ok) {
+    let body: string;
+    try {
+      body = await response.text();
+    } catch {
+      body = '<unable to read response body>';
+    }
     throw new Error(
-      `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${response.status}`
+      `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${response.status} ${response.statusText}${body ? ` — ${body}` : ''}`
     );
   }
 
