@@ -13,8 +13,14 @@ import type {
 } from '@ai-sdk/provider';
 import type { StepResult, ToolSet } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
-import { FatalError } from 'workflow';
 import { z } from 'zod';
+
+class FatalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FatalError';
+  }
+}
 
 // Mock the streamTextIterator
 vi.mock('./stream-text-iterator.js', () => ({

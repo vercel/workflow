@@ -9,6 +9,7 @@ import type {
 import {
   asSchema,
   type FinishReason,
+  type InferUITools,
   type LanguageModelResponseMetadata,
   type LanguageModelUsage,
   type ModelMessage,
@@ -34,6 +35,24 @@ export type { CompatibleLanguageModel } from './types.js';
  * Use `Output.object({ schema })` for structured output or `Output.text()` for text output.
  */
 export { Output };
+
+/**
+ * Infer the type of the tools of a durable agent.
+ */
+export type InferDurableAgentTools<DURABLE_AGENT> =
+  DURABLE_AGENT extends DurableAgent<infer TOOLS> ? TOOLS : never;
+
+/**
+ * Infer the UI message type of a durable agent.
+ */
+export type InferDurableAgentUIMessage<
+  DURABLE_AGENT,
+  MESSAGE_METADATA = unknown,
+> = UIMessage<
+  MESSAGE_METADATA,
+  never,
+  InferUITools<InferDurableAgentTools<DURABLE_AGENT>>
+>;
 
 /**
  * Output specification interface for structured outputs.
