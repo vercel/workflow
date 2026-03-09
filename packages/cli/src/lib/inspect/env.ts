@@ -15,9 +15,10 @@ import {
 /**
  * Overwrite values on process.env with the given values (if not undefined)
  *
- * We do this because the core world init code reads from environment
- * (or workflow.config.ts soon) on first invocations, so CLI needs to
- * overwrite the values.
+ * Used by the CLI to configure environment variables that are read by
+ * various subsystems (e.g., WORKFLOW_TARGET_WORLD, WORKFLOW_LOCAL_DATA_DIR).
+ * Note: WORKFLOW_VERCEL_* env vars are read back via getEnvVars() and passed
+ * to createVercelWorld() explicitly — they are NOT read by createWorld().
  */
 export const writeEnvVars = (envVars: Record<string, string>) => {
   Object.entries(envVars).forEach(([key, value]) => {

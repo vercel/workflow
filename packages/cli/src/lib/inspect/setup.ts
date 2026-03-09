@@ -1,9 +1,13 @@
-import { getWorld } from '@workflow/core/runtime';
+import { createWorld, setWorld } from '@workflow/core/runtime';
+import { isVercelWorldTarget } from '@workflow/utils';
+import type { World } from '@workflow/world';
+import { createVercelWorld } from '@workflow/world-vercel';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
 import { checkForUpdateCached } from '../update-check.js';
 import {
+  getEnvVars,
   inferLocalWorldEnvVars,
   inferVercelEnvVars,
   writeEnvVars,
@@ -79,10 +83,7 @@ export const setupCliWorld = async (
     WORKFLOW_VERCEL_TEAM: flags.team,
   });
 
-  if (
-    flags.backend === 'vercel' ||
-    flags.backend === '@workflow/world-vercel'
-  ) {
+  if (isVercelWorldTarget(flags.backend)) {
     await inferVercelEnvVars();
   } else if (
     flags.backend === 'local' ||
@@ -107,8 +108,27 @@ export const setupCliWorld = async (
   }
 
   logger.debug('Initializing world');
-  // Use getWorld() instead of createWorld() so the world is stored in the
-  // global cache. This allows BaseCommand.finally() to find and close it.
-  const world = getWorld();
+
+  let world: World;
+  if (isVercelWorldTarget(flags.backend)) {
+    // Build the Vercel world config explicitly from the inferred env vars,
+    // rather than relying on createWorld() reading process.env. This keeps
+    // the WORKFLOW_VERCEL_* env vars scoped to CLI/tooling only.
+    const envVars = getEnvVars();
+    world = createVercelWorld({
+      token: envVars.WORKFLOW_VERCEL_AUTH_TOKEN || undefined,
+      projectConfig: {
+        environment: envVars.WORKFLOW_VERCEL_ENV || undefined,
+        projectId: envVars.WORKFLOW_VERCEL_PROJECT || undefined,
+        projectName: envVars.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
+        teamId: envVars.WORKFLOW_VERCEL_TEAM || undefined,
+      },
+    });
+  } else {
+    world = createWorld();
+  }
+
+  // Store in the global cache so BaseCommand.finally() can find and close it.
+  setWorld(world);
   return world;
 };
