@@ -2,12 +2,13 @@
 
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
-import { Send, Zap } from 'lucide-react';
+import { Lock, Send, Unlock, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
+import { isEncryptedMarker } from '../../lib/hydration';
 
 // Type guards for runtime validation of span attribute data
 function isStep(data: unknown): data is Step {
@@ -63,6 +64,7 @@ export function EntityDetailPanel({
   onLoadEventData,
   onResolveHook,
   encryptionKey,
+  onDecrypt,
   selectedSpan,
 }: {
   run: WorkflowRun;
@@ -96,6 +98,8 @@ export function EntityDetailPanel({
   ) => Promise<void>;
   /** Encryption key (available after Decrypt is clicked), used to re-load event data */
   encryptionKey?: Uint8Array;
+  /** Callback to initiate decryption of encrypted run data */
+  onDecrypt?: () => void;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
 }): React.JSX.Element | null {
@@ -195,6 +199,17 @@ export function EntityDetailPanel({
 
   const error = spanDetailError ?? undefined;
   const loading = spanDetailLoading ?? false;
+
+  const hasEncryptedFields = useMemo(() => {
+    if (!spanDetailData) return false;
+    const d = spanDetailData as Record<string, unknown>;
+    return (
+      isEncryptedMarker(d.input) ||
+      isEncryptedMarker(d.output) ||
+      isEncryptedMarker(d.error) ||
+      isEncryptedMarker(d.metadata)
+    );
+  }, [spanDetailData]);
 
   // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
   const hookToken = useMemo(() => {
@@ -371,6 +386,33 @@ export function EntityDetailPanel({
               {resourceId}
             </p>
           </div>
+          {(hasEncryptedFields || encryptionKey) && onDecrypt && (
+            <button
+              type="button"
+              onClick={onDecrypt}
+              disabled={!!encryptionKey}
+              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors flex-shrink-0"
+              style={{
+                borderColor: encryptionKey
+                  ? 'var(--ds-green-400)'
+                  : 'var(--ds-gray-300)',
+                color: encryptionKey
+                  ? 'var(--ds-green-900)'
+                  : 'var(--ds-gray-900)',
+                backgroundColor: encryptionKey
+                  ? 'var(--ds-green-100)'
+                  : 'var(--ds-background-100)',
+                cursor: encryptionKey ? 'default' : 'pointer',
+              }}
+            >
+              {encryptionKey ? (
+                <Unlock className="h-3 w-3" />
+              ) : (
+                <Lock className="h-3 w-3" />
+              )}
+              {encryptionKey ? 'Decrypted' : 'Decrypt'}
+            </button>
+          )}
         </div>
       </div>
 
