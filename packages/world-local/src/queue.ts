@@ -150,15 +150,17 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           if (response.ok) {
             try {
               const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
-              if (timeoutSeconds > 0) {
+              if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
                 // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
                 // When this fires early, the handler recalculates remaining time from
                 // persistent state and returns another timeoutSeconds if needed.
-                const timeoutMs = Math.min(
-                  timeoutSeconds * 1000,
-                  MAX_SAFE_TIMEOUT_MS
-                );
-                await setTimeout(timeoutMs);
+                if (timeoutSeconds > 0) {
+                  const timeoutMs = Math.min(
+                    timeoutSeconds * 1000,
+                    MAX_SAFE_TIMEOUT_MS
+                  );
+                  await setTimeout(timeoutMs);
+                }
                 defaultRetriesLeft++;
                 continue;
               }
