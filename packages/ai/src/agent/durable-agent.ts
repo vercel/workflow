@@ -292,7 +292,8 @@ export type PrepareStepCallback<TTools extends ToolSet = ToolSet> = (
 /**
  * Configuration options for creating a {@link DurableAgent} instance.
  */
-export interface DurableAgentOptions extends GenerationSettings {
+export interface DurableAgentOptions<TTools extends ToolSet = ToolSet>
+  extends GenerationSettings {
   /**
    * The model provider to use for the agent.
    *
@@ -306,7 +307,7 @@ export interface DurableAgentOptions extends GenerationSettings {
    * Tools can be implemented as workflow steps for automatic retries and persistence,
    * or as regular workflow-level logic using core library features like sleep() and Hooks.
    */
-  tools?: ToolSet;
+  tools?: TTools;
 
   /**
    * Optional system prompt to guide the agent's behavior.
@@ -316,12 +317,21 @@ export interface DurableAgentOptions extends GenerationSettings {
   /**
    * The tool choice strategy. Default: 'auto'.
    */
-  toolChoice?: ToolChoice<ToolSet>;
+  toolChoice?: ToolChoice<TTools>;
 
   /**
    * Optional telemetry configuration (experimental).
    */
   experimental_telemetry?: TelemetrySettings;
+
+  /**
+   * Default callback function called before each step in the agent loop.
+   * Use this to modify settings, manage context, or inject messages dynamically
+   * for every stream call on this agent instance.
+   *
+   * Per-stream `prepareStep` values passed to `stream()` override this default.
+   */
+  prepareStep?: PrepareStepCallback<TTools>;
 }
 
 /**
@@ -529,6 +539,7 @@ export interface DurableAgentStreamOptions<
   /**
    * Callback function called before each step in the agent loop.
    * Use this to modify settings, manage context, or inject messages dynamically.
+   * Overrides the agent-level `prepareStep` for this stream when provided.
    *
    * @example
    * ```typescript
@@ -622,13 +633,15 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private generationSettings: GenerationSettings;
   private toolChoice?: ToolChoice<TBaseTools>;
   private telemetry?: TelemetrySettings;
+  private prepareStep?: PrepareStepCallback<TBaseTools>;
 
-  constructor(options: DurableAgentOptions & { tools?: TBaseTools }) {
+  constructor(options: DurableAgentOptions<TBaseTools>) {
     this.model = options.model;
     this.tools = (options.tools ?? {}) as TBaseTools;
     this.system = options.system;
-    this.toolChoice = options.toolChoice as ToolChoice<TBaseTools>;
+    this.toolChoice = options.toolChoice;
     this.telemetry = options.experimental_telemetry;
+    this.prepareStep = options.prepareStep;
 
     // Extract generation settings
     this.generationSettings = {
@@ -711,6 +724,10 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         ? filterTools(this.tools, options.activeTools as string[])
         : this.tools;
 
+    const effectivePrepareStep =
+      options.prepareStep ??
+      (this.prepareStep as PrepareStepCallback<TTools> | undefined);
+
     // Initialize context
     let experimentalContext = options.experimental_context;
 
@@ -743,7 +760,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       sendStart: options.sendStart ?? true,
       onStepFinish: options.onStepFinish,
       onError: options.onError,
-      prepareStep: options.prepareStep,
+      prepareStep: effectivePrepareStep,
       generationSettings: mergedGenerationSettings,
       toolChoice: effectiveToolChoice as ToolChoice<ToolSet>,
       experimental_context: experimentalContext,
