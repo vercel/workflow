@@ -1,4 +1,7 @@
-import { getWorld } from '@workflow/core/runtime';
+import { createWorld, setWorld } from '@workflow/core/runtime';
+import { isVercelWorldTarget } from '@workflow/utils';
+import type { World } from '@workflow/world';
+import { createVercelWorld } from '@workflow/world-vercel';
 import chalk from 'chalk';
 import terminalLink from 'terminal-link';
 import { logger, setJsonMode, setVerboseMode } from '../config/log.js';
@@ -6,6 +9,7 @@ import { checkForUpdateCached } from '../update-check.js';
 import {
   inferLocalWorldEnvVars,
   inferVercelEnvVars,
+  type VercelEnvVars,
   writeEnvVars,
 } from './env.js';
 
@@ -73,17 +77,19 @@ export const setupCliWorld = async (
   writeEnvVars({
     DEBUG: flags.verbose ? '1' : '',
     WORKFLOW_TARGET_WORLD: flags.backend,
-    WORKFLOW_VERCEL_ENV: flags.env,
-    WORKFLOW_VERCEL_AUTH_TOKEN: flags.authToken,
-    WORKFLOW_VERCEL_PROJECT: flags.project,
-    WORKFLOW_VERCEL_TEAM: flags.team,
   });
 
-  if (
-    flags.backend === 'vercel' ||
-    flags.backend === '@workflow/world-vercel'
-  ) {
-    await inferVercelEnvVars();
+  let vercelEnvVars: VercelEnvVars | undefined;
+  if (isVercelWorldTarget(flags.backend)) {
+    // Seed the initial flags into process.env so inferVercelEnvVars() can
+    // read them via getEnvVars() as starting values before inference.
+    writeEnvVars({
+      WORKFLOW_VERCEL_ENV: flags.env,
+      WORKFLOW_VERCEL_AUTH_TOKEN: flags.authToken,
+      WORKFLOW_VERCEL_PROJECT: flags.project,
+      WORKFLOW_VERCEL_TEAM: flags.team,
+    });
+    vercelEnvVars = await inferVercelEnvVars();
   } else if (
     flags.backend === 'local' ||
     flags.backend === '@workflow/world-local'
@@ -107,8 +113,25 @@ export const setupCliWorld = async (
   }
 
   logger.debug('Initializing world');
-  // Use getWorld() instead of createWorld() so the world is stored in the
-  // global cache. This allows BaseCommand.finally() to find and close it.
-  const world = getWorld();
+
+  let world: World;
+  if (vercelEnvVars) {
+    // Build the Vercel world directly from the inferred config, rather than
+    // relying on createWorld() reading process.env.
+    world = createVercelWorld({
+      token: vercelEnvVars.token,
+      projectConfig: {
+        environment: vercelEnvVars.environment,
+        projectId: vercelEnvVars.projectId,
+        projectName: vercelEnvVars.projectName,
+        teamId: vercelEnvVars.teamId,
+      },
+    });
+  } else {
+    world = createWorld();
+  }
+
+  // Store in the global cache so BaseCommand.finally() can find and close it.
+  setWorld(world);
   return world;
 };

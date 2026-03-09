@@ -1466,3 +1466,70 @@ export async function stepFunctionAsStartArgWorkflow(
 
   return { directResult, viaStepResult, doubled };
 }
+
+//////////////////////////////////////////////////////////
+
+async function processPayload(payload: { type: string; id?: number }) {
+  'use step';
+  return { processed: true, type: payload.type, id: payload.id };
+}
+
+/**
+ * Workflow that uses a hook with concurrent sleep — tests that multiple
+ * hook payloads are delivered correctly even when a sleep has no wait_completed.
+ *
+ * This is a regression test for a bug where the sleep's WorkflowSuspension
+ * would terminate the workflow before all hook payloads were processed.
+ */
+export async function hookWithSleepWorkflow(token: string) {
+  'use workflow';
+
+  type Payload = { type: string; id?: number; done?: boolean };
+
+  using hook = createHook<Payload>({ token });
+
+  // Concurrent sleep that won't complete during the test
+  void sleep('1d');
+
+  const results: any[] = [];
+
+  for await (const payload of hook) {
+    // Process each payload through a step to prove we reached it
+    const result = await processPayload(payload);
+    results.push(result);
+
+    if (payload.done) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+//////////////////////////////////////////////////////////
+
+async function addNumbers(a: number, b: number) {
+  'use step';
+  return a + b;
+}
+
+/**
+ * Control workflow: sleep + sequential steps (no hooks).
+ * Proves that void sleep().then() does NOT interfere with sequential steps
+ * whose events all exist in the log. This is a control test to show
+ * the promiseQueue regression is specific to hooks.
+ */
+export async function sleepWithSequentialStepsWorkflow() {
+  'use workflow';
+
+  // Fire-and-forget sleep (same pattern as agent-stop)
+  let shouldCancel = false;
+  void sleep('1d').then(() => {
+    shouldCancel = true;
+  });
+
+  const a = await addNumbers(1, 2);
+  const b = await addNumbers(a, 3);
+  const c = await addNumbers(b, 4);
+  return { a, b, c, shouldCancel };
+}

@@ -196,6 +196,7 @@ export const cliInspectJson = async (args: string) => {
       './node_modules/workflow/bin/run.js',
       'inspect',
       '--json',
+      '--decrypt',
       ...inspectArgs,
       ...cliArgs,
     ],

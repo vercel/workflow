@@ -6,9 +6,9 @@ import { mergeById, pollResource } from '~/lib/client/workflow-primitives';
 import { fetchEvents, fetchRun } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 
-const LIVE_POLL_LIMIT = 10;
-const INITIAL_PAGE_SIZE = 10;
-const LOAD_MORE_PAGE_SIZE = 10;
+const LIVE_POLL_LIMIT = 100;
+const INITIAL_PAGE_SIZE = 500;
+const LOAD_MORE_PAGE_SIZE = 100;
 const LIVE_UPDATE_INTERVAL_MS = 5000;
 
 /**
