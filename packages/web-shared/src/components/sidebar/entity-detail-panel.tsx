@@ -307,10 +307,6 @@ export function EntityDetailPanel({
     [onResolveHook, hookToken, resolvingHook, spanDetailData, data]
   );
 
-  if (!selectedSpan || !resource || !resourceId) {
-    return null;
-  }
-
   // Prefer externally-fetched details when available. For sleep spans, the
   // host fetches full correlated events (withData=true) and materializes a wait
   // entity, so this includes resumeAt/completedAt without bloating trace payloads.
@@ -319,6 +315,7 @@ export function EntityDetailPanel({
     | Step
     | Hook
     | Event;
+
   const moduleSpecifier = useMemo(() => {
     const displayRecord = displayData as Record<string, unknown>;
     const displayStepName = displayRecord.stepName;
@@ -334,6 +331,10 @@ export function EntityDetailPanel({
     }
     return undefined;
   }, [displayData, run.workflowName]);
+
+  if (!selectedSpan || !resource || !resourceId) {
+    return null;
+  }
 
   const resourceLabel = resource.charAt(0).toUpperCase() + resource.slice(1);
   const hasPendingActions =
