@@ -1466,3 +1466,250 @@ export async function stepFunctionAsStartArgWorkflow(
 
   return { directResult, viaStepResult, doubled };
 }
+
+//////////////////////////////////////////////////////////
+// AbortController / AbortSignal e2e tests
+//////////////////////////////////////////////////////////
+
+/**
+ * Step that performs a long-running operation respecting an AbortSignal.
+ * Loops with 500ms delays, checking signal.aborted each iteration.
+ */
+async function longStep(signal: AbortSignal): Promise<string> {
+  'use step';
+  for (let i = 0; i < 60; i++) {
+    if (signal.aborted) {
+      return 'aborted';
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return 'completed';
+}
+
+/**
+ * Step that returns immediately with the signal's current aborted state.
+ */
+async function checkSignalState(signal: AbortSignal): Promise<{
+  aborted: boolean;
+  reason: unknown;
+}> {
+  'use step';
+  return { aborted: signal.aborted, reason: signal.reason };
+}
+
+/**
+ * Step that calls abort() on the controller and returns.
+ */
+async function abortFromStep(controller: AbortController): Promise<void> {
+  'use step';
+  controller.abort('aborted from step');
+}
+
+/**
+ * Step that uses fetch with an AbortSignal.
+ * Uses a URL that intentionally delays, so the abort cancels it.
+ */
+async function fetchWithSignal(
+  url: string,
+  signal: AbortSignal
+): Promise<{ ok: boolean; aborted: boolean }> {
+  'use step';
+  try {
+    const response = await globalThis.fetch(url, { signal });
+    return { ok: response.ok, aborted: false };
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      return { ok: false, aborted: true };
+    }
+    throw err;
+  }
+}
+
+/**
+ * E2E: Basic timeout cancellation.
+ * Creates controller in workflow, races step vs sleep, aborts on timeout.
+ */
+export async function abortTimeoutWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+
+  const result = await Promise.race([
+    longStep(controller.signal),
+    sleep('3s').then(() => 'timeout' as const),
+  ]);
+
+  if (result === 'timeout') {
+    controller.abort();
+    return { status: 'timed out', aborted: controller.signal.aborted };
+  }
+
+  return { status: 'completed', result };
+}
+
+/**
+ * E2E: Signal passed to multiple parallel steps, abort cancels all.
+ */
+export async function abortParallelWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+
+  const result = await Promise.race([
+    Promise.all([
+      longStep(controller.signal),
+      longStep(controller.signal),
+      longStep(controller.signal),
+    ]),
+    sleep('3s').then(() => 'timeout' as const),
+  ]);
+
+  if (result === 'timeout') {
+    controller.abort();
+    return { status: 'timed out' };
+  }
+
+  return { status: 'completed', results: result };
+}
+
+/**
+ * E2E: Controller returned from step, used to cancel another step.
+ */
+export async function abortFromStepWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+
+  // Pass controller to a step that decides to abort
+  await abortFromStep(controller);
+
+  // Check that the workflow sees the abort
+  const state = await checkSignalState(controller.signal);
+
+  return {
+    workflowAborted: controller.signal.aborted,
+    stepSawAborted: state.aborted,
+  };
+}
+
+/**
+ * E2E: Already-aborted signal passed to step.
+ */
+export async function abortAlreadyAbortedWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+  controller.abort('pre-aborted');
+
+  const state = await checkSignalState(controller.signal);
+
+  return {
+    aborted: state.aborted,
+    reason: state.reason,
+  };
+}
+
+/**
+ * E2E: Abort reason is preserved.
+ */
+export async function abortReasonWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+
+  const raceResult = await Promise.race([
+    longStep(controller.signal),
+    sleep('2s').then(() => 'timeout' as const),
+  ]);
+
+  if (raceResult === 'timeout') {
+    controller.abort('custom timeout reason');
+  }
+
+  const state = await checkSignalState(controller.signal);
+  return {
+    aborted: state.aborted,
+    reason: state.reason,
+  };
+}
+
+/**
+ * E2E: Abort after all steps complete (no-op, no error).
+ */
+export async function abortAfterCompletionWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+  const state = await checkSignalState(controller.signal);
+
+  // Abort after the step already completed
+  controller.abort();
+
+  return {
+    stepSawAborted: state.aborted,
+    workflowAborted: controller.signal.aborted,
+  };
+}
+
+/**
+ * E2E: User-triggered cancellation via hook + abort controller.
+ */
+export async function abortViaHookWorkflow(hookToken: string) {
+  'use workflow';
+
+  using cancelHook = createHook<{ reason: string }>({
+    token: hookToken,
+  });
+
+  const controller = new AbortController();
+
+  const result = await Promise.race([
+    longStep(controller.signal).then((r) => ({
+      status: 'completed' as const,
+      result: r,
+    })),
+    cancelHook.then((payload) => {
+      controller.abort(payload.reason);
+      return { status: 'cancelled' as const, reason: payload.reason };
+    }),
+  ]);
+
+  return result;
+}
+
+/**
+ * E2E: AbortSignal passed as workflow input from external code.
+ */
+export async function abortExternalSignalWorkflow(signal: AbortSignal) {
+  'use workflow';
+
+  const state = await checkSignalState(signal);
+  return { aborted: state.aborted, reason: state.reason };
+}
+
+/**
+ * E2E: Controller survives workflow replay (sleep causes suspension/resumption).
+ */
+export async function abortSurvivesReplayWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+
+  // First step
+  const before = await checkSignalState(controller.signal);
+
+  // Sleep causes workflow to suspend and replay
+  await sleep('1s');
+
+  // Abort after replay
+  controller.abort('after-replay');
+
+  // Second step sees the abort
+  const after = await checkSignalState(controller.signal);
+
+  return {
+    beforeAborted: before.aborted,
+    afterAborted: after.aborted,
+    afterReason: after.reason,
+  };
+}

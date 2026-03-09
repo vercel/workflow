@@ -154,6 +154,8 @@ export async function processWithTimeout(data: string) {
 }
 ```
 
+To also **cancel** the in-progress step when the timeout fires, pass an `AbortSignal`. See the [Cancellation Guide](/docs/foundations/cancellation) for details.
+
 This pattern works with any promise-returning operation including steps, hooks, and webhooks. For example, you can add a timeout to a webhook that waits for external input:
 
 ```typescript lineNumbers

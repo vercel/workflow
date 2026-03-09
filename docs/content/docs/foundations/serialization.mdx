@@ -55,6 +55,50 @@ These types have special handling and are explained in detail in the sections be
 - `Response`
 - `ReadableStream<Serializable>`
 - `WritableStream<Serializable>`
+- `AbortController`
+- `AbortSignal`
+
+## Pass-by-Value Semantics
+
+**Parameters are passed by value, not by reference.** Steps receive deserialized copies of data. Mutations inside a step won't affect the original in the workflow.
+
+**Incorrect:**
+
+```typescript title="workflows/incorrect-mutation.ts" lineNumbers
+export async function updateUserWorkflow(userId: string) {
+  "use workflow";
+
+  let user = { id: userId, name: "John", email: "john@example.com" };
+  await updateUserStep(user);
+
+  // user.email is still "john@example.com" // [!code highlight]
+  console.log(user.email); // [!code highlight]
+}
+
+async function updateUserStep(user: { id: string; name: string; email: string }) {
+  "use step";
+  user.email = "newemail@example.com"; // Changes are lost // [!code highlight]
+}
+```
+
+**Correct - return the modified data:**
+
+```typescript title="workflows/correct-mutation.ts" lineNumbers
+export async function updateUserWorkflow(userId: string) {
+  "use workflow";
+
+  let user = { id: userId, name: "John", email: "john@example.com" };
+  user = await updateUserStep(user); // Reassign the return value // [!code highlight]
+
+  console.log(user.email); // "newemail@example.com"
+}
+
+async function updateUserStep(user: { id: string; name: string; email: string }) {
+  "use step";
+  user.email = "newemail@example.com";
+  return user; // [!code highlight]
+}
+```
 
 ## Streaming
 
@@ -121,44 +165,35 @@ export async function fetch(...args: Parameters<typeof globalThis.fetch>) {
 
 This allows you to make HTTP requests directly in workflow functions while maintaining deterministic replay behavior through automatic caching.
 
-## Pass-by-Value Semantics
+## AbortController & AbortSignal
 
-**Parameters are passed by value, not by reference.** Steps receive deserialized copies of data. Mutations inside a step won't affect the original in the workflow.
+`AbortController` and `AbortSignal` are serializable types that enable cooperative cancellation across workflow and step boundaries. Inside a workflow function, `new AbortController()` creates a durable controller that works across suspensions and step boundaries:
 
-**Incorrect:**
+```typescript lineNumbers
+import { sleep } from "workflow";
 
-```typescript title="workflows/incorrect-mutation.ts" lineNumbers
-export async function updateUserWorkflow(userId: string) {
+export async function cancellableWorkflow() {
   "use workflow";
 
-  let user = { id: userId, name: "John", email: "john@example.com" };
-  await updateUserStep(user);
+  const controller = new AbortController(); // [!code highlight]
 
-  // user.email is still "john@example.com" // [!code highlight]
-  console.log(user.email); // [!code highlight]
+  const result = await Promise.race([
+    fetchData(controller.signal), // [!code highlight]
+    sleep("10s").then(() => null),
+  ]);
+
+  if (result === null) {
+    controller.abort(); // [!code highlight]
+  }
+
+  return result;
 }
 
-async function updateUserStep(user: { id: string; name: string; email: string }) {
+async function fetchData(signal: AbortSignal) {
   "use step";
-  user.email = "newemail@example.com"; // Changes are lost // [!code highlight]
+  const response = await fetch("https://api.example.com/data", { signal });
+  return response.json();
 }
 ```
 
-**Correct - return the modified data:**
-
-```typescript title="workflows/correct-mutation.ts" lineNumbers
-export async function updateUserWorkflow(userId: string) {
-  "use workflow";
-
-  let user = { id: userId, name: "John", email: "john@example.com" };
-  user = await updateUserStep(user); // Reassign the return value // [!code highlight]
-
-  console.log(user.email); // "newemail@example.com"
-}
-
-async function updateUserStep(user: { id: string; name: string; email: string }) {
-  "use step";
-  user.email = "newemail@example.com";
-  return user; // [!code highlight]
-}
-```
+For usage patterns including timeouts, parallel cancellation, user-triggered cancellation, and run cancellation, see the [Cancellation Guide](/docs/foundations/cancellation). For details on the hook and stream backing that makes this work, see [How Cancellation Works](/docs/how-it-works/cancellation).

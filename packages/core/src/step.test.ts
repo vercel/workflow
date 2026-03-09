@@ -566,3 +566,39 @@ describe('createUseStep', () => {
     expect(workflowError?.message).toContain('wait_completed');
   });
 });
+
+// ============================================================================
+// AbortController hook integration in workflow context
+// ============================================================================
+
+describe('AbortController hook integration', () => {
+  describe('suspension handler', () => {
+    it.todo(
+      'abort() triggers suspension handler to create hook_received event and write stream'
+    );
+  });
+
+  describe('replay with abort events', () => {
+    it.todo(
+      'replay with hook_received event reconstructs signal.aborted === true'
+    );
+
+    it.todo(
+      'replay without hook_received event reconstructs signal.aborted === false'
+    );
+  });
+
+  describe('hydration into workflow context', () => {
+    it.todo(
+      'AbortController returned from step: hook created on hydration into workflow'
+    );
+
+    it.todo('AbortSignal passed as workflow input: hook created on hydration');
+  });
+
+  describe('eventual consistency', () => {
+    it.todo(
+      'abort before hook exists: stream packet persists, step processes it, hook resumed on next replay'
+    );
+  });
+});

@@ -4283,3 +4283,72 @@ describe('isEncrypted', () => {
     expect(isEncrypted(new Uint8Array(2))).toBe(false);
   });
 });
+
+// ============================================================================
+// AbortController / AbortSignal serialization
+// ============================================================================
+
+describe('AbortController serialization', () => {
+  // const { context, globalThis: vmGlobalThis } = createContext({
+  //   seed: 'test-abort-serde',
+  //   fixedTimestamp: 1714857600000,
+  // });
+
+  describe('workflow arguments (external → workflow)', () => {
+    it.todo(
+      'AbortController round-trip preserves type, signal.aborted === false'
+    );
+
+    it.todo(
+      'already-aborted AbortController: signal.aborted === true after hydration'
+    );
+
+    it.todo('AbortSignal (standalone) round-trip');
+
+    it.todo('AbortSignal.abort() static: serialized with aborted=true');
+
+    it.todo(
+      'AbortSignal.abort("custom reason"): reason preserved through round-trip'
+    );
+  });
+
+  describe('step arguments (workflow → step)', () => {
+    it.todo(
+      'AbortController dehydrated with workflow reducers, hydrated with step revivers'
+    );
+
+    it.todo('AbortSignal as standalone step argument');
+  });
+
+  describe('step return value (step → workflow)', () => {
+    it.todo(
+      'AbortController dehydrated with step reducers, hydrated with workflow revivers'
+    );
+
+    it.todo('AbortSignal as standalone step return value');
+  });
+
+  describe('nested and compound structures', () => {
+    it.todo(
+      'AbortController nested in object: { ctrl: new AbortController() }'
+    );
+
+    it.todo('array of controllers: [ctrl1, ctrl2] get distinct stream names');
+
+    it.todo(
+      'same controller serialized twice reuses the same stream name (WeakMap dedup)'
+    );
+  });
+
+  describe('integration with Request', () => {
+    it.todo(
+      'Request with signal: new Request(url, { signal }) preserves signal through round-trip'
+    );
+  });
+
+  describe('encryption', () => {
+    it.todo('AbortController round-trip with encryption enabled');
+
+    it.todo('AbortSignal round-trip with encryption enabled');
+  });
+});

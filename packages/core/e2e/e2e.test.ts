@@ -1968,4 +1968,36 @@ describe('e2e', () => {
       expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
     });
   });
+
+  // ==========================================================================
+  // AbortController / AbortSignal
+  // ==========================================================================
+
+  describe('AbortController', () => {
+    test.todo('abortTimeoutWorkflow: timeout cancels long-running step');
+
+    test.todo('abortParallelWorkflow: abort cancels all parallel steps');
+
+    test.todo(
+      'abortFromStepWorkflow: step calls abort(), workflow sees aborted state'
+    );
+
+    test.todo('abortAlreadyAbortedWorkflow: pre-aborted signal seen by step');
+
+    test.todo('abortReasonWorkflow: abort reason preserved across boundaries');
+
+    test.todo(
+      'abortAfterCompletionWorkflow: abort after step completes is a no-op'
+    );
+
+    test.todo(
+      'abortViaHookWorkflow: external hook triggers abort on in-flight step'
+    );
+
+    test.todo('abortExternalSignalWorkflow: signal passed as workflow input');
+
+    test.todo(
+      'abortSurvivesReplayWorkflow: controller state consistent across replay'
+    );
+  });
 });
