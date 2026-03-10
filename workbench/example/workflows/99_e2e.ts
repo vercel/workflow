@@ -14,8 +14,8 @@ import {
   sleep,
 } from 'workflow';
 import { getRun, start } from 'workflow/api';
-import { importedStepOnly } from './_imported_step_only.js';
-import { callThrower, stepThatThrowsFromHelper } from './helpers.js';
+import { importedStepOnly } from './_imported_step_only';
+import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
 //////////////////////////////////////////////////////////
 
@@ -1283,7 +1283,7 @@ import {
   createVector,
   scaleVector,
   sumVectors,
-} from './serde-steps.js';
+} from './serde-steps';
 
 /**
  * Workflow that tests cross-context class registration.
