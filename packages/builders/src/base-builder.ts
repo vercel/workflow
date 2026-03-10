@@ -102,6 +102,7 @@ export abstract class BaseBuilder {
       '**/.git/**',
       '**/.next/**',
       '**/.nuxt/**',
+      '**/.output/**',
       '**/.vercel/**',
       '**/.workflow-data/**',
       '**/.well-known/workflow/**',
@@ -398,8 +399,10 @@ export abstract class BaseBuilder {
         /\\/g,
         '/'
       );
-      // Ensure relative paths start with ./ so esbuild resolves them correctly
-      if (!relativePath.startsWith('.')) {
+      // Ensure relative paths start with ./ so esbuild resolves them correctly.
+      // Paths like ".output/..." are not valid relative specifiers and must
+      // become "./.output/...".
+      if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
         relativePath = `./${relativePath}`;
       }
       return `import '${relativePath}';`;
@@ -625,8 +628,10 @@ export abstract class BaseBuilder {
         /\\/g,
         '/'
       );
-      // Ensure relative paths start with ./ so esbuild resolves them correctly
-      if (!relativePath.startsWith('.')) {
+      // Ensure relative paths start with ./ so esbuild resolves them correctly.
+      // Paths like ".output/..." are not valid relative specifiers and must
+      // become "./.output/...".
+      if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
         relativePath = `./${relativePath}`;
       }
       return `import '${relativePath}';`;
@@ -879,9 +884,21 @@ export const POST = workflowEntrypoint(workflowCode);`;
       (f) => !inputFilesNormalized.has(f)
     );
 
-    // Re-exports for input files (user's workflow/step definitions)
+    // Re-exports for input files (user's workflow/step definitions).
+    // These must use valid relative specifiers because some frameworks pass
+    // generated files like ".output/server/index.mjs" as input files.
     const reexports = inputFiles
-      .map((file) => `export * from '${file}';`)
+      .map((file) => {
+        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+        let relativePath = relative(normalizedWorkingDir, file).replace(
+          /\\/g,
+          '/'
+        );
+        if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
+          relativePath = `./${relativePath}`;
+        }
+        return `export * from '${relativePath}';`;
+      })
       .join('\n');
 
     // Side-effect imports for serde files not in inputFiles (for class registration)
@@ -892,7 +909,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
           /\\/g,
           '/'
         );
-        if (!relativePath.startsWith('.')) {
+        if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
           relativePath = `./${relativePath}`;
         }
         return `import '${relativePath}';`;
