@@ -103,7 +103,16 @@ export function TraceViewerTimeline({
   highlightedSpans,
   eagerRender = false,
   isLive = false,
-}: Omit<TraceViewerProps, 'getQuickLinks'>): ReactNode {
+  footer,
+  knownDurationMs,
+  hasMoreData = false,
+}: Omit<TraceViewerProps, 'getQuickLinks'> & {
+  footer?: ReactNode;
+  /** Duration in ms from trace start to the latest known event. Used to render the unknown-time overlay. */
+  knownDurationMs?: number;
+  /** Whether more data pages are expected. Controls the unknown-data overlay visibility. */
+  hasMoreData?: boolean;
+}): ReactNode {
   const isSkeleton = trace === skeletonTrace;
   const { state, dispatch } = useTraceViewer();
   const { timelineRef, scrollSnapshotRef } = state;
@@ -450,7 +459,7 @@ export function TraceViewerTimeline({
             style={{
               position: 'relative',
               width: state.timelineWidth,
-              height: state.timelineHeight - TIMELINE_PADDING * 2,
+              minHeight: state.timelineHeight - TIMELINE_PADDING * 2,
               padding: TIMELINE_PADDING,
               paddingBottom: 0,
             }}
@@ -487,8 +496,44 @@ export function TraceViewerTimeline({
                 scrollSnapshotRef={scrollSnapshotRef}
                 spans={spans}
               />
+              {/* Horizontal "unknown time" overlay — covers the region to the
+                  right of the latest known event, indicating data beyond this
+                  point hasn't been loaded yet. */}
+              {knownDurationMs != null &&
+                knownDurationMs > 0 &&
+                (hasMoreData || isLive) &&
+                state.root.duration > 0 &&
+                (() => {
+                  const knownPx = knownDurationMs * scale;
+                  const totalPx = state.root.duration * scale;
+                  const unknownWidth = totalPx - knownPx;
+                  // Only show if the unknown region is meaningfully wide
+                  if (unknownWidth < 4) return null;
+                  // Offset ~5% into the unknown region so it doesn't touch spans
+                  const insetPx = Math.min(unknownWidth * 0.05, 20);
+                  return (
+                    <div
+                      style={{
+                        position: 'absolute',
+                        top: 0,
+                        left: knownPx + insetPx,
+                        width: unknownWidth - insetPx,
+                        height: '100%',
+                        pointerEvents: 'none',
+                        zIndex: 1,
+                        maskImage:
+                          'linear-gradient(to right, transparent 1%, black 3%)',
+                        WebkitMaskImage:
+                          'linear-gradient(to right, transparent 1%, black 3%)',
+                        background:
+                          'repeating-linear-gradient(-45deg, var(--ds-background-200) 0, var(--ds-background-200) 11px, var(--ds-gray-200) 11px, var(--ds-gray-200) 12px)',
+                      }}
+                    />
+                  );
+                })()}
             </div>
           </div>
+          {footer}
         </div>
         <div className={styles.zoomButtonTraceViewer}>
           <ZoomButton />

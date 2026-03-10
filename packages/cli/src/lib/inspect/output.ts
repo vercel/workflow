@@ -782,8 +782,17 @@ export const showStep = async (
       'Filtering by step-id is not supported in get calls, ignoring filter.'
     );
   }
+
+  const runId = opts.runId ?? (await getRecentRun(world, opts))?.runId;
+  if (!runId) {
+    logger.error(
+      'run-id is required for showing a step. Usage: `workflow inspect step <STEP_ID> --runId=<RUN_ID>`'
+    );
+    return;
+  }
+
   try {
-    const step = await world.steps.get(opts.runId, stepId, {
+    const step = await world.steps.get(runId, stepId, {
       resolveData: 'all',
     });
     const stepWithHydratedIO = await hydrateResourceIO(step, resolveKey);
@@ -913,17 +922,15 @@ export const listEvents = async (
     );
   }
 
-  let filterId: string | undefined = opts.hookId || opts.stepId || opts.runId;
-  if (!filterId) {
-    filterId = (await getRecentRun(world, opts))?.runId;
-    if (!filterId) {
-      logger.error('No run found.');
-      return;
-    }
+  const runId = opts.runId ?? (await getRecentRun(world, opts))?.runId;
+  if (!runId) {
+    logger.error('No run found.');
+    return;
   }
 
-  const isCorrelationId = Boolean(opts.hookId || opts.stepId);
-  const params: Omit<ListEventsParams, 'runId'> = {
+  const correlationIdFilter = opts.hookId || opts.stepId;
+  const params: ListEventsParams = {
+    runId,
     pagination: {
       sortOrder: opts.sort || 'desc',
       cursor: opts.cursor,
@@ -931,19 +938,21 @@ export const listEvents = async (
     },
     resolveData: opts.withData ? 'all' : 'none',
   };
-  const listCall = isCorrelationId
-    ? (correlationId: string, pagination: PaginationOptions) =>
-        world.events.listByCorrelationId({
-          ...params,
-          correlationId,
-          pagination: { ...params.pagination, ...pagination },
-        })
-    : (runId: string, pagination: PaginationOptions) =>
-        world.events.list({
-          ...params,
-          runId,
-          pagination: { ...params.pagination, ...pagination },
-        });
+  const listCall = async (pagination: PaginationOptions) => {
+    const result = await world.events.list({
+      ...params,
+      pagination: { ...params.pagination, ...pagination },
+    });
+    if (correlationIdFilter) {
+      return {
+        ...result,
+        data: result.data.filter(
+          (e) => e.correlationId === correlationIdFilter
+        ),
+      };
+    }
+    return result;
+  };
 
   // Determine which props to show based on withData flag
   const props = opts.withData
@@ -952,9 +961,9 @@ export const listEvents = async (
 
   // For JSON output, just fetch once and return
   if (opts.json) {
-    logger.debug(`Fetching events for run ${filterId}`);
+    logger.debug(`Fetching events for run ${runId}`);
     try {
-      const events = await listCall(filterId, {});
+      const events = await listCall({});
       const hydratedEvents = await Promise.all(
         events.data.map((e) => hydrateResourceIO(e, resolveKey))
       );
@@ -972,9 +981,9 @@ export const listEvents = async (
     initialCursor: opts.cursor,
     interactive: opts.interactive,
     fetchPage: async (cursor) => {
-      logger.debug(`Fetching events for run ${filterId}`);
+      logger.debug(`Fetching events for run ${runId}`);
       try {
-        const events = await listCall(filterId, { cursor });
+        const events = await listCall({ cursor });
         return {
           data: events.data,
           cursor: events.cursor,
@@ -1141,14 +1150,14 @@ export const listSleeps = async (
   }
 
   try {
-    // Fetch all events for the run with resolveData=false
+    // Fetch all events for the run with resolveData='all' to get wait eventData
     const events = await world.events.list({
       runId: opts.runId,
       pagination: {
         sortOrder: opts.sort || 'desc',
         limit: 1000,
       },
-      resolveData: 'none',
+      resolveData: 'all',
     });
 
     // Show info message if there might be more sleeps
@@ -1158,15 +1167,17 @@ export const listSleeps = async (
       );
     }
 
-    // Filter locally by correlationId starting with 'wait_'
-    const waitCorrelationIds = new Set<string>();
+    // Group wait events by correlationId
+    const waitEventsByCorrelation = new Map<string, Event[]>();
     for (const event of events.data) {
       if (event.correlationId?.startsWith('wait_')) {
-        waitCorrelationIds.add(event.correlationId);
+        const existing = waitEventsByCorrelation.get(event.correlationId) ?? [];
+        existing.push(event);
+        waitEventsByCorrelation.set(event.correlationId, existing);
       }
     }
 
-    if (waitCorrelationIds.size === 0) {
+    if (waitEventsByCorrelation.size === 0) {
       logger.warn('No sleeps found for this run.');
       if (opts.json) {
         showJson([]);
@@ -1181,24 +1192,15 @@ export const listSleeps = async (
       return;
     }
 
-    // For each unique correlationId, fetch events by correlationId with resolveData=true
+    // Build sleeps from grouped wait events
     const sleeps: Sleep[] = [];
-    for (const correlationId of waitCorrelationIds) {
-      const correlationEvents = await world.events.listByCorrelationId({
-        correlationId,
-        pagination: {
-          sortOrder: 'asc',
-          limit: 10,
-        },
-        resolveData: 'all',
-      });
-
+    for (const [correlationId, correlationEvents] of waitEventsByCorrelation) {
       // Stitch up wait_created and wait_completed events
-      const waitCreated = correlationEvents.data.find(
-        (e) => e.eventType === 'wait_created'
+      const waitCreated = correlationEvents.find(
+        (e: Event) => e.eventType === 'wait_created'
       );
-      const waitCompleted = correlationEvents.data.find(
-        (e) => e.eventType === 'wait_completed'
+      const waitCompleted = correlationEvents.find(
+        (e: Event) => e.eventType === 'wait_completed'
       );
 
       if (waitCreated) {

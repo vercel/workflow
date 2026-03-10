@@ -83,7 +83,7 @@ export default class Inspect extends BaseCommand {
   static flags = {
     runId: Flags.string({
       description:
-        'run ID to filter by (optional for steps, events, and hooks, required for sleeps)',
+        'Run ID to filter by (required for steps, sleeps, and events. Optional for hooks.)',
       required: false,
       char: 'r',
       aliases: ['run'],
