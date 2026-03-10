@@ -121,10 +121,14 @@ export async function start<TArgs extends unknown[], TResult>(
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
       // key derivation and the run_created event. The World implementation
-      // uses the runId for per-run HKDF key derivation. The opts object is
-      // passed as opaque context so the World can read world-specific fields
-      // (e.g., deploymentId for world-vercel) needed for key resolution.
-      const rawKey = await world.getEncryptionKeyForRun?.(runId, { ...opts });
+      // uses the runId for per-run HKDF key derivation. We pass the resolved
+      // deploymentId (not just the raw opts) so the World can use it for
+      // key resolution even when deploymentId was inferred from the environment
+      // rather than explicitly provided in opts (e.g., in e2e test runners).
+      const rawKey = await world.getEncryptionKeyForRun?.(runId, {
+        ...opts,
+        deploymentId,
+      });
       const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
       // Create run via run_created event (event-sourced architecture)
