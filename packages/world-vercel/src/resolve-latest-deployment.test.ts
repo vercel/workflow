@@ -120,6 +120,44 @@ describe('createResolveLatestDeploymentId', () => {
     );
   });
 
+  it('should use OIDC token when config token is absent and VERCEL_TOKEN is unset', async () => {
+    delete process.env.VERCEL_TOKEN;
+
+    // Override the OIDC mock to resolve successfully for this test
+    const { getVercelOidcToken } = await import('@vercel/oidc');
+    vi.mocked(getVercelOidcToken).mockResolvedValueOnce('oidc-token-456');
+
+    mockFetch.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          id: 'dpl_latest_from_oidc',
+          url: 'my-app.vercel.app',
+          readyState: 'READY',
+          target: 'production',
+          createdAt: 1234567890,
+          meta: {},
+          gitSource: null,
+        }),
+        { status: 200 }
+      )
+    );
+
+    const resolveLatest = createResolveLatestDeploymentId({
+      // No config token
+    });
+    const result = await resolveLatest();
+
+    expect(result).toBe('dpl_latest_from_oidc');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          authorization: 'Bearer oidc-token-456',
+        }),
+      })
+    );
+  });
+
   it('should throw on non-ok HTTP response', async () => {
     mockFetch.mockResolvedValueOnce(new Response('Not found', { status: 404 }));
 

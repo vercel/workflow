@@ -45,7 +45,7 @@ export function createResolveLatestDeploymentId(
       );
     }
 
-    const url = `https://api.vercel.com/v1/workflow/resolve-latest-deployment/${currentDeploymentId}`;
+    const url = `https://api.vercel.com/v1/workflow/resolve-latest-deployment/${encodeURIComponent(currentDeploymentId)}`;
 
     // 429/5xx retries are handled by the shared RetryAgent from getDispatcher()
     const response = await fetch(url, {

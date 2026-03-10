@@ -274,6 +274,37 @@ describe('start', () => {
       );
     });
 
+    it('should pass the resolved deployment ID to getEncryptionKeyForRun when using "latest"', async () => {
+      const mockResolveLatest = vi
+        .fn()
+        .mockResolvedValue('dpl_resolved_abc123');
+      const mockGetEncryptionKeyForRun = vi.fn();
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        resolveLatestDeploymentId: mockResolveLatest,
+        getEncryptionKeyForRun: mockGetEncryptionKeyForRun,
+      } as any);
+
+      await start(validWorkflow, [], { deploymentId: 'latest' });
+
+      expect(mockResolveLatest).toHaveBeenCalledTimes(1);
+      expect(mockGetEncryptionKeyForRun).toHaveBeenCalled();
+
+      const [, contextArg] =
+        mockGetEncryptionKeyForRun.mock.calls[
+          mockGetEncryptionKeyForRun.mock.calls.length - 1
+        ] || [];
+
+      expect(contextArg).toEqual(
+        expect.objectContaining({
+          deploymentId: 'dpl_resolved_abc123',
+        })
+      );
+    });
+
     it('should throw WorkflowRuntimeError when "latest" is used with a World that does not implement resolveLatestDeploymentId', async () => {
       vi.mocked(getWorld).mockReturnValue({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),

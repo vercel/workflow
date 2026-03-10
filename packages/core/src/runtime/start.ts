@@ -117,9 +117,6 @@ export async function start<TArgs extends unknown[], TResult>(
           );
         }
         deploymentId = await world.resolveLatestDeploymentId();
-        // Update opts so downstream consumers (e.g., getEncryptionKeyForRun)
-        // see the resolved deployment ID, not the 'latest' sentinel.
-        opts.deploymentId = deploymentId;
       }
 
       const ops: Promise<void>[] = [];
