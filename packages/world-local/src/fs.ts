@@ -2,12 +2,10 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { WorkflowAPIError } from '@workflow/errors';
 import type { PaginatedResponse } from '@workflow/world';
-import { decodeTime, monotonicFactory } from 'ulid';
+import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 
 const ulid = monotonicFactory(() => Math.random());
-
-const Ulid = z.string().ulid();
 
 const isWindows = process.platform === 'win32';
 
@@ -53,14 +51,7 @@ export function clearCreatedFilesCache(): void {
   createdFilesCache.clear();
 }
 
-export function ulidToDate(maybeUlid: string): Date | null {
-  const ulid = Ulid.safeParse(maybeUlid);
-  if (!ulid.success) {
-    return null;
-  }
-
-  return new Date(decodeTime(ulid.data));
-}
+export { ulidToDate } from '@workflow/world';
 
 export async function ensureDir(dirPath: string): Promise<void> {
   try {

@@ -136,7 +136,7 @@ import { sleep, createWebhook } from "workflow";
 export async function documentReviewProcess(userId: string) {
   "use workflow";
 
-  await sleep("1 month"); // Sleep will suspend without consuming any resources [!code highlight]
+  await sleep("30d"); // Sleep will suspend without consuming any resources [!code highlight]
 
   // Create a webhook for external workflow resumption
   const webhook = createWebhook();

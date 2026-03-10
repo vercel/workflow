@@ -3,6 +3,7 @@ import type {
   CreateEventRequest,
   Event,
   EventResult,
+  GetEventParams,
   ListEventsByCorrelationIdParams,
   ListEventsParams,
   RunCreatedEventRequest,
@@ -154,6 +155,12 @@ export interface Storage {
       data: CreateEventRequest,
       params?: CreateEventParams
     ): Promise<EventResult>;
+
+    get(
+      runId: string,
+      eventId: string,
+      params?: GetEventParams
+    ): Promise<Event>;
 
     list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
     listByCorrelationId(

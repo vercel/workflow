@@ -228,6 +228,20 @@ export class WorkflowRunNotFoundError extends WorkflowError {
   }
 }
 
+export class HookNotFoundError extends WorkflowError {
+  token: string;
+
+  constructor(token: string) {
+    super('Hook not found', {});
+    this.name = 'HookNotFoundError';
+    this.token = token;
+  }
+
+  static is(value: unknown): value is HookNotFoundError {
+    return isError(value) && value.name === 'HookNotFoundError';
+  }
+}
+
 export class WorkflowRunCancelledError extends WorkflowError {
   runId: string;
 

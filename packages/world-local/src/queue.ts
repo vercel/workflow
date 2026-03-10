@@ -28,9 +28,16 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
+export type DirectHandler = (req: Request) => Promise<Response>;
+
 export type LocalQueue = Queue & {
   /** Close the HTTP agent and release resources. */
   close(): Promise<void>;
+  /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
+  registerHandler(
+    prefix: '__wkf_step_' | '__wkf_workflow_',
+    handler: DirectHandler
+  ): void;
 };
 
 export function createQueue(config: Partial<Config>): LocalQueue {
@@ -54,6 +61,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
    */
   const inflightMessages = new Map<string, MessageId>();
 
+  /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
+  const directHandlers = new Map<string, DirectHandler>();
+
   const queue: Queue['queue'] = async (queueName, message, opts) => {
     const cleanup = [] as (() => void)[];
 
@@ -66,10 +76,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
     const body = transport.serialize(message);
     let pathname: string;
+    let prefix: '__wkf_step_' | '__wkf_workflow_';
     if (queueName.startsWith('__wkf_step_')) {
       pathname = `step`;
+      prefix = '__wkf_step_';
     } else if (queueName.startsWith('__wkf_workflow_')) {
       pathname = `flow`;
+      prefix = '__wkf_workflow_';
     } else {
       throw new Error('Unknown queue name prefix');
     }
@@ -93,48 +106,66 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
       try {
         let defaultRetriesLeft = 3;
-        const baseUrl = await resolveBaseUrl(config);
+        const directHandler = directHandlers.get(prefix);
         for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
           defaultRetriesLeft--;
 
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-          const response = await fetch(
-            `${baseUrl}/.well-known/workflow/v1/${pathname}`,
-            {
-              method: 'POST',
-              duplex: 'half',
-              dispatcher: httpAgent,
-              headers: {
-                ...opts?.headers,
-                'content-type': 'application/json',
-                'x-vqs-queue-name': queueName,
-                'x-vqs-message-id': messageId,
-                'x-vqs-message-attempt': String(attempt + 1),
-              },
-              body,
-            } as any
-          );
+          let response: Response;
+          const headers: Record<string, string> = {
+            ...opts?.headers,
+            'content-type': 'application/json',
+            'x-vqs-queue-name': queueName,
+            'x-vqs-message-id': messageId,
+            'x-vqs-message-attempt': String(attempt + 1),
+          };
 
-          if (response.ok) {
-            return;
+          if (directHandler) {
+            // Call handler directly in-process, bypassing HTTP
+            const req = new Request(
+              'http://localhost/.well-known/workflow/v1/' + pathname,
+              {
+                method: 'POST',
+                headers,
+                body,
+              }
+            );
+            response = await directHandler(req);
+          } else {
+            const baseUrl = await resolveBaseUrl(config);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+            response = await fetch(
+              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+              {
+                method: 'POST',
+                duplex: 'half',
+                dispatcher: httpAgent,
+                headers,
+                body,
+              } as any
+            );
           }
 
           const text = await response.text();
 
-          if (response.status === 503) {
+          if (response.ok) {
             try {
               const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
-              // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
-              // When this fires early, the handler recalculates remaining time from
-              // persistent state and returns another timeoutSeconds if needed.
-              const timeoutMs = Math.min(
-                timeoutSeconds * 1000,
-                MAX_SAFE_TIMEOUT_MS
-              );
-              await setTimeout(timeoutMs);
-              defaultRetriesLeft++;
-              continue;
+              if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
+                // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
+                // When this fires early, the handler recalculates remaining time from
+                // persistent state and returns another timeoutSeconds if needed.
+                if (timeoutSeconds > 0) {
+                  const timeoutMs = Math.min(
+                    timeoutSeconds * 1000,
+                    MAX_SAFE_TIMEOUT_MS
+                  );
+                  await setTimeout(timeoutMs);
+                }
+                defaultRetriesLeft++;
+                continue;
+              }
             } catch {}
+            return;
           }
 
           console.error(`[local world] Failed to queue message`, {
@@ -212,8 +243,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           );
         }
 
-        if (timeoutSeconds) {
-          return Response.json({ timeoutSeconds }, { status: 503 });
+        if (timeoutSeconds != null) {
+          return Response.json({ timeoutSeconds });
         }
 
         return Response.json({ ok: true });
@@ -232,6 +263,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     queue,
     createQueueHandler,
     getDeploymentId,
+    registerHandler(
+      prefix: '__wkf_step_' | '__wkf_workflow_',
+      handler: DirectHandler
+    ) {
+      directHandlers.set(prefix, handler);
+    },
     async close() {
       await httpAgent.close();
     },

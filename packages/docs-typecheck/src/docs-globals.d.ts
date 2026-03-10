@@ -123,6 +123,7 @@ declare global {
   };
   type LanguageModelV2 = any;
   type LanguageModelV2Prompt = any;
+  const myModel: LanguageModelV2;
   function convertToModelMessages(messages: any[]): any[];
   function createUIMessageStreamResponse(options: any): Response;
 
@@ -158,6 +159,12 @@ declare global {
   const onSubmit: (e: any) => void;
   const onChange: (e: any) => void;
   const e: any;
+
+  // Augment Request to include respondWith for docs that show webhook patterns
+  // without using the full createWebhook({ respondWith: "manual" }) overload.
+  interface Request {
+    respondWith(response: Response): Promise<void>;
+  }
 
   // Constants used in examples
   const FLIGHT_ASSISTANT_PROMPT: string;

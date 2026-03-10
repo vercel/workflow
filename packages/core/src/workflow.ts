@@ -95,14 +95,15 @@ export async function runWorkflow(
 
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
-    const port = await getPort();
+    const isVercel = process.env.VERCEL_URL !== undefined;
+    const port = isVercel ? undefined : await getPort();
 
     const {
       context,
       globalThis: vmGlobalThis,
       updateTimestamp,
     } = createContext({
-      seed: workflowRun.runId,
+      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${+startedAt}`,
       fixedTimestamp: +startedAt,
     });
 
@@ -147,6 +148,7 @@ export async function runWorkflow(
       set promiseQueue(value: Promise<void>) {
         promiseQueueHolder.current = value;
       },
+      pendingDeliveries: 0,
     };
 
     // Subscribe to the events log to update the timestamp in the vm context
@@ -196,12 +198,13 @@ export async function runWorkflow(
 
     // TODO: there should be a getUrl method on the world interface itself. This
     // solution only works for vercel + local worlds.
-    const url = process.env.VERCEL_URL
+    const url = isVercel
       ? `https://${process.env.VERCEL_URL}`
       : `http://localhost:${port ?? 3000}`;
 
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {
+      workflowName: workflowRun.workflowName,
       workflowRunId: workflowRun.runId,
       workflowStartedAt: new vmGlobalThis.Date(+startedAt),
       url,

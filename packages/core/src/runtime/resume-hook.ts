@@ -1,5 +1,9 @@
 import { waitUntil } from '@vercel/functions';
-import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  ERROR_SLUGS,
+  HookNotFoundError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import {
   type Hook,
   isLegacySpecVersion,
@@ -233,6 +237,14 @@ export async function resumeWebhook(
   request: Request
 ): Promise<Response> {
   const { hook, encryptionKey } = await getHookByTokenWithKey(token);
+
+  // Only webhooks can be resumed via the public endpoint.
+  // If the hook was created via createHook() (isWebhook !== true),
+  // throw the same "not found" error the world would throw for a missing
+  // token. This prevents leaking that the token is valid.
+  if (hook.isWebhook === false) {
+    throw new HookNotFoundError(token);
+  }
 
   let response: Response | undefined;
   let responseReadable: ReadableStream<Response> | undefined;

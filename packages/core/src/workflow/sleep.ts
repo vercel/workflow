@@ -3,7 +3,10 @@ import { parseDurationToDate, withResolvers } from '@workflow/utils';
 import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
 import { type WaitInvocationQueueItem, WorkflowSuspension } from '../global.js';
-import type { WorkflowOrchestratorContext } from '../private.js';
+import {
+  scheduleWhenIdle,
+  type WorkflowOrchestratorContext,
+} from '../private.js';
 
 export function createSleep(ctx: WorkflowOrchestratorContext) {
   return async function sleepImpl(
@@ -27,7 +30,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
       // If there are no events and we're waiting for wait_completed,
       // suspend the workflow until the wait fires
       if (!event) {
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        scheduleWhenIdle(ctx, () => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );

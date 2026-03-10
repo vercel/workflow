@@ -5,6 +5,7 @@ import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
 } from '@workflow/errors';
+import { createVercelWorld } from '@workflow/world-vercel';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
@@ -13,6 +14,7 @@ import {
   getWorld,
   healthCheck,
   resumeHook,
+  setWorld,
   start,
 } from '../src/runtime';
 import {
@@ -269,8 +271,22 @@ describe('e2e', () => {
       const isNextJs = appName.includes('nextjs') || appName.includes('next-');
       const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
       process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+    } else if (process.env.WORKFLOW_VERCEL_ENV) {
+      // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI.
+      // Build the Vercel world explicitly with the CI-provided config rather than relying on
+      // createWorld() reading these env vars (which no longer happens at runtime).
+      setWorld(
+        createVercelWorld({
+          token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+          projectConfig: {
+            environment: process.env.WORKFLOW_VERCEL_ENV || undefined,
+            projectId: process.env.WORKFLOW_VERCEL_PROJECT || undefined,
+            projectName: process.env.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
+            teamId: process.env.WORKFLOW_VERCEL_TEAM || undefined,
+          },
+        })
+      );
     }
-    // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI
     // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
   });
 
@@ -464,20 +480,63 @@ describe('e2e', () => {
     expect(returnValue[2].done).toBe(true);
   });
 
-  test('webhookWorkflow', { timeout: 60_000 }, async () => {
-    const token = Math.random().toString(36).slice(2);
-    const token2 = Math.random().toString(36).slice(2);
-    const token3 = Math.random().toString(36).slice(2);
+  test(
+    'hookWorkflow is not resumable via public webhook endpoint',
+    { timeout: 60_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
 
-    const run = await start(await e2e('webhookWorkflow'), [
-      token,
-      token2,
-      token3,
-    ]);
+      const run = await start(await e2e('hookWorkflow'), [token, customData]);
+
+      // Wait for the hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Verify the hook exists via server-side API
+      const hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run.runId);
+
+      // Attempt to resume via the public webhook endpoint — should get 404
+      const res = await fetch(
+        new URL(
+          `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
+          deploymentUrl
+        ),
+        {
+          method: 'POST',
+          headers: getProtectionBypassHeaders(),
+          body: JSON.stringify({ message: 'should-be-rejected' }),
+        }
+      );
+      expect(res.status).toBe(404);
+
+      // Now resume via server-side resumeHook() — should work
+      await resumeHook(hook, {
+        message: 'via-server',
+        customData: (hook.metadata as any)?.customData,
+        done: true,
+      });
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toHaveLength(1);
+      expect(returnValue[0].message).toBe('via-server');
+    }
+  );
+
+  test('webhookWorkflow', { timeout: 60_000 }, async () => {
+    const run = await start(await e2e('webhookWorkflow'), []);
 
     // Wait a few seconds so that the webhooks are registered.
     // TODO: make this more efficient when we add subscription support.
     await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+    // Discover the randomly generated webhook tokens via hooks.list
+    const world = getWorld();
+    const { data: hooks } = await world.hooks.list({ runId: run.runId });
+    expect(hooks).toHaveLength(3);
+
+    // Hooks are returned in creation order; extract tokens
+    const [token, token2, token3] = hooks.map((h) => h.token);
 
     // Webhook with default response
     const res = await fetch(
@@ -608,6 +667,13 @@ describe('e2e', () => {
       returnValue.innerWorkflowMetadata
     );
 
+    // workflow context should have workflowName and stepMetadata shouldn't
+    expect(typeof returnValue.workflowMetadata.workflowName).toBe('string');
+    expect(returnValue.workflowMetadata.workflowName).toBe(
+      returnValue.innerWorkflowMetadata.workflowName
+    );
+    expect(returnValue.stepMetadata.workflowName).toBeUndefined();
+
     // workflow context should have workflowRunId and stepMetadata shouldn't
     expect(returnValue.workflowMetadata.workflowRunId).toBe(run.runId);
     expect(returnValue.innerWorkflowMetadata.workflowRunId).toBe(run.runId);
@@ -637,6 +703,9 @@ describe('e2e', () => {
     expect(returnValue.workflowMetadata.attempt).toBeUndefined();
 
     // step context
+
+    // stepName should be a string
+    expect(typeof returnValue.stepMetadata.stepName).toBe('string');
 
     // Attempt should be atleast 1
     expect(returnValue.stepMetadata.attempt).toBeGreaterThanOrEqual(1);
@@ -1915,4 +1984,76 @@ describe('e2e', () => {
       expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
     });
   });
+
+  test(
+    'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
+    { timeout: 90_000 },
+    async () => {
+      // Regression test: when a hook and sleep run concurrently, multiple
+      // hook_received events should all be processed even though the sleep
+      // has no wait_completed event. Previously, the sleep's WorkflowSuspension
+      // would terminate the workflow before all hook payloads were delivered.
+      const token = Math.random().toString(36).slice(2);
+
+      const run = await start(await e2e('hookWithSleepWorkflow'), [token]);
+
+      // Wait for the hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Send 3 payloads: two normal ones, then one with done=true
+      let hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run.runId);
+      await resumeHook(hook, { type: 'subscribe', id: 1 });
+
+      // Wait for the first payload to be processed (step must complete)
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      hook = await getHookByToken(token);
+      await resumeHook(hook, { type: 'subscribe', id: 2 });
+
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      hook = await getHookByToken(token);
+      await resumeHook(hook, { type: 'done', done: true });
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBeInstanceOf(Array);
+      expect(returnValue).toHaveLength(3);
+      expect(returnValue[0]).toMatchObject({
+        processed: true,
+        type: 'subscribe',
+        id: 1,
+      });
+      expect(returnValue[1]).toMatchObject({
+        processed: true,
+        type: 'subscribe',
+        id: 2,
+      });
+      expect(returnValue[2]).toMatchObject({ processed: true, type: 'done' });
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
+    'sleepWithSequentialStepsWorkflow - sequential steps work with concurrent sleep (control)',
+    { timeout: 60_000 },
+    async () => {
+      // Control test: proves that void sleep('1d').then() does NOT break
+      // sequential step execution. Steps have per-event consumption so the
+      // sleep's pending suspension doesn't interfere. This contrasts with
+      // hookWithSleepWorkflow where the bug manifests.
+      const run = await start(
+        await e2e('sleepWithSequentialStepsWorkflow'),
+        []
+      );
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({ a: 3, b: 6, c: 10, shouldCancel: false });
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
+    }
+  );
 });

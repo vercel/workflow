@@ -18,6 +18,7 @@ export interface HookInvocationQueueItem {
   metadata?: Serializable;
   hasCreatedEvent?: boolean;
   disposed?: boolean;
+  isWebhook?: boolean;
 }
 
 export interface WaitInvocationQueueItem {

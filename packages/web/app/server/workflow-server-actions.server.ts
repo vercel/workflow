@@ -15,10 +15,7 @@ import {
   healthCheck,
 } from '@workflow/core/runtime/helpers';
 import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-hook';
-import {
-  getDeserializeStream,
-  getExternalRevivers,
-} from '@workflow/core/serialization';
+
 import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
@@ -713,40 +710,24 @@ export async function fetchEvents(
 }
 
 /**
- * Fetch events by correlation ID
+ * Fetch a single event by run ID and event ID
  */
-export async function fetchEventsByCorrelationId(
+export async function fetchEvent(
   worldEnv: EnvMap,
-  correlationId: string,
-  params: {
-    cursor?: string;
-    sortOrder?: 'asc' | 'desc';
-    limit?: number;
-    withData?: boolean;
-  }
-): Promise<ServerActionResult<PaginatedResult<Event>>> {
-  const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
+  runId: string,
+  eventId: string,
+  resolveData: 'none' | 'all' = 'all'
+): Promise<ServerActionResult<Event>> {
   try {
     const world = await getWorldFromEnv(worldEnv);
-    const result = await world.events.listByCorrelationId({
-      correlationId,
-      pagination: { cursor, limit, sortOrder },
-      resolveData: withData ? 'all' : 'none',
-    });
-    return createResponse({
-      data: result.data as Event[],
-      cursor: result.cursor ?? undefined,
-      hasMore: result.hasMore,
-    });
+    const event = await world.events.get(runId, eventId, { resolveData });
+    return createResponse(event as Event);
   } catch (error) {
-    return createServerActionError<PaginatedResult<Event>>(
-      error,
-      'world.events.listByCorrelationId',
-      {
-        correlationId,
-        ...params,
-      }
-    );
+    return createServerActionError<Event>(error, 'world.events.get', {
+      runId,
+      eventId,
+      resolveData,
+    });
   }
 }
 
@@ -951,18 +932,12 @@ export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,
   startIndex?: number
-): Promise<ReadableStream<unknown> | ServerActionError> {
+): Promise<ReadableStream<Uint8Array> | ServerActionError> {
   try {
     const world = await getWorldFromEnv(env);
-    // We should probably use getRun().getReadable() instead, to make the UI
-    // more consistent with runtime behavior, and also expose a "replay" and "startIndex",
-    // feature, to allow for testing World behavior.
-    const stream = await world.readFromStream(streamId, startIndex);
-
-    const revivers = getExternalRevivers(globalThis, [], '', undefined);
-    const transform = getDeserializeStream(revivers, undefined);
-
-    return stream.pipeThrough(transform);
+    // Return the raw binary stream — deserialization and decryption
+    // happen entirely client-side.
+    return await world.readFromStream(streamId, startIndex);
   } catch (error) {
     const actionError = createServerActionError(error, 'world.readFromStream', {
       streamId,

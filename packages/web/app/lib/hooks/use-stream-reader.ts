@@ -1,6 +1,10 @@
-import { hydrateData } from '@workflow/core/serialization-format';
+import { decrypt as aesGcmDecrypt, importKey } from '@workflow/core/encryption';
+import {
+  decodeFormatPrefix,
+  hydrateData,
+  SerializationFormat,
+} from '@workflow/core/serialization-format';
 import { getWebRevivers } from '@workflow/web-shared';
-import { decode } from 'cbor-x';
 import { useEffect, useRef, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
 import { readStream } from '~/lib/workflow-api-client';
@@ -11,7 +15,14 @@ export interface StreamChunk {
   text: string;
 }
 
-export function useStreamReader(env: EnvMap, streamId: string | null) {
+const FRAME_HEADER_SIZE = 4;
+
+export function useStreamReader(
+  env: EnvMap,
+  streamId: string | null,
+  runId?: string,
+  encryptionKey?: Uint8Array | null
+) {
   const [chunks, setChunks] = useState<StreamChunk[]>([]);
   const [isLive, setIsLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,109 +46,107 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
 
     const revivers = getWebRevivers();
 
-    const handleStreamEnd = () => {
-      if (mounted) {
-        setIsLive(false);
-      }
-    };
-
-    const handleStreamError = (err: unknown) => {
-      if (mounted) {
-        setError(err instanceof Error ? err.message : String(err));
-        setIsLive(false);
-      }
-    };
-
-    const addChunk = (value: unknown) => {
-      if (mounted && value !== undefined && value !== null) {
-        const chunkId = chunkIdRef.current++;
-        // Hydrate the chunk — it may be a format-prefixed Uint8Array
-        // (same serialization as step inputs/outputs)
-        let hydrated: unknown;
-        try {
-          hydrated = hydrateData(value, revivers);
-        } catch {
-          hydrated = value;
-        }
-        const text =
-          typeof hydrated === 'string'
-            ? hydrated
-            : JSON.stringify(hydrated, null, 2);
-        setChunks((prev) => [...prev, { id: chunkId, text }]);
-      }
-    };
-
-    /**
-     * Read length-prefixed CBOR chunks from the stream.
-     * Each frame: [4-byte big-endian length][CBOR-encoded chunk]
-     */
-    const processFramedStream = async (
-      reader: ReadableStreamDefaultReader<Uint8Array>
-    ) => {
-      let buffer = new Uint8Array(0);
-
-      const appendToBuffer = (data: Uint8Array) => {
-        const newBuffer = new Uint8Array(buffer.length + data.length);
-        newBuffer.set(buffer, 0);
-        newBuffer.set(data, buffer.length);
-        buffer = newBuffer;
-      };
-
-      for (;;) {
-        if (abortControllerRef.current?.signal.aborted) break;
-
-        const { value, done } = await reader.read();
-        if (done) {
-          handleStreamEnd();
-          break;
-        }
-
-        appendToBuffer(value);
-
-        // Process complete frames from the buffer
-        while (buffer.length >= 4) {
-          const view = new DataView(
-            buffer.buffer,
-            buffer.byteOffset,
-            buffer.byteLength
-          );
-          const frameLength = view.getUint32(0, false);
-
-          if (buffer.length < 4 + frameLength) {
-            // Not enough data yet for the full frame
-            break;
-          }
-
-          // Extract the CBOR-encoded chunk
-          const frameData = buffer.slice(4, 4 + frameLength);
-          buffer = buffer.slice(4 + frameLength);
-
-          // Decode CBOR → raw chunk (may be Uint8Array with format prefix)
-          try {
-            const rawChunk = decode(frameData);
-            addChunk(rawChunk);
-          } catch (err) {
-            console.error('Failed to decode stream chunk:', err);
-          }
-        }
-      }
-    };
-
     const readStreamData = async () => {
       try {
-        const stream = await readStream(
+        // Get raw binary stream from server (no deserialization on server)
+        const rawStream = await readStream(
           env,
           streamId,
           undefined,
           abortController.signal
         );
-        const reader = (stream as ReadableStream<Uint8Array>).getReader();
-        await processFramedStream(reader);
-      } catch (err) {
-        if (abortController.signal.aborted) {
-          return;
+
+        // Import the CryptoKey if the user has clicked Decrypt
+        const cryptoKey = encryptionKey
+          ? await importKey(encryptionKey)
+          : undefined;
+
+        // Process length-prefixed frames from the raw stream, deserializing
+        // and decrypting entirely client-side.
+        const reader = (rawStream as ReadableStream<Uint8Array>).getReader();
+        let buffer = new Uint8Array(0);
+
+        const appendToBuffer = (data: Uint8Array) => {
+          const newBuffer = new Uint8Array(buffer.length + data.length);
+          newBuffer.set(buffer, 0);
+          newBuffer.set(data, buffer.length);
+          buffer = newBuffer;
+        };
+
+        for (;;) {
+          if (abortController.signal.aborted) break;
+
+          const { value, done } = await reader.read();
+          if (done) {
+            if (mounted) setIsLive(false);
+            break;
+          }
+
+          appendToBuffer(value);
+
+          // Process complete frames
+          while (buffer.length >= FRAME_HEADER_SIZE) {
+            const view = new DataView(
+              buffer.buffer,
+              buffer.byteOffset,
+              buffer.byteLength
+            );
+            const frameLength = view.getUint32(0, false);
+
+            if (buffer.length < FRAME_HEADER_SIZE + frameLength) {
+              break; // Incomplete frame
+            }
+
+            const frameData = buffer.slice(
+              FRAME_HEADER_SIZE,
+              FRAME_HEADER_SIZE + frameLength
+            );
+            buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
+
+            try {
+              // Check if the frame is encrypted
+              const { format, payload } = decodeFormatPrefix(frameData);
+              let dataToHydrate: Uint8Array;
+
+              if (format === SerializationFormat.ENCRYPTED) {
+                if (!cryptoKey) {
+                  if (mounted) {
+                    setError(
+                      'This stream is encrypted. Click Decrypt to view.'
+                    );
+                    setIsLive(false);
+                  }
+                  reader.cancel().catch(() => {});
+                  return;
+                }
+                // Decrypt to get the inner format-prefixed bytes (e.g., devl+data)
+                dataToHydrate = await aesGcmDecrypt(cryptoKey, payload);
+              } else {
+                // Not encrypted — pass the original frame data (with format prefix)
+                dataToHydrate = frameData;
+              }
+
+              // hydrateData handles format prefix decoding + devalue parsing
+              const hydrated = hydrateData(dataToHydrate, revivers);
+              if (mounted && hydrated !== undefined && hydrated !== null) {
+                const chunkId = chunkIdRef.current++;
+                const text =
+                  typeof hydrated === 'string'
+                    ? hydrated
+                    : JSON.stringify(hydrated, null, 2);
+                setChunks((prev) => [...prev, { id: chunkId, text }]);
+              }
+            } catch (err) {
+              console.error('Failed to process stream frame:', err);
+            }
+          }
         }
-        handleStreamError(err);
+      } catch (err) {
+        if (abortController.signal.aborted) return;
+        if (mounted) {
+          setError(err instanceof Error ? err.message : String(err));
+          setIsLive(false);
+        }
       }
     };
 
@@ -149,11 +158,9 @@ export function useStreamReader(env: EnvMap, streamId: string | null) {
         abortControllerRef.current.abort();
       }
     };
-  }, [env, streamId]);
+    // Re-run when encryptionKey changes (user clicked Decrypt)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [env, streamId, runId, encryptionKey]);
 
-  return {
-    chunks,
-    isLive,
-    error,
-  };
+  return { chunks, isLive, error };
 }

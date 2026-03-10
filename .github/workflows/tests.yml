@@ -143,7 +143,7 @@ jobs:
           build-packages: 'false'
 
       - name: Run Unit Tests
-        run: pnpm test --filter='!./docs'
+        run: pnpm test --filter='!./docs' --filter='!./workbench/vitest'
 
   build-error-messages:
     name: Node.js Module Build Errors Test
@@ -183,6 +183,30 @@ jobs:
         run: pnpm vitest run packages/core/e2e/build-errors.test.ts
         env:
           APP_NAME: "nextjs-turbopack"
+
+  vitest-plugin:
+    name: Vitest Plugin Tests
+    runs-on: ubuntu-latest
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          setup-rust: 'true'
+          install-args: '--ignore-scripts'
+          build-packages: 'false'
+
+      - name: Build packages
+        run: pnpm turbo run build --filter='!./workbench/*'
+
+      - name: Run Vitest Plugin Tests
+        run: pnpm test
+        working-directory: workbench/vitest
 
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})

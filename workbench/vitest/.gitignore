@@ -1,0 +1,7 @@
+# Nitro build output
+.nitro/
+.output/
+
+# Test data
+.workflow-data/
+.workflow-vitest/
