@@ -44,7 +44,7 @@ import {
   useWorkflowHooks,
 } from '~/lib/workflow-api-client';
 import type { EnvMap } from '~/lib/types';
-import { fetchEventsByCorrelationId } from '~/lib/rpc-client';
+import { fetchEvents } from '~/lib/rpc-client';
 
 interface HooksTableProps {
   runId?: string;
@@ -115,9 +115,9 @@ export function HooksTable({
     Map<string, InvocationData>
   >(new Map());
 
-  // Fetch invocation counts for each hook in the background
+  // Fetch invocation counts for hooks by loading all events for the run
   useEffect(() => {
-    if (!hooks.length) return;
+    if (!hooks.length || !runId) return;
 
     const fetchInvocations = async () => {
       // Initialize all hooks as loading
@@ -131,73 +131,66 @@ export function HooksTable({
       }
       setInvocationData(initialData);
 
-      // Fetch events for each hook
-      const results = await Promise.allSettled(
-        hooks.map(async (hook) => {
-          try {
-            const serverResult = await fetchEventsByCorrelationId(
-              env,
-              hook.hookId,
-              {
-                sortOrder: 'asc',
-                limit: 100,
-              }
-            );
+      try {
+        const serverResult = await fetchEvents(env, runId, {
+          sortOrder: 'asc',
+          limit: 1000,
+        });
 
-            if (!serverResult.success) {
-              return {
-                hookId: hook.hookId,
-                count: new Error(
-                  serverResult.error?.message || 'Failed to fetch events'
-                ),
-                hasMore: false,
-              };
+        if (!serverResult.success) {
+          // Mark all as not loading with 0 counts
+          setInvocationData((prev) => {
+            const updated = new Map(prev);
+            for (const hook of hooks) {
+              updated.set(hook.hookId, { count: 0, hasMore: false, loading: false });
             }
+            return updated;
+          });
+          return;
+        }
 
-            // Count only hook_received events
-            const events = serverResult.data;
-            const count = events.data.filter(
-              (e: Event) => e.eventType === 'hook_received'
-            ).length;
+        const allEvents = serverResult.data.data;
+        const hookIds = new Set(hooks.map((h) => h.hookId));
 
-            return {
-              hookId: hook.hookId,
-              count,
-              hasMore: events.hasMore,
-            };
-          } catch (e) {
-            return {
-              hookId: hook.hookId,
-              count: e as Error,
-              hasMore: false,
-            };
-          }
-        })
-      );
-
-      // Update state with results
-      setInvocationData((prev) => {
-        const updated = new Map(prev);
-        for (let i = 0; i < results.length; i++) {
-          const result = results[i];
-          const hookId = hooks[i].hookId;
-          if (result.status === 'fulfilled') {
-            updated.set(result.value.hookId, {
-              count: result.value.count,
-              hasMore: result.value.hasMore,
-              loading: false,
-            });
-          } else {
-            // Mark the failed hook as not loading with default values
-            updated.set(hookId, { count: 0, hasMore: false, loading: false });
+        // Count hook_received events per hook
+        const counts = new Map<string, number>();
+        for (const event of allEvents) {
+          if (
+            event.eventType === 'hook_received' &&
+            event.correlationId &&
+            hookIds.has(event.correlationId)
+          ) {
+            counts.set(
+              event.correlationId,
+              (counts.get(event.correlationId) ?? 0) + 1
+            );
           }
         }
-        return updated;
-      });
+
+        setInvocationData((prev) => {
+          const updated = new Map(prev);
+          for (const hook of hooks) {
+            updated.set(hook.hookId, {
+              count: counts.get(hook.hookId) ?? 0,
+              hasMore: serverResult.data.hasMore,
+              loading: false,
+            });
+          }
+          return updated;
+        });
+      } catch {
+        setInvocationData((prev) => {
+          const updated = new Map(prev);
+          for (const hook of hooks) {
+            updated.set(hook.hookId, { count: 0, hasMore: false, loading: false });
+          }
+          return updated;
+        });
+      }
     };
 
     fetchInvocations();
-  }, [hooks, env]);
+  }, [hooks, env, runId]);
 
   // Render invocation count for a hook
   const renderInvocationCount = (hook: Hook) => {

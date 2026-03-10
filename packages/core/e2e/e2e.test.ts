@@ -5,6 +5,7 @@ import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
 } from '@workflow/errors';
+import { createVercelWorld } from '@workflow/world-vercel';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
@@ -13,6 +14,7 @@ import {
   getWorld,
   healthCheck,
   resumeHook,
+  setWorld,
   start,
 } from '../src/runtime';
 import {
@@ -269,8 +271,22 @@ describe('e2e', () => {
       const isNextJs = appName.includes('nextjs') || appName.includes('next-');
       const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
       process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+    } else if (process.env.WORKFLOW_VERCEL_ENV) {
+      // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI.
+      // Build the Vercel world explicitly with the CI-provided config rather than relying on
+      // createWorld() reading these env vars (which no longer happens at runtime).
+      setWorld(
+        createVercelWorld({
+          token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+          projectConfig: {
+            environment: process.env.WORKFLOW_VERCEL_ENV || undefined,
+            projectId: process.env.WORKFLOW_VERCEL_PROJECT || undefined,
+            projectName: process.env.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
+            teamId: process.env.WORKFLOW_VERCEL_TEAM || undefined,
+          },
+        })
+      );
     }
-    // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI
     // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
   });
 

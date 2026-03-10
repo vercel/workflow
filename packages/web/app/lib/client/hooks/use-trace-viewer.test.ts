@@ -8,20 +8,11 @@ vi.mock('@workflow/web-shared', () => ({
 
 vi.mock('~/lib/rpc-client', () => ({
   fetchRun: vi.fn(),
-  fetchSteps: vi.fn(),
-  fetchHooks: vi.fn(),
   fetchEvents: vi.fn(),
-  fetchEventsByCorrelationId: vi.fn(),
 }));
 
 import type { WorkflowRun } from '@workflow/world';
-import {
-  fetchEvents,
-  fetchEventsByCorrelationId,
-  fetchHooks,
-  fetchRun,
-  fetchSteps,
-} from '~/lib/rpc-client';
+import { fetchEvents, fetchRun } from '~/lib/rpc-client';
 
 const env = { SOME_VAR: 'test' };
 
@@ -52,7 +43,6 @@ function emptyPage() {
 describe('useWorkflowTraceViewerData', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(fetchEventsByCorrelationId).mockReturnValue(emptyPage());
   });
 
   it('shows complete trace data on load', async () => {
@@ -60,8 +50,6 @@ describe('useWorkflowTraceViewerData', () => {
       success: true,
       data: WORKFLOW_RUN,
     });
-    vi.mocked(fetchSteps).mockReturnValue(emptyPage());
-    vi.mocked(fetchHooks).mockReturnValue(emptyPage());
     vi.mocked(fetchEvents).mockReturnValue(emptyPage());
 
     const { result } = renderHook(() =>
@@ -73,8 +61,6 @@ describe('useWorkflowTraceViewerData', () => {
     });
 
     expect(result.current.run).toEqual(WORKFLOW_RUN);
-    expect(result.current.steps).toEqual([]);
-    expect(result.current.hooks).toEqual([]);
     expect(result.current.events).toEqual([]);
     expect(result.current.error).toBeNull();
   });
@@ -89,8 +75,6 @@ describe('useWorkflowTraceViewerData', () => {
         request: { operation: 'fetchRun', params: {} },
       },
     });
-    vi.mocked(fetchSteps).mockReturnValue(emptyPage());
-    vi.mocked(fetchHooks).mockReturnValue(emptyPage());
     vi.mocked(fetchEvents).mockReturnValue(emptyPage());
 
     const { result } = renderHook(() =>
@@ -104,29 +88,28 @@ describe('useWorkflowTraceViewerData', () => {
     expect(result.current.error?.message).toBe('run not found');
   });
 
-  it('shows steps associated with the run', async () => {
+  it('shows events associated with the run', async () => {
     vi.mocked(fetchRun).mockResolvedValue({
       success: true,
       data: WORKFLOW_RUN,
     });
-    vi.mocked(fetchSteps).mockResolvedValue({
+    vi.mocked(fetchEvents).mockResolvedValue({
       success: true,
       data: {
         data: [
           {
-            stepId: 'step-1',
+            eventId: 'evt-1',
             runId: 'run-1',
-            status: 'completed',
+            eventType: 'step_created',
+            correlationId: 'step-1',
             createdAt: new Date(),
-            updatedAt: new Date(),
+            eventData: { stepName: 'myStep' },
           },
         ] as any,
         cursor: undefined,
         hasMore: false,
       },
     });
-    vi.mocked(fetchHooks).mockReturnValue(emptyPage());
-    vi.mocked(fetchEvents).mockReturnValue(emptyPage());
 
     const { result } = renderHook(() =>
       useWorkflowTraceViewerData(env, 'run-1')
@@ -136,33 +119,14 @@ describe('useWorkflowTraceViewerData', () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(result.current.steps).toHaveLength(1);
-    expect(result.current.steps[0]).toMatchObject({ stepId: 'step-1' });
+    expect(result.current.events).toHaveLength(1);
+    expect(result.current.events[0]).toMatchObject({ eventId: 'evt-1' });
   });
 
-  it('shows hooks associated with the run', async () => {
+  it('uses correct page sizes for initial load', async () => {
     vi.mocked(fetchRun).mockResolvedValue({
       success: true,
       data: WORKFLOW_RUN,
-    });
-    vi.mocked(fetchSteps).mockReturnValue(emptyPage());
-    vi.mocked(fetchHooks).mockResolvedValue({
-      success: true,
-      data: {
-        data: [
-          {
-            hookId: 'hook-1',
-            runId: 'run-1',
-            createdAt: new Date(),
-            token: 'tok-1',
-            ownerId: 'owner-1',
-            projectId: 'proj-1',
-            environment: 'development',
-          },
-        ] as any,
-        cursor: undefined,
-        hasMore: false,
-      },
     });
     vi.mocked(fetchEvents).mockReturnValue(emptyPage());
 
@@ -174,7 +138,39 @@ describe('useWorkflowTraceViewerData', () => {
       expect(result.current.loading).toBe(false);
     });
 
-    expect(result.current.hooks).toHaveLength(1);
-    expect(result.current.hooks[0]).toMatchObject({ hookId: 'hook-1' });
+    // Initial fetch should use INITIAL_PAGE_SIZE
+    expect(vi.mocked(fetchEvents)).toHaveBeenCalledWith(
+      env,
+      'run-1',
+      expect.objectContaining({
+        sortOrder: 'asc',
+        withData: true,
+      })
+    );
+  });
+
+  it('reports hasMoreTraceData when events have more pages', async () => {
+    vi.mocked(fetchRun).mockResolvedValue({
+      success: true,
+      data: WORKFLOW_RUN,
+    });
+    vi.mocked(fetchEvents).mockResolvedValue({
+      success: true,
+      data: {
+        data: [],
+        cursor: 'next-cursor',
+        hasMore: true,
+      },
+    });
+
+    const { result } = renderHook(() =>
+      useWorkflowTraceViewerData(env, 'run-1')
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.hasMoreTraceData).toBe(true);
   });
 });

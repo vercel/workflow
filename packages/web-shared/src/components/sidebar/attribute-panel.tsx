@@ -215,7 +215,10 @@ type AttributeKey =
   | 'eventData'
   | 'resumeAt'
   | 'expiredAt'
-  | 'workflowCoreVersion';
+  | 'workflowCoreVersion'
+  | 'receivedCount'
+  | 'lastReceivedAt'
+  | 'disposedAt';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -228,6 +231,9 @@ const attributeOrder: AttributeKey[] = [
   'runId',
   'attempt',
   'token',
+  'receivedCount',
+  'lastReceivedAt',
+  'disposedAt',
   'correlationId',
   'eventType',
   'deploymentId',
@@ -262,6 +268,7 @@ const sortByAttributeOrder = (a: string, b: string): number => {
  */
 const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   workflowCoreVersion: '@workflow/core version',
+  receivedCount: 'times resolved',
 };
 
 /**
@@ -353,6 +360,9 @@ const attributeToDisplayFn: Record<
   // Hook details
   token: (value: unknown) => String(value),
   isWebhook: (value: unknown) => String(value),
+  receivedCount: (value: unknown) => String(value),
+  lastReceivedAt: localMillisecondTimeOrNull,
+  disposedAt: localMillisecondTimeOrNull,
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),
@@ -773,13 +783,18 @@ export const AttributePanel = ({
                 typeof displayValue === 'string'
                   ? displayValue
                   : String(displayValue ?? displayData.moduleSpecifier ?? '');
+              const shouldCapitalizeLabel = attribute !== 'workflowCoreVersion';
               const showDivider = index < orderedBasicAttributes.length - 1;
 
               return (
                 <div key={attribute} className="py-1">
                   <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
                     <span
-                      className="text-[14px] first-letter:uppercase"
+                      className={
+                        shouldCapitalizeLabel
+                          ? 'text-[14px] first-letter:uppercase'
+                          : 'text-[14px]'
+                      }
                       style={{ color: 'var(--ds-gray-700)' }}
                     >
                       {getAttributeDisplayName(attribute)}

@@ -732,44 +732,6 @@ export async function fetchEvent(
 }
 
 /**
- * Fetch events by correlation ID
- */
-export async function fetchEventsByCorrelationId(
-  worldEnv: EnvMap,
-  correlationId: string,
-  params: {
-    cursor?: string;
-    sortOrder?: 'asc' | 'desc';
-    limit?: number;
-    withData?: boolean;
-  }
-): Promise<ServerActionResult<PaginatedResult<Event>>> {
-  const { cursor, sortOrder = 'asc', limit = 1000, withData = false } = params;
-  try {
-    const world = await getWorldFromEnv(worldEnv);
-    const result = await world.events.listByCorrelationId({
-      correlationId,
-      pagination: { cursor, limit, sortOrder },
-      resolveData: withData ? 'all' : 'none',
-    });
-    return createResponse({
-      data: result.data as Event[],
-      cursor: result.cursor ?? undefined,
-      hasMore: result.hasMore,
-    });
-  } catch (error) {
-    return createServerActionError<PaginatedResult<Event>>(
-      error,
-      'world.events.listByCorrelationId',
-      {
-        correlationId,
-        ...params,
-      }
-    );
-  }
-}
-
-/**
  * Fetch paginated list of hooks
  */
 export async function fetchHooks(
