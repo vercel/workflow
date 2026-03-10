@@ -156,4 +156,64 @@ describe('start', () => {
       );
     });
   });
+
+  describe('encryption', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+    let mockGetEncryptionKeyForRun: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+      mockGetEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_resolved'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        getEncryptionKeyForRun: mockGetEncryptionKeyForRun,
+      } as any);
+    });
+
+    afterEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should pass resolved deploymentId to getEncryptionKeyForRun even when not in opts', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      // Call start() without explicit deploymentId in options — it should
+      // be resolved from world.getDeploymentId() and forwarded to
+      // getEncryptionKeyForRun so the key can be fetched.
+      await start(validWorkflow, []);
+
+      expect(mockGetEncryptionKeyForRun).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          deploymentId: 'deploy_resolved',
+        })
+      );
+    });
+
+    it('should pass explicit deploymentId from opts to getEncryptionKeyForRun', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      await start(validWorkflow, [], { deploymentId: 'deploy_explicit' });
+
+      expect(mockGetEncryptionKeyForRun).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          deploymentId: 'deploy_explicit',
+        })
+      );
+    });
+  });
 });
