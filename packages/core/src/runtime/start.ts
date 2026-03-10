@@ -105,7 +105,23 @@ export async function start<TArgs extends unknown[], TResult>(
       });
 
       const world = opts?.world ?? getWorld();
-      const deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+      let deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+
+      // When 'latest' is requested, resolve the actual latest deployment ID
+      // for the current deployment's environment (same production target or
+      // same git branch for preview deployments).
+      if (deploymentId === 'latest') {
+        if (!world.resolveLatestDeploymentId) {
+          throw new WorkflowRuntimeError(
+            "deploymentId 'latest' requires a World that implements resolveLatestDeploymentId()"
+          );
+        }
+        deploymentId = await world.resolveLatestDeploymentId();
+        // Update opts so downstream consumers (e.g., getEncryptionKeyForRun)
+        // see the resolved deployment ID, not the 'latest' sentinel.
+        opts.deploymentId = deploymentId;
+      }
+
       const ops: Promise<void>[] = [];
 
       // Generate runId client-side so we have it before serialization
