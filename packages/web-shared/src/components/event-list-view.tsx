@@ -1,7 +1,7 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, Step, WorkflowRun } from '@workflow/world';
+import type { Event, WorkflowRun } from '@workflow/world';
 import { Check, ChevronRight, Copy } from 'lucide-react';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -103,11 +103,11 @@ function getStatusDotColor(eventType: string): string {
 }
 
 /**
- * Build a map from correlationId (stepId) → display name using step entities,
- * and parse the workflow name from the run.
+ * Build a map from correlationId (stepId) → display name using step_created
+ * events, and parse the workflow name from the run.
  */
 function buildNameMaps(
-  steps: Step[] | null,
+  events: Event[] | null,
   run: WorkflowRun | null
 ): {
   correlationNameMap: Map<string, string>;
@@ -115,11 +115,17 @@ function buildNameMaps(
 } {
   const correlationNameMap = new Map<string, string>();
 
-  // Map step correlationId (= stepId) → parsed step name
-  if (steps) {
-    for (const step of steps) {
-      const parsed = parseStepName(String(step.stepName));
-      correlationNameMap.set(step.stepId, parsed?.shortName ?? step.stepName);
+  // Map step correlationId (= stepId) → parsed step name from step_created events
+  if (events) {
+    for (const event of events) {
+      if (event.eventType === 'step_created' && event.correlationId) {
+        const stepName = event.eventData?.stepName ?? '';
+        const parsed = parseStepName(String(stepName));
+        correlationNameMap.set(
+          event.correlationId,
+          parsed?.shortName ?? stepName
+        );
+      }
     }
   }
 
@@ -583,7 +589,6 @@ function PayloadBlock({
 
 interface EventsListProps {
   events: Event[] | null;
-  steps?: Step[] | null;
   run?: WorkflowRun | null;
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
   hasMoreEvents?: boolean;
@@ -960,7 +965,6 @@ function EventRow({
 
 export function EventListView({
   events,
-  steps,
   run,
   onLoadEventData,
   hasMoreEvents = false,
@@ -977,8 +981,8 @@ export function EventListView({
   }, [events]);
 
   const { correlationNameMap, workflowName } = useMemo(
-    () => buildNameMaps(steps ?? null, run ?? null),
-    [steps, run]
+    () => buildNameMaps(events ?? null, run ?? null),
+    [events, run]
   );
 
   const durationMap = useMemo(

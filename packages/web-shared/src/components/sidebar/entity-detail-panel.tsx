@@ -5,10 +5,10 @@ import clsx from 'clsx';
 import { Lock, Send, Unlock, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { isEncryptedMarker } from '../../lib/hydration';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
-import { isEncryptedMarker } from '../../lib/hydration';
 
 // Type guards for runtime validation of span attribute data
 function isStep(data: unknown): data is Step {
@@ -54,7 +54,6 @@ export interface SelectedSpanInfo {
  */
 export function EntityDetailPanel({
   run,
-  hooks,
   onStreamClick,
   spanDetailData,
   spanDetailError,
@@ -68,8 +67,6 @@ export function EntityDetailPanel({
   selectedSpan,
 }: {
   run: WorkflowRun;
-  /** All hooks for the current run (used as fallback for token lookup). */
-  hooks?: Hook[];
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
   /** Pre-fetched span detail data for the selected span. */
@@ -133,10 +130,11 @@ export function EntityDetailPanel({
       return { resource: 'hook', resourceId: data.hookId, runId: undefined };
     }
     if (res === 'sleep') {
+      const waitData = data as { runId?: string } | undefined;
       return {
         resource: 'sleep',
         resourceId: selectedSpan.spanId,
-        runId: undefined,
+        runId: waitData?.runId,
       };
     }
     return { resource: undefined, resourceId: undefined, runId: undefined };
@@ -218,17 +216,12 @@ export function EntityDetailPanel({
     if (isHook(spanDetailData) && spanDetailData.token) {
       return spanDetailData.token;
     }
-    // 2. Try the hooks array (always has tokens)
-    const hookFromArray = hooks?.find((h) => h.hookId === resourceId);
-    if (hookFromArray?.token) {
-      return hookFromArray.token;
-    }
-    // 3. Try the span's inline data (partial hook from events - may lack token)
+    // 2. Try the span's inline data (reconstructed from hook_created event)
     if (isHook(data) && (data as Hook).token) {
       return (data as Hook).token;
     }
     return undefined;
-  }, [resource, resourceId, spanDetailData, data, hooks]);
+  }, [resource, resourceId, spanDetailData, data]);
 
   useEffect(() => {
     if (error && selectedSpan && resource) {
@@ -314,10 +307,6 @@ export function EntityDetailPanel({
     [onResolveHook, hookToken, resolvingHook, spanDetailData, data]
   );
 
-  if (!selectedSpan || !resource || !resourceId) {
-    return null;
-  }
-
   // Prefer externally-fetched details when available. For sleep spans, the
   // host fetches full correlated events (withData=true) and materializes a wait
   // entity, so this includes resumeAt/completedAt without bloating trace payloads.
@@ -326,6 +315,7 @@ export function EntityDetailPanel({
     | Step
     | Hook
     | Event;
+
   const moduleSpecifier = useMemo(() => {
     const displayRecord = displayData as Record<string, unknown>;
     const displayStepName = displayRecord.stepName;
@@ -341,6 +331,10 @@ export function EntityDetailPanel({
     }
     return undefined;
   }, [displayData, run.workflowName]);
+
+  if (!selectedSpan || !resource || !resourceId) {
+    return null;
+  }
 
   const resourceLabel = resource.charAt(0).toUpperCase() + resource.slice(1);
   const hasPendingActions =
