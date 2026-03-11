@@ -596,6 +596,8 @@ interface EventsListProps {
   onLoadMoreEvents?: () => Promise<void> | void;
   /** When provided, signals that decryption is active (triggers re-load of expanded events) */
   encryptionKey?: Uint8Array;
+  /** When true, shows a loading state instead of "No events found" for empty lists */
+  isLoading?: boolean;
 }
 
 function EventRow({
@@ -971,6 +973,7 @@ export function EventListView({
   isLoadingMoreEvents = false,
   onLoadMoreEvents,
   encryptionKey,
+  isLoading = false,
 }: EventsListProps) {
   const sortedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
@@ -1067,7 +1070,7 @@ export function EventListView({
         className="flex items-center justify-center h-full text-sm"
         style={{ color: 'var(--ds-gray-700)' }}
       >
-        No events found
+        {isLoading ? 'Loading events…' : 'No events found'}
       </div>
     );
   }

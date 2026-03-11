@@ -749,6 +749,7 @@ export function RunDetailView({
                     run={run}
                     onLoadEventData={handleLoadEventData}
                     encryptionKey={encryptionKey ?? undefined}
+                    isLoading={loading}
                   />
                 </div>
               </ErrorBoundary>
