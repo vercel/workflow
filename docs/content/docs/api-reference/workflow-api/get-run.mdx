@@ -67,7 +67,7 @@ export default StopSleepResult;`}
 
 ### Check if a Run Exists
 
-Use the `exists` getter to check whether a workflow run exists without throwing an error:
+Use the `exists` getter to check whether a workflow run exists without throwing when the run is not found:
 
 ```typescript lineNumbers
 import { getRun } from "workflow/api";

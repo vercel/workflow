@@ -119,7 +119,7 @@ export class Run<TResult> {
    */
   get exists(): Promise<boolean> {
     return this.world.runs
-      .get(this.runId)
+      .get(this.runId, { resolveData: 'none' })
       .then(() => true)
       .catch((error) => {
         if (WorkflowRunNotFoundError.is(error)) {
