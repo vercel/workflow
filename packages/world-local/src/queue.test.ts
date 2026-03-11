@@ -1,6 +1,7 @@
-import type { StepInvokePayload } from '@workflow/world';
+import { JsonTransport } from '@vercel/queue';
+import { MessageId, type StepInvokePayload } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createQueue } from './queue';
+import { createQueue, createQueueExecutor } from './queue';
 
 // Mock node:timers/promises so setTimeout resolves immediately
 vi.mock('node:timers/promises', () => ({
@@ -93,6 +94,29 @@ describe('queue timeout re-enqueue', () => {
 
     const body = await response.json();
     expect(body).toEqual({ timeoutSeconds: 0 });
+  });
+
+  it('executeMessage returns structured timeoutSeconds results', async () => {
+    const executor = createQueueExecutor({ baseUrl: 'http://localhost:3000' });
+    const transport = new JsonTransport();
+    const handler = localQueue.createQueueHandler('__wkf_step_', async () => ({
+      timeoutSeconds: 5,
+    }));
+
+    executor.registerHandler('__wkf_step_', handler);
+
+    try {
+      const result = await executor.executeMessage({
+        queueName: '__wkf_step_test' as const,
+        messageId: MessageId.parse('msg_01ABC'),
+        attempt: 2,
+        body: transport.serialize(stepPayload),
+      });
+
+      expect(result).toEqual({ type: 'reschedule', timeoutSeconds: 5 });
+    } finally {
+      await executor.close();
+    }
   });
 
   it('queue retries when handler returns timeoutSeconds > 0', async () => {

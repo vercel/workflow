@@ -17,7 +17,13 @@ export {
   parseVersion,
 } from './init.js';
 
-export type { DirectHandler } from './queue.js';
+export {
+  createQueueExecutor,
+  type DirectHandler,
+  type QueueExecutionRequest,
+  type QueueExecutionResult,
+  type QueueExecutor,
+} from './queue.js';
 
 export type LocalWorld = World & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
