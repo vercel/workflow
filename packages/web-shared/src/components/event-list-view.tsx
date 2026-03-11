@@ -1143,24 +1143,34 @@ export function EventListView({
 
   const searchIndex = useMemo(() => {
     const entries: {
-      text: string;
+      fields: string[];
       groupKey?: string;
       eventId: string;
       index: number;
     }[] = [];
     for (let i = 0; i < sortedEvents.length; i++) {
       const ev = sortedEvents[i];
+      const isRun = isRunLevel(ev.eventType);
+      const name = isRun
+        ? (workflowName ?? '')
+        : ev.correlationId
+          ? (correlationNameMap.get(ev.correlationId) ?? '')
+          : '';
       entries.push({
-        text: [ev.eventId, ev.correlationId ?? ''].join(' ').toLowerCase(),
-        groupKey:
-          ev.correlationId ??
-          (isRunLevel(ev.eventType) ? '__run__' : undefined),
+        fields: [
+          ev.eventId,
+          ev.correlationId ?? '',
+          ev.eventType,
+          formatEventType(ev.eventType),
+          name,
+        ].map((f) => f.toLowerCase()),
+        groupKey: ev.correlationId ?? (isRun ? '__run__' : undefined),
         eventId: ev.eventId,
         index: i,
       });
     }
     return entries;
-  }, [sortedEvents]);
+  }, [sortedEvents, correlationNameMap, workflowName]);
 
   useEffect(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -1168,11 +1178,23 @@ export function EventListView({
       setSelectedGroupKey(undefined);
       return;
     }
-    const match = searchIndex.find((entry) => entry.text.includes(q));
-    if (match) {
-      setSelectedGroupKey(match.groupKey);
+    let bestMatch: (typeof searchIndex)[number] | null = null;
+    let bestScore = 0;
+    for (const entry of searchIndex) {
+      for (const field of entry.fields) {
+        if (field && field.includes(q)) {
+          const score = q.length / field.length;
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = entry;
+          }
+        }
+      }
+    }
+    if (bestMatch) {
+      setSelectedGroupKey(bestMatch.groupKey);
       virtuosoRef.current?.scrollToIndex({
-        index: match.index,
+        index: bestMatch.index,
         align: 'center',
         behavior: 'smooth',
       });
