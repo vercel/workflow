@@ -1,4 +1,5 @@
 import * as Stream from 'node:stream';
+import { setTimeout } from 'node:timers/promises';
 import { JsonTransport } from '@vercel/queue';
 import {
   MessageId,
@@ -7,7 +8,7 @@ import {
   type QueuePrefix,
   type ValidQueueName,
 } from '@workflow/world';
-import { createLocalWorld } from '@workflow/world-local';
+import { createLocalWorld, createQueueExecutor } from '@workflow/world-local';
 import {
   Logger,
   makeWorkerUtils,
@@ -39,6 +40,8 @@ function createGraphileLogger() {
 }
 
 const graphileLogger = createGraphileLogger();
+const MAX_SAFE_TIMEOUT_MS = 2147483647;
+const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 
 /**
  * The Postgres queue works by creating two job types in graphile-worker:
@@ -61,6 +64,7 @@ export function createQueue(
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createLocalWorld({ dataDir: undefined, port });
+  const executor = createQueueExecutor({ port });
 
   const transport = new JsonTransport();
   const generateMessageId = monotonicFactory();
@@ -71,15 +75,34 @@ export function createQueue(
     __wkf_step_: `${prefix}steps`,
   } as const satisfies Record<QueuePrefix, string>;
 
-  const createQueueHandler = localWorld.createQueueHandler;
+  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
+    const wrappedHandler = localWorld.createQueueHandler(prefix, handler);
+    // Register the HTTP-compatible handler so Graphile workers can execute it
+    // directly in-process when the route module has been loaded.
+    executor.registerHandler(prefix, wrappedHandler);
+    return wrappedHandler;
+  };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     return 'postgres';
   };
 
+  const completedMessages = new Set<string>();
+  const inflightMessages = new Map<string, Promise<void>>();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let startPromise: Promise<void> | null = null;
+
+  function markMessageCompleted(idempotencyKey: string) {
+    completedMessages.delete(idempotencyKey);
+    completedMessages.add(idempotencyKey);
+    if (completedMessages.size > COMPLETED_IDEMPOTENCY_CACHE_LIMIT) {
+      const oldestKey = completedMessages.values().next().value;
+      if (oldestKey) {
+        completedMessages.delete(oldestKey);
+      }
+    }
+  }
 
   async function migratePgBossJobs(utils: WorkerUtils): Promise<void> {
     // Scenario A: Drizzle migration already ran — staging table exists
@@ -154,7 +177,11 @@ export function createQueue(
     const jobName = Queues[prefix];
     const body = transport.serialize(message);
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
-    await workerUtils!.addJob(
+    const utils = workerUtils;
+    if (!utils) {
+      throw new Error('Postgres queue worker utils are not initialized');
+    }
+    await utils.addJob(
       jobName,
       MessageData.encode({
         id: queueId,
@@ -174,20 +201,74 @@ export function createQueue(
   function createTaskHandler(queue: QueuePrefix) {
     return async (payload: unknown) => {
       const messageData = MessageData.parse(payload);
-      const bodyStream = Stream.Readable.toWeb(
-        Stream.Readable.from([messageData.data])
-      );
-      const body = await transport.deserialize(
-        bodyStream as ReadableStream<Uint8Array>
-      );
-      const message = QueuePayloadSchema.parse(body);
-      const queueName = `${queue}${messageData.id}` as const;
-      // TODO: Custom headers from opts.headers are not propagated into MessageData.
-      // To support this, MessageData schema would need to include a headers field
-      // and the headers would need to be stored/retrieved from graphile-worker job data.
-      await localWorld.queue(queueName, message, {
-        idempotencyKey: messageData.idempotencyKey,
-      });
+      const executeTask = async () => {
+        const bodyStream = Stream.Readable.toWeb(
+          Stream.Readable.from([messageData.data])
+        );
+        const body = await transport.deserialize(
+          bodyStream as ReadableStream<Uint8Array>
+        );
+        QueuePayloadSchema.parse(body);
+        const queueName = `${queue}${messageData.id}` as const;
+
+        let attempt = messageData.attempt;
+        while (true) {
+          const result = await executor.executeMessage({
+            queueName,
+            messageId: messageData.messageId,
+            attempt,
+            body: messageData.data,
+          });
+
+          if (result.type === 'completed') {
+            return;
+          }
+
+          if (result.type === 'reschedule') {
+            // This keeps current timeout semantics while removing the second queue
+            // handoff. Durable Graphile rescheduling will replace this next.
+            if (result.timeoutSeconds > 0) {
+              const timeoutMs = Math.min(
+                result.timeoutSeconds * 1000,
+                MAX_SAFE_TIMEOUT_MS
+              );
+              await setTimeout(timeoutMs);
+            }
+            attempt++;
+            continue;
+          }
+
+          throw new Error(
+            `[postgres world] Queue execution failed (${result.status}): ${result.text}`
+          );
+        }
+      };
+
+      const idempotencyKey = messageData.idempotencyKey;
+      if (!idempotencyKey) {
+        await executeTask();
+        return;
+      }
+
+      if (completedMessages.has(idempotencyKey)) {
+        return;
+      }
+
+      const existing = inflightMessages.get(idempotencyKey);
+      if (existing) {
+        await existing;
+        return;
+      }
+
+      const execution = executeTask()
+        .then(() => {
+          markMessageCompleted(idempotencyKey);
+        })
+        .finally(() => {
+          inflightMessages.delete(idempotencyKey);
+        });
+      inflightMessages.set(idempotencyKey, execution);
+      await execution;
     };
   }
 
@@ -224,6 +305,7 @@ export function createQueue(
         workerUtils = null;
       }
       startPromise = null;
+      await executor.close();
       await localWorld.close?.();
     },
   };
