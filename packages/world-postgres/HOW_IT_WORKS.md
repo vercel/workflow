@@ -39,13 +39,6 @@ When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphi
 
 The executor still falls back to the HTTP-compatible workflow endpoints (`.well-known/workflow/v1/flow` or `.well-known/workflow/v1/step`) when the route module has not been loaded yet.
 
-## Concurrency Semantics
-
-`queueConcurrency` now tracks actual active workflow and step executions much more closely because Graphile tasks stay open until work is complete or durably rescheduled.
-
-- Per-process concurrency is controlled by `queueConcurrency`
-- Total deployment concurrency is still `instance count * queueConcurrency`
-- Excess backlog remains in PostgreSQL rather than moving into a second in-memory queue
 
 In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):
 
