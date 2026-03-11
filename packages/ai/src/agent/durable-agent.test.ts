@@ -623,6 +623,283 @@ describe('DurableAgent', () => {
     });
   });
 
+  describe('client-side tools (tools without execute)', () => {
+    it('should stop the loop and return clientToolCalls for tools without execute', async () => {
+      const tools: ToolSet = {
+        askUser: {
+          description: 'Ask the user a question',
+          inputSchema: z.object({ question: z.string() }),
+          // No execute function - this is a client-side tool
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({
+          done: false,
+          value: {
+            toolCalls: [
+              {
+                toolCallId: 'ask-user-call-id',
+                toolName: 'askUser',
+                input: '{"question":"What is your name?"}',
+                providerExecuted: false,
+              } as LanguageModelV2ToolCall,
+            ],
+            messages: mockMessages,
+          },
+        }),
+        // Note: no second call - the loop should stop before calling next again
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      const result = await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // The loop should have stopped - iterator.next called only once
+      expect(mockIterator.next).toHaveBeenCalledTimes(1);
+
+      // Result should contain the client tool calls
+      expect(result.clientToolCalls).toBeDefined();
+      expect(result.clientToolCalls).toHaveLength(1);
+      expect(result.clientToolCalls![0]).toEqual({
+        toolCallId: 'ask-user-call-id',
+        toolName: 'askUser',
+        input: { question: 'What is your name?' },
+      });
+    });
+
+    it('should handle mixed executable and client-side tools in the same step', async () => {
+      const localToolResult = { data: 'from-server' };
+      const localExecuteFn = vi.fn().mockResolvedValue(localToolResult);
+      const tools: ToolSet = {
+        serverTool: {
+          description: 'A server-side tool',
+          inputSchema: z.object({}),
+          execute: localExecuteFn,
+        },
+        clientTool: {
+          description: 'A client-side tool',
+          inputSchema: z.object({ prompt: z.string() }),
+          // No execute function
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const writtenChunks: unknown[] = [];
+      const mockWritable = new WritableStream({
+        write: (chunk) => {
+          writtenChunks.push(chunk);
+        },
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({
+          done: false,
+          value: {
+            toolCalls: [
+              {
+                toolCallId: 'server-call-id',
+                toolName: 'serverTool',
+                input: '{}',
+                providerExecuted: false,
+              } as LanguageModelV2ToolCall,
+              {
+                toolCallId: 'client-call-id',
+                toolName: 'clientTool',
+                input: '{"prompt":"confirm action"}',
+                providerExecuted: false,
+              } as LanguageModelV2ToolCall,
+            ],
+            messages: mockMessages,
+          },
+        }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      const result = await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Server tool should have been executed
+      expect(localExecuteFn).toHaveBeenCalledTimes(1);
+
+      // The resolved server tool result should have been written to UI
+      const toolOutputChunks = writtenChunks.filter(
+        (c: any) => c.type === 'tool-output-available'
+      );
+      expect(toolOutputChunks).toHaveLength(1);
+      expect((toolOutputChunks[0] as any).toolCallId).toBe('server-call-id');
+
+      // Loop should have stopped
+      expect(mockIterator.next).toHaveBeenCalledTimes(1);
+
+      // Result should contain the client tool call
+      expect(result.clientToolCalls).toBeDefined();
+      expect(result.clientToolCalls).toHaveLength(1);
+      expect(result.clientToolCalls![0]).toEqual({
+        toolCallId: 'client-call-id',
+        toolName: 'clientTool',
+        input: { prompt: 'confirm action' },
+      });
+    });
+
+    it('should call onFinish when stopping for client-side tools', async () => {
+      const onFinish = vi.fn();
+      const tools: ToolSet = {
+        askUser: {
+          description: 'Ask the user a question',
+          inputSchema: z.object({ question: z.string() }),
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({
+          done: false,
+          value: {
+            toolCalls: [
+              {
+                toolCallId: 'ask-id',
+                toolName: 'askUser',
+                input: '{"question":"confirm?"}',
+                providerExecuted: false,
+              } as LanguageModelV2ToolCall,
+            ],
+            messages: mockMessages,
+          },
+        }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        onFinish,
+      });
+
+      // onFinish should have been called
+      expect(onFinish).toHaveBeenCalledTimes(1);
+      expect(onFinish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          steps: expect.any(Array),
+          messages: expect.any(Array),
+        })
+      );
+    });
+
+    it('should not include clientToolCalls when all tools have execute functions', async () => {
+      const tools: ToolSet = {
+        serverTool: {
+          description: 'A server tool',
+          inputSchema: z.object({}),
+          execute: vi.fn().mockResolvedValue('result'),
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockMessages: LanguageModelV2Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'server-call-id',
+                  toolName: 'serverTool',
+                  input: '{}',
+                  providerExecuted: false,
+                } as LanguageModelV2ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      const result = await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      // Normal completion - no client tool calls
+      expect(result.clientToolCalls).toBeUndefined();
+    });
+  });
+
   describe('prepareStep callback', () => {
     it('should pass prepareStep callback to streamTextIterator', async () => {
       const mockModel = createMockModel();
