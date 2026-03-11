@@ -146,6 +146,7 @@ describe('postgres queue direct execution', () => {
           messageId: payload.messageId,
         },
         {
+          jobKey: 'step_01ABC',
           maxAttempts: 3,
           runAt: new Date('2024-01-01T00:00:05.000Z'),
         }
@@ -222,6 +223,37 @@ describe('postgres queue direct execution', () => {
     await task(payload, {} as any);
 
     expect(executeMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards graphile retry attempts to queue execution metadata', async () => {
+    executeMessage.mockResolvedValueOnce({ type: 'completed' });
+
+    const queue = createQueue(
+      { connectionString: 'postgres://test' },
+      postgres
+    );
+    await queue.start();
+
+    const task = getTaskHandler('workflow_steps');
+    const payload = MessageData.encode({
+      id: 'test-step',
+      data: transport.serialize({
+        workflowName: 'test-workflow',
+        workflowRunId: 'run_01ABC',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_01ABC',
+      }),
+      attempt: 1,
+      messageId: MessageId.parse('msg_01ABC'),
+    });
+
+    await task(payload, { job: { attempts: 4 } });
+
+    expect(executeMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempt: 4,
+      })
+    );
   });
 
   it('queues producer delays and headers in graphile job metadata', async () => {

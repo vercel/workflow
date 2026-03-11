@@ -17,6 +17,7 @@ import {
 } from 'graphile-worker';
 import type Postgres from 'postgres';
 import { monotonicFactory } from 'ulid';
+import z from 'zod';
 import type { PostgresWorldConfig } from './config.js';
 import { MessageData } from './message.js';
 
@@ -40,6 +41,11 @@ function createGraphileLogger() {
 
 const graphileLogger = createGraphileLogger();
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
+const GraphileHelpers = z.object({
+  job: z.object({
+    attempts: z.number().int().positive(),
+  }),
+});
 
 /**
  * The Postgres queue works by creating two job types in graphile-worker:
@@ -238,8 +244,12 @@ export function createQueue(
   };
 
   function createTaskHandler(queue: QueuePrefix) {
-    return async (payload: unknown) => {
+    return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
+      const graphileAttempt = GraphileHelpers.safeParse(helpers);
+      const attempt = graphileAttempt.success
+        ? graphileAttempt.data.job.attempts
+        : messageData.attempt;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const bodyStream = Stream.Readable.toWeb(
           Stream.Readable.from([messageData.data])
@@ -252,7 +262,7 @@ export function createQueue(
         const result = await executor.executeMessage({
           queueName,
           messageId: messageData.messageId,
-          attempt: messageData.attempt,
+          attempt,
           body: messageData.data,
           headers: messageData.headers,
         });
@@ -269,10 +279,11 @@ export function createQueue(
             queueId: messageData.id,
             body: messageData.data,
             messageId: messageData.messageId,
-            attempt: messageData.attempt + 1,
+            attempt: attempt + 1,
             idempotencyKey: messageData.idempotencyKey,
             headers: messageData.headers,
             delaySeconds: result.timeoutSeconds,
+            jobKey: messageData.idempotencyKey ?? messageData.messageId,
           });
           return 'rescheduled';
         }
@@ -313,7 +324,10 @@ export function createQueue(
   }
 
   async function setupListeners() {
-    const taskList: Record<string, (payload: unknown) => Promise<void>> = {};
+    const taskList: Record<
+      string,
+      (payload: unknown, helpers: unknown) => Promise<void>
+    > = {};
     for (const [prefix, jobName] of Object.entries(Queues) as [
       QueuePrefix,
       string,
