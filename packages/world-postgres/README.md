@@ -58,7 +58,7 @@ const world = createWorld({
 | ------------------ | -------- | -------------------------------------------------------------------------------------- | ----------------------------------- |
 | `connectionString` | `string` | `process.env.WORKFLOW_POSTGRES_URL` or `'postgres://world:world@localhost:5432/world'` | PostgreSQL connection string        |
 | `jobPrefix`        | `string` | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names |
-| `queueConcurrency` | `number` | `10`                                                                                   | Number of concurrent queue workers  |
+| `queueConcurrency` | `number` | `10`                                                                                   | Number of concurrent active workflow/step executions per process |
 
 ## Environment Variables
 
@@ -115,10 +115,20 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 ## Features
 
 - **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
-- **Queue Processing**: Uses graphile-worker for reliable job queue processing
+- **Queue Processing**: Uses graphile-worker as the durable queue and executes jobs inline in the worker
+- **Durable Delays**: Re-schedules waits and retries in PostgreSQL instead of sleeping in process memory
 - **Streaming**: Real-time event streaming capabilities
 - **Health Checks**: Built-in connection health monitoring
 - **Configurable Concurrency**: Adjustable worker concurrency for queue processing
+
+## Queue Behavior
+
+The PostgreSQL world keeps Graphile as the only durable queue.
+
+- Graphile jobs are acknowledged only after the workflow or step execution finishes, or after the worker durably schedules a delayed follow-up job
+- `queueConcurrency` now maps much more closely to real active execution concurrency for the current process
+- Backlog stays in PostgreSQL when all execution slots are busy
+- Retry and sleep-style delays use Graphile `runAt` scheduling instead of in-process `setTimeout()`
 
 ## Development
 

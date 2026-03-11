@@ -77,58 +77,82 @@ describe('postgres queue direct execution', () => {
 
     await queue.start();
 
-    const taskList = vi.mocked(run).mock.calls[0]?.[0]?.taskList;
-    expect(taskList).toBeDefined();
+    const task = getTaskHandler('workflow_flows');
 
     const message = {
       runId: 'run_01ABC',
     } satisfies QueuePayload;
-    const payload = buildMessageData('__wkf_workflow_test-flow', message);
+    const payload = buildMessageData('__wkf_workflow_test-flow', message, {
+      headers: { traceparent: 'trace-parent' },
+    });
 
-    await taskList.workflow_flows(payload);
+    await task(payload, {} as any);
 
     expect(executeMessage).toHaveBeenCalledWith({
       queueName: '__wkf_workflow_test-flow',
       messageId: payload.messageId,
       attempt: 1,
       body: transport.serialize(message),
+      headers: { traceparent: 'trace-parent' },
     });
   });
 
-  it('retries direct execution in-process while preserving attempt metadata', async () => {
-    executeMessage
-      .mockResolvedValueOnce({ type: 'reschedule', timeoutSeconds: 0 })
-      .mockResolvedValueOnce({ type: 'completed' });
+  it('durably reschedules execution with incremented attempt metadata', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
 
-    const queue = createQueue(
-      { connectionString: 'postgres://test' },
-      postgres
-    );
-    await queue.start();
+    try {
+      executeMessage.mockResolvedValueOnce({
+        type: 'reschedule',
+        timeoutSeconds: 5,
+      });
 
-    const taskList = vi.mocked(run).mock.calls[0]?.[0]?.taskList;
-    const message = {
-      workflowName: 'test-workflow',
-      workflowRunId: 'run_01ABC',
-      workflowStartedAt: Date.now(),
-      stepId: 'step_01ABC',
-    } satisfies QueuePayload;
-    const payload = buildMessageData('__wkf_step_test-step', message);
+      const queue = createQueue(
+        { connectionString: 'postgres://test' },
+        postgres
+      );
+      await queue.start();
 
-    await taskList.workflow_steps(payload);
+      const task = getTaskHandler('workflow_steps');
+      const message = {
+        workflowName: 'test-workflow',
+        workflowRunId: 'run_01ABC',
+        workflowStartedAt: Date.now(),
+        stepId: 'step_01ABC',
+      } satisfies QueuePayload;
+      const payload = buildMessageData('__wkf_step_test-step', message, {
+        idempotencyKey: 'step_01ABC',
+        headers: { traceparent: 'trace-parent' },
+      });
 
-    expect(executeMessage).toHaveBeenNthCalledWith(1, {
-      queueName: '__wkf_step_test-step',
-      messageId: payload.messageId,
-      attempt: 1,
-      body: transport.serialize(message),
-    });
-    expect(executeMessage).toHaveBeenNthCalledWith(2, {
-      queueName: '__wkf_step_test-step',
-      messageId: payload.messageId,
-      attempt: 2,
-      body: transport.serialize(message),
-    });
+      await task(payload, {} as any);
+
+      expect(executeMessage).toHaveBeenCalledWith({
+        queueName: '__wkf_step_test-step',
+        messageId: payload.messageId,
+        attempt: 1,
+        body: transport.serialize(message),
+        headers: { traceparent: 'trace-parent' },
+      });
+
+      expect(workerUtilsMock.addJob).toHaveBeenLastCalledWith(
+        'workflow_steps',
+        {
+          attempt: 2,
+          data: payload.data,
+          headers: { traceparent: 'trace-parent' },
+          id: 'test-step',
+          idempotencyKey: 'step_01ABC',
+          messageId: payload.messageId,
+        },
+        {
+          maxAttempts: 3,
+          runAt: new Date('2024-01-01T00:00:05.000Z'),
+        }
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('deduplicates concurrent executions with the same idempotency key', async () => {
@@ -146,7 +170,7 @@ describe('postgres queue direct execution', () => {
     );
     await queue.start();
 
-    const taskList = vi.mocked(run).mock.calls[0]?.[0]?.taskList;
+    const task = getTaskHandler('workflow_steps');
     const payload = MessageData.encode({
       id: 'test-step',
       data: transport.serialize({
@@ -160,8 +184,8 @@ describe('postgres queue direct execution', () => {
       idempotencyKey: 'step_01ABC',
     });
 
-    const first = taskList.workflow_steps(payload);
-    const second = taskList.workflow_steps(payload);
+    const first = task(payload, {} as any);
+    const second = task(payload, {} as any);
 
     await vi.waitFor(() => {
       expect(executeMessage).toHaveBeenCalledTimes(1);
@@ -180,7 +204,7 @@ describe('postgres queue direct execution', () => {
     );
     await queue.start();
 
-    const taskList = vi.mocked(run).mock.calls[0]?.[0]?.taskList;
+    const task = getTaskHandler('workflow_steps');
     const payload = MessageData.encode({
       id: 'test-step',
       data: transport.serialize({
@@ -194,14 +218,68 @@ describe('postgres queue direct execution', () => {
       idempotencyKey: 'step_01ABC',
     });
 
-    await taskList.workflow_steps(payload);
-    await taskList.workflow_steps(payload);
+    await task(payload, {} as any);
+    await task(payload, {} as any);
 
     expect(executeMessage).toHaveBeenCalledTimes(1);
   });
+
+  it('queues producer delays and headers in graphile job metadata', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
+
+    try {
+      const queue = createQueue(
+        { connectionString: 'postgres://test' },
+        postgres
+      );
+      await queue.start();
+
+      await queue.queue(
+        '__wkf_step_test-step',
+        {
+          workflowName: 'test-workflow',
+          workflowRunId: 'run_01ABC',
+          workflowStartedAt: Date.now(),
+          stepId: 'step_01ABC',
+        },
+        {
+          delaySeconds: 5,
+          headers: { traceparent: 'trace-parent' },
+          idempotencyKey: 'step_01ABC',
+        }
+      );
+
+      expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
+        'workflow_steps',
+        expect.objectContaining({
+          attempt: 1,
+          headers: { traceparent: 'trace-parent' },
+          id: 'test-step',
+          idempotencyKey: 'step_01ABC',
+        }),
+        expect.objectContaining({
+          jobKey: 'step_01ABC',
+          maxAttempts: 3,
+          runAt: new Date('2024-01-01T00:00:05.000Z'),
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
-function buildMessageData(queueName: string, payload: QueuePayload) {
+function buildMessageData(
+  queueName: string,
+  payload: QueuePayload,
+  opts?: {
+    attempt?: number;
+    headers?: Record<string, string>;
+    idempotencyKey?: string;
+    messageId?: MessageId;
+  }
+) {
   const [, id] = queueName.startsWith('__wkf_step_')
     ? ['__wkf_step_', queueName.slice('__wkf_step_'.length)]
     : ['__wkf_workflow_', queueName.slice('__wkf_workflow_'.length)];
@@ -209,7 +287,16 @@ function buildMessageData(queueName: string, payload: QueuePayload) {
   return MessageData.encode({
     id,
     data: transport.serialize(payload),
-    attempt: 1,
-    messageId: MessageId.parse('msg_01ABC'),
+    attempt: opts?.attempt ?? 1,
+    headers: opts?.headers,
+    idempotencyKey: opts?.idempotencyKey,
+    messageId: opts?.messageId ?? MessageId.parse('msg_01ABC'),
   });
+}
+
+function getTaskHandler(name: 'workflow_flows' | 'workflow_steps') {
+  const taskList = vi.mocked(run).mock.calls[0]?.[0]?.taskList;
+  const task = taskList?.[name];
+  expect(task).toBeTypeOf('function');
+  return task as (payload: unknown, helpers: unknown) => Promise<void>;
 }

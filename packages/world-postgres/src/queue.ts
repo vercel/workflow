@@ -1,5 +1,4 @@
 import * as Stream from 'node:stream';
-import { setTimeout } from 'node:timers/promises';
 import { JsonTransport } from '@vercel/queue';
 import {
   MessageId,
@@ -40,7 +39,6 @@ function createGraphileLogger() {
 }
 
 const graphileLogger = createGraphileLogger();
-const MAX_SAFE_TIMEOUT_MS = 2147483647;
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 
 /**
@@ -102,6 +100,55 @@ export function createQueue(
         completedMessages.delete(oldestKey);
       }
     }
+  }
+
+  async function addGraphileJob({
+    queuePrefix,
+    queueId,
+    body,
+    messageId,
+    attempt,
+    idempotencyKey,
+    headers,
+    delaySeconds,
+    jobKey,
+  }: {
+    queuePrefix: QueuePrefix;
+    queueId: string;
+    body: Buffer | Uint8Array;
+    messageId: MessageId;
+    attempt: number;
+    idempotencyKey?: string;
+    headers?: Record<string, string>;
+    delaySeconds?: number;
+    jobKey?: string;
+  }) {
+    const utils = workerUtils;
+    if (!utils) {
+      throw new Error('Postgres queue worker utils are not initialized');
+    }
+
+    const runAt =
+      typeof delaySeconds === 'number' && delaySeconds > 0
+        ? new Date(Date.now() + delaySeconds * 1000)
+        : undefined;
+
+    await utils.addJob(
+      Queues[queuePrefix],
+      MessageData.encode({
+        id: queueId,
+        data: Buffer.from(body),
+        attempt,
+        messageId,
+        idempotencyKey,
+        headers,
+      }),
+      {
+        ...(jobKey ? { jobKey } : {}),
+        ...(runAt ? { runAt } : {}),
+        maxAttempts: 3,
+      }
+    );
   }
 
   async function migratePgBossJobs(utils: WorkerUtils): Promise<void> {
@@ -173,35 +220,27 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
-    const [prefix, queueId] = parseQueueName(queue);
-    const jobName = Queues[prefix];
+    const [queuePrefix, queueId] = parseQueueName(queue);
     const body = transport.serialize(message);
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
-    const utils = workerUtils;
-    if (!utils) {
-      throw new Error('Postgres queue worker utils are not initialized');
-    }
-    await utils.addJob(
-      jobName,
-      MessageData.encode({
-        id: queueId,
-        data: body,
-        attempt: 1,
-        messageId,
-        idempotencyKey: opts?.idempotencyKey,
-      }),
-      {
-        jobKey: opts?.idempotencyKey ?? messageId,
-        maxAttempts: 3,
-      }
-    );
+    await addGraphileJob({
+      queuePrefix,
+      queueId,
+      body,
+      messageId,
+      attempt: 1,
+      idempotencyKey: opts?.idempotencyKey,
+      headers: opts?.headers,
+      delaySeconds: opts?.delaySeconds,
+      jobKey: opts?.idempotencyKey ?? messageId,
+    });
     return { messageId };
   };
 
   function createTaskHandler(queue: QueuePrefix) {
     return async (payload: unknown) => {
       const messageData = MessageData.parse(payload);
-      const executeTask = async () => {
+      const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const bodyStream = Stream.Readable.toWeb(
           Stream.Readable.from([messageData.data])
         );
@@ -210,38 +249,37 @@ export function createQueue(
         );
         QueuePayloadSchema.parse(body);
         const queueName = `${queue}${messageData.id}` as const;
+        const result = await executor.executeMessage({
+          queueName,
+          messageId: messageData.messageId,
+          attempt: messageData.attempt,
+          body: messageData.data,
+          headers: messageData.headers,
+        });
 
-        let attempt = messageData.attempt;
-        while (true) {
-          const result = await executor.executeMessage({
-            queueName,
-            messageId: messageData.messageId,
-            attempt,
-            body: messageData.data,
-          });
-
-          if (result.type === 'completed') {
-            return;
-          }
-
-          if (result.type === 'reschedule') {
-            // This keeps current timeout semantics while removing the second queue
-            // handoff. Durable Graphile rescheduling will replace this next.
-            if (result.timeoutSeconds > 0) {
-              const timeoutMs = Math.min(
-                result.timeoutSeconds * 1000,
-                MAX_SAFE_TIMEOUT_MS
-              );
-              await setTimeout(timeoutMs);
-            }
-            attempt++;
-            continue;
-          }
-
-          throw new Error(
-            `[postgres world] Queue execution failed (${result.status}): ${result.text}`
-          );
+        if (result.type === 'completed') {
+          return 'completed';
         }
+
+        if (result.type === 'reschedule') {
+          // Schedule the follow-up job before we return so a crash cannot
+          // lose the wake-up request.
+          await addGraphileJob({
+            queuePrefix: queue,
+            queueId: messageData.id,
+            body: messageData.data,
+            messageId: messageData.messageId,
+            attempt: messageData.attempt + 1,
+            idempotencyKey: messageData.idempotencyKey,
+            headers: messageData.headers,
+            delaySeconds: result.timeoutSeconds,
+          });
+          return 'rescheduled';
+        }
+
+        throw new Error(
+          `[postgres world] Queue execution failed (${result.status}): ${result.text}`
+        );
       };
 
       const idempotencyKey = messageData.idempotencyKey;
@@ -261,8 +299,10 @@ export function createQueue(
       }
 
       const execution = executeTask()
-        .then(() => {
-          markMessageCompleted(idempotencyKey);
+        .then((result) => {
+          if (result === 'completed') {
+            markMessageCompleted(idempotencyKey);
+          }
         })
         .finally(() => {
           inflightMessages.delete(idempotencyKey);
