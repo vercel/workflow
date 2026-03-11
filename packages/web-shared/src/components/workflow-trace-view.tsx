@@ -706,12 +706,14 @@ function PanelResizeHandle({
 function TraceViewerFooter({
   hasMore,
   isLive,
+  isInitialLoading,
 }: {
   hasMore: boolean;
   isLive: boolean;
+  isInitialLoading: boolean;
 }): ReactNode {
   const style = { color: 'var(--ds-gray-900)' };
-  if (hasMore) {
+  if (hasMore || isInitialLoading) {
     return (
       <div
         className="flex items-center justify-center gap-2 py-3 text-xs"
@@ -997,9 +999,13 @@ export const WorkflowTraceViewer = ({
               isLive={isLive}
               trace={trace}
               knownDurationMs={traceWithMeta?.knownDurationMs}
-              hasMoreData={hasMoreSpans}
+              hasMoreData={hasMoreSpans || Boolean(isLoading)}
               footer={
-                <TraceViewerFooter hasMore={hasMoreSpans} isLive={isLive} />
+                <TraceViewerFooter
+                  hasMore={hasMoreSpans}
+                  isLive={isLive}
+                  isInitialLoading={Boolean(isLoading)}
+                />
               }
             />
           </TraceViewerWithContextMenu>
