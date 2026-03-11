@@ -58,7 +58,7 @@ const world = createWorld({
 | ------------------ | -------- | -------------------------------------------------------------------------------------- | ----------------------------------- |
 | `connectionString` | `string` | `process.env.WORKFLOW_POSTGRES_URL` or `'postgres://world:world@localhost:5432/world'` | PostgreSQL connection string        |
 | `jobPrefix`        | `string` | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names |
-| `queueConcurrency` | `number` | `10`                                                                                   | Number of concurrent active workflow/step executions per process |
+| `queueConcurrency` | `number` | `10`                                                                                   | Number of concurrent active step executions per process |
 
 ## Environment Variables
 
