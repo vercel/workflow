@@ -951,23 +951,24 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               await closeStream(options.writable, preventClose, sendFinish);
             }
 
-            // Use iterMessages (which includes the assistant tool-call message)
-            // so callers can resume by appending tool results to the conversation
-            const messages = iterMessages as unknown as ModelMessage[];
-
-            // If there are resolved tool results, add them to messages so callers
+            // Add resolved tool results to the conversation so callers
             // don't need to re-execute server tools when resuming
             if (resolvedResults.length > 0) {
-              (messages as unknown as LanguageModelV2Prompt).push({
+              iterMessages.push({
                 role: 'tool',
                 content: resolvedResults,
               });
             }
 
+            // iterMessages includes the assistant tool-call message (and any
+            // resolved tool results), so callers can resume the conversation.
+            // Cast matches the existing pattern used at the end of stream().
+            const messages = iterMessages as unknown as ModelMessage[];
+
             if (options.onFinish && !wasAborted) {
               await options.onFinish({
                 steps,
-                messages: messages as ModelMessage[],
+                messages,
                 experimental_context: experimentalContext,
                 experimental_output: undefined as OUTPUT,
               });
@@ -978,7 +979,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               : undefined;
 
             return {
-              messages: messages as ModelMessage[],
+              messages,
               steps,
               toolCalls: allToolCalls,
               toolResults: allToolResults,
