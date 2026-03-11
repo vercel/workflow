@@ -869,13 +869,15 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
           // Further split non-provider tool calls into executable (has execute function)
           // and client-side (no execute function, needs external resolution)
+          // Note: missing tools (!tool) are left to executeTool which will throw —
+          // only tools that exist but lack execute are treated as client-side.
           const executableToolCalls = nonProviderToolCalls.filter((tc) => {
             const tool = (effectiveTools as ToolSet)[tc.toolName];
-            return tool && typeof tool.execute === 'function';
+            return !tool || typeof tool.execute === 'function';
           });
           const clientSideToolCalls = nonProviderToolCalls.filter((tc) => {
             const tool = (effectiveTools as ToolSet)[tc.toolName];
-            return !tool || typeof tool.execute !== 'function';
+            return tool && typeof tool.execute !== 'function';
           });
 
           // If there are client-side tool calls, stop the loop and return them
@@ -908,11 +910,15 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               const writer = options.writable.getWriter();
               try {
                 for (const result of resolvedResults) {
-                  await writer.write({
+                  const chunk: UIMessageChunk = {
                     type: 'tool-output-available' as const,
                     toolCallId: result.toolCallId,
                     output: result.output.value,
-                  } as UIMessageChunk);
+                  };
+                  await writer.write(chunk);
+                  if (collectUIChunks) {
+                    allUIChunks.push(chunk);
+                  }
                 }
               } finally {
                 writer.releaseLock();
@@ -945,8 +951,18 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               await closeStream(options.writable, preventClose, sendFinish);
             }
 
-            const messages = (finalMessages ??
-              options.messages) as unknown as ModelMessage[];
+            // Use iterMessages (which includes the assistant tool-call message)
+            // so callers can resume by appending tool results to the conversation
+            const messages = iterMessages as unknown as ModelMessage[];
+
+            // If there are resolved tool results, add them to messages so callers
+            // don't need to re-execute server tools when resuming
+            if (resolvedResults.length > 0) {
+              (messages as unknown as LanguageModelV2Prompt).push({
+                role: 'tool',
+                content: resolvedResults,
+              });
+            }
 
             if (options.onFinish && !wasAborted) {
               await options.onFinish({

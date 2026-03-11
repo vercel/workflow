@@ -690,6 +690,10 @@ describe('DurableAgent', () => {
 
       // toolResults should be empty (no execute function → not executed)
       expect(result.toolResults).toHaveLength(0);
+
+      // Messages should include the conversation up to the tool call (from iterMessages),
+      // not just the original input messages, so callers can resume
+      expect(result.messages).toBe(mockMessages);
     });
 
     it('should handle mixed executable and client-side tools in the same step', async () => {
@@ -802,6 +806,10 @@ describe('DurableAgent', () => {
       );
       expect(unresolvedCalls).toHaveLength(1);
       expect(unresolvedCalls[0].toolName).toBe('clientTool');
+
+      // Messages should include the conversation (from iterMessages) and
+      // a tool role message with the resolved server tool result
+      expect(result.messages).toBe(mockMessages);
     });
 
     it('should call onFinish when stopping for client-side tools', async () => {
