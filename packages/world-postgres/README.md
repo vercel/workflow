@@ -123,7 +123,6 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 
 ## Queue Behavior
 
-The PostgreSQL world keeps Graphile as the only durable queue.
 
 - Graphile jobs are acknowledged only after the workflow or step execution finishes, or after the worker durably schedules a delayed follow-up job
 - Backlog stays in PostgreSQL when all execution slots are busy
