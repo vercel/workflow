@@ -22,4 +22,5 @@ export type {
 export { type StreamChunk, StreamViewer } from './stream-viewer';
 export type { Span, SpanEvent } from './trace-viewer/types';
 export { DataInspector, type DataInspectorProps } from './ui/data-inspector';
+export { MenuDropdown, type MenuDropdownOption } from './ui/menu-dropdown';
 export { WorkflowTraceViewer } from './workflow-trace-view';

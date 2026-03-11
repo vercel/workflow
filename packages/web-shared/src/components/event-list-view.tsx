@@ -12,6 +12,7 @@ import {
   ErrorStackBlock,
   isStructuredErrorWithStack,
 } from './ui/error-stack-block';
+import { MenuDropdown } from './ui/menu-dropdown';
 import { Skeleton } from './ui/skeleton';
 
 /**
@@ -587,6 +588,15 @@ function PayloadBlock({
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Sort options for the events list
+// ──────────────────────────────────────────────────────────────────────────
+
+const SORT_OPTIONS = [
+  { value: 'desc' as const, label: 'Newest' },
+  { value: 'asc' as const, label: 'Oldest' },
+];
+
+// ──────────────────────────────────────────────────────────────────────────
 // Event row
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -601,6 +611,11 @@ interface EventsListProps {
   encryptionKey?: Uint8Array;
   /** When true, shows a loading state instead of "No events found" for empty lists */
   isLoading?: boolean;
+  /** Sort order for events. Defaults to 'asc'. */
+  sortOrder?: 'asc' | 'desc';
+  /** Called when the user changes sort order. When provided, the sort dropdown is shown
+   *  and the parent is expected to refetch from the API with the new order. */
+  onSortOrderChange?: (order: 'asc' | 'desc') => void;
 }
 
 function EventRow({
@@ -1003,14 +1018,33 @@ export function EventListView({
   onLoadMoreEvents,
   encryptionKey,
   isLoading = false,
+  sortOrder: sortOrderProp,
+  onSortOrderChange,
 }: EventsListProps) {
+  const [internalSortOrder, setInternalSortOrder] = useState<'asc' | 'desc'>(
+    'asc'
+  );
+  const effectiveSortOrder = sortOrderProp ?? internalSortOrder;
+  const handleSortOrderChange = useCallback(
+    (order: 'asc' | 'desc') => {
+      if (onSortOrderChange) {
+        onSortOrderChange(order);
+      } else {
+        setInternalSortOrder(order);
+      }
+    },
+    [onSortOrderChange]
+  );
+
   const sortedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
+    const dir = effectiveSortOrder === 'desc' ? -1 : 1;
     return [...events].sort(
       (a, b) =>
-        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        dir *
+        (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     );
-  }, [events]);
+  }, [events, effectiveSortOrder]);
 
   const { correlationNameMap, workflowName } = useMemo(
     () => buildNameMaps(events ?? null, run ?? null),
@@ -1146,12 +1180,57 @@ export function EventListView({
   }, [searchQuery, searchIndex]);
 
   if (!events || events.length === 0) {
+    if (isLoading) {
+      return (
+        <div className="h-full flex flex-col overflow-hidden">
+          {/* Skeleton search bar */}
+          <div style={{ padding: 6 }}>
+            <Skeleton style={{ height: 40, borderRadius: 6 }} />
+          </div>
+          {/* Skeleton header */}
+          <div
+            className="flex items-center gap-0 h-10 border-b flex-shrink-0 px-4"
+            style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
+          >
+            <Skeleton className="h-3" style={{ width: 60 }} />
+            <div style={{ flex: 1 }} />
+            <Skeleton className="h-3" style={{ width: 80 }} />
+            <div style={{ flex: 1 }} />
+            <Skeleton className="h-3" style={{ width: 50 }} />
+            <div style={{ flex: 1 }} />
+            <Skeleton className="h-3" style={{ width: 90 }} />
+            <div style={{ flex: 1 }} />
+            <Skeleton className="h-3" style={{ width: 70 }} />
+          </div>
+          {/* Skeleton rows */}
+          <div className="flex-1 overflow-hidden">
+            {Array.from({ length: 8 }, (_, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-3 px-4"
+                style={{ height: 40 }}
+              >
+                <Skeleton
+                  className="h-2 w-2 flex-shrink-0"
+                  style={{ borderRadius: '50%' }}
+                />
+                <Skeleton className="h-3" style={{ width: 90 }} />
+                <Skeleton className="h-3" style={{ width: 100 }} />
+                <Skeleton className="h-3" style={{ width: 80 }} />
+                <Skeleton className="h-3 flex-1" />
+                <Skeleton className="h-3 flex-1" />
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
     return (
       <div
         className="flex items-center justify-center h-full text-sm"
         style={{ color: 'var(--ds-gray-700)' }}
       >
-        {isLoading ? 'Loading events…' : 'No events found'}
+        No events found
       </div>
     );
   }
@@ -1159,8 +1238,15 @@ export function EventListView({
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
-      {/* Search bar */}
-      <div style={{ padding: 6, backgroundColor: 'var(--ds-background-100)' }}>
+      {/* Search bar + sort */}
+      <div
+        style={{
+          padding: 6,
+          backgroundColor: 'var(--ds-background-100)',
+          display: 'flex',
+          gap: 6,
+        }}
+      >
         <label
           style={{
             display: 'flex',
@@ -1170,6 +1256,8 @@ export function EventListView({
             boxShadow: '0 0 0 1px var(--ds-gray-alpha-400)',
             background: 'var(--ds-background-100)',
             height: 40,
+            flex: 1,
+            minWidth: 0,
           }}
         >
           <div
@@ -1208,7 +1296,7 @@ export function EventListView({
           </div>
           <input
             type="search"
-            placeholder="Search by event ID or correlation ID…"
+            placeholder="Search by name, event type, or ID…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             style={{
@@ -1224,6 +1312,11 @@ export function EventListView({
             }}
           />
         </label>
+        <MenuDropdown
+          options={SORT_OPTIONS}
+          value={effectiveSortOrder}
+          onChange={handleSortOrderChange}
+        />
       </div>
 
       {/* Header */}
