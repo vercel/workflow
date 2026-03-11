@@ -558,17 +558,33 @@ export interface DurableAgentStreamOptions<
 }
 
 /**
- * A client-side tool call that needs to be resolved by the caller.
- * This represents a tool that was called by the model but has no `execute` function,
- * meaning it must be handled externally (e.g., by the frontend/client).
+ * A tool call made by the model. Matches the AI SDK's tool call shape.
  */
-export interface ClientToolCall {
+export interface ToolCall {
+  /** Discriminator for content part arrays */
+  type: 'tool-call';
   /** The unique identifier of the tool call */
   toolCallId: string;
   /** The name of the tool that was called */
   toolName: string;
   /** The parsed input arguments for the tool call */
   input: unknown;
+}
+
+/**
+ * A tool result from executing a tool. Matches the AI SDK's tool result shape.
+ */
+export interface ToolResult {
+  /** Discriminator for content part arrays */
+  type: 'tool-result';
+  /** The tool call ID this result corresponds to */
+  toolCallId: string;
+  /** The name of the tool that was executed */
+  toolName: string;
+  /** The parsed input arguments that were passed to the tool */
+  input: unknown;
+  /** The output produced by the tool */
+  output: unknown;
 }
 
 /**
@@ -589,6 +605,33 @@ export interface DurableAgentStreamResult<
   steps: StepResult<TTools>[];
 
   /**
+   * The tool calls from the last step.
+   * Includes all tool calls regardless of whether they were executed.
+   *
+   * When the agent stops because a tool without an `execute` function was called,
+   * this array will contain those calls. Compare with `toolResults` to find
+   * unresolved tool calls that need client-side handling:
+   *
+   * ```ts
+   * const unresolved = result.toolCalls.filter(
+   *   tc => !result.toolResults.some(tr => tr.toolCallId === tc.toolCallId)
+   * );
+   * ```
+   *
+   * This matches the AI SDK's `GenerateTextResult.toolCalls` behavior.
+   */
+  toolCalls: ToolCall[];
+
+  /**
+   * The tool results from the last step.
+   * Only includes results for tools that were actually executed (server-side or provider-executed).
+   * Tools without an `execute` function will NOT have entries here.
+   *
+   * This matches the AI SDK's `GenerateTextResult.toolResults` behavior.
+   */
+  toolResults: ToolResult[];
+
+  /**
    * The generated structured output. It uses the `experimental_output` specification.
    * Only available when `experimental_output` is specified.
    */
@@ -599,17 +642,6 @@ export interface DurableAgentStreamResult<
    * Only available when `collectUIMessages` is set to `true` in the stream options.
    */
   uiMessages?: UIMessage[];
-
-  /**
-   * Tool calls that need to be resolved by the client.
-   * These are tools that were called by the model but don't have an `execute` function.
-   * When present, the agent loop has been paused and can be resumed by calling
-   * `stream()` again with the tool results added to the messages.
-   *
-   * This enables human-in-the-loop patterns, client-side tool execution,
-   * and other scenarios where tool results come from outside the server.
-   */
-  clientToolCalls?: ClientToolCall[];
 }
 
 /**
@@ -741,6 +773,10 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
     const steps: StepResult<TTools>[] = [];
 
+    // Track tool calls and results from the last step for the result
+    let lastStepToolCalls: ToolCall[] = [];
+    let lastStepToolResults: ToolResult[] = [];
+
     // Check for abort before starting
     if (mergedGenerationSettings.abortSignal?.aborted) {
       if (options.onAbort) {
@@ -749,6 +785,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       return {
         messages: options.messages as unknown as ModelMessage[],
         steps,
+        toolCalls: [],
+        toolResults: [],
         experimental_output: undefined as OUTPUT,
         uiMessages: undefined,
       };
@@ -881,13 +919,24 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               }
             }
 
-            // Parse client-side tool call inputs
-            const parsedClientToolCalls: ClientToolCall[] =
-              clientSideToolCalls.map((tc) => ({
-                toolCallId: tc.toolCallId,
-                toolName: tc.toolName,
-                input: JSON.parse(tc.input || '{}'),
-              }));
+            // Build toolCalls for ALL tool calls in this step (matches AI SDK convention)
+            const allToolCalls: ToolCall[] = toolCalls.map((tc) => ({
+              type: 'tool-call' as const,
+              toolCallId: tc.toolCallId,
+              toolName: tc.toolName,
+              input: safeParseInput(tc.input),
+            }));
+
+            // Build toolResults only for tools that were executed
+            const allToolResults: ToolResult[] = resolvedResults.map((r) => ({
+              type: 'tool-result' as const,
+              toolCallId: r.toolCallId,
+              toolName: r.toolName,
+              input: safeParseInput(
+                toolCalls.find((tc) => tc.toolCallId === r.toolCallId)?.input
+              ),
+              output: r.output.value,
+            }));
 
             // Close the stream and call onFinish before returning
             const sendFinish = options.sendFinish ?? true;
@@ -915,9 +964,10 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
             return {
               messages: messages as ModelMessage[],
               steps,
+              toolCalls: allToolCalls,
+              toolResults: allToolResults,
               experimental_output: undefined as OUTPUT,
               uiMessages,
-              clientToolCalls: parsedClientToolCalls,
             };
           }
 
@@ -960,9 +1010,28 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
             };
           });
 
+          // Track the tool calls and results for this step
+          lastStepToolCalls = toolCalls.map((tc) => ({
+            type: 'tool-call' as const,
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            input: safeParseInput(tc.input),
+          }));
+          lastStepToolResults = toolResults.map((r) => ({
+            type: 'tool-result' as const,
+            toolCallId: r.toolCallId,
+            toolName: r.toolName,
+            input: safeParseInput(
+              toolCalls.find((tc) => tc.toolCallId === r.toolCallId)?.input
+            ),
+            output: r.output.value,
+          }));
+
           result = await iterator.next(toolResults);
         } else {
-          // Final step with no tool calls - just advance the iterator
+          // Final step with no tool calls - reset tracking
+          lastStepToolCalls = [];
+          lastStepToolResults = [];
           result = await iterator.next([]);
         }
       }
@@ -1047,6 +1116,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     return {
       messages: messages as ModelMessage[],
       steps,
+      toolCalls: lastStepToolCalls,
+      toolResults: lastStepToolResults,
       experimental_output: experimentalOutput,
       uiMessages,
     };
@@ -1149,6 +1220,18 @@ async function convertChunksToUIMessages(
   }
 
   return messages;
+}
+
+/**
+ * Safely parse tool call input JSON. Returns the parsed value or the raw string
+ * if parsing fails (e.g., for tool calls that were repaired).
+ */
+function safeParseInput(input: string | undefined): unknown {
+  try {
+    return JSON.parse(input || '{}');
+  } catch {
+    return input;
+  }
 }
 
 // Matches AI SDK's getErrorMessage from @ai-sdk/provider-utils

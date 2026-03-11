@@ -624,7 +624,7 @@ describe('DurableAgent', () => {
   });
 
   describe('client-side tools (tools without execute)', () => {
-    it('should stop the loop and return clientToolCalls for tools without execute', async () => {
+    it('should stop the loop and return unresolved toolCalls for tools without execute', async () => {
       const tools: ToolSet = {
         askUser: {
           description: 'Ask the user a question',
@@ -679,14 +679,17 @@ describe('DurableAgent', () => {
       // The loop should have stopped - iterator.next called only once
       expect(mockIterator.next).toHaveBeenCalledTimes(1);
 
-      // Result should contain the client tool calls
-      expect(result.clientToolCalls).toBeDefined();
-      expect(result.clientToolCalls).toHaveLength(1);
-      expect(result.clientToolCalls![0]).toEqual({
+      // toolCalls should contain the call (matches AI SDK convention)
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls[0]).toEqual({
+        type: 'tool-call',
         toolCallId: 'ask-user-call-id',
         toolName: 'askUser',
         input: { question: 'What is your name?' },
       });
+
+      // toolResults should be empty (no execute function → not executed)
+      expect(result.toolResults).toHaveLength(0);
     });
 
     it('should handle mixed executable and client-side tools in the same step', async () => {
@@ -769,14 +772,36 @@ describe('DurableAgent', () => {
       // Loop should have stopped
       expect(mockIterator.next).toHaveBeenCalledTimes(1);
 
-      // Result should contain the client tool call
-      expect(result.clientToolCalls).toBeDefined();
-      expect(result.clientToolCalls).toHaveLength(1);
-      expect(result.clientToolCalls![0]).toEqual({
+      // toolCalls should contain ALL tool calls from the step
+      expect(result.toolCalls).toHaveLength(2);
+      expect(result.toolCalls[0]).toMatchObject({
+        type: 'tool-call',
+        toolCallId: 'server-call-id',
+        toolName: 'serverTool',
+      });
+      expect(result.toolCalls[1]).toMatchObject({
+        type: 'tool-call',
         toolCallId: 'client-call-id',
         toolName: 'clientTool',
         input: { prompt: 'confirm action' },
       });
+
+      // toolResults should only contain the server-executed tool
+      expect(result.toolResults).toHaveLength(1);
+      expect(result.toolResults[0]).toMatchObject({
+        type: 'tool-result',
+        toolCallId: 'server-call-id',
+        toolName: 'serverTool',
+        output: localToolResult,
+      });
+
+      // Consumer can find unresolved calls by diffing (standard AI SDK pattern)
+      const unresolvedCalls = result.toolCalls.filter(
+        (tc) =>
+          !result.toolResults.some((tr) => tr.toolCallId === tc.toolCallId)
+      );
+      expect(unresolvedCalls).toHaveLength(1);
+      expect(unresolvedCalls[0].toolName).toBe('clientTool');
     });
 
     it('should call onFinish when stopping for client-side tools', async () => {
@@ -841,7 +866,7 @@ describe('DurableAgent', () => {
       );
     });
 
-    it('should not include clientToolCalls when all tools have execute functions', async () => {
+    it('should have empty toolCalls when all tools complete normally', async () => {
       const tools: ToolSet = {
         serverTool: {
           description: 'A server tool',
@@ -867,6 +892,7 @@ describe('DurableAgent', () => {
         { role: 'user', content: [{ type: 'text', text: 'test' }] },
       ];
 
+      // Step 1: tool call (executed), Step 2: text completion (no tools)
       const mockIterator = {
         next: vi
           .fn()
@@ -884,6 +910,14 @@ describe('DurableAgent', () => {
               messages: mockMessages,
             },
           })
+          // Second step: no tool calls (text completion)
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [],
+              messages: mockMessages,
+            },
+          })
           .mockResolvedValueOnce({ done: true, value: [] }),
       };
       vi.mocked(streamTextIterator).mockReturnValue(
@@ -895,8 +929,10 @@ describe('DurableAgent', () => {
         writable: mockWritable,
       });
 
-      // Normal completion - no client tool calls
-      expect(result.clientToolCalls).toBeUndefined();
+      // Normal completion ends with text step - toolCalls/toolResults are empty
+      // (they represent the LAST step, which had no tool calls)
+      expect(result.toolCalls).toHaveLength(0);
+      expect(result.toolResults).toHaveLength(0);
     });
   });
 
