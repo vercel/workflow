@@ -35,7 +35,7 @@ Real-time data streaming via **PostgreSQL LISTEN/NOTIFY**:
 
 Call `world.start()` to initialize graphile-worker workers. When `.start()` is called, workers begin listening to graphile-worker queues. When a job arrives, the worker executes the queue message directly through the shared queue executor and awaits completion before acknowledging the Graphile job.
 
-When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task. This keeps retries and waits in PostgreSQL instead of sleeping in process memory.
+When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task.
 
 The executor still falls back to the HTTP-compatible workflow endpoints (`.well-known/workflow/v1/flow` or `.well-known/workflow/v1/step`) when the route module has not been loaded yet.
 
