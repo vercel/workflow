@@ -95,12 +95,19 @@ describe('streamer', () => {
         if (!ctx.task.result?.errors?.length) {
           await fs.rm(testDir, { recursive: true, force: true });
         } else {
-          const files = await fs.readdir(`${testDir}/streams/chunks`);
+          const chunksPath = `${testDir}/streams/chunks`;
+          let files: string[];
+          try {
+            files = await fs.readdir(chunksPath);
+          } catch {
+            // chunks directory may not exist if the test failed before any writes
+            files = [];
+          }
           const chunks = [] as unknown[];
           let lastTime = 0;
           for (const file of files) {
             const chunk = deserializeChunk(
-              await fs.readFile(`${testDir}/streams/chunks/${file}`)
+              await fs.readFile(`${chunksPath}/${file}`)
             );
             // Extract ULID from filename: "streamName-chnk_ULID.bin"
             const chunkIdPart = String(file.split('-').at(-1)).split('.')[0]; // "chnk_ULID"
