@@ -989,15 +989,9 @@ importers:
 
   packages/web:
     dependencies:
-      '@react-router/node':
-        specifier: 7.13.1
-        version: 7.13.1(react-router@7.13.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(typescript@5.9.3)
       express:
         specifier: ^4.21.0
         version: 4.22.1
-      isbot:
-        specifier: ^5
-        version: 5.1.35
     devDependencies:
       '@biomejs/biome':
         specifier: 'catalog:'
@@ -1038,6 +1032,9 @@ importers:
       '@react-router/express':
         specifier: 7.13.1
         version: 7.13.1(express@4.22.1)(react-router@7.13.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(typescript@5.9.3)
+      '@react-router/node':
+        specifier: 7.13.1
+        version: 7.13.1(react-router@7.13.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(typescript@5.9.3)
       '@tailwindcss/vite':
         specifier: '4'
         version: 4.1.18(vite@6.4.1(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
@@ -1095,6 +1092,9 @@ importers:
       geist:
         specifier: ^1.7.0
         version: 1.7.0(next@16.2.0-canary.65(@babel/core@7.28.4)(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0))
+      isbot:
+        specifier: ^5
+        version: 5.1.35
       jsdom:
         specifier: ^26
         version: 26.1.0

@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 use swc_core::ecma::{
-    transforms::testing::{test_fixture, FixtureTestConfig},
+    transforms::testing::{FixtureTestConfig, test_fixture},
     visit::visit_mut_pass,
 };
 use swc_workflow::{StepTransform, TransformMode};

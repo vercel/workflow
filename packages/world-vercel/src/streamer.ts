@@ -13,7 +13,7 @@ function getStreamUrl(
 ) {
   if (runId) {
     return new URL(
-      `${httpConfig.baseUrl}/v2/runs/${runId}/stream/${encodeURIComponent(name)}`
+      `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
     );
   }
   return new URL(`${httpConfig.baseUrl}/v2/stream/${encodeURIComponent(name)}`);
@@ -141,7 +141,9 @@ export function createStreamer(config?: APIConfig): Streamer {
 
     async listStreamsByRunId(runId: string) {
       const httpConfig = await getHttpConfig(config);
-      const url = new URL(`${httpConfig.baseUrl}/v2/runs/${runId}/streams`);
+      const url = new URL(
+        `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/streams`
+      );
       const response = await fetch(url, {
         headers: httpConfig.headers,
       });

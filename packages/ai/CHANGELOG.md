@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.55
+
+### Patch Changes
+
+- [#1320](https://github.com/vercel/workflow/pull/1320) [`b28a5fd`](https://github.com/vercel/workflow/commit/b28a5fd0be591d88a38e8f9556d8bd44f927ff2f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use `workspace:^` for the `workflow` peer dependency so that pnpm resolves the correct version range at publish time, fixing `changeset version` warnings about mismatched dependency versions.
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.68
+
 ## 4.0.1-beta.54
 
 ### Patch Changes

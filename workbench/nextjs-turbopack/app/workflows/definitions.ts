@@ -1,12 +1,7 @@
-import { allWorkflows } from '@/_workflows';
+import 'server-only';
 
-export type WorkflowDefinition = {
-  workflowFile: string;
-  name: string;
-  displayName: string;
-  description?: string;
-  defaultArgs: unknown[];
-};
+import { allWorkflows } from '@/_workflows';
+import type { WorkflowDefinition } from './types';
 
 const RANDOM_ARG_PLACEHOLDER = '<random-id>';
 
@@ -38,31 +33,6 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   closureVariableWorkflow: [7],
 };
 
-function resolveRandomArgPlaceholders(value: unknown): unknown {
-  if (value === RANDOM_ARG_PLACEHOLDER) {
-    return Math.random().toString(36).slice(2);
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((entry) => resolveRandomArgPlaceholders(entry));
-  }
-
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [
-        key,
-        resolveRandomArgPlaceholders(entry),
-      ])
-    );
-  }
-
-  return value;
-}
-
-export function materializeWorkflowArgs(args: unknown[]): unknown[] {
-  return args.map((arg) => resolveRandomArgPlaceholders(arg));
-}
-
 // Dynamically generate workflow definitions from allWorkflows
 export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = Object.entries(
   allWorkflows
@@ -89,5 +59,3 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = Object.entries(
     }
     return a.name.localeCompare(b.name);
   });
-
-export type WorkflowName = string;

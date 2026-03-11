@@ -1,5 +1,13 @@
 # @workflow/world-vercel
 
+## 4.1.0-beta.42
+
+### Patch Changes
+
+- [#1262](https://github.com/vercel/workflow/pull/1262) [`9781afb`](https://github.com/vercel/workflow/commit/9781afb490b252f5656e5d48c61c038c3aef794f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use VERCEL=1 to distinguish serverless runtime from external contexts for encryption key resolution
+
+- [#1309](https://github.com/vercel/workflow/pull/1309) [`d842ce1`](https://github.com/vercel/workflow/commit/d842ce1c435049805233cf218aa9ce07d9cab130) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Include response body and status text in fetchRunKey error message for better debuggability of rate limit and server errors.
+
 ## 4.1.0-beta.41
 
 ### Patch Changes

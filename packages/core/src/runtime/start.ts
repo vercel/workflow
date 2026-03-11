@@ -21,11 +21,15 @@ export interface StartOptions {
   /**
    * The deployment ID to use for the workflow run.
    *
+   * Set to `'latest'` to automatically resolve the most recent deployment
+   * for the current environment (same production target or git branch).
+   * Requires a World that implements `resolveLatestDeploymentId()`.
+   *
    * @deprecated This property should not be set in user code under normal circumstances.
    * It is automatically inferred from environment variables when deploying to Vercel.
    * Only set this if you are doing something advanced and know what you are doing.
    */
-  deploymentId?: string;
+  deploymentId?: 'latest' | (string & {});
 
   /**
    * The world to use for the workflow run creation,
