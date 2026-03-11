@@ -183,7 +183,7 @@ export async function getWorkflowRun(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${id}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({
@@ -231,7 +231,7 @@ export async function cancelWorkflowRunV1(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${id}/cancel${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v1/runs/${encodeURIComponent(id)}/cancel${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({

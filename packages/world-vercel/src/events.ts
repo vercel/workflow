@@ -262,7 +262,7 @@ export async function getEvent(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${runId}/events/${eventId}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}${queryString ? `?${queryString}` : ''}`;
 
   const event = await makeRequest({
     endpoint,
@@ -308,7 +308,7 @@ export async function getWorkflowRunEvents(
   const query = queryString ? `?${queryString}` : '';
   const endpoint = correlationId
     ? `/v2/events${query}`
-    : `/v2/runs/${runId}/events${query}`;
+    : `/v2/runs/${encodeURIComponent(runId!)}/events${query}`;
 
   let refResolveConcurrency: number | undefined;
   const response = (await makeRequest({
@@ -384,7 +384,7 @@ export async function createWorkflowRunEvent(
       return { run };
     }
     const wireResult = await makeRequest({
-      endpoint: `/v1/runs/${id}/events`,
+      endpoint: `/v1/runs/${encodeURIComponent(id!)}/events`,
       options: { method: 'POST' },
       data,
       config,
@@ -403,7 +403,7 @@ export async function createWorkflowRunEvent(
   }
 
   // For run_created events, runId may be client-provided or null
-  const runIdPath = id === null ? 'null' : id;
+  const runIdPath = id === null ? 'null' : encodeURIComponent(id);
 
   const remoteRefBehavior = eventsNeedingResolve.has(data.eventType)
     ? 'resolve'
