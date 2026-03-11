@@ -8,7 +8,7 @@
 
 Workflow DevKit is a durable functions framework for JavaScript/TypeScript that enables writing long-running, stateful application logic on top of stateless compute. The runtime persists progress as an event log and deterministically replays code to reconstruct state after cold starts, failures, or scale events.
 
-This repository contains the client side SDK code for workflows, along example apps that showcase Workflow DevKit in action.
+This repository contains the client-side SDK code for workflows, along with example apps that showcase Workflow DevKit in action.
 
 ## Architecture
 
@@ -50,7 +50,10 @@ pnpm test:e2e
 # Format code with Biome
 pnpm format
 
-# Lint and typecheck with Biome
+# Lint with Biome
+pnpm lint
+
+# Typecheck TypeScript
 pnpm typecheck
 
 # Clean build artifacts
@@ -146,7 +149,7 @@ This project uses pnpm with workspace configuration. The required version is spe
 - Uses Biome for formatting and linting
 - 2-space indentation, single quotes, trailing commas (ES5)
 - Import type enforcement enabled
-- No explicit any allowed, exhaustive dependencies warnings enabled
+- Explicit `any` is discouraged (Biome's `noExplicitAny` rule is currently disabled); exhaustive dependencies warnings enabled
 
 ## Documentation Standards
 
