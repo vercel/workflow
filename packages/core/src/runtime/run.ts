@@ -2,6 +2,7 @@ import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
+  WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
@@ -111,6 +112,21 @@ export class Run<TResult> {
       eventType: 'run_cancelled',
       specVersion: SPEC_VERSION_CURRENT,
     });
+  }
+
+  /**
+   * Whether the workflow run exists.
+   */
+  get exists(): Promise<boolean> {
+    return this.world.runs
+      .get(this.runId, { resolveData: 'none' })
+      .then(() => true)
+      .catch((error) => {
+        if (WorkflowRunNotFoundError.is(error)) {
+          return false;
+        }
+        throw error;
+      });
   }
 
   /**

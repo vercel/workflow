@@ -11,6 +11,7 @@ export const MessageData = z.object({
   attempt: z.number().describe('The attempt number of the message'),
   messageId: MessageId.describe('The unique ID of the message'),
   idempotencyKey: z.string().optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   id: z
     .string()
     .describe(
