@@ -116,7 +116,7 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 
 - **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
 - **Queue Processing**: Uses graphile-worker as the durable queue and executes jobs inline in the worker
-- **Durable Delays**: Re-schedules waits and retries in PostgreSQL instead of sleeping in process memory
+- **Durable Delays**: Re-schedules waits and retries in PostgreSQL
 - **Streaming**: Real-time event streaming capabilities
 - **Health Checks**: Built-in connection health monitoring
 - **Configurable Concurrency**: Adjustable worker concurrency for queue processing
