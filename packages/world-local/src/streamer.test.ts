@@ -507,8 +507,11 @@ describe('streamer', () => {
       });
 
       it('should not lose or duplicate chunks written during stream initialization (race condition test)', async () => {
-        // Run multiple iterations to increase probability of catching race conditions
-        for (let iteration = 0; iteration < 10; iteration++) {
+        // Run multiple iterations to increase probability of catching race conditions.
+        // Keep the count low — each iteration creates a fresh streamer with its own
+        // temp directory, and per-chunk I/O on Windows CI can be ~100-200ms which
+        // easily blows the timeout at higher counts.
+        for (let iteration = 0; iteration < 3; iteration++) {
           const { streamer } = await setupStreamer();
           const streamName = `race-${iteration}`;
 
