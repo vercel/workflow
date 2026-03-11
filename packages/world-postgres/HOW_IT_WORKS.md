@@ -37,7 +37,7 @@ Call `world.start()` to initialize graphile-worker workers. When `.start()` is c
 
 When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task. This keeps retries and waits in PostgreSQL instead of sleeping in process memory.
 
-The executor still falls back to the HTTP-compatible workflow endpoints (`.well-known/workflow/v1/flow` or `.well-known/workflow/v1/step`) when the route module has not been loaded yet, but it no longer hands work off through a second in-memory queue.
+The executor still falls back to the HTTP-compatible workflow endpoints (`.well-known/workflow/v1/flow` or `.well-known/workflow/v1/step`) when the route module has not been loaded yet.
 
 ## Concurrency Semantics
 
