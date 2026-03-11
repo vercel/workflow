@@ -1,6 +1,6 @@
 {
   "name": "@workflow/cli",
-  "version": "4.2.0-beta.67",
+  "version": "4.2.0-beta.68",
   "description": "Command-line interface for Workflow DevKit",
   "type": "module",
   "bin": {

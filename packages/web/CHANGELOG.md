@@ -1,5 +1,15 @@
 # @workflow/web
 
+## 4.1.0-beta.40
+
+### Patch Changes
+
+- [#1261](https://github.com/vercel/workflow/pull/1261) [`887cc2b`](https://github.com/vercel/workflow/commit/887cc2bd55b904c696083d87ab32a9fc03d619a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Refactor trace viewer to build spans entirely from events instead of fetching Steps and Hooks as separate resources.
+
+- [#1265](https://github.com/vercel/workflow/pull/1265) [`aa2f581`](https://github.com/vercel/workflow/commit/aa2f581b488baf929a784f289a81e21c39ccb5a6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add custom `entry.server.tsx` and move `@react-router/node`, `isbot`, `react-router`, and `@react-router/express` to devDependencies since the build process bundles them entirely at build time
+
+- [#1308](https://github.com/vercel/workflow/pull/1308) [`33101a2`](https://github.com/vercel/workflow/commit/33101a229207bafe869fb73686c6bfcc59ab25b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Move decrypt operation to the entity panel inside web-shared and wire it up to web via component callback.
+
 ## 4.1.0-beta.39
 
 ### Patch Changes

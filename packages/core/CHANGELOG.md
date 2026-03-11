@@ -1,5 +1,17 @@
 # @workflow/core
 
+## 4.2.0-beta.68
+
+### Patch Changes
+
+- [#1304](https://github.com/vercel/workflow/pull/1304) [`83dbd46`](https://github.com/vercel/workflow/commit/83dbd46456a8dbfc89efd87895929cbb813feda3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Stop reading `WORKFLOW_VERCEL_*` env vars at runtime to prevent unintended proxy routing
+
+- [#1318](https://github.com/vercel/workflow/pull/1318) [`854a25f`](https://github.com/vercel/workflow/commit/854a25f9103f5f3a5769dec6e3e5c6b98ed119b0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `start()` not encrypting initial workflow input in external contexts (e2e tests, CLI). The resolved `deploymentId` was not being passed to `getEncryptionKeyForRun`, causing it to silently skip encryption when `deploymentId` was inferred from the environment rather than explicitly provided in options.
+
+- Updated dependencies [[`9781afb`](https://github.com/vercel/workflow/commit/9781afb490b252f5656e5d48c61c038c3aef794f), [`4a6ddd8`](https://github.com/vercel/workflow/commit/4a6ddd82c0fc1b3768f3a10befad77f43e81036e), [`d842ce1`](https://github.com/vercel/workflow/commit/d842ce1c435049805233cf218aa9ce07d9cab130)]:
+  - @workflow/world-vercel@4.1.0-beta.42
+  - @workflow/world-local@4.1.0-beta.41
+
 ## 4.2.0-beta.67
 
 ### Patch Changes

@@ -1,5 +1,18 @@
 # @workflow/web-shared
 
+## 4.1.0-beta.63
+
+### Patch Changes
+
+- [#1261](https://github.com/vercel/workflow/pull/1261) [`887cc2b`](https://github.com/vercel/workflow/commit/887cc2bd55b904c696083d87ab32a9fc03d619a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Refactor trace viewer to build spans entirely from events instead of fetching Steps and Hooks as separate resources.
+
+- [#1305](https://github.com/vercel/workflow/pull/1305) [`c59dd8c`](https://github.com/vercel/workflow/commit/c59dd8c5716f02e03d930150cfadc53446c69c57) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Enrich sidepanel with "resumedAt" for sleeps. Lower case the properties.
+
+- [#1308](https://github.com/vercel/workflow/pull/1308) [`33101a2`](https://github.com/vercel/workflow/commit/33101a229207bafe869fb73686c6bfcc59ab25b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Move decrypt operation to the entity panel inside web-shared and wire it up to web via component callback.
+
+- Updated dependencies [[`83dbd46`](https://github.com/vercel/workflow/commit/83dbd46456a8dbfc89efd87895929cbb813feda3), [`854a25f`](https://github.com/vercel/workflow/commit/854a25f9103f5f3a5769dec6e3e5c6b98ed119b0)]:
+  - @workflow/core@4.2.0-beta.68
+
 ## 4.1.0-beta.62
 
 ### Patch Changes

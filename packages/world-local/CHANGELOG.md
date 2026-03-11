@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.1.0-beta.41
+
+### Patch Changes
+
+- [#1307](https://github.com/vercel/workflow/pull/1307) [`4a6ddd8`](https://github.com/vercel/workflow/commit/4a6ddd82c0fc1b3768f3a10befad77f43e81036e) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Return HTTP 200 instead of 503 for queue timeout re-enqueue signals in local world
+
 ## 4.1.0-beta.40
 
 ### Patch Changes
