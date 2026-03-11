@@ -637,9 +637,9 @@ function EventRow({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [hasAttemptedLoad, setHasAttemptedLoad] = useState(false);
 
-  const rowGroupKey =
-    event.correlationId ??
-    (isRunLevel(event.eventType) ? '__run__' : undefined);
+  const rowGroupKey = isRunLevel(event.eventType)
+    ? '__run__'
+    : (event.correlationId ?? undefined);
 
   // Collapse when a different group gets selected
   useEffect(() => {
