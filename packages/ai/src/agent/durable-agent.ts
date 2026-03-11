@@ -1276,51 +1276,52 @@ function resolveProviderToolResult(
   >
 ): LanguageModelV2ToolResultPart {
   const streamResult = providerExecutedToolResults?.get(toolCall.toolCallId);
-  if (streamResult) {
-    const result = streamResult.result;
-    const isString = typeof result === 'string';
-
+  if (!streamResult) {
+    console.warn(
+      `[DurableAgent] Provider-executed tool "${toolCall.toolName}" (${toolCall.toolCallId}) ` +
+        `did not receive a result from the stream. This may indicate a provider issue.`
+    );
     return {
       type: 'tool-result' as const,
       toolCallId: toolCall.toolCallId,
       toolName: toolCall.toolName,
-      output: isString
-        ? streamResult.isError
-          ? { type: 'error-text' as const, value: result }
-          : { type: 'text' as const, value: result }
-        : streamResult.isError
-          ? {
-              type: 'error-json' as const,
-              value: result as LanguageModelV2ToolResultPart['output'] extends {
-                type: 'json';
-                value: infer V;
-              }
-                ? V
-                : never,
-            }
-          : {
-              type: 'json' as const,
-              value: result as LanguageModelV2ToolResultPart['output'] extends {
-                type: 'json';
-                value: infer V;
-              }
-                ? V
-                : never,
-            },
+      output: {
+        type: 'text' as const,
+        value: '',
+      },
     };
   }
-  console.warn(
-    `[DurableAgent] Provider-executed tool "${toolCall.toolName}" (${toolCall.toolCallId}) ` +
-      `did not receive a result from the stream. This may indicate a provider issue.`
-  );
+
+  const result = streamResult.result;
+  const isString = typeof result === 'string';
+
   return {
     type: 'tool-result' as const,
     toolCallId: toolCall.toolCallId,
     toolName: toolCall.toolName,
-    output: {
-      type: 'text' as const,
-      value: '',
-    },
+    output: isString
+      ? streamResult.isError
+        ? { type: 'error-text' as const, value: result }
+        : { type: 'text' as const, value: result }
+      : streamResult.isError
+        ? {
+            type: 'error-json' as const,
+            value: result as LanguageModelV2ToolResultPart['output'] extends {
+              type: 'json';
+              value: infer V;
+            }
+              ? V
+              : never,
+          }
+        : {
+            type: 'json' as const,
+            value: result as LanguageModelV2ToolResultPart['output'] extends {
+              type: 'json';
+              value: infer V;
+            }
+              ? V
+              : never,
+          },
   };
 }
 
