@@ -27,10 +27,11 @@ import {
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSON,
+  writeExclusive,
   writeJSON,
 } from '../fs.js';
 import { filterEventData } from './filters.js';
-import { getObjectCreatedAt, monotonicUlid } from './helpers.js';
+import { getObjectCreatedAt, hashToken, monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 
@@ -577,20 +578,24 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           isWebhook?: boolean;
         };
 
-        // Check for duplicate token before creating hook
-        const hooksDir = path.join(basedir, 'hooks');
-        const hookFiles = await listJSONFiles(hooksDir);
-        let hasConflict = false;
-        for (const file of hookFiles) {
-          const existingHookPath = path.join(hooksDir, `${file}.json`);
-          const existingHook = await readJSON(existingHookPath, HookSchema);
-          if (existingHook && existingHook.token === hookData.token) {
-            hasConflict = true;
-            break;
-          }
-        }
+        // Atomically claim the token using an exclusive-create constraint file.
+        // This avoids the TOCTOU race of the previous read-all-then-check approach.
+        const constraintPath = path.join(
+          basedir,
+          'hooks',
+          'tokens',
+          `${hashToken(hookData.token)}.json`
+        );
+        const tokenClaimed = await writeExclusive(
+          constraintPath,
+          JSON.stringify({
+            token: hookData.token,
+            hookId: data.correlationId,
+            runId: effectiveRunId,
+          })
+        );
 
-        if (hasConflict) {
+        if (!tokenClaimed) {
           // Create hook_conflict event instead of hook_created
           // This allows the workflow to continue and fail gracefully when the hook is awaited
           const conflictEvent: Event = {
@@ -647,12 +652,23 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         );
         await writeJSON(hookPath, hook);
       } else if (data.eventType === 'hook_disposed') {
-        // Delete the hook when disposed
+        // Read the hook to get its token before deleting
         const hookPath = path.join(
           basedir,
           'hooks',
           `${data.correlationId}.json`
         );
+        const existingHook = await readJSON(hookPath, HookSchema);
+        if (existingHook) {
+          // Delete the token constraint file to free up the token for reuse
+          const disposedConstraintPath = path.join(
+            basedir,
+            'hooks',
+            'tokens',
+            `${hashToken(existingHook.token)}.json`
+          );
+          await deleteJSON(disposedConstraintPath);
+        }
         await deleteJSON(hookPath);
       } else if (data.eventType === 'wait_created' && 'eventData' in data) {
         // wait_created: Creates wait entity with status 'waiting'

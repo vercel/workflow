@@ -137,6 +137,7 @@ const awaitCommand = async (
         env: {
           ...process.env,
           DEBUG: '1',
+          WORKFLOW_NO_UPDATE_CHECK: '1',
           ...envOverrides,
         },
       });
