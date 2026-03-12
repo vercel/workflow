@@ -5,7 +5,6 @@ import {
   EventListView,
   hydrateResourceIO,
   hydrateResourceIOWithKey,
-  isEncryptedMarker,
   StreamViewer,
   stepEventsToStepEntity,
   WorkflowTraceViewer,
@@ -55,6 +54,7 @@ import { useStreamReader } from '~/lib/hooks/use-stream-reader';
 
 import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
 
+import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
@@ -328,7 +328,7 @@ export function RunDetailView({
     serverConfig.backendId === 'local' ||
     serverConfig.backendId === '@workflow/world-local';
 
-  // Fetch run + events for the trace viewer (steps/hooks are fetched on-demand by sidebar)
+  // Fetch run + events for the trace viewer (always asc)
   const {
     run: runData,
     events: allEvents,
@@ -339,6 +339,16 @@ export function RunDetailView({
     hasMoreTraceData,
     isLoadingMoreTraceData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
+
+  // Separate event fetching for the Events tab with user-controlled sort order
+  const [eventsSortOrder, setEventsSortOrder] = useState<'asc' | 'desc'>('asc');
+  const {
+    events: eventsListData,
+    loading: eventsListLoading,
+    hasMore: hasMoreEventsTab,
+    loadingMore: loadingMoreEventsTab,
+    loadMore: loadMoreEventsTab,
+  } = useEventsListData(env, runId, { sortOrder: eventsSortOrder });
   const run = runData ?? ({} as WorkflowRun);
 
   // Encryption key persisted for the lifetime of this run page.
@@ -745,11 +755,16 @@ export function RunDetailView({
               <ErrorBoundary title="Failed to load events list">
                 <div className="h-full">
                   <EventListView
-                    events={allEvents}
+                    events={eventsListData}
                     run={run}
                     onLoadEventData={handleLoadEventData}
+                    hasMoreEvents={hasMoreEventsTab}
+                    isLoadingMoreEvents={loadingMoreEventsTab}
+                    onLoadMoreEvents={loadMoreEventsTab}
                     encryptionKey={encryptionKey ?? undefined}
-                    isLoading={loading}
+                    isLoading={eventsListLoading}
+                    sortOrder={eventsSortOrder}
+                    onSortOrderChange={setEventsSortOrder}
                   />
                 </div>
               </ErrorBoundary>
