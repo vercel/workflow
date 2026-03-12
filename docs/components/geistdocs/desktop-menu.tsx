@@ -12,7 +12,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
 
 type DesktopMenuProps = {
-  items: { label: string; href: string }[];
+  items: { label: string; href: string; preview?: boolean }[];
   className?: string;
 };
 
@@ -39,8 +39,20 @@ export const DesktopMenu = ({ items, className }: DesktopMenuProps) => {
                   <ExternalLinkIcon className="size-3.5" />
                 </a>
               ) : (
-                <DynamicLink href={`/[lang]${item.href}`}>
+                <DynamicLink
+                  href={`/[lang]${item.href}`}
+                  className={
+                    item.preview
+                      ? 'flex flex-row items-center gap-1.5'
+                      : undefined
+                  }
+                >
                   {item.label}
+                  {item.preview && (
+                    <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-blue-700 dark:bg-blue-900/40 dark:text-blue-400">
+                      Preview
+                    </span>
+                  )}
                 </DynamicLink>
               )}
             </NavigationMenuLink>
