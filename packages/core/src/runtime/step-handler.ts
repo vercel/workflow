@@ -19,6 +19,7 @@ import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
 } from '../serialization.js';
+import { Run } from './run.js';
 import type { StartOptions } from './start.js';
 import { start } from './start.js';
 import { contextStorage } from '../step/context-storage.js';
@@ -48,23 +49,83 @@ import { getWorld, getWorldHandlers } from './world.js';
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
 // Register the built-in __workflow_start step that enables start() inside workflow functions.
-// This step receives the workflowId, args, and options, calls the real start(), and returns the runId.
+// This step receives the workflowId, args, and options, calls the real start(), and returns the Run object.
+// The Run object is serialized via its custom WORKFLOW_SERIALIZE method (to { runId }) and
+// deserialized as a WorkflowRun in the workflow VM, giving the user a fully functional Run-like object.
 // maxRetries = 0 because start() generates a new runId on each attempt — retrying would
 // spawn duplicate child workflows instead of retrying the same one.
 const __workflowStartStep = async (
   workflowId: string,
   args: unknown[],
   options?: StartOptions
-): Promise<string> => {
-  const run = await start(
+): Promise<Run<unknown>> => {
+  return await start(
     { workflowId } as { workflowId: string },
     args as any,
     options
   );
-  return run.runId;
 };
 __workflowStartStep.maxRetries = 0;
 registerStepFunction('__workflow_start', __workflowStartStep);
+
+// Register built-in steps for Run methods so that WorkflowRun instances in the VM
+// can delegate their method calls to the real Run class in the step context.
+// All use maxRetries = 0 since these are read/cancel operations that should not be retried.
+const __runCancel = async (runId: string): Promise<void> => {
+  const run = new Run(runId);
+  await run.cancel();
+};
+__runCancel.maxRetries = 0;
+registerStepFunction('__run_cancel', __runCancel);
+
+const __runStatus = async (runId: string) => {
+  const run = new Run(runId);
+  return await run.status;
+};
+__runStatus.maxRetries = 0;
+registerStepFunction('__run_status', __runStatus);
+
+const __runReturnValue = async (runId: string) => {
+  const run = new Run(runId);
+  return await run.returnValue;
+};
+__runReturnValue.maxRetries = 0;
+registerStepFunction('__run_return_value', __runReturnValue);
+
+const __runWorkflowName = async (runId: string) => {
+  const run = new Run(runId);
+  return await run.workflowName;
+};
+__runWorkflowName.maxRetries = 0;
+registerStepFunction('__run_workflow_name', __runWorkflowName);
+
+const __runCreatedAt = async (runId: string) => {
+  const run = new Run(runId);
+  return await run.createdAt;
+};
+__runCreatedAt.maxRetries = 0;
+registerStepFunction('__run_created_at', __runCreatedAt);
+
+const __runStartedAt = async (runId: string) => {
+  const run = new Run(runId);
+  return await run.startedAt;
+};
+__runStartedAt.maxRetries = 0;
+registerStepFunction('__run_started_at', __runStartedAt);
+
+const __runCompletedAt = async (runId: string) => {
+  const run = new Run(runId);
+  return await run.completedAt;
+};
+__runCompletedAt.maxRetries = 0;
+registerStepFunction('__run_completed_at', __runCompletedAt);
+
+const __runExists = async (runId: string) => {
+  const run = new Run(runId);
+  return await run.exists;
+};
+__runExists.maxRetries = 0;
+registerStepFunction('__run_exists', __runExists);
 
 const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',

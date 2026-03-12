@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow DevKit. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow devkit", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.3'
+  version: '1.4'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -112,11 +112,12 @@ import { start } from "workflow/api";
 export async function parentWorkflow(value: number) {
   "use workflow";
   const childRun = await start(childWorkflow, [value]);
-  // childRun.runId is available; use getRun(runId) in a step for full Run access
+  // childRun is a full Run object — use .runId, .status, .returnValue, .cancel(), etc.
+  const result = await childRun.returnValue;
 }
 ```
 
-Inside workflow functions, `start()` returns `{ runId: string }` (not a full `Run` object). For full `Run` capabilities (`.returnValue`, `.cancel()`), use `getRun(runId)` inside a step function.
+Inside workflow functions, `start()` returns a full `Run` object. Each property access (`.status`, `.returnValue`) or method call (`.cancel()`) executes as a separate workflow step.
 
 ## Workflow Sandbox Limitations
 

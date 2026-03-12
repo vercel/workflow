@@ -89,15 +89,16 @@ export async function parentWorkflow(inputValue: number) {
 
   const childRun = await start(childWorkflow, [inputValue]); // [!code highlight]
 
-  // childRun.runId is available immediately
-  return { childRunId: childRun.runId };
+  // childRun is a full Run object — use it like normal
+  const childResult = await childRun.returnValue;
+  return { childRunId: childRun.runId, childResult };
 }
 ```
 
-When `start()` is called inside a workflow function, it automatically executes through an internal step to maintain deterministic replay. The returned object contains a `runId` property that you can use to track the child workflow.
+When `start()` is called inside a workflow function, it automatically executes through an internal step to maintain deterministic replay. The returned `Run` object works just like it does outside workflows — properties like `.runId`, `.status`, `.returnValue`, and methods like `.cancel()` are all available. Each property access or method call executes as a separate step under the hood.
 
 <Callout type="info">
-Inside workflow functions, `start()` returns an object with only the `runId` property (not a full `Run` object). To get full `Run` capabilities like `.returnValue` or `.cancel()`, use `getRun(runId)` inside a step function.
+Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.returnValue`) triggers a workflow step. This means each access is recorded in the event log and replayed deterministically.
 </Callout>
 
 ### Fire and Forget

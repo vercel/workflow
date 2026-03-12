@@ -54,6 +54,14 @@ export interface WorkflowReadableStreamOptions {
  */
 export class Run<TResult> {
   /**
+   * Marker used by the serialization system to identify Run instances.
+   * This is not WORKFLOW_SERIALIZE to avoid the SWC plugin injecting
+   * `registerSerializationClass` imports into this file.
+   * @internal
+   */
+  static readonly __serializable = 'Run' as const;
+
+  /**
    * The ID of the workflow run.
    */
   runId: string;

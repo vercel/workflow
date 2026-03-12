@@ -110,12 +110,13 @@ import { childWorkflow } from "./workflows/child";
 export async function parentWorkflow(value: number) {
   "use workflow";
 
-  // start() works directly in workflow functions
+  // start() works directly in workflow functions — returns a full Run object
   const childRun = await start(childWorkflow, [value]); // [!code highlight]
-  return { childRunId: childRun.runId };
+  const result = await childRun.returnValue; // [!code highlight]
+  return { childRunId: childRun.runId, result };
 }
 ```
 
 <Callout type="info">
-When called inside a workflow function, `start()` executes through an internal step to maintain deterministic replay. The return value has a `runId` property but not the full `Run` methods.
+When called inside a workflow function, `start()` executes through an internal step. The returned `Run` object is fully functional — each property access or method call (`.status`, `.returnValue`, `.cancel()`) executes as a separate step.
 </Callout>

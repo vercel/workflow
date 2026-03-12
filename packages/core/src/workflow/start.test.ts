@@ -10,6 +10,13 @@ import { dehydrateStepReturnValue } from '../serialization.js';
 import { createContext } from '../vm/index.js';
 import { createStart } from './start.js';
 
+// Mock Run-like class that matches the serialization system's Run reducer.
+// The real Run class requires getWorld() which isn't available in unit tests.
+class MockRun {
+  static readonly __serializable = 'Run' as const;
+  constructor(public readonly runId: string) {}
+}
+
 // Helper to setup context to simulate a workflow run
 function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const context = createContext({
@@ -18,7 +25,10 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   });
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
+  const promiseQueueHolder = { current: Promise.resolve() };
   const ctx: WorkflowOrchestratorContext = {
+    runId: 'wrun_123',
+    encryptionKey: undefined,
     globalThis: context.globalThis,
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: (event) => {
@@ -28,6 +38,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
           )
         );
       },
+      getPromiseQueue: () => promiseQueueHolder.current,
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
@@ -35,14 +46,23 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
     onWorkflowError: vi.fn(),
+    get promiseQueue() {
+      return promiseQueueHolder.current;
+    },
+    set promiseQueue(value: Promise<void>) {
+      promiseQueueHolder.current = value;
+    },
+    pendingDeliveries: 0,
   };
   return ctx;
 }
 
 describe('createStart', () => {
-  it('should resolve with { runId } when step_completed event is received', async () => {
+  it('should resolve with run object when step_completed event is received', async () => {
+    // Simulate what the real __workflow_start step produces: a Run object
+    // that gets serialized via the Run reducer to { runId }
     const serializedResult = await dehydrateStepReturnValue(
-      'wrun_child_456',
+      new MockRun('wrun_child_456'),
       'wrun_123',
       undefined
     );
@@ -79,7 +99,9 @@ describe('createStart', () => {
     const startFn = createStart(ctx);
     const result = await startFn({ workflowId: 'test-child-workflow' }, [42]);
 
-    expect(result).toEqual({ runId: 'wrun_child_456' });
+    // In the test context (no WorkflowRun in registry), the Run reviver
+    // falls back to a plain object with runId
+    expect(result).toHaveProperty('runId', 'wrun_child_456');
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
     expect(ctx.invocationsQueue.size).toBe(0);
   });
@@ -133,7 +155,7 @@ describe('createStart', () => {
 
   it('should allow deploymentId and specVersion options', async () => {
     const serializedResult = await dehydrateStepReturnValue(
-      'wrun_child_789',
+      new MockRun('wrun_child_789'),
       'wrun_123',
       undefined
     );
@@ -173,7 +195,7 @@ describe('createStart', () => {
       specVersion: 2,
     });
 
-    expect(result).toEqual({ runId: 'wrun_child_789' });
+    expect(result).toHaveProperty('runId', 'wrun_child_789');
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 

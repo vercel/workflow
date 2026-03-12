@@ -5,9 +5,13 @@ import { createUseStep } from '../step.js';
 const ALLOWED_START_OPTIONS = new Set(['deploymentId', 'specVersion']);
 
 export function createStart(ctx: WorkflowOrchestratorContext) {
+  // The step returns a Run object (serialized via WORKFLOW_SERIALIZE),
+  // which the VM deserializes as a WorkflowRun instance.
   const internalStartStep = createUseStep(ctx)<
     [string, Serializable[], Serializable],
-    string
+    // The result type after deserialization in the VM is a WorkflowRun,
+    // but from the step's perspective it returns a Run (which serializes to { runId }).
+    unknown
   >('__workflow_start');
 
   return async function startImpl(
@@ -50,11 +54,12 @@ export function createStart(ctx: WorkflowOrchestratorContext) {
       sanitizedOpts[key] = value as Serializable;
     }
 
-    const runId = await internalStartStep(
+    // The step returns a Run object, which is serialized to { runId } via
+    // WORKFLOW_SERIALIZE and deserialized as a WorkflowRun in the VM.
+    return await internalStartStep(
       workflowId,
       args,
       sanitizedOpts as Serializable
     );
-    return { runId };
   };
 }

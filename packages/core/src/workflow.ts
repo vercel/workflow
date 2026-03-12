@@ -34,6 +34,7 @@ import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
+import { createWorkflowRun } from './workflow/run.js';
 import { createStart } from './workflow/start.js';
 
 /**
@@ -188,6 +189,11 @@ export async function runWorkflow(
     const createHook = createCreateHook(workflowContext);
     const sleep = createSleep(workflowContext);
     const startFn = createStart(workflowContext);
+
+    // Create the WorkflowRun class for this VM context.
+    // This registers it in the VM's class registry so that Run objects
+    // serialized from step context deserialize as WorkflowRun in the VM.
+    createWorkflowRun(workflowContext);
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_USE_STEP] = useStep;

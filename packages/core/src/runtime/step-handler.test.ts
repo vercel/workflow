@@ -132,6 +132,7 @@ vi.mock('../types.js', () => ({
 // Mock private module
 vi.mock('../private.js', () => ({
   getStepFunction: vi.fn().mockReturnValue(mockStepFn),
+  registerStepFunction: vi.fn(),
 }));
 
 // Mock get-port
