@@ -236,10 +236,10 @@ export async function userCancellableWorkflow(jobId: string) {
   const workPromise = doExpensiveWork(controller.signal);
 
   const result = await Promise.race([ // [!code highlight]
-    workPromise.then((data) => ({ status: "completed" as const, data })),
+    workPromise.then((data) => ({ status: "completed", data })),
     cancelHook.then((payload) => { // [!code highlight]
       controller.abort(); // [!code highlight]
-      return { status: "cancelled" as const, reason: payload.reason };
+      return { status: "cancelled", reason: payload.reason };
     }),
   ]);
 
