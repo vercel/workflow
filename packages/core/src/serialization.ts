@@ -999,14 +999,21 @@ export function getWorkflowReducers(
       return { name };
     },
 
-    // AbortController/AbortSignal in workflow context — just read symbols (handles)
+    // AbortController/AbortSignal in workflow context — just read symbols (handles).
+    // In the workflow VM, global.AbortController is a class but global.AbortSignal
+    // is a plain object (not a class), so instanceof checks won't work for signals.
+    // Detect instances by the presence of the ABORT_STREAM_NAME symbol instead.
     AbortController: (value) => {
-      if (
-        !global.AbortController ||
-        typeof global.AbortController !== 'function' ||
-        !(value instanceof global.AbortController)
-      )
-        return false;
+      // Must have a .signal property to be a controller (not a signal)
+      if (!value || !value.signal) return false;
+      const hasAbortSymbol =
+        (value as any)[ABORT_STREAM_NAME] ||
+        (value as any).signal?.[ABORT_STREAM_NAME];
+      const isNativeAbortController =
+        global.AbortController &&
+        typeof global.AbortController === 'function' &&
+        value instanceof global.AbortController;
+      if (!hasAbortSymbol && !isNativeAbortController) return false;
       const streamName =
         (value as any)[ABORT_STREAM_NAME] ||
         (value.signal as any)?.[ABORT_STREAM_NAME];
@@ -1024,12 +1031,12 @@ export function getWorkflowReducers(
       };
     },
     AbortSignal: (value) => {
-      if (
-        !global.AbortSignal ||
-        typeof global.AbortSignal !== 'function' ||
-        !(value instanceof global.AbortSignal)
-      )
-        return false;
+      const hasAbortSymbol = value && (value as any)[ABORT_STREAM_NAME];
+      const isNativeAbortSignal =
+        global.AbortSignal &&
+        typeof global.AbortSignal === 'function' &&
+        value instanceof global.AbortSignal;
+      if (!hasAbortSymbol && !isNativeAbortSignal) return false;
       const streamName = (value as any)[ABORT_STREAM_NAME];
       const hookToken = (value as any)[ABORT_HOOK_TOKEN];
       if (!streamName) {

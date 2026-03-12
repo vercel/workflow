@@ -2213,5 +2213,56 @@ describe('e2e', () => {
         expect(returnValue.afterReason).toBe('after-replay');
       }
     );
+
+    test(
+      'abortThrowIfAbortedWorkflow: throwIfAborted causes FatalError, no retries',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortThrowIfAbortedWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step calls throwIfAborted() on an already-aborted signal.
+        // The DOMException is wrapped in FatalError by the step handler.
+        expect(returnValue.threw).toBe(true);
+        expect(returnValue.isFatal).toBe(true);
+      }
+    );
+
+    test(
+      'abortReasonTypesWorkflow: various abort reason types propagate correctly',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortReasonTypesWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // String reason
+        expect(returnValue.stringReason.aborted).toBe(true);
+        expect(returnValue.stringReason.reason).toBe('string-reason');
+
+        // Object reason
+        expect(returnValue.objectReason.aborted).toBe(true);
+        expect(returnValue.objectReason.reason).toMatchObject({
+          code: 'CANCELLED',
+          detail: 'by user',
+        });
+
+        // Undefined reason (default abort)
+        expect(returnValue.undefinedReason.aborted).toBe(true);
+      }
+    );
+
+    test(
+      'abortFetchUncaughtWorkflow: uncaught fetch AbortError is FatalError, no retries',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortFetchUncaughtWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step does fetch() with an already-aborted signal.
+        // The AbortError is NOT caught in the step — it propagates as FatalError.
+        expect(returnValue.threw).toBe(true);
+        expect(returnValue.isFatal).toBe(true);
+      }
+    );
   });
 });

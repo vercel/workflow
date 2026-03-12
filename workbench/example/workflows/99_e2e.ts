@@ -1714,6 +1714,96 @@ export async function abortSurvivesReplayWorkflow() {
   };
 }
 
+/**
+ * E2E: throwIfAborted() causes FatalError (no retries).
+ * Step calls throwIfAborted() on an already-aborted signal.
+ * The DOMException should be wrapped in FatalError, skip retries,
+ * and propagate to the workflow.
+ */
+export async function abortThrowIfAbortedWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+  controller.abort('throw-test-reason');
+
+  try {
+    await stepThatThrowsIfAborted(controller.signal);
+    return { threw: false };
+  } catch (err: any) {
+    return {
+      threw: true,
+      message: err.message,
+      isFatal: err.name === 'FatalError' || err.fatal === true,
+    };
+  }
+}
+
+async function stepThatThrowsIfAborted(signal: AbortSignal) {
+  'use step';
+  signal.throwIfAborted();
+  return 'should not reach here';
+}
+
+/**
+ * E2E: Abort reason propagation with various types.
+ * Tests that string, object, and undefined reasons all propagate correctly.
+ */
+export async function abortReasonTypesWorkflow() {
+  'use workflow';
+
+  const c1 = new AbortController();
+  c1.abort('string-reason');
+  const s1 = await checkSignalState(c1.signal);
+
+  const c2 = new AbortController();
+  c2.abort({ code: 'CANCELLED', detail: 'by user' });
+  const s2 = await checkSignalState(c2.signal);
+
+  const c3 = new AbortController();
+  c3.abort();
+  const s3 = await checkSignalState(c3.signal);
+
+  return {
+    stringReason: s1,
+    objectReason: s2,
+    undefinedReason: s3,
+  };
+}
+
+/**
+ * E2E: Uncaught fetch AbortError propagates as FatalError (no retries).
+ * The step does NOT catch the AbortError from fetch — it should propagate
+ * as a FatalError to the workflow without the step being retried.
+ */
+export async function abortFetchUncaughtWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+
+  // Abort immediately so fetch will throw
+  controller.abort('fetch-abort-test');
+
+  try {
+    await stepThatFetchesWithSignal(controller.signal);
+    return { threw: false };
+  } catch (err: any) {
+    return {
+      threw: true,
+      message: err.message,
+      isFatal: err.name === 'FatalError' || err.fatal === true,
+    };
+  }
+}
+
+async function stepThatFetchesWithSignal(signal: AbortSignal) {
+  'use step';
+  // This will throw AbortError because the signal is already aborted.
+  // The error should NOT be caught here — it propagates to the workflow
+  // as a FatalError (wrapped by the step handler).
+  const response = await globalThis.fetch('https://example.com', { signal });
+  return response.status;
+}
+
 //////////////////////////////////////////////////////////
 
 async function processPayload(payload: { type: string; id?: number }) {

@@ -6,8 +6,8 @@
     "common-patterns",
     "errors-and-retries",
     "hooks",
-    "cancellation",
     "streaming",
+    "cancellation",
     "serialization",
     "idempotency"
   ],
