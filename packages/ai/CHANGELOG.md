@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.0.1-beta.56
+
+### Patch Changes
+
+- [#1329](https://github.com/vercel/workflow/pull/1329) [`6d45c8e`](https://github.com/vercel/workflow/commit/6d45c8ec36990be55f5a8435992bf7efd01cb0c9) Thanks [@pranaygp](https://github.com/pranaygp)! - Support client-side tools in DurableAgent. Tools without an `execute` function now pause the agent loop and return `clientToolCalls` in the result instead of throwing an error.
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.69
+
 ## 4.0.1-beta.55
 
 ### Patch Changes

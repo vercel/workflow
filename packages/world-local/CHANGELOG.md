@@ -1,5 +1,15 @@
 # @workflow/world-local
 
+## 4.1.0-beta.42
+
+### Patch Changes
+
+- [#1334](https://github.com/vercel/workflow/pull/1334) [`3648109`](https://github.com/vercel/workflow/commit/3648109861f1fbfe24101936dc35c9a36650b7e2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Refactor queue handler to separate queue behavior from route call behavior and export QueueExecutor.
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7)]:
+  - @workflow/world@4.1.0-beta.12
+  - @workflow/errors@4.1.0-beta.18
+
 ## 4.1.0-beta.41
 
 ### Patch Changes

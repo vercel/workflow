@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 4.2.0-beta.69
+
+### Patch Changes
+
+- [#1317](https://github.com/vercel/workflow/pull/1317) [`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Support `deploymentId: 'latest'` in `start()` options to automatically resolve the most recent deployment ID for the current environment
+
+- [#1336](https://github.com/vercel/workflow/pull/1336) [`fb5a500`](https://github.com/vercel/workflow/commit/fb5a500eadba80efdef75e3ccf6e85e957820f38) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `exists` getter to `Run` class for checking if a workflow run exists without throwing
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`3648109`](https://github.com/vercel/workflow/commit/3648109861f1fbfe24101936dc35c9a36650b7e2), [`d5bc418`](https://github.com/vercel/workflow/commit/d5bc418816748ab2b5109ca7b082f3be427c326b)]:
+  - @workflow/world-vercel@4.1.0-beta.43
+  - @workflow/world@4.1.0-beta.12
+  - @workflow/world-local@4.1.0-beta.42
+  - @workflow/errors@4.1.0-beta.18
+
 ## 4.2.0-beta.68
 
 ### Patch Changes
