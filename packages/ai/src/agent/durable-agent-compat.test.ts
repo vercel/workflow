@@ -312,8 +312,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
       expect(doStreamOptions?.abortSignal).toBe(abortController.signal);
     });
 
-    it.fails('should pass timeout to streamText', async () => {
-      // GAP: DurableAgent does not have a timeout option
+    it('should pass timeout to streamText', async () => {
       const agent = new DurableAgent({
         model: asModelFactory(mockModel),
       });
@@ -734,10 +733,8 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
         });
       });
 
-      it.fails('should call onStepFinish from constructor', async () => {
+      it('should call onStepFinish from constructor', async () => {
         const onStepFinishCalls: string[] = [];
-
-        // GAP: DurableAgent does not accept onStepFinish in constructor
         const agent = new DurableAgent({
           model: asModelFactory(mockModel),
           onStepFinish: async () => {
@@ -781,7 +778,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
         `);
       });
 
-      it.fails('should call both constructor and method onStepFinish in correct order', async () => {
+      it('should call both constructor and method onStepFinish in correct order', async () => {
         const onStepFinishCalls: string[] = [];
 
         const agent = new DurableAgent({
@@ -1144,10 +1141,8 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
         });
       });
 
-      it.fails('should call onFinish from constructor', async () => {
+      it('should call onFinish from constructor', async () => {
         const calls: string[] = [];
-
-        // GAP: DurableAgent does not accept onFinish in constructor
         const agent = new DurableAgent({
           model: asModelFactory(mockModel),
           onFinish: async () => {
@@ -1191,7 +1186,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
         `);
       });
 
-      it.fails('should call both constructor and method in correct order', async () => {
+      it('should call both constructor and method in correct order', async () => {
         const calls: string[] = [];
 
         const agent = new DurableAgent({
@@ -1218,7 +1213,7 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
         `);
       });
 
-      it.fails('should pass correct event information', async () => {
+      it('should pass correct event information', async () => {
         let event!: any;
 
         const agent = new DurableAgent({

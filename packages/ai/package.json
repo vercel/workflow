@@ -53,6 +53,10 @@
     "./xai": {
       "types": "./dist/providers/xai.d.ts",
       "default": "./dist/providers/xai.js"
+    },
+    "./test": {
+      "types": "./dist/providers/mock.d.ts",
+      "default": "./dist/providers/mock.js"
     }
   },
   "scripts": {

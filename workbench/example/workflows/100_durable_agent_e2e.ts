@@ -1,41 +1,22 @@
 /**
  * E2E test workflows for DurableAgent.
  *
- * These workflows use inline mock LanguageModelV2 implementations so they
- * don't require real LLM API keys. The mock models return deterministic
- * responses to validate DurableAgent behavior end-to-end through the
- * workflow runtime.
+ * These workflows use MockLanguageModelV3 from ai/test (wrapped via
+ * @workflow/ai/test) so they don't require real LLM API keys. The mock
+ * models return deterministic responses to validate DurableAgent behavior
+ * end-to-end through the workflow runtime.
  */
 import { DurableAgent } from '@workflow/ai/agent';
+import { mockModel, convertArrayToReadableStream } from '@workflow/ai/test';
 import { FatalError, getWritable } from 'workflow';
 import z from 'zod/v4';
 
 // ============================================================================
-// Mock model helpers
+// Shared stream parts
 // ============================================================================
 
-// Use `any` for model types to avoid direct @ai-sdk/provider dependency.
-// The runtime only cares about the shape, not the TypeScript type.
-
-/**
- * Creates a ReadableStream from an array of stream parts.
- */
-function streamFromParts(parts: any[]): ReadableStream<any> {
-  return new ReadableStream({
-    start(controller) {
-      try {
-        for (const part of parts) {
-          controller.enqueue(part);
-        }
-      } finally {
-        controller.close();
-      }
-    },
-  });
-}
-
 const finishPart = {
-  type: 'finish',
+  type: 'finish' as const,
   finishReason: { unified: 'stop', raw: 'stop' } as any,
   usage: {
     inputTokens: { total: 5, noCache: 5 } as any,
@@ -47,152 +28,6 @@ const toolCallFinishPart = {
   ...finishPart,
   finishReason: { unified: 'tool-calls', raw: undefined } as any,
 };
-
-/**
- * Creates a mock LanguageModelV2 that returns a text response.
- */
-function createTextMockModel(text: string): any {
-  return {
-    specificationVersion: 'v2',
-    provider: 'mock',
-    modelId: 'mock-text',
-    supportedUrls: {},
-    doGenerate: async () => {
-      throw new Error('not implemented');
-    },
-    doStream: async () => ({
-      stream: streamFromParts([
-        { type: 'stream-start', warnings: [] } as any,
-        {
-          type: 'response-metadata',
-          id: 'resp-1',
-          modelId: 'mock-text',
-          timestamp: new Date(),
-        } as any,
-        { type: 'text-start', id: '1' } as any,
-        { type: 'text-delta', id: '1', delta: text } as any,
-        { type: 'text-end', id: '1' } as any,
-        finishPart,
-      ]),
-    }),
-  };
-}
-
-/**
- * Creates a mock LanguageModelV2 that calls a tool on first turn,
- * then returns text on second turn.
- */
-function createToolCallMockModel(
-  toolName: string,
-  toolInput: string,
-  finalText: string
-): any {
-  let callCount = 0;
-  return {
-    specificationVersion: 'v2',
-    provider: 'mock',
-    modelId: 'mock-tool',
-    supportedUrls: {},
-    doGenerate: async () => {
-      throw new Error('not implemented');
-    },
-    doStream: async () => {
-      if (callCount++ === 0) {
-        return {
-          stream: streamFromParts([
-            { type: 'stream-start', warnings: [] } as any,
-            {
-              type: 'response-metadata',
-              id: 'resp-1',
-              modelId: 'mock-tool',
-              timestamp: new Date(),
-            } as any,
-            {
-              type: 'tool-call',
-              toolCallId: `call-${callCount}`,
-              toolName,
-              input: toolInput,
-            } as any,
-            toolCallFinishPart,
-          ]),
-        };
-      }
-      return {
-        stream: streamFromParts([
-          { type: 'stream-start', warnings: [] } as any,
-          {
-            type: 'response-metadata',
-            id: `resp-${callCount + 1}`,
-            modelId: 'mock-tool',
-            timestamp: new Date(),
-          } as any,
-          { type: 'text-start', id: '1' } as any,
-          { type: 'text-delta', id: '1', delta: finalText } as any,
-          { type: 'text-end', id: '1' } as any,
-          finishPart,
-        ]),
-      };
-    },
-  };
-}
-
-/**
- * Creates a mock model that calls a tool N times sequentially, then returns text.
- */
-function createMultiStepMockModel(
-  toolName: string,
-  steps: number,
-  finalText: string
-): any {
-  let callCount = 0;
-  return {
-    specificationVersion: 'v2',
-    provider: 'mock',
-    modelId: 'mock-multi',
-    supportedUrls: {},
-    doGenerate: async () => {
-      throw new Error('not implemented');
-    },
-    doStream: async () => {
-      callCount++;
-      if (callCount <= steps) {
-        return {
-          stream: streamFromParts([
-            { type: 'stream-start', warnings: [] } as any,
-            {
-              type: 'response-metadata',
-              id: `resp-${callCount}`,
-              modelId: 'mock-multi',
-              timestamp: new Date(),
-            } as any,
-            {
-              type: 'tool-call',
-              toolCallId: `call-${callCount}`,
-              toolName,
-              input: JSON.stringify({ step: callCount }),
-            } as any,
-            toolCallFinishPart,
-          ]),
-        };
-      }
-      return {
-        stream: streamFromParts([
-          { type: 'stream-start', warnings: [] } as any,
-          {
-            type: 'response-metadata',
-            id: `resp-${callCount}`,
-            modelId: 'mock-multi',
-            timestamp: new Date(),
-          } as any,
-          { type: 'text-start', id: '1' } as any,
-          { type: 'text-delta', id: '1', delta: finalText } as any,
-          { type: 'text-end', id: '1' } as any,
-          finishPart,
-        ]),
-      };
-    },
-  };
-}
 
 // ============================================================================
 // Step functions
@@ -224,8 +59,28 @@ export async function agentBasicE2e(prompt: string) {
   'use workflow';
 
   const agent = new DurableAgent({
-    model: async () => createTextMockModel(`Echo: ${prompt}`),
-    system: 'You are a helpful assistant.',
+    model: mockModel({
+      doStream: async () => ({
+        stream: convertArrayToReadableStream([
+          { type: 'stream-start' as const, warnings: [] },
+          {
+            type: 'response-metadata' as const,
+            id: 'resp-1',
+            modelId: 'mock-text',
+            timestamp: new Date(),
+          },
+          { type: 'text-start' as const, id: '1' },
+          {
+            type: 'text-delta' as const,
+            id: '1',
+            delta: `Echo: ${prompt}`,
+          },
+          { type: 'text-end' as const, id: '1' },
+          finishPart,
+        ]),
+      }),
+    }),
+    instructions: 'You are a helpful assistant.',
   });
 
   const result = await agent.stream({
@@ -245,13 +100,52 @@ export async function agentBasicE2e(prompt: string) {
 export async function agentToolCallE2e(a: number, b: number) {
   'use workflow';
 
+  let callCount = 0;
   const agent = new DurableAgent({
-    model: async () =>
-      createToolCallMockModel(
-        'addNumbers',
-        JSON.stringify({ a, b }),
-        `The sum is ${a + b}`
-      ),
+    model: mockModel({
+      doStream: async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start' as const, warnings: [] },
+              {
+                type: 'response-metadata' as const,
+                id: 'resp-1',
+                modelId: 'mock-tool',
+                timestamp: new Date(),
+              },
+              {
+                type: 'tool-call' as const,
+                toolCallId: `call-${callCount}`,
+                toolName: 'addNumbers',
+                input: JSON.stringify({ a, b }),
+              },
+              toolCallFinishPart,
+            ]),
+          };
+        }
+        return {
+          stream: convertArrayToReadableStream([
+            { type: 'stream-start' as const, warnings: [] },
+            {
+              type: 'response-metadata' as const,
+              id: `resp-${callCount}`,
+              modelId: 'mock-tool',
+              timestamp: new Date(),
+            },
+            { type: 'text-start' as const, id: '1' },
+            {
+              type: 'text-delta' as const,
+              id: '1',
+              delta: `The sum is ${a + b}`,
+            },
+            { type: 'text-end' as const, id: '1' },
+            finishPart,
+          ]),
+        };
+      },
+    }),
     tools: {
       addNumbers: {
         description: 'Add two numbers',
@@ -259,7 +153,7 @@ export async function agentToolCallE2e(a: number, b: number) {
         execute: addNumbers,
       },
     },
-    system: 'You are a calculator assistant.',
+    instructions: 'You are a calculator assistant.',
   });
 
   const result = await agent.stream({
@@ -280,8 +174,49 @@ export async function agentToolCallE2e(a: number, b: number) {
 export async function agentMultiStepE2e() {
   'use workflow';
 
+  let callCount = 0;
+  const totalToolSteps = 3;
   const agent = new DurableAgent({
-    model: async () => createMultiStepMockModel('echoStep', 3, 'All done!'),
+    model: mockModel({
+      doStream: async () => {
+        callCount++;
+        if (callCount <= totalToolSteps) {
+          return {
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start' as const, warnings: [] },
+              {
+                type: 'response-metadata' as const,
+                id: `resp-${callCount}`,
+                modelId: 'mock-multi',
+                timestamp: new Date(),
+              },
+              {
+                type: 'tool-call' as const,
+                toolCallId: `call-${callCount}`,
+                toolName: 'echoStep',
+                input: JSON.stringify({ step: callCount }),
+              },
+              toolCallFinishPart,
+            ]),
+          };
+        }
+        return {
+          stream: convertArrayToReadableStream([
+            { type: 'stream-start' as const, warnings: [] },
+            {
+              type: 'response-metadata' as const,
+              id: `resp-${callCount}`,
+              modelId: 'mock-multi',
+              timestamp: new Date(),
+            },
+            { type: 'text-start' as const, id: '1' },
+            { type: 'text-delta' as const, id: '1', delta: 'All done!' },
+            { type: 'text-end' as const, id: '1' },
+            finishPart,
+          ]),
+        };
+      },
+    }),
     tools: {
       echoStep: {
         description: 'Echo the step number',
@@ -309,14 +244,52 @@ export async function agentMultiStepE2e() {
 export async function agentErrorToolE2e() {
   'use workflow';
 
-  // Model calls throwingTool, gets error result, then returns text
+  let callCount = 0;
   const agent = new DurableAgent({
-    model: async () =>
-      createToolCallMockModel(
-        'throwingTool',
-        '{}',
-        'Tool failed but I recovered.'
-      ),
+    model: mockModel({
+      doStream: async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            stream: convertArrayToReadableStream([
+              { type: 'stream-start' as const, warnings: [] },
+              {
+                type: 'response-metadata' as const,
+                id: 'resp-1',
+                modelId: 'mock-error',
+                timestamp: new Date(),
+              },
+              {
+                type: 'tool-call' as const,
+                toolCallId: 'call-1',
+                toolName: 'throwingTool',
+                input: '{}',
+              },
+              toolCallFinishPart,
+            ]),
+          };
+        }
+        return {
+          stream: convertArrayToReadableStream([
+            { type: 'stream-start' as const, warnings: [] },
+            {
+              type: 'response-metadata' as const,
+              id: `resp-${callCount}`,
+              modelId: 'mock-error',
+              timestamp: new Date(),
+            },
+            { type: 'text-start' as const, id: '1' },
+            {
+              type: 'text-delta' as const,
+              id: '1',
+              delta: 'Tool failed but I recovered.',
+            },
+            { type: 'text-end' as const, id: '1' },
+            finishPart,
+          ]),
+        };
+      },
+    }),
     tools: {
       throwingTool: {
         description: 'A tool that always fails',

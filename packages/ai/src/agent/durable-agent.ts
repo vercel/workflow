@@ -18,6 +18,7 @@ import {
   type StepResult,
   type StopCondition,
   type StreamTextOnStepFinishCallback,
+  type SystemModelMessage,
   type ToolChoice,
   type ToolSet,
   type UIMessage,
@@ -310,7 +311,14 @@ export interface DurableAgentOptions extends GenerationSettings {
   tools?: ToolSet;
 
   /**
+   * Agent instructions. Can be a string, a SystemModelMessage, or an array of SystemModelMessages.
+   * Supports provider-specific options (e.g., caching) when using the SystemModelMessage form.
+   */
+  instructions?: string | SystemModelMessage | Array<SystemModelMessage>;
+
+  /**
    * Optional system prompt to guide the agent's behavior.
+   * @deprecated Use `instructions` instead.
    */
   system?: string;
 
@@ -323,6 +331,16 @@ export interface DurableAgentOptions extends GenerationSettings {
    * Optional telemetry configuration (experimental).
    */
   experimental_telemetry?: TelemetrySettings;
+
+  /**
+   * Callback function to be called after each step completes.
+   */
+  onStepFinish?: StreamTextOnStepFinishCallback<ToolSet>;
+
+  /**
+   * Callback that is called when the LLM response and all request tool executions are finished.
+   */
+  onFinish?: StreamTextOnFinishCallback<ToolSet>;
 }
 
 /**
@@ -341,6 +359,21 @@ export type StreamTextOnFinishCallback<
    * The final messages including all tool calls and results.
    */
   readonly messages: ModelMessage[];
+
+  /**
+   * The text output from the last step.
+   */
+  readonly text: string;
+
+  /**
+   * The finish reason from the last step.
+   */
+  readonly finishReason: FinishReason;
+
+  /**
+   * The total token usage across all steps.
+   */
+  readonly totalUsage: LanguageModelUsage;
 
   /**
    * Context that is passed into tool execution.
@@ -556,6 +589,13 @@ export interface DurableAgentStreamOptions<
    * @default false
    */
   collectUIMessages?: boolean;
+
+  /**
+   * Timeout in milliseconds for the stream operation.
+   * When specified, creates an AbortSignal that will abort the operation after the given time.
+   * If both `timeout` and `abortSignal` are provided, whichever triggers first will abort.
+   */
+  timeout?: number;
 }
 
 /**
@@ -676,17 +716,25 @@ export interface DurableAgentStreamResult<
 export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private model: string | (() => Promise<CompatibleLanguageModel>);
   private tools: TBaseTools;
-  private system?: string;
+  private instructions?:
+    | string
+    | SystemModelMessage
+    | Array<SystemModelMessage>;
   private generationSettings: GenerationSettings;
   private toolChoice?: ToolChoice<TBaseTools>;
   private telemetry?: TelemetrySettings;
+  private constructorOnStepFinish?: StreamTextOnStepFinishCallback<ToolSet>;
+  private constructorOnFinish?: StreamTextOnFinishCallback<ToolSet>;
 
   constructor(options: DurableAgentOptions & { tools?: TBaseTools }) {
     this.model = options.model;
     this.tools = (options.tools ?? {}) as TBaseTools;
-    this.system = options.system;
+    // `instructions` takes precedence over deprecated `system`
+    this.instructions = options.instructions ?? options.system;
     this.toolChoice = options.toolChoice as ToolChoice<TBaseTools>;
     this.telemetry = options.experimental_telemetry;
+    this.constructorOnStepFinish = options.onStepFinish;
+    this.constructorOnFinish = options.onFinish;
 
     // Extract generation settings
     this.generationSettings = {
@@ -717,7 +765,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     options: DurableAgentStreamOptions<TTools, OUTPUT, PARTIAL_OUTPUT>
   ): Promise<DurableAgentStreamResult<TTools, OUTPUT>> {
     const prompt = await standardizePrompt({
-      system: options.system || this.system,
+      system: options.system || this.instructions,
       messages: options.messages,
     });
 
@@ -726,6 +774,16 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       supportedUrls: {},
       download: options.experimental_download,
     });
+
+    // Build effective abort signal: merge timeout + explicit abortSignal
+    let effectiveAbortSignal =
+      options.abortSignal ?? this.generationSettings.abortSignal;
+    if (options.timeout !== undefined) {
+      const timeoutSignal = AbortSignal.timeout(options.timeout);
+      effectiveAbortSignal = effectiveAbortSignal
+        ? AbortSignal.any([effectiveAbortSignal, timeoutSignal])
+        : timeoutSignal;
+    }
 
     // Merge generation settings: constructor defaults < stream options
     const mergedGenerationSettings: GenerationSettings = {
@@ -751,14 +809,52 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       ...(options.maxRetries !== undefined && {
         maxRetries: options.maxRetries,
       }),
-      ...(options.abortSignal !== undefined && {
-        abortSignal: options.abortSignal,
+      ...(effectiveAbortSignal !== undefined && {
+        abortSignal: effectiveAbortSignal,
       }),
       ...(options.headers !== undefined && { headers: options.headers }),
       ...(options.providerOptions !== undefined && {
         providerOptions: options.providerOptions,
       }),
     };
+
+    // Merge constructor + stream callbacks (constructor first, then stream)
+    const mergedOnStepFinish:
+      | StreamTextOnStepFinishCallback<TTools>
+      | undefined =
+      this.constructorOnStepFinish || options.onStepFinish
+        ? async (event) => {
+            if (this.constructorOnStepFinish) {
+              await (
+                this
+                  .constructorOnStepFinish as unknown as StreamTextOnStepFinishCallback<TTools>
+              )(event);
+            }
+            if (options.onStepFinish) {
+              await options.onStepFinish(event);
+            }
+          }
+        : undefined;
+
+    const mergedOnFinish:
+      | StreamTextOnFinishCallback<TTools, OUTPUT>
+      | undefined =
+      this.constructorOnFinish || options.onFinish
+        ? async (event) => {
+            if (this.constructorOnFinish) {
+              await (
+                this
+                  .constructorOnFinish as unknown as StreamTextOnFinishCallback<
+                  TTools,
+                  OUTPUT
+                >
+              )(event);
+            }
+            if (options.onFinish) {
+              await options.onFinish(event);
+            }
+          }
+        : undefined;
 
     // Determine effective tool choice
     const effectiveToolChoice = options.toolChoice ?? this.toolChoice;
@@ -805,7 +901,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       stopConditions: options.stopWhen,
       maxSteps: options.maxSteps,
       sendStart: options.sendStart ?? true,
-      onStepFinish: options.onStepFinish,
+      onStepFinish: mergedOnStepFinish,
       onError: options.onError,
       prepareStep: options.prepareStep,
       generationSettings: mergedGenerationSettings,
@@ -969,10 +1065,14 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
             // Cast matches the existing pattern used at the end of stream().
             const messages = iterMessages as unknown as ModelMessage[];
 
-            if (options.onFinish && !wasAborted) {
-              await options.onFinish({
+            if (mergedOnFinish && !wasAborted) {
+              const lastStep = steps[steps.length - 1];
+              await mergedOnFinish({
                 steps,
                 messages,
+                text: lastStep?.text ?? '',
+                finishReason: lastStep?.finishReason ?? 'other',
+                totalUsage: aggregateUsage(steps),
                 experimental_context: experimentalContext,
                 experimental_output: undefined as OUTPUT,
               });
@@ -1114,10 +1214,14 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     }
 
     // Call onFinish callback if provided (always call, even on errors, but not on abort)
-    if (options.onFinish && !wasAborted) {
-      await options.onFinish({
+    if (mergedOnFinish && !wasAborted) {
+      const lastStep = steps[steps.length - 1];
+      await mergedOnFinish({
         steps,
         messages: messages as ModelMessage[],
+        text: lastStep?.text ?? '',
+        finishReason: lastStep?.finishReason ?? 'other',
+        totalUsage: aggregateUsage(steps),
         experimental_context: experimentalContext,
         experimental_output: experimentalOutput,
       });
@@ -1148,6 +1252,23 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 /**
  * Filter tools to only include the specified active tools.
  */
+/**
+ * Aggregate token usage across all steps.
+ */
+function aggregateUsage(steps: StepResult<any>[]): LanguageModelUsage {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const step of steps) {
+    inputTokens += step.usage?.inputTokens ?? 0;
+    outputTokens += step.usage?.outputTokens ?? 0;
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+  } as LanguageModelUsage;
+}
+
 function filterTools<TTools extends ToolSet>(
   tools: TTools,
   activeTools: string[]
