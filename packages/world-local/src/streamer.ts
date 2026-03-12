@@ -325,7 +325,17 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           const taggedBinFiles = taggedResults[0] ?? [];
           const fileExtMap = new Map<string, string>();
           for (const f of jsonFiles) fileExtMap.set(f, '.json');
-          for (const f of binFiles) fileExtMap.set(f, '.bin'); // .bin takes precedence
+          // When a tag is set, skip .bin entries that end with the tag suffix
+          // because those same files will be properly handled by taggedBinFiles.
+          // Without this filter, a file like "stream-chnk_ABC.vitest-0.bin" would
+          // appear twice: once as "stream-chnk_ABC.vitest-0" (from .bin listing)
+          // and once as "stream-chnk_ABC" (from .vitest-0.bin listing), causing
+          // duplicate data in the stream.
+          const tagSuffix = tag ? `.${tag}` : '';
+          for (const f of binFiles) {
+            if (tag && f.endsWith(tagSuffix)) continue;
+            fileExtMap.set(f, '.bin'); // .bin takes precedence
+          }
           for (const f of taggedBinFiles) fileExtMap.set(f, `.${tag}.bin`); // tagged .bin takes precedence
           const chunkFiles = [...fileExtMap.keys()]
             .filter((file) => file.startsWith(`${name}-`))
