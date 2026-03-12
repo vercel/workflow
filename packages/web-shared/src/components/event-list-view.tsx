@@ -12,6 +12,7 @@ import {
   ErrorStackBlock,
   isStructuredErrorWithStack,
 } from './ui/error-stack-block';
+import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
 import { Skeleton } from './ui/skeleton';
 
@@ -1408,43 +1409,32 @@ export function EventListView({
             />
           );
         }}
-        components={{
-          Footer: hasMoreEvents
-            ? () => (
-                <div className="px-3 pt-3 flex justify-center">
-                  <button
-                    type="button"
-                    onClick={() => void onLoadMoreEvents?.()}
-                    disabled={isLoadingMoreEvents}
-                    className="h-8 px-3 text-xs rounded-md border transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                    style={{
-                      borderColor: 'var(--ds-gray-alpha-400)',
-                      color: 'var(--ds-gray-900)',
-                      backgroundColor: 'var(--ds-background-100)',
-                    }}
-                  >
-                    {isLoadingMoreEvents
-                      ? 'Loading more events...'
-                      : 'Load more'}
-                  </button>
-                </div>
-              )
-            : undefined,
-        }}
         style={{ flex: 1, minHeight: 0 }}
       />
 
-      {/* Fixed footer — always at the bottom of the visible area */}
+      {/* Fixed footer — count + load more */}
       <div
-        className="flex-shrink-0 border-t text-xs px-3 py-2"
+        className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-xs"
         style={{
           borderColor: 'var(--ds-gray-alpha-200)',
           color: 'var(--ds-gray-900)',
           backgroundColor: 'var(--ds-background-100)',
         }}
       >
-        {sortedEvents.length} event
-        {sortedEvents.length !== 1 ? 's' : ''} total
+        <span>
+          {sortedEvents.length} event
+          {sortedEvents.length !== 1 ? 's' : ''} loaded
+        </span>
+        {hasMoreEvents && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="pointer-events-auto">
+              <LoadMoreButton
+                loading={isLoadingMoreEvents}
+                onClick={() => void onLoadMoreEvents?.()}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
