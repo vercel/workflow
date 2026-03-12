@@ -360,6 +360,7 @@ export function RunDetailView({
   } = useEventsListData(env, runId, {
     sortOrder: eventsSortOrder,
     encryptionKey: encryptionKey ?? undefined,
+    enabled: activeTab === 'events',
   });
 
   const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(

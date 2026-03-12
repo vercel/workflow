@@ -19,9 +19,14 @@ const LOAD_MORE_PAGE_SIZE = 100;
 export function useEventsListData(
   env: EnvMap,
   runId: string,
-  options: { sortOrder?: 'asc' | 'desc'; encryptionKey?: Uint8Array } = {}
+  options: {
+    sortOrder?: 'asc' | 'desc';
+    encryptionKey?: Uint8Array;
+    /** When false, defers fetching until enabled. Defaults to true. */
+    enabled?: boolean;
+  } = {}
 ) {
-  const { sortOrder = 'asc', encryptionKey } = options;
+  const { sortOrder = 'asc', encryptionKey, enabled = true } = options;
 
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
@@ -66,8 +71,8 @@ export function useEventsListData(
   }, [env, runId, sortOrder]);
 
   useEffect(() => {
-    fetchInitial();
-  }, [fetchInitial]);
+    if (enabled) fetchInitial();
+  }, [fetchInitial, enabled]);
 
   // Re-hydrate loaded events with decryption when encryption key becomes available
   useEffect(() => {
