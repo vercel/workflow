@@ -173,6 +173,51 @@ async function uploadData(data: ArrayBuffer, signal: AbortSignal) {
 }
 ```
 
+### Step-Initiated Abort
+
+A step can receive the full `AbortController` and call `abort()` to cancel parallel work. This is useful for watchdog/monitor patterns where one step observes an external condition and cancels other in-flight steps:
+
+```typescript lineNumbers
+export async function processWithQuotaCheck(userId: string, dataUrl: string) {
+  "use workflow";
+
+  const controller = new AbortController();
+
+  // Run the work and a quota monitor in parallel
+  const [result] = await Promise.all([ // [!code highlight]
+    processData(dataUrl, controller.signal), // [!code highlight]
+    monitorQuota(userId, controller), // [!code highlight]
+  ]); // [!code highlight]
+
+  return result;
+}
+
+async function processData(url: string, signal: AbortSignal) {
+  "use step";
+  const response = await fetch(url, { signal });
+  const data = await response.arrayBuffer();
+  // ... expensive processing ...
+  return { processed: true };
+}
+
+async function monitorQuota(userId: string, controller: AbortController) {
+  "use step";
+
+  // Poll quota status while the other step is running
+  while (!controller.signal.aborted) {
+    const quota = await fetch(`https://api.example.com/quota/${userId}`);
+    const { exceeded } = await quota.json();
+
+    if (exceeded) {
+      controller.abort("Quota exceeded"); // Cancels processData // [!code highlight]
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+}
+```
+
 ### User-Triggered Cancellation with Hooks
 
 Combine hooks with abort controllers to let users cancel in-flight work from an external API:
