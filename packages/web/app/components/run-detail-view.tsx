@@ -340,6 +340,14 @@ export function RunDetailView({
     isLoadingMoreTraceData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
+  const run = runData ?? ({} as WorkflowRun);
+
+  // Encryption key persisted for the lifetime of this run page.
+  // Once fetched (via Decrypt button), it's used automatically for all
+  // subsequent resource + event hydration, even across span selection changes.
+  const [encryptionKey, setEncryptionKey] = useState<Uint8Array | null>(null);
+  encryptionKeyRef.current = encryptionKey;
+
   // Separate event fetching for the Events tab with user-controlled sort order
   const [eventsSortOrder, setEventsSortOrder] = useState<'asc' | 'desc'>('asc');
   const {
@@ -348,14 +356,10 @@ export function RunDetailView({
     hasMore: hasMoreEventsTab,
     loadingMore: loadingMoreEventsTab,
     loadMore: loadMoreEventsTab,
-  } = useEventsListData(env, runId, { sortOrder: eventsSortOrder });
-  const run = runData ?? ({} as WorkflowRun);
-
-  // Encryption key persisted for the lifetime of this run page.
-  // Once fetched (via Decrypt button), it's used automatically for all
-  // subsequent resource + event hydration, even across span selection changes.
-  const [encryptionKey, setEncryptionKey] = useState<Uint8Array | null>(null);
-  encryptionKeyRef.current = encryptionKey;
+  } = useEventsListData(env, runId, {
+    sortOrder: eventsSortOrder,
+    encryptionKey: encryptionKey ?? undefined,
+  });
 
   const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
     null
@@ -380,26 +384,29 @@ export function RunDetailView({
     }
   );
 
+  const [isDecrypting, setIsDecrypting] = useState(false);
+
   const handleDecrypt = useCallback(async () => {
     if (encryptionKey) {
-      // Key already available — just re-fetch to trigger decrypted hydration
       refreshSpanDetail();
       return;
     }
-    // Fetch the key for this run
-    const { error: keyError, result: keyResult } =
-      await unwrapServerActionResult(getEncryptionKeyForRun(env, runId));
-    if (keyError) {
-      toast.error(`Failed to fetch encryption key: ${keyError.message}`);
-      return;
+    setIsDecrypting(true);
+    try {
+      const { error: keyError, result: keyResult } =
+        await unwrapServerActionResult(getEncryptionKeyForRun(env, runId));
+      if (keyError) {
+        toast.error(`Failed to fetch encryption key: ${keyError.message}`);
+        return;
+      }
+      if (!keyResult) {
+        toast.error('Encryption is not configured for this deployment.');
+        return;
+      }
+      setEncryptionKey(keyResult);
+    } finally {
+      setIsDecrypting(false);
     }
-    if (!keyResult) {
-      toast.error('Encryption is not configured for this deployment.');
-      return;
-    }
-    setEncryptionKey(keyResult);
-    // Refresh will happen automatically via the state change propagating
-    // to useWorkflowResourceData's encryptionKey option
   }, [encryptionKey, env, runId, refreshSpanDetail]);
 
   const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
@@ -746,6 +753,7 @@ export function RunDetailView({
                     isLoadingMoreSpans={isLoadingMoreTraceData}
                     encryptionKey={encryptionKey ?? undefined}
                     onDecrypt={handleDecrypt}
+                    isDecrypting={isDecrypting}
                   />
                 </div>
               </ErrorBoundary>
@@ -765,6 +773,8 @@ export function RunDetailView({
                     isLoading={eventsListLoading}
                     sortOrder={eventsSortOrder}
                     onSortOrderChange={setEventsSortOrder}
+                    onDecrypt={handleDecrypt}
+                    isDecrypting={isDecrypting}
                   />
                 </div>
               </ErrorBoundary>

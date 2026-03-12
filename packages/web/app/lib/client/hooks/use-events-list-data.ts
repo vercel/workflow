@@ -1,4 +1,7 @@
-import { hydrateResourceIO } from '@workflow/web-shared';
+import {
+  hydrateResourceIO,
+  hydrateResourceIOWithKey,
+} from '@workflow/web-shared';
 import type { Event } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
@@ -16,9 +19,9 @@ const LOAD_MORE_PAGE_SIZE = 100;
 export function useEventsListData(
   env: EnvMap,
   runId: string,
-  options: { sortOrder?: 'asc' | 'desc' } = {}
+  options: { sortOrder?: 'asc' | 'desc'; encryptionKey?: Uint8Array } = {}
 ) {
-  const { sortOrder = 'asc' } = options;
+  const { sortOrder = 'asc', encryptionKey } = options;
 
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,7 +51,15 @@ export function useEventsListData(
       if (fetchError) {
         setError(fetchError);
       } else {
-        setEvents(result.data.map(hydrateResourceIO));
+        const hydrated = result.data.map(hydrateResourceIO);
+        if (encryptionKey) {
+          const decrypted = await Promise.all(
+            hydrated.map((ev) => hydrateResourceIOWithKey(ev, encryptionKey))
+          );
+          setEvents(decrypted);
+        } else {
+          setEvents(hydrated);
+        }
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
       }
@@ -58,11 +69,26 @@ export function useEventsListData(
       setLoading(false);
       isFetchingRef.current = false;
     }
-  }, [env, runId, sortOrder]);
+  }, [env, runId, sortOrder, encryptionKey]);
 
   useEffect(() => {
     fetchInitial();
   }, [fetchInitial]);
+
+  // Re-hydrate loaded events with decryption when encryption key becomes available
+  useEffect(() => {
+    if (!encryptionKey || events.length === 0) return;
+    let cancelled = false;
+    Promise.all(events.map((ev) => hydrateResourceIOWithKey(ev, encryptionKey)))
+      .then((decrypted) => {
+        if (!cancelled) setEvents(decrypted);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [encryptionKey]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || !cursor) return;
@@ -80,7 +106,15 @@ export function useEventsListData(
         setError(fetchError);
       } else {
         if (result.data.length > 0) {
-          setEvents((prev) => [...prev, ...result.data.map(hydrateResourceIO)]);
+          const hydrated = result.data.map(hydrateResourceIO);
+          if (encryptionKey) {
+            const decrypted = await Promise.all(
+              hydrated.map((ev) => hydrateResourceIOWithKey(ev, encryptionKey))
+            );
+            setEvents((prev) => [...prev, ...decrypted]);
+          } else {
+            setEvents((prev) => [...prev, ...hydrated]);
+          }
         }
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
