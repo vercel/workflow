@@ -67,6 +67,17 @@ export function getWorkflowRunStreamId(runId: string, namespace?: string) {
 }
 
 /**
+ * Generate a stream ID for an abort signal's backing stream.
+ * Uses the "_system_abort" namespace to isolate from user-defined streams.
+ *
+ * @param id - A unique identifier (typically a ULID)
+ * @returns The stream ID in format: `strm_{id}_system_abort`
+ */
+export function getAbortStreamId(id: string) {
+  return `strm_${id}_system_abort`;
+}
+
+/**
  * A small wrapper around `waitUntil` that also returns
  * the result of the awaited promise.
  */

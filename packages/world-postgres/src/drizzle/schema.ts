@@ -170,6 +170,7 @@ export const hooks = schema.table(
     metadata: Cbor<SerializedContent>()('metadata_cbor'),
     specVersion: integer('spec_version'),
     isWebhook: boolean('is_webhook').default(true),
+    isSystem: boolean('is_system').default(false),
   } satisfies DrizzlishOfType<Cborized<Hook, 'metadata'>>,
   (tb) => [index().on(tb.runId), index().on(tb.token)]
 );

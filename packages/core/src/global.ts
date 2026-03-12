@@ -19,6 +19,9 @@ export interface HookInvocationQueueItem {
   hasCreatedEvent?: boolean;
   disposed?: boolean;
   isWebhook?: boolean;
+  isSystem?: boolean;
+  abortRequested?: boolean;
+  abortReason?: unknown;
 }
 
 export interface WaitInvocationQueueItem {
@@ -46,6 +49,7 @@ export class WorkflowSuspension extends Error {
   hookCount: number;
   waitCount: number;
   hookDisposedCount: number;
+  abortCount: number;
 
   constructor(stepsInput: Map<string, QueueItem>, global: typeof globalThis) {
     // Convert Map to array for iteration and storage
@@ -56,10 +60,12 @@ export class WorkflowSuspension extends Error {
     let hookCount = 0;
     let waitCount = 0;
     let hookDisposedCount = 0;
+    let abortCount = 0;
     for (const item of steps) {
       if (item.type === 'step') stepCount++;
       else if (item.type === 'hook') {
         if (item.disposed) hookDisposedCount++;
+        else if (item.abortRequested) abortCount++;
         else hookCount++;
       } else if (item.type === 'wait') waitCount++;
     }
@@ -117,6 +123,7 @@ export class WorkflowSuspension extends Error {
     this.hookCount = hookCount;
     this.waitCount = waitCount;
     this.hookDisposedCount = hookDisposedCount;
+    this.abortCount = abortCount;
   }
 
   static is(value: unknown): value is WorkflowSuspension {

@@ -32,12 +32,15 @@ import { getStepFunction } from './private.js';
 import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
 import {
+  ABORT_HOOK_TOKEN,
+  ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
+import { getAbortStreamId } from './util.js';
 
 // ============================================================================
 // Serialization Format Prefix System
@@ -608,6 +611,18 @@ export interface SerializableSpecial {
   Uint16Array: string; // base64 string
   Uint32Array: string; // base64 string
   WritableStream: { name: string };
+  AbortController: {
+    streamName: string;
+    hookToken: string;
+    aborted: boolean;
+    reason?: unknown;
+  };
+  AbortSignal: {
+    streamName: string;
+    hookToken: string;
+    aborted: boolean;
+    reason?: unknown;
+  };
 }
 
 type Reducers = {
@@ -848,6 +863,78 @@ export function getExternalReducers(
 
       return { name };
     },
+
+    AbortController: (value) => {
+      if (!global.AbortController || !(value instanceof global.AbortController))
+        return false;
+
+      // Reuse existing names if already serialized (dedup)
+      let streamName = (value as any)[ABORT_STREAM_NAME];
+      let hookToken = (value as any)[ABORT_HOOK_TOKEN];
+      if (!streamName) {
+        const id = ((global as any)[STABLE_ULID] || defaultUlid)();
+        streamName = getAbortStreamId(id);
+        hookToken = `abrt_${id}`;
+        (value as any)[ABORT_STREAM_NAME] = streamName;
+        (value as any)[ABORT_HOOK_TOKEN] = hookToken;
+        (value.signal as any)[ABORT_STREAM_NAME] = streamName;
+        (value.signal as any)[ABORT_HOOK_TOKEN] = hookToken;
+      }
+
+      // Attach listener for abort propagation (listener-first to avoid micro-race)
+      if (!value.signal.aborted) {
+        const abortListener = () => {
+          const writable = new WorkflowServerWritableStream(streamName, runId);
+          const writer = writable.getWriter();
+          const packet = new TextEncoder().encode(
+            JSON.stringify({ reason: value.signal.reason })
+          );
+          ops.push(writer.write(packet).then(() => writer.close()));
+        };
+        value.signal.addEventListener('abort', abortListener, { once: true });
+      }
+
+      return {
+        streamName,
+        hookToken,
+        aborted: value.signal.aborted,
+        reason: value.signal.aborted ? value.signal.reason : undefined,
+      };
+    },
+
+    AbortSignal: (value) => {
+      if (!global.AbortSignal || !(value instanceof global.AbortSignal))
+        return false;
+
+      let streamName = (value as any)[ABORT_STREAM_NAME];
+      let hookToken = (value as any)[ABORT_HOOK_TOKEN];
+      if (!streamName) {
+        const id = ((global as any)[STABLE_ULID] || defaultUlid)();
+        streamName = getAbortStreamId(id);
+        hookToken = `abrt_${id}`;
+        (value as any)[ABORT_STREAM_NAME] = streamName;
+        (value as any)[ABORT_HOOK_TOKEN] = hookToken;
+      }
+
+      if (!value.aborted) {
+        const abortListener = () => {
+          const writable = new WorkflowServerWritableStream(streamName, runId);
+          const writer = writable.getWriter();
+          const packet = new TextEncoder().encode(
+            JSON.stringify({ reason: value.reason })
+          );
+          ops.push(writer.write(packet).then(() => writer.close()));
+        };
+        value.addEventListener('abort', abortListener, { once: true });
+      }
+
+      return {
+        streamName,
+        hookToken,
+        aborted: value.aborted,
+        reason: value.aborted ? value.reason : undefined,
+      };
+    },
   };
 }
 
@@ -893,6 +980,42 @@ export function getWorkflowReducers(
         throw new Error('WritableStream `name` is not set');
       }
       return { name };
+    },
+
+    // AbortController/AbortSignal in workflow context — just read symbols (handles)
+    AbortController: (value) => {
+      if (!global.AbortController || !(value instanceof global.AbortController))
+        return false;
+      const streamName =
+        (value as any)[ABORT_STREAM_NAME] ||
+        (value.signal as any)?.[ABORT_STREAM_NAME];
+      const hookToken =
+        (value as any)[ABORT_HOOK_TOKEN] ||
+        (value.signal as any)?.[ABORT_HOOK_TOKEN];
+      if (!streamName) {
+        throw new Error('AbortController stream name is not set');
+      }
+      return {
+        streamName,
+        hookToken,
+        aborted: value.signal.aborted,
+        reason: value.signal.aborted ? value.signal.reason : undefined,
+      };
+    },
+    AbortSignal: (value) => {
+      if (!global.AbortSignal || !(value instanceof global.AbortSignal))
+        return false;
+      const streamName = (value as any)[ABORT_STREAM_NAME];
+      const hookToken = (value as any)[ABORT_HOOK_TOKEN];
+      if (!streamName) {
+        throw new Error('AbortSignal stream name is not set');
+      }
+      return {
+        streamName,
+        hookToken,
+        aborted: value.aborted,
+        reason: value.aborted ? value.reason : undefined,
+      };
     },
   };
 }
@@ -977,7 +1100,177 @@ function getStepReducers(
 
       return { name };
     },
+
+    AbortController: (value) => {
+      if (!global.AbortController || !(value instanceof global.AbortController))
+        return false;
+
+      let streamName = (value as any)[ABORT_STREAM_NAME];
+      let hookToken = (value as any)[ABORT_HOOK_TOKEN];
+      if (!streamName) {
+        const id = ((global as any)[STABLE_ULID] || defaultUlid)();
+        streamName = getAbortStreamId(id);
+        hookToken = `abrt_${id}`;
+        (value as any)[ABORT_STREAM_NAME] = streamName;
+        (value as any)[ABORT_HOOK_TOKEN] = hookToken;
+        (value.signal as any)[ABORT_STREAM_NAME] = streamName;
+        (value.signal as any)[ABORT_HOOK_TOKEN] = hookToken;
+      }
+
+      if (!value.signal.aborted) {
+        const abortListener = () => {
+          const writable = new WorkflowServerWritableStream(streamName, runId);
+          const writer = writable.getWriter();
+          const packet = new TextEncoder().encode(
+            JSON.stringify({ reason: value.signal.reason })
+          );
+          ops.push(writer.write(packet).then(() => writer.close()));
+        };
+        value.signal.addEventListener('abort', abortListener, { once: true });
+      }
+
+      return {
+        streamName,
+        hookToken,
+        aborted: value.signal.aborted,
+        reason: value.signal.aborted ? value.signal.reason : undefined,
+      };
+    },
+
+    AbortSignal: (value) => {
+      if (!global.AbortSignal || !(value instanceof global.AbortSignal))
+        return false;
+
+      let streamName = (value as any)[ABORT_STREAM_NAME];
+      let hookToken = (value as any)[ABORT_HOOK_TOKEN];
+      if (!streamName) {
+        const id = ((global as any)[STABLE_ULID] || defaultUlid)();
+        streamName = getAbortStreamId(id);
+        hookToken = `abrt_${id}`;
+        (value as any)[ABORT_STREAM_NAME] = streamName;
+        (value as any)[ABORT_HOOK_TOKEN] = hookToken;
+      }
+
+      if (!value.aborted) {
+        const abortListener = () => {
+          const writable = new WorkflowServerWritableStream(streamName, runId);
+          const writer = writable.getWriter();
+          const packet = new TextEncoder().encode(
+            JSON.stringify({ reason: value.reason })
+          );
+          ops.push(writer.write(packet).then(() => writer.close()));
+        };
+        value.addEventListener('abort', abortListener, { once: true });
+      }
+
+      return {
+        streamName,
+        hookToken,
+        aborted: value.aborted,
+        reason: value.aborted ? value.reason : undefined,
+      };
+    },
   };
+}
+
+/**
+ * Creates an AbortController with stream-backed abort propagation.
+ * Used by step and external revivers where real abort signal behavior is needed.
+ *
+ * @param value - The serialized abort controller/signal data
+ * @param ops - The ops array for tracking async work
+ * @param runId - The workflow run ID (for stream writes)
+ * @returns A real AbortController with patched abort() method
+ */
+function reviveAbortController(
+  value: SerializableSpecial['AbortController'],
+  ops: Promise<void>[],
+  _runId: string
+): AbortController {
+  const controller = new AbortController();
+
+  // Store symbols for re-serialization
+  (controller as any)[ABORT_STREAM_NAME] = value.streamName;
+  (controller as any)[ABORT_HOOK_TOKEN] = value.hookToken;
+  (controller.signal as any)[ABORT_STREAM_NAME] = value.streamName;
+  (controller.signal as any)[ABORT_HOOK_TOKEN] = value.hookToken;
+
+  if (value.aborted) {
+    controller.abort(value.reason);
+  } else if (value.streamName) {
+    // Set up stream reader for real-time abort propagation
+    ops.push(
+      (async () => {
+        try {
+          const readable = new WorkflowServerReadableStream(value.streamName);
+          const reader = readable.getReader();
+          const result = await reader.read();
+          reader.releaseLock();
+          if (result.value && !result.done) {
+            try {
+              const data = JSON.parse(new TextDecoder().decode(result.value));
+              controller.abort(data.reason);
+            } catch {
+              controller.abort();
+            }
+          }
+        } catch {
+          // Stream read failed — signal won't propagate in real-time,
+          // but hook-based propagation on next replay provides fallback
+        }
+      })()
+    );
+  }
+
+  // Override abort() to also write stream + resume hook (for step-initiated abort)
+  const originalAbort = controller.abort.bind(controller);
+  controller.abort = (reason?: unknown) => {
+    if (controller.signal.aborted) return; // already aborted
+    originalAbort(reason);
+
+    const ctx = contextStorage.getStore();
+    if (ctx) {
+      // Write stream cancellation packet
+      ctx.ops.push(
+        (async () => {
+          try {
+            const writable = new WorkflowServerWritableStream(
+              value.streamName,
+              ctx.workflowMetadata.workflowRunId
+            );
+            const writer = writable.getWriter();
+            await writer.write(
+              new TextEncoder().encode(JSON.stringify({ reason }))
+            );
+            await writer.close();
+          } catch {
+            // Best-effort stream write
+          }
+        })()
+      );
+
+      // Resume the internal hook so the workflow sees the abort on replay
+      if (value.hookToken) {
+        ctx.ops.push(
+          (async () => {
+            try {
+              const { resumeHook: resumeHookFn } = await import(
+                './runtime/resume-hook.js'
+              );
+              await resumeHookFn(value.hookToken, {
+                aborted: true,
+                reason,
+              });
+            } catch {
+              // Best-effort hook resume — retry on next replay
+            }
+          })()
+        );
+      }
+    }
+  };
+
+  return controller;
 }
 
 export function getCommonRevivers(global: Record<string, any> = globalThis) {
@@ -1208,6 +1501,9 @@ export function getExternalRevivers(
 
       return serialize.writable;
     },
+
+    AbortController: (value) => reviveAbortController(value, ops, runId),
+    AbortSignal: (value) => reviveAbortController(value, ops, runId).signal,
   };
 }
 
@@ -1302,6 +1598,29 @@ export function getWorkflowRevivers(
           writable: false,
         },
       });
+    },
+
+    // AbortController/AbortSignal in workflow context — create stubs with symbols
+    AbortController: (value) => {
+      const obj = Object.create(global.AbortController?.prototype ?? {});
+      obj[ABORT_STREAM_NAME] = value.streamName;
+      obj[ABORT_HOOK_TOKEN] = value.hookToken;
+      // Create a signal stub (the workflow VM's AbortSignal class will handle the actual state)
+      const signal = Object.create(global.AbortSignal?.prototype ?? {});
+      signal[ABORT_STREAM_NAME] = value.streamName;
+      signal[ABORT_HOOK_TOKEN] = value.hookToken;
+      signal.aborted = value.aborted;
+      signal.reason = value.reason;
+      obj.signal = signal;
+      return obj;
+    },
+    AbortSignal: (value) => {
+      const signal = Object.create(global.AbortSignal?.prototype ?? {});
+      signal[ABORT_STREAM_NAME] = value.streamName;
+      signal[ABORT_HOOK_TOKEN] = value.hookToken;
+      signal.aborted = value.aborted;
+      signal.reason = value.reason;
+      return signal;
     },
   };
 }
@@ -1478,6 +1797,9 @@ function getStepRevivers(
 
       return serialize.writable;
     },
+
+    AbortController: (value) => reviveAbortController(value, ops, runId),
+    AbortSignal: (value) => reviveAbortController(value, ops, runId).signal,
   };
 }
 

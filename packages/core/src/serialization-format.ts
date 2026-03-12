@@ -334,6 +334,9 @@ export const observabilityRevivers: Revivers = {
   ReadableStream: streamToStreamRef,
   WritableStream: streamToStreamRef,
   TransformStream: streamToStreamRef,
+  AbortController: (value: any) =>
+    `<AbortController(aborted: ${value.aborted})>`,
+  AbortSignal: (value: any) => `<AbortSignal(aborted: ${value.aborted})>`,
   StepFunction: serializedStepFunctionToString,
   Instance: serializedInstanceToRef,
   Class: serializedClassToString,

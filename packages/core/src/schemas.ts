@@ -43,4 +43,6 @@ export type Serializable =
   | Uint16Array
   | Uint32Array
   | WritableStream<Uint8Array>
+  | AbortController
+  | AbortSignal
   | ((...args: Serializable[]) => Promise<Serializable>); // Step function

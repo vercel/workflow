@@ -451,6 +451,17 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             });
             return;
           } catch (err: unknown) {
+            // Wrap AbortError in FatalError — abort is intentional cancellation, not retryable
+            const isAbortError =
+              err instanceof Error && err.name === 'AbortError';
+            if (isAbortError && !FatalError.is(err)) {
+              const fatalErr = new FatalError(
+                `Aborted: ${(err as Error).message}`
+              );
+              fatalErr.stack = (err as Error).stack;
+              err = fatalErr;
+            }
+
             const normalizedError = await normalizeUnknownError(err);
             const normalizedStack =
               normalizedError.stack || getErrorStack(err) || '';
