@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { RunNotSupportedError, WorkflowAPIError } from '@workflow/errors';
 import type {
@@ -27,6 +28,7 @@ import {
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSON,
+  writeExclusive,
   writeJSON,
 } from '../fs.js';
 import { filterEventData } from './filters.js';
@@ -577,20 +579,28 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           isWebhook?: boolean;
         };
 
-        // Check for duplicate token before creating hook
-        const hooksDir = path.join(basedir, 'hooks');
-        const hookFiles = await listJSONFiles(hooksDir);
-        let hasConflict = false;
-        for (const file of hookFiles) {
-          const existingHookPath = path.join(hooksDir, `${file}.json`);
-          const existingHook = await readJSON(existingHookPath, HookSchema);
-          if (existingHook && existingHook.token === hookData.token) {
-            hasConflict = true;
-            break;
-          }
-        }
+        // Atomically claim the token using an exclusive-create constraint file.
+        // This mirrors workflow-server's HookTokenConstraintEntity pattern and
+        // avoids the TOCTOU race of the previous read-all-then-check approach.
+        const tokenHash = createHash('sha256')
+          .update(hookData.token)
+          .digest('hex');
+        const constraintPath = path.join(
+          basedir,
+          'hooks',
+          'tokens',
+          `${tokenHash}.json`
+        );
+        const tokenClaimed = await writeExclusive(
+          constraintPath,
+          JSON.stringify({
+            token: hookData.token,
+            hookId: data.correlationId,
+            runId: effectiveRunId,
+          })
+        );
 
-        if (hasConflict) {
+        if (!tokenClaimed) {
           // Create hook_conflict event instead of hook_created
           // This allows the workflow to continue and fail gracefully when the hook is awaited
           const conflictEvent: Event = {
@@ -647,12 +657,26 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         );
         await writeJSON(hookPath, hook);
       } else if (data.eventType === 'hook_disposed') {
-        // Delete the hook when disposed
+        // Read the hook to get its token before deleting
         const hookPath = path.join(
           basedir,
           'hooks',
           `${data.correlationId}.json`
         );
+        const existingHook = await readJSON(hookPath, HookSchema);
+        if (existingHook) {
+          // Delete the token constraint file to free up the token for reuse
+          const disposedTokenHash = createHash('sha256')
+            .update(existingHook.token)
+            .digest('hex');
+          const disposedConstraintPath = path.join(
+            basedir,
+            'hooks',
+            'tokens',
+            `${disposedTokenHash}.json`
+          );
+          await deleteJSON(disposedConstraintPath);
+        }
         await deleteJSON(hookPath);
       } else if (data.eventType === 'wait_created' && 'eventData' in data) {
         // wait_created: Creates wait entity with status 'waiting'
