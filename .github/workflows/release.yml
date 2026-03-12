@@ -22,11 +22,18 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
       - name: Checkout Repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -54,7 +61,7 @@ jobs:
           publish: pnpm ci:publish
           createGithubReleases: false
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
       - name: Add latest dist-tag to published packages
         if: steps.changesets.outputs.published == 'true'
@@ -81,7 +88,7 @@ jobs:
       - name: Create GitHub Release
         if: steps.changesets.outputs.published == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
         run: |
           # Generate release notes (PUBLISHED_PACKAGES filters to only include packages from this release)
