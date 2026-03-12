@@ -19,10 +19,11 @@ import { MockLanguageModelV3 } from 'ai/test';
 export function mockModel(
   ...args: ConstructorParameters<typeof MockLanguageModelV3>
 ) {
-  return async () => {
-    'use step';
-    return new MockLanguageModelV3(...args);
-  };
+  // Note: Unlike real provider wrappers (anthropic, openai, etc.) that use 'use step',
+  // the mock model factory does NOT need a step boundary because:
+  // 1. The model factory runs inside doStreamStep which is already a step
+  // 2. Mock constructor args contain closures (doStream) that can't be serialized
+  return async () => new MockLanguageModelV3(...args);
 }
 
 export { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
