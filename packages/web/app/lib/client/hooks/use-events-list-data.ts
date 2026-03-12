@@ -51,15 +51,7 @@ export function useEventsListData(
       if (fetchError) {
         setError(fetchError);
       } else {
-        const hydrated = result.data.map(hydrateResourceIO);
-        if (encryptionKey) {
-          const decrypted = await Promise.all(
-            hydrated.map((ev) => hydrateResourceIOWithKey(ev, encryptionKey))
-          );
-          setEvents(decrypted);
-        } else {
-          setEvents(hydrated);
-        }
+        setEvents(result.data.map(hydrateResourceIO));
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
       }
@@ -69,7 +61,9 @@ export function useEventsListData(
       setLoading(false);
       isFetchingRef.current = false;
     }
-  }, [env, runId, sortOrder, encryptionKey]);
+    // encryptionKey intentionally excluded — the re-hydration effect below
+    // handles decrypting in-memory events when the key arrives.
+  }, [env, runId, sortOrder]);
 
   useEffect(() => {
     fetchInitial();
@@ -124,7 +118,7 @@ export function useEventsListData(
     } finally {
       setLoadingMore(false);
     }
-  }, [env, runId, sortOrder, cursor, loadingMore]);
+  }, [env, runId, sortOrder, cursor, loadingMore, encryptionKey]);
 
   return {
     events,

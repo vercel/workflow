@@ -117,7 +117,7 @@ function StreamSkeleton() {
  * of complex types (Map, Set, Date, custom classes, etc.).
  */
 export function StreamViewer({
-  streamId,
+  streamId: _streamId,
   chunks,
   isLive,
   error,
@@ -213,11 +213,7 @@ export function StreamViewer({
             endReached={() => onScrollEnd?.()}
             itemContent={(index) => (
               <div style={{ paddingBottom: 8 }}>
-                <ChunkRow
-                  key={`${streamId}-chunk-${chunks[index].id}`}
-                  chunk={chunks[index]}
-                  index={index}
-                />
+                <ChunkRow chunk={chunks[index]} index={index} />
               </div>
             )}
             style={{ flex: 1, minHeight: 0 }}

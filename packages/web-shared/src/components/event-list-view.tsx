@@ -1079,7 +1079,9 @@ export function EventListView({
     );
   }, [events, effectiveSortOrder]);
 
-  // Detect encrypted fields across all loaded events
+  // Detect encrypted fields across all loaded events.
+  // Only checks top-level eventData values (input, output, result, etc.) —
+  // the current data model guarantees encrypted markers appear at this level.
   const hasEncryptedData = useMemo(() => {
     if (!events) return false;
     for (const event of events) {

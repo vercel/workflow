@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+const STYLES = `.wf-menu-btn{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:40px;padding:0 12px;border-radius:6px;font-size:14px;font-weight:500;line-height:20px;color:var(--ds-gray-1000);background:var(--ds-background-100);box-shadow:0 0 0 1px var(--ds-gray-400);cursor:pointer;white-space:nowrap;transition:background 150ms}.wf-menu-btn:hover{background:var(--ds-gray-alpha-200)}.wf-menu-item{appearance:none;-webkit-appearance:none;border:none;display:flex;align-items:center;width:100%;height:40px;padding:0 8px;border-radius:6px;font-size:14px;color:var(--ds-gray-1000);background:transparent;cursor:pointer;transition:background 150ms}.wf-menu-item:hover{background:var(--ds-gray-alpha-100)}`;
+
 export interface MenuDropdownOption<T extends string = string> {
   value: T;
   label: string;
@@ -40,12 +42,7 @@ export function MenuDropdown<T extends string = string>({
 
   return (
     <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
-      <style>{`
-        .wf-menu-btn{appearance:none;-webkit-appearance:none;border:none;display:inline-flex;align-items:center;justify-content:center;height:40px;padding:0 12px;border-radius:6px;font-size:14px;font-weight:500;line-height:20px;color:var(--ds-gray-1000);background:var(--ds-background-100);box-shadow:0 0 0 1px var(--ds-gray-400);cursor:pointer;white-space:nowrap;transition:background 150ms}
-        .wf-menu-btn:hover{background:var(--ds-gray-alpha-200)}
-        .wf-menu-item{appearance:none;-webkit-appearance:none;border:none;display:flex;align-items:center;width:100%;height:40px;padding:0 8px;border-radius:6px;font-size:14px;color:var(--ds-gray-1000);background:transparent;cursor:pointer;transition:background 150ms}
-        .wf-menu-item:hover{background:var(--ds-gray-alpha-100)}
-      `}</style>
+      <style dangerouslySetInnerHTML={{ __html: STYLES }} />
 
       <button
         type="button"
