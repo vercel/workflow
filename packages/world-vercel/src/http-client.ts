@@ -15,7 +15,10 @@ export function getDispatcher(): RetryAgent {
       new Agent({
         connections: 8,
         keepAliveTimeout: 10_000,
-        allowH2: true,
+        // H2 is specifically incompatible with SvelteKit on Vercel prod. Everything else
+        // runs fine.
+        // TODO: Investigate/fix the failure on SvelteKit so we can re-enable H2.
+        allowH2: false,
         // HTTP/1.1 pipelining is disabled (pipelining: 1) because it causes
         // head-of-line blocking that deadlocks the webhook respondWith mechanism.
         pipelining: 1,
