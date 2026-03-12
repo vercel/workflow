@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { RunNotSupportedError, WorkflowAPIError } from '@workflow/errors';
 import type {
@@ -32,7 +31,7 @@ import {
   writeJSON,
 } from '../fs.js';
 import { filterEventData } from './filters.js';
-import { getObjectCreatedAt, monotonicUlid } from './helpers.js';
+import { getObjectCreatedAt, hashToken, monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
 
@@ -581,14 +580,11 @@ export function createEventsStorage(basedir: string): Storage['events'] {
 
         // Atomically claim the token using an exclusive-create constraint file.
         // This avoids the TOCTOU race of the previous read-all-then-check approach.
-        const tokenHash = createHash('sha256')
-          .update(hookData.token)
-          .digest('hex');
         const constraintPath = path.join(
           basedir,
           'hooks',
           'tokens',
-          `${tokenHash}.json`
+          `${hashToken(hookData.token)}.json`
         );
         const tokenClaimed = await writeExclusive(
           constraintPath,
@@ -665,14 +661,11 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         const existingHook = await readJSON(hookPath, HookSchema);
         if (existingHook) {
           // Delete the token constraint file to free up the token for reuse
-          const disposedTokenHash = createHash('sha256')
-            .update(existingHook.token)
-            .digest('hex');
           const disposedConstraintPath = path.join(
             basedir,
             'hooks',
             'tokens',
-            `${disposedTokenHash}.json`
+            `${hashToken(existingHook.token)}.json`
           );
           await deleteJSON(disposedConstraintPath);
         }

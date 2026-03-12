@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { HookNotFoundError } from '@workflow/errors';
 import type {
@@ -17,6 +16,7 @@ import {
   readJSON,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
+import { hashToken } from './helpers.js';
 
 /**
  * Creates a hooks storage implementation using the filesystem.
@@ -115,8 +115,11 @@ export async function deleteAllHooksForRun(
     const hook = await readJSON(hookPath, HookSchema);
     if (hook && hook.runId === runId) {
       // Delete the token constraint file to free up the token
-      const tokenHash = createHash('sha256').update(hook.token).digest('hex');
-      const constraintPath = path.join(hooksDir, 'tokens', `${tokenHash}.json`);
+      const constraintPath = path.join(
+        hooksDir,
+        'tokens',
+        `${hashToken(hook.token)}.json`
+      );
       await deleteJSON(constraintPath);
       await deleteJSON(hookPath);
     }
