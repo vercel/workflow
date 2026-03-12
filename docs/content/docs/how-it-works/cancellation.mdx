@@ -188,19 +188,14 @@ The signal is **not** updated synchronously in the workflow. This is intentional
 
 ### Processing Queue Items on Workflow Completion
 
-Normally, the invocations queue is only processed when the workflow suspends (throws `WorkflowSuspension`). If the workflow completes without suspending — for example, a race resolves and then `abort()` is called before returning — any remaining queue items would be dropped with a warning.
+Normally, the invocations queue is only processed when the workflow suspends (throws `WorkflowSuspension`). If the workflow completes (or fails) without suspending, any remaining queue items are dropped with a warning.
 
-For `AbortController` to work correctly, the runtime must also process pending queue items when the workflow completes (or fails) with items still in the invocations queue. This ensures that:
+The runtime processes all pending invocations queue items when the workflow completes or fails — not just on suspension. This is a general improvement that applies to all queue item types (steps, hooks, waits, abort signals), not just abort. For example, if a step is created as the run is completing, it should still be enqueued for execution.
+
+For abort specifically, this ensures that:
 
 - The abort's `hook_received` event is created in the event log
 - The cancellation stream packet is written to propagate to running steps
-- The workflow replays with the abort state correctly reflected
-
-This is a change from the current runtime behavior, where pending queue items on completion only produce a warning. The runtime needs to flush abort-related items from the queue before finalizing the run result.
-
-<Callout type="info">
-This applies specifically to `controller.abort()` calls that happen after the last suspension point. If the workflow has further `await` calls after `abort()`, the normal suspension flow handles it.
-</Callout>
 
 ## Race Conditions
 

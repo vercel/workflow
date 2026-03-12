@@ -60,21 +60,25 @@ describe('AbortController consistency', () => {
     it.todo('double abort produces only one stream packet and one hook event');
   });
 
-  describe('abort queue items processed on workflow completion', () => {
+  describe('invocations queue processed on workflow completion (not just suspension)', () => {
     it.todo(
-      'abort() called after last suspension point: queue items are still processed'
+      'abort() called after last suspension point: hook resumption is still processed'
     );
 
     it.todo(
-      'hook_received event is created even when workflow completes without suspending'
+      'abort() called after last suspension point: stream packet is still written'
     );
 
     it.todo(
-      'stream cancellation packet is written even when workflow completes without suspending'
+      'pending step created as workflow completes: step is still enqueued'
     );
 
     it.todo(
-      'workflow replays correctly after abort queue items are flushed on completion'
+      'pending hook created as workflow completes: hook_created event is still written'
+    );
+
+    it.todo(
+      'pending wait created as workflow completes: wait_created event is still written'
     );
   });
 });
