@@ -280,10 +280,21 @@ export async function makeRequest<T>({
         body,
         headers,
       });
+
+      if (process.env.DEBUG === '1') {
+        console.error(`[Debug] ${method} ${url} - sending request...`);
+      }
+
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
       const response = await fetch(request, {
         dispatcher: getDispatcher(),
       } as any);
+
+      if (process.env.DEBUG === '1') {
+        console.error(
+          `[Debug] ${method} ${url} - ${response.status} ${response.statusText}`
+        );
+      }
 
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
