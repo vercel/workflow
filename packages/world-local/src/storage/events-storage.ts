@@ -580,8 +580,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         };
 
         // Atomically claim the token using an exclusive-create constraint file.
-        // This mirrors workflow-server's HookTokenConstraintEntity pattern and
-        // avoids the TOCTOU race of the previous read-all-then-check approach.
+        // This avoids the TOCTOU race of the previous read-all-then-check approach.
         const tokenHash = createHash('sha256')
           .update(hookData.token)
           .digest('hex');
