@@ -65,8 +65,6 @@ describe('AbortController in workflow VM', () => {
 
     it.todo('controller.abort() marks the hook for resumption in the queue');
 
-    it.todo(
-      'deterministic hook correlationId: same seed produces same ID across runs'
-    );
+    it.todo('hook token from serialized payload is reused across replays');
   });
 });

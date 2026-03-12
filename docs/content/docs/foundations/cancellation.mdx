@@ -149,13 +149,13 @@ async function downloadData(url: string, signal: AbortSignal) {
 async function transformData(data: ArrayBuffer, signal: AbortSignal) {
   "use step";
 
-  if (signal.aborted) throw new DOMException("Aborted", "AbortError"); // [!code highlight]
+  signal.throwIfAborted(); // [!code highlight]
 
   const chunks = splitIntoChunks(data);
   const results = [];
 
   for (const chunk of chunks) {
-    if (signal.aborted) throw new DOMException("Aborted", "AbortError"); // [!code highlight]
+    signal.throwIfAborted(); // [!code highlight]
     results.push(await processChunk(chunk));
   }
 
@@ -325,12 +325,12 @@ Use `AbortSignal` when you need fine-grained, in-flight cancellation of specific
 
 ## Best Practices
 
-**Check `signal.aborted` before expensive work:**
+**Use `throwIfAborted()` before expensive work.** This throws the signal's abort reason if the signal is already aborted, preventing wasted compute:
 
 ```typescript lineNumbers
 async function expensiveStep(signal: AbortSignal) {
   "use step";
-  if (signal.aborted) return null; // [!code highlight]
+  signal.throwIfAborted(); // [!code highlight]
   // ... expensive work ...
 }
 ```
