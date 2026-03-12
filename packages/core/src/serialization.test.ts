@@ -1,7 +1,7 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
@@ -25,8 +25,29 @@ import {
   maybeEncrypt,
   SerializationFormat,
 } from './serialization.js';
-import { STABLE_ULID, STREAM_NAME_SYMBOL } from './symbols.js';
+import {
+  ABORT_HOOK_TOKEN,
+  ABORT_STREAM_NAME,
+  STABLE_ULID,
+  STREAM_NAME_SYMBOL,
+} from './symbols.js';
 import { createContext } from './vm/index.js';
+
+vi.mock('./runtime/world.js', () => ({
+  getWorld: vi.fn(() => ({
+    writeToStream: vi.fn().mockResolvedValue(undefined),
+    writeToStreamMulti: vi.fn().mockResolvedValue(undefined),
+    closeStream: vi.fn().mockResolvedValue(undefined),
+    readFromStream: vi.fn().mockResolvedValue(
+      new ReadableStream({
+        start(c) {
+          c.close();
+        },
+      })
+    ),
+    listStreamsByRunId: vi.fn().mockResolvedValue([]),
+  })),
+}));
 
 const mockRunId = 'wrun_mockidnumber0001';
 const noEncryptionKey = undefined;
@@ -4289,66 +4310,572 @@ describe('isEncrypted', () => {
 // ============================================================================
 
 describe('AbortController serialization', () => {
-  // const { context, globalThis: vmGlobalThis } = createContext({
-  //   seed: 'test-abort-serde',
-  //   fixedTimestamp: 1714857600000,
-  // });
+  const { context, globalThis: vmGlobalThis } = createContext({
+    seed: 'test-abort-serde',
+    fixedTimestamp: 1714857600000,
+  });
+  // The workflow VM does NOT use the real AbortController/AbortSignal
+  // (their prototypes have getter-only properties like `aborted`).
+  // The real workflow VM uses lightweight stubs from workflow/abort-controller.ts.
+  // Workflow revivers use Object.create(global.AbortController?.prototype ?? {})
+  // which falls back to a plain object when the VM doesn't have them set.
+
+  // Set up common web globals that workflow reducers check via instanceof
+  vmGlobalThis.Request = globalThis.Request;
+  vmGlobalThis.Response = globalThis.Response;
+  vmGlobalThis.Headers = globalThis.Headers;
+  vmGlobalThis.ReadableStream = globalThis.ReadableStream;
+  vmGlobalThis.WritableStream = globalThis.WritableStream;
 
   describe('workflow arguments (external → workflow)', () => {
-    it.todo(
-      'AbortController round-trip preserves type, signal.aborted === false'
-    );
+    it('AbortController round-trip preserves type, signal.aborted === false', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000001';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
 
-    it.todo(
-      'already-aborted AbortController: signal.aborted === true after hydration'
-    );
+        const serialized = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
 
-    it.todo('AbortSignal (standalone) round-trip');
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
 
-    it.todo('AbortSignal.abort() static: serialized with aborted=true');
+        // Workflow revivers produce stubs with symbols and properties
+        expect(hydrated.signal).toBeDefined();
+        expect(hydrated.signal.aborted).toBe(false);
+        expect((hydrated as any)[ABORT_STREAM_NAME]).toBeDefined();
+        expect((hydrated as any)[ABORT_HOOK_TOKEN]).toBeDefined();
+        expect((hydrated.signal as any)[ABORT_STREAM_NAME]).toBeDefined();
+        expect((hydrated.signal as any)[ABORT_HOOK_TOKEN]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
 
-    it.todo(
-      'AbortSignal.abort("custom reason"): reason preserved through round-trip'
-    );
+    it('already-aborted AbortController: signal.aborted === true after hydration', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000002';
+      try {
+        const controller = new AbortController();
+        controller.abort('test reason');
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.signal.aborted).toBe(true);
+        expect(hydrated.signal.reason).toBe('test reason');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal (standalone) round-trip', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000003';
+      try {
+        const controller = new AbortController();
+        const signal = controller.signal;
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          signal,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.aborted).toBe(false);
+        expect((hydrated as any)[ABORT_STREAM_NAME]).toBeDefined();
+        expect((hydrated as any)[ABORT_HOOK_TOKEN]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal.abort() static: serialized with aborted=true', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000004';
+      try {
+        // Use a string reason because the default DOMException from
+        // AbortSignal.abort() is not serializable (isNativeError returns
+        // false for DOMException)
+        const signal = AbortSignal.abort('aborted');
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          signal,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.aborted).toBe(true);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal.abort("custom reason"): reason preserved through round-trip', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000005';
+      try {
+        const signal = AbortSignal.abort('custom reason');
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          signal,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.aborted).toBe(true);
+        expect(hydrated.reason).toBe('custom reason');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
   });
 
   describe('step arguments (workflow → step)', () => {
-    it.todo(
-      'AbortController dehydrated with workflow reducers, hydrated with step revivers'
-    );
+    it('AbortController dehydrated with workflow reducers, hydrated with step revivers', async () => {
+      try {
+        // Create a controller stub as the workflow VM would produce:
+        // a plain object with ABORT_STREAM_NAME/ABORT_HOOK_TOKEN symbols
+        // and a signal property (mimicking workflow revivers output)
+        const controller: any = {};
+        controller[ABORT_STREAM_NAME] =
+          'strm_01ABORT0000000000006_system_abort';
+        controller[ABORT_HOOK_TOKEN] = 'abrt_01ABORT0000000000006';
+        const signal: any = {};
+        signal[ABORT_STREAM_NAME] = 'strm_01ABORT0000000000006_system_abort';
+        signal[ABORT_HOOK_TOKEN] = 'abrt_01ABORT0000000000006';
+        signal.aborted = false;
+        signal.reason = undefined;
+        controller.signal = signal;
 
-    it.todo('AbortSignal as standalone step argument');
+        // The workflow reducers check instanceof, so we need the VM
+        // to recognize these as AbortController/AbortSignal. Set up
+        // simple constructors whose prototypes these objects inherit from.
+        const origAC = vmGlobalThis.AbortController;
+        const origAS = vmGlobalThis.AbortSignal;
+        function FakeAC() {}
+        function FakeAS() {}
+        Object.setPrototypeOf(controller, FakeAC.prototype);
+        Object.setPrototypeOf(signal, FakeAS.prototype);
+        vmGlobalThis.AbortController = FakeAC;
+        vmGlobalThis.AbortSignal = FakeAS;
+
+        const serialized = await dehydrateStepArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        const ops: Promise<void>[] = [];
+        const hydrated = await hydrateStepArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        // Step revivers use reviveAbortController which creates a real AbortController
+        expect(hydrated).toBeInstanceOf(AbortController);
+        expect(hydrated.signal.aborted).toBe(false);
+        expect((hydrated as any)[ABORT_STREAM_NAME]).toBe(
+          'strm_01ABORT0000000000006_system_abort'
+        );
+        expect((hydrated as any)[ABORT_HOOK_TOKEN]).toBe(
+          'abrt_01ABORT0000000000006'
+        );
+
+        vmGlobalThis.AbortController = origAC;
+        vmGlobalThis.AbortSignal = origAS;
+      } catch (e) {
+        throw e;
+      }
+    });
+
+    it('AbortSignal as standalone step argument', async () => {
+      try {
+        // Create a signal stub as the workflow VM would produce
+        const signal: any = {};
+        signal[ABORT_STREAM_NAME] = 'strm_01ABORT0000000000007_system_abort';
+        signal[ABORT_HOOK_TOKEN] = 'abrt_01ABORT0000000000007';
+        signal.aborted = false;
+        signal.reason = undefined;
+
+        const origAS = vmGlobalThis.AbortSignal;
+        function FakeAS() {}
+        Object.setPrototypeOf(signal, FakeAS.prototype);
+        vmGlobalThis.AbortSignal = FakeAS;
+
+        const serialized = await dehydrateStepArguments(
+          signal,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        const ops: Promise<void>[] = [];
+        const hydrated = await hydrateStepArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        // Step revivers revive AbortSignal via reviveAbortController().signal
+        expect(hydrated).toBeInstanceOf(AbortSignal);
+        expect(hydrated.aborted).toBe(false);
+
+        vmGlobalThis.AbortSignal = origAS;
+      } catch (e) {
+        throw e;
+      }
+    });
   });
 
   describe('step return value (step → workflow)', () => {
-    it.todo(
-      'AbortController dehydrated with step reducers, hydrated with workflow revivers'
-    );
+    it('AbortController dehydrated with step reducers, hydrated with workflow revivers', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000008';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
 
-    it.todo('AbortSignal as standalone step return value');
+        const serialized = await dehydrateStepReturnValue(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        // hydrateStepReturnValue uses workflow revivers (stubs)
+        const hydrated = await hydrateStepReturnValue(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.signal).toBeDefined();
+        expect(hydrated.signal.aborted).toBe(false);
+        expect((hydrated as any)[ABORT_STREAM_NAME]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal as standalone step return value', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000009';
+      try {
+        const controller = new AbortController();
+        const signal = controller.signal;
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateStepReturnValue(
+          signal,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateStepReturnValue(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        expect(hydrated.aborted).toBe(false);
+        expect((hydrated as any)[ABORT_STREAM_NAME]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
   });
 
   describe('nested and compound structures', () => {
-    it.todo(
-      'AbortController nested in object: { ctrl: new AbortController() }'
-    );
+    it('AbortController nested in object: { ctrl: new AbortController() }', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000A';
+      try {
+        const controller = new AbortController();
+        const data = { ctrl: controller, extra: 'hello' };
+        const ops: Promise<void>[] = [];
 
-    it.todo('array of controllers: [ctrl1, ctrl2] get distinct stream names');
+        const serialized = await dehydrateWorkflowArguments(
+          data,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
 
-    it.todo(
-      'same controller serialized twice reuses the same stream name (WeakMap dedup)'
-    );
+        const hydrated = (await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        )) as { ctrl: any; extra: string };
+
+        expect(hydrated.ctrl.signal).toBeDefined();
+        expect(hydrated.ctrl.signal.aborted).toBe(false);
+        expect((hydrated.ctrl as any)[ABORT_STREAM_NAME]).toBeDefined();
+        expect(hydrated.extra).toBe('hello');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('array of controllers: [ctrl1, ctrl2] get distinct stream names', async () => {
+      let callCount = 0;
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => {
+        callCount++;
+        return `01ABORT00000000000${callCount.toString().padStart(2, '0')}`;
+      };
+      try {
+        const ctrl1 = new AbortController();
+        const ctrl2 = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          [ctrl1, ctrl2],
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = (await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        )) as any[];
+
+        // Both should have signal properties (workflow stubs)
+        expect(hydrated[0].signal).toBeDefined();
+        expect(hydrated[1].signal).toBeDefined();
+
+        // They should have distinct stream names
+        const name1 = (hydrated[0] as any)[ABORT_STREAM_NAME];
+        const name2 = (hydrated[1] as any)[ABORT_STREAM_NAME];
+        expect(name1).toBeDefined();
+        expect(name2).toBeDefined();
+        expect(name1).not.toBe(name2);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('same controller serialized twice reuses the same stream name (WeakMap dedup)', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000D';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        // Serialize the same controller in two different positions
+        const serialized = await dehydrateWorkflowArguments(
+          { a: controller, b: controller },
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = (await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        )) as { a: any; b: any };
+
+        // Both should share the same stream name (dedup via symbol on the original)
+        const nameA = (hydrated.a as any)[ABORT_STREAM_NAME];
+        const nameB = (hydrated.b as any)[ABORT_STREAM_NAME];
+        expect(nameA).toBeDefined();
+        expect(nameA).toBe(nameB);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
   });
 
   describe('integration with Request', () => {
-    it.todo(
-      'Request with signal: new Request(url, { signal }) preserves signal through round-trip'
-    );
+    it('Request with signal: new Request(url, { signal }) preserves signal through round-trip', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000E';
+      try {
+        // Use an aborted signal because the Request reducer only includes
+        // signals that are aborted or have ABORT_STREAM_NAME set
+        const controller = new AbortController();
+        controller.abort('request cancelled');
+        const request = new Request('https://example.com/api', {
+          method: 'POST',
+          signal: controller.signal,
+        });
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          request,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = (await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        )) as Request;
+
+        vmGlobalThis.val = hydrated;
+        expect(runInContext('val instanceof Request', context)).toBe(true);
+        expect(hydrated.url).toBe('https://example.com/api');
+        expect(hydrated.method).toBe('POST');
+        // The signal should exist and be aborted with the reason preserved
+        expect(hydrated.signal).toBeDefined();
+        expect(hydrated.signal.aborted).toBe(true);
+        expect(hydrated.signal.reason).toBe('request cancelled');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
   });
 
   describe('encryption', () => {
-    it.todo('AbortController round-trip with encryption enabled');
+    const testKeyRaw = new Uint8Array([
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+      0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+      0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+    ]);
+    let testKey: CryptoKey;
+    beforeAll(async () => {
+      testKey = await importKey(testKeyRaw);
+    });
 
-    it.todo('AbortSignal round-trip with encryption enabled');
+    it('AbortController round-trip with encryption enabled', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000F';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        const encrypted = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          testKey,
+          ops,
+          globalThis,
+          false
+        );
+
+        // Should have 'encr' prefix
+        expect(encrypted).toBeInstanceOf(Uint8Array);
+        const prefix = new TextDecoder().decode(
+          (encrypted as Uint8Array).subarray(0, 4)
+        );
+        expect(prefix).toBe('encr');
+
+        const decrypted = await hydrateWorkflowArguments(
+          encrypted,
+          mockRunId,
+          testKey,
+          vmGlobalThis,
+          {}
+        );
+
+        expect(decrypted.signal).toBeDefined();
+        expect(decrypted.signal.aborted).toBe(false);
+        expect((decrypted as any)[ABORT_STREAM_NAME]).toBeDefined();
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('AbortSignal round-trip with encryption enabled', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT000000000000G';
+      try {
+        const signal = AbortSignal.abort('encrypted reason');
+        const ops: Promise<void>[] = [];
+
+        const encrypted = await dehydrateWorkflowArguments(
+          signal,
+          mockRunId,
+          testKey,
+          ops,
+          globalThis,
+          false
+        );
+
+        // Should have 'encr' prefix
+        expect(encrypted).toBeInstanceOf(Uint8Array);
+        const prefix = new TextDecoder().decode(
+          (encrypted as Uint8Array).subarray(0, 4)
+        );
+        expect(prefix).toBe('encr');
+
+        const decrypted = await hydrateWorkflowArguments(
+          encrypted,
+          mockRunId,
+          testKey,
+          vmGlobalThis,
+          {}
+        );
+
+        expect(decrypted.aborted).toBe(true);
+        expect(decrypted.reason).toBe('encrypted reason');
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
   });
 });

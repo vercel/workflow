@@ -8,7 +8,9 @@ import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
+import { ABORT_HOOK_TOKEN } from './symbols.js';
 import { createContext } from './vm/index.js';
+import { createCreateAbortController } from './workflow/abort-controller.js';
 
 // Helper to setup context to simulate a workflow run
 function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
@@ -572,33 +574,210 @@ describe('createUseStep', () => {
 // ============================================================================
 
 describe('AbortController hook integration', () => {
-  describe('suspension handler', () => {
-    it.todo(
-      'abort() triggers suspension handler to create hook_received event and write stream'
-    );
+  describe('factory creates hook in invocations queue', () => {
+    it('new AbortController() adds a hook entry to the invocations queue', () => {
+      const ctx = setupWorkflowContext([]);
+      const WorkflowAbortController = createCreateAbortController(ctx);
+
+      expect(ctx.invocationsQueue.size).toBe(0);
+
+      const controller = new WorkflowAbortController();
+
+      // A hook item should have been added to the queue
+      expect(ctx.invocationsQueue.size).toBe(1);
+      const queueItem = [...ctx.invocationsQueue.values()][0];
+      expect(queueItem).toMatchObject({
+        type: 'hook',
+        isSystem: true,
+        isWebhook: false,
+      });
+      // The hook token should match the controller's token
+      expect(queueItem.type).toBe('hook');
+      if (queueItem.type === 'hook') {
+        expect(queueItem.token).toBe((controller as any)[ABORT_HOOK_TOKEN]);
+      }
+    });
+
+    it('multiple AbortControllers create independent hook entries', () => {
+      const ctx = setupWorkflowContext([]);
+      const WorkflowAbortController = createCreateAbortController(ctx);
+
+      const ctrl1 = new WorkflowAbortController();
+      const ctrl2 = new WorkflowAbortController();
+
+      expect(ctx.invocationsQueue.size).toBe(2);
+
+      // Each should have a distinct token
+      const items = [...ctx.invocationsQueue.values()];
+      expect(items[0].type).toBe('hook');
+      expect(items[1].type).toBe('hook');
+      if (items[0].type === 'hook' && items[1].type === 'hook') {
+        expect(items[0].token).not.toBe(items[1].token);
+      }
+    });
+  });
+
+  describe('abort marks hook with abortRequested', () => {
+    it('calling abort() sets abortRequested on the hook queue item', () => {
+      const ctx = setupWorkflowContext([]);
+      const WorkflowAbortController = createCreateAbortController(ctx);
+
+      const controller = new WorkflowAbortController();
+      controller.abort('test reason');
+
+      const queueItem = [...ctx.invocationsQueue.values()][0];
+      expect(queueItem.type).toBe('hook');
+      if (queueItem.type === 'hook') {
+        expect(queueItem.abortRequested).toBe(true);
+        expect(queueItem.abortReason).toBe('test reason');
+      }
+    });
+
+    it('calling abort() twice does not crash or duplicate flags', () => {
+      const ctx = setupWorkflowContext([]);
+      const WorkflowAbortController = createCreateAbortController(ctx);
+
+      const controller = new WorkflowAbortController();
+      controller.abort('first');
+      controller.abort('second');
+
+      // Still only one queue item
+      expect(ctx.invocationsQueue.size).toBe(1);
+      const queueItem = [...ctx.invocationsQueue.values()][0];
+      if (queueItem.type === 'hook') {
+        expect(queueItem.abortRequested).toBe(true);
+        // The first abort() sets abortRequested + abortReason on the queue item.
+        // The second abort() also sets them (since signal.aborted is not set
+        // synchronously in workflow context — it waits for hook replay). However,
+        // the suspension handler will only process the abort once, and the signal
+        // state is idempotent via _setAborted's guard.
+        expect(queueItem.abortReason).toBe('second');
+      }
+    });
+
+    it('abort without reason sets abortRequested but reason is undefined', () => {
+      const ctx = setupWorkflowContext([]);
+      const WorkflowAbortController = createCreateAbortController(ctx);
+
+      const controller = new WorkflowAbortController();
+      controller.abort();
+
+      const queueItem = [...ctx.invocationsQueue.values()][0];
+      if (queueItem.type === 'hook') {
+        expect(queueItem.abortRequested).toBe(true);
+        expect(queueItem.abortReason).toBeUndefined();
+      }
+    });
   });
 
   describe('replay with abort events', () => {
-    it.todo(
-      'replay with hook_received event reconstructs signal.aborted === true'
-    );
+    it('replay with hook_received event reconstructs signal.aborted === true', async () => {
+      // First, discover the correlationId that createCreateAbortController will use
+      // by doing a dry run with the same deterministic seed.
+      const dryCtx = setupWorkflowContext([]);
+      const DryAbortController = createCreateAbortController(dryCtx);
+      new DryAbortController();
+      const correlationId = [...dryCtx.invocationsQueue.keys()][0];
 
+      // Now create the real context with the hook_created and hook_received events
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId,
+          eventData: {},
+          createdAt: new Date(),
+        },
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId,
+          eventData: { payload: { reason: 'aborted!' } },
+          createdAt: new Date(),
+        },
+      ]);
+
+      const WorkflowAbortController = createCreateAbortController(ctx);
+      const controller = new WorkflowAbortController();
+
+      // The events consumer processes events via process.nextTick, and the
+      // hook_received handler chains through promiseQueue. We need to let
+      // multiple ticks pass for all events to be consumed and the abort
+      // state to propagate.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await ctx.promiseQueue;
+
+      expect(controller.signal.aborted).toBe(true);
+      expect(controller.signal.reason).toBe('aborted!');
+      // The hook should have been removed from the queue after hook_received
+      expect(ctx.invocationsQueue.size).toBe(0);
+    });
+
+    it('replay without hook_received event reconstructs signal.aborted === false', async () => {
+      // Discover the correlationId via dry run
+      const dryCtx = setupWorkflowContext([]);
+      const DryAbortController = createCreateAbortController(dryCtx);
+      new DryAbortController();
+      const correlationId = [...dryCtx.invocationsQueue.keys()][0];
+
+      // Only hook_created, no hook_received
+      const ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_created',
+          correlationId,
+          eventData: {},
+          createdAt: new Date(),
+        },
+      ]);
+
+      const WorkflowAbortController = createCreateAbortController(ctx);
+      const controller = new WorkflowAbortController();
+
+      // Let event processing complete
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await ctx.promiseQueue;
+
+      expect(controller.signal.aborted).toBe(false);
+      // The hook should still be in the queue (waiting for resume)
+      expect(ctx.invocationsQueue.size).toBe(1);
+      const queueItem = [...ctx.invocationsQueue.values()][0];
+      if (queueItem.type === 'hook') {
+        expect(queueItem.hasCreatedEvent).toBe(true);
+      }
+    });
+  });
+
+  describe('suspension handler', () => {
     it.todo(
-      'replay without hook_received event reconstructs signal.aborted === false'
+      'abort() triggers suspension handler to create hook_received event and write stream'
+      // Requires integration test with real world backend — the suspension
+      // handler calls world.createEvents() and world.writeStream() which
+      // need real infrastructure.
     );
   });
 
   describe('hydration into workflow context', () => {
     it.todo(
       'AbortController returned from step: hook created on hydration into workflow'
+      // Requires integration test — hydration from step return values involves
+      // the full workflow orchestrator and deserialization pipeline.
     );
 
-    it.todo('AbortSignal passed as workflow input: hook created on hydration');
+    it.todo(
+      'AbortSignal passed as workflow input: hook created on hydration'
+      // Requires integration test — input hydration happens in the workflow
+      // orchestrator before the workflow function runs.
+    );
   });
 
   describe('eventual consistency', () => {
     it.todo(
       'abort before hook exists: stream packet persists, step processes it, hook resumed on next replay'
+      // Requires integration test with real world backend
     );
   });
 });

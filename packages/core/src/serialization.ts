@@ -578,6 +578,8 @@ export interface SerializableSpecial {
 
     // This is specifically for the `RequestWithResponse` type which is used for webhooks
     responseWritable?: WritableStream<Response>;
+    // AbortSignal from the original request (serialized via AbortSignal reducer)
+    signal?: AbortSignal;
   };
   Response: {
     type: Response['type'];
@@ -750,6 +752,13 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       const responseWritable = value[WEBHOOK_RESPONSE_WRITABLE];
       if (responseWritable) {
         data.responseWritable = responseWritable;
+      }
+      // Include signal if present and not the default stub
+      if (
+        value.signal &&
+        (value.signal.aborted || (value.signal as any)[ABORT_STREAM_NAME])
+      ) {
+        data.signal = value.signal;
       }
       return data;
     },
@@ -1434,12 +1443,14 @@ export function getExternalRevivers(
     },
 
     Request: (value) => {
-      return new global.Request(value.url, {
+      const init: RequestInit & { duplex?: string } = {
         method: value.method,
         headers: new global.Headers(value.headers),
         body: value.body,
         duplex: value.duplex,
-      });
+      };
+      if (value.signal) init.signal = value.signal;
+      return new global.Request(value.url, init);
     },
     Response: (value) => {
       // Note: Response constructor only accepts status, statusText, and headers
@@ -1624,27 +1635,50 @@ export function getWorkflowRevivers(
       });
     },
 
-    // AbortController/AbortSignal in workflow context — create stubs with symbols
+    // AbortController/AbortSignal in workflow context — create stubs with symbols.
+    // Use plain objects (not prototype-based) since AbortSignal.prototype.aborted
+    // is a readonly getter that can't be overwritten via assignment.
     AbortController: (value) => {
-      const obj = Object.create(global.AbortController?.prototype ?? {});
-      obj[ABORT_STREAM_NAME] = value.streamName;
-      obj[ABORT_HOOK_TOKEN] = value.hookToken;
-      // Create a signal stub (the workflow VM's AbortSignal class will handle the actual state)
-      const signal = Object.create(global.AbortSignal?.prototype ?? {});
-      signal[ABORT_STREAM_NAME] = value.streamName;
-      signal[ABORT_HOOK_TOKEN] = value.hookToken;
-      signal.aborted = value.aborted;
-      signal.reason = value.reason;
-      obj.signal = signal;
-      return obj;
+      const signal: Record<string | symbol, unknown> = {
+        [ABORT_STREAM_NAME]: value.streamName,
+        [ABORT_HOOK_TOKEN]: value.hookToken,
+        aborted: value.aborted,
+        reason: value.reason,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        throwIfAborted() {
+          if (signal.aborted) {
+            throw (
+              signal.reason ??
+              new DOMException('The operation was aborted.', 'AbortError')
+            );
+          }
+        },
+      };
+      return {
+        [ABORT_STREAM_NAME]: value.streamName,
+        [ABORT_HOOK_TOKEN]: value.hookToken,
+        signal,
+        abort: () => {},
+      };
     },
     AbortSignal: (value) => {
-      const signal = Object.create(global.AbortSignal?.prototype ?? {});
-      signal[ABORT_STREAM_NAME] = value.streamName;
-      signal[ABORT_HOOK_TOKEN] = value.hookToken;
-      signal.aborted = value.aborted;
-      signal.reason = value.reason;
-      return signal;
+      return {
+        [ABORT_STREAM_NAME]: value.streamName,
+        [ABORT_HOOK_TOKEN]: value.hookToken,
+        aborted: value.aborted,
+        reason: value.reason,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        throwIfAborted() {
+          if (value.aborted) {
+            throw (
+              value.reason ??
+              new DOMException('The operation was aborted.', 'AbortError')
+            );
+          }
+        },
+      };
     },
   };
 }
@@ -1725,12 +1759,14 @@ function getStepRevivers(
 
     Request: (value) => {
       const responseWritable = value.responseWritable;
-      const request = new global.Request(value.url, {
+      const init: RequestInit & { duplex?: string } = {
         method: value.method,
         headers: new global.Headers(value.headers),
         body: value.body,
         duplex: value.duplex,
-      });
+      };
+      if (value.signal) init.signal = value.signal;
+      const request = new global.Request(value.url, init);
       if (responseWritable) {
         request.respondWith = async (response: Response) => {
           const writer = responseWritable.getWriter();
