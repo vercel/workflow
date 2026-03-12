@@ -11,12 +11,9 @@
  * - DurableAgent model is `string | () => Promise<CompatibleLanguageModel>` instead of direct LanguageModel
  * - DurableAgent returns DurableAgentStreamResult (not StreamTextResult with consumeStream())
  */
-import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-} from '@ai-sdk/provider';
 import { tool } from 'ai';
 import type { UIMessageChunk } from 'ai';
+import { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -27,75 +24,6 @@ vi.mock('./stream-text-iterator.js', () => ({
 
 // Import after mocking
 const { DurableAgent } = await import('./durable-agent.js');
-
-// ============================================================================
-// Inline mock utilities (avoiding ai/test which pulls in msw)
-// ============================================================================
-
-/**
- * Converts an array of values to a ReadableStream.
- * Equivalent to @ai-sdk/provider-utils/test convertArrayToReadableStream.
- */
-function convertArrayToReadableStream<T>(values: T[]): ReadableStream<T> {
-  return new ReadableStream({
-    start(controller) {
-      try {
-        for (const value of values) {
-          controller.enqueue(value);
-        }
-      } finally {
-        controller.close();
-      }
-    },
-  });
-}
-
-/**
- * Mock LanguageModelV3 implementation.
- * Equivalent to ai/test MockLanguageModelV3.
- */
-class MockLanguageModelV3 implements LanguageModelV3 {
-  readonly specificationVersion = 'v3' as const;
-  readonly provider: string;
-  readonly modelId: string;
-
-  doGenerate: LanguageModelV3['doGenerate'];
-  doStream: LanguageModelV3['doStream'];
-
-  doGenerateCalls: LanguageModelV3CallOptions[] = [];
-  doStreamCalls: LanguageModelV3CallOptions[] = [];
-
-  constructor({
-    provider = 'mock-provider',
-    modelId = 'mock-model-id',
-    doGenerate = async () => {
-      throw new Error('not implemented');
-    },
-    doStream = async () => {
-      throw new Error('not implemented');
-    },
-  }: {
-    provider?: string;
-    modelId?: string;
-    doGenerate?: LanguageModelV3['doGenerate'];
-    doStream?: LanguageModelV3['doStream'];
-  } = {}) {
-    this.provider = provider;
-    this.modelId = modelId;
-    this.doGenerate = async (options) => {
-      this.doGenerateCalls.push(options);
-      return doGenerate(options);
-    };
-    this.doStream = async (options) => {
-      this.doStreamCalls.push(options);
-      return doStream(options);
-    };
-  }
-
-  get supportedUrls() {
-    return async () => ({});
-  }
-}
 
 // ============================================================================
 // Test helpers

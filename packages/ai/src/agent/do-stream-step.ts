@@ -209,17 +209,13 @@ export async function doStreamStep(
               input: chunk.input || '{}',
             });
           } else if (chunk.type === 'tool-result') {
-            // Capture provider-executed tool results
-            // In V3, providerExecuted is not on the LanguageModelV3ToolResult type
-            // but providers may still send it at runtime for provider-executed tools.
-            if ((chunk as any).providerExecuted) {
-              providerExecutedToolResults.set(chunk.toolCallId, {
-                toolCallId: chunk.toolCallId,
-                toolName: chunk.toolName,
-                result: chunk.result,
-                isError: chunk.isError,
-              });
-            }
+            // In V3, all tool-result stream parts are provider-executed by definition
+            providerExecutedToolResults.set(chunk.toolCallId, {
+              toolCallId: chunk.toolCallId,
+              toolName: chunk.toolName,
+              result: chunk.result,
+              isError: chunk.isError,
+            });
           } else if (chunk.type === 'finish') {
             finish = chunk;
           }
@@ -425,10 +421,6 @@ export async function doStreamStep(
                 type: 'tool-output-available',
                 toolCallId: part.toolCallId,
                 output: part.result,
-                // In V3, providerExecuted is not on the type but providers may still send it
-                ...((part as any).providerExecuted != null
-                  ? { providerExecuted: (part as any).providerExecuted }
-                  : {}),
               });
               break;
             }
