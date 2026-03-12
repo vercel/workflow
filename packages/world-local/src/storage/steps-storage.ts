@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { Storage, StepWithoutData } from '@workflow/world';
+import type { StepWithoutData, Storage } from '@workflow/world';
 import { StepSchema } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
