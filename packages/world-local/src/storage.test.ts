@@ -1300,6 +1300,34 @@ describe('Storage', () => {
         expect((result.event as any).eventData.token).toBe(token);
         expect(result.hook).toBeUndefined();
       });
+
+      it('should reject concurrent creates for the same token atomically', async () => {
+        const token = 'concurrent-token';
+
+        // Fire 5 concurrent hook creations with the same token
+        const results = await Promise.allSettled(
+          Array.from({ length: 5 }, (_, i) =>
+            storage.events.create(testRunId, {
+              eventType: 'hook_created',
+              correlationId: `concurrent_hook_${i}`,
+              eventData: { token },
+            })
+          )
+        );
+
+        const fulfilled = results.filter(
+          (r) => r.status === 'fulfilled'
+        ) as PromiseFulfilledResult<any>[];
+        const created = fulfilled.filter(
+          (r) => r.value.event.eventType === 'hook_created'
+        );
+        const conflicts = fulfilled.filter(
+          (r) => r.value.event.eventType === 'hook_conflict'
+        );
+
+        expect(created).toHaveLength(1);
+        expect(conflicts).toHaveLength(4);
+      });
     });
 
     describe('get', () => {
