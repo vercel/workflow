@@ -18,6 +18,8 @@ export {
   ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
+export type { RequestContext } from './request-context.js';
+export { getRequestContext, requestContext } from './request-context.js';
 export type * from './runs.js';
 export {
   WorkflowRunBaseSchema,
@@ -43,10 +45,10 @@ export {
 } from './spec-version.js';
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';
-export type * from './waits.js';
-export { WaitSchema, WaitStatusSchema } from './waits.js';
 export {
   DEFAULT_TIMESTAMP_THRESHOLD_MS,
   ulidToDate,
   validateUlidTimestamp,
 } from './ulid.js';
+export type * from './waits.js';
+export { WaitSchema, WaitStatusSchema } from './waits.js';

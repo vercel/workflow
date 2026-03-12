@@ -2,7 +2,11 @@ import os from 'node:os';
 import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
 import { WorkflowAPIError } from '@workflow/errors';
-import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
+import {
+  getRequestContext,
+  type StructuredError,
+  StructuredErrorSchema,
+} from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
@@ -30,6 +34,13 @@ import { version } from './version.js';
  * Example: 'https://workflow-server-git-branch-name.vercel.sh'
  */
 const WORKFLOW_SERVER_URL_OVERRIDE = '';
+
+/**
+ * Hard-coded chaos workflow-server URL.
+ * When chaos testing is active (via request context), requests are routed
+ * to this dedicated deployment instead of the production server.
+ */
+const CHAOS_WORKFLOW_SERVER_URL = 'https://chaos.vercel-workflow.com';
 
 export interface APIConfig {
   token?: string;
@@ -157,8 +168,13 @@ export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
+  // Chaos testing overrides the workflow-server URL when active
+  const ctx = getRequestContext();
+  const chaosOverride = ctx?.chaos ? CHAOS_WORKFLOW_SERVER_URL : undefined;
   const defaultHost =
-    WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    chaosOverride ||
+    WORKFLOW_SERVER_URL_OVERRIDE ||
+    'https://vercel-workflow.com';
   const customProxyUrl = process.env.WORKFLOW_VERCEL_BACKEND_URL;
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   // Use proxy when we have project config (for authentication via Vercel API)
@@ -193,8 +209,18 @@ export const getHeaders = (
   // Only set workflow-api-url header when using the proxy, since the proxy
   // forwards it to the workflow-server. When not using proxy, requests go
   // directly to the workflow-server so this header has no effect.
-  if (WORKFLOW_SERVER_URL_OVERRIDE && options.usingProxy) {
-    headers.set('x-vercel-workflow-api-url', WORKFLOW_SERVER_URL_OVERRIDE);
+  const ctx = getRequestContext();
+  const chaosOverride = ctx?.chaos ? CHAOS_WORKFLOW_SERVER_URL : undefined;
+  const urlOverride = chaosOverride || WORKFLOW_SERVER_URL_OVERRIDE;
+  if (urlOverride && options.usingProxy) {
+    headers.set('x-vercel-workflow-api-url', urlOverride);
+  }
+  // Add chaos testing headers when chaos mode is active in the request context
+  if (ctx?.chaos) {
+    headers.set('X-Chaos', ctx.chaos);
+  }
+  if (ctx?.chaosSeed) {
+    headers.set('X-Chaos-Seed', ctx.chaosSeed);
   }
   return headers;
 };

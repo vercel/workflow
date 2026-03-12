@@ -177,6 +177,9 @@ export async function resumeHook<T = any>(
             // attach the trace carrier from the workflow run
             traceCarrier:
               workflowRun.executionContext?.traceCarrier ?? undefined,
+            // propagate chaos config from the run's execution context
+            chaos: workflowRun.executionContext?.chaos ?? undefined,
+            chaosSeed: workflowRun.executionContext?.chaosSeed ?? undefined,
           } satisfies WorkflowInvokePayload,
           {
             deploymentId: workflowRun.deploymentId,

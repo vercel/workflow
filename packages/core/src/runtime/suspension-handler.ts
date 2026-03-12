@@ -43,6 +43,10 @@ export interface SuspensionHandlerParams {
   world: World;
   run: WorkflowRun;
   span?: Span;
+  /** Chaos testing mode to propagate to step queue messages */
+  chaos?: string;
+  /** Deterministic seed for reproducible chaos */
+  chaosSeed?: string;
 }
 
 export interface SuspensionHandlerResult {
@@ -63,6 +67,8 @@ export async function handleSuspension({
   world,
   run,
   span,
+  chaos,
+  chaosSeed,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
   const workflowName = run.workflowName;
@@ -260,6 +266,8 @@ export async function handleSuspension({
             stepId: queueItem.correlationId,
             traceCarrier,
             requestedAt: new Date(),
+            chaos,
+            chaosSeed,
           },
           {
             idempotencyKey: queueItem.correlationId,
