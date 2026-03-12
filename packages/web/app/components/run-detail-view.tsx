@@ -1,6 +1,7 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { SpanSelectionInfo } from '@workflow/web-shared';
 import {
+  DecryptButton,
   ErrorBoundary,
   EventListView,
   hydrateResourceIO,
@@ -842,12 +843,41 @@ export function RunDetailView({
                   {/* Stream viewer */}
                   <div className="flex-1 min-w-0">
                     {selectedStreamId ? (
-                      <StreamViewer
-                        streamId={selectedStreamId}
-                        chunks={streamChunks}
-                        isLive={streamIsLive}
-                        error={streamError}
-                      />
+                      streamError?.includes('encrypted') && !encryptionKey ? (
+                        <div
+                          className="h-full flex flex-col items-center justify-center gap-3 rounded-lg border p-4"
+                          style={{
+                            borderColor: 'var(--ds-gray-300)',
+                            backgroundColor: 'var(--ds-gray-100)',
+                          }}
+                        >
+                          <Lock
+                            className="h-6 w-6"
+                            style={{ color: 'var(--ds-gray-700)' }}
+                          />
+                          <div
+                            className="text-sm"
+                            style={{ color: 'var(--ds-gray-900)' }}
+                          >
+                            This stream is encrypted.
+                          </div>
+                          <DecryptButton
+                            onClick={handleDecrypt}
+                            loading={isDecrypting}
+                          />
+                        </div>
+                      ) : (
+                        <StreamViewer
+                          streamId={selectedStreamId}
+                          chunks={streamChunks}
+                          isLive={streamIsLive}
+                          error={
+                            streamError?.includes('encrypted')
+                              ? null
+                              : streamError
+                          }
+                        />
+                      )
                     ) : (
                       <div
                         className="h-full flex items-center justify-center rounded-lg border"
