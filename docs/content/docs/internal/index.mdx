@@ -1,0 +1,31 @@
+---
+title: Internal
+description: Preview-only page for internal tools, draft changelogs, and testing utilities.
+type: overview
+---
+
+<Callout type="warn">
+This page is only visible on preview deployments and local development. It does not appear in production.
+</Callout>
+
+## Preview Package
+
+Install the workflow package built from this preview deployment:
+
+```bash
+pnpm i https://{VERCEL_URL}/workflow.tgz
+```
+
+Run the web UI in your project:
+
+```bash
+npx workflow@https://{VERCEL_URL}/workflow.tgz web
+```
+
+Replace `{VERCEL_URL}` with the preview deployment URL (e.g., `workflow-docs-git-my-branch.vercel.sh`).
+
+## Draft Changelogs
+
+Changelog entries staged here for review before publishing to the Vercel website.
+
+- [Serializable AbortController and AbortSignal](/docs/internal/serializable-abort-controller) — March 12, 2026

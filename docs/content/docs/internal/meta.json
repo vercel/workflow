@@ -1,5 +1,5 @@
 {
-  "title": "Changelog",
+  "title": "Internal",
   "pages": ["index", "serializable-abort-controller"],
   "defaultOpen": false
 }

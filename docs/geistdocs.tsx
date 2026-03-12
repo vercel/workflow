@@ -36,8 +36,8 @@ export const nav: { label: string; href: string; preview?: boolean }[] = [
     href: 'https://github.com/vercel/workflow-examples',
   },
   {
-    label: 'Changelog',
-    href: '/docs/changelog',
+    label: 'Internal',
+    href: '/docs/internal',
     preview: true,
   },
 ];

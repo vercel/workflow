@@ -1,6 +1,5 @@
 import { SiVercel } from '@icons-pack/react-simple-icons';
 import { DynamicLink } from 'fumadocs-core/dynamic-link';
-import { PreviewBadge } from '@/app/[lang]/(home)/components/preview-badge';
 import { basePath, Logo, nav, suggestions } from '@/geistdocs';
 import { Chat } from './chat';
 import { DesktopMenu } from './desktop-menu';
@@ -11,10 +10,6 @@ import { SearchButton } from './search';
 const isPreview =
   process.env.VERCEL_ENV === 'preview' ||
   process.env.NODE_ENV === 'development';
-
-const deploymentUrl = process.env.VERCEL_URL
-  ? `https://${process.env.VERCEL_URL}`
-  : '';
 
 export const Navbar = () => {
   // Filter nav items: show preview items only in preview/dev environments
@@ -36,9 +31,6 @@ export const Navbar = () => {
         <div className="ml-auto flex flex-1 items-center justify-end gap-2">
           <SearchButton className="hidden md:flex" />
           <Chat basePath={basePath} suggestions={suggestions} />
-          {isPreview && deploymentUrl && (
-            <PreviewBadge deploymentUrl={deploymentUrl} />
-          )}
           <MobileMenu />
         </div>
       </div>
