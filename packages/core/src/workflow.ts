@@ -31,6 +31,10 @@ import { getWorkflowRunStreamId } from './util.js';
 import { createContext } from './vm/index.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
+import {
+  createAbortSignalStatics,
+  createCreateAbortController,
+} from './workflow/abort-controller.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
@@ -257,6 +261,18 @@ export async function runWorkflow(
       throw new WorkflowRuntimeError(timeoutErrorMessage, {
         slug: ERROR_SLUGS.TIMEOUT_FUNCTIONS_IN_WORKFLOW,
       });
+    };
+
+    // `AbortController` and `AbortSignal` in the workflow VM are hook-backed
+    // for deterministic replay. The controller's abort() queues a hook resumption,
+    // and signal.aborted is updated when the hook event is processed during replay.
+    (vmGlobalThis as any).AbortController =
+      createCreateAbortController(workflowContext);
+    const abortSignalStatics = createAbortSignalStatics(vmGlobalThis);
+    (vmGlobalThis as any).AbortSignal = {
+      abort: abortSignalStatics.abort,
+      any: abortSignalStatics.any,
+      timeout: abortSignalStatics.timeout,
     };
 
     // `Request` and `Response` are special built-in classes that invoke steps
@@ -733,6 +749,31 @@ export async function runWorkflow(
       span?.setAttributes({
         ...Attribute.WorkflowResultType(typeof result),
       });
+
+      // Check for pending queue items that need processing. When the workflow
+      // completes with uncommitted operations (e.g., abort hook resumptions,
+      // steps created after the last await), throw WorkflowSuspension so
+      // the runtime processes them via handleSuspension. The workflow will
+      // replay and complete on the next invocation.
+      const hasActionableItems = [
+        ...workflowContext.invocationsQueue.values(),
+      ].some((item) => {
+        if (item.type === 'hook') {
+          // Only hooks with abort requests need processing on completion.
+          // Regular hooks (even uncreated ones) are benign since the backend
+          // auto-disposes all hooks when a run reaches a terminal state.
+          return item.abortRequested === true;
+        }
+        // Steps and waits need processing (creation + queueing)
+        return true;
+      });
+
+      if (hasActionableItems) {
+        throw new WorkflowSuspension(
+          workflowContext.invocationsQueue,
+          vmGlobalThis
+        );
+      }
 
       warnPendingQueueItems(
         workflowRun.runId,

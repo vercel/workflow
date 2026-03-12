@@ -193,6 +193,79 @@ export async function handleSuspension({
     );
   }
 
+  // Process abort requests — resume the hook with abort payload and write stream packet
+  const hooksNeedingAbort = allHookItems.filter(
+    (item) => item.abortRequested && !item.disposed
+  );
+
+  if (hooksNeedingAbort.length > 0) {
+    await Promise.all(
+      hooksNeedingAbort.map(async (queueItem) => {
+        try {
+          // Dehydrate the abort payload for storage
+          const abortPayload = await dehydrateStepArguments(
+            { aborted: true, reason: queueItem.abortReason },
+            runId,
+            encryptionKey,
+            suspension.globalThis
+          );
+
+          // Create hook_received event with abort payload
+          await world.events.create(runId, {
+            eventType: 'hook_received' as const,
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: queueItem.correlationId,
+            eventData: {
+              payload: abortPayload,
+            },
+          });
+
+          // Write stream cancellation packet for real-time step propagation
+          try {
+            // The stream name is derived from the hook token
+            // (abort hooks use token format `abrt_{id}`, stream is `strm_{id}_system_abort`)
+            const abortId = queueItem.token.replace('abrt_', '');
+            const streamName = `strm_${abortId}_system_abort`;
+            await world.writeToStream(
+              streamName,
+              runId,
+              new TextEncoder().encode(
+                JSON.stringify({ reason: queueItem.abortReason })
+              )
+            );
+            await world.closeStream(streamName, runId);
+          } catch {
+            // Best-effort stream write — hook event provides the durable fallback
+            runtimeLogger.debug(
+              'Failed to write abort stream packet, hook event will provide fallback',
+              {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+              }
+            );
+          }
+        } catch (err) {
+          if (WorkflowAPIError.is(err)) {
+            if (err.status === 410) {
+              runtimeLogger.info(
+                'Workflow run already completed, skipping abort',
+                {
+                  workflowRunId: runId,
+                  correlationId: queueItem.correlationId,
+                  message: err.message,
+                }
+              );
+            } else {
+              throw err;
+            }
+          } else {
+            throw err;
+          }
+        }
+      })
+    );
+  }
+
   // Build a map of stepId -> step event for steps that need creation
   const stepsNeedingCreation = new Set(
     stepItems

@@ -2,7 +2,7 @@ import { types } from 'node:util';
 import { WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { assert, describe, expect, it, vi } from 'vitest';
-import type { WorkflowSuspension } from './global.js';
+import { WorkflowSuspension } from './global.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
@@ -3742,31 +3742,32 @@ describe('runWorkflow', () => {
   });
 
   describe('pending queue warnings', () => {
-    it('should warn when workflow completes with an unawaited step', async () => {
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        const ops: Promise<any>[] = [];
-        const workflowRun: WorkflowRun = {
-          runId: 'test-run-123',
-          workflowName: 'workflow',
-          status: 'running',
-          input: await dehydrateWorkflowArguments(
-            [],
-            'wrun_123',
-            noEncryptionKey,
-            ops
-          ),
-          createdAt: new Date('2024-01-01T00:00:00.000Z'),
-          updatedAt: new Date('2024-01-01T00:00:00.000Z'),
-          startedAt: new Date('2024-01-01T00:00:00.000Z'),
-          deploymentId: 'test-deployment',
-        };
+    it('should throw WorkflowSuspension when workflow completes with an unawaited step', async () => {
+      const ops: Promise<any>[] = [];
+      const workflowRun: WorkflowRun = {
+        runId: 'test-run-123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
 
-        // No step events — the unawaited step stays pending in the queue
-        const events: Event[] = [];
+      // No step events — the unawaited step stays pending in the queue
+      const events: Event[] = [];
 
-        // Workflow calls step but doesn't await it, returns immediately
-        await runWorkflow(
+      // Workflow calls step but doesn't await it, returns immediately.
+      // The runtime now throws WorkflowSuspension to process the pending
+      // step via the suspension handler (instead of just warning).
+      await expect(
+        runWorkflow(
           `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
           async function workflow() {
             add(1, 2); // not awaited!
@@ -3775,24 +3776,8 @@ describe('runWorkflow', () => {
           workflowRun,
           events,
           noEncryptionKey
-        );
-
-        const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
-        expect(
-          warnCalls.some(
-            (msg: string) =>
-              msg.includes('uncommitted operation') &&
-              msg.includes('step "add"')
-          )
-        ).toBe(true);
-        expect(
-          warnCalls.some((msg: string) =>
-            msg.includes('Did you forget to `await`')
-          )
-        ).toBe(true);
-      } finally {
-        warnSpy.mockRestore();
-      }
+        )
+      ).rejects.toThrow(WorkflowSuspension);
     });
 
     it('should warn when workflow fails with pending operations', async () => {

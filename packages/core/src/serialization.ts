@@ -865,7 +865,11 @@ export function getExternalReducers(
     },
 
     AbortController: (value) => {
-      if (!global.AbortController || !(value instanceof global.AbortController))
+      if (
+        !global.AbortController ||
+        typeof global.AbortController !== 'function' ||
+        !(value instanceof global.AbortController)
+      )
         return false;
 
       // Reuse existing names if already serialized (dedup)
@@ -903,7 +907,11 @@ export function getExternalReducers(
     },
 
     AbortSignal: (value) => {
-      if (!global.AbortSignal || !(value instanceof global.AbortSignal))
+      if (
+        !global.AbortSignal ||
+        typeof global.AbortSignal !== 'function' ||
+        !(value instanceof global.AbortSignal)
+      )
         return false;
 
       let streamName = (value as any)[ABORT_STREAM_NAME];
@@ -984,7 +992,11 @@ export function getWorkflowReducers(
 
     // AbortController/AbortSignal in workflow context — just read symbols (handles)
     AbortController: (value) => {
-      if (!global.AbortController || !(value instanceof global.AbortController))
+      if (
+        !global.AbortController ||
+        typeof global.AbortController !== 'function' ||
+        !(value instanceof global.AbortController)
+      )
         return false;
       const streamName =
         (value as any)[ABORT_STREAM_NAME] ||
@@ -1003,7 +1015,11 @@ export function getWorkflowReducers(
       };
     },
     AbortSignal: (value) => {
-      if (!global.AbortSignal || !(value instanceof global.AbortSignal))
+      if (
+        !global.AbortSignal ||
+        typeof global.AbortSignal !== 'function' ||
+        !(value instanceof global.AbortSignal)
+      )
         return false;
       const streamName = (value as any)[ABORT_STREAM_NAME];
       const hookToken = (value as any)[ABORT_HOOK_TOKEN];
@@ -1102,7 +1118,11 @@ function getStepReducers(
     },
 
     AbortController: (value) => {
-      if (!global.AbortController || !(value instanceof global.AbortController))
+      if (
+        !global.AbortController ||
+        typeof global.AbortController !== 'function' ||
+        !(value instanceof global.AbortController)
+      )
         return false;
 
       let streamName = (value as any)[ABORT_STREAM_NAME];
@@ -1138,7 +1158,11 @@ function getStepReducers(
     },
 
     AbortSignal: (value) => {
-      if (!global.AbortSignal || !(value instanceof global.AbortSignal))
+      if (
+        !global.AbortSignal ||
+        typeof global.AbortSignal !== 'function' ||
+        !(value instanceof global.AbortSignal)
+      )
         return false;
 
       let streamName = (value as any)[ABORT_STREAM_NAME];
