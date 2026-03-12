@@ -2073,30 +2073,145 @@ describe('e2e', () => {
   // ==========================================================================
 
   describe('AbortController', () => {
-    test.todo('abortTimeoutWorkflow: timeout cancels long-running step');
+    test(
+      'abortTimeoutWorkflow: timeout cancels long-running step',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortTimeoutWorkflow'), []);
+        const returnValue = await run.returnValue;
 
-    test.todo('abortParallelWorkflow: abort cancels all parallel steps');
-
-    test.todo(
-      'abortFromStepWorkflow: step calls abort(), workflow sees aborted state'
+        // The workflow races a long step against a 3s sleep timeout.
+        // The sleep wins, so the workflow aborts and returns timed out status.
+        expect(returnValue.status).toBe('timed out');
+        expect(returnValue.aborted).toBe(true);
+      }
     );
 
-    test.todo('abortAlreadyAbortedWorkflow: pre-aborted signal seen by step');
+    test(
+      'abortParallelWorkflow: abort cancels all parallel steps',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortParallelWorkflow'), []);
+        const returnValue = await run.returnValue;
 
-    test.todo('abortReasonWorkflow: abort reason preserved across boundaries');
-
-    test.todo(
-      'abortAfterCompletionWorkflow: abort after step completes is a no-op'
+        // The workflow races 3 parallel long steps against a 3s sleep.
+        // The sleep wins, so the workflow returns timed out status.
+        expect(returnValue.status).toBe('timed out');
+      }
     );
 
-    test.todo(
-      'abortViaHookWorkflow: external hook triggers abort on in-flight step'
+    test(
+      'abortFromStepWorkflow: step calls abort(), workflow sees aborted state',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortFromStepWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // A step calls controller.abort('aborted from step'), then the
+        // workflow checks signal state in another step.
+        expect(returnValue.workflowAborted).toBe(true);
+        expect(returnValue.stepSawAborted).toBe(true);
+      }
     );
 
-    test.todo('abortExternalSignalWorkflow: signal passed as workflow input');
+    test(
+      'abortAlreadyAbortedWorkflow: pre-aborted signal seen by step',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortAlreadyAbortedWorkflow'), []);
+        const returnValue = await run.returnValue;
 
-    test.todo(
-      'abortSurvivesReplayWorkflow: controller state consistent across replay'
+        // The controller is aborted before passing to the step.
+        // The step should see aborted=true and the reason.
+        expect(returnValue.aborted).toBe(true);
+        expect(returnValue.reason).toBe('pre-aborted');
+      }
+    );
+
+    test(
+      'abortReasonWorkflow: abort reason preserved across boundaries',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortReasonWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The workflow aborts with a custom reason after timeout.
+        // The reason should be preserved when checked in a subsequent step.
+        expect(returnValue.aborted).toBe(true);
+        expect(returnValue.reason).toBe('custom timeout reason');
+      }
+    );
+
+    test(
+      'abortAfterCompletionWorkflow: abort after step completes is a no-op',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortAfterCompletionWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step runs before abort is called, so it sees aborted=false.
+        // The workflow then aborts — should not cause errors.
+        expect(returnValue.stepSawAborted).toBe(false);
+        expect(returnValue.workflowAborted).toBe(true);
+      }
+    );
+
+    test(
+      'abortViaHookWorkflow: external hook triggers abort on in-flight step',
+      { timeout: 60_000 },
+      async () => {
+        const token = Math.random().toString(36).slice(2);
+        const run = await start(await e2e('abortViaHookWorkflow'), [token]);
+
+        // Wait for the hook to be registered
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+        // Resume the hook with a cancellation payload
+        const hook = await getHookByToken(token);
+        expect(hook.runId).toBe(run.runId);
+        await resumeHook(hook, { reason: 'user cancelled' });
+
+        const returnValue = await run.returnValue;
+
+        // The hook fires before the long step completes, triggering abort.
+        expect(returnValue.status).toBe('cancelled');
+        expect(returnValue.reason).toBe('user cancelled');
+      }
+    );
+
+    test(
+      'abortExternalSignalWorkflow: signal passed as workflow input',
+      { timeout: 60_000 },
+      async () => {
+        // Pass a pre-aborted AbortController to the workflow.
+        // The workflow receives the signal and passes it to a step.
+        const controller = new AbortController();
+        controller.abort('external abort');
+
+        const run = await start(await e2e('abortExternalSignalWorkflow'), [
+          controller.signal,
+        ]);
+        const returnValue = await run.returnValue;
+
+        // The step should see the signal as aborted with the reason.
+        expect(returnValue.aborted).toBe(true);
+        expect(returnValue.reason).toBe('external abort');
+      }
+    );
+
+    test(
+      'abortSurvivesReplayWorkflow: controller state consistent across replay',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortSurvivesReplayWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // Before sleep (and abort), signal should not be aborted.
+        expect(returnValue.beforeAborted).toBe(false);
+        // After sleep + abort, signal should be aborted.
+        expect(returnValue.afterAborted).toBe(true);
+        expect(returnValue.afterReason).toBe('after-replay');
+      }
     );
   });
 });
