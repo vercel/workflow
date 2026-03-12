@@ -258,9 +258,42 @@ When an `AbortSignal` is aborted, the behavior depends on how the step uses it:
 | Usage | Behavior on Abort |
 |-------|-------------------|
 | `fetch(url, { signal })` | Request is cancelled, throws `AbortError` |
+| `signal.throwIfAborted()` | Throws the abort reason |
 | `signal.aborted` check | Returns `true`, step can exit gracefully |
 | `signal.addEventListener('abort', fn)` | Callback fires, step can clean up |
 | Ignored | Step runs to completion (abort is cooperative) |
+
+### Abort Errors Skip Retries
+
+When a step throws due to an abort (e.g., `fetch` throws `AbortError`, or `signal.throwIfAborted()` throws), the error is automatically wrapped in a `FatalError`. This means the step **skips retries** and the error bubbles up to the workflow immediately.
+
+This is the correct behavior because an abort is an intentional cancellation — retrying the step would just result in another abort. You don't need to manually wrap abort errors in `FatalError`.
+
+```typescript lineNumbers
+export async function workflow() {
+  "use workflow";
+  const controller = new AbortController();
+
+  try {
+    const result = await Promise.race([
+      cancellableStep(controller.signal),
+      sleep("5s").then(() => null),
+    ]);
+    if (result === null) controller.abort();
+    return result;
+  } catch (err) {
+    // AbortError arrives as FatalError — no retries attempted // [!code highlight]
+    return { status: "cancelled" };
+  }
+}
+
+async function cancellableStep(signal: AbortSignal) {
+  "use step";
+  // If this throws AbortError, it's automatically wrapped in FatalError
+  const response = await fetch("https://api.example.com/slow", { signal });
+  return response.json();
+}
+```
 
 ### Passing AbortSignal as Workflow Input
 
@@ -335,9 +368,11 @@ async function expensiveStep(signal: AbortSignal) {
 }
 ```
 
-**Handle `AbortError` in the workflow:**
+**Handle abort errors in the workflow.** Abort errors arrive as `FatalError` (no retries) and can be caught with a standard try/catch:
 
 ```typescript lineNumbers
+import { FatalError } from "workflow";
+
 export async function workflow() {
   "use workflow";
   const controller = new AbortController();
@@ -345,7 +380,7 @@ export async function workflow() {
   try {
     await cancellableStep(controller.signal);
   } catch (err) {
-    if (err instanceof Error && err.name === "AbortError") {
+    if (FatalError.is(err)) { // [!code highlight]
       return { status: "cancelled" };
     }
     throw err;

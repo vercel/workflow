@@ -51,4 +51,26 @@ describe('AbortSignal deserialized in step context', () => {
       'AbortSignal.any() with deserialized + local signals works correctly'
     );
   });
+
+  describe('abort errors wrapped in FatalError', () => {
+    it.todo(
+      'AbortError from fetch is wrapped in FatalError (skips retries)'
+    );
+
+    it.todo(
+      'error from signal.throwIfAborted() is wrapped in FatalError'
+    );
+
+    it.todo(
+      'custom abort reason is preserved inside the FatalError wrapper'
+    );
+
+    it.todo(
+      'abort error skips retries regardless of step maxRetries config'
+    );
+
+    it.todo(
+      'non-abort errors in a step with an AbortSignal are NOT wrapped in FatalError'
+    );
+  });
 });
