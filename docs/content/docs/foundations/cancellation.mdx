@@ -173,38 +173,6 @@ async function uploadData(data: ArrayBuffer, signal: AbortSignal) {
 }
 ```
 
-### Aborting from Within a Step
-
-A step that receives the full `AbortController` can call `abort()` directly:
-
-```typescript lineNumbers
-export async function conditionalAbortWorkflow() {
-  "use workflow";
-
-  const controller = new AbortController();
-  await orchestrateWork(controller);
-
-  if (controller.signal.aborted) { // [!code highlight]
-    return { status: "aborted by step" };
-  }
-
-  return { status: "completed" };
-}
-
-async function orchestrateWork(controller: AbortController) {
-  "use step";
-
-  const result = await someCheck();
-
-  if (result.shouldCancel) {
-    controller.abort(); // [!code highlight]
-    return;
-  }
-
-  await doMoreWork(controller.signal);
-}
-```
-
 ### User-Triggered Cancellation with Hooks
 
 Combine hooks with abort controllers to let users cancel in-flight work from an external API:
