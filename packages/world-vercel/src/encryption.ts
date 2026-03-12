@@ -114,17 +114,23 @@ export async function fetchRunKey(
     params.set('teamId', options.teamId);
   }
   // 429/5xx retries are handled by the shared RetryAgent from getDispatcher()
-  const response = await fetch(
-    `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
-    {
-      method: 'GET',
-      headers: {
-        authorization: `Bearer ${token}`,
-      },
-      // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
-      dispatcher: getDispatcher(),
-    }
-  );
+  const url = `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`;
+  if (process.env.DEBUG === '1') {
+    console.error(`[Debug] GET ${url} - sending request...`);
+  }
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      authorization: `Bearer ${token}`,
+    },
+    // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
+    dispatcher: getDispatcher(),
+  });
+  if (process.env.DEBUG === '1') {
+    console.error(
+      `[Debug] GET ${url} - ${response.status} ${response.statusText}`
+    );
+  }
 
   if (!response.ok) {
     let body: string;
