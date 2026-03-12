@@ -1,5 +1,57 @@
 # workflow
 
+## 4.2.0-beta.69
+
+### Patch Changes
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`fb5a500`](https://github.com/vercel/workflow/commit/fb5a500eadba80efdef75e3ccf6e85e957820f38)]:
+  - @workflow/core@4.2.0-beta.69
+  - @workflow/cli@4.2.0-beta.69
+  - @workflow/next@4.0.1-beta.65
+  - @workflow/nitro@4.0.1-beta.64
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/astro@4.0.0-beta.43
+  - @workflow/nest@0.0.0-beta.18
+  - @workflow/rollup@4.0.0-beta.26
+  - @workflow/sveltekit@4.0.0-beta.58
+  - @workflow/nuxt@4.0.1-beta.53
+
+## 4.2.0-beta.68
+
+### Patch Changes
+
+- Updated dependencies [[`887cc2b`](https://github.com/vercel/workflow/commit/887cc2bd55b904c696083d87ab32a9fc03d619a8), [`83dbd46`](https://github.com/vercel/workflow/commit/83dbd46456a8dbfc89efd87895929cbb813feda3), [`d842ce1`](https://github.com/vercel/workflow/commit/d842ce1c435049805233cf218aa9ce07d9cab130), [`854a25f`](https://github.com/vercel/workflow/commit/854a25f9103f5f3a5769dec6e3e5c6b98ed119b0)]:
+  - @workflow/cli@4.2.0-beta.68
+  - @workflow/core@4.2.0-beta.68
+  - @workflow/next@4.0.1-beta.64
+  - @workflow/nitro@4.0.1-beta.63
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/astro@4.0.0-beta.42
+  - @workflow/nest@0.0.0-beta.17
+  - @workflow/rollup@4.0.0-beta.25
+  - @workflow/sveltekit@4.0.0-beta.57
+  - @workflow/nuxt@4.0.1-beta.52
+
+## 4.2.0-beta.67
+
+### Patch Changes
+
+- [#1285](https://github.com/vercel/workflow/pull/1285) [`36a901d`](https://github.com/vercel/workflow/commit/36a901d2d2f2ba37ec024073a7dd39a094b9e9c0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `workflowName` to `getWorkflowMetadata()` and `stepName` to `getStepMetadata()`
+
+- Updated dependencies [[`c71befe`](https://github.com/vercel/workflow/commit/c71befe8ec73765e67b7f2e0627251643ab245d4), [`36a901d`](https://github.com/vercel/workflow/commit/36a901d2d2f2ba37ec024073a7dd39a094b9e9c0)]:
+  - @workflow/core@4.2.0-beta.67
+  - @workflow/cli@4.2.0-beta.67
+  - @workflow/next@4.0.1-beta.63
+  - @workflow/nitro@4.0.1-beta.62
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/astro@4.0.0-beta.41
+  - @workflow/nest@0.0.0-beta.16
+  - @workflow/rollup@4.0.0-beta.24
+  - @workflow/sveltekit@4.0.0-beta.56
+  - @workflow/nuxt@4.0.1-beta.51
+
 ## 4.2.0-beta.66
 
 ### Patch Changes

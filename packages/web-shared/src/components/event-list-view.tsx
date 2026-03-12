@@ -1,7 +1,7 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, Step, WorkflowRun } from '@workflow/world';
+import type { Event, WorkflowRun } from '@workflow/world';
 import { Check, ChevronRight, Copy } from 'lucide-react';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -12,6 +12,7 @@ import {
   ErrorStackBlock,
   isStructuredErrorWithStack,
 } from './ui/error-stack-block';
+import { MenuDropdown } from './ui/menu-dropdown';
 import { Skeleton } from './ui/skeleton';
 
 /**
@@ -103,11 +104,11 @@ function getStatusDotColor(eventType: string): string {
 }
 
 /**
- * Build a map from correlationId (stepId) → display name using step entities,
- * and parse the workflow name from the run.
+ * Build a map from correlationId (stepId) → display name using step_created
+ * events, and parse the workflow name from the run.
  */
 function buildNameMaps(
-  steps: Step[] | null,
+  events: Event[] | null,
   run: WorkflowRun | null
 ): {
   correlationNameMap: Map<string, string>;
@@ -115,11 +116,17 @@ function buildNameMaps(
 } {
   const correlationNameMap = new Map<string, string>();
 
-  // Map step correlationId (= stepId) → parsed step name
-  if (steps) {
-    for (const step of steps) {
-      const parsed = parseStepName(String(step.stepName));
-      correlationNameMap.set(step.stepId, parsed?.shortName ?? step.stepName);
+  // Map step correlationId (= stepId) → parsed step name from step_created events
+  if (events) {
+    for (const event of events) {
+      if (event.eventType === 'step_created' && event.correlationId) {
+        const stepName = event.eventData?.stepName ?? '';
+        const parsed = parseStepName(String(stepName));
+        correlationNameMap.set(
+          event.correlationId,
+          parsed?.shortName ?? stepName
+        );
+      }
     }
   }
 
@@ -372,9 +379,11 @@ function TreeGutter({
 function CopyableCell({
   value,
   className,
+  style: styleProp,
 }: {
   value: string;
   className?: string;
+  style?: React.CSSProperties;
 }): ReactNode {
   const [copied, setCopied] = useState(false);
   const resetCopiedTimeoutRef = useRef<number | null>(null);
@@ -406,7 +415,8 @@ function CopyableCell({
 
   return (
     <div
-      className={`group/copy flex items-center gap-1 flex-1 min-w-0 px-4 ${className ?? ''}`}
+      className={`group/copy flex items-center gap-1 min-w-0 px-4 ${className ?? ''}`}
+      style={styleProp}
     >
       <span className="overflow-hidden text-ellipsis whitespace-nowrap">
         {value || '-'}
@@ -578,12 +588,20 @@ function PayloadBlock({
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Sort options for the events list
+// ──────────────────────────────────────────────────────────────────────────
+
+const SORT_OPTIONS = [
+  { value: 'desc' as const, label: 'Newest' },
+  { value: 'asc' as const, label: 'Oldest' },
+];
+
+// ──────────────────────────────────────────────────────────────────────────
 // Event row
 // ──────────────────────────────────────────────────────────────────────────
 
 interface EventsListProps {
   events: Event[] | null;
-  steps?: Step[] | null;
   run?: WorkflowRun | null;
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
   hasMoreEvents?: boolean;
@@ -591,6 +609,13 @@ interface EventsListProps {
   onLoadMoreEvents?: () => Promise<void> | void;
   /** When provided, signals that decryption is active (triggers re-load of expanded events) */
   encryptionKey?: Uint8Array;
+  /** When true, shows a loading state instead of "No events found" for empty lists */
+  isLoading?: boolean;
+  /** Sort order for events. Defaults to 'asc'. */
+  sortOrder?: 'asc' | 'desc';
+  /** Called when the user changes sort order. When provided, the sort dropdown is shown
+   *  and the parent is expected to refetch from the API with the new order. */
+  onSortOrderChange?: (order: 'asc' | 'desc') => void;
 }
 
 function EventRow({
@@ -598,6 +623,8 @@ function EventRow({
   index,
   isFirst,
   isLast,
+  isExpanded,
+  onToggleExpand,
   activeGroupKey,
   selectedGroupKey,
   selectedGroupRange,
@@ -607,12 +634,16 @@ function EventRow({
   onSelectGroup,
   onHoverGroup,
   onLoadEventData,
+  cachedEventData,
+  onCacheEventData,
   encryptionKey,
 }: {
   event: Event;
   index: number;
   isFirst: boolean;
   isLast: boolean;
+  isExpanded: boolean;
+  onToggleExpand: (eventId: string) => void;
   activeGroupKey?: string;
   selectedGroupKey?: string;
   selectedGroupRange: { first: number; last: number } | null;
@@ -622,24 +653,22 @@ function EventRow({
   onSelectGroup: (groupKey: string | undefined) => void;
   onHoverGroup: (groupKey: string | undefined) => void;
   onLoadEventData?: (event: Event) => Promise<unknown | null>;
+  cachedEventData: unknown | null;
+  onCacheEventData: (eventId: string, data: unknown) => void;
   encryptionKey?: Uint8Array;
 }) {
-  const [isExpanded, setIsExpanded] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [loadedEventData, setLoadedEventData] = useState<unknown | null>(null);
+  const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
+    cachedEventData
+  );
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [hasAttemptedLoad, setHasAttemptedLoad] = useState(false);
+  const [hasAttemptedLoad, setHasAttemptedLoad] = useState(
+    cachedEventData !== null
+  );
 
-  const rowGroupKey =
-    event.correlationId ??
-    (isRunLevel(event.eventType) ? '__run__' : undefined);
-
-  // Collapse when a different group gets selected
-  useEffect(() => {
-    if (selectedGroupKey !== undefined && selectedGroupKey !== rowGroupKey) {
-      setIsExpanded(false);
-    }
-  }, [selectedGroupKey, rowGroupKey]);
+  const rowGroupKey = isRunLevel(event.eventType)
+    ? '__run__'
+    : (event.correlationId ?? undefined);
 
   const statusDotColor = getStatusDotColor(event.eventType);
   const createdAt = new Date(event.createdAt);
@@ -681,9 +710,10 @@ function EventRow({
         setLoadError('Event details unavailable');
         return;
       }
-      const eventData = await onLoadEventData(event);
-      if (eventData !== null && eventData !== undefined) {
-        setLoadedEventData(eventData);
+      const data = await onLoadEventData(event);
+      if (data !== null && data !== undefined) {
+        setLoadedEventData(data);
+        onCacheEventData(event.eventId, data);
       }
     } catch (err) {
       setLoadError(
@@ -693,7 +723,27 @@ function EventRow({
       setIsLoading(false);
       setHasAttemptedLoad(true);
     }
-  }, [event, loadedEventData, hasExistingEventData, onLoadEventData]);
+  }, [
+    event,
+    loadedEventData,
+    hasExistingEventData,
+    onLoadEventData,
+    onCacheEventData,
+  ]);
+
+  // Auto-load event data when remounting in expanded state without cached data
+  useEffect(() => {
+    if (
+      isExpanded &&
+      loadedEventData === null &&
+      !hasExistingEventData &&
+      !isLoading &&
+      !hasAttemptedLoad
+    ) {
+      loadEventDetails();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // When encryption key changes and this event was previously loaded,
   // re-load to get decrypted data
@@ -705,6 +755,7 @@ function EventRow({
         .then((data) => {
           if (data !== null && data !== undefined) {
             setLoadedEventData(data);
+            onCacheEventData(event.eventId, data);
           }
           setHasAttemptedLoad(true);
         })
@@ -715,25 +766,23 @@ function EventRow({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encryptionKey]);
 
-  const handleExpandToggle = useCallback(
-    (e: ReactMouseEvent) => {
-      e.stopPropagation();
-      const newExpanded = !isExpanded;
-      setIsExpanded(newExpanded);
-      if (newExpanded && loadedEventData === null && !hasExistingEventData) {
-        loadEventDetails();
-      }
-    },
-    [isExpanded, loadedEventData, hasExistingEventData, loadEventDetails]
-  );
-
   const handleRowClick = useCallback(() => {
-    if (selectedGroupKey === rowGroupKey) {
-      onSelectGroup(undefined);
-    } else {
-      onSelectGroup(rowGroupKey);
+    onSelectGroup(rowGroupKey === selectedGroupKey ? undefined : rowGroupKey);
+    onToggleExpand(event.eventId);
+    if (!isExpanded && loadedEventData === null && !hasExistingEventData) {
+      loadEventDetails();
     }
-  }, [selectedGroupKey, rowGroupKey, onSelectGroup]);
+  }, [
+    selectedGroupKey,
+    rowGroupKey,
+    onSelectGroup,
+    onToggleExpand,
+    event.eventId,
+    isExpanded,
+    loadedEventData,
+    hasExistingEventData,
+    loadEventDetails,
+  ]);
 
   const eventData = hasExistingEventData
     ? (event as Event & { eventData: unknown }).eventData
@@ -755,7 +804,7 @@ function EventRow({
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') handleRowClick();
         }}
-        className="w-full text-left flex items-center gap-0 text-sm hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
+        className="w-full text-left flex items-center gap-0 text-[13px] hover:bg-[var(--ds-gray-alpha-100)] transition-colors cursor-pointer"
         style={{ minHeight: 40 }}
       >
         <TreeGutter
@@ -776,36 +825,32 @@ function EventRow({
           className="flex items-center flex-1 min-w-0"
           style={{ opacity: contentOpacity, transition: 'opacity 150ms' }}
         >
-          {/* Expand chevron button */}
-          <button
-            type="button"
-            onClick={handleExpandToggle}
-            className="flex items-center justify-center w-5 h-5 flex-shrink-0 rounded hover:bg-[var(--ds-gray-alpha-200)] transition-colors"
+          {/* Expand chevron indicator */}
+          <div
+            className="flex items-center justify-center w-5 h-5 flex-shrink-0 rounded"
             style={{
-              ...BUTTON_RESET_STYLE,
-              border: '1px solid var(--ds-gray-alpha-400)',
+              border: '1px solid var(--ds-gray-400)',
             }}
-            aria-label={isExpanded ? 'Collapse details' : 'Expand details'}
           >
             <ChevronRight
               className="h-3 w-3 transition-transform"
               style={{
-                color: 'var(--ds-gray-700)',
+                color: 'var(--ds-gray-900)',
                 transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)',
               }}
             />
-          </button>
+          </div>
 
           {/* Time */}
           <div
-            className="text-xs tabular-nums flex-1 min-w-0 px-4"
-            style={{ color: 'var(--ds-gray-900)' }}
+            className="tabular-nums min-w-0 px-4"
+            style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
           >
             {formatEventTime(createdAt)}
           </div>
 
           {/* Event Type */}
-          <div className="text-xs font-medium flex-1 min-w-0 px-4">
+          <div className="font-medium min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             <span
               className="inline-flex items-center gap-1.5"
               style={{ color: 'var(--ds-gray-900)' }}
@@ -847,7 +892,8 @@ function EventRow({
 
           {/* Name */}
           <div
-            className="text-xs flex-1 min-w-0 px-4 overflow-hidden text-ellipsis whitespace-nowrap"
+            className="min-w-0 px-4 overflow-hidden text-ellipsis whitespace-nowrap"
+            style={{ flex: '2 1 0%' }}
             title={eventName !== '-' ? eventName : undefined}
           >
             {eventName}
@@ -856,11 +902,16 @@ function EventRow({
           {/* Correlation ID */}
           <CopyableCell
             value={event.correlationId || ''}
-            className="font-mono text-xs"
+            className="font-mono"
+            style={{ flex: '3 1 0%' }}
           />
 
           {/* Event ID */}
-          <CopyableCell value={event.eventId} className="font-mono text-xs" />
+          <CopyableCell
+            value={event.eventId}
+            className="font-mono"
+            style={{ flex: '3 1 0%' }}
+          />
         </div>
       </div>
 
@@ -960,25 +1011,44 @@ function EventRow({
 
 export function EventListView({
   events,
-  steps,
   run,
   onLoadEventData,
   hasMoreEvents = false,
   isLoadingMoreEvents = false,
   onLoadMoreEvents,
   encryptionKey,
+  isLoading = false,
+  sortOrder: sortOrderProp,
+  onSortOrderChange,
 }: EventsListProps) {
+  const [internalSortOrder, setInternalSortOrder] = useState<'asc' | 'desc'>(
+    'asc'
+  );
+  const effectiveSortOrder = sortOrderProp ?? internalSortOrder;
+  const handleSortOrderChange = useCallback(
+    (order: 'asc' | 'desc') => {
+      if (onSortOrderChange) {
+        onSortOrderChange(order);
+      } else {
+        setInternalSortOrder(order);
+      }
+    },
+    [onSortOrderChange]
+  );
+
   const sortedEvents = useMemo(() => {
     if (!events || events.length === 0) return [];
+    const dir = effectiveSortOrder === 'desc' ? -1 : 1;
     return [...events].sort(
       (a, b) =>
-        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        dir *
+        (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     );
-  }, [events]);
+  }, [events, effectiveSortOrder]);
 
   const { correlationNameMap, workflowName } = useMemo(
-    () => buildNameMaps(steps ?? null, run ?? null),
-    [steps, run]
+    () => buildNameMaps(events ?? null, run ?? null),
+    [events, run]
   );
 
   const durationMap = useMemo(
@@ -1001,6 +1071,58 @@ export function EventListView({
 
   const activeGroupKey = selectedGroupKey ?? hoveredGroupKey;
 
+  // Expanded state lifted out of EventRow so it survives virtualization
+  const [expandedEventIds, setExpandedEventIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const toggleEventExpanded = useCallback((eventId: string) => {
+    setExpandedEventIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(eventId)) {
+        next.delete(eventId);
+      } else {
+        next.add(eventId);
+      }
+      return next;
+    });
+  }, []);
+
+  // Event data cache — ref avoids re-renders when cache updates
+  const eventDataCacheRef = useRef<Map<string, unknown>>(new Map());
+  const cacheEventData = useCallback((eventId: string, data: unknown) => {
+    eventDataCacheRef.current.set(eventId, data);
+  }, []);
+
+  // Lookup from eventId → groupKey for efficient collapse filtering
+  const eventGroupKeyMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const ev of sortedEvents) {
+      const gk = isRunLevel(ev.eventType)
+        ? '__run__'
+        : (ev.correlationId ?? '');
+      if (gk) map.set(ev.eventId, gk);
+    }
+    return map;
+  }, [sortedEvents]);
+
+  // Collapse expanded events that don't belong to the newly selected group
+  useEffect(() => {
+    if (selectedGroupKey === undefined) return;
+    setExpandedEventIds((prev) => {
+      if (prev.size === 0) return prev;
+      let changed = false;
+      const next = new Set<string>();
+      for (const eventId of prev) {
+        if (eventGroupKeyMap.get(eventId) === selectedGroupKey) {
+          next.add(eventId);
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [selectedGroupKey, eventGroupKeyMap]);
+
   // Compute the row-index range for the active group's connecting lane line.
   // Only applies to non-run groups (step/hook/wait correlations).
   const selectedGroupRange = useMemo(() => {
@@ -1021,24 +1143,34 @@ export function EventListView({
 
   const searchIndex = useMemo(() => {
     const entries: {
-      text: string;
+      fields: string[];
       groupKey?: string;
       eventId: string;
       index: number;
     }[] = [];
     for (let i = 0; i < sortedEvents.length; i++) {
       const ev = sortedEvents[i];
+      const isRun = isRunLevel(ev.eventType);
+      const name = isRun
+        ? (workflowName ?? '')
+        : ev.correlationId
+          ? (correlationNameMap.get(ev.correlationId) ?? '')
+          : '';
       entries.push({
-        text: [ev.eventId, ev.correlationId ?? ''].join(' ').toLowerCase(),
-        groupKey:
-          ev.correlationId ??
-          (isRunLevel(ev.eventType) ? '__run__' : undefined),
+        fields: [
+          ev.eventId,
+          ev.correlationId ?? '',
+          ev.eventType,
+          formatEventType(ev.eventType),
+          name,
+        ].map((f) => f.toLowerCase()),
+        groupKey: ev.correlationId ?? (isRun ? '__run__' : undefined),
         eventId: ev.eventId,
         index: i,
       });
     }
     return entries;
-  }, [sortedEvents]);
+  }, [sortedEvents, correlationNameMap, workflowName]);
 
   useEffect(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -1046,11 +1178,23 @@ export function EventListView({
       setSelectedGroupKey(undefined);
       return;
     }
-    const match = searchIndex.find((entry) => entry.text.includes(q));
-    if (match) {
-      setSelectedGroupKey(match.groupKey);
+    let bestMatch: (typeof searchIndex)[number] | null = null;
+    let bestScore = 0;
+    for (const entry of searchIndex) {
+      for (const field of entry.fields) {
+        if (field && field.includes(q)) {
+          const score = q.length / field.length;
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = entry;
+          }
+        }
+      }
+    }
+    if (bestMatch) {
+      setSelectedGroupKey(bestMatch.groupKey);
       virtuosoRef.current?.scrollToIndex({
-        index: match.index,
+        index: bestMatch.index,
         align: 'center',
         behavior: 'smooth',
       });
@@ -1058,6 +1202,51 @@ export function EventListView({
   }, [searchQuery, searchIndex]);
 
   if (!events || events.length === 0) {
+    if (isLoading) {
+      return (
+        <div className="h-full flex flex-col overflow-hidden">
+          {/* Skeleton search bar */}
+          <div style={{ padding: 6 }}>
+            <Skeleton style={{ height: 40, borderRadius: 6 }} />
+          </div>
+          {/* Skeleton header */}
+          <div
+            className="flex items-center gap-0 h-10 border-b flex-shrink-0 px-4"
+            style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
+          >
+            <Skeleton className="h-3" style={{ width: 60 }} />
+            <div style={{ flex: 1 }} />
+            <Skeleton className="h-3" style={{ width: 80 }} />
+            <div style={{ flex: 1 }} />
+            <Skeleton className="h-3" style={{ width: 50 }} />
+            <div style={{ flex: 1 }} />
+            <Skeleton className="h-3" style={{ width: 90 }} />
+            <div style={{ flex: 1 }} />
+            <Skeleton className="h-3" style={{ width: 70 }} />
+          </div>
+          {/* Skeleton rows */}
+          <div className="flex-1 overflow-hidden">
+            {Array.from({ length: 8 }, (_, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-3 px-4"
+                style={{ height: 40 }}
+              >
+                <Skeleton
+                  className="h-2 w-2 flex-shrink-0"
+                  style={{ borderRadius: '50%' }}
+                />
+                <Skeleton className="h-3" style={{ width: 90 }} />
+                <Skeleton className="h-3" style={{ width: 100 }} />
+                <Skeleton className="h-3" style={{ width: 80 }} />
+                <Skeleton className="h-3 flex-1" />
+                <Skeleton className="h-3 flex-1" />
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
     return (
       <div
         className="flex items-center justify-center h-full text-sm"
@@ -1071,8 +1260,15 @@ export function EventListView({
   return (
     <div className="h-full flex flex-col overflow-hidden">
       <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
-      {/* Search bar */}
-      <div style={{ padding: 6, backgroundColor: 'var(--ds-background-100)' }}>
+      {/* Search bar + sort */}
+      <div
+        style={{
+          padding: 6,
+          backgroundColor: 'var(--ds-background-100)',
+          display: 'flex',
+          gap: 6,
+        }}
+      >
         <label
           style={{
             display: 'flex',
@@ -1082,6 +1278,8 @@ export function EventListView({
             boxShadow: '0 0 0 1px var(--ds-gray-alpha-400)',
             background: 'var(--ds-background-100)',
             height: 40,
+            flex: 1,
+            minWidth: 0,
           }}
         >
           <div
@@ -1120,7 +1318,7 @@ export function EventListView({
           </div>
           <input
             type="search"
-            placeholder="Search by event ID or correlation ID…"
+            placeholder="Search by name, event type, or ID…"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             style={{
@@ -1136,11 +1334,16 @@ export function EventListView({
             }}
           />
         </label>
+        <MenuDropdown
+          options={SORT_OPTIONS}
+          value={effectiveSortOrder}
+          onChange={handleSortOrderChange}
+        />
       </div>
 
       {/* Header */}
       <div
-        className="flex items-center gap-0 text-sm font-medium h-10 border-b flex-shrink-0"
+        className="flex items-center gap-0 text-[13px] font-medium h-10 border-b flex-shrink-0"
         style={{
           borderColor: 'var(--ds-gray-alpha-200)',
           color: 'var(--ds-gray-900)',
@@ -1149,11 +1352,21 @@ export function EventListView({
       >
         <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
         <div className="w-5 flex-shrink-0" />
-        <div className="flex-1 min-w-0 px-4">Time</div>
-        <div className="flex-1 min-w-0 px-4">Event Type</div>
-        <div className="flex-1 min-w-0 px-4">Name</div>
-        <div className="flex-1 min-w-0 px-4">Correlation ID</div>
-        <div className="flex-1 min-w-0 px-4">Event ID</div>
+        <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+          Time
+        </div>
+        <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+          Event Type
+        </div>
+        <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+          Name
+        </div>
+        <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+          Correlation ID
+        </div>
+        <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+          Event ID
+        </div>
       </div>
 
       {/* Virtualized event rows */}
@@ -1169,12 +1382,15 @@ export function EventListView({
           void onLoadMoreEvents?.();
         }}
         itemContent={(index: number) => {
+          const ev = sortedEvents[index];
           return (
             <EventRow
-              event={sortedEvents[index]}
+              event={ev}
               index={index}
               isFirst={index === 0}
               isLast={index === sortedEvents.length - 1}
+              isExpanded={expandedEventIds.has(ev.eventId)}
+              onToggleExpand={toggleEventExpanded}
               activeGroupKey={activeGroupKey}
               selectedGroupKey={selectedGroupKey}
               selectedGroupRange={selectedGroupRange}
@@ -1184,14 +1400,17 @@ export function EventListView({
               onSelectGroup={onSelectGroup}
               onHoverGroup={onHoverGroup}
               onLoadEventData={onLoadEventData}
+              cachedEventData={
+                eventDataCacheRef.current.get(ev.eventId) ?? null
+              }
+              onCacheEventData={cacheEventData}
               encryptionKey={encryptionKey}
             />
           );
         }}
         components={{
-          Footer: () => (
-            <>
-              {hasMoreEvents && (
+          Footer: hasMoreEvents
+            ? () => (
                 <div className="px-3 pt-3 flex justify-center">
                   <button
                     type="button"
@@ -1209,22 +1428,24 @@ export function EventListView({
                       : 'Load more'}
                   </button>
                 </div>
-              )}
-              <div
-                className="mt-4 pt-3 border-t text-xs px-3"
-                style={{
-                  borderColor: 'var(--ds-gray-alpha-200)',
-                  color: 'var(--ds-gray-900)',
-                }}
-              >
-                {sortedEvents.length} event
-                {sortedEvents.length !== 1 ? 's' : ''} total
-              </div>
-            </>
-          ),
+              )
+            : undefined,
         }}
         style={{ flex: 1, minHeight: 0 }}
       />
+
+      {/* Fixed footer — always at the bottom of the visible area */}
+      <div
+        className="flex-shrink-0 border-t text-xs px-3 py-2"
+        style={{
+          borderColor: 'var(--ds-gray-alpha-200)',
+          color: 'var(--ds-gray-900)',
+          backgroundColor: 'var(--ds-background-100)',
+        }}
+      >
+        {sortedEvents.length} event
+        {sortedEvents.length !== 1 ? 's' : ''} total
+      </div>
     </div>
   );
 }

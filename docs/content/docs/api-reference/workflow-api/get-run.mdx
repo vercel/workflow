@@ -65,6 +65,35 @@ export default StopSleepResult;`}
 
 ## Examples
 
+### Check if a Run Exists
+
+Use the `exists` getter to check whether a workflow run exists without throwing when the run is not found:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+
+  if (!runId) {
+    return Response.json({ error: "No runId provided" }, { status: 400 });
+  }
+
+  const run = getRun(runId);
+
+  if (!(await run.exists)) { // [!code highlight]
+    return Response.json(
+      { error: "Workflow run not found" },
+      { status: 404 }
+    );
+  }
+
+  const status = await run.status;
+  return Response.json({ status });
+}
+```
+
 ### Basic Status Check
 
 Check the current status of a workflow run:

@@ -11,16 +11,12 @@ vi.mock('~/lib/rpc-client', () => ({
   fetchRun: vi.fn(),
   fetchStep: vi.fn(),
   fetchHook: vi.fn(),
-  fetchEventsByCorrelationId: vi.fn(),
+  fetchEvents: vi.fn(),
 }));
 
 import { waitEventsToWaitEntity } from '@workflow/web-shared';
 import type { WorkflowRun } from '@workflow/world';
-import {
-  fetchEventsByCorrelationId,
-  fetchHook,
-  fetchRun,
-} from '~/lib/rpc-client';
+import { fetchEvents, fetchHook, fetchRun } from '~/lib/rpc-client';
 
 const env = { SOME_VAR: 'test' };
 
@@ -115,15 +111,28 @@ describe('useWorkflowResourceData', () => {
   });
 
   it('shows sleep entity constructed from events', async () => {
-    const events = [{ eventId: 'e1', type: 'sleep_scheduled', data: {} }];
-    vi.mocked(fetchEventsByCorrelationId).mockResolvedValue({
+    const events = [
+      {
+        eventId: 'e1',
+        type: 'sleep_scheduled',
+        correlationId: 'sleep-corr-1',
+        data: {},
+      },
+      {
+        eventId: 'e2',
+        type: 'other_event',
+        correlationId: 'other-id',
+        data: {},
+      },
+    ];
+    vi.mocked(fetchEvents).mockResolvedValue({
       success: true,
       data: { data: events, cursor: undefined, hasMore: false } as any,
     });
     vi.mocked(waitEventsToWaitEntity).mockReturnValue({ id: 'sleep-1' } as any);
 
     const { result } = renderHook(() =>
-      useWorkflowResourceData(env, 'sleep', 'sleep-corr-1')
+      useWorkflowResourceData(env, 'sleep', 'sleep-corr-1', { runId: 'run-1' })
     );
 
     await waitFor(() => {
@@ -135,14 +144,14 @@ describe('useWorkflowResourceData', () => {
   });
 
   it('shows error when sleep event data is missing', async () => {
-    vi.mocked(fetchEventsByCorrelationId).mockResolvedValue({
+    vi.mocked(fetchEvents).mockResolvedValue({
       success: true,
       data: { data: [], cursor: undefined, hasMore: false } as any,
     });
     vi.mocked(waitEventsToWaitEntity).mockReturnValue(null);
 
     const { result } = renderHook(() =>
-      useWorkflowResourceData(env, 'sleep', 'sleep-corr-1')
+      useWorkflowResourceData(env, 'sleep', 'sleep-corr-1', { runId: 'run-1' })
     );
 
     await waitFor(() => {

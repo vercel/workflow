@@ -2,9 +2,10 @@
 
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
-import { Send, Zap } from 'lucide-react';
+import { Lock, Send, Unlock, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
+import { isEncryptedMarker } from '../../lib/hydration';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -53,7 +54,6 @@ export interface SelectedSpanInfo {
  */
 export function EntityDetailPanel({
   run,
-  hooks,
   onStreamClick,
   spanDetailData,
   spanDetailError,
@@ -63,11 +63,10 @@ export function EntityDetailPanel({
   onLoadEventData,
   onResolveHook,
   encryptionKey,
+  onDecrypt,
   selectedSpan,
 }: {
   run: WorkflowRun;
-  /** All hooks for the current run (used as fallback for token lookup). */
-  hooks?: Hook[];
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
   /** Pre-fetched span detail data for the selected span. */
@@ -96,6 +95,8 @@ export function EntityDetailPanel({
   ) => Promise<void>;
   /** Encryption key (available after Decrypt is clicked), used to re-load event data */
   encryptionKey?: Uint8Array;
+  /** Callback to initiate decryption of encrypted run data */
+  onDecrypt?: () => void;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
 }): React.JSX.Element | null {
@@ -129,10 +130,11 @@ export function EntityDetailPanel({
       return { resource: 'hook', resourceId: data.hookId, runId: undefined };
     }
     if (res === 'sleep') {
+      const waitData = data as { runId?: string } | undefined;
       return {
         resource: 'sleep',
         resourceId: selectedSpan.spanId,
-        runId: undefined,
+        runId: waitData?.runId,
       };
     }
     return { resource: undefined, resourceId: undefined, runId: undefined };
@@ -196,6 +198,17 @@ export function EntityDetailPanel({
   const error = spanDetailError ?? undefined;
   const loading = spanDetailLoading ?? false;
 
+  const hasEncryptedFields = useMemo(() => {
+    if (!spanDetailData) return false;
+    const d = spanDetailData as Record<string, unknown>;
+    return (
+      isEncryptedMarker(d.input) ||
+      isEncryptedMarker(d.output) ||
+      isEncryptedMarker(d.error) ||
+      isEncryptedMarker(d.metadata)
+    );
+  }, [spanDetailData]);
+
   // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
   const hookToken = useMemo(() => {
     if (resource !== 'hook' || !resourceId) return undefined;
@@ -203,17 +216,12 @@ export function EntityDetailPanel({
     if (isHook(spanDetailData) && spanDetailData.token) {
       return spanDetailData.token;
     }
-    // 2. Try the hooks array (always has tokens)
-    const hookFromArray = hooks?.find((h) => h.hookId === resourceId);
-    if (hookFromArray?.token) {
-      return hookFromArray.token;
-    }
-    // 3. Try the span's inline data (partial hook from events - may lack token)
+    // 2. Try the span's inline data (reconstructed from hook_created event)
     if (isHook(data) && (data as Hook).token) {
       return (data as Hook).token;
     }
     return undefined;
-  }, [resource, resourceId, spanDetailData, data, hooks]);
+  }, [resource, resourceId, spanDetailData, data]);
 
   useEffect(() => {
     if (error && selectedSpan && resource) {
@@ -299,16 +307,15 @@ export function EntityDetailPanel({
     [onResolveHook, hookToken, resolvingHook, spanDetailData, data]
   );
 
-  if (!selectedSpan || !resource || !resourceId) {
-    return null;
-  }
+  // Prefer externally-fetched details when available. For sleep spans, the
+  // host fetches full correlated events (withData=true) and materializes a wait
+  // entity, so this includes resumeAt/completedAt without bloating trace payloads.
+  const displayData = (spanDetailData ?? data) as
+    | WorkflowRun
+    | Step
+    | Hook
+    | Event;
 
-  // For sleep spans, spanDetailData from the host is typically an events array
-  // (not a single entity), so always prefer the inline wait entity from span
-  // attributes which contains waitId, runId, createdAt, resumeAt, completedAt.
-  const displayData = (
-    resource === 'sleep' ? data : (spanDetailData ?? data)
-  ) as WorkflowRun | Step | Hook | Event;
   const moduleSpecifier = useMemo(() => {
     const displayRecord = displayData as Record<string, unknown>;
     const displayStepName = displayRecord.stepName;
@@ -324,6 +331,10 @@ export function EntityDetailPanel({
     }
     return undefined;
   }, [displayData, run.workflowName]);
+
+  if (!selectedSpan || !resource || !resourceId) {
+    return null;
+  }
 
   const resourceLabel = resource.charAt(0).toUpperCase() + resource.slice(1);
   const hasPendingActions =
@@ -369,6 +380,33 @@ export function EntityDetailPanel({
               {resourceId}
             </p>
           </div>
+          {(hasEncryptedFields || encryptionKey) && onDecrypt && (
+            <button
+              type="button"
+              onClick={onDecrypt}
+              disabled={!!encryptionKey}
+              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors flex-shrink-0"
+              style={{
+                borderColor: encryptionKey
+                  ? 'var(--ds-green-400)'
+                  : 'var(--ds-gray-300)',
+                color: encryptionKey
+                  ? 'var(--ds-green-900)'
+                  : 'var(--ds-gray-900)',
+                backgroundColor: encryptionKey
+                  ? 'var(--ds-green-100)'
+                  : 'var(--ds-background-100)',
+                cursor: encryptionKey ? 'default' : 'pointer',
+              }}
+            >
+              {encryptionKey ? (
+                <Unlock className="h-3 w-3" />
+              ) : (
+                <Lock className="h-3 w-3" />
+              )}
+              {encryptionKey ? 'Decrypted' : 'Decrypt'}
+            </button>
+          )}
         </div>
       </div>
 

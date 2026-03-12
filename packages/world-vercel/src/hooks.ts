@@ -72,7 +72,7 @@ export async function getHook(
   config?: APIConfig
 ): Promise<Hook> {
   const resolveData = params?.resolveData || 'all';
-  const endpoint = `/v2/hooks/${hookId}`;
+  const endpoint = `/v2/hooks/${encodeURIComponent(hookId)}`;
 
   const hook = await makeRequest({
     endpoint,
@@ -124,7 +124,7 @@ export async function disposeHook(
   config?: APIConfig
 ): Promise<Hook> {
   return makeRequest({
-    endpoint: `/v2/hooks/${hookId}`,
+    endpoint: `/v2/hooks/${encodeURIComponent(hookId)}`,
     options: { method: 'DELETE' },
     config,
     schema: HookSchema,

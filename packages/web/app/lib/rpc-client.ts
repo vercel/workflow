@@ -19,9 +19,7 @@ import type {
   HealthCheckEndpoint,
   HealthCheckResult,
   PaginatedResult,
-  PublicServerConfig,
   ResumeHookResult,
-  ServerActionError,
   ServerActionResult,
   StopSleepOptions,
   StopSleepResult,
@@ -124,19 +122,6 @@ export async function fetchEvent(
   resolveData: 'none' | 'all' = 'all'
 ): Promise<ServerActionResult<Event>> {
   return rpc('fetchEvent', { worldEnv, runId, eventId, resolveData });
-}
-
-export async function fetchEventsByCorrelationId(
-  worldEnv: EnvMap,
-  correlationId: string,
-  params: {
-    cursor?: string;
-    sortOrder?: 'asc' | 'desc';
-    limit?: number;
-    withData?: boolean;
-  }
-): Promise<ServerActionResult<PaginatedResult<Event>>> {
-  return rpc('fetchEventsByCorrelationId', { worldEnv, correlationId, params });
 }
 
 export async function fetchHooks(
