@@ -5,6 +5,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
+import { PreviewInstallServer } from '@/components/preview-install-server';
 import { AskAI } from '@/components/geistdocs/ask-ai';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
@@ -76,6 +77,7 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
             ...AccordionComponents,
             Tabs,
             Tab,
+            PreviewInstall: PreviewInstallServer,
             // No-op for world MDX files (they redirect to /worlds/[id])
             WorldTestingPerformance: WorldTestingPerformanceNoop,
           })}
