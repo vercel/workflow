@@ -36,9 +36,12 @@ export function createResolveLatestDeploymentId(
     }
 
     // Authenticate via provided token (CLI/config), OIDC token (runtime),
-    // or VERCEL_TOKEN env var (external tooling)
-    const oidcToken = await getVercelOidcToken().catch(() => null);
-    const token = config?.token ?? oidcToken ?? process.env.VERCEL_TOKEN;
+    // or VERCEL_TOKEN env var (external tooling).
+    // Skip the OIDC network call when a token is already available.
+    const token =
+      config?.token ??
+      process.env.VERCEL_TOKEN ??
+      (await getVercelOidcToken().catch(() => null));
     if (!token) {
       throw new Error(
         'Cannot resolve latest deployment: no OIDC token or VERCEL_TOKEN available'
