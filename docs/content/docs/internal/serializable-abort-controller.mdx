@@ -26,6 +26,7 @@ Race a step against a durable `sleep()`, and cancel the step if the timeout wins
 
 ```typescript
 import { sleep } from "workflow";
+declare function fetchUrl(url: string, signal: AbortSignal): Promise<unknown>; // @setup
 
 export async function fetchWithTimeout(url: string) {
   "use workflow";
@@ -57,6 +58,8 @@ async function fetchUrl(url: string, signal: AbortSignal) {
 When racing multiple steps, cancel the losers:
 
 ```typescript
+declare function fetchUrl(url: string, signal: AbortSignal): Promise<{ url: string; data: unknown }>; // @setup
+
 export async function firstResponder(urls: string[]) {
   "use workflow";
 
@@ -78,6 +81,7 @@ Combine hooks with abort controllers to let users cancel work from an external A
 
 ```typescript
 import { createHook } from "workflow";
+declare function doExpensiveWork(signal: AbortSignal): Promise<unknown>; // @setup
 
 export async function userCancellableWorkflow(jobId: string) {
   "use workflow";
@@ -106,6 +110,8 @@ export async function userCancellableWorkflow(jobId: string) {
 A step can receive the full `AbortController` and call `abort()` to cancel parallel work — useful for watchdog patterns like quota monitoring:
 
 ```typescript
+declare function processData(url: string, signal: AbortSignal): Promise<{ processed: boolean }>; // @setup
+
 export async function processWithQuotaCheck(userId: string, dataUrl: string) {
   "use workflow";
 
