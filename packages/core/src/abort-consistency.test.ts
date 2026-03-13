@@ -557,12 +557,13 @@ describe('AbortController consistency', () => {
         log.push('listener-fired');
       });
 
-      // Simulate replay: event consumer marks aborted without firing listeners
+      // Simulate replay: event consumer records the abort but does NOT
+      // update aborted or fire listeners
       controller.signal._markAbortedFromReplay('replay-reason');
       log.push('after-mark');
 
-      // Signal reads true, but listener hasn't fired yet
-      expect(controller.signal.aborted).toBe(true);
+      // Signal.aborted is still false — same as first-run at this point
+      expect(controller.signal.aborted).toBe(false);
       expect(log).toEqual(['after-mark']); // No 'listener-fired'!
 
       // When workflow code reaches abort(), listeners fire NOW
@@ -595,9 +596,10 @@ describe('AbortController consistency', () => {
       controller.signal._markAbortedFromReplay('reason');
       log.push('other-hook-resolved'); // Simulates other hook resolving
 
-      // At this point, abort listener should NOT have fired
+      // At this point, abort listener should NOT have fired,
+      // and signal.aborted should still be false (same as first-run)
       expect(log).toEqual(['other-hook-resolved']);
-      expect(controller.signal.aborted).toBe(true); // reads are correct
+      expect(controller.signal.aborted).toBe(false);
 
       // Workflow code reaches abort() — NOW listeners fire
       controller.abort();
@@ -608,6 +610,40 @@ describe('AbortController consistency', () => {
         'abort-listener',
         'workflow-continues',
       ]);
+    });
+
+    it('if-check on signal.aborted takes same branch on first-run and replay', () => {
+      // The motivating example: if signal.aborted were set during event
+      // processing (replay), this if-check would take the wrong branch.
+      //
+      //   if (controller.signal.aborted) {
+      //     return 'was aborted';    // WRONG on replay if aborted set early
+      //   } else {
+      //     controller.abort();
+      //     return 'just aborted';   // correct path on both runs
+      //   }
+      //
+      // With deferred abort, signal.aborted stays false until abort() is
+      // called, so the if-check takes the else branch on BOTH runs.
+
+      const ctx = setupWorkflowContext([]);
+      const WorkflowAbortController = createCreateAbortController(ctx);
+      const controller = new WorkflowAbortController();
+
+      // Simulate replay: event consumer recorded the abort
+      controller.signal._markAbortedFromReplay('reason');
+
+      // The if-check MUST take the same branch as first-run (else)
+      let result: string;
+      if (controller.signal.aborted) {
+        result = 'was aborted'; // WRONG — would break determinism
+      } else {
+        controller.abort();
+        result = 'just aborted'; // CORRECT — same as first-run
+      }
+
+      expect(result).toBe('just aborted');
+      expect(controller.signal.aborted).toBe(true);
     });
   });
 

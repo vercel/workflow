@@ -46,15 +46,18 @@ class WorkflowAbortSignal {
 
   /**
    * @internal Called by the events consumer during replay.
-   * Records that abort happened but defers listener firing until abort() is called.
+   * Only records the replay flag — does NOT update aborted or fire listeners.
+   * Both aborted state and listeners are deferred until abort() is called
+   * in the workflow code, ensuring the workflow takes the same code path
+   * on both first-run and replay.
    */
   _markAbortedFromReplay(reason?: unknown): void {
     if (this.aborted) return;
     this._replayAbortReason = { set: true, reason };
-    // Set aborted=true so reads return true, but DON'T fire listeners.
-    // Listeners will fire when abort() is called in the workflow code.
-    this.aborted = true;
-    this.reason = reason;
+    // Intentionally do NOT set this.aborted = true here.
+    // If we did, an `if (signal.aborted)` check between construction
+    // and the abort() call would take a different branch on replay
+    // vs first-run, breaking determinism.
   }
 
   addEventListener(type: string, listener: () => void): void {
@@ -170,19 +173,16 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
     }
 
     abort(reason?: unknown): void {
-      // If already aborted from replay (_markAbortedFromReplay was called),
-      // fire listeners now at the abort() call site for consistent ordering.
+      if (this.signal.aborted) return; // no-op if already aborted
+
+      // If replay recorded the abort (hook_received was in the event log),
+      // use the replay reason and skip marking the hook (already processed).
       if (this.signal._replayAbortReason?.set) {
         const replayReason = this.signal._replayAbortReason.reason;
         this.signal._replayAbortReason = undefined;
-        // aborted is already true, but listeners haven't fired yet.
-        // Temporarily reset and call _setAborted to fire them.
-        this.signal.aborted = false;
         this.signal._setAborted(replayReason);
-        return; // Hook was already processed during replay, no queue changes needed
+        return;
       }
-
-      if (this.signal.aborted) return; // true no-op (listeners already fired)
 
       // First run: update signal and fire listeners synchronously
       this.signal._setAborted(reason);

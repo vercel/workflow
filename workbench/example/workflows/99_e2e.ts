@@ -1667,6 +1667,41 @@ async function stepThatFetchesWithSignal(signal: AbortSignal) {
   return response.status;
 }
 
+/**
+ * E2E: Deterministic branching — if-check on signal.aborted takes same path
+ * on first-run and replay.
+ *
+ * On first run: abort() hasn't been called yet, signal.aborted is false,
+ * takes the else branch. On replay: hook_received was processed but
+ * signal.aborted must STILL be false until abort() is called, so the
+ * else branch is taken again. This ensures deterministic code paths.
+ */
+export async function abortDeterministicBranchWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+
+  // This if-check MUST take the same branch on both first-run and replay.
+  // If signal.aborted were set during event replay (before this code runs),
+  // the if-branch would be taken on replay but not on first-run.
+  let result: string;
+  if (controller.signal.aborted) {
+    result = 'was aborted'; // Should NEVER happen
+  } else {
+    controller.abort('test');
+    result = 'just aborted'; // Should ALWAYS happen
+  }
+
+  // After abort(), signal.aborted should be true
+  const state = await checkSignalState(controller.signal);
+
+  return {
+    result,
+    aborted: state.aborted,
+    reason: state.reason,
+  };
+}
+
 //////////////////////////////////////////////////////////
 
 async function processPayload(payload: { type: string; id?: number }) {

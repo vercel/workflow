@@ -2237,5 +2237,24 @@ describe('e2e', () => {
         expect(returnValue.isFatal).toBe(true);
       }
     );
+
+    test(
+      'abortDeterministicBranchWorkflow: if-check takes same path on first-run and replay',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(
+          await e2e('abortDeterministicBranchWorkflow'),
+          []
+        );
+        const returnValue = await run.returnValue;
+
+        // The workflow checks signal.aborted BEFORE calling abort().
+        // On both first-run and replay, signal.aborted must be false
+        // at that point, so the else branch is taken.
+        expect(returnValue.result).toBe('just aborted');
+        expect(returnValue.aborted).toBe(true);
+        expect(returnValue.reason).toBe('test');
+      }
+    );
   });
 });
