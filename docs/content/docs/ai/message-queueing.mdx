@@ -36,12 +36,12 @@ interface PrepareStepInfo {
   model: string | (() => Promise<LanguageModelV2>);  // Current model
   stepNumber: number;                                // 0-indexed step count
   steps: StepResult[];                               // Previous step results
-  messages: LanguageModelV2Prompt;                   // Messages to be sent
+  messages: LanguageModelV3Prompt;                   // Messages to be sent
 }
 
 interface PrepareStepResult {
   model?: string | (() => Promise<LanguageModelV2>); // Override model
-  messages?: LanguageModelV2Prompt;                  // Override messages
+  messages?: LanguageModelV3Prompt;                  // Override messages
 }
 ```
 
@@ -65,7 +65,7 @@ export async function chat(initialMessages: ModelMessage[]) {
 
   const agent = new DurableAgent({
     model: "bedrock/claude-haiku-4-5-20251001-v1",
-    system: FLIGHT_ASSISTANT_PROMPT,
+    instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
 
@@ -101,7 +101,7 @@ export async function chat(initialMessages: ModelMessage[]) {
 Messages sent via `chatMessageHook.resume()` accumulate in the queue and get injected before the next step, whether that's a tool call or another LLM request.
 
 <Callout type="info">
-The `prepareStep` callback receives messages in `LanguageModelV2Prompt` format (with content arrays), which is the internal format used by the AI SDK.
+The `prepareStep` callback receives messages in `LanguageModelV3Prompt` format (with content arrays), which is the internal format used by the AI SDK.
 </Callout>
 
 ## Combining with Multi-Turn Sessions
