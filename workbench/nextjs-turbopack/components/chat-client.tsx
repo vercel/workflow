@@ -314,13 +314,16 @@ export function ChatClient() {
           if (id) setRunId(id);
           const team = response.headers.get('x-workflow-team-slug');
           const project = response.headers.get('x-workflow-project-slug');
-          const env = response.headers.get('x-workflow-environment');
           if (team && project) {
             setObservabilityBase(
               `https://vercel.com/${team}/${project}/observability/workflows/runs`
             );
           }
         },
+        prepareSendMessagesRequest: ({ messages, body, ...rest }) => ({
+          ...rest,
+          body: { messages, ...body },
+        }),
       }),
     []
   );
