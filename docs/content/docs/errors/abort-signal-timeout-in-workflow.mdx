@@ -33,6 +33,7 @@ Use [`sleep()`](/docs/api-reference/workflow/sleep) with an `AbortController` to
 
 **Before (incorrect):**
 
+{/* @skip-typecheck: intentionally incorrect example */}
 ```typescript lineNumbers
 export async function workflow() {
   "use workflow";
@@ -48,6 +49,7 @@ export async function workflow() {
 
 ```typescript lineNumbers
 import { sleep } from "workflow";
+declare function fetchData(signal: AbortSignal): Promise<unknown>; // @setup
 
 export async function workflow() {
   "use workflow";

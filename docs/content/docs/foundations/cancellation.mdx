@@ -122,6 +122,9 @@ async function fetchUrl(url: string, signal: AbortSignal) {
 Pass the same signal to a chain of steps. Aborting cancels whichever step is currently running:
 
 ```typescript lineNumbers
+declare function splitIntoChunks(data: ArrayBuffer): ArrayBuffer[]; // @setup
+declare function processChunk(chunk: ArrayBuffer): Promise<Uint8Array>; // @setup
+
 export async function pipelineWorkflow(dataUrl: string) {
   "use workflow";
 
@@ -283,6 +286,9 @@ When a step throws due to an abort (e.g., `fetch` throws `AbortError`, or `signa
 This is the correct behavior because an abort is an intentional cancellation — retrying the step would just result in another abort. You don't need to manually wrap abort errors in `FatalError`.
 
 ```typescript lineNumbers
+import { sleep } from "workflow";
+declare function cancellableStep(signal: AbortSignal): Promise<unknown>; // @setup
+
 export async function workflow() {
   "use workflow";
   const controller = new AbortController();
@@ -385,6 +391,7 @@ async function expensiveStep(signal: AbortSignal) {
 
 ```typescript lineNumbers
 import { FatalError } from "workflow";
+declare function cancellableStep(signal: AbortSignal): Promise<void>; // @setup
 
 export async function workflow() {
   "use workflow";
@@ -421,6 +428,9 @@ async function stepWithMultipleSignals(
 **Abort after a race:**
 
 ```typescript lineNumbers
+declare function stepA(signal: AbortSignal): Promise<string>; // @setup
+declare function stepB(signal: AbortSignal): Promise<string>; // @setup
+
 export async function workflow() {
   "use workflow";
   const controller = new AbortController();
