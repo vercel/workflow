@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow DevKit. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow devkit", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.4'
+  version: '1.5'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -118,6 +118,30 @@ export async function parentWorkflow(value: number) {
 ```
 
 Inside workflow functions, `start()` returns a full `Run` object. Each property access (`.status`, `.returnValue`) or method call (`.cancel()`) executes as a separate workflow step.
+
+### Recursive & Repeating Workflows
+
+A workflow can `start()` a new instance of itself. This avoids long-running workflows with large event logs (which get slower to replay and more expensive to store). Common patterns:
+
+- **Batch processing**: Process a page of items, then start a new run for the next page
+- **Cron-like repeating**: Complete work, `sleep()`, then start a new instance to create indefinite chains
+
+```typescript
+export async function repeatingSync() {
+  "use workflow";
+  await refreshData();
+  await sleep("1h");
+  await start(repeatingSync); // daisy-chain to next run
+}
+```
+
+Use `deploymentId: "latest"` to run the next instance on the latest deployment (picks up new code):
+
+```typescript
+await start(repeatingSync, [], { deploymentId: "latest" });
+```
+
+**Warning**: With `deploymentId: "latest"`, type safety is not guaranteed across deployments. If workflow input/output types change, the chain may receive unexpected data. Ensure workflows remain backwards-compatible when using this pattern.
 
 ## Workflow Sandbox Limitations
 
