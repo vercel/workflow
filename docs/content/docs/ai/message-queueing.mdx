@@ -33,14 +33,14 @@ The `prepareStep` callback runs before each step in the agent loop. It receives 
 
 ```typescript lineNumbers
 interface PrepareStepInfo {
-  model: string | (() => Promise<LanguageModelV2>);  // Current model
+  model: string | (() => Promise<LanguageModelV3>);  // Current model
   stepNumber: number;                                // 0-indexed step count
   steps: StepResult[];                               // Previous step results
   messages: LanguageModelV3Prompt;                   // Messages to be sent
 }
 
 interface PrepareStepResult {
-  model?: string | (() => Promise<LanguageModelV2>); // Override model
+  model?: string | (() => Promise<LanguageModelV3>); // Override model
   messages?: LanguageModelV3Prompt;                  // Override messages
 }
 ```
