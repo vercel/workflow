@@ -15,7 +15,16 @@ export type StepFunction<
   stepId?: string;
 };
 
-const registeredSteps = new Map<string, StepFunction>();
+const RegisteredStepsKey = Symbol.for('@workflow/core//registeredSteps');
+
+const globalSymbols: typeof globalThis & {
+  [RegisteredStepsKey]?: Map<string, StepFunction>;
+} = globalThis;
+
+const registeredSteps = (globalSymbols[RegisteredStepsKey] ??= new Map<
+  string,
+  StepFunction
+>());
 
 function getStepIdAliasCandidates(stepId: string): string[] {
   const parts = stepId.split('//');
