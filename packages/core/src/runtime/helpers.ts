@@ -1,4 +1,3 @@
-import { WorkflowAPIError } from '@workflow/errors';
 import type {
   Event,
   HealthCheckPayload,
@@ -7,7 +6,7 @@ import type {
 } from '@workflow/world';
 import { HealthCheckPayloadSchema } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { runtimeLogger } from '../logger.js';
+
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { getWorld } from './world.js';
@@ -402,111 +401,4 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
   } catch {
     return;
   }
-}
-
-/**
- * Wraps a queue handler with HTTP 429 throttle retry logic.
- * - retryAfter < 10s: waits in-process via setTimeout, then retries once
- * - retryAfter >= 10s: returns { timeoutSeconds } to defer to the queue
- *
- * Safe to retry the entire handler because 429 is sent from server middleware
- * before the request is processed — no server state has changed.
- */
-// biome-ignore lint/suspicious/noConfusingVoidType: matches Queue handler return type
-export async function withThrottleRetry(
-  fn: () => Promise<void | { timeoutSeconds: number }>
-): Promise<void | { timeoutSeconds: number }> {
-  try {
-    return await fn();
-  } catch (err) {
-    if (WorkflowAPIError.is(err) && err.status === 429) {
-      const retryAfterSeconds = Math.max(
-        // If we don't have a retry-after value, 30s seems a reasonable default
-        // to avoid re-trying during the unknown rate-limiting period.
-        1,
-        typeof err.retryAfter === 'number' ? err.retryAfter : 30
-      );
-
-      if (retryAfterSeconds < 10) {
-        runtimeLogger.warn(
-          'Throttled by workflow-server (429), retrying in-process',
-          {
-            retryAfterSeconds,
-            url: err.url,
-          }
-        );
-        // Short wait: sleep in-process, then retry once
-        await new Promise((resolve) =>
-          setTimeout(resolve, retryAfterSeconds * 1000)
-        );
-        try {
-          return await fn();
-        } catch (retryErr) {
-          // If the retry also gets throttled, defer to queue
-          if (WorkflowAPIError.is(retryErr) && retryErr.status === 429) {
-            const retryRetryAfter = Math.max(
-              1,
-              typeof retryErr.retryAfter === 'number' ? retryErr.retryAfter : 1
-            );
-            runtimeLogger.warn('Throttled again on retry, deferring to queue', {
-              retryAfterSeconds: retryRetryAfter,
-            });
-            return { timeoutSeconds: retryRetryAfter };
-          }
-          throw retryErr;
-        }
-      }
-
-      // Long wait: defer to queue infrastructure
-      runtimeLogger.warn(
-        'Throttled by workflow-server (429), deferring to queue',
-        {
-          retryAfterSeconds,
-          url: err.url,
-        }
-      );
-      return { timeoutSeconds: retryAfterSeconds };
-    }
-    throw err;
-  }
-}
-
-/**
- * Retries a function when it throws a 5xx WorkflowAPIError.
- * Used to handle transient workflow-server errors without consuming step attempts.
- *
- * Retries up to 3 times with exponential backoff (500ms, 1s, 2s ≈ 3.5s total).
- * If all retries fail, the original error is re-thrown.
- */
-export async function withServerErrorRetry<T>(
-  fn: () => Promise<T>
-): Promise<T> {
-  const delays = [500, 1000, 2000];
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    try {
-      return await fn();
-    } catch (err) {
-      if (
-        WorkflowAPIError.is(err) &&
-        err.status !== undefined &&
-        err.status >= 500 &&
-        attempt < delays.length
-      ) {
-        runtimeLogger.warn(
-          'Server error (5xx) from workflow-server, retrying in-process',
-          {
-            status: err.status,
-            attempt: attempt + 1,
-            maxRetries: delays.length,
-            nextDelayMs: delays[attempt],
-            url: err.url,
-          }
-        );
-        await new Promise((resolve) => setTimeout(resolve, delays[attempt]));
-        continue;
-      }
-      throw err;
-    }
-  }
-  throw new Error('withServerErrorRetry: unreachable');
 }

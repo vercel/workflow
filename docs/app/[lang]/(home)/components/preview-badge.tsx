@@ -1,9 +1,10 @@
 'use client';
 
-import { CheckIcon, CopyIcon, EyeIcon } from 'lucide-react';
+import { CheckIcon, CopyIcon, ExternalLinkIcon, EyeIcon } from 'lucide-react';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Dialog,
   DialogContent,
@@ -12,7 +13,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog';
-import { Button } from '@/components/ui/button';
 
 type PreviewBadgeProps = {
   deploymentUrl: string;
@@ -112,6 +112,22 @@ export function PreviewBadge({ deploymentUrl }: PreviewBadgeProps) {
               </code>
               <CopyButton text={npxCmd} />
             </div>
+          </div>
+          <div className="space-y-1.5">
+            <p className="text-sm text-muted-foreground">
+              SWC Compiler Playground:
+            </p>
+            <a
+              href="https://workflow-swc-playground.labs.vercel.dev/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-xs font-mono hover:bg-muted transition-colors"
+            >
+              <span className="flex-1">
+                workflow-swc-playground.labs.vercel.dev
+              </span>
+              <ExternalLinkIcon className="size-3 shrink-0 text-muted-foreground" />
+            </a>
           </div>
         </div>
       </DialogContent>

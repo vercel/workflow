@@ -6,12 +6,15 @@ import { Check, ChevronRight, Copy } from 'lucide-react';
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
+import { isEncryptedMarker } from '../lib/hydration';
+import { DecryptButton } from './ui/decrypt-button';
 import { formatDuration } from '../lib/utils';
 import { DataInspector } from './ui/data-inspector';
 import {
   ErrorStackBlock,
   isStructuredErrorWithStack,
 } from './ui/error-stack-block';
+import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
 import { Skeleton } from './ui/skeleton';
 
@@ -596,6 +599,30 @@ const SORT_OPTIONS = [
   { value: 'asc' as const, label: 'Oldest' },
 ];
 
+function RowsSkeleton() {
+  return (
+    <div className="flex-1 overflow-hidden">
+      {Array.from({ length: 8 }, (_, i) => (
+        <div
+          key={i}
+          className="flex items-center gap-3 px-4"
+          style={{ height: 40 }}
+        >
+          <Skeleton
+            className="h-2 w-2 flex-shrink-0"
+            style={{ borderRadius: '50%' }}
+          />
+          <Skeleton className="h-3" style={{ width: 90 }} />
+          <Skeleton className="h-3" style={{ width: 100 }} />
+          <Skeleton className="h-3" style={{ width: 80 }} />
+          <Skeleton className="h-3 flex-1" />
+          <Skeleton className="h-3 flex-1" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Event row
 // ──────────────────────────────────────────────────────────────────────────
@@ -616,6 +643,10 @@ interface EventsListProps {
   /** Called when the user changes sort order. When provided, the sort dropdown is shown
    *  and the parent is expected to refetch from the API with the new order. */
   onSortOrderChange?: (order: 'asc' | 'desc') => void;
+  /** Called when the user clicks the Decrypt button. */
+  onDecrypt?: () => void;
+  /** Whether the encryption key is currently being fetched. */
+  isDecrypting?: boolean;
 }
 
 function EventRow({
@@ -1020,6 +1051,8 @@ export function EventListView({
   isLoading = false,
   sortOrder: sortOrderProp,
   onSortOrderChange,
+  onDecrypt,
+  isDecrypting = false,
 }: EventsListProps) {
   const [internalSortOrder, setInternalSortOrder] = useState<'asc' | 'desc'>(
     'asc'
@@ -1045,6 +1078,22 @@ export function EventListView({
         (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
     );
   }, [events, effectiveSortOrder]);
+
+  // Detect encrypted fields across all loaded events.
+  // Only checks top-level eventData values (input, output, result, etc.) —
+  // the current data model guarantees encrypted markers appear at this level.
+  const hasEncryptedData = useMemo(() => {
+    if (!events) return false;
+    for (const event of events) {
+      const ed = (event as Record<string, unknown>).eventData;
+      if (!ed || typeof ed !== 'object') continue;
+      const data = ed as Record<string, unknown>;
+      for (const val of Object.values(data)) {
+        if (isEncryptedMarker(val)) return true;
+      }
+    }
+    return false;
+  }, [events]);
 
   const { correlationNameMap, workflowName } = useMemo(
     () => buildNameMaps(events ?? null, run ?? null),
@@ -1201,52 +1250,43 @@ export function EventListView({
     }
   }, [searchQuery, searchIndex]);
 
-  if (!events || events.length === 0) {
-    if (isLoading) {
-      return (
-        <div className="h-full flex flex-col overflow-hidden">
-          {/* Skeleton search bar */}
-          <div style={{ padding: 6 }}>
-            <Skeleton style={{ height: 40, borderRadius: 6 }} />
-          </div>
-          {/* Skeleton header */}
-          <div
-            className="flex items-center gap-0 h-10 border-b flex-shrink-0 px-4"
-            style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
-          >
-            <Skeleton className="h-3" style={{ width: 60 }} />
-            <div style={{ flex: 1 }} />
-            <Skeleton className="h-3" style={{ width: 80 }} />
-            <div style={{ flex: 1 }} />
-            <Skeleton className="h-3" style={{ width: 50 }} />
-            <div style={{ flex: 1 }} />
-            <Skeleton className="h-3" style={{ width: 90 }} />
-            <div style={{ flex: 1 }} />
-            <Skeleton className="h-3" style={{ width: 70 }} />
-          </div>
-          {/* Skeleton rows */}
-          <div className="flex-1 overflow-hidden">
-            {Array.from({ length: 8 }, (_, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-3 px-4"
-                style={{ height: 40 }}
-              >
-                <Skeleton
-                  className="h-2 w-2 flex-shrink-0"
-                  style={{ borderRadius: '50%' }}
-                />
-                <Skeleton className="h-3" style={{ width: 90 }} />
-                <Skeleton className="h-3" style={{ width: 100 }} />
-                <Skeleton className="h-3" style={{ width: 80 }} />
-                <Skeleton className="h-3 flex-1" />
-                <Skeleton className="h-3 flex-1" />
-              </div>
-            ))}
-          </div>
+  // Track whether we've ever had events to distinguish initial load from refetch
+  const hasHadEventsRef = useRef(false);
+  if (sortedEvents.length > 0) {
+    hasHadEventsRef.current = true;
+  }
+  const isInitialLoad = isLoading && !hasHadEventsRef.current;
+  const isRefetching =
+    isLoading && hasHadEventsRef.current && sortedEvents.length === 0;
+
+  if (isInitialLoad) {
+    return (
+      <div className="h-full flex flex-col overflow-hidden">
+        {/* Skeleton search bar */}
+        <div style={{ padding: 6 }}>
+          <Skeleton style={{ height: 40, borderRadius: 6 }} />
         </div>
-      );
-    }
+        {/* Skeleton header */}
+        <div
+          className="flex items-center gap-0 h-10 border-b flex-shrink-0 px-4"
+          style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
+        >
+          <Skeleton className="h-3" style={{ width: 60 }} />
+          <div style={{ flex: 1 }} />
+          <Skeleton className="h-3" style={{ width: 80 }} />
+          <div style={{ flex: 1 }} />
+          <Skeleton className="h-3" style={{ width: 50 }} />
+          <div style={{ flex: 1 }} />
+          <Skeleton className="h-3" style={{ width: 90 }} />
+          <div style={{ flex: 1 }} />
+          <Skeleton className="h-3" style={{ width: 70 }} />
+        </div>
+        <RowsSkeleton />
+      </div>
+    );
+  }
+
+  if (!isLoading && (!events || events.length === 0)) {
     return (
       <div
         className="flex items-center justify-center h-full text-sm"
@@ -1339,6 +1379,13 @@ export function EventListView({
           value={effectiveSortOrder}
           onChange={handleSortOrderChange}
         />
+        {(hasEncryptedData || encryptionKey) && onDecrypt && (
+          <DecryptButton
+            decrypted={!!encryptionKey}
+            loading={isDecrypting}
+            onClick={onDecrypt}
+          />
+        )}
       </div>
 
       {/* Header */}
@@ -1369,82 +1416,75 @@ export function EventListView({
         </div>
       </div>
 
-      {/* Virtualized event rows */}
-      <Virtuoso
-        ref={virtuosoRef}
-        totalCount={sortedEvents.length}
-        overscan={20}
-        defaultItemHeight={40}
-        endReached={() => {
-          if (!hasMoreEvents || isLoadingMoreEvents) {
-            return;
-          }
-          void onLoadMoreEvents?.();
-        }}
-        itemContent={(index: number) => {
-          const ev = sortedEvents[index];
-          return (
-            <EventRow
-              event={ev}
-              index={index}
-              isFirst={index === 0}
-              isLast={index === sortedEvents.length - 1}
-              isExpanded={expandedEventIds.has(ev.eventId)}
-              onToggleExpand={toggleEventExpanded}
-              activeGroupKey={activeGroupKey}
-              selectedGroupKey={selectedGroupKey}
-              selectedGroupRange={selectedGroupRange}
-              correlationNameMap={correlationNameMap}
-              workflowName={workflowName}
-              durationMap={durationMap}
-              onSelectGroup={onSelectGroup}
-              onHoverGroup={onHoverGroup}
-              onLoadEventData={onLoadEventData}
-              cachedEventData={
-                eventDataCacheRef.current.get(ev.eventId) ?? null
-              }
-              onCacheEventData={cacheEventData}
-              encryptionKey={encryptionKey}
-            />
-          );
-        }}
-        components={{
-          Footer: hasMoreEvents
-            ? () => (
-                <div className="px-3 pt-3 flex justify-center">
-                  <button
-                    type="button"
-                    onClick={() => void onLoadMoreEvents?.()}
-                    disabled={isLoadingMoreEvents}
-                    className="h-8 px-3 text-xs rounded-md border transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                    style={{
-                      borderColor: 'var(--ds-gray-alpha-400)',
-                      color: 'var(--ds-gray-900)',
-                      backgroundColor: 'var(--ds-background-100)',
-                    }}
-                  >
-                    {isLoadingMoreEvents
-                      ? 'Loading more events...'
-                      : 'Load more'}
-                  </button>
-                </div>
-              )
-            : undefined,
-        }}
-        style={{ flex: 1, minHeight: 0 }}
-      />
+      {/* Virtualized event rows or refetching skeleton */}
+      {isRefetching ? (
+        <RowsSkeleton />
+      ) : (
+        <Virtuoso
+          ref={virtuosoRef}
+          totalCount={sortedEvents.length}
+          overscan={20}
+          defaultItemHeight={40}
+          endReached={() => {
+            if (!hasMoreEvents || isLoadingMoreEvents) {
+              return;
+            }
+            void onLoadMoreEvents?.();
+          }}
+          itemContent={(index: number) => {
+            const ev = sortedEvents[index];
+            return (
+              <EventRow
+                event={ev}
+                index={index}
+                isFirst={index === 0}
+                isLast={index === sortedEvents.length - 1}
+                isExpanded={expandedEventIds.has(ev.eventId)}
+                onToggleExpand={toggleEventExpanded}
+                activeGroupKey={activeGroupKey}
+                selectedGroupKey={selectedGroupKey}
+                selectedGroupRange={selectedGroupRange}
+                correlationNameMap={correlationNameMap}
+                workflowName={workflowName}
+                durationMap={durationMap}
+                onSelectGroup={onSelectGroup}
+                onHoverGroup={onHoverGroup}
+                onLoadEventData={onLoadEventData}
+                cachedEventData={
+                  eventDataCacheRef.current.get(ev.eventId) ?? null
+                }
+                onCacheEventData={cacheEventData}
+                encryptionKey={encryptionKey}
+              />
+            );
+          }}
+          style={{ flex: 1, minHeight: 0 }}
+        />
+      )}
 
-      {/* Fixed footer — always at the bottom of the visible area */}
+      {/* Fixed footer — count + load more */}
       <div
-        className="flex-shrink-0 border-t text-xs px-3 py-2"
+        className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-xs"
         style={{
           borderColor: 'var(--ds-gray-alpha-200)',
           color: 'var(--ds-gray-900)',
           backgroundColor: 'var(--ds-background-100)',
         }}
       >
-        {sortedEvents.length} event
-        {sortedEvents.length !== 1 ? 's' : ''} total
+        <span>
+          {sortedEvents.length} event
+          {sortedEvents.length !== 1 ? 's' : ''} loaded
+        </span>
+        {hasMoreEvents && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="pointer-events-auto">
+              <LoadMoreButton
+                loading={isLoadingMoreEvents}
+                onClick={() => void onLoadMoreEvents?.()}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
