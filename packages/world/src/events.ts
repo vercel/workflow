@@ -267,6 +267,7 @@ export const EventSchema = AllEventsSchema.and(
     createdAt: z.coerce.date(),
     specVersion: z.number().optional(),
     stepName: z.string().optional(),
+    workflowName: z.string().optional(),
   })
 );
 
