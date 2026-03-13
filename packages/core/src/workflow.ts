@@ -756,20 +756,14 @@ export async function runWorkflow(
       // steps created after the last await), throw WorkflowSuspension so
       // the runtime processes them via handleSuspension. The workflow will
       // replay and complete on the next invocation.
-      const hasActionableItems = [
-        ...workflowContext.invocationsQueue.values(),
-      ].some((item) => {
-        if (item.type === 'hook') {
-          // Only hooks with abort requests need processing on completion.
-          // Regular hooks (even uncreated ones) are benign since the backend
-          // auto-disposes all hooks when a run reaches a terminal state.
-          return item.abortRequested === true;
-        }
-        // Steps and waits need processing (creation + queueing)
-        return true;
-      });
+      // Only process abort-related items on completion. Other pending items
+      // (unawaited steps, fire-and-forget sleeps, etc.) are warned about but
+      // should not block workflow completion — they may be intentional.
+      const hasAbortItems = [...workflowContext.invocationsQueue.values()].some(
+        (item) => item.type === 'hook' && item.abortRequested === true
+      );
 
-      if (hasActionableItems) {
+      if (hasAbortItems) {
         throw new WorkflowSuspension(
           workflowContext.invocationsQueue,
           vmGlobalThis
