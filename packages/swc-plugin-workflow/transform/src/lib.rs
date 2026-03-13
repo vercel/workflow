@@ -594,6 +594,63 @@ impl ClosureVariableCollector {
                             self.collect_from_block_stmt(body);
                         }
                     }
+                    Decl::Class(class_decl) => {
+                        self.local_vars.insert(class_decl.ident.sym.to_string());
+                        // Walk class body — reuse the same logic as Expr::Class
+                        if let Some(super_class) = &class_decl.class.super_class {
+                            self.collect_from_expr(super_class);
+                        }
+                        for member in &class_decl.class.body {
+                            match member {
+                                ClassMember::Method(method) => {
+                                    for param in &method.function.params {
+                                        self.collect_param_names(&param.pat);
+                                    }
+                                    if let Some(body) = &method.function.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                ClassMember::ClassProp(prop) => {
+                                    if let Some(value) = &prop.value {
+                                        self.collect_from_expr(value);
+                                    }
+                                }
+                                ClassMember::PrivateProp(prop) => {
+                                    if let Some(value) = &prop.value {
+                                        self.collect_from_expr(value);
+                                    }
+                                }
+                                ClassMember::Constructor(ctor) => {
+                                    for param in &ctor.params {
+                                        match param {
+                                            ParamOrTsParamProp::Param(p) => {
+                                                self.collect_param_names(&p.pat);
+                                            }
+                                            ParamOrTsParamProp::TsParamProp(ts_param) => {
+                                                match &ts_param.param {
+                                                    TsParamPropParam::Ident(i) => {
+                                                        self.local_vars
+                                                            .insert(i.id.sym.to_string());
+                                                    }
+                                                    TsParamPropParam::Assign(a) => {
+                                                        self.collect_declared_names(&a.left);
+                                                        self.collect_from_expr(&a.right);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if let Some(body) = &ctor.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                ClassMember::StaticBlock(block) => {
+                                    self.collect_from_block_stmt(&block.body);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -942,10 +999,78 @@ impl ClosureVariableCollector {
                     }
                 }
             },
-            Expr::Class(_) => {
-                // Don't visit class expression bodies for closure detection
+            Expr::Class(class_expr) => {
+                // Walk into class body to find closure vars from the outer scope.
+                if let Some(super_class) = &class_expr.class.super_class {
+                    self.collect_from_expr(super_class);
+                }
+                for member in &class_expr.class.body {
+                    match member {
+                        ClassMember::Method(method) => {
+                            for param in &method.function.params {
+                                self.collect_param_names(&param.pat);
+                            }
+                            if let Some(body) = &method.function.body {
+                                self.collect_from_block_stmt(body);
+                            }
+                        }
+                        ClassMember::ClassProp(prop) => {
+                            if let Some(value) = &prop.value {
+                                self.collect_from_expr(value);
+                            }
+                        }
+                        ClassMember::Constructor(ctor) => {
+                            for param in &ctor.params {
+                                match param {
+                                    ParamOrTsParamProp::Param(p) => {
+                                        self.collect_param_names(&p.pat);
+                                    }
+                                    ParamOrTsParamProp::TsParamProp(ts_param) => {
+                                        match &ts_param.param {
+                                            TsParamPropParam::Ident(i) => {
+                                                self.local_vars.insert(i.id.sym.to_string());
+                                            }
+                                            TsParamPropParam::Assign(a) => {
+                                                self.collect_declared_names(&a.left);
+                                                self.collect_from_expr(&a.right);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(body) = &ctor.body {
+                                self.collect_from_block_stmt(body);
+                            }
+                        }
+                        ClassMember::PrivateProp(prop) => {
+                            if let Some(value) = &prop.value {
+                                self.collect_from_expr(value);
+                            }
+                        }
+                        ClassMember::StaticBlock(block) => {
+                            self.collect_from_block_stmt(&block.body);
+                        }
+                        _ => {}
+                    }
+                }
             }
-            _ => {}
+            // TypeScript expression wrappers — visit the inner expression
+            Expr::TsAs(e) => self.collect_from_expr(&e.expr),
+            Expr::TsNonNull(e) => self.collect_from_expr(&e.expr),
+            Expr::TsTypeAssertion(e) => self.collect_from_expr(&e.expr),
+            Expr::TsConstAssertion(e) => self.collect_from_expr(&e.expr),
+            Expr::TsInstantiation(e) => self.collect_from_expr(&e.expr),
+            Expr::TsSatisfies(e) => self.collect_from_expr(&e.expr),
+            _ => {
+                // Remaining variants that are safe to skip:
+                // - Expr::This (keyword)
+                // - Expr::Lit (literal values)
+                // - Expr::SuperProp (super keyword)
+                // - Expr::MetaProp (new.target, import.meta)
+                // - Expr::PrivateName (#foo)
+                // - Expr::Invalid (error recovery)
+                // - Expr::JSX* (JSX — stripped before this plugin runs)
+            }
         }
     }
 
