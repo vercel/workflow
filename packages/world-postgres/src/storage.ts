@@ -1336,9 +1336,14 @@ function filterHookData(hook: Hook, resolveData: ResolveData): Hook {
 
 function filterEventData(event: Event, resolveData: ResolveData): Event {
   if (resolveData === 'none' && 'eventData' in event) {
-    const { eventData: _, ...rest } = event;
-
-    return rest as Event;
+    const { eventData: _eventData, ...rest } = event;
+    const stepName = (_eventData as any)?.stepName;
+    const workflowName = (_eventData as any)?.workflowName;
+    return {
+      ...rest,
+      ...(stepName !== undefined ? { stepName } : {}),
+      ...(workflowName !== undefined ? { workflowName } : {}),
+    } as Event;
   }
   return event;
 }

@@ -111,10 +111,11 @@ export const events = schema.table(
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
-    stepName: varchar('step_name'),
-    workflowName: varchar('workflow_name'),
   } satisfies DrizzlishOfType<
-    Cborized<Event & { eventData?: undefined }, 'eventData'>
+    Cborized<
+      Omit<Event, 'stepName' | 'workflowName'> & { eventData?: undefined },
+      'eventData'
+    >
   >,
   (tb) => [index().on(tb.runId), index().on(tb.correlationId)]
 );
