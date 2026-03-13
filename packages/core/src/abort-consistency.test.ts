@@ -482,74 +482,46 @@ describe('AbortController consistency', () => {
     });
   });
 
-  describe('invocations queue processed on workflow completion (not just suspension)', () => {
-    it('abort() called after last suspension point: hook resumption is still processed', async () => {
+  describe('pending queue items on workflow completion are fire-and-forget', () => {
+    it('abort() called after last suspension point: workflow completes normally', async () => {
       // When a workflow calls abort() after all steps have completed,
-      // the invocations queue should still contain the hook with abortRequested.
-      // The suspension handler will process it.
+      // the workflow should still complete — pending items are fire-and-forget.
       const { workflowRun } = await createWorkflowRun([]);
 
-      let error: Error | undefined;
-      try {
-        await runWorkflow(
-          `async function workflow() {
+      // Should NOT throw — the abort hook is in the queue but doesn't
+      // block completion. The runtime warns about it.
+      const result = await runWorkflow(
+        `async function workflow() {
             const controller = new AbortController();
             controller.abort('post-completion abort');
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          [],
-          noEncryptionKey
-        );
-      } catch (err) {
-        error = err as Error;
-      }
+        workflowRun,
+        [],
+        noEncryptionKey
+      );
 
-      // The workflow should suspend because the AbortController created
-      // an internal hook, and calling abort() marks it with abortRequested
-      expect(error?.name).toBe('WorkflowSuspension');
-      const suspension = error as WorkflowSuspension;
-
-      // The hook item should have abortRequested set
-      const hookItem = suspension.steps.find((s) => s.type === 'hook');
-      expect(hookItem).toBeDefined();
-      if (hookItem?.type === 'hook') {
-        expect(hookItem.abortRequested).toBe(true);
-        expect(hookItem.abortReason).toBe('post-completion abort');
-      }
+      // Workflow completes with the return value
+      expect(result).toBeDefined();
     });
 
-    it('abort() called after last suspension point: stream packet is still written', async () => {
-      // Same as above — abort creates a stream write op that the suspension
-      // handler should process alongside the hook resumption.
+    it('fire-and-forget sleep does not block workflow completion', async () => {
+      // void sleep('1d') is a common fire-and-forget pattern.
+      // It should NOT block the workflow from completing.
       const { workflowRun } = await createWorkflowRun([]);
 
-      let error: Error | undefined;
-      try {
-        await runWorkflow(
-          `async function workflow() {
-            const controller = new AbortController();
-            controller.abort('stream test');
+      const result = await runWorkflow(
+        `const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+          async function workflow() {
+            void sleep('1d');
             return 'done';
           }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          [],
-          noEncryptionKey
-        );
-      } catch (err) {
-        error = err as Error;
-      }
-
-      // Workflow suspends with the abort hook item
-      expect(error?.name).toBe('WorkflowSuspension');
-      const suspension = error as WorkflowSuspension;
-
-      // Verify the abort was recorded in the queue
-      expect(suspension.abortCount).toBeGreaterThanOrEqual(0);
-      const hookItem = suspension.steps.find(
-        (s) => s.type === 'hook' && s.abortRequested
+        workflowRun,
+        [],
+        noEncryptionKey
       );
-      expect(hookItem).toBeDefined();
+
+      expect(result).toBeDefined();
     });
 
     it('pending step created as workflow completes: step is still enqueued', async () => {
