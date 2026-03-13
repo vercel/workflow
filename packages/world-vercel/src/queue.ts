@@ -8,6 +8,7 @@ import {
   ValidQueueName,
 } from '@workflow/world';
 import * as z from 'zod';
+import { getDispatcher } from './http-client.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 
 const MessageWrapper = z.object({
@@ -84,6 +85,7 @@ export function createQueue(config?: APIConfig): Queue {
 
   const clientOptions = {
     region,
+    dispatcher: getDispatcher(),
     ...(usingProxy && {
       // final path will be /queues-proxy/api/v3/topic/...
       // and the proxy will strip the /queues-proxy prefix before forwarding to VQS
