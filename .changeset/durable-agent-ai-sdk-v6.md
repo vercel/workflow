@@ -14,3 +14,4 @@
 - Enrich `onFinish` event with `text`, `finishReason`, `totalUsage`
 - Add `@workflow/ai/test` export with `mockTextModel` and `mockSequenceModel` for workflow e2e testing
 - Update `OutputSpecification` to match AI SDK v6 Output interface
+- Fix `WorkflowChatTransport` to forward `body` and `headers` from `ChatRequestOptions` to `prepareSendMessagesRequest` and the default request body
