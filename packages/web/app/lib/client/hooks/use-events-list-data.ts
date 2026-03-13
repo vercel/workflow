@@ -36,6 +36,9 @@ export function useEventsListData(
   const [loadingMore, setLoadingMore] = useState(false);
   const isFetchingRef = useRef(false);
 
+  const encryptionKeyRef = useRef(encryptionKey);
+  encryptionKeyRef.current = encryptionKey;
+
   const fetchInitial = useCallback(async () => {
     if (isFetchingRef.current) return;
     isFetchingRef.current = true;
@@ -56,7 +59,16 @@ export function useEventsListData(
       if (fetchError) {
         setError(fetchError);
       } else {
-        setEvents(result.data.map(hydrateResourceIO));
+        const hydrated = result.data.map(hydrateResourceIO);
+        const key = encryptionKeyRef.current;
+        if (key) {
+          const decrypted = await Promise.all(
+            hydrated.map((ev) => hydrateResourceIOWithKey(ev, key))
+          );
+          setEvents(decrypted);
+        } else {
+          setEvents(hydrated);
+        }
         setCursor(result.hasMore ? result.cursor : undefined);
         setHasMore(Boolean(result.hasMore));
       }
@@ -66,8 +78,6 @@ export function useEventsListData(
       setLoading(false);
       isFetchingRef.current = false;
     }
-    // encryptionKey intentionally excluded — the re-hydration effect below
-    // handles decrypting in-memory events when the key arrives.
   }, [env, runId, sortOrder]);
 
   useEffect(() => {
@@ -106,9 +116,10 @@ export function useEventsListData(
       } else {
         if (result.data.length > 0) {
           const hydrated = result.data.map(hydrateResourceIO);
-          if (encryptionKey) {
+          const key = encryptionKeyRef.current;
+          if (key) {
             const decrypted = await Promise.all(
-              hydrated.map((ev) => hydrateResourceIOWithKey(ev, encryptionKey))
+              hydrated.map((ev) => hydrateResourceIOWithKey(ev, key))
             );
             setEvents((prev) => [...prev, ...decrypted]);
           } else {
@@ -123,7 +134,7 @@ export function useEventsListData(
     } finally {
       setLoadingMore(false);
     }
-  }, [env, runId, sortOrder, cursor, loadingMore, encryptionKey]);
+  }, [env, runId, sortOrder, cursor, loadingMore]);
 
   return {
     events,
