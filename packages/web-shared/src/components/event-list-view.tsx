@@ -611,21 +611,67 @@ const SORT_OPTIONS = [
 function RowsSkeleton() {
   return (
     <div className="flex-1 overflow-hidden">
-      {Array.from({ length: 8 }, (_, i) => (
-        <div
-          key={i}
-          className="flex items-center gap-3 px-4"
-          style={{ height: 40 }}
-        >
-          <Skeleton
-            className="h-2 w-2 flex-shrink-0"
-            style={{ borderRadius: '50%' }}
-          />
-          <Skeleton className="h-3" style={{ width: 90 }} />
-          <Skeleton className="h-3" style={{ width: 100 }} />
-          <Skeleton className="h-3" style={{ width: 80 }} />
-          <Skeleton className="h-3 flex-1" />
-          <Skeleton className="h-3 flex-1" />
+      {Array.from({ length: 16 }, (_, i) => (
+        <div key={i} className="flex items-center gap-0" style={{ height: 40 }}>
+          {/* Gutter area */}
+          <div
+            className="relative flex-shrink-0 self-stretch flex items-center"
+            style={{ width: GUTTER_WIDTH }}
+          >
+            {/* Vertical line skeleton */}
+            <div
+              style={{
+                position: 'absolute',
+                left: 8,
+                top: i === 0 ? '50%' : 0,
+                bottom: 0,
+                width: 2,
+              }}
+            >
+              <Skeleton className="w-full h-full" style={{ borderRadius: 1 }} />
+            </div>
+            {/* Dot skeleton */}
+            <Skeleton
+              className="flex-shrink-0"
+              style={{
+                width: i % 4 === 0 ? 8 : 6,
+                height: i % 4 === 0 ? 8 : 6,
+                borderRadius: '50%',
+                marginLeft: i % 4 === 0 ? 5 : 6,
+              }}
+            />
+          </div>
+          {/* Chevron placeholder */}
+          <div className="w-5 flex-shrink-0 flex items-center justify-center">
+            <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
+          </div>
+          {/* Time */}
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '70%' }} />
+          </div>
+          {/* Event Type */}
+          <div
+            className="min-w-0 px-4 flex items-center gap-1.5"
+            style={{ flex: '2 1 0%' }}
+          >
+            <Skeleton
+              className="flex-shrink-0"
+              style={{ width: 6, height: 6, borderRadius: '50%' }}
+            />
+            <Skeleton className="h-3" style={{ width: '60%' }} />
+          </div>
+          {/* Name */}
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '50%' }} />
+          </div>
+          {/* Correlation ID */}
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '75%' }} />
+          </div>
+          {/* Event ID */}
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '75%' }} />
+          </div>
         </div>
       ))}
     </div>
@@ -1300,18 +1346,26 @@ export function EventListView({
         </div>
         {/* Skeleton header */}
         <div
-          className="flex items-center gap-0 h-10 border-b flex-shrink-0 px-4"
+          className="flex items-center gap-0 h-10 border-b flex-shrink-0"
           style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
         >
-          <Skeleton className="h-3" style={{ width: 60 }} />
-          <div style={{ flex: 1 }} />
-          <Skeleton className="h-3" style={{ width: 80 }} />
-          <div style={{ flex: 1 }} />
-          <Skeleton className="h-3" style={{ width: 50 }} />
-          <div style={{ flex: 1 }} />
-          <Skeleton className="h-3" style={{ width: 90 }} />
-          <div style={{ flex: 1 }} />
-          <Skeleton className="h-3" style={{ width: 70 }} />
+          <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
+          <div className="w-5 flex-shrink-0" />
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 40 }} />
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 72 }} />
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 44 }} />
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 92 }} />
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 60 }} />
+          </div>
         </div>
         <RowsSkeleton />
       </div>
