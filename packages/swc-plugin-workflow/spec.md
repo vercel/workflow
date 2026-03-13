@@ -321,10 +321,14 @@ var wrapper$_anonymousStep0 = async () => {
     return 10 * multiplier;
 };
 function wrapper(multiplier) {
-    return wrapper$_anonymousStep0;
+    return async () => {
+        return 10 * multiplier;
+    };
 }
 registerStepFunction("step//./input//wrapper/_anonymousStep0", wrapper$_anonymousStep0);
 ```
+
+Note: The hoisted copy (`wrapper$_anonymousStep0`) uses `__private_getClosureVars()` for workflow-driven execution, while the original function body is preserved in `wrapper()` with the directive stripped. This allows the enclosing function to work correctly when called directly (non-workflow), since JavaScript's normal closure semantics naturally capture `multiplier`.
 
 ### Instance Method Step
 

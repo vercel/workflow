@@ -52,31 +52,47 @@ async function wflow$_anonymousStep4() {
     console.log('count', count);
 }
 function stepWrapperReturnArrowFunctionVar(a, b, c) {
-    const fn = stepWrapperReturnArrowFunctionVar$fn;
+    const fn = async ()=>{
+        return a + b + c;
+    };
     return fn;
 }
 function stepWrapperReturnNamedFunction(a, b, c) {
-    return stepWrapperReturnNamedFunction$f;
+    return async function f() {
+        return a + b + c;
+    };
 }
 function stepWrapperReturnArrowFunction(a, b, c) {
-    return stepWrapperReturnArrowFunction$_anonymousStep0;
+    return async ()=>{
+        return a + b + c;
+    };
 }
 function stepWrapperReturnNamedFunctionVar(a, b, c) {
-    const fn = stepWrapperReturnNamedFunctionVar$fn;
+    async function fn() {
+        return a + b + c;
+    }
     return fn;
 }
 const arrowWrapperReturnArrowFunctionVar = (a, b, c)=>{
-    const fn = arrowWrapperReturnArrowFunctionVar$fn;
+    const fn = async ()=>{
+        return a + b + c;
+    };
     return fn;
 };
 const arrowWrapperReturnNamedFunction = (a, b, c)=>{
-    return arrowWrapperReturnNamedFunction$f;
+    return async function f() {
+        return a + b + c;
+    };
 };
 const arrowWrapperReturnArrowFunction = (a, b, c)=>{
-    return arrowWrapperReturnArrowFunction$_anonymousStep1;
+    return async ()=>{
+        return a + b + c;
+    };
 };
 const arrowWrapperReturnNamedFunctionVar = (a, b, c)=>{
-    const fn = arrowWrapperReturnNamedFunctionVar$fn;
+    async function fn() {
+        return a + b + c;
+    }
     return fn;
 };
 export async function wflow() {

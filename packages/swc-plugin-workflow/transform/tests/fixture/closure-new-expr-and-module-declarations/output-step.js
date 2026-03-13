@@ -93,11 +93,15 @@ var withComputedKey$_anonymousStep13 = async ()=>{
 };
 // Bug 1: `new` expressions should have their arguments captured as closure vars
 export function mockModel(...args) {
-    return mockModel$_anonymousStep0;
+    return async ()=>{
+        return new MockLanguageModelV3(...args);
+    };
 }
 // Regular function call for comparison (already worked before the fix)
 export function xai(...args) {
-    return xai$_anonymousStep1;
+    return async ()=>{
+        return xaiProvider(...args);
+    };
 }
 // Bug 3: Module-level function should NOT be captured as a closure variable.
 // It should be available directly in the step bundle and removed by DCE
@@ -106,55 +110,111 @@ function mockProvider(...args) {
     return new MockLanguageModelV3(...args);
 }
 export function mockModelWrapped(...args) {
-    return mockModelWrapped$_anonymousStep2;
+    return async ()=>{
+        return mockProvider(...args);
+    };
 }
 // Module-level variable should also NOT be captured as a closure variable.
 const CONFIG = {
     timeout: 5000
 };
 export function configuredStep(url) {
-    return configuredStep$_anonymousStep3;
+    return async ()=>{
+        return {
+            url,
+            config: CONFIG
+        };
+    };
 }
 // --- Additional expression patterns for closure variable coverage ---
 // Optional chaining on a closure variable
 export function withOptionalChaining(client) {
-    return withOptionalChaining$_anonymousStep4;
+    return async ()=>{
+        return client?.query();
+    };
 }
 // Sequence expressions (comma operator)
 export function withSequenceExpr(a, b) {
-    return withSequenceExpr$_anonymousStep5;
+    return async ()=>{
+        return a, b;
+    };
 }
 // Try/catch/finally referencing closure vars
 export function withTryCatch(fn, fallback) {
-    return withTryCatch$_anonymousStep6;
+    return async ()=>{
+        try {
+            return fn();
+        } catch (err) {
+            return fallback;
+        }
+    };
 }
 // Throw expression with closure var
 export function withThrow(message) {
-    return withThrow$_anonymousStep7;
+    return async ()=>{
+        throw message;
+    };
 }
 // Switch statement referencing closure vars
 export function withSwitch(mode, a, b) {
-    return withSwitch$_anonymousStep8;
+    return async ()=>{
+        switch(mode){
+            case 'add':
+                return a + b;
+            default:
+                return a - b;
+        }
+    };
 }
 // For-of loop with closure var
 export function withForOf(items, transform) {
-    return withForOf$_anonymousStep9;
+    return async ()=>{
+        const results = [];
+        for (const item of items){
+            results.push(transform(item));
+        }
+        return results;
+    };
 }
 // For-in loop with closure var
 export function withForIn(obj) {
-    return withForIn$_anonymousStep10;
+    return async ()=>{
+        const keys = [];
+        for(const key in obj){
+            keys.push(key);
+        }
+        return keys;
+    };
 }
 // Do-while loop with closure var
 export function withDoWhile(getNext) {
-    return withDoWhile$_anonymousStep11;
+    return async ()=>{
+        const results = [];
+        let val;
+        do {
+            val = getNext();
+            results.push(val);
+        }while (val !== null)
+        return results;
+    };
 }
 // Object shorthand properties referencing closure vars
 export function withShorthandProps(name, value) {
-    return withShorthandProps$_anonymousStep12;
+    return async ()=>{
+        return {
+            name,
+            value,
+            extra: 'literal'
+        };
+    };
 }
 // Computed property keys referencing closure vars
 export function withComputedKey(key, value) {
-    return withComputedKey$_anonymousStep13;
+    return async ()=>{
+        return {
+            [key]: value
+        };
+    };
 }
 registerStepFunction("step//./input//mockModel/_anonymousStep0", mockModel$_anonymousStep0);
 registerStepFunction("step//./input//xai/_anonymousStep1", xai$_anonymousStep1);

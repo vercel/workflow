@@ -1081,42 +1081,10 @@ impl StepTransform {
                                             .unwrap_or_default(),
                                     ));
 
-                                    // Replace with const declaration referencing the hoisted function
-                                    let hoisted_name =
-                                        if let Some(parent) = &self.current_parent_function_name {
-                                            if !parent.is_empty() {
-                                                format!("{}${}", parent, fn_name)
-                                            } else {
-                                                fn_name.clone()
-                                            }
-                                        } else {
-                                            fn_name.clone()
-                                        };
-
-                                    let var_decl = Decl::Var(Box::new(VarDecl {
-                                        span: DUMMY_SP,
-                                        ctxt: SyntaxContext::empty(),
-                                        kind: VarDeclKind::Const,
-                                        decls: vec![VarDeclarator {
-                                            span: DUMMY_SP,
-                                            name: Pat::Ident(BindingIdent {
-                                                id: Ident::new(
-                                                    fn_name.clone().into(),
-                                                    DUMMY_SP,
-                                                    SyntaxContext::empty(),
-                                                ),
-                                                type_ann: None,
-                                            }),
-                                            init: Some(Box::new(Expr::Ident(Ident::new(
-                                                hoisted_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            )))),
-                                            definite: false,
-                                        }],
-                                        declare: false,
-                                    }));
-                                    *stmt = Stmt::Decl(var_decl);
+                                    // Keep the original function declaration with the directive stripped,
+                                    // so that direct (non-workflow) calls work with normal closure semantics.
+                                    // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                    self.remove_use_step_directive(&mut fn_decl.function.body);
                                     return;
                                 }
                                 TransformMode::Workflow => {
@@ -1837,39 +1805,12 @@ impl StepTransform {
                                 // Now handle the transformation based on mode
                                 match self.mode {
                                     TransformMode::Step => {
-                                        // In step mode, replace method with key-value property referencing the hoisted variable
-                                        // Replace slashes with $ in parent_var_name to create valid JS identifier
-                                        let safe_parent_name = parent_var_name.replace('/', "$");
-                                        let hoist_var_name = if let Some(ref workflow_name) =
-                                            self.current_workflow_function_name
-                                        {
-                                            format!(
-                                                "{}${}${}",
-                                                workflow_name, safe_parent_name, prop_key
-                                            )
-                                        } else {
-                                            format!("{}${}", safe_parent_name, prop_key)
-                                        };
-                                        let step_id = self.create_object_property_id(
-                                            parent_var_name,
-                                            &prop_key,
-                                            false,
-                                            self.current_workflow_function_name.as_deref(),
+                                        // Keep the original method with the directive stripped,
+                                        // so that direct (non-workflow) calls work with normal closure semantics.
+                                        // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                        self.remove_use_step_directive(
+                                            &mut method_prop.function.body,
                                         );
-                                        // Replace the method with a key-value property referencing the hoisted function
-                                        *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
-                                            key: method_prop.key.clone(),
-                                            value: Box::new(Expr::Ident(Ident::new(
-                                                hoist_var_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                        }));
-                                        self.object_property_workflow_conversions.push((
-                                            parent_var_name.to_string(),
-                                            prop_key,
-                                            step_id,
-                                        ));
                                     }
                                     TransformMode::Workflow => {
                                         // In workflow mode, convert method to key-value property with initializer call
@@ -1951,26 +1892,9 @@ impl StepTransform {
 
         match self.mode {
             TransformMode::Step => {
-                // In step mode, replace with reference to hoisted variable
-                // Replace slashes with $ in parent_var_name to create valid JS identifier
-                let safe_parent_name = parent_var_name.replace('/', "$");
-                let hoist_var_name =
-                    if let Some(ref workflow_name) = self.current_workflow_function_name {
-                        format!("{}${}${}", workflow_name, safe_parent_name, prop_key)
-                    } else {
-                        format!("{}${}", safe_parent_name, prop_key)
-                    };
-                *kv_prop.value = Expr::Ident(Ident::new(
-                    hoist_var_name.into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                ));
-                // Track for metadata
-                self.object_property_workflow_conversions.push((
-                    parent_var_name.to_string(),
-                    prop_key.to_string(),
-                    step_id,
-                ));
+                // Keep the original value (directive already stripped by caller),
+                // so that direct (non-workflow) calls work with normal closure semantics.
+                // The hoisted copy (with __private_getClosureVars) is registered separately.
             }
             TransformMode::Workflow => {
                 // Replace with initializer call
@@ -6605,23 +6529,12 @@ impl VisitMut for StepTransform {
                                                         .unwrap_or_default(),
                                                 ));
 
-                                                // Replace with identifier reference to the hoisted function
-                                                let hoisted_name = if let Some(parent) =
-                                                    &self.current_parent_function_name
-                                                {
-                                                    if !parent.is_empty() {
-                                                        format!("{}${}", parent, name)
-                                                    } else {
-                                                        name
-                                                    }
-                                                } else {
-                                                    name
-                                                };
-                                                *init = Box::new(Expr::Ident(Ident::new(
-                                                    hoisted_name.into(),
-                                                    DUMMY_SP,
-                                                    SyntaxContext::empty(),
-                                                )));
+                                                // Keep the original arrow with the directive stripped,
+                                                // so that direct (non-workflow) calls work with normal closure semantics.
+                                                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                                self.remove_use_step_directive_arrow(
+                                                    &mut arrow_expr.body,
+                                                );
                                             }
                                             TransformMode::Workflow => {
                                                 // Replace with proxy reference (not a function call)
@@ -7426,23 +7339,11 @@ impl VisitMut for StepTransform {
                                         .unwrap_or_default(),
                                 ));
 
-                                // Replace with identifier reference
-                                let hoisted_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}${}", parent, name)
-                                        } else {
-                                            name
-                                        }
-                                    } else {
-                                        name
-                                    };
-                                *expr = Expr::Ident(Ident::new(
-                                    hoisted_name.into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                ));
-                                return; // Don't visit children since we replaced the expr
+                                // Keep the original function with the directive stripped,
+                                // so that direct (non-workflow) calls work with normal closure semantics.
+                                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                self.remove_use_step_directive(&mut fn_expr.function.body);
+                                return; // Don't visit children since we already processed
                             }
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
@@ -7554,23 +7455,11 @@ impl VisitMut for StepTransform {
                                         .unwrap_or_default(),
                                 ));
 
-                                // Replace with identifier reference
-                                let hoisted_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}${}", parent, name)
-                                        } else {
-                                            name
-                                        }
-                                    } else {
-                                        name
-                                    };
-                                *expr = Expr::Ident(Ident::new(
-                                    hoisted_name.into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                ));
-                                return; // Don't visit children since we replaced the expr
+                                // Keep the original arrow with the directive stripped,
+                                // so that direct (non-workflow) calls work with normal closure semantics.
+                                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                self.remove_use_step_directive_arrow(&mut arrow_expr.body);
+                                return; // Don't visit children since we already processed
                             }
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
@@ -8127,12 +8016,10 @@ impl VisitMut for StepTransform {
                                                                 .unwrap_or_default(),
                                                         ));
 
-                                                        // Replace with identifier reference
-                                                        *kv_prop.value = Expr::Ident(Ident::new(
-                                                            generated_name.into(),
-                                                            DUMMY_SP,
-                                                            SyntaxContext::empty(),
-                                                        ));
+                                                        // Keep the original arrow with the directive stripped
+                                                        self.remove_use_step_directive_arrow(
+                                                            &mut arrow_expr.body,
+                                                        );
                                                     }
                                                     TransformMode::Workflow => {
                                                         // Replace with step proxy reference
@@ -8219,12 +8106,10 @@ impl VisitMut for StepTransform {
                                                                 .unwrap_or_default(),
                                                         ));
 
-                                                        // Replace with identifier reference
-                                                        *kv_prop.value = Expr::Ident(Ident::new(
-                                                            generated_name.into(),
-                                                            DUMMY_SP,
-                                                            SyntaxContext::empty(),
-                                                        ));
+                                                        // Keep the original function with the directive stripped
+                                                        self.remove_use_step_directive(
+                                                            &mut fn_expr.function.body,
+                                                        );
                                                     }
                                                     TransformMode::Workflow => {
                                                         // Replace with step proxy reference
@@ -8319,16 +8204,10 @@ impl VisitMut for StepTransform {
                                                         .unwrap_or_default(),
                                                 ));
 
-                                                // Replace method with property pointing to identifier
-                                                *boxed_prop =
-                                                    Box::new(Prop::KeyValue(KeyValueProp {
-                                                        key: method_prop.key.clone(),
-                                                        value: Box::new(Expr::Ident(Ident::new(
-                                                            generated_name.into(),
-                                                            DUMMY_SP,
-                                                            SyntaxContext::empty(),
-                                                        ))),
-                                                    }));
+                                                // Keep the original method with the directive stripped
+                                                self.remove_use_step_directive(
+                                                    &mut method_prop.function.body,
+                                                );
                                             }
                                             TransformMode::Workflow => {
                                                 // Replace with step proxy reference
