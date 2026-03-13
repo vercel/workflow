@@ -279,15 +279,12 @@ function MessageParts({
                 toolName={toolPart.toolName}
               />
               <ToolContent>
-                {toolPart.input != null && (
-                  <ToolInput>
-                    {JSON.stringify(toolPart.input, null, 2)}
-                  </ToolInput>
-                )}
+                {toolPart.input != null && <ToolInput input={toolPart.input} />}
                 {toolPart.output != null && (
-                  <ToolOutput>
-                    {JSON.stringify(toolPart.output, null, 2)}
-                  </ToolOutput>
+                  <ToolOutput
+                    output={toolPart.output}
+                    errorText={toolPart.errorText}
+                  />
                 )}
               </ToolContent>
             </Tool>
