@@ -1,5 +1,5 @@
 // https://github.com/vercel/workflow/issues/1365
-/**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep10":{"stepId":"step//./input//_anonymousStep10"},"_anonymousStep11":{"stepId":"step//./input//_anonymousStep11"},"_anonymousStep12":{"stepId":"step//./input//_anonymousStep12"},"_anonymousStep13":{"stepId":"step//./input//_anonymousStep13"},"_anonymousStep14":{"stepId":"step//./input//_anonymousStep14"},"_anonymousStep15":{"stepId":"step//./input//_anonymousStep15"},"_anonymousStep16":{"stepId":"step//./input//_anonymousStep16"},"_anonymousStep17":{"stepId":"step//./input//_anonymousStep17"},"_anonymousStep18":{"stepId":"step//./input//_anonymousStep18"},"_anonymousStep19":{"stepId":"step//./input//_anonymousStep19"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"_anonymousStep5":{"stepId":"step//./input//_anonymousStep5"},"_anonymousStep6":{"stepId":"step//./input//_anonymousStep6"},"_anonymousStep7":{"stepId":"step//./input//_anonymousStep7"},"_anonymousStep8":{"stepId":"step//./input//_anonymousStep8"},"_anonymousStep9":{"stepId":"step//./input//_anonymousStep9"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep10":{"stepId":"step//./input//_anonymousStep10"},"_anonymousStep11":{"stepId":"step//./input//_anonymousStep11"},"_anonymousStep12":{"stepId":"step//./input//_anonymousStep12"},"_anonymousStep13":{"stepId":"step//./input//_anonymousStep13"},"_anonymousStep14":{"stepId":"step//./input//_anonymousStep14"},"_anonymousStep15":{"stepId":"step//./input//_anonymousStep15"},"_anonymousStep16":{"stepId":"step//./input//_anonymousStep16"},"_anonymousStep17":{"stepId":"step//./input//_anonymousStep17"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"_anonymousStep5":{"stepId":"step//./input//_anonymousStep5"},"_anonymousStep6":{"stepId":"step//./input//_anonymousStep6"},"_anonymousStep7":{"stepId":"step//./input//_anonymousStep7"},"_anonymousStep8":{"stepId":"step//./input//_anonymousStep8"},"_anonymousStep9":{"stepId":"step//./input//_anonymousStep9"}}}}*/;
 // Bug 1: `new` expressions should have their arguments captured as closure vars
 export function mockModel(...args) {
     return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//mockModel/_anonymousStep0", ()=>({
@@ -98,32 +98,21 @@ export function mockTextModel(text) {
             text
         }));
 }
-// TypeScript expression wrappers should not prevent closure detection
-export function withTsAs(value) {
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//withTsAs/_anonymousStep15", ()=>({
-            value
-        }));
-}
-export function withTsNonNull(value) {
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//withTsNonNull/_anonymousStep16", ()=>({
-            value
-        }));
-}
 // Class expression bodies should detect closure vars from outer scope
 export function withClassExpr(baseUrl) {
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//withClassExpr/_anonymousStep17", ()=>({
+    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//withClassExpr/_anonymousStep15", ()=>({
             baseUrl
         }));
 }
 // Class with super class referencing closure var
 export function withClassSuper(Base) {
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//withClassSuper/_anonymousStep18", ()=>({
+    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//withClassSuper/_anonymousStep16", ()=>({
             Base
         }));
 }
 // Class property initializer referencing closure var
 export function withClassProp(defaultValue) {
-    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//withClassProp/_anonymousStep19", ()=>({
+    return globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//withClassProp/_anonymousStep17", ()=>({
             defaultValue
         }));
 }

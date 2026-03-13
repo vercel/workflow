@@ -2,7 +2,7 @@ import { __private_getClosureVars, registerStepFunction } from "workflow/interna
 // https://github.com/vercel/workflow/issues/1365
 import { MockLanguageModelV3 } from 'ai/test';
 import { xai as xaiProvider } from '@ai-sdk/xai';
-/**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep10":{"stepId":"step//./input//_anonymousStep10"},"_anonymousStep11":{"stepId":"step//./input//_anonymousStep11"},"_anonymousStep12":{"stepId":"step//./input//_anonymousStep12"},"_anonymousStep13":{"stepId":"step//./input//_anonymousStep13"},"_anonymousStep14":{"stepId":"step//./input//_anonymousStep14"},"_anonymousStep15":{"stepId":"step//./input//_anonymousStep15"},"_anonymousStep16":{"stepId":"step//./input//_anonymousStep16"},"_anonymousStep17":{"stepId":"step//./input//_anonymousStep17"},"_anonymousStep18":{"stepId":"step//./input//_anonymousStep18"},"_anonymousStep19":{"stepId":"step//./input//_anonymousStep19"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"_anonymousStep5":{"stepId":"step//./input//_anonymousStep5"},"_anonymousStep6":{"stepId":"step//./input//_anonymousStep6"},"_anonymousStep7":{"stepId":"step//./input//_anonymousStep7"},"_anonymousStep8":{"stepId":"step//./input//_anonymousStep8"},"_anonymousStep9":{"stepId":"step//./input//_anonymousStep9"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep10":{"stepId":"step//./input//_anonymousStep10"},"_anonymousStep11":{"stepId":"step//./input//_anonymousStep11"},"_anonymousStep12":{"stepId":"step//./input//_anonymousStep12"},"_anonymousStep13":{"stepId":"step//./input//_anonymousStep13"},"_anonymousStep14":{"stepId":"step//./input//_anonymousStep14"},"_anonymousStep15":{"stepId":"step//./input//_anonymousStep15"},"_anonymousStep16":{"stepId":"step//./input//_anonymousStep16"},"_anonymousStep17":{"stepId":"step//./input//_anonymousStep17"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"_anonymousStep5":{"stepId":"step//./input//_anonymousStep5"},"_anonymousStep6":{"stepId":"step//./input//_anonymousStep6"},"_anonymousStep7":{"stepId":"step//./input//_anonymousStep7"},"_anonymousStep8":{"stepId":"step//./input//_anonymousStep8"},"_anonymousStep9":{"stepId":"step//./input//_anonymousStep9"}}}}*/;
 var mockModel$_anonymousStep0 = async ()=>{
     const { args } = __private_getClosureVars();
     return new MockLanguageModelV3(...args);
@@ -109,15 +109,7 @@ var mockTextModel$_anonymousStep14 = async ()=>{
             })
     });
 };
-var withTsAs$_anonymousStep15 = async ()=>{
-    const { value } = __private_getClosureVars();
-    return value;
-};
-var withTsNonNull$_anonymousStep16 = async ()=>{
-    const { value } = __private_getClosureVars();
-    return value;
-};
-var withClassExpr$_anonymousStep17 = async ()=>{
+var withClassExpr$_anonymousStep15 = async ()=>{
     const { baseUrl } = __private_getClosureVars();
     return new class {
         getUrl() {
@@ -125,7 +117,7 @@ var withClassExpr$_anonymousStep17 = async ()=>{
         }
     };
 };
-var withClassSuper$_anonymousStep18 = async ()=>{
+var withClassSuper$_anonymousStep16 = async ()=>{
     const { Base } = __private_getClosureVars();
     return class extends Base {
         getValue() {
@@ -133,7 +125,7 @@ var withClassSuper$_anonymousStep18 = async ()=>{
         }
     };
 };
-var withClassProp$_anonymousStep19 = async ()=>{
+var withClassProp$_anonymousStep17 = async ()=>{
     const { defaultValue } = __private_getClosureVars();
     return new class {
         value = defaultValue;
@@ -286,17 +278,6 @@ export function mockTextModel(text) {
         });
     };
 }
-// TypeScript expression wrappers should not prevent closure detection
-export function withTsAs(value) {
-    return async ()=>{
-        return value;
-    };
-}
-export function withTsNonNull(value) {
-    return async ()=>{
-        return value;
-    };
-}
 // Class expression bodies should detect closure vars from outer scope
 export function withClassExpr(baseUrl) {
     return async ()=>{
@@ -340,8 +321,6 @@ registerStepFunction("step//./input//withDoWhile/_anonymousStep11", withDoWhile$
 registerStepFunction("step//./input//withShorthandProps/_anonymousStep12", withShorthandProps$_anonymousStep12);
 registerStepFunction("step//./input//withComputedKey/_anonymousStep13", withComputedKey$_anonymousStep13);
 registerStepFunction("step//./input//mockTextModel/_anonymousStep14", mockTextModel$_anonymousStep14);
-registerStepFunction("step//./input//withTsAs/_anonymousStep15", withTsAs$_anonymousStep15);
-registerStepFunction("step//./input//withTsNonNull/_anonymousStep16", withTsNonNull$_anonymousStep16);
-registerStepFunction("step//./input//withClassExpr/_anonymousStep17", withClassExpr$_anonymousStep17);
-registerStepFunction("step//./input//withClassSuper/_anonymousStep18", withClassSuper$_anonymousStep18);
-registerStepFunction("step//./input//withClassProp/_anonymousStep19", withClassProp$_anonymousStep19);
+registerStepFunction("step//./input//withClassExpr/_anonymousStep15", withClassExpr$_anonymousStep15);
+registerStepFunction("step//./input//withClassSuper/_anonymousStep16", withClassSuper$_anonymousStep16);
+registerStepFunction("step//./input//withClassProp/_anonymousStep17", withClassProp$_anonymousStep17);

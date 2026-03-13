@@ -168,21 +168,6 @@ export function mockTextModel(text) {
   };
 }
 
-// TypeScript expression wrappers should not prevent closure detection
-export function withTsAs(value) {
-  return async () => {
-    'use step';
-    return value;
-  };
-}
-
-export function withTsNonNull(value) {
-  return async () => {
-    'use step';
-    return value;
-  };
-}
-
 // Class expression bodies should detect closure vars from outer scope
 export function withClassExpr(baseUrl) {
   return async () => {
