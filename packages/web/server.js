@@ -9,7 +9,7 @@
  */
 
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import express from 'express';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -18,7 +18,9 @@ const buildDir = path.resolve(__dirname, 'build');
 async function createApp() {
   // Import the compiled server build, which exports { app } (an Express app
   // with the React Router request handler already mounted by server/app.ts)
-  const { app } = await import(path.join(buildDir, 'server/index.js'));
+  const { app } = await import(
+    pathToFileURL(path.join(buildDir, 'server/index.js')).href
+  );
 
   // Add static file serving in front of the React Router handler.
   // We create a wrapper app so static middleware runs first.

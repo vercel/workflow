@@ -1,5 +1,13 @@
+import { createHash } from 'node:crypto';
 import { monotonicFactory } from 'ulid';
 import { ulidToDate } from '../fs.js';
+
+/**
+ * Hash a hook token to produce a filesystem-safe constraint filename.
+ */
+export function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
 
 /**
  * Create a monotonic ULID factory that ensures ULIDs are always increasing

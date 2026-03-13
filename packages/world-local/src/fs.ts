@@ -187,6 +187,27 @@ export async function deleteJSON(filePath: string): Promise<void> {
   }
 }
 
+/**
+ * Atomically create a file using O_CREAT | O_EXCL flags.
+ * Returns true if the file was created, false if it already exists.
+ * This is atomic at the OS level, safe for concurrent access.
+ */
+export async function writeExclusive(
+  filePath: string,
+  data: string
+): Promise<boolean> {
+  await ensureDir(path.dirname(filePath));
+  try {
+    await fs.writeFile(filePath, data, { flag: 'wx' });
+    return true;
+  } catch (error: any) {
+    if (error.code === 'EEXIST') {
+      return false;
+    }
+    throw error;
+  }
+}
+
 export async function listJSONFiles(dirPath: string): Promise<string[]> {
   return listFilesByExtension(dirPath, '.json');
 }

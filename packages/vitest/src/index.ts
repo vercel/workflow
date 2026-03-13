@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BaseBuilder, createBaseBuilderConfig } from '@workflow/builders';
 import type { Run } from '@workflow/core/runtime';
 import { setWorld } from '@workflow/core/runtime';
@@ -134,10 +134,10 @@ export async function setupWorkflowTests(
   const outDir = getOutDir(cwd);
 
   const workflowsModule = await import(
-    /* @vite-ignore */ join(outDir, 'workflows.mjs')
+    /* @vite-ignore */ pathToFileURL(join(outDir, 'workflows.mjs')).href
   );
   const stepsModule = await import(
-    /* @vite-ignore */ join(outDir, 'steps.mjs')
+    /* @vite-ignore */ pathToFileURL(join(outDir, 'steps.mjs')).href
   );
 
   const workflowHandler = workflowsModule.POST as (

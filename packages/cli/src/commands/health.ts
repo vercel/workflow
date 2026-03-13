@@ -223,12 +223,11 @@ export default class Health extends BaseCommand {
 
   static flags = {
     endpoint: Flags.string({
-      char: 'e',
       description: 'Which endpoint(s) to check',
       options: ['workflow', 'step', 'both'],
       default: 'both',
       helpGroup: 'Health Check',
-      helpLabel: '-e, --endpoint',
+      helpLabel: '--endpoint',
       helpValue: ['workflow', 'step', 'both'],
     }),
     timeout: Flags.integer({
