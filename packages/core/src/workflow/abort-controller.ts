@@ -20,12 +20,20 @@ class WorkflowAbortSignal {
 
   #listeners: Array<() => void> = [];
 
+  /**
+   * Set by the events consumer during replay when hook_received is processed.
+   * The actual _setAborted (with listener firing) is deferred until abort()
+   * is called in the workflow code, ensuring listeners fire at the same point
+   * in both first-run and replay.
+   */
+  _replayAbortReason: { set: true; reason: unknown } | undefined;
+
   constructor(streamName: string, hookToken: string) {
     this[ABORT_STREAM_NAME] = streamName;
     this[ABORT_HOOK_TOKEN] = hookToken;
   }
 
-  /** @internal Called by the events consumer when hook_received is processed */
+  /** @internal Called by abort() to update state and fire listeners */
   _setAborted(reason?: unknown): void {
     if (this.aborted) return;
     this.aborted = true;
@@ -34,6 +42,19 @@ class WorkflowAbortSignal {
       listener();
     }
     this.#listeners = [];
+  }
+
+  /**
+   * @internal Called by the events consumer during replay.
+   * Records that abort happened but defers listener firing until abort() is called.
+   */
+  _markAbortedFromReplay(reason?: unknown): void {
+    if (this.aborted) return;
+    this._replayAbortReason = { set: true, reason };
+    // Set aborted=true so reads return true, but DON'T fire listeners.
+    // Listeners will fire when abort() is called in the workflow code.
+    this.aborted = true;
+    this.reason = reason;
   }
 
   addEventListener(type: string, listener: () => void): void {
@@ -120,7 +141,10 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
         }
 
         if (event.eventType === 'hook_received') {
-          // The abort was recorded — update the signal's state
+          // The abort was recorded in the event log during a previous run.
+          // Mark the signal as aborted (so reads return true) but DON'T fire
+          // listeners yet — they'll fire when abort() is called in the workflow
+          // code, ensuring consistent ordering between first-run and replay.
           const payload = event.eventData?.payload;
           const reason =
             payload && typeof payload === 'object' && 'reason' in payload
@@ -129,7 +153,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
 
           // Chain through promiseQueue for deterministic ordering
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
-            this.signal._setAborted(reason);
+            this.signal._markAbortedFromReplay(reason);
           });
 
           ctx.invocationsQueue.delete(correlationId);
@@ -146,12 +170,21 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
     }
 
     abort(reason?: unknown): void {
-      if (this.signal.aborted) return; // no-op if already aborted
+      // If already aborted from replay (_markAbortedFromReplay was called),
+      // fire listeners now at the abort() call site for consistent ordering.
+      if (this.signal._replayAbortReason?.set) {
+        const replayReason = this.signal._replayAbortReason.reason;
+        this.signal._replayAbortReason = undefined;
+        // aborted is already true, but listeners haven't fired yet.
+        // Temporarily reset and call _setAborted to fire them.
+        this.signal.aborted = false;
+        this.signal._setAborted(replayReason);
+        return; // Hook was already processed during replay, no queue changes needed
+      }
 
-      // Update the signal's local state immediately so that:
-      // 1. signal.aborted returns true for subsequent reads in the workflow
-      // 2. Serialization (when passing to steps) captures aborted: true
-      // 3. Event listeners fire synchronously
+      if (this.signal.aborted) return; // true no-op (listeners already fired)
+
+      // First run: update signal and fire listeners synchronously
       this.signal._setAborted(reason);
 
       // Mark the hook for resumption so the suspension handler records
