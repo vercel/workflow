@@ -90,7 +90,10 @@ export function createStreamer(config: CloudflareWorldConfig): Streamer {
 
     async listStreamsByRunId(runId: string): Promise<string[]> {
       const stub = getRunStub(config.runs, runId);
-      return doFetch<string[]>(stub, '/streams');
+      const names = await doFetch<string[]>(stub, '/streams');
+      // Prefix each stream name with `runId:` so the result can be passed
+      // directly to readFromStream, which expects that format.
+      return names.map((name) => `${runId}:${name}`);
     },
   };
 }

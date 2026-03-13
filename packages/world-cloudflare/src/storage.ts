@@ -22,8 +22,11 @@ import type {
   WorkflowRun,
   WorkflowRunWithoutData,
 } from '@workflow/world';
+import { monotonicFactory } from 'ulid';
 import type { CloudflareWorldConfig } from './config.js';
 import { doFetch, getRunStub } from './util.js';
+
+const ulid = monotonicFactory();
 
 /**
  * Creates the Storage implementation that routes requests to Durable Objects
@@ -150,22 +153,22 @@ function createEventsStorage(config: CloudflareWorldConfig): Storage['events'] {
       data: RunCreatedEventRequest | CreateEventRequest,
       params?: CreateEventParams
     ): Promise<EventResult> {
-      // For run_created with null runId, we'll let the DO generate one.
-      // We need a temporary runId to route to the DO. The DO will generate
-      // the real runId if needed.
-      let routingRunId = runId;
+      // For run_created with null runId, generate the runId client-side so
+      // the routing key and the stored runId map to the same DO instance.
+      // If we used a random temp key and let the DO generate its own runId,
+      // that runId would route to a different DO instance, making the run
+      // data permanently unretrievable.
+      let effectiveRunId = runId;
       if (data.eventType === 'run_created' && !runId) {
-        // We'll use a placeholder — the DO will generate the real runId
-        // and we need to route to a consistent DO. Use a random one.
-        routingRunId = `wrun_temp_${Date.now()}`;
+        effectiveRunId = `wrun_${ulid()}`;
       }
 
-      const stub = getRunStub(config.runs, routingRunId as string);
+      const stub = getRunStub(config.runs, effectiveRunId as string);
       return doFetch<EventResult>(stub, '/events', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          runId,
+          runId: effectiveRunId,
           data,
           params,
         }),
