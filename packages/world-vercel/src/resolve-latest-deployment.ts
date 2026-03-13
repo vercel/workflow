@@ -35,9 +35,10 @@ export function createResolveLatestDeploymentId(
       );
     }
 
-    // Authenticate via provided token (CLI/config), OIDC token (runtime),
-    // or VERCEL_TOKEN env var (external tooling).
-    // Skip the OIDC network call when a token is already available.
+    // Authenticate via provided token (CLI/config), VERCEL_TOKEN env var
+    // (external tooling), or OIDC token (runtime) — in that order.
+    // OIDC is last to avoid an unnecessary network call when a token is
+    // already available (e.g. CLI or CI contexts).
     const token =
       config?.token ??
       process.env.VERCEL_TOKEN ??
