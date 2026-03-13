@@ -148,11 +148,14 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
     abort(reason?: unknown): void {
       if (this.signal.aborted) return; // no-op if already aborted
 
-      // Find the hook queue item and mark it for abort.
-      // The suspension handler will process this by:
-      // 1. Creating the hook (if not yet created)
-      // 2. Resuming it with hook_received (recording the abort in the event log)
-      // 3. Writing the stream cancellation packet (for real-time step propagation)
+      // Update the signal's local state immediately so that:
+      // 1. signal.aborted returns true for subsequent reads in the workflow
+      // 2. Serialization (when passing to steps) captures aborted: true
+      // 3. Event listeners fire synchronously
+      this.signal._setAborted(reason);
+
+      // Mark the hook for resumption so the suspension handler records
+      // the abort in the event log and writes the stream packet.
       for (const [, item] of ctx.invocationsQueue) {
         if (item.type === 'hook' && item.token === this[ABORT_HOOK_TOKEN]) {
           item.abortRequested = true;

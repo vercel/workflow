@@ -650,12 +650,9 @@ describe('AbortController hook integration', () => {
       const queueItem = [...ctx.invocationsQueue.values()][0];
       if (queueItem.type === 'hook') {
         expect(queueItem.abortRequested).toBe(true);
-        // The first abort() sets abortRequested + abortReason on the queue item.
-        // The second abort() also sets them (since signal.aborted is not set
-        // synchronously in workflow context — it waits for hook replay). However,
-        // the suspension handler will only process the abort once, and the signal
-        // state is idempotent via _setAborted's guard.
-        expect(queueItem.abortReason).toBe('second');
+        // The first abort() sets signal.aborted synchronously, so the second
+        // abort() is a no-op (returns early). The reason stays 'first'.
+        expect(queueItem.abortReason).toBe('first');
       }
     });
 
