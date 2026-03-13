@@ -49,6 +49,8 @@ export {
   STREAM_REF_TYPE,
   truncateId,
 } from './lib/hydration';
+export type { ToastAdapter } from './lib/toast';
+export { ToastProvider, useToast } from './lib/toast';
 export type { StreamStep } from './lib/utils';
 export {
   extractConversation,

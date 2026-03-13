@@ -17,6 +17,7 @@ import {
 import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
 import { Skeleton } from './ui/skeleton';
+import { TimestampTooltip } from './ui/timestamp-tooltip';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -209,6 +210,15 @@ function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
   }
 
   return durations;
+}
+
+/** Check if a loaded eventData object contains any encrypted marker values. */
+function hasEncryptedValues(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  for (const val of Object.values(data as Record<string, unknown>)) {
+    if (isEncryptedMarker(val)) return true;
+  }
+  return false;
 }
 
 function isRunLevel(eventType: string): boolean {
@@ -602,21 +612,67 @@ const SORT_OPTIONS = [
 function RowsSkeleton() {
   return (
     <div className="flex-1 overflow-hidden">
-      {Array.from({ length: 8 }, (_, i) => (
-        <div
-          key={i}
-          className="flex items-center gap-3 px-4"
-          style={{ height: 40 }}
-        >
-          <Skeleton
-            className="h-2 w-2 flex-shrink-0"
-            style={{ borderRadius: '50%' }}
-          />
-          <Skeleton className="h-3" style={{ width: 90 }} />
-          <Skeleton className="h-3" style={{ width: 100 }} />
-          <Skeleton className="h-3" style={{ width: 80 }} />
-          <Skeleton className="h-3 flex-1" />
-          <Skeleton className="h-3 flex-1" />
+      {Array.from({ length: 16 }, (_, i) => (
+        <div key={i} className="flex items-center gap-0" style={{ height: 40 }}>
+          {/* Gutter area */}
+          <div
+            className="relative flex-shrink-0 self-stretch flex items-center"
+            style={{ width: GUTTER_WIDTH }}
+          >
+            {/* Vertical line skeleton */}
+            <div
+              style={{
+                position: 'absolute',
+                left: 8,
+                top: i === 0 ? '50%' : 0,
+                bottom: 0,
+                width: 2,
+              }}
+            >
+              <Skeleton className="w-full h-full" style={{ borderRadius: 1 }} />
+            </div>
+            {/* Dot skeleton */}
+            <Skeleton
+              className="flex-shrink-0"
+              style={{
+                width: i % 4 === 0 ? 8 : 6,
+                height: i % 4 === 0 ? 8 : 6,
+                borderRadius: '50%',
+                marginLeft: i % 4 === 0 ? 5 : 6,
+              }}
+            />
+          </div>
+          {/* Chevron placeholder */}
+          <div className="w-5 flex-shrink-0 flex items-center justify-center">
+            <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
+          </div>
+          {/* Time */}
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '70%' }} />
+          </div>
+          {/* Event Type */}
+          <div
+            className="min-w-0 px-4 flex items-center gap-1.5"
+            style={{ flex: '2 1 0%' }}
+          >
+            <Skeleton
+              className="flex-shrink-0"
+              style={{ width: 6, height: 6, borderRadius: '50%' }}
+            />
+            <Skeleton className="h-3" style={{ width: '60%' }} />
+          </div>
+          {/* Name */}
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '50%' }} />
+          </div>
+          {/* Correlation ID */}
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '75%' }} />
+          </div>
+          {/* Event ID */}
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: '75%' }} />
+          </div>
         </div>
       ))}
     </div>
@@ -668,6 +724,7 @@ function EventRow({
   cachedEventData,
   onCacheEventData,
   encryptionKey,
+  onEncryptedDataDetected,
 }: {
   event: Event;
   index: number;
@@ -687,6 +744,7 @@ function EventRow({
   cachedEventData: unknown | null;
   onCacheEventData: (eventId: string, data: unknown) => void;
   encryptionKey?: Uint8Array;
+  onEncryptedDataDetected?: () => void;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
@@ -696,6 +754,18 @@ function EventRow({
   const [hasAttemptedLoad, setHasAttemptedLoad] = useState(
     cachedEventData !== null
   );
+
+  // Notify parent if cached data has encrypted markers on mount
+  useEffect(() => {
+    if (
+      cachedEventData !== null &&
+      !encryptionKey &&
+      hasEncryptedValues(cachedEventData)
+    ) {
+      onEncryptedDataDetected?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const rowGroupKey = isRunLevel(event.eventType)
     ? '__run__'
@@ -745,6 +815,9 @@ function EventRow({
       if (data !== null && data !== undefined) {
         setLoadedEventData(data);
         onCacheEventData(event.eventId, data);
+        if (!encryptionKey && hasEncryptedValues(data)) {
+          onEncryptedDataDetected?.();
+        }
       }
     } catch (err) {
       setLoadError(
@@ -760,6 +833,8 @@ function EventRow({
     hasExistingEventData,
     onLoadEventData,
     onCacheEventData,
+    encryptionKey,
+    onEncryptedDataDetected,
   ]);
 
   // Auto-load event data when remounting in expanded state without cached data
@@ -877,7 +952,9 @@ function EventRow({
             className="tabular-nums min-w-0 px-4"
             style={{ color: 'var(--ds-gray-900)', flex: '2 1 0%' }}
           >
-            {formatEventTime(createdAt)}
+            <TimestampTooltip date={createdAt}>
+              <span>{formatEventTime(createdAt)}</span>
+            </TimestampTooltip>
           </div>
 
           {/* Event Type */}
@@ -1079,21 +1156,25 @@ export function EventListView({
     );
   }, [events, effectiveSortOrder]);
 
-  // Detect encrypted fields across all loaded events.
-  // Only checks top-level eventData values (input, output, result, etc.) —
-  // the current data model guarantees encrypted markers appear at this level.
-  const hasEncryptedData = useMemo(() => {
+  // Detect encrypted fields across all loaded events (inline eventData).
+  const hasEncryptedInlineData = useMemo(() => {
     if (!events) return false;
     for (const event of events) {
       const ed = (event as Record<string, unknown>).eventData;
-      if (!ed || typeof ed !== 'object') continue;
-      const data = ed as Record<string, unknown>;
-      for (const val of Object.values(data)) {
-        if (isEncryptedMarker(val)) return true;
-      }
+      if (hasEncryptedValues(ed)) return true;
     }
     return false;
   }, [events]);
+
+  // Tracks whether any expanded row's lazy-loaded data contained encrypted markers.
+  // Set to true by EventRow via onEncryptedDataDetected; never reset (sticky).
+  const [foundEncryptedInLazyData, setFoundEncryptedInLazyData] =
+    useState(false);
+  const handleEncryptedDataDetected = useCallback(() => {
+    setFoundEncryptedInLazyData(true);
+  }, []);
+
+  const hasEncryptedData = hasEncryptedInlineData || foundEncryptedInLazyData;
 
   const { correlationNameMap, workflowName } = useMemo(
     () => buildNameMaps(events ?? null, run ?? null),
@@ -1268,18 +1349,26 @@ export function EventListView({
         </div>
         {/* Skeleton header */}
         <div
-          className="flex items-center gap-0 h-10 border-b flex-shrink-0 px-4"
+          className="flex items-center gap-0 h-10 border-b flex-shrink-0"
           style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
         >
-          <Skeleton className="h-3" style={{ width: 60 }} />
-          <div style={{ flex: 1 }} />
-          <Skeleton className="h-3" style={{ width: 80 }} />
-          <div style={{ flex: 1 }} />
-          <Skeleton className="h-3" style={{ width: 50 }} />
-          <div style={{ flex: 1 }} />
-          <Skeleton className="h-3" style={{ width: 90 }} />
-          <div style={{ flex: 1 }} />
-          <Skeleton className="h-3" style={{ width: 70 }} />
+          <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
+          <div className="w-5 flex-shrink-0" />
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 40 }} />
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 72 }} />
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 44 }} />
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 92 }} />
+          </div>
+          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+            <Skeleton className="h-3" style={{ width: 60 }} />
+          </div>
         </div>
         <RowsSkeleton />
       </div>
@@ -1455,6 +1544,7 @@ export function EventListView({
                 }
                 onCacheEventData={cacheEventData}
                 encryptionKey={encryptionKey}
+                onEncryptedDataDetected={handleEncryptedDataDetected}
               />
             );
           }}

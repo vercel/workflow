@@ -4,7 +4,7 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { useToast } from '../../lib/toast';
 import { isEncryptedMarker } from '../../lib/hydration';
 import { DecryptButton } from '../ui/decrypt-button';
 import { AttributePanel } from './attribute-panel';
@@ -104,6 +104,7 @@ export function EntityDetailPanel({
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
 }): React.JSX.Element | null {
+  const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
   const [showResolveHookModal, setShowResolveHookModal] = useState(false);
   const [resolvingHook, setResolvingHook] = useState(false);
