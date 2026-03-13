@@ -78,7 +78,7 @@ export async function chat(messages: UIMessage[], model?: string) {
     ...(isAnthropic
       ? { anthropic: { thinking: { type: 'enabled', budgetTokens: 10000 } } }
       : {}),
-    ...(isOpenAI ? { openai: { reasoningEffort: 'high' } } : {}),
+    ...(isOpenAI ? { openai: { reasoningEffort: 'medium' } } : {}),
   };
 
   const agent = new DurableAgent({
