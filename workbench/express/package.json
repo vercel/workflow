@@ -24,6 +24,7 @@
     "lodash.chunk": "^4.2.0",
     "openai": "^6.1.0",
     "workflow": "workspace:*",
+    "@workflow/ai": "workspace:*",
     "zod": "catalog:"
   }
 }

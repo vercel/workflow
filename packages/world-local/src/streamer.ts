@@ -6,7 +6,8 @@ import { z } from 'zod';
 import {
   listFilesByExtension,
   readBuffer,
-  readJSON,
+  readJSONWithFallback,
+  taggedPath,
   write,
   writeJSON,
 } from './fs.js';
@@ -44,7 +45,8 @@ export function deserializeChunk(serialized: Buffer) {
   return { eof, chunk };
 }
 
-export function createStreamer(basedir: string): Streamer {
+export function createStreamer(basedir: string, tag?: string): Streamer {
+  const tagSuffix = tag ? `.${tag}` : '';
   const streamEmitter = new EventEmitter<{
     [key: `chunk:${string}`]: [
       {
@@ -73,15 +75,16 @@ export function createStreamer(basedir: string): Streamer {
       return; // Already registered in this session
     }
 
-    const runStreamsPath = path.join(
-      basedir,
-      'streams',
-      'runs',
-      `${runId}.json`
-    );
+    const runStreamsPath = taggedPath(basedir, 'streams/runs', runId, tag);
 
-    // Read existing streams for this run
-    const existing = await readJSON(runStreamsPath, RunStreamsSchema);
+    // Read existing streams for this run (try tagged first, fall back to untagged)
+    const existing = await readJSONWithFallback(
+      basedir,
+      'streams/runs',
+      runId,
+      RunStreamsSchema,
+      tag
+    );
     const streams = existing?.streams ?? [];
 
     // Add stream if not already present
@@ -133,7 +136,7 @@ export function createStreamer(basedir: string): Streamer {
         basedir,
         'streams',
         'chunks',
-        `${name}-${chunkId}.bin`
+        `${name}-${chunkId}${tagSuffix}.bin`
       );
 
       await write(chunkPath, serialized);
@@ -181,7 +184,7 @@ export function createStreamer(basedir: string): Streamer {
           basedir,
           'streams',
           'chunks',
-          `${name}-${chunkId}.bin`
+          `${name}-${chunkId}${tagSuffix}.bin`
         );
 
         await write(chunkPath, serialized);
@@ -219,7 +222,7 @@ export function createStreamer(basedir: string): Streamer {
         basedir,
         'streams',
         'chunks',
-        `${name}-${chunkId}.bin`
+        `${name}-${chunkId}${tagSuffix}.bin`
       );
 
       await write(
@@ -231,14 +234,13 @@ export function createStreamer(basedir: string): Streamer {
     },
 
     async listStreamsByRunId(runId: string) {
-      const runStreamsPath = path.join(
+      const data = await readJSONWithFallback(
         basedir,
-        'streams',
-        'runs',
-        `${runId}.json`
+        'streams/runs',
+        runId,
+        RunStreamsSchema,
+        tag
       );
-
-      const data = await readJSON(runStreamsPath, RunStreamsSchema);
       return data?.streams ?? [];
     },
 
@@ -310,13 +312,31 @@ export function createStreamer(basedir: string): Streamer {
           // Now load existing chunks from disk.
           // List both .bin (current) and .json (legacy) chunk files for
           // backwards compatibility with streams written before this change.
-          const [binFiles, jsonFiles] = await Promise.all([
+          // Also list tagged .bin files (e.g., `.vitest-0.bin`).
+          const listPromises: Promise<string[]>[] = [
             listFilesByExtension(chunksDir, '.bin'),
             listFilesByExtension(chunksDir, '.json'),
-          ]);
+          ];
+          if (tag) {
+            listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
+          }
+          const [binFiles, jsonFiles, ...taggedResults] =
+            await Promise.all(listPromises);
+          const taggedBinFiles = taggedResults[0] ?? [];
           const fileExtMap = new Map<string, string>();
           for (const f of jsonFiles) fileExtMap.set(f, '.json');
-          for (const f of binFiles) fileExtMap.set(f, '.bin'); // .bin takes precedence
+          // When a tag is set, skip .bin entries that end with the tag suffix
+          // because those same files will be properly handled by taggedBinFiles.
+          // Without this filter, a file like "stream-chnk_ABC.vitest-0.bin" would
+          // appear twice: once as "stream-chnk_ABC.vitest-0" (from .bin listing)
+          // and once as "stream-chnk_ABC" (from .vitest-0.bin listing), causing
+          // duplicate data in the stream.
+          const tagSuffix = tag ? `.${tag}` : '';
+          for (const f of binFiles) {
+            if (tag && f.endsWith(tagSuffix)) continue;
+            fileExtMap.set(f, '.bin'); // .bin takes precedence
+          }
+          for (const f of taggedBinFiles) fileExtMap.set(f, `.${tag}.bin`); // tagged .bin takes precedence
           const chunkFiles = [...fileExtMap.keys()]
             .filter((file) => file.startsWith(`${name}-`))
             .sort(); // ULID lexicographic sort = chronological order
@@ -325,8 +345,12 @@ export function createStreamer(basedir: string): Streamer {
           let isComplete = false;
           for (let i = startIndex; i < chunkFiles.length; i++) {
             const file = chunkFiles[i];
-            // Extract chunk ID from filename: "streamName-chunkId"
-            const chunkId = file.substring(name.length + 1);
+            // Extract chunk ID from filename: "streamName-chunkId" or "streamName-chunkId.tag"
+            const rawChunkId = file.substring(name.length + 1);
+            // Strip tag suffix (e.g., "chnk_ULID.vitest-0" → "chnk_ULID")
+            const chunkId = tag
+              ? rawChunkId.replace(`.${tag}`, '')
+              : rawChunkId;
 
             // Skip if already delivered via event
             if (deliveredChunkIds.has(chunkId)) {

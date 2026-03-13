@@ -14,13 +14,13 @@ import { createStepsStorage } from './steps-storage.js';
  * @param basedir - The base directory for storing workflow data
  * @returns A complete Storage implementation with tracing
  */
-export function createStorage(basedir: string): Storage {
+export function createStorage(basedir: string, tag?: string): Storage {
   // Create raw storage implementations
   const storage: Storage = {
-    runs: createRunsStorage(basedir),
-    steps: createStepsStorage(basedir),
-    events: createEventsStorage(basedir),
-    hooks: createHooksStorage(basedir),
+    runs: createRunsStorage(basedir, tag),
+    steps: createStepsStorage(basedir, tag),
+    events: createEventsStorage(basedir, tag),
+    hooks: createHooksStorage(basedir, tag),
   };
 
   // Instrument all storage methods with tracing

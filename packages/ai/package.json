@@ -53,6 +53,10 @@
     "./xai": {
       "types": "./dist/providers/xai.d.ts",
       "default": "./dist/providers/xai.js"
+    },
+    "./test": {
+      "types": "./dist/providers/mock.d.ts",
+      "default": "./dist/providers/mock.js"
     }
   },
   "scripts": {
@@ -68,18 +72,19 @@
     "workflow": "workspace:*"
   },
   "peerDependencies": {
-    "ai": "^5 || ^6",
+    "ai": "^6",
     "workflow": "workspace:^"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^2.0.0 || ^3.0.0",
+    "@ai-sdk/provider": "^3.0.0",
+    "@workflow/serde": "workspace:^",
     "zod": "catalog:"
   },
   "optionalDependencies": {
-    "@ai-sdk/anthropic": "^2.0.0 || ^3.0.0",
-    "@ai-sdk/gateway": "^2.0.0 || ^3.0.0",
-    "@ai-sdk/google": "^2.0.0 || ^3.0.0",
-    "@ai-sdk/openai": "^2.0.0 || ^3.0.0",
-    "@ai-sdk/xai": "^2.0.0 || ^3.0.0"
+    "@ai-sdk/anthropic": "^3.0.0",
+    "@ai-sdk/gateway": "^3.0.0",
+    "@ai-sdk/google": "^3.0.0",
+    "@ai-sdk/openai": "^3.0.0",
+    "@ai-sdk/xai": "^3.0.0"
   }
 }
