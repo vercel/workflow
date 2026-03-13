@@ -33,6 +33,9 @@ export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
 }).extend({
   // Backend returns error as either a JSON string or structured object
   error: z.union([z.string(), StructuredErrorSchema]).optional(),
+  // errorCode is stored inline on the run entity (not inside errorRef).
+  // It's merged into StructuredError.code by deserializeError().
+  errorCode: z.string().optional(),
   // Not part of the World interface, but passed through for direct consumers and debugging
   blobStorageBytes: z.number().optional(),
   streamStorageBytes: z.number().optional(),

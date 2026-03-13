@@ -90,11 +90,15 @@ export function serializeError<T extends { error?: StructuredError }>(
  * status), but the transformation preserves all other fields correctly.
  */
 export function deserializeError<T extends Record<string, any>>(obj: any): T {
-  const { error, ...rest } = obj;
+  const { error, errorCode, ...rest } = obj;
 
   if (!error) {
     return obj as T;
   }
+
+  // errorCode is stored as a separate inline field on the run entity (not
+  // inside errorRef). Merge it into StructuredError.code so consumers see it.
+  // If the error already has a code from the ref, errorCode takes precedence.
 
   // If error is already an object (new format), validate and use directly
   if (typeof error === 'object' && error !== null) {
@@ -105,7 +109,7 @@ export function deserializeError<T extends Record<string, any>>(obj: any): T {
         error: {
           message: result.data.message,
           stack: result.data.stack,
-          code: result.data.code,
+          code: errorCode ?? result.data.code,
         },
       } as T;
     }
@@ -121,7 +125,7 @@ export function deserializeError<T extends Record<string, any>>(obj: any): T {
         error: {
           message: parsed.message,
           stack: parsed.stack,
-          code: parsed.code,
+          code: errorCode ?? parsed.code,
         },
       } as T;
     } catch {
@@ -130,6 +134,7 @@ export function deserializeError<T extends Record<string, any>>(obj: any): T {
         ...rest,
         error: {
           message: error,
+          code: errorCode,
         },
       } as T;
     }
@@ -294,8 +299,9 @@ export async function makeRequest<T>({
           await parseResponseBody(response)
             .then((r) => r.data as { message?: string; code?: string })
             .catch(() => ({}));
-        if (process.env.DEBUG === '1') {
+        if (process.env.DEBUG) {
           const stringifiedHeaders = Array.from(headers.entries())
+            .filter(([key]) => key.toLowerCase() !== 'authorization')
             .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
             .join(' ');
           console.error(
@@ -358,8 +364,17 @@ export async function makeRequest<T>({
       const result = await trace('world.validate', async () => {
         const validationResult = schema.safeParse(parseResult.data);
         if (!validationResult.success) {
+          const issues = validationResult.error.issues
+            .map(
+              (i) =>
+                `  ${i.path.length > 0 ? i.path.join('.') : '<root>'}: ${i.message}`
+            )
+            .join('\n');
+          const debugContext = process.env.DEBUG
+            ? `\n\nResponse context: ${parseResult.getDebugContext()}`
+            : '';
           throw new WorkflowAPIError(
-            `Schema validation failed for ${method} ${endpoint}:\n\n${validationResult.error}\n\nResponse context: ${parseResult.getDebugContext()}`,
+            `Schema validation failed for ${method} ${endpoint}:\n${issues}${debugContext}`,
             { url, cause: validationResult.error }
           );
         }
