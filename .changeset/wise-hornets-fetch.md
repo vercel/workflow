@@ -1,6 +1,7 @@
 ---
 "@workflow/world-vercel": patch
 "@workflow/world": patch
+"@workflow/world-postgres": patch
 ---
 
-Preserve stepName on events when resolveData is 'none'
+Add stepName and workflowName to Event schema and propagate through all worlds

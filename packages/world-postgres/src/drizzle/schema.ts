@@ -111,6 +111,8 @@ export const events = schema.table(
     eventDataJson: jsonb('payload'),
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
+    stepName: varchar('step_name'),
+    workflowName: varchar('workflow_name'),
   } satisfies DrizzlishOfType<
     Cborized<Event & { eventData?: undefined }, 'eventData'>
   >,
