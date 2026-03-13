@@ -70,18 +70,22 @@ export async function chat(messages: UIMessage[], model?: string) {
 
   const selectedModel = model || 'anthropic/claude-sonnet-4-20250514';
 
-  // Enable extended thinking for Anthropic models that support it
-  const isAnthropicReasoning = selectedModel.includes('opus-4-5');
-  const providerOptions = isAnthropicReasoning
-    ? { anthropic: { thinking: { type: 'enabled', budgetTokens: 5000 } } }
-    : undefined;
+  // Enable reasoning for models that support it
+  const isAnthropic = selectedModel.includes('anthropic/');
+  const isOpenAI = selectedModel.includes('openai/');
+
+  const providerOptions = {
+    ...(isAnthropic
+      ? { anthropic: { thinking: { type: 'enabled', budgetTokens: 10000 } } }
+      : {}),
+    ...(isOpenAI ? { openai: { reasoningEffort: 'high' } } : {}),
+  };
 
   const agent = new DurableAgent({
     model: selectedModel,
     providerOptions,
-    instructions: isAnthropicReasoning
-      ? undefined // Opus 4.5 with thinking doesn't support system prompts in some configurations
-      : 'You are a helpful assistant with access to weather and calculator tools. Use them when the user asks about weather in a city or needs math calculations. Keep responses concise.',
+    instructions:
+      'You are a helpful assistant with access to weather and calculator tools. Use them when the user asks about weather in a city or needs math calculations. Keep responses concise.',
     tools: {
       getWeather: {
         description:
