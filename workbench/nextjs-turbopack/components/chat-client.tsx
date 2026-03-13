@@ -274,7 +274,7 @@ function MessageParts({
           return (
             <Tool key={`${message.id}-tool-${i}`}>
               <ToolHeader
-                type={partType}
+                type={partType as any}
                 state={toolPart.state}
                 toolName={toolPart.toolName}
               />
@@ -309,7 +309,7 @@ export function ChatClient() {
     () =>
       new WorkflowChatTransport({
         api: '/api/chat',
-        onChatSendMessage: (response) => {
+        onChatSendMessage: (response: any) => {
           const id = response.headers.get('x-workflow-run-id');
           if (id) setRunId(id);
           const team = response.headers.get('x-workflow-team-slug');
@@ -338,7 +338,9 @@ export function ChatClient() {
     return `http://localhost:3456/run/${runId}`;
   }, [runId, observabilityBase]);
 
-  const { messages, sendMessage, status } = useChat({ transport });
+  const { messages, sendMessage, status } = useChat({
+    transport: transport as any,
+  });
 
   // Debug: log message parts
   if (messages.length > 0) {
