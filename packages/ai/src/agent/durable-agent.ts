@@ -778,11 +778,24 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     // Build effective abort signal: merge timeout + explicit abortSignal
     let effectiveAbortSignal =
       options.abortSignal ?? this.generationSettings.abortSignal;
-    if (options.timeout !== undefined) {
-      const timeoutSignal = AbortSignal.timeout(options.timeout);
-      effectiveAbortSignal = effectiveAbortSignal
-        ? AbortSignal.any([effectiveAbortSignal, timeoutSignal])
-        : timeoutSignal;
+    if (
+      options.timeout !== undefined &&
+      typeof AbortController !== 'undefined'
+    ) {
+      const timeoutController = new AbortController();
+      setTimeout(() => timeoutController.abort(), options.timeout);
+      const timeoutSignal = timeoutController.signal;
+      if (effectiveAbortSignal) {
+        // Combine: whichever fires first wins
+        const combined = new AbortController();
+        effectiveAbortSignal.addEventListener('abort', () =>
+          combined.abort()
+        );
+        timeoutSignal.addEventListener('abort', () => combined.abort());
+        effectiveAbortSignal = combined.signal;
+      } else {
+        effectiveAbortSignal = timeoutSignal;
+      }
     }
 
     // Merge generation settings: constructor defaults < stream options
