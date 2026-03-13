@@ -10,130 +10,25 @@
  *   2. DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack \
  *      pnpm vitest run packages/core/e2e/e2e-agent.test.ts
  */
-import path from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
-import { createVercelWorld } from '@workflow/world-vercel';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { setWorld, start } from '../src/runtime';
-import {
-  getProtectionBypassHeaders,
-  getWorkbenchAppPath,
-  isLocalDeployment,
-} from './utils';
-
-// ============================================================================
-// Setup (same pattern as e2e.test.ts)
-// ============================================================================
-
-interface WorkflowManifest {
-  version: string;
-  workflows: Record<
-    string,
-    Record<string, { workflowId: string; graph?: unknown }>
-  >;
-  steps: Record<string, Record<string, { stepId: string }>>;
-}
+import { start } from '../src/runtime';
+import { getWorkflowMetadata, setupWorld } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
-let cachedManifest: WorkflowManifest | null = null;
-
-async function fetchManifest(): Promise<WorkflowManifest> {
-  if (cachedManifest) return cachedManifest;
-  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
-  const res = await fetch(url, { headers: getProtectionBypassHeaders() });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to fetch manifest from ${url}: ${res.status} ${await res.text()}`
-    );
-  }
-  cachedManifest = (await res.json()) as WorkflowManifest;
-  return cachedManifest;
-}
-
-function findWorkflowInManifest(
-  manifest: WorkflowManifest,
-  workflowFile: string,
-  workflowFn: string
-): { workflowId: string } | null {
-  for (const [file, fns] of Object.entries(manifest.workflows)) {
-    if (file.endsWith(workflowFile) || workflowFile.endsWith(file)) {
-      if (fns[workflowFn]) return fns[workflowFn];
-    }
-  }
-  const noExt = workflowFile.replace(/\.tsx?$/, '');
-  for (const [file, fns] of Object.entries(manifest.workflows)) {
-    const mNoExt = file.replace(/\.tsx?$/, '');
-    if (mNoExt.endsWith(noExt) || noExt.endsWith(mNoExt)) {
-      if (fns[workflowFn]) return fns[workflowFn];
-    }
-  }
-  return null;
-}
-
-const manifestRetryMs = Number(
-  process.env.WORKFLOW_E2E_MANIFEST_RETRY_MS ?? '10000'
-);
-
-async function getWorkflowMetadata(
-  workflowFile: string,
-  workflowFn: string
-): Promise<{ workflowId: string }> {
-  try {
-    const manifest = await fetchManifest();
-    const meta = findWorkflowInManifest(manifest, workflowFile, workflowFn);
-    if (meta) return meta;
-  } catch {
-    // fall through
-  }
-  const deadline = Date.now() + manifestRetryMs;
-  while (Date.now() < deadline) {
-    cachedManifest = null;
-    try {
-      const manifest = await fetchManifest();
-      const meta = findWorkflowInManifest(manifest, workflowFile, workflowFn);
-      if (meta) return meta;
-    } catch {
-      // keep retrying
-    }
-    await sleep(250);
-  }
-  const noExt = workflowFile.replace(/\.tsx?$/, '');
-  return { workflowId: `workflow//./${noExt}//${workflowFn}` };
-}
-
 async function agentE2e(fn: string) {
-  return getWorkflowMetadata('workflows/100_durable_agent_e2e.ts', fn);
+  return getWorkflowMetadata(
+    deploymentUrl,
+    'workflows/100_durable_agent_e2e.ts',
+    fn
+  );
 }
-
-// ============================================================================
-// Setup: configure world based on environment
-// ============================================================================
 
 beforeAll(async () => {
-  if (isLocalDeployment()) {
-    const appPath = getWorkbenchAppPath();
-    const appName = process.env.APP_NAME!;
-    const isNextJs = appName.includes('nextjs') || appName.includes('next-');
-    const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
-    process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
-    process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
-  } else if (process.env.WORKFLOW_VERCEL_ENV) {
-    setWorld(
-      createVercelWorld({
-        token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
-        projectConfig: {
-          environment: process.env.WORKFLOW_VERCEL_ENV || undefined,
-          projectId: process.env.WORKFLOW_VERCEL_PROJECT || undefined,
-          projectName: process.env.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
-          teamId: process.env.WORKFLOW_VERCEL_TEAM || undefined,
-        },
-      })
-    );
-  }
+  setupWorld(deploymentUrl);
 });
 
 // ============================================================================
