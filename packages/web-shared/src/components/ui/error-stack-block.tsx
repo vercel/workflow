@@ -1,7 +1,7 @@
 'use client';
 
 import { AlertCircle, Copy } from 'lucide-react';
-import { toast } from 'sonner';
+import { useToast } from '../../lib/toast';
 
 /**
  * Check whether `value` looks like a structured error object with a `stack`
@@ -28,6 +28,7 @@ export function ErrorStackBlock({
 }: {
   value: Record<string, unknown> & { stack: string };
 }) {
+  const toast = useToast();
   const stack = value.stack;
   const message = typeof value.message === 'string' ? value.message : undefined;
   const copyText = message ? `${message}\n\n${stack}` : stack;
