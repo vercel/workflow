@@ -300,7 +300,7 @@ Note: Shorthand methods are hoisted as regular function expressions (not arrow f
 
 ### Closure Variables
 
-When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`. Closure variable detection analyzes all expression types including function calls, `new` expressions, member accesses, template literals, etc. Module-level imports and declarations (functions, variables, classes) are excluded from closure variable detection since they are available directly in the step bundle:
+When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`. Closure variable detection walks the step function body and collects identifiers that are not parameters, local declarations, known globals, module-level imports, or module-level declarations. Supported expression types include identifiers, function calls, `new` expressions, member accesses, optional chaining, binary/unary/conditional operators, template literals, object literals (including shorthand properties and computed keys), array literals, sequence expressions, assignments, `await`, and `yield`. Supported statement types include variable/function declarations, expression statements, `if`/`else`, `return`, `throw`, `try`/`catch`/`finally`, `switch`, `for`/`for-in`/`for-of`, `while`/`do-while`, blocks, and labeled statements. Module-level imports and declarations (functions, variables, classes) are excluded since they are available directly in the step bundle and should not be serialized as closure values:
 
 Input:
 ```javascript
@@ -933,6 +933,6 @@ The plugin detects this pattern and correctly identifies the directive inside th
 - The `this` keyword and `arguments` object are not allowed in step functions
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection
-- Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available in all bundles and should not be serialized as closure values
+- Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available directly in the step bundle and should not be serialized as closure values
 - `new` expressions are analyzed for closure variables in the same way as regular function calls (both the callee and arguments are checked)
 - Workflow functions always throw when called directly; use `start(workflow)` from `workflow/api` instead

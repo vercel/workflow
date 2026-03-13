@@ -31,3 +31,118 @@ export function mockModelWrapped(...args) {
     return mockProvider(...args);
   };
 }
+
+// Module-level variable should also NOT be captured as a closure variable.
+const CONFIG = { timeout: 5000 };
+
+export function configuredStep(url) {
+  return async () => {
+    'use step';
+    return { url, config: CONFIG };
+  };
+}
+
+// --- Additional expression patterns for closure variable coverage ---
+
+// Optional chaining on a closure variable
+export function withOptionalChaining(client) {
+  return async () => {
+    'use step';
+    return client?.query();
+  };
+}
+
+// Sequence expressions (comma operator)
+export function withSequenceExpr(a, b) {
+  return async () => {
+    'use step';
+    return (a, b);
+  };
+}
+
+// Try/catch/finally referencing closure vars
+export function withTryCatch(fn, fallback) {
+  return async () => {
+    'use step';
+    try {
+      return fn();
+    } catch (err) {
+      return fallback;
+    }
+  };
+}
+
+// Throw expression with closure var
+export function withThrow(message) {
+  return async () => {
+    'use step';
+    throw message;
+  };
+}
+
+// Switch statement referencing closure vars
+export function withSwitch(mode, a, b) {
+  return async () => {
+    'use step';
+    switch (mode) {
+      case 'add':
+        return a + b;
+      default:
+        return a - b;
+    }
+  };
+}
+
+// For-of loop with closure var
+export function withForOf(items, transform) {
+  return async () => {
+    'use step';
+    const results = [];
+    for (const item of items) {
+      results.push(transform(item));
+    }
+    return results;
+  };
+}
+
+// For-in loop with closure var
+export function withForIn(obj) {
+  return async () => {
+    'use step';
+    const keys = [];
+    for (const key in obj) {
+      keys.push(key);
+    }
+    return keys;
+  };
+}
+
+// Do-while loop with closure var
+export function withDoWhile(getNext) {
+  return async () => {
+    'use step';
+    const results = [];
+    let val;
+    do {
+      val = getNext();
+      results.push(val);
+    } while (val !== null);
+    return results;
+  };
+}
+
+// Object shorthand properties referencing closure vars
+export function withShorthandProps(name, value) {
+  return async () => {
+    'use step';
+    return { name, value, extra: 'literal' };
+  };
+}
+
+// Computed property keys referencing closure vars
+export function withComputedKey(key, value) {
+  return async () => {
+    'use step';
+    return { [key]: value };
+  };
+}

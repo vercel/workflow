@@ -637,6 +637,75 @@ impl ClosureVariableCollector {
                 self.collect_from_expr(&while_stmt.test);
                 self.collect_from_stmt(&while_stmt.body);
             }
+            Stmt::DoWhile(do_while) => {
+                self.collect_from_stmt(&do_while.body);
+                self.collect_from_expr(&do_while.test);
+            }
+            Stmt::Throw(throw_stmt) => {
+                self.collect_from_expr(&throw_stmt.arg);
+            }
+            Stmt::Try(try_stmt) => {
+                self.collect_from_block_stmt(&try_stmt.block);
+                if let Some(catch_clause) = &try_stmt.handler {
+                    // The catch parameter introduces a local binding
+                    if let Some(param) = &catch_clause.param {
+                        self.collect_declared_names(param);
+                    }
+                    self.collect_from_block_stmt(&catch_clause.body);
+                }
+                if let Some(finalizer) = &try_stmt.finalizer {
+                    self.collect_from_block_stmt(finalizer);
+                }
+            }
+            Stmt::Switch(switch_stmt) => {
+                self.collect_from_expr(&switch_stmt.discriminant);
+                for case in &switch_stmt.cases {
+                    if let Some(test) = &case.test {
+                        self.collect_from_expr(test);
+                    }
+                    for stmt in &case.cons {
+                        self.collect_from_stmt(stmt);
+                    }
+                }
+            }
+            Stmt::ForIn(for_in) => {
+                match &for_in.left {
+                    ForHead::VarDecl(var_decl) => {
+                        for declarator in &var_decl.decls {
+                            self.collect_declared_names(&declarator.name);
+                        }
+                    }
+                    ForHead::Pat(pat) => {
+                        // Pattern used as assignment target (e.g., `for (x in obj)`)
+                        if let Pat::Ident(ident) = &**pat {
+                            self.collect_from_ident_binding(&ident.id);
+                        }
+                    }
+                    _ => {}
+                }
+                self.collect_from_expr(&for_in.right);
+                self.collect_from_stmt(&for_in.body);
+            }
+            Stmt::ForOf(for_of) => {
+                match &for_of.left {
+                    ForHead::VarDecl(var_decl) => {
+                        for declarator in &var_decl.decls {
+                            self.collect_declared_names(&declarator.name);
+                        }
+                    }
+                    ForHead::Pat(pat) => {
+                        if let Pat::Ident(ident) = &**pat {
+                            self.collect_from_ident_binding(&ident.id);
+                        }
+                    }
+                    _ => {}
+                }
+                self.collect_from_expr(&for_of.right);
+                self.collect_from_stmt(&for_of.body);
+            }
+            Stmt::Labeled(labeled) => {
+                self.collect_from_stmt(&labeled.body);
+            }
             _ => {}
         }
     }
@@ -721,13 +790,31 @@ impl ClosureVariableCollector {
                     match prop {
                         PropOrSpread::Prop(prop) => {
                             match &**prop {
+                                Prop::Shorthand(ident) => {
+                                    // { foo } is shorthand for { foo: foo }
+                                    let name = ident.sym.to_string();
+                                    if !self.params.contains(&name)
+                                        && !self.local_vars.contains(&name)
+                                    {
+                                        if !is_global_identifier(&name) {
+                                            self.closure_vars.insert(name);
+                                        }
+                                    }
+                                }
                                 Prop::KeyValue(kv) => {
+                                    // Check computed key expressions (e.g., { [expr]: value })
+                                    if let PropName::Computed(computed) = &kv.key {
+                                        self.collect_from_expr(&computed.expr);
+                                    }
                                     self.collect_from_expr(&kv.value);
                                 }
-                                Prop::Method(_method) => {
-                                    // Don't visit nested method bodies
+                                Prop::Assign(assign) => {
+                                    // { key = default } — collect the default value expression
+                                    self.collect_from_expr(&assign.value);
                                 }
-                                _ => {}
+                                Prop::Getter(_) | Prop::Setter(_) | Prop::Method(_) => {
+                                    // Don't visit nested method/accessor bodies
+                                }
                             }
                         }
                         PropOrSpread::Spread(spread) => {
@@ -788,6 +875,30 @@ impl ClosureVariableCollector {
                         self.collect_from_expr(&arg.expr);
                     }
                 }
+            }
+            Expr::Seq(seq) => {
+                for expr in &seq.exprs {
+                    self.collect_from_expr(expr);
+                }
+            }
+            Expr::Yield(yield_expr) => {
+                if let Some(arg) = &yield_expr.arg {
+                    self.collect_from_expr(arg);
+                }
+            }
+            Expr::OptChain(opt_chain) => match &*opt_chain.base {
+                OptChainBase::Member(member) => {
+                    self.collect_from_expr(&member.obj);
+                }
+                OptChainBase::Call(call) => {
+                    self.collect_from_expr(&call.callee);
+                    for arg in &call.args {
+                        self.collect_from_expr(&arg.expr);
+                    }
+                }
+            },
+            Expr::Class(_) => {
+                // Don't visit class expression bodies for closure detection
             }
             _ => {}
         }
