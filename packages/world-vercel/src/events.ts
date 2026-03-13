@@ -47,7 +47,8 @@ function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
       eventDataRef: _eventDataRef,
       ...rest
     } = event;
-    return rest;
+    const stepName = _eventData?.stepName;
+    return stepName !== undefined ? { ...rest, stepName } : rest;
   }
   return event;
 }
@@ -88,6 +89,7 @@ const EventWithRefsSchema = z.object({
   eventData: z.any().optional(),
   createdAt: z.coerce.date(),
   specVersion: z.number().default(1),
+  stepName: z.string().optional(),
 });
 
 /**
