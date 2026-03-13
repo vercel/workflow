@@ -12,8 +12,9 @@
  */
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { createVercelWorld } from '@workflow/world-vercel';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { start } from '../src/runtime';
+import { setWorld, start } from '../src/runtime';
 import {
   getProtectionBypassHeaders,
   getWorkbenchAppPath,
@@ -115,10 +116,22 @@ async function agentE2e(fn: string) {
 beforeAll(async () => {
   if (isLocalDeployment()) {
     const appPath = getWorkbenchAppPath();
+    const appName = process.env.APP_NAME!;
+    const isNextJs = appName.includes('nextjs') || appName.includes('next-');
+    const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
     process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
-    process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(
-      appPath,
-      '.next/workflow-data'
+    process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+  } else if (process.env.WORKFLOW_VERCEL_ENV) {
+    setWorld(
+      createVercelWorld({
+        token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+        projectConfig: {
+          environment: process.env.WORKFLOW_VERCEL_ENV || undefined,
+          projectId: process.env.WORKFLOW_VERCEL_PROJECT || undefined,
+          projectName: process.env.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
+          teamId: process.env.WORKFLOW_VERCEL_TEAM || undefined,
+        },
+      })
     );
   }
 });
@@ -213,10 +226,7 @@ describe('DurableAgent e2e', { timeout: 120_000 }, () => {
 
   describe('instructions', () => {
     it('string instructions are passed to the model', async () => {
-      const run = await start(
-        await agentE2e('agentInstructionsStringE2e'),
-        []
-      );
+      const run = await start(await agentE2e('agentInstructionsStringE2e'), []);
       const rv = await run.returnValue;
       expect(rv.stepCount).toBe(1);
       expect(rv.lastStepText).toBe('ok');
@@ -262,10 +272,7 @@ describe('DurableAgent e2e', { timeout: 120_000 }, () => {
 
   describe('experimental_onToolCallStart (GAP)', () => {
     it('completes but callbacks are not called (GAP)', async () => {
-      const run = await start(
-        await agentE2e('agentOnToolCallStartE2e'),
-        []
-      );
+      const run = await start(await agentE2e('agentOnToolCallStartE2e'), []);
       const rv = await run.returnValue;
       // GAP: when implemented, should be ['constructor', 'method']
       expect(rv.calls).toEqual([]);
@@ -274,10 +281,7 @@ describe('DurableAgent e2e', { timeout: 120_000 }, () => {
 
   describe('experimental_onToolCallFinish (GAP)', () => {
     it('completes but callbacks are not called (GAP)', async () => {
-      const run = await start(
-        await agentE2e('agentOnToolCallFinishE2e'),
-        []
-      );
+      const run = await start(await agentE2e('agentOnToolCallFinishE2e'), []);
       const rv = await run.returnValue;
       // GAP: when implemented, should be ['constructor', 'method']
       expect(rv.calls).toEqual([]);
