@@ -47,12 +47,16 @@ function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
       eventDataRef: _eventDataRef,
       ...rest
     } = event;
-    const stepName = _eventData?.stepName;
-    const workflowName = _eventData?.workflowName;
+    const minimalEventData: Record<string, unknown> = {};
+    if (_eventData?.stepName !== undefined)
+      minimalEventData.stepName = _eventData.stepName;
+    if (_eventData?.workflowName !== undefined)
+      minimalEventData.workflowName = _eventData.workflowName;
     return {
       ...rest,
-      ...(stepName !== undefined ? { stepName } : {}),
-      ...(workflowName !== undefined ? { workflowName } : {}),
+      ...(Object.keys(minimalEventData).length > 0
+        ? { eventData: minimalEventData }
+        : {}),
     };
   }
   return event;
@@ -94,8 +98,6 @@ const EventWithRefsSchema = z.object({
   eventData: z.any().optional(),
   createdAt: z.coerce.date(),
   specVersion: z.number().default(1),
-  stepName: z.string().optional(),
-  workflowName: z.string().optional(),
 });
 
 /**

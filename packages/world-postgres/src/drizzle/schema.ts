@@ -112,10 +112,7 @@ export const events = schema.table(
     eventData: Cbor<unknown>()('payload_cbor'),
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<
-    Cborized<
-      Omit<Event, 'stepName' | 'workflowName'> & { eventData?: undefined },
-      'eventData'
-    >
+    Cborized<Event & { eventData?: undefined }, 'eventData'>
   >,
   (tb) => [index().on(tb.runId), index().on(tb.correlationId)]
 );

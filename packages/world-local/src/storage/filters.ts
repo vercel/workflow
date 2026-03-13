@@ -74,12 +74,16 @@ export function filterEventData(
 ): Event {
   if (resolveData === 'none') {
     const { eventData: _eventData, ...rest } = event as any;
-    const stepName = _eventData?.stepName;
-    const workflowName = _eventData?.workflowName;
+    const minimalEventData: Record<string, unknown> = {};
+    if (_eventData?.stepName !== undefined)
+      minimalEventData.stepName = _eventData.stepName;
+    if (_eventData?.workflowName !== undefined)
+      minimalEventData.workflowName = _eventData.workflowName;
     return {
       ...rest,
-      ...(stepName !== undefined ? { stepName } : {}),
-      ...(workflowName !== undefined ? { workflowName } : {}),
+      ...(Object.keys(minimalEventData).length > 0
+        ? { eventData: minimalEventData }
+        : {}),
     };
   }
   return event;
