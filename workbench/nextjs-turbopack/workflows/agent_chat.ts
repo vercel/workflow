@@ -11,9 +11,7 @@ import z from 'zod/v4';
 // Tool step functions
 // ============================================================================
 
-async function getWeather(input: {
-  city: string;
-}): Promise<{
+async function getWeather(input: { city: string }): Promise<{
   city: string;
   temperature: number;
   unit: string;
@@ -65,15 +63,25 @@ async function calculate(input: {
 // Chat workflow
 // ============================================================================
 
-export async function chat(messages: UIMessage[]) {
+export async function chat(messages: UIMessage[], model?: string) {
   'use workflow';
 
   const modelMessages = await convertToModelMessages(messages);
 
+  const selectedModel = model || 'anthropic/claude-sonnet-4-20250514';
+
+  // Enable extended thinking for Anthropic models that support it
+  const isAnthropicReasoning = selectedModel.includes('opus-4-5');
+  const providerOptions = isAnthropicReasoning
+    ? { anthropic: { thinking: { type: 'enabled', budgetTokens: 5000 } } }
+    : undefined;
+
   const agent = new DurableAgent({
-    model: 'anthropic/claude-sonnet-4-20250514',
-    instructions:
-      'You are a helpful assistant with access to weather and calculator tools. Use them when the user asks about weather in a city or needs math calculations. Keep responses concise.',
+    model: selectedModel,
+    providerOptions,
+    instructions: isAnthropicReasoning
+      ? undefined // Opus 4.5 with thinking doesn't support system prompts in some configurations
+      : 'You are a helpful assistant with access to weather and calculator tools. Use them when the user asks about weather in a city or needs math calculations. Keep responses concise.',
     tools: {
       getWeather: {
         description:

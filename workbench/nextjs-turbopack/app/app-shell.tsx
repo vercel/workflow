@@ -44,9 +44,7 @@ export function AppShell({ workflowDefinitions }: AppShellProps) {
       {tab === 'workflows' ? (
         <HomeClient workflowDefinitions={workflowDefinitions} />
       ) : (
-        <div className="max-w-3xl mx-auto">
-          <ChatClient />
-        </div>
+        <ChatClient />
       )}
     </div>
   );
