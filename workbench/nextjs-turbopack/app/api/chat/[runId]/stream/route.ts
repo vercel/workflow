@@ -12,7 +12,7 @@ export async function GET(
     );
 
     const run = await getRun(runId);
-    const readable = run.getReadable(startIndex);
+    const readable = run.getReadable({ startIndex });
 
     return new Response(readable, {
       headers: {
