@@ -85,6 +85,7 @@ stepFunction(controller.signal)
 ```
 controller.abort()
         │
+        ├─→ signal.aborted set to true (synchronous, local state)
         ├─→ Hook marked for resumption in invocations queue
         └─→ Workflow suspends (reaches next step/sleep/hook await)
                 │
@@ -186,21 +187,16 @@ The wrapping happens at the step handler level (`runtime/step-handler.ts`), duri
 
 When `abort()` is called in the workflow context:
 
-1. The internal hook is marked for resumption in the invocations queue (same pattern as `hook.dispose()`)
-2. The workflow continues until it reaches the next suspension point (step call, hook await, or sleep) or completes
-3. The pending queue items are processed:
+1. `signal.aborted` is updated to `true` immediately (so subsequent reads and serialization capture the correct state)
+2. The internal hook is marked for resumption in the invocations queue (same pattern as `hook.dispose()`)
+3. The workflow continues until it reaches the next suspension point (step call, hook await, or sleep) or completes
+4. The pending queue items are processed:
    - Creates a `hook_received` event in the event log
    - Writes the cancellation packet to the stream (for real-time step propagation)
    - Re-enqueues the workflow for replay
 4. On replay, the event consumer processes the `hook_received` event, updating `signal.aborted` to `true` at the deterministically correct point
 
-The signal is **not** updated synchronously in the workflow. This is intentional — the abort state must come from the event log to maintain deterministic replay. The workflow will see `signal.aborted === true` after the replay processes the hook event.
-
-### Processing Queue Items on Workflow Completion
-
-Normally, the invocations queue is only processed when the workflow suspends (throws `WorkflowSuspension`). If the workflow completes (or fails) without suspending, any remaining queue items are dropped with a warning.
-
-The runtime processes all pending invocations queue items when the workflow completes or fails — not just on suspension. This is a general improvement that applies to all queue item types (steps, hooks, waits, abort signals), not just abort. For example, if a step is created as the run is completing, it should still be enqueued for execution.
+`signal.aborted` is updated synchronously so that the workflow can immediately check the state and serialization captures `aborted: true` when passing the signal to steps. On replay, the event consumer also processes the `hook_received` event, ensuring the state is consistent.
 
 For abort specifically, this ensures that:
 
