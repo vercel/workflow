@@ -779,10 +779,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       if (resolveData === 'none') {
         return {
           ...result,
-          data: result.data.map((event) => {
-            const { eventData: _eventData, ...rest } = event as any;
-            return rest;
-          }),
+          data: result.data.map((event) => filterEventData(event, resolveData)),
         };
       }
 
@@ -810,10 +807,7 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       if (resolveData === 'none') {
         return {
           ...result,
-          data: result.data.map((event) => {
-            const { eventData: _eventData, ...rest } = event as any;
-            return rest;
-          }),
+          data: result.data.map((event) => filterEventData(event, resolveData)),
         };
       }
 

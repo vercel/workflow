@@ -74,7 +74,13 @@ export function filterEventData(
 ): Event {
   if (resolveData === 'none') {
     const { eventData: _eventData, ...rest } = event as any;
-    return rest;
+    const stepName = _eventData?.stepName;
+    const workflowName = _eventData?.workflowName;
+    return {
+      ...rest,
+      ...(stepName !== undefined ? { stepName } : {}),
+      ...(workflowName !== undefined ? { workflowName } : {}),
+    };
   }
   return event;
 }
