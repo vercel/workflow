@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { listJSONFiles, stripTag } from './fs.js';
 import { createStorage } from './storage.js';
 import {
+  createHook,
   createRun,
   createStep,
   updateRun,
@@ -303,6 +304,50 @@ describe('File tagging', () => {
       expect(await fs.readdir(runsDir)).toHaveLength(0);
       expect(await fs.readdir(eventsDir)).toHaveLength(0);
       expect(await fs.readdir(stepsDir)).toHaveLength(0);
+
+      await world.close?.();
+    });
+
+    it('should clear hook token constraint files', async () => {
+      const { createLocalWorld } = await import('./index.js');
+
+      const world = createLocalWorld({ dataDir: testDir, tag: 'vitest-0' });
+      await world.start?.();
+
+      const run = await createRun(world, {
+        deploymentId: 'dep-1',
+        workflowName: 'hook-wf',
+        input: new Uint8Array(),
+      });
+      await updateRun(world, run.runId, 'run_started');
+      await createHook(world, run.runId, {
+        hookId: 'hook_0',
+        token: 'my-unique-token',
+      });
+
+      // Verify constraint file was created
+      const tokensDir = path.join(testDir, 'hooks', 'tokens');
+      const constraintsBefore = await fs.readdir(tokensDir);
+      expect(constraintsBefore).toHaveLength(1);
+
+      // Verify hook file was created with tag
+      const hooksDir = path.join(testDir, 'hooks');
+      const hookFiles = (await fs.readdir(hooksDir)).filter((f) =>
+        f.endsWith('.json')
+      );
+      expect(hookFiles).toHaveLength(1);
+      expect(hookFiles[0]).toMatch(/\.vitest-0\.json$/);
+
+      await world.clear();
+
+      // Both the tagged hook file and the untagged constraint file should be gone
+      const hookFilesAfter = (await fs.readdir(hooksDir)).filter((f) =>
+        f.endsWith('.json')
+      );
+      expect(hookFilesAfter).toHaveLength(0);
+
+      const constraintsAfter = await fs.readdir(tokensDir);
+      expect(constraintsAfter).toHaveLength(0);
 
       await world.close?.();
     });

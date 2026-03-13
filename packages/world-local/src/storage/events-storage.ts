@@ -48,8 +48,8 @@ async function deleteAllWaitsForRun(
   const files = await listJSONFiles(waitsDir);
 
   for (const file of files) {
-    // Strip tag before prefix check — fileIds may contain tags
-    // e.g., "wrun_ABC-corrId.vitest-0" still starts with "wrun_ABC-"
+    // fileIds may contain tag suffixes (e.g., "wrun_ABC-corrId.vitest-0")
+    // but startsWith still matches correctly since the tag is a suffix.
     if (file.startsWith(`${runId}-`)) {
       const waitPath = path.join(waitsDir, `${file}.json`);
       await deleteJSON(waitPath);

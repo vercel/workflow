@@ -9,10 +9,12 @@ import {
   deleteJSON,
   listTaggedFiles,
   listTaggedFilesByExtension,
+  readJSON,
 } from './fs.js';
 import { initDataDir } from './init.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { createStorage } from './storage.js';
+import { hashToken } from './storage/helpers.js';
 import { createStreamer } from './streamer.js';
 
 // Re-export init types and utilities for consumers
@@ -78,12 +80,34 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
       if (tag) {
         // Selectively delete only files matching this tag
         const basedir = mergedConfig.dataDir;
+
+        // Delete hook token constraint files BEFORE deleting the hooks,
+        // since we need to read each hook to extract its token hash.
+        // Constraint files are untagged ({sha256}.json) so listTaggedFiles
+        // won't find them — we must resolve them via the hook data.
+        const hooksDir = path.join(basedir, 'hooks');
+        const taggedHookFiles = await listTaggedFiles(hooksDir, tag);
+        const { HookSchema } = await import('@workflow/world');
+        await Promise.all(
+          taggedHookFiles.map(async (hookFile) => {
+            const hook = await readJSON(
+              path.join(hooksDir, hookFile),
+              HookSchema
+            );
+            if (hook?.token) {
+              await deleteJSON(
+                path.join(hooksDir, 'tokens', `${hashToken(hook.token)}.json`)
+              );
+            }
+          })
+        );
+
+        // Delete tagged entity files across all directories
         const entityDirs = [
           'runs',
           'steps',
           'events',
           'hooks',
-          'hooks/tokens',
           'waits',
           'streams/runs',
         ];
