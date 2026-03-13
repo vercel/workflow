@@ -734,6 +734,7 @@ describe('e2e', () => {
             expect(WorkflowRunFailedError.is(error)).toBe(true);
             assert(WorkflowRunFailedError.is(error));
             expect(error.cause.message).toContain('Nested workflow error');
+            expect(error.cause.code).toBe('USER_ERROR');
 
             // Workflow source maps are not properly supported everywhere. Check the definition
             // of hasWorkflowSourceMaps() to see where they are supported
@@ -747,8 +748,11 @@ describe('e2e', () => {
               expect(error.cause.stack).not.toContain('evalmachine');
             }
 
-            const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+            const { json: runData } = await cliInspectJson(
+              `runs ${run.runId} --withData`
+            );
             expect(runData.status).toBe('failed');
+            expect(runData.error.code).toBe('USER_ERROR');
           }
         );
 
@@ -921,6 +925,7 @@ describe('e2e', () => {
           expect(WorkflowRunFailedError.is(error)).toBe(true);
           assert(WorkflowRunFailedError.is(error));
           expect(error.cause.message).toContain('Fatal step error');
+          expect(error.cause.code).toBe('USER_ERROR');
 
           const { json: steps } = await cliInspectJson(
             `steps --runId ${run.runId}`

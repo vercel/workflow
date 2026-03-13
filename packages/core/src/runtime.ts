@@ -1,4 +1,9 @@
-import { WorkflowAPIError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  RUN_ERROR_CODES,
+  WorkflowAPIError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
+import { classifyRunError } from './classify-error.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -195,6 +200,7 @@ export function workflowEntrypoint(
                               message: err.message,
                               stack: err.stack,
                             },
+                            errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
                           },
                         },
                         { requestId }
@@ -368,8 +374,14 @@ export function workflowEntrypoint(
                     );
                   }
 
+                  // Classify the error: WorkflowRuntimeError indicates an
+                  // internal issue (corrupted event log, missing data);
+                  // everything else is a user code error.
+                  const errorCode = classifyRunError(err);
+
                   runtimeLogger.error('Error while running workflow', {
                     workflowRunId: runId,
+                    errorCode,
                     errorName,
                     errorStack,
                   });
@@ -386,7 +398,7 @@ export function workflowEntrypoint(
                             message: errorMessage,
                             stack: errorStack,
                           },
-                          // TODO: include error codes when we define them
+                          errorCode,
                         },
                       },
                       { requestId }
@@ -404,6 +416,7 @@ export function workflowEntrypoint(
                         }
                       );
                       span?.setAttributes({
+                        ...Attribute.WorkflowErrorCode(errorCode),
                         ...Attribute.WorkflowErrorName(errorName),
                         ...Attribute.WorkflowErrorMessage(errorMessage),
                         ...Attribute.ErrorType(errorName),
@@ -416,6 +429,7 @@ export function workflowEntrypoint(
 
                   span?.setAttributes({
                     ...Attribute.WorkflowRunStatus('failed'),
+                    ...Attribute.WorkflowErrorCode(errorCode),
                     ...Attribute.WorkflowErrorName(errorName),
                     ...Attribute.WorkflowErrorMessage(errorMessage),
                     ...Attribute.ErrorType(errorName),

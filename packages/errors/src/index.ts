@@ -337,3 +337,5 @@ export class RetryableError extends Error {
 
 export const VERCEL_403_ERROR_MESSAGE =
   'Your current vercel account does not have access to this resource. Use `vercel login` or `vercel switch` to ensure you are linked to the right account.';
+
+export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
