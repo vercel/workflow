@@ -1,0 +1,68 @@
+{
+  "name": "@workflow/world-aws",
+  "version": "4.1.0-beta.1",
+  "description": "An AWS World implementation using DynamoDB and SQS",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "workflow-aws-setup": "./bin/setup.js"
+  },
+  "files": [
+    "dist",
+    "bin"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-aws"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "default": "./dist/cli.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "3.750.0",
+    "@aws-sdk/client-sqs": "3.750.0",
+    "@aws-sdk/client-s3": "3.750.0",
+    "@aws-sdk/util-dynamodb": "3.750.0",
+    "@vercel/queue": "catalog:",
+    "@workflow/errors": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "@workflow/world-local": "workspace:*",
+    "cbor-x": "1.6.0",
+    "ulid": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "@workflow/world-testing": "workspace:*",
+    "vitest": "catalog:"
+  },
+  "keywords": [
+    "aws",
+    "dynamodb",
+    "sqs",
+    "workflow",
+    "durable-functions"
+  ],
+  "author": "",
+  "packageManager": "pnpm@10.15.1"
+}
