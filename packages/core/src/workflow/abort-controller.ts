@@ -6,10 +6,13 @@ import { getAbortStreamId } from '../util.js';
 /**
  * A lightweight AbortSignal implementation for the workflow VM context.
  *
- * In the workflow, `signal.aborted` is backed by the internal hook's event log.
- * It is NOT set synchronously when `abort()` is called — instead, the hook is
- * marked for resumption, and the replay updates the state at the deterministically
- * correct point.
+ * `signal.aborted` and listeners are updated in two scenarios:
+ * 1. On first-run: when `abort()` is called in the workflow code
+ * 2. On replay: when the events consumer processes the `hook_received`
+ *    event (chained through promiseQueue for deterministic ordering)
+ *
+ * On replay, `abort()` in the workflow code becomes a no-op since
+ * `_setAborted` was already called by the events consumer.
  */
 class WorkflowAbortSignal {
   aborted = false;
@@ -20,20 +23,16 @@ class WorkflowAbortSignal {
 
   #listeners: Array<() => void> = [];
 
-  /**
-   * Set by the events consumer during replay when hook_received is processed.
-   * The actual _setAborted (with listener firing) is deferred until abort()
-   * is called in the workflow code, ensuring listeners fire at the same point
-   * in both first-run and replay.
-   */
-  _replayAbortReason: { set: true; reason: unknown } | undefined;
-
   constructor(streamName: string, hookToken: string) {
     this[ABORT_STREAM_NAME] = streamName;
     this[ABORT_HOOK_TOKEN] = hookToken;
   }
 
-  /** @internal Called by abort() to update state and fire listeners */
+  /**
+   * @internal Sets aborted state and fires listeners.
+   * Called by abort() on first-run, or by the events consumer on replay.
+   * Idempotent — second call is a no-op.
+   */
   _setAborted(reason?: unknown): void {
     if (this.aborted) return;
     this.aborted = true;
@@ -42,22 +41,6 @@ class WorkflowAbortSignal {
       listener();
     }
     this.#listeners = [];
-  }
-
-  /**
-   * @internal Called by the events consumer during replay.
-   * Only records the replay flag — does NOT update aborted or fire listeners.
-   * Both aborted state and listeners are deferred until abort() is called
-   * in the workflow code, ensuring the workflow takes the same code path
-   * on both first-run and replay.
-   */
-  _markAbortedFromReplay(reason?: unknown): void {
-    if (this.aborted) return;
-    this._replayAbortReason = { set: true, reason };
-    // Intentionally do NOT set this.aborted = true here.
-    // If we did, an `if (signal.aborted)` check between construction
-    // and the abort() call would take a different branch on replay
-    // vs first-run, breaking determinism.
   }
 
   addEventListener(type: string, listener: () => void): void {
@@ -92,9 +75,10 @@ class WorkflowAbortSignal {
  * Follows the same pattern as `createCreateHook()` in `workflow/hook.ts`:
  * - Registers a hook in the invocations queue on construction
  * - Subscribes to the events consumer for hook_created/hook_received events
- * - `abort()` marks the hook for resumption (like `hook.dispose()`)
+ * - `abort()` calls `_setAborted` + marks the hook for resumption
  * - The suspension handler processes the abort (creates event + writes stream)
- * - On replay, the events consumer updates `signal.aborted` at the correct point
+ * - On replay, the events consumer calls `_setAborted` when hook_received
+ *   is processed, and `abort()` in the workflow code becomes a no-op
  */
 export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
   return class WorkflowAbortController {
@@ -124,9 +108,6 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
 
       // Subscribe to events for this hook's lifecycle
       ctx.eventsConsumer.subscribe((event) => {
-        // End of event log — if abort was requested but not yet processed,
-        // the workflow will suspend and the suspension handler will create
-        // the hook_received event.
         if (!event) {
           return EventConsumerResult.NotConsumed;
         }
@@ -144,19 +125,18 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
         }
 
         if (event.eventType === 'hook_received') {
-          // The abort was recorded in the event log during a previous run.
-          // Mark the signal as aborted (so reads return true) but DON'T fire
-          // listeners yet — they'll fire when abort() is called in the workflow
-          // code, ensuring consistent ordering between first-run and replay.
+          // The abort was recorded in the event log (from a previous run's
+          // abort() call, or from a step/external abort). Update signal
+          // state and fire listeners at this deterministic point in the
+          // promiseQueue — same ordering as hook payload delivery.
           const payload = event.eventData?.payload;
           const reason =
             payload && typeof payload === 'object' && 'reason' in payload
               ? payload.reason
               : undefined;
 
-          // Chain through promiseQueue for deterministic ordering
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
-            this.signal._markAbortedFromReplay(reason);
+            this.signal._setAborted(reason);
           });
 
           ctx.invocationsQueue.delete(correlationId);
@@ -173,18 +153,9 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
     }
 
     abort(reason?: unknown): void {
-      if (this.signal.aborted) return; // no-op if already aborted
+      if (this.signal.aborted) return; // no-op (already aborted, e.g. from replay)
 
-      // If replay recorded the abort (hook_received was in the event log),
-      // use the replay reason and skip marking the hook (already processed).
-      if (this.signal._replayAbortReason?.set) {
-        const replayReason = this.signal._replayAbortReason.reason;
-        this.signal._replayAbortReason = undefined;
-        this.signal._setAborted(replayReason);
-        return;
-      }
-
-      // First run: update signal and fire listeners synchronously
+      // Update signal state and fire listeners synchronously
       this.signal._setAborted(reason);
 
       // Mark the hook for resumption so the suspension handler records

@@ -705,17 +705,12 @@ describe('AbortController hook integration', () => {
 
       // The events consumer processes events via process.nextTick, and the
       // hook_received handler chains through promiseQueue. We need to let
-      // multiple ticks pass for the replay flag to be set.
+      // multiple ticks pass for _setAborted to be called.
       await new Promise((resolve) => setTimeout(resolve, 10));
       await ctx.promiseQueue;
 
-      // After replay event processing, signal.aborted is still false —
-      // it only becomes true when abort() is called in the workflow code.
-      // This ensures deterministic branching (if checks take same path).
-      expect(controller.signal.aborted).toBe(false);
-
-      // But the replay flag IS set, so calling abort() uses the replayed reason
-      controller.abort();
+      // After replay event processing, signal.aborted is true — the
+      // events consumer called _setAborted when hook_received was processed.
       expect(controller.signal.aborted).toBe(true);
       expect(controller.signal.reason).toBe('aborted!');
 
