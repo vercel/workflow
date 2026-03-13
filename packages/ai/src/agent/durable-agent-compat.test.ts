@@ -1469,4 +1469,83 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
       });
     });
   });
+
+  describe('tool approval', () => {
+    describe('stream', () => {
+      it.fails(
+        'should pause agent when tool has needsApproval: true',
+        async () => {
+          // GAP: DurableAgent does not support tool approval.
+          // When a tool has needsApproval: true, the agent should pause
+          // and emit a tool-approval-request before executing the tool.
+          const agent = new DurableAgent({
+            model: asModelFactory(createToolCallStreamMockModel()),
+            tools: {
+              testTool: tool({
+                inputSchema: z.object({ value: z.string() }),
+                execute: async ({ value }: { value: string }) =>
+                  `${value}-result`,
+                needsApproval: true,
+              }),
+            },
+          });
+
+          const { writable, chunks } = createMockWritable();
+          const result = await agent.stream({
+            messages: [
+              { role: 'user' as const, content: 'test' },
+            ],
+            writable,
+          });
+
+          // When approval is needed, the agent should stop and return the
+          // unresolved tool call (similar to client-side tools without execute).
+          // The toolCalls should contain the pending call, and toolResults
+          // should NOT contain it (since it wasn't executed yet).
+          expect(result.toolCalls.length).toBe(1);
+          expect(result.toolCalls[0].toolName).toBe('testTool');
+          expect(result.toolResults.length).toBe(0);
+        },
+      );
+
+      it.fails(
+        'should support needsApproval as a function',
+        async () => {
+          // GAP: needsApproval can be a function that receives the tool input
+          // and returns a boolean (or promise of boolean).
+          let approvalInput: any = null;
+
+          const agent = new DurableAgent({
+            model: asModelFactory(createToolCallStreamMockModel()),
+            tools: {
+              testTool: tool({
+                inputSchema: z.object({ value: z.string() }),
+                execute: async ({ value }: { value: string }) =>
+                  `${value}-result`,
+                needsApproval: async (input: any) => {
+                  approvalInput = input;
+                  return true; // always require approval
+                },
+              }),
+            },
+          });
+
+          const { writable } = createMockWritable();
+          const result = await agent.stream({
+            messages: [
+              { role: 'user' as const, content: 'test' },
+            ],
+            writable,
+          });
+
+          // The approval function should have been called with the tool input
+          expect(approvalInput).toEqual({ value: 'test' });
+
+          // Agent should pause waiting for approval
+          expect(result.toolCalls.length).toBe(1);
+          expect(result.toolResults.length).toBe(0);
+        },
+      );
+    });
+  });
 });

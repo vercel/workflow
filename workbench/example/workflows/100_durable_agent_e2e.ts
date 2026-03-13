@@ -346,3 +346,38 @@ export async function agentPrepareCallE2e() {
     lastStepText: result.steps[result.steps.length - 1]?.text,
   };
 }
+
+// ============================================================================
+// GAP tests — tool approval (needsApproval)
+// ============================================================================
+
+/** Tool with needsApproval: true should pause the agent. */
+export async function agentToolApprovalE2e() {
+  'use workflow';
+  const agent = new DurableAgent({
+    model: mockSequenceModel([
+      { type: 'tool-call', toolName: 'riskyTool', input: JSON.stringify({ action: 'delete' }) },
+      { type: 'text', text: 'done' },
+    ]),
+    tools: {
+      riskyTool: {
+        description: 'A dangerous tool that needs approval',
+        inputSchema: z.object({ action: z.string() }),
+        execute: echoStep as any,
+        needsApproval: true,
+      } as any,
+    },
+  });
+  const result = await agent.stream({
+    messages: [{ role: 'user', content: 'do something risky' }],
+    writable: getWritable(),
+  });
+  return {
+    // If approval works, toolCalls should have the pending call
+    // but toolResults should be empty (tool wasn't executed yet)
+    toolCallsCount: result.toolCalls.length,
+    toolResultsCount: result.toolResults.length,
+    stepCount: result.steps.length,
+    firstToolCallName: result.toolCalls[0]?.toolName,
+  };
+}

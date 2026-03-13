@@ -287,14 +287,26 @@ describe('DurableAgent e2e', { timeout: 120_000 }, () => {
   });
 
   describe('prepareCall (GAP)', () => {
-    // prepareCall is silently ignored — the workflow completes but the
-    // call params aren't transformed. This test documents the gap.
-    // When prepareCall is implemented, we'll need a workflow that
-    // captures providerOptions from inside doStreamStep to verify.
     it('completes but prepareCall is not applied (GAP)', async () => {
       const run = await start(await agentE2e('agentPrepareCallE2e'), []);
       const rv = await run.returnValue;
       expect(rv.stepCount).toBe(1);
+    });
+  });
+
+  describe('tool approval (GAP)', () => {
+    it('completes but needsApproval is not checked (GAP)', async () => {
+      const run = await start(await agentE2e('agentToolApprovalE2e'), []);
+      const rv = await run.returnValue;
+      // GAP: when tool approval is implemented, the agent should pause
+      // with toolCallsCount=1 and toolResultsCount=0 (awaiting approval).
+      // Currently needsApproval is ignored, so the tool executes immediately.
+      // The workflow completes with both tool call and result.
+      expect(rv.stepCount).toBe(2);
+      // When implemented, these should be:
+      // expect(rv.toolCallsCount).toBe(1);
+      // expect(rv.toolResultsCount).toBe(0);
+      // expect(rv.firstToolCallName).toBe('riskyTool');
     });
   });
 });
