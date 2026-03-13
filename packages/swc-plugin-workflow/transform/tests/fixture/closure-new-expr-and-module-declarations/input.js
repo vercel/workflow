@@ -167,3 +167,52 @@ export function mockTextModel(text) {
     });
   };
 }
+
+// TypeScript expression wrappers should not prevent closure detection
+export function withTsAs(value) {
+  return async () => {
+    'use step';
+    return value;
+  };
+}
+
+export function withTsNonNull(value) {
+  return async () => {
+    'use step';
+    return value;
+  };
+}
+
+// Class expression bodies should detect closure vars from outer scope
+export function withClassExpr(baseUrl) {
+  return async () => {
+    'use step';
+    return new class {
+      getUrl() {
+        return baseUrl + '/api';
+      }
+    };
+  };
+}
+
+// Class with super class referencing closure var
+export function withClassSuper(Base) {
+  return async () => {
+    'use step';
+    return class extends Base {
+      getValue() {
+        return 42;
+      }
+    };
+  };
+}
+
+// Class property initializer referencing closure var
+export function withClassProp(defaultValue) {
+  return async () => {
+    'use step';
+    return new class {
+      value = defaultValue;
+    };
+  };
+}
