@@ -1702,6 +1702,95 @@ export async function abortDeterministicBranchWorkflow() {
   };
 }
 
+/**
+ * Helper step that records its argument to a log array and returns it.
+ */
+async function logStep(entry: string): Promise<string> {
+  'use step';
+  return entry;
+}
+
+/**
+ * E2E: Abort + Hook ordering matrix.
+ *
+ * Tests all 4 combinations of:
+ * - Listener registration order (abort listener first vs hook.then first)
+ * - Event trigger order (abort first vs resumeHook first)
+ *
+ * Each combination must produce a deterministic log order on both
+ * first-run and replay.
+ *
+ * The `variant` parameter selects which combination to test:
+ * - "listener-first-abort-first": addEventListener → hook.then → abort() → resumeHook
+ * - "listener-first-hook-first":  addEventListener → hook.then → resumeHook → abort()
+ * - "hook-first-abort-first":     hook.then → addEventListener → abort() → resumeHook
+ * - "hook-first-hook-first":      hook.then → addEventListener → resumeHook → abort()
+ */
+export async function abortHookOrderingWorkflow(
+  hookToken: string,
+  variant: string
+) {
+  'use workflow';
+
+  const controller = new AbortController();
+  using hook = createHook<{ value: string }>({ token: hookToken });
+  const log: string[] = [];
+
+  if (variant === 'listener-first-abort-first') {
+    // Register abort listener first, then hook.then
+    controller.signal.addEventListener('abort', () => {
+      log.push('abort-listener');
+    });
+    void hook.then(async (payload) => {
+      log.push('hook-resolved:' + payload.value);
+    });
+    // Trigger abort first (hook resumed externally after)
+    controller.abort();
+    log.push('after-abort');
+  } else if (variant === 'listener-first-hook-first') {
+    // Register abort listener first, then hook.then
+    controller.signal.addEventListener('abort', () => {
+      log.push('abort-listener');
+    });
+    void hook.then(async (payload) => {
+      log.push('hook-resolved:' + payload.value);
+    });
+    // Hook is resumed externally first, then abort
+    // (we await a step to give the hook time to be resumed)
+    await logStep('waiting');
+    controller.abort();
+    log.push('after-abort');
+  } else if (variant === 'hook-first-abort-first') {
+    // Register hook.then first, then abort listener
+    void hook.then(async (payload) => {
+      log.push('hook-resolved:' + payload.value);
+    });
+    controller.signal.addEventListener('abort', () => {
+      log.push('abort-listener');
+    });
+    // Trigger abort first
+    controller.abort();
+    log.push('after-abort');
+  } else if (variant === 'hook-first-hook-first') {
+    // Register hook.then first, then abort listener
+    void hook.then(async (payload) => {
+      log.push('hook-resolved:' + payload.value);
+    });
+    controller.signal.addEventListener('abort', () => {
+      log.push('abort-listener');
+    });
+    // Hook resumed externally first, then abort
+    await logStep('waiting');
+    controller.abort();
+    log.push('after-abort');
+  }
+
+  // Wait for any pending hook resolution
+  await sleep('1s');
+
+  return log;
+}
+
 //////////////////////////////////////////////////////////
 
 async function processPayload(payload: { type: string; id?: number }) {

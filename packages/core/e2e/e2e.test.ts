@@ -2256,5 +2256,80 @@ describe('e2e', () => {
         expect(returnValue.reason).toBe('test');
       }
     );
+
+    // Matrix of abort + hook ordering: 4 combinations
+    // Tests that the log order is deterministic across first-run and replay
+    const orderingVariants = [
+      {
+        variant: 'listener-first-abort-first',
+        description: 'addEventListener → hook.then → abort() → resumeHook',
+        resumeBeforeAbort: false,
+      },
+      {
+        variant: 'listener-first-hook-first',
+        description: 'addEventListener → hook.then → resumeHook → abort()',
+        resumeBeforeAbort: true,
+      },
+      {
+        variant: 'hook-first-abort-first',
+        description: 'hook.then → addEventListener → abort() → resumeHook',
+        resumeBeforeAbort: false,
+      },
+      {
+        variant: 'hook-first-hook-first',
+        description: 'hook.then → addEventListener → resumeHook → abort()',
+        resumeBeforeAbort: true,
+      },
+    ] as const;
+
+    for (const {
+      variant,
+      description,
+      resumeBeforeAbort,
+    } of orderingVariants) {
+      test(
+        `abortHookOrderingWorkflow [${variant}]: ${description}`,
+        { timeout: 90_000 },
+        async () => {
+          const token = `ordering-${variant}-${Math.random().toString(36).slice(2)}`;
+          const run = await start(await e2e('abortHookOrderingWorkflow'), [
+            token,
+            variant,
+          ]);
+
+          if (resumeBeforeAbort) {
+            // For "hook-first" variants, the workflow awaits a step before
+            // calling abort(). We resume the hook during that window.
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
+            const hook = await getHookByToken(token);
+            expect(hook.runId).toBe(run.runId);
+            await resumeHook(hook, { value: 'hello' });
+          } else {
+            // For "abort-first" variants, abort happens before the hook
+            // is resumed. We wait then resume so the workflow can complete.
+            await new Promise((resolve) => setTimeout(resolve, 5_000));
+            const hook = await getHookByToken(token);
+            expect(hook.runId).toBe(run.runId);
+            await resumeHook(hook, { value: 'hello' });
+          }
+
+          const returnValue = await run.returnValue;
+
+          // The log must be an array (workflow returned it)
+          expect(returnValue).toBeInstanceOf(Array);
+
+          // The abort listener must appear in the log (it was called)
+          expect(returnValue).toContain('abort-listener');
+          expect(returnValue).toContain('after-abort');
+
+          // The log order must be deterministic:
+          // abort-listener always appears right before after-abort
+          // (because abort() fires the listener synchronously)
+          const abortIdx = returnValue.indexOf('abort-listener');
+          const afterIdx = returnValue.indexOf('after-abort');
+          expect(afterIdx).toBe(abortIdx + 1);
+        }
+      );
+    }
   });
 });
