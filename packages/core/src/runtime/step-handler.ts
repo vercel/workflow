@@ -48,10 +48,29 @@ import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
+// Register Run in the host class registry so the Run reviver can deserialize
+// Run/WorkflowRun instances in step context (e.g., when a workflow passes a
+// Run as a step argument). Uses Symbol.for directly to avoid importing
+// class-serialization which causes bundling issues with wf build.
+const WORKFLOW_CLASS_REGISTRY = Symbol.for('workflow-class-registry');
+const hostRegistry =
+  ((globalThis as any)[WORKFLOW_CLASS_REGISTRY] as Map<string, Function>) ??
+  new Map<string, Function>();
+if (!((globalThis as any)[WORKFLOW_CLASS_REGISTRY] as Map<string, Function>)) {
+  (globalThis as any)[WORKFLOW_CLASS_REGISTRY] = hostRegistry;
+}
+hostRegistry.set('Run', Run);
+Object.defineProperty(Run, 'classId', {
+  value: 'Run',
+  writable: false,
+  enumerable: false,
+  configurable: false,
+});
+
 // Register the built-in __workflow_start step that enables start() inside workflow functions.
 // This step receives the workflowId, args, and options, calls the real start(), and returns the Run object.
-// The Run object is serialized via its custom WORKFLOW_SERIALIZE method (to { runId }) and
-// deserialized as a WorkflowRun in the workflow VM, giving the user a fully functional Run-like object.
+// The Run object is serialized via the custom Run reducer (keyed off __serializable === 'Run')
+// to { runId }, and deserialized as a WorkflowRun in the workflow VM via the Run reviver.
 // maxRetries = 0 because start() generates a new runId on each attempt — retrying would
 // spawn duplicate child workflows instead of retrying the same one.
 const __workflowStartStep = async (
