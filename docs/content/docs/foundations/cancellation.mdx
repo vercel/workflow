@@ -287,7 +287,6 @@ This is the correct behavior because an abort is an intentional cancellation —
 
 ```typescript lineNumbers
 import { sleep } from "workflow";
-declare function cancellableStep(signal: AbortSignal): Promise<unknown>; // @setup
 
 export async function workflow() {
   "use workflow";
@@ -318,6 +317,7 @@ async function cancellableStep(signal: AbortSignal) {
 
 You can pass an `AbortSignal` from external code into a workflow via `start()`:
 
+{/* @skip-typecheck: myWorkflow is not declared, this is a conceptual snippet */}
 ```typescript lineNumbers
 import { start } from "workflow/api";
 
@@ -390,8 +390,8 @@ async function expensiveStep(signal: AbortSignal) {
 **Handle abort errors in the workflow.** Abort errors arrive as `FatalError` (no retries) and can be caught with a standard try/catch:
 
 ```typescript lineNumbers
-import { FatalError } from "workflow";
 declare function cancellableStep(signal: AbortSignal): Promise<void>; // @setup
+import { FatalError } from "workflow";
 
 export async function workflow() {
   "use workflow";

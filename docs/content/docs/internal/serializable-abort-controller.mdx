@@ -26,7 +26,6 @@ Race a step against a durable `sleep()`, and cancel the step if the timeout wins
 
 ```typescript
 import { sleep } from "workflow";
-declare function fetchUrl(url: string, signal: AbortSignal): Promise<unknown>; // @setup
 
 export async function fetchWithTimeout(url: string) {
   "use workflow";
@@ -80,8 +79,8 @@ export async function firstResponder(urls: string[]) {
 Combine hooks with abort controllers to let users cancel work from an external API:
 
 ```typescript
-import { createHook } from "workflow";
 declare function doExpensiveWork(signal: AbortSignal): Promise<unknown>; // @setup
+import { createHook } from "workflow";
 
 export async function userCancellableWorkflow(jobId: string) {
   "use workflow";
