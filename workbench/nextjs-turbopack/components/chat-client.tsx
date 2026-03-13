@@ -67,9 +67,9 @@ const SUGGESTIONS = [
 const MODELS = [
   { id: 'anthropic/claude-haiku-4-5-20251001', name: 'Claude Haiku 4.5' },
   { id: 'anthropic/claude-sonnet-4-20250514', name: 'Claude Sonnet 4' },
-  { id: 'anthropic/claude-opus-4-5-20250501', name: 'Claude Opus 4.5' },
-  { id: 'openai/gpt-4o', name: 'GPT-4o' },
-  { id: 'openai/gpt-4o-mini', name: 'GPT-4o Mini' },
+  { id: 'anthropic/claude-opus-4-5', name: 'Claude Opus 4.5' },
+  { id: 'openai/gpt-5.2', name: 'GPT-5.2' },
+  { id: 'openai/gpt-5.3-chat-latest', name: 'GPT-5.3' },
 ];
 
 function FeatureItem({
