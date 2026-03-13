@@ -1,7 +1,12 @@
 import os from 'node:os';
 import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
-import { WorkflowAPIError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  RunExpiredError,
+  ThrottleError,
+  WorkflowAPIError,
+} from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
@@ -322,9 +327,38 @@ export async function makeRequest<T>({
           }
         }
 
-        const error = new WorkflowAPIError(
+        const defaultMessage =
           errorData.message ||
-            `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`,
+          `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`;
+
+        // Map specific HTTP status codes to semantic error types
+        if (response.status === 409) {
+          const error = new EntityConflictError(defaultMessage);
+          span?.setAttributes({
+            ...ErrorType(errorData.code || `HTTP ${response.status}`),
+          });
+          span?.recordException?.(error);
+          throw error;
+        }
+        if (response.status === 410) {
+          const error = new RunExpiredError(defaultMessage);
+          span?.setAttributes({
+            ...ErrorType(errorData.code || `HTTP ${response.status}`),
+          });
+          span?.recordException?.(error);
+          throw error;
+        }
+        if (response.status === 429) {
+          const error = new ThrottleError(defaultMessage, { retryAfter });
+          span?.setAttributes({
+            ...ErrorType(errorData.code || `HTTP ${response.status}`),
+          });
+          span?.recordException?.(error);
+          throw error;
+        }
+
+        const error = new WorkflowAPIError(
+          defaultMessage,
           { url, status: response.status, code: errorData.code, retryAfter }
         );
         // Record error attributes per OTEL conventions

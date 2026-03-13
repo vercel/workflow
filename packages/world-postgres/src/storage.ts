@@ -1,5 +1,7 @@
 import {
+  EntityConflictError,
   HookNotFoundError,
+  RunExpiredError,
   RunNotSupportedError,
   WorkflowAPIError,
 } from '@workflow/errors';
@@ -439,9 +441,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           runTerminalEvents.includes(data.eventType) ||
           data.eventType === 'run_cancelled'
         ) {
-          throw new WorkflowAPIError(
-            `Cannot transition run from terminal state "${currentRun.status}"`,
-            { status: 409 }
+          throw new EntityConflictError(
+            `Cannot transition run from terminal state "${currentRun.status}"`
           );
         }
 
@@ -451,9 +452,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           data.eventType === 'hook_created' ||
           data.eventType === 'wait_created'
         ) {
-          throw new WorkflowAPIError(
-            `Cannot create new entities on run in terminal state "${currentRun.status}"`,
-            { status: 409 }
+          throw new EntityConflictError(
+            `Cannot create new entities on run in terminal state "${currentRun.status}"`
           );
         }
       }
@@ -488,18 +488,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
         // Step terminal state validation
         if (isStepTerminal(validatedStep.status)) {
-          throw new WorkflowAPIError(
-            `Cannot modify step in terminal state "${validatedStep.status}"`,
-            { status: 409 }
+          throw new EntityConflictError(
+            `Cannot modify step in terminal state "${validatedStep.status}"`
           );
         }
 
         // On terminal runs: only allow completing/failing in-progress steps
         if (currentRun && isRunTerminal(currentRun.status)) {
           if (validatedStep.status !== 'running') {
-            throw new WorkflowAPIError(
-              `Cannot modify non-running step on run in terminal state "${currentRun.status}"`,
-              { status: 410 }
+            throw new RunExpiredError(
+              `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
             );
           }
         }
@@ -770,9 +768,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
           if (['completed', 'failed'].includes(existing.status)) {
-            throw new WorkflowAPIError(
-              `Cannot modify step in terminal state "${existing.status}"`,
-              { status: 409 }
+            throw new EntityConflictError(
+              `Cannot modify step in terminal state "${existing.status}"`
             );
           }
         }
@@ -824,9 +821,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
           if (['completed', 'failed'].includes(existing.status)) {
-            throw new WorkflowAPIError(
-              `Cannot modify step in terminal state "${existing.status}"`,
-              { status: 409 }
+            throw new EntityConflictError(
+              `Cannot modify step in terminal state "${existing.status}"`
             );
           }
         }
@@ -899,9 +895,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             .returning({ createdAt: events.createdAt });
 
           if (!conflictValue) {
-            throw new WorkflowAPIError(
-              `Event ${eventId} could not be created`,
-              { status: 409 }
+            throw new EntityConflictError(
+              `Event ${eventId} could not be created`
             );
           }
 
@@ -981,9 +976,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             specVersion: waitValue.specVersion ?? undefined,
           };
         } else {
-          throw new WorkflowAPIError(
-            `Wait "${data.correlationId}" already exists`,
-            { status: 409 }
+          throw new EntityConflictError(
+            `Wait "${data.correlationId}" already exists`
           );
         }
       }
@@ -1028,9 +1022,8 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             );
           }
           if (existing.status === 'completed') {
-            throw new WorkflowAPIError(
-              `Wait "${data.correlationId}" already completed`,
-              { status: 409 }
+            throw new EntityConflictError(
+              `Wait "${data.correlationId}" already completed`
             );
           }
         }
@@ -1048,9 +1041,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         })
         .returning({ createdAt: events.createdAt });
       if (!value) {
-        throw new WorkflowAPIError(`Event ${eventId} could not be created`, {
-          status: 409,
-        });
+        throw new EntityConflictError(
+          `Event ${eventId} could not be created`
+        );
       }
       const result = { ...data, ...value, runId: effectiveRunId, eventId };
       const parsed = EventSchema.parse(result);

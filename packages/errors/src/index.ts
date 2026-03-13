@@ -242,6 +242,54 @@ export class HookNotFoundError extends WorkflowError {
   }
 }
 
+/**
+ * Thrown when attempting to modify an entity that is already in a terminal state.
+ * Replaces WorkflowAPIError with status 409.
+ */
+export class EntityConflictError extends WorkflowError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EntityConflictError';
+  }
+
+  static is(value: unknown): value is EntityConflictError {
+    return isError(value) && value.name === 'EntityConflictError';
+  }
+}
+
+/**
+ * Thrown when attempting to operate on a run that has been cleaned up or expired.
+ * Replaces WorkflowAPIError with status 410.
+ */
+export class RunExpiredError extends WorkflowError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RunExpiredError';
+  }
+
+  static is(value: unknown): value is RunExpiredError {
+    return isError(value) && value.name === 'RunExpiredError';
+  }
+}
+
+/**
+ * Thrown when a request is rate limited.
+ * Replaces WorkflowAPIError with status 429.
+ */
+export class ThrottleError extends WorkflowError {
+  retryAfter?: number;
+
+  constructor(message: string, options?: { retryAfter?: number }) {
+    super(message);
+    this.name = 'ThrottleError';
+    this.retryAfter = options?.retryAfter;
+  }
+
+  static is(value: unknown): value is ThrottleError {
+    return isError(value) && value.name === 'ThrottleError';
+  }
+}
+
 export class WorkflowRunCancelledError extends WorkflowError {
   runId: string;
 

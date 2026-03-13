@@ -1,6 +1,7 @@
 import {
+  EntityConflictError,
   RUN_ERROR_CODES,
-  WorkflowAPIError,
+  RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { classifyRunError } from './classify-error.js';
@@ -195,8 +196,8 @@ export function workflowEntrypoint(
                       );
                     } catch (failErr) {
                       if (
-                        WorkflowAPIError.is(failErr) &&
-                        (failErr.status === 409 || failErr.status === 410)
+                        EntityConflictError.is(failErr) ||
+                        RunExpiredError.is(failErr)
                       ) {
                         return;
                       }
@@ -269,7 +270,7 @@ export function workflowEntrypoint(
                     // Add the event to the events array so the workflow can see it
                     events.push(result.event!);
                   } catch (err) {
-                    if (WorkflowAPIError.is(err) && err.status === 409) {
+                    if (EntityConflictError.is(err)) {
                       runtimeLogger.info('Wait already completed, skipping', {
                         workflowRunId: runId,
                         correlationId: waitEvent.correlationId,
@@ -393,8 +394,8 @@ export function workflowEntrypoint(
                     );
                   } catch (failErr) {
                     if (
-                      WorkflowAPIError.is(failErr) &&
-                      (failErr.status === 409 || failErr.status === 410)
+                      EntityConflictError.is(failErr) ||
+                      RunExpiredError.is(failErr)
                     ) {
                       runtimeLogger.info(
                         'Tried failing workflow run, but run has already finished.',
@@ -440,8 +441,8 @@ export function workflowEntrypoint(
                   );
                 } catch (err) {
                   if (
-                    WorkflowAPIError.is(err) &&
-                    (err.status === 409 || err.status === 410)
+                    EntityConflictError.is(err) ||
+                    RunExpiredError.is(err)
                   ) {
                     runtimeLogger.info(
                       'Tried completing workflow run, but run has already finished.',
