@@ -42,12 +42,12 @@ export { Output };
  * Use `Output.object({ schema })` or `Output.text()` to create an output specification.
  */
 export interface OutputSpecification<OUTPUT, PARTIAL> {
-  readonly type: 'object' | 'text';
-  responseFormat: LanguageModelV3CallOptions['responseFormat'];
-  parsePartial(options: {
+  readonly name: string;
+  responseFormat: PromiseLike<LanguageModelV3CallOptions['responseFormat']>;
+  parsePartialOutput(options: {
     text: string;
   }): Promise<{ partial: PARTIAL } | undefined>;
-  parseOutput(
+  parseCompleteOutput(
     options: { text: string },
     context: {
       response: LanguageModelResponseMetadata;
@@ -788,9 +788,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       if (effectiveAbortSignal) {
         // Combine: whichever fires first wins
         const combined = new AbortController();
-        effectiveAbortSignal.addEventListener('abort', () =>
-          combined.abort()
-        );
+        effectiveAbortSignal.addEventListener('abort', () => combined.abort());
         timeoutSignal.addEventListener('abort', () => combined.abort());
         effectiveAbortSignal = combined.signal;
       } else {
@@ -925,7 +923,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       experimental_transform: options.experimental_transform as
         | StreamTextTransform<ToolSet>
         | Array<StreamTextTransform<ToolSet>>,
-      responseFormat: options.experimental_output?.responseFormat,
+      responseFormat: await options.experimental_output?.responseFormat,
       collectUIChunks,
     });
 
@@ -1208,14 +1206,15 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       const text = lastStep.text;
       if (text) {
         try {
-          experimentalOutput = await options.experimental_output.parseOutput(
-            { text },
-            {
-              response: lastStep.response,
-              usage: lastStep.usage,
-              finishReason: lastStep.finishReason,
-            }
-          );
+          experimentalOutput =
+            await options.experimental_output.parseCompleteOutput(
+              { text },
+              {
+                response: lastStep.response,
+                usage: lastStep.usage,
+                finishReason: lastStep.finishReason,
+              }
+            );
         } catch (parseError) {
           // If there's already an error, don't override it
           // If not, set this as the error

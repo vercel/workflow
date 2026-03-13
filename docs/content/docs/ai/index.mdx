@@ -130,8 +130,8 @@ export async function POST(req: Request) {
     instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
-  const modelMessages = convertToModelMessages(messages);
-  const stream = agent.stream({ messages: modelMessages }); // [!code highlight]
+  const modelMessages = await convertToModelMessages(messages);
+  const stream = await agent.stream({ messages: modelMessages }); // [!code highlight]
   return createUIMessageStreamResponse({
     stream: stream.toUIMessageStream(),
   });
@@ -304,7 +304,7 @@ import { chatWorkflow } from "@/workflows/chat/workflow";
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
-  const modelMessages = convertToModelMessages(messages);
+  const modelMessages = await convertToModelMessages(messages);
 
   const run = await start(chatWorkflow, [modelMessages]); // [!code highlight]
 
