@@ -37,29 +37,50 @@ import {
   makeRequest,
 } from './utils.js';
 
-// Helper to filter event data based on resolveData setting.
-// Strips both eventData and eventDataRef since the server always returns
-// lazy refs now, and callers with resolveData='none' should not see either.
-function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
-  if (resolveData === 'none') {
-    const {
-      eventData: _eventData,
-      eventDataRef: _eventDataRef,
-      ...rest
-    } = event;
-    const minimalEventData: Record<string, unknown> = {};
-    if (_eventData?.stepName !== undefined)
-      minimalEventData.stepName = _eventData.stepName;
-    if (_eventData?.workflowName !== undefined)
-      minimalEventData.workflowName = _eventData.workflowName;
-    return {
-      ...rest,
-      ...(Object.keys(minimalEventData).length > 0
-        ? { eventData: minimalEventData }
-        : {}),
-    };
+/**
+ * Fields within eventData that hold ref/payload data per event type.
+ * When resolveData is 'none', only these fields are stripped — all other
+ * metadata (stepName, workflowName, etc.) is preserved.
+ */
+const EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
+  run_created: ['input'],
+  run_completed: ['output'],
+  run_failed: ['error'],
+  step_created: ['input'],
+  step_completed: ['result'],
+  step_failed: ['error'],
+  step_retrying: ['error'],
+  hook_created: ['metadata'],
+  hook_received: ['payload'],
+};
+
+// Strip ref/payload fields from eventData based on resolveData setting.
+// Also strips the legacy eventDataRef field since the server always returns
+// lazy refs now, and callers with resolveData='none' should not see them.
+function stripEventDataRefs(event: any, resolveData: 'none' | 'all'): Event {
+  if (resolveData !== 'none') return event;
+
+  const { eventDataRef: _eventDataRef, ...withoutLegacyRef } = event;
+
+  const eventData = withoutLegacyRef.eventData;
+  if (!eventData || typeof eventData !== 'object') {
+    const { eventData: _, ...rest } = withoutLegacyRef;
+    return rest;
   }
-  return event;
+
+  const refFields = EVENT_DATA_REF_FIELDS[withoutLegacyRef.eventType as string];
+  if (!refFields || refFields.length === 0) return withoutLegacyRef;
+
+  const stripped = { ...eventData };
+  for (const field of refFields) {
+    delete stripped[field];
+  }
+
+  const { eventData: _, ...rest } = withoutLegacyRef;
+  return {
+    ...rest,
+    ...(Object.keys(stripped).length > 0 ? { eventData: stripped } : {}),
+  };
 }
 
 // Schema for EventResult wire format returned by events.create.
@@ -281,7 +302,7 @@ export async function getEvent(
     schema: (resolveData === 'none' ? EventWithRefsSchema : EventSchema) as any,
   });
 
-  return filterEventData(event as any, resolveData);
+  return stripEventDataRefs(event as any, resolveData);
 }
 
 export async function getWorkflowRunEvents(
@@ -371,7 +392,7 @@ export async function getWorkflowRunEvents(
   return {
     ...response,
     data: response.data.map((event: any) =>
-      filterEventData(event, resolveData)
+      stripEventDataRefs(event, resolveData)
     ),
   };
 }
@@ -432,7 +453,7 @@ export async function createWorkflowRunEvent(
     });
 
     return {
-      event: filterEventData(wireResult.event, resolveData),
+      event: stripEventDataRefs(wireResult.event, resolveData),
       run: wireResult.run,
       step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
       hook: wireResult.hook,
@@ -452,7 +473,7 @@ export async function createWorkflowRunEvent(
   // undefined (lazy ref mode), so deserializeError normalizes it into the
   // StructuredError shape expected by WorkflowRun consumers.
   return {
-    event: filterEventData(wireResult.event, resolveData),
+    event: stripEventDataRefs(wireResult.event, resolveData),
     run: wireResult.run
       ? deserializeError<WorkflowRun>(wireResult.run)
       : undefined,

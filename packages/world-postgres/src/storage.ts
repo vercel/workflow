@@ -243,7 +243,7 @@ async function handleLegacyEventPostgres(
         runId,
         eventId,
       });
-      return { event: filterEventData(event, resolveData) };
+      return { event: stripEventDataRefs(event, resolveData) };
     }
 
     default:
@@ -428,7 +428,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           const parsed = EventSchema.parse(result);
           const resolveData = params?.resolveData ?? 'all';
           return {
-            event: filterEventData(parsed, resolveData),
+            event: stripEventDataRefs(parsed, resolveData),
             run: fullRun ? deserializeRunError(compact(fullRun)) : undefined,
           };
         }
@@ -915,7 +915,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           const parsedConflict = EventSchema.parse(conflictResult);
           const resolveData = params?.resolveData ?? 'all';
           return {
-            event: filterEventData(parsedConflict, resolveData),
+            event: stripEventDataRefs(parsedConflict, resolveData),
             run,
             step,
             hook: undefined,
@@ -1055,7 +1055,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const parsed = EventSchema.parse(result);
       const resolveData = params?.resolveData ?? 'all';
       return {
-        event: filterEventData(parsed, resolveData),
+        event: stripEventDataRefs(parsed, resolveData),
         run,
         step,
         hook,
@@ -1082,7 +1082,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       value.eventData ||= value.eventDataJson;
       const parsed = EventSchema.parse(compact(value));
       const resolveData = params?.resolveData ?? 'all';
-      return filterEventData(parsed, resolveData);
+      return stripEventDataRefs(parsed, resolveData);
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
       const limit = params?.pagination?.limit ?? 100;
@@ -1112,7 +1112,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         data: values.map((v) => {
           v.eventData ||= v.eventDataJson;
           const parsed = EventSchema.parse(compact(v));
-          return filterEventData(parsed, resolveData);
+          return stripEventDataRefs(parsed, resolveData);
         }),
         cursor: values.at(-1)?.eventId ?? null,
         hasMore: all.length > limit,
@@ -1146,7 +1146,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         data: values.map((v) => {
           v.eventData ||= v.eventDataJson;
           const parsed = EventSchema.parse(compact(v));
-          return filterEventData(parsed, resolveData);
+          return stripEventDataRefs(parsed, resolveData);
         }),
         cursor: values.at(-1)?.eventId ?? null,
         hasMore: all.length > limit,
@@ -1334,20 +1334,44 @@ function filterHookData(hook: Hook, resolveData: ResolveData): Hook {
   return hook;
 }
 
-function filterEventData(event: Event, resolveData: ResolveData): Event {
-  if (resolveData === 'none' && 'eventData' in event) {
-    const { eventData: _eventData, ...rest } = event;
-    const minimalEventData: Record<string, unknown> = {};
-    if ((_eventData as any)?.stepName !== undefined)
-      minimalEventData.stepName = (_eventData as any).stepName;
-    if ((_eventData as any)?.workflowName !== undefined)
-      minimalEventData.workflowName = (_eventData as any).workflowName;
-    return {
-      ...rest,
-      ...(Object.keys(minimalEventData).length > 0
-        ? { eventData: minimalEventData }
-        : {}),
-    } as Event;
+/**
+ * Fields within eventData that hold ref/payload data per event type.
+ * When resolveData is 'none', only these fields are stripped — all other
+ * metadata (stepName, workflowName, etc.) is preserved.
+ */
+const EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
+  run_created: ['input'],
+  run_completed: ['output'],
+  run_failed: ['error'],
+  step_created: ['input'],
+  step_completed: ['result'],
+  step_failed: ['error'],
+  step_retrying: ['error'],
+  hook_created: ['metadata'],
+  hook_received: ['payload'],
+};
+
+function stripEventDataRefs(event: Event, resolveData: ResolveData): Event {
+  if (resolveData !== 'none') return event;
+  if (!('eventData' in event)) return event;
+
+  const eventData = event.eventData;
+  if (!eventData || typeof eventData !== 'object') {
+    const { eventData: _, ...rest } = event;
+    return rest as Event;
   }
-  return event;
+
+  const refFields = EVENT_DATA_REF_FIELDS[event.eventType];
+  if (!refFields || refFields.length === 0) return event;
+
+  const stripped = { ...(eventData as Record<string, unknown>) };
+  for (const field of refFields) {
+    delete stripped[field];
+  }
+
+  const { eventData: _, ...rest } = event;
+  return {
+    ...rest,
+    ...(Object.keys(stripped).length > 0 ? { eventData: stripped } : {}),
+  } as Event;
 }

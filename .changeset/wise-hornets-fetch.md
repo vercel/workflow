@@ -4,4 +4,4 @@
 "@workflow/world-local": patch
 ---
 
-Preserve stepName and workflowName in eventData when resolveData is 'none'
+Strip only ref/payload fields from eventData when resolveData is 'none', preserving all other metadata

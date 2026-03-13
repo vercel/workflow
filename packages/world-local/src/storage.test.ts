@@ -1024,7 +1024,7 @@ describe('Storage', () => {
 
         // step_created + step_completed = 2 events
         expect(result.data).toHaveLength(2);
-        // step_created preserves stepName in minimal eventData
+        // step_created: ref field 'input' stripped, metadata like stepName preserved
         expect((result.data[0] as any).eventData).toEqual({
           stepName: 'test-step',
         });

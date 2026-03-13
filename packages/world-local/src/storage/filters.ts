@@ -65,28 +65,53 @@ export function filterStepData(
 }
 
 /**
- * Filter event data based on resolveData setting.
- * When resolveData is 'none', strips eventData to reduce payload size.
+ * Fields within eventData that hold ref/payload data per event type.
+ * When resolveData is 'none', only these fields are stripped — all other
+ * metadata (stepName, workflowName, etc.) is preserved.
  */
-export function filterEventData(
+const EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
+  run_created: ['input'],
+  run_completed: ['output'],
+  run_failed: ['error'],
+  step_created: ['input'],
+  step_completed: ['result'],
+  step_failed: ['error'],
+  step_retrying: ['error'],
+  hook_created: ['metadata'],
+  hook_received: ['payload'],
+};
+
+/**
+ * Strip ref/payload fields from eventData based on resolveData setting.
+ * When resolveData is 'none', removes only large data fields (refs) from
+ * eventData while preserving metadata like stepName, workflowName, etc.
+ */
+export function stripEventDataRefs(
   event: Event,
   resolveData: 'none' | 'all'
 ): Event {
-  if (resolveData === 'none') {
-    const { eventData: _eventData, ...rest } = event as any;
-    const minimalEventData: Record<string, unknown> = {};
-    if (_eventData?.stepName !== undefined)
-      minimalEventData.stepName = _eventData.stepName;
-    if (_eventData?.workflowName !== undefined)
-      minimalEventData.workflowName = _eventData.workflowName;
-    return {
-      ...rest,
-      ...(Object.keys(minimalEventData).length > 0
-        ? { eventData: minimalEventData }
-        : {}),
-    };
+  if (resolveData !== 'none') return event;
+  if (!('eventData' in event)) return event;
+
+  const eventData = (event as any).eventData;
+  if (!eventData || typeof eventData !== 'object') {
+    const { eventData: _, ...rest } = event as any;
+    return rest;
   }
-  return event;
+
+  const refFields = EVENT_DATA_REF_FIELDS[event.eventType];
+  if (!refFields || refFields.length === 0) return event;
+
+  const stripped = { ...eventData };
+  for (const field of refFields) {
+    delete stripped[field];
+  }
+
+  const { eventData: _, ...rest } = event as any;
+  return {
+    ...rest,
+    ...(Object.keys(stripped).length > 0 ? { eventData: stripped } : {}),
+  };
 }
 
 /**
