@@ -1,7 +1,7 @@
 // https://github.com/vercel/workflow/issues/1365
 import { MockLanguageModelV3 } from 'ai/test';
 import { xai as xaiProvider } from '@ai-sdk/xai';
-/**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep10":{"stepId":"step//./input//_anonymousStep10"},"_anonymousStep11":{"stepId":"step//./input//_anonymousStep11"},"_anonymousStep12":{"stepId":"step//./input//_anonymousStep12"},"_anonymousStep13":{"stepId":"step//./input//_anonymousStep13"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"_anonymousStep5":{"stepId":"step//./input//_anonymousStep5"},"_anonymousStep6":{"stepId":"step//./input//_anonymousStep6"},"_anonymousStep7":{"stepId":"step//./input//_anonymousStep7"},"_anonymousStep8":{"stepId":"step//./input//_anonymousStep8"},"_anonymousStep9":{"stepId":"step//./input//_anonymousStep9"}}}}*/;
+/**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep10":{"stepId":"step//./input//_anonymousStep10"},"_anonymousStep11":{"stepId":"step//./input//_anonymousStep11"},"_anonymousStep12":{"stepId":"step//./input//_anonymousStep12"},"_anonymousStep13":{"stepId":"step//./input//_anonymousStep13"},"_anonymousStep14":{"stepId":"step//./input//_anonymousStep14"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"_anonymousStep5":{"stepId":"step//./input//_anonymousStep5"},"_anonymousStep6":{"stepId":"step//./input//_anonymousStep6"},"_anonymousStep7":{"stepId":"step//./input//_anonymousStep7"},"_anonymousStep8":{"stepId":"step//./input//_anonymousStep8"},"_anonymousStep9":{"stepId":"step//./input//_anonymousStep9"}}}}*/;
 // Bug 1: `new` expressions should have their arguments captured as closure vars
 export function mockModel(...args) {
     return async ()=>{
@@ -125,5 +125,27 @@ export function withComputedKey(key, value) {
         return {
             [key]: value
         };
+    };
+}
+// Bug 4: Deeply nested closure variable usage inside inner functions/methods.
+// `text` is used inside start() method of ReadableStream constructor,
+// which is nested several levels deep. Should still be captured.
+export function mockTextModel(text) {
+    return async ()=>{
+        return mockProvider({
+            doStream: async ()=>({
+                    stream: new ReadableStream({
+                        start (c) {
+                            for (const v of [
+                                {
+                                    type: 'text-delta',
+                                    delta: text
+                                }
+                            ])c.enqueue(v);
+                            c.close();
+                        }
+                    })
+                })
+        });
     };
 }

@@ -146,3 +146,24 @@ export function withComputedKey(key, value) {
     return { [key]: value };
   };
 }
+
+// Bug 4: Deeply nested closure variable usage inside inner functions/methods.
+// `text` is used inside start() method of ReadableStream constructor,
+// which is nested several levels deep. Should still be captured.
+export function mockTextModel(text) {
+  return async () => {
+    'use step';
+    return mockProvider({
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(c) {
+            for (const v of [
+              { type: 'text-delta', delta: text },
+            ]) c.enqueue(v);
+            c.close();
+          },
+        }),
+      }),
+    });
+  };
+}

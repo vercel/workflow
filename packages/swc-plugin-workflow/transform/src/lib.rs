@@ -586,7 +586,13 @@ impl ClosureVariableCollector {
                     }
                     Decl::Fn(fn_decl) => {
                         self.local_vars.insert(fn_decl.ident.sym.to_string());
-                        // Don't visit nested function bodies for closure detection
+                        // Walk into nested function bodies to find closure vars from the outer scope.
+                        for param in &fn_decl.function.params {
+                            self.collect_param_names(&param.pat);
+                        }
+                        if let Some(body) = &fn_decl.function.body {
+                            self.collect_from_block_stmt(body);
+                        }
                     }
                     _ => {}
                 }
@@ -812,8 +818,25 @@ impl ClosureVariableCollector {
                                     // { key = default } — collect the default value expression
                                     self.collect_from_expr(&assign.value);
                                 }
-                                Prop::Getter(_) | Prop::Setter(_) | Prop::Method(_) => {
-                                    // Don't visit nested method/accessor bodies
+                                Prop::Method(method) => {
+                                    // Walk into method bodies to find closure vars from the outer scope.
+                                    for param in &method.function.params {
+                                        self.collect_param_names(&param.pat);
+                                    }
+                                    if let Some(body) = &method.function.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                Prop::Getter(getter) => {
+                                    if let Some(body) = &getter.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                Prop::Setter(setter) => {
+                                    self.collect_declared_names(&setter.param);
+                                    if let Some(body) = &setter.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
                                 }
                             }
                         }
@@ -837,11 +860,33 @@ impl ClosureVariableCollector {
                     self.collect_from_expr(expr);
                 }
             }
-            Expr::Arrow(_arrow) => {
-                // Don't visit nested arrow function bodies for closure detection
+            Expr::Arrow(arrow) => {
+                // Walk into nested arrow bodies to find closure vars from the outer scope.
+                // Add the arrow's own params to local_vars so they don't get captured.
+                for param in &arrow.params {
+                    self.collect_declared_names(param);
+                }
+                match &*arrow.body {
+                    BlockStmtOrExpr::BlockStmt(block) => {
+                        self.collect_from_block_stmt(block);
+                    }
+                    BlockStmtOrExpr::Expr(expr) => {
+                        self.collect_from_expr(expr);
+                    }
+                }
             }
-            Expr::Fn(_) => {
-                // Don't visit nested function bodies for closure detection
+            Expr::Fn(fn_expr) => {
+                // Walk into nested function bodies to find closure vars from the outer scope.
+                // Add the function's own params and name to local_vars so they don't get captured.
+                if let Some(ident) = &fn_expr.ident {
+                    self.local_vars.insert(ident.sym.to_string());
+                }
+                for param in &fn_expr.function.params {
+                    self.collect_param_names(&param.pat);
+                }
+                if let Some(body) = &fn_expr.function.body {
+                    self.collect_from_block_stmt(body);
+                }
             }
             Expr::Assign(assign) => {
                 self.collect_from_expr(&assign.right);
@@ -983,11 +1028,30 @@ fn is_global_identifier(name: &str) -> bool {
             | "DataView"
             | "ArrayBuffer"
             | "SharedArrayBuffer"
+            | "ReadableStream"
+            | "WritableStream"
+            | "TransformStream"
+            | "Blob"
+            | "File"
+            | "FormData"
+            | "AbortController"
+            | "AbortSignal"
+            | "EventTarget"
+            | "Event"
+            | "MessageChannel"
+            | "MessagePort"
             | "Atomics"
             | "Proxy"
             | "Reflect"
             | "Intl"
             | "WebAssembly"
+            | "queueMicrotask"
+            | "structuredClone"
+            | "atob"
+            | "btoa"
+            | "crypto"
+            | "performance"
+            | "navigator"
             | "require"
             | "module"
             | "exports"
