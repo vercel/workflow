@@ -236,11 +236,16 @@ export function createRunsStorage(
           Limit: limit + 1,
         };
         if (fromCursor) {
-          queryParams.ExclusiveStartKey = marshall({
-            runId: fromCursor,
-            workflowName: params.workflowName,
-            createdAt: '', // DynamoDB needs all key attributes
-          });
+          const cursorItem = await dynamo.send(
+            new GetItemCommand({
+              TableName: tables.runs,
+              Key: marshall({ runId: fromCursor }),
+              ProjectionExpression: 'runId, workflowName, createdAt',
+            })
+          );
+          if (cursorItem.Item) {
+            queryParams.ExclusiveStartKey = cursorItem.Item;
+          }
         }
         const result = await dynamo.send(new QueryCommand(queryParams));
         items = (result.Items ?? []).map((i) => unmarshall(i));
@@ -256,11 +261,17 @@ export function createRunsStorage(
           Limit: limit + 1,
         };
         if (fromCursor) {
-          queryParams.ExclusiveStartKey = marshall({
-            runId: fromCursor,
-            status: params.status,
-            createdAt: '',
-          });
+          const cursorItem = await dynamo.send(
+            new GetItemCommand({
+              TableName: tables.runs,
+              Key: marshall({ runId: fromCursor }),
+              ProjectionExpression: 'runId, #s, createdAt',
+              ExpressionAttributeNames: { '#s': 'status' },
+            })
+          );
+          if (cursorItem.Item) {
+            queryParams.ExclusiveStartKey = cursorItem.Item;
+          }
         }
         const result = await dynamo.send(new QueryCommand(queryParams));
         items = (result.Items ?? []).map((i) => unmarshall(i));
@@ -1299,8 +1310,9 @@ export function createEventsStorage(
                 { status: 409 }
               );
             }
+          } else {
+            throw err;
           }
-          throw err;
         }
       }
 
