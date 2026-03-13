@@ -1,5 +1,8 @@
-import { usefulHelper// do not remove
+import { someHelper } from './helpers'; // should be removed
+import { anotherHelper, usefulHelper// do not remove
  } from './utils';
+import defaultExport from './default'; // should be removed
+import * as something from './something'; // should be removed
 import * as useful from './useful'; // do not remove
 /**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//./input//processData"}}}}*/;
 export async function processData(data) {
@@ -9,6 +12,12 @@ export async function processData(data) {
     return defaultExport(transformed);
 }
 processData.stepId = "step//./input//processData";
+function localFunction() {
+    // only used by the step, so it should be removed
+    // when the step body gets removed since it is not used
+    // anywhere anymore
+    something.doSomething();
+}
 export function normalFunction() {
     // since this function is exported we can't remove it
     useful.doSomething();

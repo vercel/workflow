@@ -21,11 +21,15 @@ export interface StartOptions {
   /**
    * The deployment ID to use for the workflow run.
    *
+   * Set to `'latest'` to automatically resolve the most recent deployment
+   * for the current environment (same production target or git branch).
+   * Requires a World that implements `resolveLatestDeploymentId()`.
+   *
    * @deprecated This property should not be set in user code under normal circumstances.
    * It is automatically inferred from environment variables when deploying to Vercel.
    * Only set this if you are doing something advanced and know what you are doing.
    */
-  deploymentId?: string;
+  deploymentId?: 'latest' | (string & {});
 
   /**
    * The world to use for the workflow run creation,
@@ -105,7 +109,20 @@ export async function start<TArgs extends unknown[], TResult>(
       });
 
       const world = opts?.world ?? getWorld();
-      const deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+      let deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+
+      // When 'latest' is requested, resolve the actual latest deployment ID
+      // for the current deployment's environment (same production target or
+      // same git branch for preview deployments).
+      if (deploymentId === 'latest') {
+        if (!world.resolveLatestDeploymentId) {
+          throw new WorkflowRuntimeError(
+            "deploymentId 'latest' requires a World that implements resolveLatestDeploymentId()"
+          );
+        }
+        deploymentId = await world.resolveLatestDeploymentId();
+      }
+
       const ops: Promise<void>[] = [];
 
       // Generate runId client-side so we have it before serialization
@@ -121,10 +138,14 @@ export async function start<TArgs extends unknown[], TResult>(
       // Resolve encryption key for the new run. The runId has already been
       // generated above (client-generated ULID) and will be used for both
       // key derivation and the run_created event. The World implementation
-      // uses the runId for per-run HKDF key derivation. The opts object is
-      // passed as opaque context so the World can read world-specific fields
-      // (e.g., deploymentId for world-vercel) needed for key resolution.
-      const rawKey = await world.getEncryptionKeyForRun?.(runId, { ...opts });
+      // uses the runId for per-run HKDF key derivation. We pass the resolved
+      // deploymentId (not just the raw opts) so the World can use it for
+      // key resolution even when deploymentId was inferred from the environment
+      // rather than explicitly provided in opts (e.g., in e2e test runners).
+      const rawKey = await world.getEncryptionKeyForRun?.(runId, {
+        ...opts,
+        deploymentId,
+      });
       const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
       // Create run via run_created event (event-sourced architecture)

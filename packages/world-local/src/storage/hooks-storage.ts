@@ -16,6 +16,7 @@ import {
   readJSON,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
+import { hashToken } from './helpers.js';
 
 /**
  * Creates a hooks storage implementation using the filesystem.
@@ -113,6 +114,13 @@ export async function deleteAllHooksForRun(
     const hookPath = path.join(hooksDir, `${file}.json`);
     const hook = await readJSON(hookPath, HookSchema);
     if (hook && hook.runId === runId) {
+      // Delete the token constraint file to free up the token
+      const constraintPath = path.join(
+        hooksDir,
+        'tokens',
+        `${hashToken(hook.token)}.json`
+      );
+      await deleteJSON(constraintPath);
       await deleteJSON(hookPath);
     }
   }

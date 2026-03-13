@@ -195,6 +195,19 @@ export interface World extends Queue, Storage, Streamer {
   close?(): Promise<void>;
 
   /**
+   * Resolve the most recent deployment ID for the current deployment's environment.
+   *
+   * Used when `deploymentId: 'latest'` is passed to `start()`. The implementation
+   * determines the latest deployment that shares the same environment (e.g., same
+   * "production" target or same git branch for "preview" deployments) as the
+   * current deployment.
+   *
+   * Not all World implementations support this — it is only implemented by
+   * world-vercel where deployment routing is meaningful.
+   */
+  resolveLatestDeploymentId?(): Promise<string>;
+
+  /**
    * Retrieve the AES-256 encryption key for a specific workflow run.
    *
    * The returned key is a ready-to-use 32-byte AES-256 key. The World

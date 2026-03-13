@@ -16,7 +16,7 @@ import {
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { toast } from 'sonner';
+import { useToast } from '../lib/toast';
 import { ErrorBoundary } from './error-boundary';
 import {
   EntityDetailPanel,
@@ -31,6 +31,7 @@ import {
 } from './trace-viewer';
 import type { Span } from './trace-viewer/types';
 import { Skeleton } from './ui/skeleton';
+import { Spinner } from './ui/spinner';
 import {
   getCustomSpanClassName,
   getCustomSpanEventClassName,
@@ -293,6 +294,7 @@ function TraceViewerWithContextMenu({
   isLoadingMoreSpans?: boolean;
   children: ReactNode;
 }): ReactNode {
+  const toast = useToast();
   const { state, dispatch } = useTraceViewer();
 
   // Drive active span widths at 60fps without React re-renders
@@ -706,36 +708,20 @@ function PanelResizeHandle({
 function TraceViewerFooter({
   hasMore,
   isLive,
+  isInitialLoading,
 }: {
   hasMore: boolean;
   isLive: boolean;
+  isInitialLoading: boolean;
 }): ReactNode {
   const style = { color: 'var(--ds-gray-900)' };
-  if (hasMore) {
+  if (hasMore || isInitialLoading) {
     return (
       <div
         className="flex items-center justify-center gap-2 py-3 text-xs"
         style={style}
       >
-        <svg
-          className="h-3.5 w-3.5 animate-spin"
-          viewBox="0 0 24 24"
-          fill="none"
-        >
-          <circle
-            className="opacity-25"
-            cx="12"
-            cy="12"
-            r="10"
-            stroke="currentColor"
-            strokeWidth="4"
-          />
-          <path
-            className="opacity-75"
-            fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-          />
-        </svg>
+        <Spinner size={14} />
         Loading more events…
       </div>
     );
@@ -783,6 +769,7 @@ export const WorkflowTraceViewer = ({
   isLoadingMoreSpans = false,
   encryptionKey,
   onDecrypt,
+  isDecrypting = false,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -821,7 +808,10 @@ export const WorkflowTraceViewer = ({
   encryptionKey?: Uint8Array;
   /** Callback to initiate decryption of encrypted run data */
   onDecrypt?: () => void;
+  /** Whether the encryption key is currently being fetched */
+  isDecrypting?: boolean;
 }) => {
+  const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
     null
   );
@@ -997,9 +987,13 @@ export const WorkflowTraceViewer = ({
               isLive={isLive}
               trace={trace}
               knownDurationMs={traceWithMeta?.knownDurationMs}
-              hasMoreData={hasMoreSpans}
+              hasMoreData={hasMoreSpans || Boolean(isLoading)}
               footer={
-                <TraceViewerFooter hasMore={hasMoreSpans} isLive={isLive} />
+                <TraceViewerFooter
+                  hasMore={hasMoreSpans}
+                  isLive={isLive}
+                  isInitialLoading={Boolean(isLoading)}
+                />
               }
             />
           </TraceViewerWithContextMenu>
@@ -1150,6 +1144,7 @@ export const WorkflowTraceViewer = ({
                 onResolveHook={onResolveHook}
                 encryptionKey={encryptionKey}
                 onDecrypt={onDecrypt}
+                isDecrypting={isDecrypting}
                 selectedSpan={selectedSpan}
               />
             </ErrorBoundary>

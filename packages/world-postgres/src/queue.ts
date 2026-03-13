@@ -7,7 +7,7 @@ import {
   type QueuePrefix,
   type ValidQueueName,
 } from '@workflow/world';
-import { createLocalWorld } from '@workflow/world-local';
+import { createLocalWorld, createQueueExecutor } from '@workflow/world-local';
 import {
   Logger,
   makeWorkerUtils,
@@ -17,6 +17,7 @@ import {
 } from 'graphile-worker';
 import type Postgres from 'postgres';
 import { monotonicFactory } from 'ulid';
+import z from 'zod';
 import type { PostgresWorldConfig } from './config.js';
 import { MessageData } from './message.js';
 
@@ -39,6 +40,12 @@ function createGraphileLogger() {
 }
 
 const graphileLogger = createGraphileLogger();
+const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
+const GraphileHelpers = z.object({
+  job: z.object({
+    attempts: z.number().int().positive(),
+  }),
+});
 
 /**
  * The Postgres queue works by creating two job types in graphile-worker:
@@ -61,6 +68,7 @@ export function createQueue(
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createLocalWorld({ dataDir: undefined, port });
+  const executor = createQueueExecutor({ port });
 
   const transport = new JsonTransport();
   const generateMessageId = monotonicFactory();
@@ -71,15 +79,83 @@ export function createQueue(
     __wkf_step_: `${prefix}steps`,
   } as const satisfies Record<QueuePrefix, string>;
 
-  const createQueueHandler = localWorld.createQueueHandler;
+  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
+    const wrappedHandler = localWorld.createQueueHandler(prefix, handler);
+    // Register the HTTP-compatible handler so Graphile workers can execute it
+    // directly in-process when the route module has been loaded.
+    executor.registerHandler(prefix, wrappedHandler);
+    return wrappedHandler;
+  };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     return 'postgres';
   };
 
+  const completedMessages = new Set<string>();
+  const inflightMessages = new Map<string, Promise<void>>();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let startPromise: Promise<void> | null = null;
+
+  function markMessageCompleted(idempotencyKey: string) {
+    completedMessages.delete(idempotencyKey);
+    completedMessages.add(idempotencyKey);
+    if (completedMessages.size > COMPLETED_IDEMPOTENCY_CACHE_LIMIT) {
+      const oldestKey = completedMessages.values().next().value;
+      if (oldestKey) {
+        completedMessages.delete(oldestKey);
+      }
+    }
+  }
+
+  async function addGraphileJob({
+    queuePrefix,
+    queueId,
+    body,
+    messageId,
+    attempt,
+    idempotencyKey,
+    headers,
+    delaySeconds,
+    jobKey,
+  }: {
+    queuePrefix: QueuePrefix;
+    queueId: string;
+    body: Buffer | Uint8Array;
+    messageId: MessageId;
+    attempt: number;
+    idempotencyKey?: string;
+    headers?: Record<string, string>;
+    delaySeconds?: number;
+    jobKey?: string;
+  }) {
+    const utils = workerUtils;
+    if (!utils) {
+      throw new Error('Postgres queue worker utils are not initialized');
+    }
+
+    const runAt =
+      typeof delaySeconds === 'number' && delaySeconds > 0
+        ? new Date(Date.now() + delaySeconds * 1000)
+        : undefined;
+
+    await utils.addJob(
+      Queues[queuePrefix],
+      MessageData.encode({
+        id: queueId,
+        data: Buffer.from(body),
+        attempt,
+        messageId,
+        idempotencyKey,
+        headers,
+      }),
+      {
+        ...(jobKey ? { jobKey } : {}),
+        ...(runAt ? { runAt } : {}),
+        maxAttempts: 3,
+      }
+    );
+  }
 
   async function migratePgBossJobs(utils: WorkerUtils): Promise<void> {
     // Scenario A: Drizzle migration already ran — staging table exists
@@ -150,49 +226,108 @@ export function createQueue(
 
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
-    const [prefix, queueId] = parseQueueName(queue);
-    const jobName = Queues[prefix];
+    const [queuePrefix, queueId] = parseQueueName(queue);
     const body = transport.serialize(message);
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
-    await workerUtils!.addJob(
-      jobName,
-      MessageData.encode({
-        id: queueId,
-        data: body,
-        attempt: 1,
-        messageId,
-        idempotencyKey: opts?.idempotencyKey,
-      }),
-      {
-        jobKey: opts?.idempotencyKey ?? messageId,
-        maxAttempts: 3,
-      }
-    );
+    await addGraphileJob({
+      queuePrefix,
+      queueId,
+      body,
+      messageId,
+      attempt: 1,
+      idempotencyKey: opts?.idempotencyKey,
+      headers: opts?.headers,
+      delaySeconds: opts?.delaySeconds,
+      jobKey: opts?.idempotencyKey ?? messageId,
+    });
     return { messageId };
   };
 
   function createTaskHandler(queue: QueuePrefix) {
-    return async (payload: unknown) => {
+    return async (payload: unknown, helpers: unknown) => {
       const messageData = MessageData.parse(payload);
-      const bodyStream = Stream.Readable.toWeb(
-        Stream.Readable.from([messageData.data])
-      );
-      const body = await transport.deserialize(
-        bodyStream as ReadableStream<Uint8Array>
-      );
-      const message = QueuePayloadSchema.parse(body);
-      const queueName = `${queue}${messageData.id}` as const;
-      // TODO: Custom headers from opts.headers are not propagated into MessageData.
-      // To support this, MessageData schema would need to include a headers field
-      // and the headers would need to be stored/retrieved from graphile-worker job data.
-      await localWorld.queue(queueName, message, {
-        idempotencyKey: messageData.idempotencyKey,
-      });
+      const graphileAttempt = GraphileHelpers.safeParse(helpers);
+      const attempt = graphileAttempt.success
+        ? graphileAttempt.data.job.attempts
+        : messageData.attempt;
+      const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
+        const bodyStream = Stream.Readable.toWeb(
+          Stream.Readable.from([messageData.data])
+        );
+        const body = await transport.deserialize(
+          bodyStream as ReadableStream<Uint8Array>
+        );
+        QueuePayloadSchema.parse(body);
+        const queueName = `${queue}${messageData.id}` as const;
+        const result = await executor.executeMessage({
+          queueName,
+          messageId: messageData.messageId,
+          attempt,
+          body: messageData.data,
+          headers: messageData.headers,
+        });
+
+        if (result.type === 'completed') {
+          return 'completed';
+        }
+
+        if (result.type === 'reschedule') {
+          // Schedule the follow-up job before we return so a crash cannot
+          // lose the wake-up request.
+          await addGraphileJob({
+            queuePrefix: queue,
+            queueId: messageData.id,
+            body: messageData.data,
+            messageId: messageData.messageId,
+            attempt: attempt + 1,
+            idempotencyKey: messageData.idempotencyKey,
+            headers: messageData.headers,
+            delaySeconds: result.timeoutSeconds,
+            jobKey: messageData.idempotencyKey ?? messageData.messageId,
+          });
+          return 'rescheduled';
+        }
+
+        throw new Error(
+          `[postgres world] Queue execution failed (${result.status}): ${result.text}`
+        );
+      };
+
+      const idempotencyKey = messageData.idempotencyKey;
+      if (!idempotencyKey) {
+        await executeTask();
+        return;
+      }
+
+      if (completedMessages.has(idempotencyKey)) {
+        return;
+      }
+
+      const existing = inflightMessages.get(idempotencyKey);
+      if (existing) {
+        await existing;
+        return;
+      }
+
+      const execution = executeTask()
+        .then((result) => {
+          if (result === 'completed') {
+            markMessageCompleted(idempotencyKey);
+          }
+        })
+        .finally(() => {
+          inflightMessages.delete(idempotencyKey);
+        });
+      inflightMessages.set(idempotencyKey, execution);
+      await execution;
     };
   }
 
   async function setupListeners() {
-    const taskList: Record<string, (payload: unknown) => Promise<void>> = {};
+    const taskList: Record<
+      string,
+      (payload: unknown, helpers: unknown) => Promise<void>
+    > = {};
     for (const [prefix, jobName] of Object.entries(Queues) as [
       QueuePrefix,
       string,
@@ -224,6 +359,7 @@ export function createQueue(
         workerUtils = null;
       }
       startPromise = null;
+      await executor.close();
       await localWorld.close?.();
     },
   };

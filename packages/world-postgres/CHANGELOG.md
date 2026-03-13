@@ -1,5 +1,30 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.45
+
+### Patch Changes
+
+- Updated dependencies [[`9feebee`](https://github.com/vercel/workflow/commit/9feebee15c7c35843b99254b23a2f7743ea3f8c6)]:
+  - @workflow/world-local@4.1.0-beta.43
+
+## 4.1.0-beta.44
+
+### Patch Changes
+
+- [#1334](https://github.com/vercel/workflow/pull/1334) [`3648109`](https://github.com/vercel/workflow/commit/3648109861f1fbfe24101936dc35c9a36650b7e2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Execute Graphile jobs inline and durably reschedule delayed queue work.
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`3648109`](https://github.com/vercel/workflow/commit/3648109861f1fbfe24101936dc35c9a36650b7e2)]:
+  - @workflow/world@4.1.0-beta.12
+  - @workflow/world-local@4.1.0-beta.42
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.1.0-beta.43
+
+### Patch Changes
+
+- Updated dependencies [[`4a6ddd8`](https://github.com/vercel/workflow/commit/4a6ddd82c0fc1b3768f3a10befad77f43e81036e)]:
+  - @workflow/world-local@4.1.0-beta.41
+
 ## 4.1.0-beta.42
 
 ### Patch Changes

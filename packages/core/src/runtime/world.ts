@@ -34,16 +34,18 @@ export const createWorld = (): World => {
   const targetWorld = resolveWorkflowTargetWorld();
 
   if (isVercelWorldTarget(targetWorld)) {
-    // Warn if WORKFLOW_VERCEL_* env vars are set — they have no effect at
-    // runtime and likely indicate a misconfiguration (user manually added
-    // them as Vercel project env vars, which is not needed).
+    // Warn if WORKFLOW_VERCEL_* env vars are set inside a Vercel serverless
+    // function (VERCEL=1) — they have no effect at runtime and likely indicate
+    // a misconfiguration (user manually added them as Vercel project env vars,
+    // which is not needed). We gate on VERCEL=1 so the warning does not fire
+    // when the CLI or web observability app sets these env vars intentionally.
     const staleEnvVars = [
       'WORKFLOW_VERCEL_PROJECT',
       'WORKFLOW_VERCEL_TEAM',
       'WORKFLOW_VERCEL_AUTH_TOKEN',
       'WORKFLOW_VERCEL_ENV',
     ].filter((key) => process.env[key]);
-    if (staleEnvVars.length > 0) {
+    if (staleEnvVars.length > 0 && process.env.VERCEL === '1') {
       console.warn(
         `[workflow] Warning: ${staleEnvVars.join(', ')} env var(s) ` +
           'are set but have no effect at runtime. These are only used by the Workflow CLI. ' +

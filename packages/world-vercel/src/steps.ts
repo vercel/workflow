@@ -162,7 +162,7 @@ export async function listWorkflowRunSteps(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${runId}/steps${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/steps${queryString ? `?${queryString}` : ''}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -185,7 +185,7 @@ export async function createStep(
   config?: APIConfig
 ): Promise<Step> {
   const step = await makeRequest({
-    endpoint: `/v2/runs/${runId}/steps`,
+    endpoint: `/v2/runs/${encodeURIComponent(runId)}/steps`,
     options: { method: 'POST' },
     data,
     config,
@@ -202,7 +202,7 @@ export async function updateStep(
 ): Promise<Step> {
   const serialized = serializeError(data);
   const step = await makeRequest({
-    endpoint: `/v2/runs/${runId}/steps/${stepId}`,
+    endpoint: `/v2/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}`,
     options: { method: 'PUT' },
     data: serialized,
     config,
@@ -243,8 +243,8 @@ export async function getStep(
 
   const queryString = searchParams.toString();
   const endpoint = runId
-    ? `/v2/runs/${runId}/steps/${stepId}${queryString ? `?${queryString}` : ''}`
-    : `/v2/steps/${stepId}${queryString ? `?${queryString}` : ''}`;
+    ? `/v2/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}${queryString ? `?${queryString}` : ''}`
+    : `/v2/steps/${encodeURIComponent(stepId)}${queryString ? `?${queryString}` : ''}`;
 
   const step = await makeRequest({
     endpoint,
