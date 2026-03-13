@@ -1474,6 +1474,9 @@ importers:
       '@astrojs/vercel':
         specifier: ^9.0.0
         version: 9.0.2(5bdc065253a3063b2ad85e26c57abf6a)
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
@@ -1554,6 +1557,9 @@ importers:
       '@types/express':
         specifier: ^5.0.5
         version: 5.0.5
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
@@ -1585,6 +1591,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
@@ -1609,6 +1618,9 @@ importers:
 
   workbench/hono:
     devDependencies:
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
@@ -1645,6 +1657,9 @@ importers:
       '@nestjs/platform-express':
         specifier: ^11.0.1
         version: 11.1.12(@nestjs/common@11.1.12(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.12)
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@workflow/nest':
         specifier: workspace:*
         version: link:../../packages/nest
@@ -1979,6 +1994,9 @@ importers:
         specifier: 1.7.6
         version: 1.7.6
     devDependencies:
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
@@ -2013,6 +2031,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 22.19.0
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres
@@ -2190,6 +2211,9 @@ importers:
         specifier: 1.7.6
         version: 1.7.6
     devDependencies:
+      '@workflow/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@workflow/world-postgres':
         specifier: workspace:*
         version: link:../../packages/world-postgres

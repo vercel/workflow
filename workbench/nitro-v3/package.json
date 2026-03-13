@@ -20,6 +20,7 @@
     "openai": "^6.1.0",
     "rollup": "^4.53.2",
     "workflow": "workspace:*",
+    "@workflow/ai": "workspace:*",
     "zod": "catalog:"
   },
   "dependencies": {
