@@ -3,10 +3,10 @@ mod naming;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use swc_core::{
-    common::{DUMMY_SP, SyntaxContext, errors::HANDLER},
+    common::{errors::HANDLER, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
-        visit::{VisitMut, VisitMutWith, noop_visit_mut_type},
+        visit::{noop_visit_mut_type, VisitMut, VisitMutWith},
     },
 };
 
@@ -466,11 +466,18 @@ impl ClosureVariableCollector {
         }
     }
 
-    fn collect_from_function(function: &Function, module_imports: &HashSet<String>) -> Vec<String> {
+    fn collect_from_function(
+        function: &Function,
+        module_imports: &HashSet<String>,
+        module_declarations: &HashSet<String>,
+    ) -> Vec<String> {
         let mut collector = Self::new();
 
-        // Add module-level imports to local_vars so they're not considered closure vars
+        // Add module-level imports and declarations to local_vars so they're not considered closure vars
         collector.local_vars.extend(module_imports.iter().cloned());
+        collector
+            .local_vars
+            .extend(module_declarations.iter().cloned());
 
         // Collect parameters
         for param in &function.params {
@@ -488,11 +495,18 @@ impl ClosureVariableCollector {
         vars
     }
 
-    fn collect_from_arrow_expr(arrow: &ArrowExpr, module_imports: &HashSet<String>) -> Vec<String> {
+    fn collect_from_arrow_expr(
+        arrow: &ArrowExpr,
+        module_imports: &HashSet<String>,
+        module_declarations: &HashSet<String>,
+    ) -> Vec<String> {
         let mut collector = Self::new();
 
-        // Add module-level imports to local_vars so they're not considered closure vars
+        // Add module-level imports and declarations to local_vars so they're not considered closure vars
         collector.local_vars.extend(module_imports.iter().cloned());
+        collector
+            .local_vars
+            .extend(module_declarations.iter().cloned());
 
         // Collect parameters
         for param in &arrow.params {
@@ -767,6 +781,14 @@ impl ClosureVariableCollector {
             Expr::Await(await_expr) => {
                 self.collect_from_expr(&await_expr.arg);
             }
+            Expr::New(new_expr) => {
+                self.collect_from_expr(&new_expr.callee);
+                if let Some(args) = &new_expr.args {
+                    for arg in args {
+                        self.collect_from_expr(&arg.expr);
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -930,6 +952,7 @@ impl StepTransform {
                                         ClosureVariableCollector::collect_from_function(
                                             &cloned_function,
                                             &self.module_imports,
+                                            &self.declared_identifiers,
                                         );
 
                                     let fn_expr = FnExpr {
@@ -1005,6 +1028,7 @@ impl StepTransform {
                                         ClosureVariableCollector::collect_from_function(
                                             &fn_decl.function,
                                             &self.module_imports,
+                                            &self.declared_identifiers,
                                         );
                                     let proxy_ref =
                                         self.create_step_proxy_reference(&step_id, &closure_vars);
@@ -6408,7 +6432,7 @@ impl VisitMut for StepTransform {
                                                 );
 
                                                 // Collect closure variables before conversion
-                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports);
+                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports, &self.declared_identifiers);
 
                                                 // Create a function expression from the arrow function
                                                 // (We need to convert it to a regular function for hoisting)
@@ -6505,7 +6529,7 @@ impl VisitMut for StepTransform {
                                                 );
 
                                                 // Collect closure variables
-                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports);
+                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports, &self.declared_identifiers);
                                                 *init = Box::new(self.create_step_proxy_reference(
                                                     &step_id,
                                                     &closure_vars,
@@ -7268,6 +7292,7 @@ impl VisitMut for StepTransform {
                                 let closure_vars = ClosureVariableCollector::collect_from_function(
                                     &cloned_function,
                                     &self.module_imports,
+                                    &self.declared_identifiers,
                                 );
 
                                 let hoisted_fn_expr = FnExpr {
@@ -7330,6 +7355,7 @@ impl VisitMut for StepTransform {
                                 let closure_vars = ClosureVariableCollector::collect_from_function(
                                     &fn_expr.function,
                                     &self.module_imports,
+                                    &self.declared_identifiers,
                                 );
                                 *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
                                 return; // Don't visit children since we replaced the expr
@@ -7365,6 +7391,7 @@ impl VisitMut for StepTransform {
                                     ClosureVariableCollector::collect_from_arrow_expr(
                                         &cloned_arrow,
                                         &self.module_imports,
+                                        &self.declared_identifiers,
                                     );
 
                                 // Convert to function expression for hoisting
@@ -7454,6 +7481,7 @@ impl VisitMut for StepTransform {
                                     ClosureVariableCollector::collect_from_arrow_expr(
                                         arrow_expr,
                                         &self.module_imports,
+                                        &self.declared_identifiers,
                                     );
                                 *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
                                 return; // Don't visit children since we replaced the expr
@@ -7920,7 +7948,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports, &self.declared_identifiers);
 
                                                         // Convert to function expression
                                                         let fn_expr = FnExpr {
@@ -8015,7 +8043,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports, &self.declared_identifiers);
                                                         *kv_prop.value = self
                                                             .create_step_proxy_reference(
                                                                 &step_id,
@@ -8058,7 +8086,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&*cloned_fn.function, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&*cloned_fn.function, &self.module_imports, &self.declared_identifiers);
 
                                                         let hoisted_fn_expr = FnExpr {
                                                             ident: Some(Ident::new(
@@ -8107,7 +8135,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&fn_expr.function, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&fn_expr.function, &self.module_imports, &self.declared_identifiers);
                                                         *kv_prop.value = self
                                                             .create_step_proxy_reference(
                                                                 &step_id,
@@ -8157,6 +8185,7 @@ impl VisitMut for StepTransform {
                                                     ClosureVariableCollector::collect_from_function(
                                                         &cloned_function,
                                                         &self.module_imports,
+                                                        &self.declared_identifiers,
                                                     );
 
                                                 let fn_expr = FnExpr {
@@ -8214,6 +8243,7 @@ impl VisitMut for StepTransform {
                                                     ClosureVariableCollector::collect_from_function(
                                                         &method_prop.function,
                                                         &self.module_imports,
+                                                        &self.declared_identifiers,
                                                     );
 
                                                 // Replace method with property pointing to proxy

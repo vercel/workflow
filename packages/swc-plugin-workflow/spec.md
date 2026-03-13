@@ -300,7 +300,7 @@ Note: Shorthand methods are hoisted as regular function expressions (not arrow f
 
 ### Closure Variables
 
-When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`:
+When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`. Closure variable detection analyzes all expression types including function calls, `new` expressions, member accesses, template literals, etc. Module-level imports and declarations (functions, variables, classes) are excluded from closure variable detection since they are available directly in the step bundle:
 
 Input:
 ```javascript
@@ -933,4 +933,6 @@ The plugin detects this pattern and correctly identifies the directive inside th
 - The `this` keyword and `arguments` object are not allowed in step functions
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection
+- Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available in all bundles and should not be serialized as closure values
+- `new` expressions are analyzed for closure variables in the same way as regular function calls (both the callee and arguments are checked)
 - Workflow functions always throw when called directly; use `start(workflow)` from `workflow/api` instead
