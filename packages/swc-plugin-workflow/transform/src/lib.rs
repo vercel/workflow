@@ -1811,6 +1811,18 @@ impl StepTransform {
                                         self.remove_use_step_directive(
                                             &mut method_prop.function.body,
                                         );
+                                        // Track for metadata generation
+                                        let step_id = self.create_object_property_id(
+                                            parent_var_name,
+                                            &prop_key,
+                                            false,
+                                            self.current_workflow_function_name.as_deref(),
+                                        );
+                                        self.object_property_workflow_conversions.push((
+                                            parent_var_name.to_string(),
+                                            prop_key,
+                                            step_id,
+                                        ));
                                     }
                                     TransformMode::Workflow => {
                                         // In workflow mode, convert method to key-value property with initializer call
@@ -1895,6 +1907,12 @@ impl StepTransform {
                 // Keep the original value (directive already stripped by caller),
                 // so that direct (non-workflow) calls work with normal closure semantics.
                 // The hoisted copy (with __private_getClosureVars) is registered separately.
+                // Track for metadata generation
+                self.object_property_workflow_conversions.push((
+                    parent_var_name.to_string(),
+                    prop_key.to_string(),
+                    step_id,
+                ));
             }
             TransformMode::Workflow => {
                 // Replace with initializer call
