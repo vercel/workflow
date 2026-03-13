@@ -211,6 +211,15 @@ function buildDurationMap(events: Event[]): Map<string, DurationInfo> {
   return durations;
 }
 
+/** Check if a loaded eventData object contains any encrypted marker values. */
+function hasEncryptedValues(data: unknown): boolean {
+  if (!data || typeof data !== 'object') return false;
+  for (const val of Object.values(data as Record<string, unknown>)) {
+    if (isEncryptedMarker(val)) return true;
+  }
+  return false;
+}
+
 function isRunLevel(eventType: string): boolean {
   return (
     eventType === 'run_created' ||
@@ -668,6 +677,7 @@ function EventRow({
   cachedEventData,
   onCacheEventData,
   encryptionKey,
+  onEncryptedDataDetected,
 }: {
   event: Event;
   index: number;
@@ -687,6 +697,7 @@ function EventRow({
   cachedEventData: unknown | null;
   onCacheEventData: (eventId: string, data: unknown) => void;
   encryptionKey?: Uint8Array;
+  onEncryptedDataDetected?: () => void;
 }) {
   const [isLoading, setIsLoading] = useState(false);
   const [loadedEventData, setLoadedEventData] = useState<unknown | null>(
@@ -696,6 +707,18 @@ function EventRow({
   const [hasAttemptedLoad, setHasAttemptedLoad] = useState(
     cachedEventData !== null
   );
+
+  // Notify parent if cached data has encrypted markers on mount
+  useEffect(() => {
+    if (
+      cachedEventData !== null &&
+      !encryptionKey &&
+      hasEncryptedValues(cachedEventData)
+    ) {
+      onEncryptedDataDetected?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const rowGroupKey = isRunLevel(event.eventType)
     ? '__run__'
@@ -745,6 +768,9 @@ function EventRow({
       if (data !== null && data !== undefined) {
         setLoadedEventData(data);
         onCacheEventData(event.eventId, data);
+        if (!encryptionKey && hasEncryptedValues(data)) {
+          onEncryptedDataDetected?.();
+        }
       }
     } catch (err) {
       setLoadError(
@@ -760,6 +786,8 @@ function EventRow({
     hasExistingEventData,
     onLoadEventData,
     onCacheEventData,
+    encryptionKey,
+    onEncryptedDataDetected,
   ]);
 
   // Auto-load event data when remounting in expanded state without cached data
@@ -1079,21 +1107,25 @@ export function EventListView({
     );
   }, [events, effectiveSortOrder]);
 
-  // Detect encrypted fields across all loaded events.
-  // Only checks top-level eventData values (input, output, result, etc.) —
-  // the current data model guarantees encrypted markers appear at this level.
-  const hasEncryptedData = useMemo(() => {
+  // Detect encrypted fields across all loaded events (inline eventData).
+  const hasEncryptedInlineData = useMemo(() => {
     if (!events) return false;
     for (const event of events) {
       const ed = (event as Record<string, unknown>).eventData;
-      if (!ed || typeof ed !== 'object') continue;
-      const data = ed as Record<string, unknown>;
-      for (const val of Object.values(data)) {
-        if (isEncryptedMarker(val)) return true;
-      }
+      if (hasEncryptedValues(ed)) return true;
     }
     return false;
   }, [events]);
+
+  // Tracks whether any expanded row's lazy-loaded data contained encrypted markers.
+  // Set to true by EventRow via onEncryptedDataDetected; never reset (sticky).
+  const [foundEncryptedInLazyData, setFoundEncryptedInLazyData] =
+    useState(false);
+  const handleEncryptedDataDetected = useCallback(() => {
+    setFoundEncryptedInLazyData(true);
+  }, []);
+
+  const hasEncryptedData = hasEncryptedInlineData || foundEncryptedInLazyData;
 
   const { correlationNameMap, workflowName } = useMemo(
     () => buildNameMaps(events ?? null, run ?? null),
@@ -1455,6 +1487,7 @@ export function EventListView({
                 }
                 onCacheEventData={cacheEventData}
                 encryptionKey={encryptionKey}
+                onEncryptedDataDetected={handleEncryptedDataDetected}
               />
             );
           }}
