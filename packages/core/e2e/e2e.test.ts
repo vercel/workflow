@@ -1338,15 +1338,16 @@ describe('e2e', () => {
       // Verify parent workflow completed with expected data
       expect(returnValue.parentInput).toBe(inputValue);
 
-      // Verify child was spawned (runId returned)
-      expect(typeof returnValue.childRunId).toBe('string');
-      expect(returnValue.childRunId.startsWith('wrun_')).toBe(true);
+      // Verify child Run object was returned (serialized from workflow context)
+      expect(returnValue.childRun).toBeDefined();
+      expect(typeof returnValue.childRun.runId).toBe('string');
+      expect(returnValue.childRun.runId.startsWith('wrun_')).toBe(true);
 
       // Verify hook signal was received from child
       expect(returnValue.signalFromChild.processed).toBe(inputValue * 3);
 
       // Verify the child workflow also completed independently
-      const childRun = getRun(returnValue.childRunId);
+      const childRun = getRun(returnValue.childRun.runId);
       const childResult = await childRun.returnValue;
       expect(childResult.processed).toBe(inputValue * 3);
 
@@ -1359,7 +1360,7 @@ describe('e2e', () => {
         },
         {
           testName: 'startFromWorkflow (child)',
-          runId: returnValue.childRunId,
+          runId: returnValue.childRun.runId,
           timestamp: new Date().toISOString(),
         }
       );
