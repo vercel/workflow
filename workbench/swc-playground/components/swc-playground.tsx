@@ -262,6 +262,8 @@ export function SwcPlayground({
                     <button
                       type="button"
                       onClick={() => togglePanel(mode)}
+                      aria-expanded={isOpen}
+                      aria-controls={`output-panel-${mode}`}
                       className="bg-muted px-4 py-2 text-sm font-medium border-b flex items-center justify-between shrink-0 hover:bg-muted/80 transition-colors cursor-pointer"
                     >
                       <div className="flex items-center gap-2">
@@ -277,7 +279,10 @@ export function SwcPlayground({
                       </div>
                     </button>
                     {isOpen && (
-                      <div className="flex-1 min-h-0 relative">
+                      <div
+                        id={`output-panel-${mode}`}
+                        className="flex-1 min-h-0 relative"
+                      >
                         {results[mode].error ? (
                           <div className="absolute inset-0 p-4 text-red-500 font-mono text-sm overflow-auto bg-red-50/10">
                             <div className="flex items-center gap-2 mb-2 font-bold">

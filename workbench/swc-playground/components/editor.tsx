@@ -3,7 +3,7 @@
 import Editor, { type EditorProps, type OnMount } from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
 import { useTheme } from 'next-themes';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 interface CodeEditorProps extends EditorProps {
   label?: string;
@@ -21,10 +21,12 @@ export function CodeEditor({
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   const vimRef = useRef<{ dispose: () => void } | null>(null);
   const statusBarRef = useRef<HTMLDivElement | null>(null);
+  const [editorMounted, setEditorMounted] = useState(false);
 
   const handleMount: OnMount = useCallback(
     (editor, monaco) => {
       editorRef.current = editor;
+      setEditorMounted(true);
       onMount?.(editor, monaco);
     },
     [onMount]
@@ -36,28 +38,36 @@ export function CodeEditor({
     if (!editor) return;
 
     if (vimMode) {
+      let cancelled = false;
+
       // Dynamically import monaco-vim to avoid SSR issues
-      import('monaco-vim').then(({ initVimMode }) => {
-        // Clean up any existing vim mode first
+      import('monaco-vim')
+        .then(({ initVimMode }) => {
+          if (cancelled) return;
+          // Clean up any existing vim mode first
+          if (vimRef.current) {
+            vimRef.current.dispose();
+          }
+          vimRef.current = initVimMode(editor, statusBarRef.current);
+        })
+        .catch(() => {
+          // Import may fail in non-browser environments
+        });
+
+      return () => {
+        cancelled = true;
         if (vimRef.current) {
           vimRef.current.dispose();
+          vimRef.current = null;
         }
-        vimRef.current = initVimMode(editor, statusBarRef.current);
-      });
-    } else {
-      if (vimRef.current) {
-        vimRef.current.dispose();
-        vimRef.current = null;
-      }
+      };
     }
 
-    return () => {
-      if (vimRef.current) {
-        vimRef.current.dispose();
-        vimRef.current = null;
-      }
-    };
-  }, [vimMode]);
+    if (vimRef.current) {
+      vimRef.current.dispose();
+      vimRef.current = null;
+    }
+  }, [vimMode, editorMounted]);
 
   return (
     <div className="flex flex-col h-full overflow-hidden bg-background">
