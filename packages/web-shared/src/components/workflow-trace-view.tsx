@@ -16,7 +16,7 @@ import {
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { toast } from 'sonner';
+import { useToast } from '../lib/toast';
 import { ErrorBoundary } from './error-boundary';
 import {
   EntityDetailPanel,
@@ -294,6 +294,7 @@ function TraceViewerWithContextMenu({
   isLoadingMoreSpans?: boolean;
   children: ReactNode;
 }): ReactNode {
+  const toast = useToast();
   const { state, dispatch } = useTraceViewer();
 
   // Drive active span widths at 60fps without React re-renders
@@ -810,6 +811,7 @@ export const WorkflowTraceViewer = ({
   /** Whether the encryption key is currently being fetched */
   isDecrypting?: boolean;
 }) => {
+  const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
     null
   );

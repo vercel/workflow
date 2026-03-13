@@ -6,7 +6,7 @@ import type { ModelMessage } from 'ai';
 import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { useToast } from '../../lib/toast';
 import { isEncryptedMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
@@ -693,6 +693,7 @@ export const AttributePanel = ({
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
 }) => {
+  const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
     const result = { ...data };
