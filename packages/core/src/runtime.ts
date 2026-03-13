@@ -60,7 +60,13 @@ export {
   type StopSleepResult,
   wakeUpRun,
 } from './runtime/runs.js';
-export { type StartOptions, start } from './runtime/start.js';
+export {
+  type StartOptions,
+  type StartOptionsBase,
+  type StartOptionsWithDeploymentId,
+  type StartOptionsWithoutDeploymentId,
+  start,
+} from './runtime/start.js';
 export { stepEntrypoint } from './runtime/step-handler.js';
 export {
   createWorld,

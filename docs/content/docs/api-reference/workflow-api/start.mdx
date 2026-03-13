@@ -54,6 +54,7 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * This is different from calling workflow functions directly, which is the typical pattern in Next.js applications.
 * The function returns immediately after enqueuing the workflow - it doesn't wait for the workflow to complete.
 * All arguments must be [serializable](/docs/foundations/serialization).
+* When `deploymentId` is provided, the argument types and return type become `unknown` since there is no guarantee the workflow function's types will be consistent across different deployments.
 
 ## Examples
 
