@@ -8,17 +8,49 @@
  */
 
 import type { Event, WorkflowRun } from '@workflow/world';
+import * as nanoid from 'nanoid';
+import { monotonicFactory } from 'ulid';
 import { describe, expect, it } from 'vitest';
+import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
+import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from './serialization.js';
 import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from './symbols.js';
+import { createContext } from './vm/index.js';
+import { createCreateAbortController } from './workflow/abort-controller.js';
 import { runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
+
+function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
+  const context = createContext({
+    seed: 'test-abort-consistency',
+    fixedTimestamp: 1753481739458,
+  });
+  const ulid = monotonicFactory(() => context.globalThis.Math.random());
+  const workflowStartedAt = context.globalThis.Date.now();
+  return {
+    runId: 'wrun_test',
+    encryptionKey: undefined,
+    globalThis: context.globalThis,
+    eventsConsumer: new EventsConsumer(events, {
+      onUnconsumedEvent: () => {},
+      getPromiseQueue: () => Promise.resolve(),
+    }),
+    invocationsQueue: new Map(),
+    generateUlid: () => ulid(workflowStartedAt),
+    generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
+      new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
+    ),
+    onWorkflowError: () => {},
+    promiseQueue: Promise.resolve(),
+    pendingDeliveries: 0,
+  };
+}
 
 const getWorkflowTransformCode = (workflowName?: string) =>
   `;globalThis.__private_workflows = new Map();
@@ -483,60 +515,99 @@ describe('AbortController consistency', () => {
   });
 
   describe('replay ordering: abort listeners must fire at deterministic point', () => {
-    it('abort listener side effects must match between first run and replay', async () => {
-      // This test validates that abort() should NOT fire listeners synchronously
-      // in the workflow. If it did, listeners would fire at the call site on first
-      // run, but at the hook_received event processing point on replay — potentially
-      // different ordering relative to other events.
+    it('abort listener fires at abort() call site, not during event replay', () => {
+      // The critical invariant: abort listeners must fire at the abort() call
+      // site on BOTH first-run and replay. If they fired during event log
+      // processing (which happens at AbortController construction time during
+      // replay), side effects would occur at a different point than first-run.
       //
-      // Scenario: workflow creates controller, adds listener that pushes to an array,
-      // then calls abort() and does more work. The listener's side effect must happen
-      // at the same point relative to other operations on both first run and replay.
-      const { workflowRun } = await createWorkflowRun([]);
+      // On replay, hook_received for the abort is processed during event
+      // consumer subscription (construction). _markAbortedFromReplay sets
+      // signal.aborted=true but does NOT fire listeners. When the workflow
+      // code reaches abort(), it detects the replay flag and fires listeners
+      // at the same call site as first-run.
+      const ctx = setupWorkflowContext([]);
+      const WorkflowAbortController = createCreateAbortController(ctx);
 
-      // First run: no events, workflow will suspend at step
-      let error: Error | undefined;
-      try {
-        await runWorkflow(
-          `async function workflow() {
-            const controller = new AbortController();
-            const log = [];
+      const controller = new WorkflowAbortController();
+      const log: string[] = [];
 
-            controller.signal.addEventListener('abort', () => {
-              log.push('abort-listener');
-            });
+      controller.signal.addEventListener('abort', () => {
+        log.push('listener-fired');
+      });
 
-            log.push('before-abort');
-            controller.abort();
-            log.push('after-abort');
+      log.push('before-abort');
+      controller.abort('test');
+      log.push('after-abort');
 
-            return log;
-          }${getWorkflowTransformCode('workflow')}`,
-          workflowRun,
-          [],
-          noEncryptionKey
-        );
-      } catch (err) {
-        error = err as Error;
-      }
+      // First run: listener fires synchronously at abort() call
+      expect(log).toEqual(['before-abort', 'listener-fired', 'after-abort']);
+    });
 
-      // The workflow completes (no await points). The log order should be
-      // deterministic regardless of whether this is first run or replay.
-      // If abort listeners fire synchronously: ['before-abort', 'abort-listener', 'after-abort']
-      // If abort listeners fire via hook replay: ['before-abort', 'after-abort'] on first run,
-      //   then ['before-abort', 'abort-listener', 'after-abort'] on replay — INCONSISTENT!
+    it('on replay, _markAbortedFromReplay sets aborted but defers listeners', () => {
+      // Simulate what happens during replay: the event consumer calls
+      // _markAbortedFromReplay before the workflow code reaches abort().
+      const ctx = setupWorkflowContext([]);
+      const WorkflowAbortController = createCreateAbortController(ctx);
+
+      const controller = new WorkflowAbortController();
+      const log: string[] = [];
+
+      controller.signal.addEventListener('abort', () => {
+        log.push('listener-fired');
+      });
+
+      // Simulate replay: event consumer marks aborted without firing listeners
+      controller.signal._markAbortedFromReplay('replay-reason');
+      log.push('after-mark');
+
+      // Signal reads true, but listener hasn't fired yet
+      expect(controller.signal.aborted).toBe(true);
+      expect(log).toEqual(['after-mark']); // No 'listener-fired'!
+
+      // When workflow code reaches abort(), listeners fire NOW
+      controller.abort('replay-reason');
+      log.push('after-abort');
+
+      expect(log).toEqual(['after-mark', 'listener-fired', 'after-abort']);
+    });
+
+    it('interleaved hooks: abort listener fires after other hook resolves, not during event processing', async () => {
+      // The scenario you described: another hook's hook_received event
+      // arrives BEFORE the abort's hook_received in the event log.
+      // On replay, both events are processed during subscription.
+      // The abort listener must NOT fire during event processing —
+      // it must fire when abort() is called in the workflow code.
       //
-      // The correct behavior: listeners fire synchronously so the order is the same
-      // on both first run and replay. The hook_received event on replay will call
-      // _setAborted again but it's a no-op (already aborted).
-      if (!error) {
-        // Workflow completed — check the result is defined
-        // (exact log validation would need hydrateWorkflowReturnValue)
-        expect(true).toBe(true);
-      } else {
-        // If it suspended, that's also valid behavior
-        expect(error.name).toBe('WorkflowSuspension');
-      }
+      // This ensures the listener's side effects don't change the
+      // behavior of the other hook's resolution.
+      const ctx = setupWorkflowContext([]);
+      const WorkflowAbortController = createCreateAbortController(ctx);
+
+      const controller = new WorkflowAbortController();
+      const log: string[] = [];
+
+      controller.signal.addEventListener('abort', () => {
+        log.push('abort-listener');
+      });
+
+      // Simulate: during replay, abort's hook_received is processed
+      controller.signal._markAbortedFromReplay('reason');
+      log.push('other-hook-resolved'); // Simulates other hook resolving
+
+      // At this point, abort listener should NOT have fired
+      expect(log).toEqual(['other-hook-resolved']);
+      expect(controller.signal.aborted).toBe(true); // reads are correct
+
+      // Workflow code reaches abort() — NOW listeners fire
+      controller.abort();
+      log.push('workflow-continues');
+
+      expect(log).toEqual([
+        'other-hook-resolved',
+        'abort-listener',
+        'workflow-continues',
+      ]);
     });
   });
 
