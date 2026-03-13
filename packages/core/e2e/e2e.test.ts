@@ -138,7 +138,11 @@ describe('e2e', () => {
     },
   ])('addTenWorkflow', { timeout: 60_000 }, async (workflow) => {
     const run = await start(
-      await getWorkflowMetadata(workflow.workflowFile, workflow.workflowFn),
+      await getWorkflowMetadata(
+        deploymentUrl,
+        workflow.workflowFile,
+        workflow.workflowFn
+      ),
       [123]
     );
 
@@ -176,6 +180,7 @@ describe('e2e', () => {
     async () => {
       const run = await start(
         await getWorkflowMetadata(
+          deploymentUrl,
           'app/.well-known/agent/v1/steps.ts',
           'wellKnownAgentWorkflow'
         ),
@@ -200,6 +205,7 @@ describe('e2e', () => {
     async () => {
       const run = await start(
         await getWorkflowMetadata(
+          deploymentUrl,
           'workflows/8_react_render.tsx',
           'reactWorkflow'
         ),
@@ -1659,7 +1665,7 @@ describe('e2e', () => {
 
       // Look up the stepId for the `add` function from 98_duplicate_case.ts
       // This simulates what the SWC plugin does in client mode: setting stepId on the function
-      const manifest = await fetchManifest();
+      const manifest = await fetchManifest(deploymentUrl);
       const stepFile = Object.keys(manifest.steps).find((f) =>
         f.includes('98_duplicate_case')
       );
