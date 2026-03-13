@@ -4,6 +4,6 @@
  * Note: This is NOT a step function - it's a regular function that gets called
  * from within a step to verify path alias imports work correctly.
  */
-export function pathsAliasHelper(): string {
+export function pathsAliasHelper() {
   return 'pathsAliasHelper';
 }

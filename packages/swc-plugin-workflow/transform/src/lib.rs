@@ -3,10 +3,10 @@ mod naming;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use swc_core::{
-    common::{errors::HANDLER, SyntaxContext, DUMMY_SP},
+    common::{DUMMY_SP, SyntaxContext, errors::HANDLER},
     ecma::{
         ast::*,
-        visit::{noop_visit_mut_type, VisitMut, VisitMutWith},
+        visit::{VisitMut, VisitMutWith, noop_visit_mut_type},
     },
 };
 
@@ -3277,6 +3277,7 @@ impl StepTransform {
         let mut visitor = ComprehensiveUsageCollector {
             used_identifiers: &mut used_identifiers,
             step_function_names: &self.step_function_names,
+            analyze_step_function_bodies: self.mode == TransformMode::Client,
             current_function: None,
         };
 
@@ -3495,6 +3496,7 @@ impl<'a> VisitMut for UsageCollector<'a> {
 struct ComprehensiveUsageCollector<'a> {
     used_identifiers: &'a mut HashSet<String>,
     step_function_names: &'a HashSet<String>,
+    analyze_step_function_bodies: bool,
     current_function: Option<String>,
 }
 
@@ -3524,8 +3526,9 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
         let fn_name = fn_decl.ident.sym.to_string();
         let is_step_function = self.step_function_names.contains(&fn_name);
 
-        if is_step_function {
-            // Step functions have their bodies replaced, so don't analyze their original content
+        if is_step_function && !self.analyze_step_function_bodies {
+            // In workflow mode, step functions are replaced with proxies, so their
+            // original bodies should not keep imports or local helpers alive.
             return;
         }
 
@@ -3577,8 +3580,9 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
         match &mut export_decl.decl {
             Decl::Fn(fn_decl) => {
                 let fn_name = fn_decl.ident.sym.to_string();
-                if self.step_function_names.contains(&fn_name) {
-                    // Step functions have their bodies replaced
+                if self.step_function_names.contains(&fn_name) && !self.analyze_step_function_bodies
+                {
+                    // In workflow mode, step functions have their bodies replaced.
                     return;
                 }
 
@@ -3608,8 +3612,8 @@ impl<'a> VisitMut for ComprehensiveUsageCollector<'a> {
                     _ => false,
                 };
 
-                if is_step_fn {
-                    // Don't visit the initializer if it's a step function
+                if is_step_fn && !self.analyze_step_function_bodies {
+                    // In workflow mode, step function initializers are replaced.
                     return;
                 }
             }

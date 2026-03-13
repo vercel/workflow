@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.1.0-beta.19
+
+### Patch Changes
+
+- [#1312](https://github.com/vercel/workflow/pull/1312) [`d72c822`](https://github.com/vercel/workflow/commit/d72c82220f0c56bb26edbc918e485b8bd14c959b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix bug where the SWC compiler bug prunes step-only imports in the client-mode transformation
+
 ## 4.1.0-beta.18
 
 ### Patch Changes
@@ -29,7 +35,6 @@
 - [#899](https://github.com/vercel/workflow/pull/899) [`73bf7be`](https://github.com/vercel/workflow/commit/73bf7be925a8ffc0c6fce0cc75b6092243882088) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Change compiler ID generation logic to use Node.js import specifiers
 
   IDs for workflows, steps, and classes now use module specifiers:
-
   - Local files use `./path/to/file` format instead of `path/to/file.ext`
   - Package files use `packageName@version` format (e.g., `workflow@4.0.1`)
 
@@ -42,7 +47,6 @@
 ### Minor Changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
-
   - Remove `cancel`, `pause`, `resume` from `runs`
   - Remove `create`, `update` from `runs`, `steps`, `hooks`
   - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
@@ -80,7 +84,6 @@
 - f46c51e: Apply workflow transformation with `export { fnName }` syntax
 - af5b005: Set `workflowId` property in workflow mode for non-exported workflow functions
 - 43f2dec: Improved workflow registration in workflow mode
-
   - SWC plugin now emits `globalThis.__private_workflows.set(workflowId, fn)` directly after setting `workflowId`
   - Non-exported workflow functions are now properly registered and can be invoked
   - Removed runtime iteration over exports in the workflow bundle - registration happens at transform time

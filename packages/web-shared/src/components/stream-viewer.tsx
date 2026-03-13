@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { DataInspector } from './ui/data-inspector';
 import { Skeleton } from './ui/skeleton';
 
@@ -46,6 +47,8 @@ interface StreamViewerProps {
   error?: string | null;
   /** True while the initial stream connection is being established */
   isLoading?: boolean;
+  /** Called when the user scrolls near the bottom, for triggering pagination */
+  onScrollEnd?: () => void;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -114,45 +117,41 @@ function StreamSkeleton() {
  * of complex types (Map, Set, Date, custom classes, etc.).
  */
 export function StreamViewer({
-  streamId,
+  streamId: _streamId,
   chunks,
   isLive,
   error,
   isLoading,
+  onScrollEnd,
 }: StreamViewerProps) {
-  const [hasMoreBelow, setHasMoreBelow] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const prevChunkCountRef = useRef(0);
 
-  const checkScrollPosition = useCallback(() => {
-    if (scrollRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
-      const isAtBottom = scrollHeight - scrollTop - clientHeight < 10;
-      setHasMoreBelow(!isAtBottom && scrollHeight > clientHeight);
-    }
-  }, []);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: chunks.length triggers scroll on new chunks
+  // Auto-scroll to bottom when new chunks arrive (live streaming)
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (chunks.length > prevChunkCountRef.current && chunks.length > 0) {
+      virtuosoRef.current?.scrollToIndex({
+        index: chunks.length - 1,
+        align: 'end',
+      });
     }
-    checkScrollPosition();
-  }, [chunks.length, checkScrollPosition]);
+    prevChunkCountRef.current = chunks.length;
+  }, [chunks.length]);
 
   // Show skeleton when loading and no chunks have arrived yet
   if (isLoading && chunks.length === 0) {
     return (
-      <div className="flex flex-col h-full pb-4">
+      <div className="flex flex-col h-full">
         <StreamSkeleton />
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full pb-4">
+    <div className="flex flex-col h-full">
       {/* Live indicator */}
       {isLive && (
-        <div className="flex items-center gap-1.5 mb-3 px-1">
+        <div className="flex items-center gap-1.5 mb-2 px-1">
           <span
             className="inline-block w-2 h-2 rounded-full"
             style={{ backgroundColor: 'var(--ds-green-600)' }}
@@ -182,52 +181,42 @@ export function StreamViewer({
       )}
 
       {/* Content */}
-      <div className="relative flex-1 min-h-[200px]">
-        <div
-          ref={scrollRef}
-          onScroll={checkScrollPosition}
-          className="absolute inset-0 overflow-auto flex flex-col gap-2"
-        >
-          {error ? (
-            <div
-              className="text-[11px] rounded-md border p-3"
-              style={{
-                borderColor: 'var(--ds-red-300)',
-                backgroundColor: 'var(--ds-red-100)',
-                color: 'var(--ds-red-700)',
-              }}
-            >
-              <div>Error reading stream:</div>
-              <div>{error}</div>
-            </div>
-          ) : chunks.length === 0 ? (
-            <div
-              className="text-[11px] rounded-md border p-3"
-              style={{
-                borderColor: 'var(--ds-gray-300)',
-                backgroundColor: 'var(--ds-gray-100)',
-                color: 'var(--ds-gray-600)',
-              }}
-            >
-              {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
-            </div>
-          ) : (
-            chunks.map((chunk, index) => (
-              <ChunkRow
-                key={`${streamId}-chunk-${chunk.id}`}
-                chunk={chunk}
-                index={index}
-              />
-            ))
-          )}
-        </div>
-        {hasMoreBelow && (
+      <div className="flex-1 min-h-0">
+        {error ? (
           <div
-            className="absolute bottom-0 left-0 right-0 h-8 pointer-events-none"
+            className="text-[11px] rounded-md border p-3"
             style={{
-              background:
-                'linear-gradient(to top, var(--ds-background-100), transparent)',
+              borderColor: 'var(--ds-red-300)',
+              backgroundColor: 'var(--ds-red-100)',
+              color: 'var(--ds-red-700)',
             }}
+          >
+            <div>Error reading stream:</div>
+            <div>{error}</div>
+          </div>
+        ) : chunks.length === 0 ? (
+          <div
+            className="text-[11px] rounded-md border p-3"
+            style={{
+              borderColor: 'var(--ds-gray-300)',
+              backgroundColor: 'var(--ds-gray-100)',
+              color: 'var(--ds-gray-600)',
+            }}
+          >
+            {isLive ? 'Waiting for stream data...' : 'Stream is empty'}
+          </div>
+        ) : (
+          <Virtuoso
+            ref={virtuosoRef}
+            totalCount={chunks.length}
+            overscan={10}
+            endReached={() => onScrollEnd?.()}
+            itemContent={(index) => (
+              <div style={{ paddingBottom: 8 }}>
+                <ChunkRow chunk={chunks[index]} index={index} />
+              </div>
+            )}
+            style={{ flex: 1, minHeight: 0 }}
           />
         )}
       </div>

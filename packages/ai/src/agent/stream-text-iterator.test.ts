@@ -7,9 +7,9 @@
  * across multi-turn tool calls.
  */
 import type {
-  LanguageModelV2Prompt,
-  LanguageModelV2ToolCall,
-  LanguageModelV2ToolResultPart,
+  LanguageModelV3Prompt,
+  LanguageModelV3ToolCall,
+  LanguageModelV3ToolResult,
 } from '@ai-sdk/provider';
 import type { StepResult, ToolSet, UIMessageChunk } from 'ai';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -78,9 +78,9 @@ describe('streamTextIterator', () => {
       const mockModel = vi.fn();
 
       // Capture the conversation prompt passed to subsequent doStreamStep calls
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      const toolCallWithMetadata: LanguageModelV2ToolCall = {
+      const toolCallWithMetadata: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -128,7 +128,7 @@ describe('streamTextIterator', () => {
       expect(firstResult.value.toolCalls).toHaveLength(1);
 
       // Provide tool results and continue
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -165,9 +165,9 @@ describe('streamTextIterator', () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      const toolCallWithoutMetadata: LanguageModelV2ToolCall = {
+      const toolCallWithoutMetadata: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -205,7 +205,7 @@ describe('streamTextIterator', () => {
       const firstResult = await iterator.next();
       expect(firstResult.done).toBe(false);
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -231,9 +231,9 @@ describe('streamTextIterator', () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      const toolCalls: LanguageModelV2ToolCall[] = [
+      const toolCalls: LanguageModelV3ToolCall[] = [
         {
           type: 'tool-call',
           toolCallId: 'call-1',
@@ -289,7 +289,7 @@ describe('streamTextIterator', () => {
       expect(firstResult.done).toBe(false);
       expect(firstResult.value.toolCalls).toHaveLength(2);
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -335,9 +335,9 @@ describe('streamTextIterator', () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      const toolCalls: LanguageModelV2ToolCall[] = [
+      const toolCalls: LanguageModelV3ToolCall[] = [
         {
           type: 'tool-call',
           toolCallId: 'call-1',
@@ -389,7 +389,7 @@ describe('streamTextIterator', () => {
 
       await iterator.next();
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -430,10 +430,10 @@ describe('streamTextIterator', () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
       // OpenAI Responses API returns itemId which requires reasoning items we don't preserve
-      const toolCallWithOpenAIMetadata: LanguageModelV2ToolCall = {
+      const toolCallWithOpenAIMetadata: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -474,7 +474,7 @@ describe('streamTextIterator', () => {
 
       await iterator.next();
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -501,10 +501,10 @@ describe('streamTextIterator', () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
       // OpenAI metadata with both itemId (should be stripped) and other fields (should be preserved)
-      const toolCallWithMixedOpenAIMetadata: LanguageModelV2ToolCall = {
+      const toolCallWithMixedOpenAIMetadata: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -546,7 +546,7 @@ describe('streamTextIterator', () => {
 
       await iterator.next();
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -577,10 +577,10 @@ describe('streamTextIterator', () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
       // Mixed provider metadata - Gemini should be fully preserved, OpenAI itemId stripped
-      const toolCallWithMixedProviders: LanguageModelV2ToolCall = {
+      const toolCallWithMixedProviders: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -624,7 +624,7 @@ describe('streamTextIterator', () => {
 
       await iterator.next();
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',

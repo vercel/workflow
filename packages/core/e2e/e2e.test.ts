@@ -19,23 +19,15 @@ import {
   cliCancel,
   cliHealthJson,
   cliInspectJson,
+  fetchManifest,
   getProtectionBypassHeaders,
   getWorkbenchAppPath,
+  getWorkflowMetadata,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
   isLocalDeployment,
+  setupWorld,
 } from './utils';
-
-// Manifest type matching the structure from BaseBuilder.createManifest()
-interface WorkflowManifest {
-  version: string;
-  workflows: Record<
-    string,
-    Record<string, { workflowId: string; graph?: unknown }>
-  >;
-  steps: Record<string, Record<string, { stepId: string }>>;
-  classes?: Record<string, Record<string, { classId: string }>>;
-}
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
@@ -73,139 +65,12 @@ function writeE2EMetadata() {
   fs.writeFileSync(getE2EMetadataPath(), JSON.stringify(metadata, null, 2));
 }
 
-// Cached manifest fetched from the deployment
-let cachedManifest: WorkflowManifest | null = null;
-const manifestRetryTimeoutMs = Number(
-  process.env.WORKFLOW_E2E_MANIFEST_RETRY_MS ?? '10000'
-);
-const manifestRetryIntervalMs = 250;
-
-/**
- * Fetches the workflow manifest from the deployment URL.
- * The manifest is served at /.well-known/workflow/v1/manifest.json by each
- * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set.
- */
-async function fetchManifest(): Promise<WorkflowManifest> {
-  return fetchManifestWithOptions();
-}
-
-async function fetchManifestWithOptions(options?: {
-  forceRefresh?: boolean;
-}): Promise<WorkflowManifest> {
-  const forceRefresh = options?.forceRefresh ?? false;
-  if (cachedManifest && !forceRefresh) return cachedManifest;
-
-  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
-  const res = await fetch(url, {
-    headers: getProtectionBypassHeaders(),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to fetch manifest from ${url}: ${res.status} ${await res.text()}`
-    );
-  }
-  cachedManifest = (await res.json()) as WorkflowManifest;
-  return cachedManifest;
-}
-
-function findWorkflowMetadataInManifest(
-  manifest: WorkflowManifest,
-  workflowFile: string,
-  workflowFn: string
-): { workflowId: string } | null {
-  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
-    if (
-      manifestFile.endsWith(workflowFile) ||
-      workflowFile.endsWith(manifestFile)
-    ) {
-      const entry = functions[workflowFn];
-      if (entry) {
-        return entry;
-      }
-    }
-  }
-
-  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
-  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
-    const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
-    if (
-      manifestFileWithoutExt.endsWith(fileWithoutExt) ||
-      fileWithoutExt.endsWith(manifestFileWithoutExt)
-    ) {
-      const entry = functions[workflowFn];
-      if (entry) {
-        return entry;
-      }
-    }
-  }
-
-  return null;
-}
-
-function getFallbackWorkflowId(
-  workflowFile: string,
-  workflowFn: string
-): string {
-  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
-  // Keep this in sync with the SWC transform ID format. This fallback is
-  // intentionally coupled so tests can continue running when deferred manifest
-  // publication lags behind discovery in staged/out-of-monorepo scenarios.
-  return `workflow//./${fileWithoutExt}//${workflowFn}`;
-}
-
-/**
- * Looks up the workflow metadata from the manifest for a given workflow file and function name.
- * Returns an object that can be passed directly to `start()`.
- *
- * The manifest contains the exact IDs produced by the SWC transform during the build,
- * which handles symlink resolution and path normalization correctly.
- */
-async function getWorkflowMetadata(
-  workflowFile: string,
-  workflowFn: string
-): Promise<{ workflowId: string }> {
-  let manifest = await fetchManifest();
-  let metadata = findWorkflowMetadataInManifest(
-    manifest,
-    workflowFile,
-    workflowFn
-  );
-  if (metadata) {
-    return metadata;
-  }
-
-  // Deferred discovery can grow the manifest during test execution, so poll
-  // briefly before failing to avoid races in staged/out-of-monorepo mode.
-  const deadline = Date.now() + manifestRetryTimeoutMs;
-  while (Date.now() < deadline) {
-    manifest = await fetchManifestWithOptions({ forceRefresh: true });
-    metadata = findWorkflowMetadataInManifest(
-      manifest,
-      workflowFile,
-      workflowFn
-    );
-    if (metadata) {
-      return metadata;
-    }
-    await sleep(manifestRetryIntervalMs);
-  }
-
-  // Deferred discovery can lag behind manifest publication in staged/out-of-
-  // monorepo tests. Fall back to the deterministic workflow ID format used by
-  // the transform so tests can continue exercising runtime behavior.
-  const fallbackWorkflowId = getFallbackWorkflowId(workflowFile, workflowFn);
-  console.warn(
-    `Workflow "${workflowFn}" not found in manifest for "${workflowFile}" after ${manifestRetryTimeoutMs}ms; ` +
-      `falling back to ${fallbackWorkflowId}`
-  );
-  return { workflowId: fallbackWorkflowId };
-}
-
 /**
  * Shorthand for looking up workflow metadata from workflows/99_e2e.ts.
  * Usage: `const run = await start(await e2e('addTenWorkflow'), [123]);`
  */
-const e2e = (fn: string) => getWorkflowMetadata('workflows/99_e2e.ts', fn);
+const e2e = (fn: string) =>
+  getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
 
 /**
  * Triggers a workflow via HTTP POST. Used only for Pages Router tests
@@ -256,22 +121,7 @@ describe('e2e', () => {
   // Configure the World for the test runner process so that start() and
   // run.returnValue can communicate with the same backend as the workbench app.
   beforeAll(async () => {
-    if (isLocalDeployment()) {
-      // Set base URL so the local queue can reach the running workbench app
-      process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
-
-      // Set the data directory to match the workbench app's data directory.
-      // We must set this explicitly (not discover it) because the data dir
-      // may not exist yet when the test starts — the app creates it on first use.
-      // Next.js uses .next/workflow-data, all other frameworks use .workflow-data.
-      const appPath = getWorkbenchAppPath();
-      const appName = process.env.APP_NAME!;
-      const isNextJs = appName.includes('nextjs') || appName.includes('next-');
-      const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
-      process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
-    }
-    // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI
-    // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
+    setupWorld(deploymentUrl);
   });
 
   // Write E2E metadata file with runIds for observability links
@@ -290,7 +140,11 @@ describe('e2e', () => {
     },
   ])('addTenWorkflow', { timeout: 60_000 }, async (workflow) => {
     const run = await start(
-      await getWorkflowMetadata(workflow.workflowFile, workflow.workflowFn),
+      await getWorkflowMetadata(
+        deploymentUrl,
+        workflow.workflowFile,
+        workflow.workflowFn
+      ),
       [123]
     );
 
@@ -328,6 +182,7 @@ describe('e2e', () => {
     async () => {
       const run = await start(
         await getWorkflowMetadata(
+          deploymentUrl,
           'app/.well-known/agent/v1/steps.ts',
           'wellKnownAgentWorkflow'
         ),
@@ -352,6 +207,7 @@ describe('e2e', () => {
     async () => {
       const run = await start(
         await getWorkflowMetadata(
+          deploymentUrl,
           'workflows/8_react_render.tsx',
           'reactWorkflow'
         ),
@@ -510,14 +366,25 @@ describe('e2e', () => {
   test('webhookWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('webhookWorkflow'), []);
 
-    // Wait a few seconds so that the webhooks are registered.
-    // TODO: make this more efficient when we add subscription support.
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-    // Discover the randomly generated webhook tokens via hooks.list
+    // Poll until all 3 webhooks are registered.
     const world = getWorld();
-    const { data: hooks } = await world.hooks.list({ runId: run.runId });
-    expect(hooks).toHaveLength(3);
+    const hooks = await (async () => {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const { data } = await world.hooks.list({ runId: run.runId });
+        if (data.length > 3) {
+          const tokens = data.map((h) => h.token).join(', ');
+          throw new Error(
+            `Expected 3 webhooks for run ${run.runId}, but found ${data.length}. Tokens: [${tokens}]`
+          );
+        }
+        if (data.length === 3) return data;
+        await sleep(500);
+      }
+      throw new Error(
+        `Timed out waiting for 3 webhooks to be registered for run ${run.runId}`
+      );
+    })();
 
     // Hooks are returned in creation order; extract tokens
     const [token, token2, token3] = hooks.map((h) => h.token);
@@ -1039,33 +906,6 @@ describe('e2e', () => {
         expect(result.failed).toBe(true);
         expect(result.attempt).toBe(1);
       });
-
-      test(
-        'workflow completes despite transient 5xx on step_completed',
-        { timeout: 120_000 },
-        async () => {
-          const run = await start(
-            await e2e('serverError5xxRetryWorkflow'),
-            [42]
-          );
-          const result = await run.returnValue;
-
-          // Correct result proves workflow completed successfully
-          expect(result.result).toBe(84); // 42 * 2
-
-          // retryCount > 0 proves the fault injection actually triggered
-          expect(result.retryCount).toBe(2);
-
-          // attempt === 1 proves no step attempt was consumed by the 5xx retries
-          const { json: steps } = await cliInspectJson(
-            `steps --runId ${run.runId}`
-          );
-          const doWorkStep = steps.find((s: any) =>
-            s.stepName.includes('doWork')
-          );
-          expect(doWorkStep.attempt).toBe(1);
-        }
-      );
     });
 
     describe('catchability', () => {
@@ -1827,7 +1667,7 @@ describe('e2e', () => {
 
       // Look up the stepId for the `add` function from 98_duplicate_case.ts
       // This simulates what the SWC plugin does in client mode: setting stepId on the function
-      const manifest = await fetchManifest();
+      const manifest = await fetchManifest(deploymentUrl);
       const stepFile = Object.keys(manifest.steps).find((f) =>
         f.includes('98_duplicate_case')
       );

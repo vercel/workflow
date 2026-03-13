@@ -1,5 +1,27 @@
 # @workflow/world-local
 
+## 4.1.0-beta.43
+
+### Patch Changes
+
+- [#1348](https://github.com/vercel/workflow/pull/1348) [`9feebee`](https://github.com/vercel/workflow/commit/9feebee15c7c35843b99254b23a2f7743ea3f8c6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ensure atomicity for hook token, matches world-postgres and world-vercel
+
+## 4.1.0-beta.42
+
+### Patch Changes
+
+- [#1334](https://github.com/vercel/workflow/pull/1334) [`3648109`](https://github.com/vercel/workflow/commit/3648109861f1fbfe24101936dc35c9a36650b7e2) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Refactor queue handler to separate queue behavior from route call behavior and export QueueExecutor.
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7)]:
+  - @workflow/world@4.1.0-beta.12
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.1.0-beta.41
+
+### Patch Changes
+
+- [#1307](https://github.com/vercel/workflow/pull/1307) [`4a6ddd8`](https://github.com/vercel/workflow/commit/4a6ddd82c0fc1b3768f3a10befad77f43e81036e) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Return HTTP 200 instead of 503 for queue timeout re-enqueue signals in local world
+
 ## 4.1.0-beta.40
 
 ### Patch Changes

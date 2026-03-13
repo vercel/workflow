@@ -19,6 +19,15 @@ jobs:
       github.event.action != 'closed'
     runs-on: ubuntu-latest
     steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: vercel
+          repositories: workflow,front
+
       - name: Checkout workflow repo
         uses: actions/checkout@v4
 
@@ -51,7 +60,7 @@ jobs:
           WORKFLOW_VERSION: ${{ steps.version.outputs.version }}
           DOCS_DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
         with:
-          github-token: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const trigger = require('./scripts/trigger-front-release-workflow-dispatch.cjs');
             await trigger({ github, context });
@@ -63,6 +72,15 @@ jobs:
       github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: vercel
+          repositories: workflow,front
+
       - name: Checkout workflow repo
         uses: actions/checkout@v4
 
@@ -78,7 +96,7 @@ jobs:
           WORKFLOW_VERSION: ""
           DOCS_DEPLOYMENT_URL: ""
         with:
-          github-token: ${{ secrets.GH_TOKEN_PULL_REQUESTS }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const trigger = require('./scripts/trigger-front-release-workflow-dispatch.cjs');
             await trigger({ github, context });

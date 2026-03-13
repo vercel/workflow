@@ -1,6 +1,6 @@
 'use client';
 
-import type { WorkflowDefinition } from '@/app/workflows/definitions';
+import type { WorkflowDefinition } from '@/app/workflows/types';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import {

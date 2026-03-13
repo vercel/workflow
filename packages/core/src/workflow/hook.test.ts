@@ -1,4 +1,5 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -8,8 +9,8 @@ import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { dehydrateStepReturnValue } from '../serialization.js';
 import { createContext } from '../vm/index.js';
-import { createCreateHook } from './hook.js';
 import { createWebhook } from './create-hook.js';
+import { createCreateHook } from './hook.js';
 
 // Helper to setup context to simulate a workflow run
 function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
@@ -68,10 +69,8 @@ describe('createCreateHook', () => {
   it('should throw WorkflowSuspension when no events are available', async () => {
     const ctx = setupWorkflowContext([]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const createHook = createCreateHook(ctx);
     const hook = createHook();
@@ -79,9 +78,7 @@ describe('createCreateHook', () => {
     // Start awaiting the hook - it will process events asynchronously
     const hookPromise = hook.then((v) => v);
 
-    // Wait for the error handler to be called
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
   });
 
@@ -101,10 +98,8 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const createHook = createCreateHook(ctx);
     const hook = createHook();
@@ -112,9 +107,7 @@ describe('createCreateHook', () => {
     // Start awaiting the hook - it will process events asynchronously
     const hookPromise = hook.then((v) => v);
 
-    // Wait for the error handler to be called
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
     expect(workflowError?.message).toContain('Unexpected event type for hook');
     expect(workflowError?.message).toContain('hook_01K11TFZ62YS0YYFDQ3E8B9YCV');
@@ -181,8 +174,10 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook();
 
-    // Wait for event processing
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Wait for event processing (hook_disposed removes from invocationsQueue)
+    await vi.waitFor(() => {
+      expect(ctx.invocationsQueue.size).toBe(0);
+    });
 
     // The hook consumer should have finished (returned EventConsumerResult.Finished)
     // and should not have called onWorkflowError with a RuntimeError
@@ -273,10 +268,8 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const createHook = createCreateHook(ctx);
     // Create hook with a specific token
@@ -285,9 +278,7 @@ describe('createCreateHook', () => {
     // Start awaiting the hook
     const hookPromise = hook.then((v) => v);
 
-    // Wait for the error handler to be called
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
     expect(workflowError?.message).toContain('my-custom-token');
   });
@@ -448,8 +439,11 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook();
 
-    // Wait for events to process
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Wait for events to process (hook_created sets hasCreatedEvent on queue item)
+    await vi.waitFor(() => {
+      const item = ctx.invocationsQueue.get('hook_01K11TFZ62YS0YYFDQ3E8B9YCV');
+      expect(item?.type === 'hook' && item.hasCreatedEvent).toBe(true);
+    });
 
     // Dispose — hook_created was replayed but no hook_disposed in log
     hook.dispose();
@@ -588,8 +582,11 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook();
 
-    // Wait for events to process
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Wait for events to process (hook_created sets hasCreatedEvent on queue item)
+    await vi.waitFor(() => {
+      const item = ctx.invocationsQueue.values().next().value;
+      expect(item?.type === 'hook' && item.hasCreatedEvent).toBe(true);
+    });
 
     // Dispose after hook_created was replayed
     hook.dispose();
@@ -776,7 +773,6 @@ describe('createCreateHook', () => {
   });
 
   it('should drain pending promises and trigger suspension when dispose is called while awaiting', async () => {
-    const ops: Promise<any>[] = [];
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -788,16 +784,17 @@ describe('createCreateHook', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const createHook = createCreateHook(ctx);
     const hook = createHook();
 
-    // Wait for events to process (hook_created consumed, then null → eventLogEmpty)
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Wait for events to process (hook_created sets hasCreatedEvent on queue item)
+    await vi.waitFor(() => {
+      const item = ctx.invocationsQueue.get('hook_01K11TFZ62YS0YYFDQ3E8B9YCV');
+      expect(item?.type === 'hook' && item.hasCreatedEvent).toBe(true);
+    });
 
     // Start awaiting — this pushes a resolver to promises[] since payloadsQueue is empty
     const hookPromise = hook.then((v) => v);
@@ -806,9 +803,7 @@ describe('createCreateHook', () => {
     // and trigger suspension (not leave an orphaned promise)
     hook.dispose();
 
-    // Wait for the async suspension handler
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
 
     // The suspension should include the disposed hook
@@ -820,10 +815,8 @@ describe('createCreateHook', () => {
   it('should suspend when awaiting a disposed hook on first invocation', async () => {
     const ctx = setupWorkflowContext([]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const createHook = createCreateHook(ctx);
     const hook = createHook();
@@ -834,9 +827,7 @@ describe('createCreateHook', () => {
     // Then await — the event log is empty, so this should trigger suspension
     const hookPromise = hook.then((v) => v);
 
-    // Wait for the async error handler
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
 
     // The suspension should include the disposed hook item

@@ -99,10 +99,14 @@ export async function fetchRunKey(
     teamId?: string;
   }
 ): Promise<Uint8Array | undefined> {
-  // Authenticate via provided token (CLI/config), OIDC token (runtime),
-  // or VERCEL_TOKEN env var (external tooling)
-  const oidcToken = await getVercelOidcToken().catch(() => null);
-  const token = options?.token ?? oidcToken ?? process.env.VERCEL_TOKEN;
+  // Authenticate via provided token (CLI/config), VERCEL_TOKEN env var
+  // (external tooling), or OIDC token (runtime) — in that order.
+  // OIDC is last to avoid an unnecessary network call when a token is
+  // already available (e.g. CLI or CI contexts).
+  const token =
+    options?.token ??
+    process.env.VERCEL_TOKEN ??
+    (await getVercelOidcToken().catch(() => null));
   if (!token) {
     throw new Error(
       'Cannot fetch run key: no OIDC token or VERCEL_TOKEN available'
@@ -113,6 +117,7 @@ export async function fetchRunKey(
   if (options?.teamId) {
     params.set('teamId', options.teamId);
   }
+  // 429/5xx retries are handled by the shared RetryAgent from getDispatcher()
   const response = await fetch(
     `https://api.vercel.com/v1/workflow/run-key/${deploymentId}?${params}`,
     {
@@ -120,14 +125,20 @@ export async function fetchRunKey(
       headers: {
         authorization: `Bearer ${token}`,
       },
+      // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
       dispatcher: getDispatcher(),
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-    } as any
+    }
   );
 
   if (!response.ok) {
+    let body: string;
+    try {
+      body = await response.text();
+    } catch {
+      body = '<unable to read response body>';
+    }
     throw new Error(
-      `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${response.status}`
+      `Failed to fetch run key for ${runId} (deployment ${deploymentId}): HTTP ${response.status} ${response.statusText}${body ? ` — ${body}` : ''}`
     );
   }
 
@@ -163,7 +174,11 @@ export function createGetEncryptionKeyForRun(
 ): World['getEncryptionKeyForRun'] {
   if (!projectId) return undefined;
 
-  const currentDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+  // VERCEL=1 is set inside Vercel serverless functions. When true, we can
+  // use the local deployment key for HKDF derivation. When false (e.g., e2e
+  // test runner, CLI, external tooling), we must fetch the key from the API
+  // even for same-deployment runs.
+  const isServerlessRuntime = process.env.VERCEL === '1';
 
   // Parse the local deployment key from env (lazy, only when encryption is used)
   let localDeploymentKey: Uint8Array | undefined;
@@ -185,20 +200,21 @@ export function createGetEncryptionKeyForRun(
         ? (context?.deploymentId as string | undefined)
         : run.deploymentId;
 
-    // Same deployment, or no deploymentId provided (e.g., start() on
-    // current deployment, or step-handler during same-deployment execution)
-    // → use local deployment key + local HKDF derivation
-    if (!deploymentId || deploymentId === currentDeploymentId) {
-      const localKey = getLocalDeploymentKey();
-      if (!localKey) return undefined;
-      return deriveRunKey(localKey, projectId, runId);
+    // Inside the Vercel serverless runtime with a local deployment key:
+    // use local HKDF derivation for same-deployment or unknown-deployment runs.
+    if (isServerlessRuntime) {
+      if (!deploymentId || deploymentId === process.env.VERCEL_DEPLOYMENT_ID) {
+        const localKey = getLocalDeploymentKey();
+        if (!localKey) return undefined;
+        return deriveRunKey(localKey, projectId, runId);
+      }
     }
 
-    // Different deployment — fetch the derived per-run key from the
-    // Vercel API. The API performs HKDF derivation server-side so the
-    // raw deployment key never leaves the API boundary.
-    // Covers cross-deployment resumeHook() (OIDC auth) and o11y
-    // tooling reading data from other deployments (VERCEL_TOKEN).
+    // External context (CLI, e2e tests, web dashboard) or cross-deployment:
+    // fetch the derived per-run key from the Vercel API. The API performs
+    // HKDF derivation server-side so the raw deployment key never leaves
+    // the API boundary.
+    if (!deploymentId) return undefined;
     return fetchRunKey(deploymentId, projectId, runId, { token, teamId });
   };
 }

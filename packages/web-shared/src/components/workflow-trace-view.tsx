@@ -16,7 +16,7 @@ import {
 import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { toast } from 'sonner';
+import { useToast } from '../lib/toast';
 import { ErrorBoundary } from './error-boundary';
 import {
   EntityDetailPanel,
@@ -31,18 +31,12 @@ import {
 } from './trace-viewer';
 import type { Span } from './trace-viewer/types';
 import { Skeleton } from './ui/skeleton';
+import { Spinner } from './ui/spinner';
 import {
   getCustomSpanClassName,
   getCustomSpanEventClassName,
 } from './workflow-traces/trace-colors';
-import {
-  hookToSpan,
-  runToSpan,
-  stepToSpan,
-  WORKFLOW_LIBRARY,
-  waitToSpan,
-} from './workflow-traces/trace-span-construction';
-import { otelTimeToMs } from './workflow-traces/trace-time-utils';
+import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
 
 /**
  * While a run is live, continuously grow root.duration and rescale so the
@@ -273,7 +267,6 @@ function SpanContextMenu({
 function TraceViewerWithContextMenu({
   trace,
   run,
-  hooks,
   isLive,
   onWakeUpSleep,
   onCancelRun,
@@ -285,7 +278,6 @@ function TraceViewerWithContextMenu({
 }: {
   trace: { spans: Span[] };
   run: WorkflowRun;
-  hooks: Hook[];
   isLive: boolean;
   onWakeUpSleep?: (
     runId: string,
@@ -302,12 +294,16 @@ function TraceViewerWithContextMenu({
   isLoadingMoreSpans?: boolean;
   children: ReactNode;
 }): ReactNode {
+  const toast = useToast();
   const { state, dispatch } = useTraceViewer();
 
   // Drive active span widths at 60fps without React re-renders
   useLiveTick(isLive);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
-  const [resolveHookTarget, setResolveHookTarget] = useState<Hook | null>(null);
+  const [resolveHookTarget, setResolveHookTarget] = useState<{
+    hookId: string;
+    token: string;
+  } | null>(null);
   const [resolvingHook, setResolvingHook] = useState(false);
   // Track hooks resolved in this session so the context menu item hides immediately
   const [resolvedHookIds, setResolvedHookIds] = useState<Set<string>>(
@@ -323,15 +319,6 @@ function TraceViewerWithContextMenu({
     return map;
   }, [trace.spans]);
 
-  // Build a lookup map: hookId -> Hook
-  const hookLookup = useMemo(() => {
-    const map = new Map<string, Hook>();
-    for (const hook of hooks) {
-      map.set(hook.hookId, hook);
-    }
-    return map;
-  }, [hooks]);
-
   const handleResolveHook = useCallback(
     async (payload: unknown) => {
       if (resolvingHook || !resolveHookTarget || !onResolveHook) return;
@@ -344,11 +331,7 @@ function TraceViewerWithContextMenu({
       }
       try {
         setResolvingHook(true);
-        await onResolveHook(
-          resolveHookTarget.token,
-          payload,
-          resolveHookTarget
-        );
+        await onResolveHook(resolveHookTarget.token, payload);
         toast.success('Hook resolved', {
           description: 'The payload has been sent and the hook resolved.',
         });
@@ -496,22 +479,24 @@ function TraceViewerWithContextMenu({
 
       // Hook-specific: Resolve Hook (only on active, unresolved hooks)
       if (menu.resourceType === 'hook' && isRunActive && onResolveHook) {
-        const hook = hookLookup.get(menu.spanId);
         const span = spanLookup.get(menu.spanId);
-        // Check data-level disposedAt, span events, AND local resolved state
         const hookData = span?.attributes?.data as
-          | { disposedAt?: unknown }
+          | { token?: string; disposedAt?: unknown }
           | undefined;
+        // Check data-level disposedAt, span events, AND local resolved state
         const isDisposed =
           Boolean(hookData?.disposedAt) ||
           Boolean(span?.events?.some((e) => e.name === 'hook_disposed')) ||
           resolvedHookIds.has(menu.spanId);
-        if (hook?.token && !isDisposed) {
+        if (hookData?.token && !isDisposed) {
           items.push({
             label: 'Resolve Hook',
             icon: <Send className="h-3.5 w-3.5" />,
             action: () => {
-              setResolveHookTarget(hook);
+              setResolveHookTarget({
+                hookId: menu.spanId,
+                token: hookData.token!,
+              });
             },
           });
         }
@@ -582,7 +567,6 @@ function TraceViewerWithContextMenu({
       onWakeUpSleep,
       onCancelRun,
       onResolveHook,
-      hookLookup,
       spanLookup,
       resolvedHookIds,
       run.runId,
@@ -609,159 +593,6 @@ function TraceViewerWithContextMenu({
     </div>
   );
 }
-
-type GroupedEvents = {
-  eventsByStepId: Map<string, Event[]>;
-  eventsByHookId: Map<string, Event[]>;
-  runLevelEvents: Event[];
-  timerEvents: Map<string, Event[]>;
-  hookEvents: Map<string, Event[]>;
-};
-
-const isTimerEvent = (eventType: string) =>
-  eventType === 'wait_created' || eventType === 'wait_completed';
-
-const isHookLifecycleEvent = (eventType: string) =>
-  eventType === 'hook_received' ||
-  eventType === 'hook_created' ||
-  eventType === 'hook_disposed';
-
-const pushEvent = (
-  map: Map<string, Event[]>,
-  correlationId: string,
-  event: Event
-) => {
-  const existing = map.get(correlationId);
-  if (existing) {
-    existing.push(event);
-    return;
-  }
-  map.set(correlationId, [event]);
-};
-
-const groupEventsByCorrelation = (
-  events: Event[],
-  steps: Step[],
-  hooks: Hook[]
-): GroupedEvents => {
-  const eventsByStepId = new Map<string, Event[]>();
-  const eventsByHookId = new Map<string, Event[]>();
-  const runLevelEvents: Event[] = [];
-  const timerEvents = new Map<string, Event[]>();
-  const hookEvents = new Map<string, Event[]>();
-  const stepIds = new Set(steps.map((step) => step.stepId));
-  const hookIds = new Set(hooks.map((hook) => hook.hookId));
-
-  for (const event of events) {
-    const correlationId = event.correlationId;
-    if (!correlationId) {
-      runLevelEvents.push(event);
-      continue;
-    }
-
-    if (isTimerEvent(event.eventType)) {
-      pushEvent(timerEvents, correlationId, event);
-      continue;
-    }
-
-    if (isHookLifecycleEvent(event.eventType)) {
-      pushEvent(hookEvents, correlationId, event);
-      continue;
-    }
-
-    if (stepIds.has(correlationId)) {
-      pushEvent(eventsByStepId, correlationId, event);
-      continue;
-    }
-
-    if (hookIds.has(correlationId)) {
-      pushEvent(eventsByHookId, correlationId, event);
-      continue;
-    }
-
-    runLevelEvents.push(event);
-  }
-
-  return {
-    eventsByStepId,
-    eventsByHookId,
-    runLevelEvents,
-    timerEvents,
-    hookEvents,
-  };
-};
-
-const buildSpans = (
-  run: WorkflowRun,
-  steps: Step[],
-  groupedEvents: GroupedEvents,
-  now: Date
-) => {
-  const viewerEndTime = new Date(run.completedAt || now);
-  const stepSpans = steps.map((step) => {
-    const stepEvents = groupedEvents.eventsByStepId.get(step.stepId) || [];
-    return stepToSpan(step, stepEvents, now, viewerEndTime);
-  });
-
-  const hookSpans = Array.from(groupedEvents.hookEvents.values())
-    .map((events) => hookToSpan(events, run, now))
-    .filter((span): span is Span => span !== null);
-
-  const waitSpans = Array.from(groupedEvents.timerEvents.values())
-    .map((events) => waitToSpan(events, run, now))
-    .filter((span): span is Span => span !== null);
-
-  return {
-    runSpan: runToSpan(run, groupedEvents.runLevelEvents, now),
-    spans: [...stepSpans, ...hookSpans, ...waitSpans],
-  };
-};
-
-const cascadeSpans = (runSpan: Span, spans: Span[]) => {
-  const sortedSpans = [
-    runSpan,
-    ...spans.slice().sort((a, b) => {
-      const aStart = otelTimeToMs(a.startTime);
-      const bStart = otelTimeToMs(b.startTime);
-      return aStart - bStart;
-    }),
-  ];
-
-  return sortedSpans.map((span, index) => {
-    const parentSpanId =
-      index === 0 ? undefined : String(sortedSpans[index - 1].spanId);
-    return {
-      ...span,
-      parentSpanId,
-    };
-  });
-};
-
-const buildTrace = (
-  run: WorkflowRun,
-  steps: Step[],
-  hooks: Hook[],
-  events: Event[],
-  now: Date
-) => {
-  const groupedEvents = groupEventsByCorrelation(events, steps, hooks);
-  const { runSpan, spans } = buildSpans(run, steps, groupedEvents, now);
-  const sortedCascadingSpans = cascadeSpans(runSpan, spans);
-
-  return {
-    traceId: run.runId,
-    rootSpanId: run.runId,
-    spans: sortedCascadingSpans,
-    resources: [
-      {
-        name: 'workflow',
-        attributes: {
-          'service.name': WORKFLOW_LIBRARY.name,
-        },
-      },
-    ],
-  };
-};
 
 /** Re-export SpanSelectionInfo for consumers */
 export type { SpanSelectionInfo };
@@ -871,13 +702,56 @@ function PanelResizeHandle({
 }
 
 // ---------------------------------------------------------------------------
+// Trace viewer footer — loading / waiting indicator
+// ---------------------------------------------------------------------------
+
+function TraceViewerFooter({
+  hasMore,
+  isLive,
+  isInitialLoading,
+}: {
+  hasMore: boolean;
+  isLive: boolean;
+  isInitialLoading: boolean;
+}): ReactNode {
+  const style = { color: 'var(--ds-gray-900)' };
+  if (hasMore || isInitialLoading) {
+    return (
+      <div
+        className="flex items-center justify-center gap-2 py-3 text-xs"
+        style={style}
+      >
+        <Spinner size={14} />
+        Loading more events…
+      </div>
+    );
+  }
+  if (isLive) {
+    return (
+      <div
+        className="flex items-center justify-center py-3 text-xs"
+        style={style}
+      >
+        Waiting for more events…
+      </div>
+    );
+  }
+  return (
+    <div
+      className="flex items-center justify-center py-3 text-xs"
+      style={style}
+    >
+      End of run
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
 export const WorkflowTraceViewer = ({
   run,
-  steps,
-  hooks,
   events,
   isLoading,
   error,
@@ -894,10 +768,10 @@ export const WorkflowTraceViewer = ({
   hasMoreSpans = false,
   isLoadingMoreSpans = false,
   encryptionKey,
+  onDecrypt,
+  isDecrypting = false,
 }: {
   run: WorkflowRun;
-  steps: Step[];
-  hooks: Hook[];
   events: Event[];
   isLoading?: boolean;
   error?: Error | null;
@@ -932,7 +806,12 @@ export const WorkflowTraceViewer = ({
   isLoadingMoreSpans?: boolean;
   /** Encryption key (available after Decrypt), threaded to event list for re-loading */
   encryptionKey?: Uint8Array;
+  /** Callback to initiate decryption of encrypted run data */
+  onDecrypt?: () => void;
+  /** Whether the encryption key is currently being fetched */
+  isDecrypting?: boolean;
 }) => {
+  const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
     null
   );
@@ -947,13 +826,14 @@ export const WorkflowTraceViewer = ({
 
   // Build trace only when actual data changes — no timer-driven rebuilds.
   // Active span widths are animated imperatively by useLiveTick at 60fps.
-  const trace = useMemo(() => {
-    if (!run) {
+  const traceWithMeta: TraceWithMeta | undefined = useMemo(() => {
+    if (!run?.runId) {
       return undefined;
     }
-    return buildTrace(run, steps, hooks, events, new Date());
+    return buildTrace(run, events, new Date());
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `new Date()` is intentionally not a dep; useLiveTick handles live growth
-  }, [run, steps, hooks, events]);
+  }, [run, events]);
+  const trace = traceWithMeta;
 
   useEffect(() => {
     if (error && !isLoading) {
@@ -1064,7 +944,7 @@ export const WorkflowTraceViewer = ({
     );
   }, [selectedSpan?.data]);
 
-  if (isLoading || !trace) {
+  if (!trace) {
     return (
       <div className="relative w-full h-full">
         <div className="border-b border-gray-alpha-400 w-full" />
@@ -1093,7 +973,6 @@ export const WorkflowTraceViewer = ({
           <TraceViewerWithContextMenu
             trace={trace}
             run={run}
-            hooks={hooks}
             isLive={isLive}
             onWakeUpSleep={onWakeUpSleep}
             onCancelRun={onCancelRun}
@@ -1107,6 +986,15 @@ export const WorkflowTraceViewer = ({
               height="100%"
               isLive={isLive}
               trace={trace}
+              knownDurationMs={traceWithMeta?.knownDurationMs}
+              hasMoreData={hasMoreSpans || Boolean(isLoading)}
+              footer={
+                <TraceViewerFooter
+                  hasMore={hasMoreSpans}
+                  isLive={isLive}
+                  isInitialLoading={Boolean(isLoading)}
+                />
+              }
             />
           </TraceViewerWithContextMenu>
         </TraceViewerContextProvider>
@@ -1246,7 +1134,6 @@ export const WorkflowTraceViewer = ({
             <ErrorBoundary title="Failed to load entity details">
               <EntityDetailPanel
                 run={run}
-                hooks={hooks}
                 onStreamClick={onStreamClick}
                 spanDetailData={spanDetailData ?? null}
                 spanDetailError={spanDetailError}
@@ -1256,6 +1143,8 @@ export const WorkflowTraceViewer = ({
                 onLoadEventData={onLoadEventData}
                 onResolveHook={onResolveHook}
                 encryptionKey={encryptionKey}
+                onDecrypt={onDecrypt}
+                isDecrypting={isDecrypting}
                 selectedSpan={selectedSpan}
               />
             </ErrorBoundary>

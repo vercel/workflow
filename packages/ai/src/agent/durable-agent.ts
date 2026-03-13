@@ -1,10 +1,11 @@
 import type {
-  LanguageModelV2CallOptions,
-  LanguageModelV2Prompt,
-  LanguageModelV2StreamPart,
-  LanguageModelV2ToolCall,
-  LanguageModelV2ToolResultPart,
-  SharedV2ProviderOptions,
+  JSONValue,
+  LanguageModelV3CallOptions,
+  LanguageModelV3Prompt,
+  LanguageModelV3StreamPart,
+  LanguageModelV3ToolCall,
+  LanguageModelV3ToolResultPart,
+  SharedV3ProviderOptions,
 } from '@ai-sdk/provider';
 import {
   asSchema,
@@ -18,6 +19,7 @@ import {
   type StepResult,
   type StopCondition,
   type StreamTextOnStepFinishCallback,
+  type SystemModelMessage,
   type ToolChoice,
   type ToolSet,
   type UIMessage,
@@ -59,12 +61,12 @@ export type InferDurableAgentUIMessage<
  * Use `Output.object({ schema })` or `Output.text()` to create an output specification.
  */
 export interface OutputSpecification<OUTPUT, PARTIAL> {
-  readonly type: 'object' | 'text';
-  responseFormat: LanguageModelV2CallOptions['responseFormat'];
-  parsePartial(options: {
+  readonly name: string;
+  responseFormat: PromiseLike<LanguageModelV3CallOptions['responseFormat']>;
+  parsePartialOutput(options: {
     text: string;
   }): Promise<{ partial: PARTIAL } | undefined>;
-  parseOutput(
+  parseCompleteOutput(
     options: { text: string },
     context: {
       response: LanguageModelResponseMetadata;
@@ -75,9 +77,9 @@ export interface OutputSpecification<OUTPUT, PARTIAL> {
 }
 
 /**
- * Provider-specific options type. This is equivalent to SharedV2ProviderOptions from @ai-sdk/provider.
+ * Provider-specific options type. This is equivalent to SharedV3ProviderOptions from @ai-sdk/provider.
  */
-export type ProviderOptions = SharedV2ProviderOptions;
+export type ProviderOptions = SharedV3ProviderOptions;
 
 /**
  * Telemetry settings for observability.
@@ -118,17 +120,17 @@ export interface TelemetrySettings {
 export type StreamTextTransform<TTools extends ToolSet> = (options: {
   tools: TTools;
   stopStream: () => void;
-}) => TransformStream<LanguageModelV2StreamPart, LanguageModelV2StreamPart>;
+}) => TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>;
 
 /**
  * Function to repair a tool call that failed to parse.
  */
 export type ToolCallRepairFunction<TTools extends ToolSet> = (options: {
-  toolCall: LanguageModelV2ToolCall;
+  toolCall: LanguageModelV3ToolCall;
   tools: TTools;
   error: unknown;
-  messages: LanguageModelV2Prompt;
-}) => Promise<LanguageModelV2ToolCall | null> | LanguageModelV2ToolCall | null;
+  messages: LanguageModelV3Prompt;
+}) => Promise<LanguageModelV3ToolCall | null> | LanguageModelV3ToolCall | null;
 
 /**
  * Custom download function for URLs.
@@ -146,7 +148,7 @@ export type DownloadFunction = (
 
 /**
  * Generation settings that can be passed to the model.
- * These map directly to LanguageModelV2CallOptions.
+ * These map directly to LanguageModelV3CallOptions.
  */
 export interface GenerationSettings {
   /**
@@ -234,7 +236,7 @@ export interface GenerationSettings {
 export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
   /**
    * The current model configuration (string or function).
-   * The function should return a LanguageModel instance (V2 or V3 depending on AI SDK version).
+   * The function should return a LanguageModelV3 instance.
    */
   model: string | (() => Promise<CompatibleLanguageModel>);
 
@@ -250,9 +252,9 @@ export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
 
   /**
    * The messages that will be sent to the model.
-   * This is the LanguageModelV2Prompt format used internally.
+   * This is the LanguageModelV3Prompt format used internally.
    */
-  messages: LanguageModelV2Prompt;
+  messages: LanguageModelV3Prompt;
 
   /**
    * The context passed via the experimental_context setting (experimental).
@@ -267,7 +269,7 @@ export interface PrepareStepInfo<TTools extends ToolSet = ToolSet> {
 export interface PrepareStepResult extends Partial<GenerationSettings> {
   /**
    * Override the model for this step.
-   * The function should return a LanguageModel instance (V2 or V3 depending on AI SDK version).
+   * The function should return a LanguageModelV3 instance.
    */
   model?: string | (() => Promise<CompatibleLanguageModel>);
 
@@ -280,7 +282,7 @@ export interface PrepareStepResult extends Partial<GenerationSettings> {
    * Override the messages for this step.
    * Use this for context management or message injection.
    */
-  messages?: LanguageModelV2Prompt;
+  messages?: LanguageModelV3Prompt;
 
   /**
    * Override the tool choice for this step.
@@ -316,7 +318,7 @@ export interface DurableAgentOptions extends GenerationSettings {
    * The model provider to use for the agent.
    *
    * This should be a string compatible with the Vercel AI Gateway (e.g., 'anthropic/claude-opus'),
-   * or a step function that returns a LanguageModel instance (V2 or V3 depending on AI SDK version).
+   * or a step function that returns a LanguageModelV3 instance.
    */
   model: string | (() => Promise<CompatibleLanguageModel>);
 
@@ -328,7 +330,14 @@ export interface DurableAgentOptions extends GenerationSettings {
   tools?: ToolSet;
 
   /**
+   * Agent instructions. Can be a string, a SystemModelMessage, or an array of SystemModelMessages.
+   * Supports provider-specific options (e.g., caching) when using the SystemModelMessage form.
+   */
+  instructions?: string | SystemModelMessage | Array<SystemModelMessage>;
+
+  /**
    * Optional system prompt to guide the agent's behavior.
+   * @deprecated Use `instructions` instead.
    */
   system?: string;
 
@@ -341,6 +350,16 @@ export interface DurableAgentOptions extends GenerationSettings {
    * Optional telemetry configuration (experimental).
    */
   experimental_telemetry?: TelemetrySettings;
+
+  /**
+   * Callback function to be called after each step completes.
+   */
+  onStepFinish?: StreamTextOnStepFinishCallback<ToolSet>;
+
+  /**
+   * Callback that is called when the LLM response and all request tool executions are finished.
+   */
+  onFinish?: StreamTextOnFinishCallback<ToolSet>;
 }
 
 /**
@@ -359,6 +378,21 @@ export type StreamTextOnFinishCallback<
    * The final messages including all tool calls and results.
    */
   readonly messages: ModelMessage[];
+
+  /**
+   * The text output from the last step.
+   */
+  readonly text: string;
+
+  /**
+   * The finish reason from the last step.
+   */
+  readonly finishReason: FinishReason;
+
+  /**
+   * The total token usage across all steps.
+   */
+  readonly totalUsage: LanguageModelUsage;
 
   /**
    * Context that is passed into tool execution.
@@ -574,6 +608,43 @@ export interface DurableAgentStreamOptions<
    * @default false
    */
   collectUIMessages?: boolean;
+
+  /**
+   * Timeout in milliseconds for the stream operation.
+   * When specified, creates an AbortSignal that will abort the operation after the given time.
+   * If both `timeout` and `abortSignal` are provided, whichever triggers first will abort.
+   */
+  timeout?: number;
+}
+
+/**
+ * A tool call made by the model. Matches the AI SDK's tool call shape.
+ */
+export interface ToolCall {
+  /** Discriminator for content part arrays */
+  type: 'tool-call';
+  /** The unique identifier of the tool call */
+  toolCallId: string;
+  /** The name of the tool that was called */
+  toolName: string;
+  /** The parsed input arguments for the tool call */
+  input: unknown;
+}
+
+/**
+ * A tool result from executing a tool. Matches the AI SDK's tool result shape.
+ */
+export interface ToolResult {
+  /** Discriminator for content part arrays */
+  type: 'tool-result';
+  /** The tool call ID this result corresponds to */
+  toolCallId: string;
+  /** The name of the tool that was executed */
+  toolName: string;
+  /** The parsed input arguments that were passed to the tool */
+  input: unknown;
+  /** The output produced by the tool */
+  output: unknown;
 }
 
 /**
@@ -592,6 +663,33 @@ export interface DurableAgentStreamResult<
    * Details for all steps.
    */
   steps: StepResult<TTools>[];
+
+  /**
+   * The tool calls from the last step.
+   * Includes all tool calls regardless of whether they were executed.
+   *
+   * When the agent stops because a tool without an `execute` function was called,
+   * this array will contain those calls. Compare with `toolResults` to find
+   * unresolved tool calls that need client-side handling:
+   *
+   * ```ts
+   * const unresolved = result.toolCalls.filter(
+   *   tc => !result.toolResults.some(tr => tr.toolCallId === tc.toolCallId)
+   * );
+   * ```
+   *
+   * This matches the AI SDK's `GenerateTextResult.toolCalls` behavior.
+   */
+  toolCalls: ToolCall[];
+
+  /**
+   * The tool results from the last step.
+   * Only includes results for tools that were actually executed (server-side or provider-executed).
+   * Tools without an `execute` function will NOT have entries here.
+   *
+   * This matches the AI SDK's `GenerateTextResult.toolResults` behavior.
+   */
+  toolResults: ToolResult[];
 
   /**
    * The generated structured output. It uses the `experimental_output` specification.
@@ -625,7 +723,7 @@ export interface DurableAgentStreamResult<
  *       execute: getWeatherStep,
  *     },
  *   },
- *   system: 'You are a helpful weather assistant.',
+ *   instructions: 'You are a helpful weather assistant.',
  * });
  *
  * await agent.stream({
@@ -637,17 +735,25 @@ export interface DurableAgentStreamResult<
 export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private model: string | (() => Promise<CompatibleLanguageModel>);
   private tools: TBaseTools;
-  private system?: string;
+  private instructions?:
+    | string
+    | SystemModelMessage
+    | Array<SystemModelMessage>;
   private generationSettings: GenerationSettings;
   private toolChoice?: ToolChoice<TBaseTools>;
   private telemetry?: TelemetrySettings;
+  private constructorOnStepFinish?: StreamTextOnStepFinishCallback<ToolSet>;
+  private constructorOnFinish?: StreamTextOnFinishCallback<ToolSet>;
 
   constructor(options: DurableAgentOptions & { tools?: TBaseTools }) {
     this.model = options.model;
     this.tools = (options.tools ?? {}) as TBaseTools;
-    this.system = options.system;
+    // `instructions` takes precedence over deprecated `system`
+    this.instructions = options.instructions ?? options.system;
     this.toolChoice = options.toolChoice as ToolChoice<TBaseTools>;
     this.telemetry = options.experimental_telemetry;
+    this.constructorOnStepFinish = options.onStepFinish;
+    this.constructorOnFinish = options.onFinish;
 
     // Extract generation settings
     this.generationSettings = {
@@ -678,7 +784,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     options: DurableAgentStreamOptions<TTools, OUTPUT, PARTIAL_OUTPUT>
   ): Promise<DurableAgentStreamResult<TTools, OUTPUT>> {
     const prompt = await standardizePrompt({
-      system: options.system || this.system,
+      system: options.system ?? this.instructions,
       messages: options.messages,
     });
 
@@ -687,6 +793,32 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       supportedUrls: {},
       download: options.experimental_download,
     });
+
+    // Build effective abort signal: merge timeout + explicit abortSignal
+    let effectiveAbortSignal =
+      options.abortSignal ?? this.generationSettings.abortSignal;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    if (
+      options.timeout !== undefined &&
+      typeof AbortController !== 'undefined'
+    ) {
+      const timeoutController = new AbortController();
+      timeoutId = setTimeout(() => timeoutController.abort(), options.timeout);
+      const timeoutSignal = timeoutController.signal;
+      if (effectiveAbortSignal) {
+        // Combine: whichever fires first wins
+        const combined = new AbortController();
+        effectiveAbortSignal.addEventListener('abort', () => combined.abort(), {
+          once: true,
+        });
+        timeoutSignal.addEventListener('abort', () => combined.abort(), {
+          once: true,
+        });
+        effectiveAbortSignal = combined.signal;
+      } else {
+        effectiveAbortSignal = timeoutSignal;
+      }
+    }
 
     // Merge generation settings: constructor defaults < stream options
     const mergedGenerationSettings: GenerationSettings = {
@@ -712,14 +844,52 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       ...(options.maxRetries !== undefined && {
         maxRetries: options.maxRetries,
       }),
-      ...(options.abortSignal !== undefined && {
-        abortSignal: options.abortSignal,
+      ...(effectiveAbortSignal !== undefined && {
+        abortSignal: effectiveAbortSignal,
       }),
       ...(options.headers !== undefined && { headers: options.headers }),
       ...(options.providerOptions !== undefined && {
         providerOptions: options.providerOptions,
       }),
     };
+
+    // Merge constructor + stream callbacks (constructor first, then stream)
+    const mergedOnStepFinish:
+      | StreamTextOnStepFinishCallback<TTools>
+      | undefined =
+      this.constructorOnStepFinish || options.onStepFinish
+        ? async (event) => {
+            if (this.constructorOnStepFinish) {
+              await (
+                this
+                  .constructorOnStepFinish as unknown as StreamTextOnStepFinishCallback<TTools>
+              )(event);
+            }
+            if (options.onStepFinish) {
+              await options.onStepFinish(event);
+            }
+          }
+        : undefined;
+
+    const mergedOnFinish:
+      | StreamTextOnFinishCallback<TTools, OUTPUT>
+      | undefined =
+      this.constructorOnFinish || options.onFinish
+        ? async (event) => {
+            if (this.constructorOnFinish) {
+              await (
+                this
+                  .constructorOnFinish as unknown as StreamTextOnFinishCallback<
+                  TTools,
+                  OUTPUT
+                >
+              )(event);
+            }
+            if (options.onFinish) {
+              await options.onFinish(event);
+            }
+          }
+        : undefined;
 
     // Determine effective tool choice
     const effectiveToolChoice = options.toolChoice ?? this.toolChoice;
@@ -735,6 +905,10 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 
     const steps: StepResult<TTools>[] = [];
 
+    // Track tool calls and results from the last step for the result
+    let lastStepToolCalls: ToolCall[] = [];
+    let lastStepToolResults: ToolResult[] = [];
+
     // Check for abort before starting
     if (mergedGenerationSettings.abortSignal?.aborted) {
       if (options.onAbort) {
@@ -743,6 +917,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       return {
         messages: options.messages as unknown as ModelMessage[],
         steps,
+        toolCalls: [],
+        toolResults: [],
         experimental_output: undefined as OUTPUT,
         uiMessages: undefined,
       };
@@ -760,7 +936,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       stopConditions: options.stopWhen,
       maxSteps: options.maxSteps,
       sendStart: options.sendStart ?? true,
-      onStepFinish: options.onStepFinish,
+      onStepFinish: mergedOnStepFinish,
       onError: options.onError,
       prepareStep: options.prepareStep,
       generationSettings: mergedGenerationSettings,
@@ -771,12 +947,12 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       experimental_transform: options.experimental_transform as
         | StreamTextTransform<ToolSet>
         | Array<StreamTextTransform<ToolSet>>,
-      responseFormat: options.experimental_output?.responseFormat,
+      responseFormat: await options.experimental_output?.responseFormat,
       collectUIChunks,
     });
 
     // Track the final conversation messages from the iterator
-    let finalMessages: LanguageModelV2Prompt | undefined;
+    let finalMessages: LanguageModelV3Prompt | undefined;
     let encounteredError: unknown;
     let wasAborted = false;
 
@@ -816,17 +992,145 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         // Only execute tools if there are tool calls
         if (toolCalls.length > 0) {
           // Separate provider-executed tool calls from client-executed ones
-          const clientToolCalls = toolCalls.filter(
+          const nonProviderToolCalls = toolCalls.filter(
             (tc) => !tc.providerExecuted
           );
           const providerToolCalls = toolCalls.filter(
             (tc) => tc.providerExecuted
           );
 
-          // Execute client tools
+          // Further split non-provider tool calls into executable (has execute function)
+          // and client-side (no execute function, needs external resolution)
+          // Note: missing tools (!tool) are left to executeTool which will throw —
+          // only tools that exist but lack execute are treated as client-side.
+          const executableToolCalls = nonProviderToolCalls.filter((tc) => {
+            const tool = (effectiveTools as ToolSet)[tc.toolName];
+            return !tool || typeof tool.execute === 'function';
+          });
+          const clientSideToolCalls = nonProviderToolCalls.filter((tc) => {
+            const tool = (effectiveTools as ToolSet)[tc.toolName];
+            return tool && typeof tool.execute !== 'function';
+          });
+
+          // If there are client-side tool calls, stop the loop and return them
+          // This matches AI SDK behavior: tools without execute pause the agent loop
+          if (clientSideToolCalls.length > 0) {
+            // Execute any executable tools that were also called in this step
+            const executableResults = await Promise.all(
+              executableToolCalls.map(
+                (toolCall): Promise<LanguageModelV3ToolResultPart> =>
+                  executeTool(
+                    toolCall,
+                    effectiveTools as ToolSet,
+                    iterMessages,
+                    experimentalContext,
+                    options.experimental_repairToolCall as ToolCallRepairFunction<ToolSet>
+                  )
+              )
+            );
+
+            // Collect provider tool results
+            const providerResults: LanguageModelV3ToolResultPart[] =
+              providerToolCalls.map((toolCall) =>
+                resolveProviderToolResult(toolCall, providerExecutedToolResults)
+              );
+
+            // Combine executable and provider results, then write to UI
+            const resolvedResults = [...executableResults, ...providerResults];
+            if (resolvedResults.length > 0) {
+              // Write resolved tool results to the UI stream
+              const writer = options.writable.getWriter();
+              try {
+                for (const result of resolvedResults) {
+                  const chunk: UIMessageChunk = {
+                    type: 'tool-output-available' as const,
+                    toolCallId: result.toolCallId,
+                    output:
+                      'value' in result.output
+                        ? result.output.value
+                        : undefined,
+                  };
+                  await writer.write(chunk);
+                  if (collectUIChunks) {
+                    allUIChunks.push(chunk);
+                  }
+                }
+              } finally {
+                writer.releaseLock();
+              }
+            }
+
+            // Build toolCalls for ALL tool calls in this step (matches AI SDK convention)
+            const allToolCalls: ToolCall[] = toolCalls.map((tc) => ({
+              type: 'tool-call' as const,
+              toolCallId: tc.toolCallId,
+              toolName: tc.toolName,
+              input: safeParseInput(tc.input),
+            }));
+
+            // Build toolResults only for tools that were executed
+            const allToolResults: ToolResult[] = resolvedResults.map((r) => ({
+              type: 'tool-result' as const,
+              toolCallId: r.toolCallId,
+              toolName: r.toolName,
+              input: safeParseInput(
+                toolCalls.find((tc) => tc.toolCallId === r.toolCallId)?.input
+              ),
+              output: 'value' in r.output ? r.output.value : undefined,
+            }));
+
+            // Close the stream and call onFinish before returning
+            const sendFinish = options.sendFinish ?? true;
+            const preventClose = options.preventClose ?? false;
+            if (sendFinish || !preventClose) {
+              await closeStream(options.writable, preventClose, sendFinish);
+            }
+
+            // Add resolved tool results to the conversation so callers
+            // don't need to re-execute server tools when resuming
+            if (resolvedResults.length > 0) {
+              iterMessages.push({
+                role: 'tool',
+                content: resolvedResults,
+              });
+            }
+
+            // iterMessages includes the assistant tool-call message (and any
+            // resolved tool results), so callers can resume the conversation.
+            // Cast matches the existing pattern used at the end of stream().
+            const messages = iterMessages as unknown as ModelMessage[];
+
+            if (mergedOnFinish && !wasAborted) {
+              const lastStep = steps[steps.length - 1];
+              await mergedOnFinish({
+                steps,
+                messages,
+                text: lastStep?.text ?? '',
+                finishReason: lastStep?.finishReason ?? 'other',
+                totalUsage: aggregateUsage(steps),
+                experimental_context: experimentalContext,
+                experimental_output: undefined as OUTPUT,
+              });
+            }
+
+            const uiMessages = collectUIChunks
+              ? await convertChunksToUIMessages(allUIChunks)
+              : undefined;
+
+            return {
+              messages,
+              steps,
+              toolCalls: allToolCalls,
+              toolResults: allToolResults,
+              experimental_output: undefined as OUTPUT,
+              uiMessages,
+            };
+          }
+
+          // Execute client tools (all have execute functions at this point)
           const clientToolResults = await Promise.all(
-            clientToolCalls.map(
-              (toolCall): Promise<LanguageModelV2ToolResultPart> =>
+            nonProviderToolCalls.map(
+              (toolCall): Promise<LanguageModelV3ToolResultPart> =>
                 executeTool(
                   toolCall,
                   effectiveTools as ToolSet,
@@ -838,64 +1142,10 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
           );
 
           // For provider-executed tools, use the results from the stream
-          const providerToolResults: LanguageModelV2ToolResultPart[] =
-            providerToolCalls.map((toolCall) => {
-              const streamResult = providerExecutedToolResults?.get(
-                toolCall.toolCallId
-              );
-              if (streamResult) {
-                // Use the appropriate output type based on the result and error status
-                // AI SDK supports 'text'/'error-text' for strings and 'json'/'error-json' for objects
-                const result = streamResult.result;
-                const isString = typeof result === 'string';
-
-                return {
-                  type: 'tool-result' as const,
-                  toolCallId: toolCall.toolCallId,
-                  toolName: toolCall.toolName,
-                  output: isString
-                    ? streamResult.isError
-                      ? { type: 'error-text' as const, value: result }
-                      : { type: 'text' as const, value: result }
-                    : streamResult.isError
-                      ? {
-                          type: 'error-json' as const,
-                          value:
-                            result as LanguageModelV2ToolResultPart['output'] extends {
-                              type: 'json';
-                              value: infer V;
-                            }
-                              ? V
-                              : never,
-                        }
-                      : {
-                          type: 'json' as const,
-                          value:
-                            result as LanguageModelV2ToolResultPart['output'] extends {
-                              type: 'json';
-                              value: infer V;
-                            }
-                              ? V
-                              : never,
-                        },
-                };
-              }
-              // If no result from stream, return an empty result
-              // This can happen if the provider didn't send a tool-result stream part
-              console.warn(
-                `[DurableAgent] Provider-executed tool "${toolCall.toolName}" (${toolCall.toolCallId}) ` +
-                  `did not receive a result from the stream. This may indicate a provider issue.`
-              );
-              return {
-                type: 'tool-result' as const,
-                toolCallId: toolCall.toolCallId,
-                toolName: toolCall.toolName,
-                output: {
-                  type: 'text' as const,
-                  value: '',
-                },
-              };
-            });
+          const providerToolResults: LanguageModelV3ToolResultPart[] =
+            providerToolCalls.map((toolCall) =>
+              resolveProviderToolResult(toolCall, providerExecutedToolResults)
+            );
 
           // Combine results in the original order
           const toolResults = toolCalls.map((tc) => {
@@ -916,9 +1166,28 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
             };
           });
 
+          // Track the tool calls and results for this step
+          lastStepToolCalls = toolCalls.map((tc) => ({
+            type: 'tool-call' as const,
+            toolCallId: tc.toolCallId,
+            toolName: tc.toolName,
+            input: safeParseInput(tc.input),
+          }));
+          lastStepToolResults = toolResults.map((r) => ({
+            type: 'tool-result' as const,
+            toolCallId: r.toolCallId,
+            toolName: r.toolName,
+            input: safeParseInput(
+              toolCalls.find((tc) => tc.toolCallId === r.toolCallId)?.input
+            ),
+            output: 'value' in r.output ? r.output.value : undefined,
+          }));
+
           result = await iterator.next(toolResults);
         } else {
-          // Final step with no tool calls - just advance the iterator
+          // Final step with no tool calls - reset tracking
+          lastStepToolCalls = [];
+          lastStepToolResults = [];
           result = await iterator.next([]);
         }
       }
@@ -940,6 +1209,11 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         await options.onError({ error });
       }
       // Don't throw yet - we want to call onFinish first
+    } finally {
+      // Clean up the timeout timer if it was set
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
     }
 
     const sendFinish = options.sendFinish ?? true;
@@ -961,14 +1235,15 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
       const text = lastStep.text;
       if (text) {
         try {
-          experimentalOutput = await options.experimental_output.parseOutput(
-            { text },
-            {
-              response: lastStep.response,
-              usage: lastStep.usage,
-              finishReason: lastStep.finishReason,
-            }
-          );
+          experimentalOutput =
+            await options.experimental_output.parseCompleteOutput(
+              { text },
+              {
+                response: lastStep.response,
+                usage: lastStep.usage,
+                finishReason: lastStep.finishReason,
+              }
+            );
         } catch (parseError) {
           // If there's already an error, don't override it
           // If not, set this as the error
@@ -980,10 +1255,14 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     }
 
     // Call onFinish callback if provided (always call, even on errors, but not on abort)
-    if (options.onFinish && !wasAborted) {
-      await options.onFinish({
+    if (mergedOnFinish && !wasAborted) {
+      const lastStep = steps[steps.length - 1];
+      await mergedOnFinish({
         steps,
         messages: messages as ModelMessage[],
+        text: lastStep?.text ?? '',
+        finishReason: lastStep?.finishReason ?? 'other',
+        totalUsage: aggregateUsage(steps),
         experimental_context: experimentalContext,
         experimental_output: experimentalOutput,
       });
@@ -1003,6 +1282,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     return {
       messages: messages as ModelMessage[],
       steps,
+      toolCalls: lastStepToolCalls,
+      toolResults: lastStepToolResults,
       experimental_output: experimentalOutput,
       uiMessages,
     };
@@ -1012,6 +1293,23 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
 /**
  * Filter tools to only include the specified active tools.
  */
+/**
+ * Aggregate token usage across all steps.
+ */
+function aggregateUsage(steps: StepResult<any>[]): LanguageModelUsage {
+  let inputTokens = 0;
+  let outputTokens = 0;
+  for (const step of steps) {
+    inputTokens += step.usage?.inputTokens ?? 0;
+    outputTokens += step.usage?.outputTokens ?? 0;
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+  } as LanguageModelUsage;
+}
+
 function filterTools<TTools extends ToolSet>(
   tools: TTools,
   activeTools: string[]
@@ -1107,6 +1405,18 @@ async function convertChunksToUIMessages(
   return messages;
 }
 
+/**
+ * Safely parse tool call input JSON. Returns the parsed value or the raw string
+ * if parsing fails (e.g., for tool calls that were repaired).
+ */
+function safeParseInput(input: string | undefined): unknown {
+  try {
+    return JSON.parse(input || '{}');
+  } catch {
+    return input;
+  }
+}
+
 // Matches AI SDK's getErrorMessage from @ai-sdk/provider-utils
 function getErrorMessage(error: unknown): string {
   if (error == null) {
@@ -1124,19 +1434,68 @@ function getErrorMessage(error: unknown): string {
   return JSON.stringify(error);
 }
 
+function resolveProviderToolResult(
+  toolCall: LanguageModelV3ToolCall,
+  providerExecutedToolResults?: Map<
+    string,
+    { toolCallId: string; toolName: string; result: unknown; isError?: boolean }
+  >
+): LanguageModelV3ToolResultPart {
+  const streamResult = providerExecutedToolResults?.get(toolCall.toolCallId);
+  if (!streamResult) {
+    console.warn(
+      `[DurableAgent] Provider-executed tool "${toolCall.toolName}" (${toolCall.toolCallId}) ` +
+        `did not receive a result from the stream. This may indicate a provider issue.`
+    );
+    return {
+      type: 'tool-result' as const,
+      toolCallId: toolCall.toolCallId,
+      toolName: toolCall.toolName,
+      output: {
+        type: 'text' as const,
+        value: '',
+      },
+    };
+  }
+
+  const result = streamResult.result;
+  const isString = typeof result === 'string';
+
+  return {
+    type: 'tool-result' as const,
+    toolCallId: toolCall.toolCallId,
+    toolName: toolCall.toolName,
+    output: isString
+      ? streamResult.isError
+        ? { type: 'error-text' as const, value: result }
+        : { type: 'text' as const, value: result }
+      : streamResult.isError
+        ? {
+            type: 'error-json' as const,
+            value: result as JSONValue,
+          }
+        : {
+            type: 'json' as const,
+            value: result as JSONValue,
+          },
+  };
+}
+
 async function executeTool(
-  toolCall: LanguageModelV2ToolCall,
+  toolCall: LanguageModelV3ToolCall,
   tools: ToolSet,
-  messages: LanguageModelV2Prompt,
+  messages: LanguageModelV3Prompt,
   experimentalContext?: unknown,
   repairToolCall?: ToolCallRepairFunction<ToolSet>
-): Promise<LanguageModelV2ToolResultPart> {
+): Promise<LanguageModelV3ToolResultPart> {
   const tool = tools[toolCall.toolName];
   if (!tool) throw new Error(`Tool "${toolCall.toolName}" not found`);
-  if (typeof tool.execute !== 'function')
+  if (typeof tool.execute !== 'function') {
     throw new Error(
-      `Tool "${toolCall.toolName}" does not have an execute function`
+      `Tool "${toolCall.toolName}" does not have an execute function. ` +
+        `Client-side tools should be filtered before calling executeTool.`
     );
+  }
   const schema = asSchema(tool.inputSchema);
 
   let parsedInput: unknown;

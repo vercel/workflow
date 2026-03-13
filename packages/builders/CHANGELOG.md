@@ -1,5 +1,30 @@
 # @workflow/builders
 
+## 4.0.1-beta.61
+
+### Patch Changes
+
+- Updated dependencies [[`7df1385`](https://github.com/vercel/workflow/commit/7df13854f85529929ff1187fe831f4dbc51b9121), [`58e67ce`](https://github.com/vercel/workflow/commit/58e67ce11bd69b982214e2734363fa7fd252f5f6)]:
+  - @workflow/core@4.2.0-beta.70
+
+## 4.0.1-beta.60
+
+### Patch Changes
+
+- [#1312](https://github.com/vercel/workflow/pull/1312) [`d72c822`](https://github.com/vercel/workflow/commit/d72c82220f0c56bb26edbc918e485b8bd14c959b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix bug where the SWC compiler bug prunes step-only imports in the client-mode transformation
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`fb5a500`](https://github.com/vercel/workflow/commit/fb5a500eadba80efdef75e3ccf6e85e957820f38), [`d72c822`](https://github.com/vercel/workflow/commit/d72c82220f0c56bb26edbc918e485b8bd14c959b)]:
+  - @workflow/core@4.2.0-beta.69
+  - @workflow/swc-plugin@4.1.0-beta.19
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.0.1-beta.59
+
+### Patch Changes
+
+- Updated dependencies [[`83dbd46`](https://github.com/vercel/workflow/commit/83dbd46456a8dbfc89efd87895929cbb813feda3), [`854a25f`](https://github.com/vercel/workflow/commit/854a25f9103f5f3a5769dec6e3e5c6b98ed119b0)]:
+  - @workflow/core@4.2.0-beta.68
+
 ## 4.0.1-beta.58
 
 ### Patch Changes

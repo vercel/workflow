@@ -10,6 +10,7 @@ export type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 export * from './components';
 export {
   hookEventsToHookEntity,
+  stepEventsToStepEntity,
   waitEventsToWaitEntity,
 } from './components/workflow-traces/trace-span-construction';
 export type { EventAnalysis } from './lib/event-analysis';
@@ -20,6 +21,18 @@ export {
   isTerminalStatus,
   shouldShowReenqueueButton,
 } from './lib/event-analysis';
+export type {
+  MaterializedEntities,
+  MaterializedHook,
+  MaterializedStep,
+  MaterializedWait,
+} from './lib/event-materialization';
+export {
+  materializeAll,
+  materializeHooks,
+  materializeSteps,
+  materializeWaits,
+} from './lib/event-materialization';
 export type { Revivers, StreamRef } from './lib/hydration';
 export {
   CLASS_INSTANCE_REF_TYPE,
@@ -36,6 +49,8 @@ export {
   STREAM_REF_TYPE,
   truncateId,
 } from './lib/hydration';
+export type { ToastAdapter } from './lib/toast';
+export { ToastProvider, useToast } from './lib/toast';
 export type { StreamStep } from './lib/utils';
 export {
   extractConversation,
