@@ -1,0 +1,36 @@
+# Example wrangler.toml for @workflow/world-cloudflare
+#
+# This demonstrates the required Cloudflare bindings for the workflow world.
+# Copy this file to wrangler.toml and fill in your own values.
+
+name = "my-workflow-worker"
+main = "src/worker.ts"
+compatibility_date = "2024-12-01"
+
+# Durable Objects — one DO class per workflow run
+[durable_objects]
+bindings = [
+  { name = "WORKFLOW_RUNS", class_name = "WorkflowRunDO" }
+]
+
+# D1 Database — lightweight index for cross-run queries
+[[d1_databases]]
+binding = "WORKFLOW_DB"
+database_name = "workflow"
+database_id = "<your-d1-database-id>"
+
+# Queue producer — for dispatching workflow/step messages
+[[queues.producers]]
+binding = "WORKFLOW_QUEUE"
+queue = "workflow-jobs"
+
+# Queue consumer — processes workflow/step messages
+[[queues.consumers]]
+queue = "workflow-jobs"
+max_batch_size = 10
+max_retries = 3
+
+# DO migration (required when first deploying)
+[[migrations]]
+tag = "v1"
+new_classes = ["WorkflowRunDO"]

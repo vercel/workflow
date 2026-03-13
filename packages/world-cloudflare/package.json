@@ -1,0 +1,61 @@
+{
+  "name": "@workflow/world-cloudflare",
+  "version": "0.1.0",
+  "description": "Cloudflare Workers world implementation for Workflow DevKit using Durable Objects, D1, and Cloudflare Queues",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./durable-object": {
+      "types": "./dist/durable-object.d.ts",
+      "default": "./dist/durable-object.js"
+    },
+    "./d1": {
+      "types": "./dist/d1.d.ts",
+      "default": "./dist/d1.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vercel/workflow.git",
+    "directory": "packages/world-cloudflare"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@workflow/errors": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "@workflow/world-local": "workspace:*",
+    "ulid": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "4.20250312.0",
+    "@types/node": "catalog:",
+    "@workflow/tsconfig": "workspace:*",
+    "vitest": "catalog:"
+  },
+  "keywords": [
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "workflow"
+  ],
+  "author": "",
+  "packageManager": "pnpm@10.15.1"
+}
