@@ -1,5 +1,16 @@
 # @workflow/core
 
+## 4.2.0-beta.70
+
+### Patch Changes
+
+- [#1339](https://github.com/vercel/workflow/pull/1339) [`7df1385`](https://github.com/vercel/workflow/commit/7df13854f85529929ff1187fe831f4dbc51b9121) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Separate infrastructure vs user code error handling in workflow and step runtimes so transient network errors (ECONNRESET, etc.) propagate to the queue for retry instead of incorrectly marking runs as failed
+
+- [#1345](https://github.com/vercel/workflow/pull/1345) [`58e67ce`](https://github.com/vercel/workflow/commit/58e67ce11bd69b982214e2734363fa7fd252f5f6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Suppress stale `WORKFLOW_VERCEL_*` env var warning when running outside Vercel serverless (e.g. CLI, web observability app)
+
+- Updated dependencies [[`9feebee`](https://github.com/vercel/workflow/commit/9feebee15c7c35843b99254b23a2f7743ea3f8c6)]:
+  - @workflow/world-local@4.1.0-beta.43
+
 ## 4.2.0-beta.69
 
 ### Patch Changes

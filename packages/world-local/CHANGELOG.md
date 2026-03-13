@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.1.0-beta.43
+
+### Patch Changes
+
+- [#1348](https://github.com/vercel/workflow/pull/1348) [`9feebee`](https://github.com/vercel/workflow/commit/9feebee15c7c35843b99254b23a2f7743ea3f8c6) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ensure atomicity for hook token, matches world-postgres and world-vercel
+
 ## 4.1.0-beta.42
 
 ### Patch Changes
