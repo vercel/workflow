@@ -1024,7 +1024,10 @@ describe('Storage', () => {
 
         // step_created + step_completed = 2 events
         expect(result.data).toHaveLength(2);
-        expect((result.data[0] as any).eventData).toBeUndefined();
+        // step_created preserves stepName in minimal eventData
+        expect((result.data[0] as any).eventData).toEqual({
+          stepName: 'test-step',
+        });
         expect((result.data[1] as any).eventData).toBeUndefined();
         expect(result.data[0].correlationId).toBe(correlationId);
       });
