@@ -1,5 +1,5 @@
 ---
-"@workflow/ai": minor
+"@workflow/ai": patch
 ---
 
 **BREAKING CHANGE**: Migrate to AI SDK v6. Drop AI SDK v5 support.

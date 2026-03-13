@@ -47,12 +47,13 @@ async function calculate(input: {
   'use step';
   // Evaluate simple math expressions safely using Function constructor
   // Only allow numbers, operators, parentheses, and whitespace
-  const sanitized = input.expression.replace(/\s/g, '');
-  if (!/^[0-9+\-*/().]+$/.test(sanitized)) {
+  // Translate ^ to ** for exponentiation before sanitizing
+  const translated = input.expression.replace(/\s/g, '').replace(/\^/g, '**');
+  if (!/^[0-9+\-*/().]+$/.test(translated)) {
     throw new Error(`Invalid expression: ${input.expression}`);
   }
   // biome-ignore lint/security/noGlobalEval: sandboxed simple math evaluation
-  const result = new Function(`return (${sanitized})`)() as number;
+  const result = new Function(`return (${translated})`)() as number;
   return {
     expression: input.expression,
     result,

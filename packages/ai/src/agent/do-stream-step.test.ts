@@ -26,10 +26,6 @@ describe('normalizeFinishReason', () => {
     it('should pass through "other"', () => {
       expect(normalizeFinishReason('other')).toBe('other');
     });
-
-    it('should pass through "other"', () => {
-      expect(normalizeFinishReason('other')).toBe('other');
-    });
   });
 
   describe('object finish reasons', () => {
@@ -60,7 +56,7 @@ describe('normalizeFinishReason', () => {
     });
 
     it('should return "other" for object with unrecognized type', () => {
-      expect(normalizeFinishReason({ type: 'unknown' })).toBe('unknown');
+      expect(normalizeFinishReason({ type: 'unknown' })).toBe('other');
     });
 
     it('should return "other" for object without type property', () => {

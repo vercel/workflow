@@ -704,7 +704,7 @@ export interface DurableAgentStreamResult<
  *       execute: getWeatherStep,
  *     },
  *   },
- *   system: 'You are a helpful weather assistant.',
+ *   instructions: 'You are a helpful weather assistant.',
  * });
  *
  * await agent.stream({
@@ -765,7 +765,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     options: DurableAgentStreamOptions<TTools, OUTPUT, PARTIAL_OUTPUT>
   ): Promise<DurableAgentStreamResult<TTools, OUTPUT>> {
     const prompt = await standardizePrompt({
-      system: options.system || this.instructions,
+      system: options.system ?? this.instructions,
       messages: options.messages,
     });
 
@@ -778,18 +778,23 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     // Build effective abort signal: merge timeout + explicit abortSignal
     let effectiveAbortSignal =
       options.abortSignal ?? this.generationSettings.abortSignal;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     if (
       options.timeout !== undefined &&
       typeof AbortController !== 'undefined'
     ) {
       const timeoutController = new AbortController();
-      setTimeout(() => timeoutController.abort(), options.timeout);
+      timeoutId = setTimeout(() => timeoutController.abort(), options.timeout);
       const timeoutSignal = timeoutController.signal;
       if (effectiveAbortSignal) {
         // Combine: whichever fires first wins
         const combined = new AbortController();
-        effectiveAbortSignal.addEventListener('abort', () => combined.abort());
-        timeoutSignal.addEventListener('abort', () => combined.abort());
+        effectiveAbortSignal.addEventListener('abort', () => combined.abort(), {
+          once: true,
+        });
+        timeoutSignal.addEventListener('abort', () => combined.abort(), {
+          once: true,
+        });
         effectiveAbortSignal = combined.signal;
       } else {
         effectiveAbortSignal = timeoutSignal;
@@ -1185,6 +1190,11 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         await options.onError({ error });
       }
       // Don't throw yet - we want to call onFinish first
+    } finally {
+      // Clean up the timeout timer if it was set
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
     }
 
     const sendFinish = options.sendFinish ?? true;

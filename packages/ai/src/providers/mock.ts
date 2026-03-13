@@ -18,14 +18,27 @@ export function mockTextModel(text: string) {
       doStream: async () => ({
         stream: new ReadableStream({
           start(c) {
-            for (const v of ([
+            for (const v of [
               { type: 'stream-start', warnings: [] },
-              { type: 'response-metadata', id: 'r', modelId: 'mock', timestamp: new Date() },
+              {
+                type: 'response-metadata',
+                id: 'r',
+                modelId: 'mock',
+                timestamp: new Date(),
+              },
               { type: 'text-start', id: '1' },
               { type: 'text-delta', id: '1', delta: _text },
               { type: 'text-end', id: '1' },
-              { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: { inputTokens: { total: 5, noCache: 5 }, outputTokens: { total: 10, text: 10 } } },
-            ]) as any[]) c.enqueue(v);
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 5, noCache: 5 },
+                  outputTokens: { total: 10, text: 10 },
+                },
+              },
+            ] as any[])
+              c.enqueue(v);
             c.close();
           },
         }),
@@ -48,32 +61,63 @@ export function mockSequenceModel(responses: MockResponseDescriptor[]) {
       doStream: async (options: any) => {
         const idx = Math.min(
           options.prompt.filter((m: any) => m.role === 'assistant').length,
-          _responses.length - 1,
+          _responses.length - 1
         );
         const r = _responses[idx];
-        const parts = r.type === 'text'
-          ? [
-              { type: 'stream-start', warnings: [] },
-              { type: 'response-metadata', id: 'r', modelId: 'mock', timestamp: new Date() },
-              { type: 'text-start', id: '1' },
-              { type: 'text-delta', id: '1', delta: r.text },
-              { type: 'text-end', id: '1' },
-              { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: { inputTokens: { total: 5, noCache: 5 }, outputTokens: { total: 10, text: 10 } } },
-            ]
-          : [
-              { type: 'stream-start', warnings: [] },
-              { type: 'response-metadata', id: 'r', modelId: 'mock', timestamp: new Date() },
-              { type: 'tool-call', toolCallId: `call-${idx + 1}`, toolName: r.toolName, input: r.input },
-              { type: 'finish', finishReason: { unified: 'tool-calls', raw: undefined }, usage: { inputTokens: { total: 5, noCache: 5 }, outputTokens: { total: 10, text: 10 } } },
-            ];
+        const parts =
+          r.type === 'text'
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'response-metadata',
+                  id: 'r',
+                  modelId: 'mock',
+                  timestamp: new Date(),
+                },
+                { type: 'text-start', id: '1' },
+                { type: 'text-delta', id: '1', delta: r.text },
+                { type: 'text-end', id: '1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: {
+                    inputTokens: { total: 5, noCache: 5 },
+                    outputTokens: { total: 10, text: 10 },
+                  },
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'response-metadata',
+                  id: 'r',
+                  modelId: 'mock',
+                  timestamp: new Date(),
+                },
+                {
+                  type: 'tool-call',
+                  toolCallId: `call-${idx + 1}`,
+                  toolName: r.toolName,
+                  input: r.input,
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: undefined },
+                  usage: {
+                    inputTokens: { total: 5, noCache: 5 },
+                    outputTokens: { total: 10, text: 10 },
+                  },
+                },
+              ];
         return {
           stream: new ReadableStream({
-            start(c) { for (const p of parts as any[]) c.enqueue(p); c.close(); },
+            start(c) {
+              for (const p of parts as any[]) c.enqueue(p);
+              c.close();
+            },
           }),
         };
       },
     });
   };
 }
-
-export { MockLanguageModelV3, convertArrayToReadableStream } from 'ai/test';

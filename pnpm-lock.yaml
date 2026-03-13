@@ -322,6 +322,9 @@ importers:
       '@ai-sdk/provider':
         specifier: ^3.0.0
         version: 3.0.8
+      '@workflow/serde':
+        specifier: workspace:^
+        version: link:../serde
       zod:
         specifier: 'catalog:'
         version: 4.3.6

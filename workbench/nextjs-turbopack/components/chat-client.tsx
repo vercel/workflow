@@ -1,5 +1,6 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import { useState, useMemo, useCallback } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { WorkflowChatTransport } from '@workflow/ai';
@@ -78,7 +79,7 @@ function FeatureItem({
   description,
   status,
 }: {
-  icon: React.ReactNode;
+  icon: ReactNode;
   title: string;
   description: string;
   status: 'working' | 'gap';
@@ -341,15 +342,6 @@ export function ChatClient() {
   const { messages, sendMessage, status } = useChat({
     transport: transport as any,
   });
-
-  // Debug: log message parts
-  if (messages.length > 0) {
-    const last = messages[messages.length - 1];
-    const toolParts = last.parts?.filter((p) => p.type.startsWith('tool-'));
-    if (toolParts?.length) {
-      console.log('[ChatClient] tool parts:', toolParts);
-    }
-  }
 
   const handleSubmit = (message: PromptInputMessage) => {
     if (message.text.trim()) {

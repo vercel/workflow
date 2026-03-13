@@ -501,10 +501,22 @@ export async function doStreamStep(
  * @internal Exported for testing
  */
 export function normalizeFinishReason(rawFinishReason: unknown): FinishReason {
+  const KNOWN_FINISH_REASONS = new Set<string>([
+    'stop',
+    'length',
+    'content-filter',
+    'tool-calls',
+    'error',
+    'other',
+  ]);
+
   // Handle object-style finish reason (V3 returns { unified, raw })
   if (typeof rawFinishReason === 'object' && rawFinishReason !== null) {
     const objReason = rawFinishReason as { unified?: string; type?: string };
-    return (objReason.unified ?? objReason.type ?? 'other') as FinishReason;
+    const extracted = objReason.unified ?? objReason.type ?? 'other';
+    return (
+      KNOWN_FINISH_REASONS.has(extracted) ? extracted : 'other'
+    ) as FinishReason;
   }
   // Handle string finish reason (standard format)
   if (typeof rawFinishReason === 'string') {
