@@ -182,15 +182,6 @@ function TimestampTooltipContent({ date }: { date: number }): ReactNode {
 // Hover tooltip wrapper
 // ---------------------------------------------------------------------------
 
-/** No-op wrapper kept for backward compatibility — portals render to document.body directly. */
-export function TimestampTooltipProvider({
-  children,
-}: {
-  children: ReactNode;
-}): ReactNode {
-  return <>{children}</>;
-}
-
 const TOOLTIP_WIDTH = 330;
 const VIEWPORT_PAD = 8;
 
@@ -277,6 +268,12 @@ export function TimestampTooltip({
   const [triggerRect, setTriggerRect] = useState<DOMRect | null>(null);
   const triggerRef = useRef<HTMLSpanElement>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    };
+  }, []);
 
   const ts =
     date == null

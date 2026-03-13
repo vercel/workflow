@@ -17,10 +17,7 @@ import {
 import { LoadMoreButton } from './ui/load-more-button';
 import { MenuDropdown } from './ui/menu-dropdown';
 import { Skeleton } from './ui/skeleton';
-import {
-  TimestampTooltip,
-  TimestampTooltipProvider,
-} from './ui/timestamp-tooltip';
+import { TimestampTooltip } from './ui/timestamp-tooltip';
 
 /**
  * Event types whose eventData contains an error field with a StructuredError.
@@ -1390,197 +1387,195 @@ export function EventListView({
   }
 
   return (
-    <TimestampTooltipProvider>
-      <div className="h-full flex flex-col overflow-hidden">
-        <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
-        {/* Search bar + sort */}
-        <div
+    <div className="h-full flex flex-col overflow-hidden">
+      <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
+      {/* Search bar + sort */}
+      <div
+        style={{
+          padding: 6,
+          backgroundColor: 'var(--ds-background-100)',
+          display: 'flex',
+          gap: 6,
+        }}
+      >
+        <label
           style={{
-            padding: 6,
-            backgroundColor: 'var(--ds-background-100)',
             display: 'flex',
-            gap: 6,
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 6,
+            boxShadow: '0 0 0 1px var(--ds-gray-alpha-400)',
+            background: 'var(--ds-background-100)',
+            height: 40,
+            flex: 1,
+            minWidth: 0,
           }}
         >
-          <label
+          <div
             style={{
+              width: 40,
+              height: 40,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
-              borderRadius: 6,
-              boxShadow: '0 0 0 1px var(--ds-gray-alpha-400)',
-              background: 'var(--ds-background-100)',
-              height: 40,
-              flex: 1,
-              minWidth: 0,
+              color: 'var(--ds-gray-800)',
+              flexShrink: 0,
             }}
           >
-            <div
-              style={{
-                width: 40,
-                height: 40,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--ds-gray-800)',
-                flexShrink: 0,
-              }}
+            <svg
+              width={16}
+              height={16}
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+              focusable="false"
             >
-              <svg
-                width={16}
-                height={16}
-                viewBox="0 0 16 16"
-                fill="none"
-                aria-hidden="true"
-                focusable="false"
-              >
-                <circle
-                  cx="7"
-                  cy="7"
-                  r="4.5"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                />
-                <path
-                  d="M11.5 11.5L14 14"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                />
-              </svg>
-            </div>
-            <input
-              type="search"
-              placeholder="Search by name, event type, or ID…"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              style={{
-                marginLeft: -16,
-                paddingInline: 12,
-                fontFamily: 'inherit',
-                fontSize: 14,
-                background: 'transparent',
-                border: 'none',
-                outline: 'none',
-                height: 40,
-                width: '100%',
-              }}
-            />
-          </label>
-          <MenuDropdown
-            options={SORT_OPTIONS}
-            value={effectiveSortOrder}
-            onChange={handleSortOrderChange}
+              <circle
+                cx="7"
+                cy="7"
+                r="4.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              />
+              <path
+                d="M11.5 11.5L14 14"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+          </div>
+          <input
+            type="search"
+            placeholder="Search by name, event type, or ID…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{
+              marginLeft: -16,
+              paddingInline: 12,
+              fontFamily: 'inherit',
+              fontSize: 14,
+              background: 'transparent',
+              border: 'none',
+              outline: 'none',
+              height: 40,
+              width: '100%',
+            }}
           />
-          {(hasEncryptedData || encryptionKey) && onDecrypt && (
-            <DecryptButton
-              decrypted={!!encryptionKey}
-              loading={isDecrypting}
-              onClick={onDecrypt}
-            />
-          )}
-        </div>
-
-        {/* Header */}
-        <div
-          className="flex items-center gap-0 text-[13px] font-medium h-10 border-b flex-shrink-0"
-          style={{
-            borderColor: 'var(--ds-gray-alpha-200)',
-            color: 'var(--ds-gray-900)',
-            backgroundColor: 'var(--ds-background-100)',
-          }}
-        >
-          <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
-          <div className="w-5 flex-shrink-0" />
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Time
-          </div>
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Event Type
-          </div>
-          <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
-            Name
-          </div>
-          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
-            Correlation ID
-          </div>
-          <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
-            Event ID
-          </div>
-        </div>
-
-        {/* Virtualized event rows or refetching skeleton */}
-        {isRefetching ? (
-          <RowsSkeleton />
-        ) : (
-          <Virtuoso
-            ref={virtuosoRef}
-            totalCount={sortedEvents.length}
-            overscan={20}
-            defaultItemHeight={40}
-            endReached={() => {
-              if (!hasMoreEvents || isLoadingMoreEvents) {
-                return;
-              }
-              void onLoadMoreEvents?.();
-            }}
-            itemContent={(index: number) => {
-              const ev = sortedEvents[index];
-              return (
-                <EventRow
-                  event={ev}
-                  index={index}
-                  isFirst={index === 0}
-                  isLast={index === sortedEvents.length - 1}
-                  isExpanded={expandedEventIds.has(ev.eventId)}
-                  onToggleExpand={toggleEventExpanded}
-                  activeGroupKey={activeGroupKey}
-                  selectedGroupKey={selectedGroupKey}
-                  selectedGroupRange={selectedGroupRange}
-                  correlationNameMap={correlationNameMap}
-                  workflowName={workflowName}
-                  durationMap={durationMap}
-                  onSelectGroup={onSelectGroup}
-                  onHoverGroup={onHoverGroup}
-                  onLoadEventData={onLoadEventData}
-                  cachedEventData={
-                    eventDataCacheRef.current.get(ev.eventId) ?? null
-                  }
-                  onCacheEventData={cacheEventData}
-                  encryptionKey={encryptionKey}
-                  onEncryptedDataDetected={handleEncryptedDataDetected}
-                />
-              );
-            }}
-            style={{ flex: 1, minHeight: 0 }}
+        </label>
+        <MenuDropdown
+          options={SORT_OPTIONS}
+          value={effectiveSortOrder}
+          onChange={handleSortOrderChange}
+        />
+        {(hasEncryptedData || encryptionKey) && onDecrypt && (
+          <DecryptButton
+            decrypted={!!encryptionKey}
+            loading={isDecrypting}
+            onClick={onDecrypt}
           />
         )}
+      </div>
 
-        {/* Fixed footer — count + load more */}
-        <div
-          className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-xs"
-          style={{
-            borderColor: 'var(--ds-gray-alpha-200)',
-            color: 'var(--ds-gray-900)',
-            backgroundColor: 'var(--ds-background-100)',
-          }}
-        >
-          <span>
-            {sortedEvents.length} event
-            {sortedEvents.length !== 1 ? 's' : ''} loaded
-          </span>
-          {hasMoreEvents && (
-            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-              <div className="pointer-events-auto">
-                <LoadMoreButton
-                  loading={isLoadingMoreEvents}
-                  onClick={() => void onLoadMoreEvents?.()}
-                />
-              </div>
-            </div>
-          )}
+      {/* Header */}
+      <div
+        className="flex items-center gap-0 text-[13px] font-medium h-10 border-b flex-shrink-0"
+        style={{
+          borderColor: 'var(--ds-gray-alpha-200)',
+          color: 'var(--ds-gray-900)',
+          backgroundColor: 'var(--ds-background-100)',
+        }}
+      >
+        <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
+        <div className="w-5 flex-shrink-0" />
+        <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+          Time
+        </div>
+        <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+          Event Type
+        </div>
+        <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
+          Name
+        </div>
+        <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+          Correlation ID
+        </div>
+        <div className="min-w-0 px-4" style={{ flex: '3 1 0%' }}>
+          Event ID
         </div>
       </div>
-    </TimestampTooltipProvider>
+
+      {/* Virtualized event rows or refetching skeleton */}
+      {isRefetching ? (
+        <RowsSkeleton />
+      ) : (
+        <Virtuoso
+          ref={virtuosoRef}
+          totalCount={sortedEvents.length}
+          overscan={20}
+          defaultItemHeight={40}
+          endReached={() => {
+            if (!hasMoreEvents || isLoadingMoreEvents) {
+              return;
+            }
+            void onLoadMoreEvents?.();
+          }}
+          itemContent={(index: number) => {
+            const ev = sortedEvents[index];
+            return (
+              <EventRow
+                event={ev}
+                index={index}
+                isFirst={index === 0}
+                isLast={index === sortedEvents.length - 1}
+                isExpanded={expandedEventIds.has(ev.eventId)}
+                onToggleExpand={toggleEventExpanded}
+                activeGroupKey={activeGroupKey}
+                selectedGroupKey={selectedGroupKey}
+                selectedGroupRange={selectedGroupRange}
+                correlationNameMap={correlationNameMap}
+                workflowName={workflowName}
+                durationMap={durationMap}
+                onSelectGroup={onSelectGroup}
+                onHoverGroup={onHoverGroup}
+                onLoadEventData={onLoadEventData}
+                cachedEventData={
+                  eventDataCacheRef.current.get(ev.eventId) ?? null
+                }
+                onCacheEventData={cacheEventData}
+                encryptionKey={encryptionKey}
+                onEncryptedDataDetected={handleEncryptedDataDetected}
+              />
+            );
+          }}
+          style={{ flex: 1, minHeight: 0 }}
+        />
+      )}
+
+      {/* Fixed footer — count + load more */}
+      <div
+        className="relative flex-shrink-0 flex items-center h-10 border-t px-4 text-xs"
+        style={{
+          borderColor: 'var(--ds-gray-alpha-200)',
+          color: 'var(--ds-gray-900)',
+          backgroundColor: 'var(--ds-background-100)',
+        }}
+      >
+        <span>
+          {sortedEvents.length} event
+          {sortedEvents.length !== 1 ? 's' : ''} loaded
+        </span>
+        {hasMoreEvents && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+            <div className="pointer-events-auto">
+              <LoadMoreButton
+                loading={isLoadingMoreEvents}
+                onClick={() => void onLoadMoreEvents?.()}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
