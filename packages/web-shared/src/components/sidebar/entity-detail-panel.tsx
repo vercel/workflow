@@ -2,10 +2,11 @@
 
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
-import { Lock, Send, Unlock, Zap } from 'lucide-react';
+import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { isEncryptedMarker } from '../../lib/hydration';
+import { DecryptButton } from '../ui/decrypt-button';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -64,6 +65,7 @@ export function EntityDetailPanel({
   onResolveHook,
   encryptionKey,
   onDecrypt,
+  isDecrypting = false,
   selectedSpan,
 }: {
   run: WorkflowRun;
@@ -97,6 +99,8 @@ export function EntityDetailPanel({
   encryptionKey?: Uint8Array;
   /** Callback to initiate decryption of encrypted run data */
   onDecrypt?: () => void;
+  /** Whether the encryption key is currently being fetched */
+  isDecrypting?: boolean;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
 }): React.JSX.Element | null {
@@ -381,31 +385,11 @@ export function EntityDetailPanel({
             </p>
           </div>
           {(hasEncryptedFields || encryptionKey) && onDecrypt && (
-            <button
-              type="button"
+            <DecryptButton
+              decrypted={!!encryptionKey}
+              loading={isDecrypting}
               onClick={onDecrypt}
-              disabled={!!encryptionKey}
-              className="inline-flex items-center gap-1 rounded-md border px-2 py-1 text-xs font-medium transition-colors flex-shrink-0"
-              style={{
-                borderColor: encryptionKey
-                  ? 'var(--ds-green-400)'
-                  : 'var(--ds-gray-300)',
-                color: encryptionKey
-                  ? 'var(--ds-green-900)'
-                  : 'var(--ds-gray-900)',
-                backgroundColor: encryptionKey
-                  ? 'var(--ds-green-100)'
-                  : 'var(--ds-background-100)',
-                cursor: encryptionKey ? 'default' : 'pointer',
-              }}
-            >
-              {encryptionKey ? (
-                <Unlock className="h-3 w-3" />
-              ) : (
-                <Lock className="h-3 w-3" />
-              )}
-              {encryptionKey ? 'Decrypted' : 'Decrypt'}
-            </button>
+            />
           )}
         </div>
       </div>

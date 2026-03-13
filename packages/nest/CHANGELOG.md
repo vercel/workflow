@@ -1,5 +1,14 @@
 # @workflow/nest
 
+## 0.0.0-beta.19
+
+### Patch Changes
+
+- [#1346](https://github.com/vercel/workflow/pull/1346) [`73c12f1`](https://github.com/vercel/workflow/commit/73c12f14dabb465e2074e2aebbcd231a4d91bc09) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `ERR_UNSUPPORTED_ESM_URL_SCHEME` on Windows by converting absolute file paths to `file://` URLs before passing them to dynamic `import()`
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.61
+
 ## 0.0.0-beta.18
 
 ### Patch Changes

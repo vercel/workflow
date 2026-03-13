@@ -1,5 +1,19 @@
 # @workflow/cli
 
+## 4.2.0-beta.70
+
+### Patch Changes
+
+- [#1343](https://github.com/vercel/workflow/pull/1343) [`3c3f80a`](https://github.com/vercel/workflow/commit/3c3f80a1f0e00878bd6550a39af59e305c035706) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `-e` short flag collision between `--endpoint` and `--env` in health command
+
+- [#1350](https://github.com/vercel/workflow/pull/1350) [`9f3551c`](https://github.com/vercel/workflow/commit/9f3551caec933679bbb733495422dc6899bbe2bc) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Support `WORKFLOW_NO_UPDATE_CHECK=1` env var to skip the npm registry version check on startup
+
+- Updated dependencies [[`7df1385`](https://github.com/vercel/workflow/commit/7df13854f85529929ff1187fe831f4dbc51b9121), [`73c12f1`](https://github.com/vercel/workflow/commit/73c12f14dabb465e2074e2aebbcd231a4d91bc09), [`5c6ae60`](https://github.com/vercel/workflow/commit/5c6ae607a58d200fbad673821728a1a39684dfd9), [`9feebee`](https://github.com/vercel/workflow/commit/9feebee15c7c35843b99254b23a2f7743ea3f8c6), [`58e67ce`](https://github.com/vercel/workflow/commit/58e67ce11bd69b982214e2734363fa7fd252f5f6), [`d6da7ec`](https://github.com/vercel/workflow/commit/d6da7ecca0fbf94d3331ce3bd7d28644a4f5cc3f)]:
+  - @workflow/core@4.2.0-beta.70
+  - @workflow/web@4.1.0-beta.42
+  - @workflow/world-local@4.1.0-beta.43
+  - @workflow/builders@4.0.1-beta.61
+
 ## 4.2.0-beta.69
 
 ### Patch Changes
