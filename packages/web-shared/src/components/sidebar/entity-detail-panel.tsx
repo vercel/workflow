@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { isEncryptedMarker } from '../../lib/hydration';
 import { DecryptButton } from '../ui/decrypt-button';
+import { TimestampTooltipProvider } from '../ui/timestamp-tooltip';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -347,155 +348,157 @@ export function EntityDetailPanel({
   const runStateLabel = run.completedAt ? 'Completed' : 'Live';
 
   return (
-    <div className="flex h-full flex-col">
-      <div
-        className="border-b px-3 py-3"
-        style={{ borderColor: 'var(--ds-gray-200)' }}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span
-                className="inline-flex items-center rounded-full border px-2 py-0.5 text-[13px] font-medium"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                  color: 'var(--ds-gray-900)',
-                  backgroundColor: 'var(--ds-background-100)',
-                }}
+    <TimestampTooltipProvider>
+      <div className="flex h-full flex-col">
+        <div
+          className="border-b px-3 py-3"
+          style={{ borderColor: 'var(--ds-gray-200)' }}
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-flex items-center rounded-full border px-2 py-0.5 text-[13px] font-medium"
+                  style={{
+                    borderColor: 'var(--ds-gray-300)',
+                    color: 'var(--ds-gray-900)',
+                    backgroundColor: 'var(--ds-background-100)',
+                  }}
+                >
+                  {resourceLabel}
+                </span>
+                <span
+                  className="text-[13px]"
+                  style={{
+                    color: run.completedAt
+                      ? 'var(--ds-gray-700)'
+                      : 'var(--ds-green-800)',
+                  }}
+                >
+                  {runStateLabel}
+                </span>
+              </div>
+              <p
+                className="mt-1 truncate font-mono text-[13px]"
+                style={{ color: 'var(--ds-gray-700)' }}
+                title={resourceId}
               >
-                {resourceLabel}
-              </span>
-              <span
-                className="text-[13px]"
-                style={{
-                  color: run.completedAt
-                    ? 'var(--ds-gray-700)'
-                    : 'var(--ds-green-800)',
-                }}
-              >
-                {runStateLabel}
-              </span>
+                {resourceId}
+              </p>
             </div>
-            <p
-              className="mt-1 truncate font-mono text-[13px]"
-              style={{ color: 'var(--ds-gray-700)' }}
-              title={resourceId}
-            >
-              {resourceId}
-            </p>
+            {(hasEncryptedFields || encryptionKey) && onDecrypt && (
+              <DecryptButton
+                decrypted={!!encryptionKey}
+                loading={isDecrypting}
+                onClick={onDecrypt}
+              />
+            )}
           </div>
-          {(hasEncryptedFields || encryptionKey) && onDecrypt && (
-            <DecryptButton
-              decrypted={!!encryptionKey}
-              loading={isDecrypting}
-              onClick={onDecrypt}
-            />
-          )}
         </div>
-      </div>
 
-      <div className="flex-1 overflow-y-auto px-3 pt-3 pb-8">
-        {hasPendingActions && (
-          <div
-            className="mb-4 rounded-lg border p-2"
-            style={{
-              borderColor: 'var(--ds-gray-300)',
-              backgroundColor: 'var(--ds-gray-100)',
-            }}
-          >
-            <p
-              className="mb-2 px-1 text-[13px] font-medium uppercase tracking-wide"
-              style={{ color: 'var(--ds-gray-700)' }}
+        <div className="flex-1 overflow-y-auto px-3 pt-3 pb-8">
+          {hasPendingActions && (
+            <div
+              className="mb-4 rounded-lg border p-2"
+              style={{
+                borderColor: 'var(--ds-gray-300)',
+                backgroundColor: 'var(--ds-gray-100)',
+              }}
             >
-              Actions
-            </p>
-            <div className="flex flex-col gap-2">
-              {/* Wake up button for pending sleep calls */}
-              {resource === 'sleep' && canWakeUp && (
-                <button
-                  type="button"
-                  onClick={handleWakeUp}
-                  disabled={stoppingSleep}
-                  className={clsx(
-                    'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium',
-                    'disabled:opacity-50 disabled:cursor-not-allowed transition-colors',
-                    stoppingSleep
-                      ? 'opacity-50 cursor-not-allowed'
-                      : 'cursor-pointer'
-                  )}
-                  style={{
-                    background: 'var(--ds-amber-200)',
-                    color: 'var(--ds-amber-900)',
-                  }}
-                >
-                  <Zap className="h-4 w-4" />
-                  {stoppingSleep ? 'Waking up...' : 'Wake Up Sleep'}
-                </button>
-              )}
+              <p
+                className="mb-2 px-1 text-[13px] font-medium uppercase tracking-wide"
+                style={{ color: 'var(--ds-gray-700)' }}
+              >
+                Actions
+              </p>
+              <div className="flex flex-col gap-2">
+                {/* Wake up button for pending sleep calls */}
+                {resource === 'sleep' && canWakeUp && (
+                  <button
+                    type="button"
+                    onClick={handleWakeUp}
+                    disabled={stoppingSleep}
+                    className={clsx(
+                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium',
+                      'disabled:opacity-50 disabled:cursor-not-allowed transition-colors',
+                      stoppingSleep
+                        ? 'opacity-50 cursor-not-allowed'
+                        : 'cursor-pointer'
+                    )}
+                    style={{
+                      background: 'var(--ds-amber-200)',
+                      color: 'var(--ds-amber-900)',
+                    }}
+                  >
+                    <Zap className="h-4 w-4" />
+                    {stoppingSleep ? 'Waking up...' : 'Wake Up Sleep'}
+                  </button>
+                )}
 
-              {/* Resolve hook button for pending hooks */}
-              {resource === 'hook' && canResolveHook && (
-                <button
-                  type="button"
-                  onClick={() => setShowResolveHookModal(true)}
-                  disabled={resolvingHook}
-                  className={clsx(
-                    'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium',
-                    'disabled:opacity-50 disabled:cursor-not-allowed transition-colors',
-                    resolvingHook
-                      ? 'opacity-50 cursor-not-allowed'
-                      : 'cursor-pointer'
-                  )}
-                  style={{
-                    background: 'var(--ds-gray-1000)',
-                    color: 'var(--ds-background-100)',
-                  }}
-                >
-                  <Send className="h-4 w-4" />
-                  Resolve Hook
-                </button>
-              )}
+                {/* Resolve hook button for pending hooks */}
+                {resource === 'hook' && canResolveHook && (
+                  <button
+                    type="button"
+                    onClick={() => setShowResolveHookModal(true)}
+                    disabled={resolvingHook}
+                    className={clsx(
+                      'flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium',
+                      'disabled:opacity-50 disabled:cursor-not-allowed transition-colors',
+                      resolvingHook
+                        ? 'opacity-50 cursor-not-allowed'
+                        : 'cursor-pointer'
+                    )}
+                    style={{
+                      background: 'var(--ds-gray-1000)',
+                      color: 'var(--ds-background-100)',
+                    }}
+                  >
+                    <Send className="h-4 w-4" />
+                    Resolve Hook
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        )}
+          )}
 
-        <div className="space-y-4">
-          <section>
-            <h3
-              className="mb-2 text-[13px] font-medium uppercase tracking-wide"
-              style={{ color: 'var(--ds-gray-700)' }}
-            >
-              Details
-            </h3>
-            <AttributePanel
-              data={displayData}
-              moduleSpecifier={moduleSpecifier}
-              expiredAt={run.expiredAt}
-              isLoading={loading}
-              error={error ?? undefined}
-              onStreamClick={onStreamClick}
-            />
-          </section>
-
-          {resource !== 'run' && rawEvents && (
+          <div className="space-y-4">
             <section>
-              <EventsList
-                events={rawEvents}
-                onLoadEventData={onLoadEventData}
-                encryptionKey={encryptionKey}
+              <h3
+                className="mb-2 text-[13px] font-medium uppercase tracking-wide"
+                style={{ color: 'var(--ds-gray-700)' }}
+              >
+                Details
+              </h3>
+              <AttributePanel
+                data={displayData}
+                moduleSpecifier={moduleSpecifier}
+                expiredAt={run.expiredAt}
+                isLoading={loading}
+                error={error ?? undefined}
+                onStreamClick={onStreamClick}
               />
             </section>
-          )}
-        </div>
-      </div>
 
-      {/* Resolve Hook Modal */}
-      <ResolveHookModal
-        isOpen={showResolveHookModal}
-        onClose={() => setShowResolveHookModal(false)}
-        onSubmit={handleResolveHook}
-        isSubmitting={resolvingHook}
-      />
-    </div>
+            {resource !== 'run' && rawEvents && (
+              <section>
+                <EventsList
+                  events={rawEvents}
+                  onLoadEventData={onLoadEventData}
+                  encryptionKey={encryptionKey}
+                />
+              </section>
+            )}
+          </div>
+        </div>
+
+        {/* Resolve Hook Modal */}
+        <ResolveHookModal
+          isOpen={showResolveHookModal}
+          onClose={() => setShowResolveHookModal(false)}
+          onSubmit={handleResolveHook}
+          isSubmitting={resolvingHook}
+        />
+      </div>
+    </TimestampTooltipProvider>
   );
 }
