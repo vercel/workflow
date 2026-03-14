@@ -10,9 +10,10 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3ToolCall,
   LanguageModelV3ToolResult,
+  LanguageModelV3ToolResultPart,
 } from '@ai-sdk/provider';
 import type { StepResult, ToolSet, UIMessageChunk } from 'ai';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock doStreamStep
 vi.mock('./do-stream-step.js', () => ({
@@ -648,6 +649,220 @@ describe('streamTextIterator', () => {
         google: {
           thoughtSignature: 'sig_gemini_preserved',
         },
+      });
+    });
+  });
+
+  describe('prepareStep system and messages ordering', () => {
+    it('should apply system message when prepareStep returns only system', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      vi.mocked(doStreamStep).mockImplementationOnce(async (prompt) => {
+        capturedPrompt = prompt;
+        return {
+          toolCalls: [],
+          finish: { finishReason: 'stop' },
+          step: createMockStepResult({ finishReason: 'stop' }),
+        };
+      });
+
+      const iterator = streamTextIterator({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+        tools: {} as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+        prepareStep: () => ({
+          system: 'You are a helpful assistant.',
+        }),
+      });
+
+      await iterator.next();
+
+      expect(capturedPrompt).toBeDefined();
+      expect(capturedPrompt![0]).toEqual({
+        role: 'system',
+        content: 'You are a helpful assistant.',
+      });
+      expect(capturedPrompt![1]).toEqual({
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }],
+      });
+    });
+
+    it('should preserve system message when prepareStep returns both system and messages', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      vi.mocked(doStreamStep).mockImplementationOnce(async (prompt) => {
+        capturedPrompt = prompt;
+        return {
+          toolCalls: [],
+          finish: { finishReason: 'stop' },
+          step: createMockStepResult({ finishReason: 'stop' }),
+        };
+      });
+
+      // prepareStep returns both system and messages — system should NOT be lost
+      const customMessages: LanguageModelV3Prompt = [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'modified message' }],
+        },
+      ];
+
+      const iterator = streamTextIterator({
+        prompt: [
+          { role: 'user', content: [{ type: 'text', text: 'original' }] },
+        ],
+        tools: {} as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+        prepareStep: () => ({
+          system: 'Dynamic system prompt.',
+          messages: customMessages,
+        }),
+      });
+
+      await iterator.next();
+
+      expect(capturedPrompt).toBeDefined();
+      // System message should be prepended to the replaced messages
+      expect(capturedPrompt!).toHaveLength(2);
+      expect(capturedPrompt![0]).toEqual({
+        role: 'system',
+        content: 'Dynamic system prompt.',
+      });
+      expect(capturedPrompt![1]).toEqual({
+        role: 'user',
+        content: [{ type: 'text', text: 'modified message' }],
+      });
+    });
+
+    it('should replace existing system message when messages already contains one', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      vi.mocked(doStreamStep).mockImplementationOnce(async (prompt) => {
+        capturedPrompt = prompt;
+        return {
+          toolCalls: [],
+          finish: { finishReason: 'stop' },
+          step: createMockStepResult({ finishReason: 'stop' }),
+        };
+      });
+
+      // Messages already include a system message — prepareStep's system should replace it
+      const customMessages: LanguageModelV3Prompt = [
+        { role: 'system', content: 'Old system prompt.' },
+        { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+      ];
+
+      const iterator = streamTextIterator({
+        prompt: [
+          { role: 'user', content: [{ type: 'text', text: 'original' }] },
+        ],
+        tools: {} as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+        prepareStep: () => ({
+          system: 'New system prompt.',
+          messages: customMessages,
+        }),
+      });
+
+      await iterator.next();
+
+      expect(capturedPrompt).toBeDefined();
+      expect(capturedPrompt!).toHaveLength(2);
+      expect(capturedPrompt![0]).toEqual({
+        role: 'system',
+        content: 'New system prompt.',
+      });
+      expect(capturedPrompt![1]).toEqual({
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }],
+      });
+    });
+
+    it('should update system message on subsequent steps', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      const capturedPrompts: LanguageModelV3Prompt[] = [];
+
+      const toolCall: LanguageModelV3ToolCall = {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'testTool',
+        input: '{}',
+      };
+
+      vi.mocked(doStreamStep)
+        .mockImplementationOnce(async (prompt) => {
+          capturedPrompts.push([...prompt]);
+          return {
+            toolCalls: [toolCall],
+            finish: { finishReason: 'tool-calls' },
+            step: createMockStepResult({ finishReason: 'tool-calls' }),
+          };
+        })
+        .mockImplementationOnce(async (prompt) => {
+          capturedPrompts.push([...prompt]);
+          return {
+            toolCalls: [],
+            finish: { finishReason: 'stop' },
+            step: createMockStepResult({ finishReason: 'stop' }),
+          };
+        });
+
+      const iterator = streamTextIterator({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+        tools: {
+          testTool: {
+            description: 'Test',
+            execute: async () => ({ ok: true }),
+          },
+        } as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+        prepareStep: ({ stepNumber: sn }) => ({
+          system: `System prompt v${sn}`,
+        }),
+      });
+
+      // First step
+      await iterator.next();
+
+      // Provide tool results
+      const toolResults: LanguageModelV3ToolResultPart[] = [
+        {
+          type: 'tool-result',
+          toolCallId: 'call-1',
+          toolName: 'testTool',
+          output: { type: 'text', value: '{"ok":true}' },
+        },
+      ];
+
+      // Second step
+      await iterator.next(toolResults);
+
+      expect(capturedPrompts).toHaveLength(2);
+      // First step should have system v0
+      expect(capturedPrompts[0][0]).toEqual({
+        role: 'system',
+        content: 'System prompt v0',
+      });
+      // Second step should have system v1
+      expect(capturedPrompts[1][0]).toEqual({
+        role: 'system',
+        content: 'System prompt v1',
       });
     });
   });
