@@ -13,8 +13,14 @@ import type {
 } from '@ai-sdk/provider';
 import type { StepResult, ToolSet } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
-import { FatalError } from 'workflow';
 import { z } from 'zod';
+
+class FatalError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'FatalError';
+  }
+}
 
 // Mock the streamTextIterator
 vi.mock('./stream-text-iterator.js', () => ({
@@ -978,6 +984,80 @@ describe('DurableAgent', () => {
       expect(streamTextIterator).toHaveBeenCalledWith(
         expect.objectContaining({
           prepareStep,
+        })
+      );
+    });
+
+    it('should use prepareStep from the agent definition by default', async () => {
+      const mockModel = createMockModel();
+      const prepareStep: PrepareStepCallback = vi.fn().mockReturnValue({});
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+        prepareStep,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prepareStep,
+        })
+      );
+    });
+
+    it('should prefer a stream prepareStep over the agent definition', async () => {
+      const mockModel = createMockModel();
+      const agentPrepareStep: PrepareStepCallback = vi.fn().mockReturnValue({});
+      const streamPrepareStep: PrepareStepCallback = vi
+        .fn()
+        .mockReturnValue({});
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools: {},
+        prepareStep: agentPrepareStep,
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi.fn().mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        prepareStep: streamPrepareStep,
+      });
+
+      expect(streamTextIterator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prepareStep: streamPrepareStep,
         })
       );
     });

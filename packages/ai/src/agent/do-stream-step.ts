@@ -21,6 +21,7 @@ import type {
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
+import { initTelemetry, recordSpan } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
 
 export type FinishPart = Extract<LanguageModelV3StreamPart, { type: 'finish' }>;
@@ -163,7 +164,18 @@ export async function doStreamStep(
     }),
   };
 
-  const result = await model.doStream(callOptions);
+  // Initialize telemetry (loads @opentelemetry/api if available)
+  await initTelemetry(options?.experimental_telemetry);
+
+  const result = await recordSpan({
+    name: 'ai.streamText.doStream',
+    telemetry: options?.experimental_telemetry,
+    attributes: {
+      'ai.model.provider': model.provider,
+      'ai.model.id': model.modelId,
+    },
+    fn: () => model!.doStream(callOptions),
+  });
 
   let finish: FinishPart | undefined;
   const toolCalls: LanguageModelV3ToolCall[] = [];
