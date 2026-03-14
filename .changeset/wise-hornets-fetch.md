@@ -1,4 +1,5 @@
 ---
+"@workflow/web": patch
 "@workflow/world": patch
 "@workflow/world-vercel": patch
 "@workflow/world-postgres": patch
