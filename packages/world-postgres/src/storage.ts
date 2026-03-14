@@ -27,6 +27,7 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  stripEventDataRefs,
   validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -1332,46 +1333,4 @@ function filterHookData(hook: Hook, resolveData: ResolveData): Hook {
     return { metadata: undefined, ...rest };
   }
   return hook;
-}
-
-/**
- * Fields within eventData that hold ref/payload data per event type.
- * When resolveData is 'none', only these fields are stripped — all other
- * metadata (stepName, workflowName, etc.) is preserved.
- */
-const EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
-  run_created: ['input'],
-  run_completed: ['output'],
-  run_failed: ['error'],
-  step_created: ['input'],
-  step_completed: ['result'],
-  step_failed: ['error'],
-  step_retrying: ['error'],
-  hook_created: ['metadata'],
-  hook_received: ['payload'],
-};
-
-function stripEventDataRefs(event: Event, resolveData: ResolveData): Event {
-  if (resolveData !== 'none') return event;
-  if (!('eventData' in event)) return event;
-
-  const eventData = event.eventData;
-  if (!eventData || typeof eventData !== 'object') {
-    const { eventData: _, ...rest } = event;
-    return rest as Event;
-  }
-
-  const refFields = EVENT_DATA_REF_FIELDS[event.eventType];
-  if (!refFields || refFields.length === 0) return event;
-
-  const stripped = { ...(eventData as Record<string, unknown>) };
-  for (const field of refFields) {
-    delete stripped[field];
-  }
-
-  const { eventData: _, ...rest } = event;
-  return {
-    ...rest,
-    ...(Object.keys(stripped).length > 0 ? { eventData: stripped } : {}),
-  } as Event;
 }
