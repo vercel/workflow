@@ -134,18 +134,23 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
     route,
     handler: `#${buildPath}`,
   });
+  const handlerImportPath = JSON.stringify(
+    join(nitro.options.buildDir, buildPath)
+  );
 
   if (!nitro.routing) {
     // Nitro v2 (legacy)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
+    import ${handlerImportPath};
     import { fromWebHandler } from "h3";
-    import { POST } from "${join(nitro.options.buildDir, buildPath)}";
+    import { POST } from ${handlerImportPath};
     export default fromWebHandler(POST);
   `;
   } else {
     // Nitro v3+ (native web handlers)
     nitro.options.virtual[`#${buildPath}`] = /* js */ `
-    import { POST } from "${join(nitro.options.buildDir, buildPath)}";
+    import ${handlerImportPath};
+    import { POST } from ${handlerImportPath};
     export default async ({ req }) => {
       try {
         return await POST(req);
