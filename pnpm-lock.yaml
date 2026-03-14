@@ -322,6 +322,9 @@ importers:
       '@ai-sdk/provider':
         specifier: ^3.0.0
         version: 3.0.8
+      '@opentelemetry/api':
+        specifier: ^1.0.0
+        version: 1.9.0
       '@workflow/serde':
         specifier: workspace:^
         version: link:../serde
