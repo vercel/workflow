@@ -92,6 +92,22 @@ export interface TelemetrySettings {
   isEnabled?: boolean;
 
   /**
+   * Enable or disable input recording. Enabled by default.
+   *
+   * You might want to disable input recording to avoid recording sensitive
+   * information, to reduce data transfers, or to increase performance.
+   */
+  recordInputs?: boolean;
+
+  /**
+   * Enable or disable output recording. Enabled by default.
+   *
+   * You might want to disable output recording to avoid recording sensitive
+   * information, to reduce data transfers, or to increase performance.
+   */
+  recordOutputs?: boolean;
+
+  /**
    * Identifier for this function. Used to group telemetry data by function.
    */
   functionId?: string;
@@ -1583,6 +1599,11 @@ async function executeTool(
     attributes: {
       'ai.toolCall.name': toolCall.toolName,
       'ai.toolCall.id': toolCall.toolCallId,
+      // Gate input recording on recordOutputs (AI SDK convention — tool args
+      // are considered "output" of the model, not user input)
+      ...(telemetry?.recordOutputs !== false && {
+        'ai.toolCall.args': toolCall.input,
+      }),
     },
     fn: async () => {
       try {

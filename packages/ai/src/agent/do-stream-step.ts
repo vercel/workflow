@@ -21,7 +21,7 @@ import type {
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
-import { initTelemetry, recordSpan } from './telemetry.js';
+import { recordSpan } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
 
 export type FinishPart = Extract<LanguageModelV3StreamPart, { type: 'finish' }>;
@@ -164,15 +164,36 @@ export async function doStreamStep(
     }),
   };
 
-  // Initialize telemetry (loads @opentelemetry/api if available)
-  await initTelemetry(options?.experimental_telemetry);
-
   const result = await recordSpan({
     name: 'ai.streamText.doStream',
     telemetry: options?.experimental_telemetry,
     attributes: {
       'ai.model.provider': model.provider,
       'ai.model.id': model.modelId,
+      // gen_ai semantic convention attributes
+      'gen_ai.system': model.provider,
+      'gen_ai.request.model': model.modelId,
+      ...(options?.maxOutputTokens !== undefined && {
+        'gen_ai.request.max_tokens': options.maxOutputTokens,
+      }),
+      ...(options?.temperature !== undefined && {
+        'gen_ai.request.temperature': options.temperature,
+      }),
+      ...(options?.topP !== undefined && {
+        'gen_ai.request.top_p': options.topP,
+      }),
+      ...(options?.topK !== undefined && {
+        'gen_ai.request.top_k': options.topK,
+      }),
+      ...(options?.frequencyPenalty !== undefined && {
+        'gen_ai.request.frequency_penalty': options.frequencyPenalty,
+      }),
+      ...(options?.presencePenalty !== undefined && {
+        'gen_ai.request.presence_penalty': options.presencePenalty,
+      }),
+      ...(options?.stopSequences !== undefined && {
+        'gen_ai.request.stop_sequences': options.stopSequences,
+      }),
     },
     fn: () => model!.doStream(callOptions),
   });
