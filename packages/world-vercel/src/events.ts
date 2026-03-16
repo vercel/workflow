@@ -12,6 +12,7 @@ import {
   type ListEventsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  stripEventDataRefs,
   validateUlidTimestamp,
   type WorkflowRun,
   WorkflowRunSchema,
@@ -37,19 +38,16 @@ import {
   makeRequest,
 } from './utils.js';
 
-// Helper to filter event data based on resolveData setting.
-// Strips both eventData and eventDataRef since the server always returns
-// lazy refs now, and callers with resolveData='none' should not see either.
-function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
-  if (resolveData === 'none') {
-    const {
-      eventData: _eventData,
-      eventDataRef: _eventDataRef,
-      ...rest
-    } = event;
-    return rest;
-  }
-  return event;
+// Wraps stripEventDataRefs to also strip the legacy eventDataRef field,
+// since the server always returns lazy refs and callers with
+// resolveData='none' should not see them.
+function stripEventAndLegacyRefs(
+  event: any,
+  resolveData: 'none' | 'all'
+): Event {
+  if (resolveData !== 'none') return event;
+  const { eventDataRef: _eventDataRef, ...withoutLegacyRef } = event;
+  return stripEventDataRefs(withoutLegacyRef, resolveData);
 }
 
 // Schema for EventResult wire format returned by events.create.
@@ -271,7 +269,7 @@ export async function getEvent(
     schema: (resolveData === 'none' ? EventWithRefsSchema : EventSchema) as any,
   });
 
-  return filterEventData(event as any, resolveData);
+  return stripEventAndLegacyRefs(event as any, resolveData);
 }
 
 export async function getWorkflowRunEvents(
@@ -361,7 +359,7 @@ export async function getWorkflowRunEvents(
   return {
     ...response,
     data: response.data.map((event: any) =>
-      filterEventData(event, resolveData)
+      stripEventAndLegacyRefs(event, resolveData)
     ),
   };
 }
@@ -422,7 +420,7 @@ export async function createWorkflowRunEvent(
     });
 
     return {
-      event: filterEventData(wireResult.event, resolveData),
+      event: stripEventAndLegacyRefs(wireResult.event, resolveData),
       run: wireResult.run,
       step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
       hook: wireResult.hook,
@@ -442,7 +440,7 @@ export async function createWorkflowRunEvent(
   // undefined (lazy ref mode), so deserializeError normalizes it into the
   // StructuredError shape expected by WorkflowRun consumers.
   return {
-    event: filterEventData(wireResult.event, resolveData),
+    event: stripEventAndLegacyRefs(wireResult.event, resolveData),
     run: wireResult.run
       ? deserializeError<WorkflowRun>(wireResult.run)
       : undefined,

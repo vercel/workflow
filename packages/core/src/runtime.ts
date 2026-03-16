@@ -368,7 +368,7 @@ export function workflowEntrypoint(
                       WorkflowAPIError.is(failErr) &&
                       (failErr.status === 409 || failErr.status === 410)
                     ) {
-                      runtimeLogger.warn(
+                      runtimeLogger.info(
                         'Tried failing workflow run, but run has already finished.',
                         {
                           workflowRunId: runId,
@@ -411,7 +411,7 @@ export function workflowEntrypoint(
                     WorkflowAPIError.is(err) &&
                     (err.status === 409 || err.status === 410)
                   ) {
-                    runtimeLogger.warn(
+                    runtimeLogger.info(
                       'Tried completing workflow run, but run has already finished.',
                       {
                         workflowRunId: runId,
