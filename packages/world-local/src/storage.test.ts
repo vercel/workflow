@@ -2,8 +2,11 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { WorkflowAPIError } from '@workflow/errors';
-import type { Storage } from '@workflow/world';
-import { DEFAULT_TIMESTAMP_THRESHOLD_MS } from '@workflow/world';
+import type { Event, Storage } from '@workflow/world';
+import {
+  DEFAULT_TIMESTAMP_THRESHOLD_MS,
+  stripEventDataRefs,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
@@ -16,6 +19,120 @@ import {
   updateRun,
   updateStep,
 } from './test-helpers.js';
+
+describe('stripEventDataRefs', () => {
+  const baseEvent = {
+    runId: 'wrun_test',
+    eventId: 'evnt_test',
+    createdAt: new Date(),
+    specVersion: 2,
+  };
+
+  it('should strip input ref from step_created, keep stepName', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_created' as const,
+      correlationId: 'step_1',
+      eventData: { stepName: 'my-step', input: new Uint8Array([1, 2, 3]) },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ stepName: 'my-step' });
+    expect(result.eventData).not.toHaveProperty('input');
+  });
+
+  it('should strip input ref from run_created, keep workflowName and deploymentId', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'run_created' as const,
+      eventData: {
+        deploymentId: 'dpl_123',
+        workflowName: 'my-workflow',
+        input: new Uint8Array([1, 2, 3]),
+      },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({
+      deploymentId: 'dpl_123',
+      workflowName: 'my-workflow',
+    });
+    expect(result.eventData).not.toHaveProperty('input');
+  });
+
+  it('should strip result ref from step_completed entirely', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_completed' as const,
+      correlationId: 'step_1',
+      eventData: { result: new Uint8Array([4, 5]) },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toBeUndefined();
+  });
+
+  it('should strip error from run_failed, keep errorCode', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'run_failed' as const,
+      eventData: { error: 'something broke', errorCode: 'TIMEOUT' },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ errorCode: 'TIMEOUT' });
+    expect(result.eventData).not.toHaveProperty('error');
+  });
+
+  it('should strip error from step_failed, keep stack', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_failed' as const,
+      correlationId: 'step_1',
+      eventData: { error: 'failed', stack: 'Error: failed\n  at ...' },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ stack: 'Error: failed\n  at ...' });
+    expect(result.eventData).not.toHaveProperty('error');
+  });
+
+  it('should not strip anything when resolveData is "all"', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_created' as const,
+      correlationId: 'step_1',
+      eventData: { stepName: 'my-step', input: new Uint8Array([1, 2, 3]) },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'all') as any;
+    expect(result.eventData.stepName).toBe('my-step');
+    expect(result.eventData.input).toBeDefined();
+  });
+
+  it('should pass through events with no ref fields (e.g. run_started)', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'run_started' as const,
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none');
+    expect(result).toEqual(event);
+  });
+
+  it('should strip metadata from hook_created, keep token', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'hook_created' as const,
+      correlationId: 'hook_1',
+      eventData: { token: 'tok_abc', metadata: { some: 'data' } },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ token: 'tok_abc' });
+    expect(result.eventData).not.toHaveProperty('metadata');
+  });
+});
 
 describe('Storage', () => {
   let testDir: string;
@@ -1024,7 +1141,12 @@ describe('Storage', () => {
 
         // step_created + step_completed = 2 events
         expect(result.data).toHaveLength(2);
-        expect((result.data[0] as any).eventData).toBeUndefined();
+        // step_created: ref field 'input' stripped, metadata like stepName preserved
+        expect((result.data[0] as any).eventData).toEqual({
+          stepName: 'test-step',
+        });
+        expect((result.data[0] as any).eventData).not.toHaveProperty('input');
+        // step_completed: only ref field 'result' exists, so eventData is removed entirely
         expect((result.data[1] as any).eventData).toBeUndefined();
         expect(result.data[0].correlationId).toBe(correlationId);
       });

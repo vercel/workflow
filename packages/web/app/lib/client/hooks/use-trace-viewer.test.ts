@@ -144,7 +144,7 @@ describe('useWorkflowTraceViewerData', () => {
       'run-1',
       expect.objectContaining({
         sortOrder: 'asc',
-        withData: true,
+        withData: false,
       })
     );
   });
