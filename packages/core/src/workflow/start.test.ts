@@ -133,7 +133,9 @@ describe('createStart', () => {
     const queueItem = Array.from(ctx.invocationsQueue.values())[0];
     expect(queueItem.type).toBe('step');
     if (queueItem.type === 'step') {
-      expect(queueItem.stepName).toBe('step//@workflow/core//start');
+      expect(queueItem.stepName).toMatch(
+        /^step\/\/workflow\/internal\/builtins@[\d.]+-?[\w.]*\/\/start$/
+      );
     }
   });
 

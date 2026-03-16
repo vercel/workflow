@@ -1,6 +1,7 @@
 import type { WorkflowOrchestratorContext } from '../private.js';
 import type { Serializable } from '../schemas.js';
 import { createUseStep } from '../step.js';
+import { builtinStepId } from './builtin-step-id.js';
 
 const ALLOWED_START_OPTIONS = new Set(['deploymentId', 'specVersion']);
 
@@ -12,7 +13,7 @@ export function createStart(ctx: WorkflowOrchestratorContext) {
     // The result type after deserialization in the VM is a WorkflowRun,
     // but from the step's perspective it returns a Run (which serializes to { runId }).
     unknown
-  >('step//@workflow/core//start');
+  >(builtinStepId('start'));
 
   return async function startImpl(
     workflow: { workflowId?: string } | ((...args: any[]) => any),
