@@ -19,19 +19,21 @@
 // Response body steps — used by Request/Response in the workflow VM
 // ---------------------------------------------------------------------------
 
-export async function __builtin_response_array_buffer(res: Response) {
+export async function __builtin_response_array_buffer(
+  this: Request | Response
+) {
   'use step';
-  return res.arrayBuffer();
+  return this.arrayBuffer();
 }
 
-export async function __builtin_response_json(res: Response) {
+export async function __builtin_response_json(this: Request | Response) {
   'use step';
-  return res.json();
+  return this.json();
 }
 
-export async function __builtin_response_text(res: Response) {
+export async function __builtin_response_text(this: Request | Response) {
   'use step';
-  return res.text();
+  return this.text();
 }
 
 // ---------------------------------------------------------------------------
@@ -54,55 +56,59 @@ export async function start(
 start.maxRetries = 0;
 
 // ---------------------------------------------------------------------------
-// Run method steps — used by WorkflowRun in the workflow VM to delegate
-// property accesses and method calls to the real Run class in step context.
+// Run method steps — static methods on a Run class so the SWC plugin
+// generates step IDs with the "Run.method" naming convention.
+// These are used by WorkflowRun in the workflow VM to delegate property
+// accesses and method calls to the real Run class in step context.
 // ---------------------------------------------------------------------------
 
-export async function Run_cancel(runId: string) {
-  'use step';
-  const { getRun } = await import('@workflow/core/runtime');
-  await getRun(runId).cancel();
-}
-Run_cancel.maxRetries = 0;
+export class Run {
+  static async cancel(runId: string) {
+    'use step';
+    const { getRun } = await import('@workflow/core/runtime');
+    await getRun(runId).cancel();
+  }
 
-export async function Run_status(runId: string) {
-  'use step';
-  const { getRun } = await import('@workflow/core/runtime');
-  return await getRun(runId).status;
-}
+  static async status(runId: string) {
+    'use step';
+    const { getRun } = await import('@workflow/core/runtime');
+    return await getRun(runId).status;
+  }
 
-export async function Run_returnValue(runId: string) {
-  'use step';
-  const { getRun } = await import('@workflow/core/runtime');
-  return await getRun(runId).returnValue;
-}
+  static async returnValue(runId: string) {
+    'use step';
+    const { getRun } = await import('@workflow/core/runtime');
+    return await getRun(runId).returnValue;
+  }
 
-export async function Run_workflowName(runId: string) {
-  'use step';
-  const { getRun } = await import('@workflow/core/runtime');
-  return await getRun(runId).workflowName;
-}
+  static async workflowName(runId: string) {
+    'use step';
+    const { getRun } = await import('@workflow/core/runtime');
+    return await getRun(runId).workflowName;
+  }
 
-export async function Run_createdAt(runId: string) {
-  'use step';
-  const { getRun } = await import('@workflow/core/runtime');
-  return await getRun(runId).createdAt;
-}
+  static async createdAt(runId: string) {
+    'use step';
+    const { getRun } = await import('@workflow/core/runtime');
+    return await getRun(runId).createdAt;
+  }
 
-export async function Run_startedAt(runId: string) {
-  'use step';
-  const { getRun } = await import('@workflow/core/runtime');
-  return await getRun(runId).startedAt;
-}
+  static async startedAt(runId: string) {
+    'use step';
+    const { getRun } = await import('@workflow/core/runtime');
+    return await getRun(runId).startedAt;
+  }
 
-export async function Run_completedAt(runId: string) {
-  'use step';
-  const { getRun } = await import('@workflow/core/runtime');
-  return await getRun(runId).completedAt;
-}
+  static async completedAt(runId: string) {
+    'use step';
+    const { getRun } = await import('@workflow/core/runtime');
+    return await getRun(runId).completedAt;
+  }
 
-export async function Run_exists(runId: string) {
-  'use step';
-  const { getRun } = await import('@workflow/core/runtime');
-  return await getRun(runId).exists;
+  static async exists(runId: string) {
+    'use step';
+    const { getRun } = await import('@workflow/core/runtime');
+    return await getRun(runId).exists;
+  }
 }
+(Run.cancel as any).maxRetries = 0;
