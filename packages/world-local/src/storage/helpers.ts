@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { monotonicFactory } from 'ulid';
-import { ulidToDate } from '../fs.js';
+import { stripTag, ulidToDate } from '../fs.js';
 
 /**
  * Hash a hook token to produce a filesystem-safe constraint filename.
@@ -25,12 +25,16 @@ export const monotonicUlid = monotonicFactory(() => Math.random());
 export const getObjectCreatedAt =
   (idPrefix: string) =>
   (filename: string): Date | null => {
+    // Strip tag suffix before ULID extraction
+    // e.g., "wrun_ABC.vitest-0.json" → "wrun_ABC.json"
+    const cleanName = stripTag(filename.replace(/\.json$/, '')) + '.json';
+
     const replaceRegex = new RegExp(`^${idPrefix}_`, 'g');
-    const dashIndex = filename.indexOf('-');
+    const dashIndex = cleanName.indexOf('-');
 
     if (dashIndex === -1) {
       // No dash - extract ULID from the filename (e.g., wrun_ULID.json, evnt_ULID.json)
-      const ulid = filename.replace(/\.json$/, '').replace(replaceRegex, '');
+      const ulid = cleanName.replace(/\.json$/, '').replace(replaceRegex, '');
       return ulidToDate(ulid);
     }
 
@@ -42,7 +46,7 @@ export const getObjectCreatedAt =
     }
 
     // For events: wrun_ULID-evnt_ULID.json - extract from the eventId part
-    const id = filename.substring(dashIndex + 1).replace(/\.json$/, '');
+    const id = cleanName.substring(dashIndex + 1).replace(/\.json$/, '');
     const ulid = id.replace(replaceRegex, '');
     return ulidToDate(ulid);
   };

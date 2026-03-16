@@ -3,7 +3,7 @@ import type { Event, EventResult, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import { writeJSON } from '../fs.js';
-import { filterEventData, filterRunData } from './filters.js';
+import { filterRunData, stripEventDataRefs } from './filters.js';
 import { monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 
@@ -72,7 +72,7 @@ export async function handleLegacyEvent(
       const compositeKey = `${runId}-${eventId}`;
       const eventPath = path.join(basedir, 'events', `${compositeKey}.json`);
       await writeJSON(eventPath, event);
-      return { event: filterEventData(event, resolveData) };
+      return { event: stripEventDataRefs(event, resolveData) };
     }
 
     default:

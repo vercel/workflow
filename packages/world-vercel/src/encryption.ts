@@ -99,10 +99,14 @@ export async function fetchRunKey(
     teamId?: string;
   }
 ): Promise<Uint8Array | undefined> {
-  // Authenticate via provided token (CLI/config), OIDC token (runtime),
-  // or VERCEL_TOKEN env var (external tooling)
-  const oidcToken = await getVercelOidcToken().catch(() => null);
-  const token = options?.token ?? oidcToken ?? process.env.VERCEL_TOKEN;
+  // Authenticate via provided token (CLI/config), VERCEL_TOKEN env var
+  // (external tooling), or OIDC token (runtime) — in that order.
+  // OIDC is last to avoid an unnecessary network call when a token is
+  // already available (e.g. CLI or CI contexts).
+  const token =
+    options?.token ??
+    process.env.VERCEL_TOKEN ??
+    (await getVercelOidcToken().catch(() => null));
   if (!token) {
     throw new Error(
       'Cannot fetch run key: no OIDC token or VERCEL_TOKEN available'

@@ -34,7 +34,7 @@ async function myAgent() {
 
   const agent = new DurableAgent({
     model: "anthropic/claude-haiku-4.5",
-    system: "You are a helpful weather assistant.",
+    instructions: "You are a helpful weather assistant.",
     temperature: 0.7,
     tools: {
       getWeather: {
@@ -249,7 +249,7 @@ async function weatherAgentWorkflow(userQuery: string) {
         execute: getWeather,
       },
     },
-    system: "You are a helpful weather assistant. Always provide accurate weather information.",
+    instructions: "You are a helpful weather assistant. Always provide accurate weather information.",
   });
 
   await agent.stream({
@@ -446,7 +446,7 @@ async function agentWithPrepareStep(userMessage: string) {
 
   const agent = new DurableAgent({
     model: "openai/gpt-4.1-mini", // Default model
-    system: "You are a helpful assistant.",
+    instructions: "You are a helpful assistant.",
   });
 
   await agent.stream({
@@ -500,7 +500,7 @@ async function agentWithMessageQueue(initialMessage: string) {
 
   const agent = new DurableAgent({
     model: "anthropic/claude-haiku-4.5",
-    system: "You are a helpful assistant.",
+    instructions: "You are a helpful assistant.",
   });
 
   await agent.stream({
@@ -812,7 +812,7 @@ async function agentWithUIMessages(userMessage: string) {
 
   const agent = new DurableAgent({
     model: "anthropic/claude-haiku-4.5",
-    system: "You are a helpful assistant.",
+    instructions: "You are a helpful assistant.",
   });
 
   const result = await agent.stream({

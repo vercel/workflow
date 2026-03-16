@@ -6,10 +6,11 @@ import type { ModelMessage } from 'ai';
 import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { useToast } from '../../lib/toast';
 import { isEncryptedMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
+import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { ErrorCard } from '../ui/error-card';
 import {
   ErrorStackBlock,
@@ -336,6 +337,16 @@ const localMillisecondTimeOrNull = (value: unknown): string | null => {
   return formatLocalMillisecondTime(date);
 };
 
+const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
+  const date = parseDateValue(value);
+  if (!date) return null;
+  return (
+    <TimestampTooltip date={date}>
+      <span>{formatLocalMillisecondTime(date)}</span>
+    </TimestampTooltip>
+  );
+};
+
 interface DisplayContext {
   stepName?: string;
 }
@@ -375,15 +386,14 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
-  // Dates
-  // TODO: relative time with tooltips for ISO times
-  createdAt: localMillisecondTimeOrNull,
-  startedAt: localMillisecondTimeOrNull,
-  updatedAt: localMillisecondTimeOrNull,
-  completedAt: localMillisecondTimeOrNull,
-  expiredAt: localMillisecondTimeOrNull,
-  retryAfter: localMillisecondTimeOrNull,
-  resumeAt: localMillisecondTimeOrNull,
+  // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  createdAt: timestampWithTooltipOrNull,
+  startedAt: timestampWithTooltipOrNull,
+  updatedAt: timestampWithTooltipOrNull,
+  completedAt: timestampWithTooltipOrNull,
+  expiredAt: timestampWithTooltipOrNull,
+  retryAfter: timestampWithTooltipOrNull,
+  resumeAt: timestampWithTooltipOrNull,
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
@@ -683,6 +693,7 @@ export const AttributePanel = ({
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
 }) => {
+  const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
     const result = { ...data };

@@ -15,6 +15,7 @@
   "devDependencies": {
     "@workflow/world-postgres": "workspace:*",
     "workflow": "workspace:*",
+    "@workflow/ai": "workspace:*",
     "ai": "catalog:",
     "hono": "^4.9.10",
     "lodash.chunk": "^4.2.0",

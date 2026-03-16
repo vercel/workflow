@@ -31,6 +31,21 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   ],
   hookCleanupTestWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
   closureVariableWorkflow: [7],
+  // 100_durable_agent_e2e.ts
+  agentBasicE2e: ['hello world'],
+  agentToolCallE2e: [3, 7],
+  agentMultiStepE2e: [],
+  agentErrorToolE2e: [],
+  agentOnStepFinishE2e: [],
+  agentOnFinishE2e: [],
+  agentInstructionsStringE2e: [],
+  agentTimeoutE2e: [],
+  agentOnStartE2e: [],
+  agentOnStepStartE2e: [],
+  agentOnToolCallStartE2e: [],
+  agentOnToolCallFinishE2e: [],
+  agentPrepareCallE2e: [],
+  agentToolApprovalE2e: [],
 };
 
 // Dynamically generate workflow definitions from allWorkflows

@@ -127,11 +127,11 @@ export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
   const agent = new Agent({ // [!code highlight]
     model: gateway("bedrock/claude-4-5-haiku-20251001-v1"),
-    system: FLIGHT_ASSISTANT_PROMPT,
+    instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
-  const modelMessages = convertToModelMessages(messages);
-  const stream = agent.stream({ messages: modelMessages }); // [!code highlight]
+  const modelMessages = await convertToModelMessages(messages);
+  const stream = await agent.stream({ messages: modelMessages }); // [!code highlight]
   return createUIMessageStreamResponse({
     stream: stream.toUIMessageStream(),
   });
@@ -273,7 +273,7 @@ export async function chatWorkflow(messages: ModelMessage[]) {
     // ELSE if using a custom provider, pass the provider call as an argument:
     model: openai("gpt-5.1"), // [!code highlight]
 
-    system: FLIGHT_ASSISTANT_PROMPT,
+    instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
 
@@ -304,7 +304,7 @@ import { chatWorkflow } from "@/workflows/chat/workflow";
 
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
-  const modelMessages = convertToModelMessages(messages);
+  const modelMessages = await convertToModelMessages(messages);
 
   const run = await start(chatWorkflow, [modelMessages]); // [!code highlight]
 

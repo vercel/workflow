@@ -23,10 +23,14 @@ const DATA_EVENT_TYPES = new Set([
   'step_created',
   'step_completed',
   'step_failed',
+  'step_retrying',
   'hook_created',
   'hook_received',
   'run_created',
   'run_completed',
+  'run_failed',
+  'wait_created',
+  'wait_completed',
 ]);
 
 /**
