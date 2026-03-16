@@ -1574,12 +1574,30 @@ impl StepTransform {
         is_workflow: bool,
     ) -> String {
         match fn_name {
-            Some(name) if name.starts_with("__builtin") => {
-                // Special case for __builtin functions: use only the function name.
-                // These are internal SDK functions that are referenced by name in the
-                // workflow VM runtime (packages/core/src/workflow.ts), so they need
-                // stable, version-independent IDs.
-                name.to_string()
+            Some(name) if name.starts_with("__builtin_") => {
+                // Special case for __builtin_ functions: use a stable module specifier
+                // ("@workflow/core") and strip the "__builtin_" prefix from the function
+                // name so the step ID renders nicely in observability.
+                //
+                // Convention: underscores after a leading UpperCase word become "#"
+                // to match the instance method naming convention used by the SWC plugin:
+                //   __builtin_Run_cancel     → step//@workflow/core//Run#cancel
+                //   __builtin_Run_returnValue → step//@workflow/core//Run#returnValue
+                //   __builtin_start          → step//@workflow/core//start
+                //   __builtin_response_json  → step//@workflow/core//response_json
+                let prefix = if is_workflow { "workflow" } else { "step" };
+                let stripped = &name["__builtin_".len()..];
+                // Check if name starts with uppercase (ClassName_method pattern)
+                let display_name = if stripped.starts_with(|c: char| c.is_uppercase()) {
+                    if let Some(pos) = stripped.find('_') {
+                        format!("{}#{}", &stripped[..pos], &stripped[pos + 1..])
+                    } else {
+                        stripped.to_string()
+                    }
+                } else {
+                    stripped.to_string()
+                };
+                naming::format_name(prefix, "@workflow/core", &display_name)
             }
             Some(name) => {
                 let prefix = if is_workflow { "workflow" } else { "step" };

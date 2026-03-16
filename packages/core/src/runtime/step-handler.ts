@@ -14,14 +14,12 @@ import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
 import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
-import { getStepFunction, registerStepFunction } from '../private.js';
+import { getStepFunction } from '../private.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
 } from '../serialization.js';
 import { Run } from './run.js';
-import type { StartOptions } from './start.js';
-import { start } from './start.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import {
@@ -66,26 +64,6 @@ Object.defineProperty(Run, 'classId', {
   enumerable: false,
   configurable: false,
 });
-
-// Register the built-in __workflow_start step that enables start() inside workflow functions.
-// This step receives the workflowId, args, and options, calls the real start(), and returns the Run object.
-// The Run object is serialized via the custom Run reducer (keyed off __serializable === 'Run')
-// to { runId }, and deserialized as a WorkflowRun in the workflow VM via the Run reviver.
-// maxRetries = 0 because start() generates a new runId on each attempt — retrying would
-// spawn duplicate child workflows instead of retrying the same one.
-const __workflowStartStep = async (
-  workflowId: string,
-  args: unknown[],
-  options?: StartOptions
-): Promise<Run<unknown>> => {
-  return await start(
-    { workflowId } as { workflowId: string },
-    args as any,
-    options
-  );
-};
-__workflowStartStep.maxRetries = 0;
-registerStepFunction('__workflow_start', __workflowStartStep);
 
 const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',

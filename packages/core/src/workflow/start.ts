@@ -12,7 +12,7 @@ export function createStart(ctx: WorkflowOrchestratorContext) {
     // The result type after deserialization in the VM is a WorkflowRun,
     // but from the step's perspective it returns a Run (which serializes to { runId }).
     unknown
-  >('__workflow_start');
+  >('step//@workflow/core//start');
 
   return async function startImpl(
     workflow: { workflowId?: string } | ((...args: any[]) => any),

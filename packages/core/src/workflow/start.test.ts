@@ -65,7 +65,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
 
 describe('createStart', () => {
   it('should resolve with run object when step_completed event is received', async () => {
-    // Simulate what the real __workflow_start step produces: a Run object
+    // Simulate what the real step//@workflow/core//start step produces: a Run object
     // that gets serialized via the Run reducer to { runId }
     const serializedResult = await dehydrateStepReturnValue(
       new MockRun('wrun_child_456'),
@@ -133,7 +133,7 @@ describe('createStart', () => {
     const queueItem = Array.from(ctx.invocationsQueue.values())[0];
     expect(queueItem.type).toBe('step');
     if (queueItem.type === 'step') {
-      expect(queueItem.stepName).toBe('__workflow_start');
+      expect(queueItem.stepName).toBe('step//@workflow/core//start');
     }
   });
 

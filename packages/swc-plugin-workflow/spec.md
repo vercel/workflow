@@ -71,8 +71,12 @@ import specifier rather than the file path. This is useful for:
 - `class//point@0.0.1//Point`
 - `step//@myorg/tasks@2.0.0//processOrder`
 
+**Built-in SDK functions (`__builtin_` prefix):**
+- `step//@workflow/core//response_json` (from `__builtin_response_json`)
+- `step//@workflow/core//start` (from `__builtin_start`)
+- `step//@workflow/core//Run#returnValue` (from `__builtin_Run_returnValue`)
+
 **With module specifier (npm package subpath export):**
-- `step//workflow/internal/builtins@4.0.0//__builtin_response_json`
 - `class//@myorg/shared/models@1.0.0//User`
 
 **Without module specifier (local files):**

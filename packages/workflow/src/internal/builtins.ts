@@ -4,84 +4,106 @@
  * alongside user defined steps. They are used internally by the runtime.
  *
  * Function names starting with "__builtin" get special treatment from the SWC plugin:
- * they use the bare function name as their step ID (no module path prefix), giving them
- * stable, version-independent IDs that the workflow VM runtime can reference.
+ * they use "@workflow/core" as the module specifier (instead of the file path), giving
+ * them stable, version-independent IDs that render nicely in observability.
  *
  * IMPORTANT: Top-level imports must not pull in Node.js modules. The SWC plugin strips
  * "use step" function bodies in workflow mode, but top-level imports are still resolved.
  * Node.js-dependent imports (like getRun) must be inside step function bodies only.
  */
 
-export async function __builtin_response_array_buffer(
-  this: Request | Response
-) {
+// ---------------------------------------------------------------------------
+// Response body steps — used by Request/Response in the workflow VM
+// ---------------------------------------------------------------------------
+
+export async function __builtin_response_array_buffer(res: Response) {
   'use step';
-  return this.arrayBuffer();
+  return res.arrayBuffer();
 }
 
-export async function __builtin_response_json(this: Request | Response) {
+export async function __builtin_response_json(res: Response) {
   'use step';
-  return this.json();
+  return res.json();
 }
 
-export async function __builtin_response_text(this: Request | Response) {
+export async function __builtin_response_text(res: Response) {
   'use step';
-  return this.text();
+  return res.text();
 }
 
 // ---------------------------------------------------------------------------
 // Run method steps — used by WorkflowRun in the workflow VM to delegate
 // property accesses and method calls to the real Run class in step context.
 //
+// Named with "Run#method" convention so parseStepName shows them as
+// instance method calls (e.g., "Run#returnValue") in observability.
+//
 // Each function imports getRun inline because this file is also processed in
 // workflow mode where Node.js modules are unavailable. The SWC plugin strips
 // "use step" function bodies in workflow mode, so the imports never execute.
 // ---------------------------------------------------------------------------
 
-export async function __builtin_run_cancel(runId: string) {
+/* eslint-disable @typescript-eslint/naming-convention */
+
+export async function __builtin_start(
+  workflowId: string,
+  args: unknown[],
+  options?: Record<string, unknown>
+) {
+  'use step';
+  const { start } = await import('@workflow/core/runtime');
+  return await start(
+    { workflowId } as { workflowId: string },
+    args as any,
+    options as any
+  );
+}
+__builtin_start.maxRetries = 0;
+
+export async function __builtin_Run_cancel(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   await getRun(runId).cancel();
 }
-__builtin_run_cancel.maxRetries = 0;
+__builtin_Run_cancel.maxRetries = 0;
 
-export async function __builtin_run_status(runId: string) {
+export async function __builtin_Run_status(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).status;
 }
 
-export async function __builtin_run_return_value(runId: string) {
+export async function __builtin_Run_returnValue(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).returnValue;
 }
 
-export async function __builtin_run_workflow_name(runId: string) {
+export async function __builtin_Run_workflowName(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).workflowName;
 }
 
-export async function __builtin_run_created_at(runId: string) {
+export async function __builtin_Run_createdAt(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).createdAt;
 }
 
-export async function __builtin_run_started_at(runId: string) {
+export async function __builtin_Run_startedAt(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).startedAt;
 }
 
-export async function __builtin_run_completed_at(runId: string) {
+export async function __builtin_Run_completedAt(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).completedAt;
 }
 
-export async function __builtin_run_exists(runId: string) {
+export async function __builtin_Run_exists(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).exists;
