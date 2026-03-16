@@ -31,6 +31,7 @@ function makeV1Run(overrides: Partial<WorkflowRun> = {}): WorkflowRun {
   } as WorkflowRun;
 }
 
+/** V2-style step events (includes step_created) */
 function makeStepEvents(
   correlationId: string,
   stepName: string,
@@ -53,6 +54,33 @@ function makeStepEvents(
       eventType: 'step_started',
       correlationId,
       createdAt: new Date(BASE_TIME.getTime() + startOffset + 100),
+      specVersion: 1,
+    },
+    {
+      eventId: `evnt_${correlationId}_completed`,
+      runId: 'wrun_v1test',
+      eventType: 'step_completed',
+      correlationId,
+      createdAt: new Date(BASE_TIME.getTime() + endOffset),
+      specVersion: 1,
+      eventData: { result: 42 },
+    },
+  ] as Event[];
+}
+
+/** V1-style step events (no step_created — only step_started + step_completed) */
+function makeV1StepEvents(
+  correlationId: string,
+  startOffset: number,
+  endOffset: number
+): Event[] {
+  return [
+    {
+      eventId: `evnt_${correlationId}_started`,
+      runId: 'wrun_v1test',
+      eventType: 'step_started',
+      correlationId,
+      createdAt: new Date(BASE_TIME.getTime() + startOffset),
       specVersion: 1,
     },
     {
@@ -119,6 +147,50 @@ describe('Trace viewer with v1 events (no run lifecycle events)', () => {
       expect(trace.spans).toHaveLength(1);
       expect(trace.spans[0].spanId).toBe('wrun_v1test');
       expect(trace.spans[0].attributes.resource).toBe('run');
+    });
+
+    it('builds step spans from v1 events (no step_created)', () => {
+      const run = makeV1Run({ status: 'completed' });
+      const events = [
+        ...makeV1StepEvents('step_1', 1000, 3000),
+        ...makeV1StepEvents('step_2', 4000, 6000),
+      ];
+      const trace = buildTrace(run, events, new Date());
+
+      // Run span + 2 step spans
+      expect(trace.spans).toHaveLength(3);
+
+      const stepSpans = trace.spans.filter(
+        (s) => s.attributes.resource === 'step'
+      );
+      expect(stepSpans).toHaveLength(2);
+      expect(stepSpans[0].spanId).toBe('step_1');
+      expect(stepSpans[1].spanId).toBe('step_2');
+    });
+
+    it('derives step status from v1 events without step_created', () => {
+      const run = makeV1Run({ status: 'completed' });
+      const events = makeV1StepEvents('step_1', 1000, 3000);
+      const trace = buildTrace(run, events, new Date());
+
+      const stepSpan = trace.spans.find((s) => s.spanId === 'step_1');
+      expect(stepSpan).toBeDefined();
+      expect(stepSpan!.attributes.data).toMatchObject({
+        status: 'completed',
+        stepName: '',
+      });
+    });
+
+    it('uses correlationId for step span when stepName is unavailable', () => {
+      const run = makeV1Run({ status: 'completed' });
+      const events = makeV1StepEvents('step_1', 1000, 3000);
+      const trace = buildTrace(run, events, new Date());
+
+      const stepSpan = trace.spans.find((s) => s.spanId === 'step_1');
+      expect(stepSpan).toBeDefined();
+      // Without step_created, stepName is empty; the span name comes from
+      // parseStepName which returns the correlationId as fallback
+      expect(stepSpan!.spanId).toBe('step_1');
     });
   });
 
