@@ -661,7 +661,52 @@ export async function getNextBuilderDeferred() {
       }
 
       await this.loadWorkflowsCache();
+
+      // The cache only contains files discovered in previous builds. On the
+      // first build after adding new workflow files, those files won't be in
+      // the cache. In production builds (`watch: false`), the loader's socket
+      // notifications arrive too late — `scheduleDeferredRebuild()` is a no-op
+      // so newly discovered files never trigger a rebuild.
+      //
+      // To fix this, eagerly scan the dirs for files with workflow/step
+      // directives and seed the discovered sets before the build runs.
+      await this.seedDiscoveredFilesFromDirs();
+
       this.cacheInitialized = true;
+    }
+
+    /**
+     * Scans the configured dirs for files containing `'use workflow'` or
+     * `'use step'` directives and adds them to the discovered sets. This
+     * ensures new workflow files are included in the very first production
+     * build, without waiting for the loader's async socket notifications.
+     */
+    private async seedDiscoveredFilesFromDirs(): Promise<void> {
+      // Use the base builder's file scanning (which searches all TS/JS files
+      // in dirs, not just entrypoints). Call the base class version directly
+      // to bypass the deferred builder's entrypoint-only filter.
+      const allInputFiles = await this.getAllDirFiles();
+
+      await Promise.all(
+        allInputFiles.map(async (filePath) => {
+          try {
+            const source = await readFile(filePath, 'utf-8');
+            const patterns = detectWorkflowPatterns(source);
+
+            if (patterns.hasUseWorkflow) {
+              this.discoveredWorkflowFiles.add(filePath);
+            }
+            if (patterns.hasUseStep) {
+              this.discoveredStepFiles.add(filePath);
+            }
+            if (patterns.hasSerde && !isWorkflowSdkFile(filePath)) {
+              this.discoveredSerdeFiles.add(filePath);
+            }
+          } catch {
+            // File may have been deleted between glob and read — skip it.
+          }
+        })
+      );
     }
 
     private getDistDir(): string {
@@ -998,6 +1043,15 @@ export async function getNextBuilderDeferred() {
         join(workflowGeneratedDir, 'webhook/[token]/route.js'),
         routeStubContent
       );
+    }
+
+    /**
+     * Returns ALL files from the configured dirs without filtering to
+     * entrypoints. Used by `seedDiscoveredFilesFromDirs` to scan for
+     * workflow/step directives on first build.
+     */
+    private async getAllDirFiles(): Promise<string[]> {
+      return super.getInputFiles();
     }
 
     protected async getInputFiles(): Promise<string[]> {
