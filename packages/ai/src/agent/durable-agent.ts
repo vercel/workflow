@@ -481,8 +481,13 @@ export interface DurableAgentStreamOptions<
   preventClose?: boolean;
 
   /**
-   * If true, sends a 'start' chunk at the beginning of the stream.
-   * Defaults to true.
+   * If true, sends a 'start' chunk (with an auto-generated messageId) at the
+   * beginning of the stream. Defaults to true.
+   *
+   * Set to `false` when you write custom UIMessageChunks to the writable
+   * stream **before** calling `agent.stream()`. The auto-generated start
+   * chunk would otherwise create a second message in the UI because its
+   * messageId differs from the one established by your earlier chunks.
    */
   sendStart?: boolean;
 
@@ -1452,6 +1457,27 @@ async function convertChunksToUIMessages(
  * Safely parse tool call input JSON. Returns the parsed value or the raw string
  * if parsing fails (e.g., for tool calls that were repaired).
  */
+/**
+ * Valid `type` values for LanguageModelV3ToolResultOutput.
+ * When a tool returns an object whose `type` matches one of these,
+ * it is passed through as-is instead of being wrapped in json/text.
+ */
+const TOOL_RESULT_OUTPUT_TYPES = new Set([
+  'text',
+  'json',
+  'content',
+  'error-text',
+  'error-json',
+  'execution-denied',
+]);
+
+function isToolResultOutput(
+  result: unknown
+): result is LanguageModelV3ToolResultPart['output'] {
+  if (typeof result !== 'object' || result === null) return false;
+  return TOOL_RESULT_OUTPUT_TYPES.has((result as { type?: string }).type ?? '');
+}
+
 function safeParseInput(input: string | undefined): unknown {
   try {
     return JSON.parse(input || '{}');
@@ -1621,10 +1647,13 @@ async function executeTool(
           experimental_context: experimentalContext,
         });
 
-        // Use the appropriate output type based on the result
-        // AI SDK supports 'text' for strings and 'json' for objects
-        const output =
-          typeof toolResult === 'string'
+        // Determine the output format:
+        // 1. If the result is already a LanguageModelV3ToolResultOutput, pass through
+        //    (supports multimodal content like images/files via type: 'content')
+        // 2. Strings → text, everything else → json (matches AI SDK convention)
+        const output = isToolResultOutput(toolResult)
+          ? toolResult
+          : typeof toolResult === 'string'
             ? { type: 'text' as const, value: toolResult }
             : { type: 'json' as const, value: toolResult };
 
