@@ -1,8 +1,11 @@
 import type { Event, WorkflowRun } from '@workflow/world';
 import { describe, expect, it } from 'vitest';
-import { computeSegments } from '../components/trace-viewer/components/span-segments.js';
-import { parseTrace } from '../components/trace-viewer/util/tree.js';
-import { buildTrace, groupEventsByCorrelation } from './trace-builder.js';
+import { computeSegments } from '../src/components/trace-viewer/components/span-segments.js';
+import { parseTrace } from '../src/components/trace-viewer/util/tree.js';
+import {
+  buildTrace,
+  groupEventsByCorrelation,
+} from '../src/lib/trace-builder.js';
 
 const BASE_TIME = new Date('2026-03-16T00:00:00Z');
 const STARTED_TIME = new Date('2026-03-16T00:00:01Z');
@@ -100,7 +103,7 @@ describe('Trace viewer with v1 events (no run lifecycle events)', () => {
       const run = makeV1Run({
         status: 'failed',
         output: undefined,
-        error: { message: 'boom', name: 'Error' },
+        error: { message: 'boom' },
       });
       const events = makeStepEvents('step_1', 'add', 1000, 3000);
       const trace = buildTrace(run, events, new Date());
@@ -141,7 +144,7 @@ describe('Trace viewer with v1 events (no run lifecycle events)', () => {
       const run = makeV1Run({
         status: 'failed',
         output: undefined,
-        error: { message: 'boom', name: 'Error' },
+        error: { message: 'boom' },
       });
       const events = makeStepEvents('step_1', 'add', 1000, 3000);
       const trace = buildTrace(run, events, new Date());

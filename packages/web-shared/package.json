@@ -41,6 +41,7 @@
     "build": "tsc && cp -r src/components/trace-viewer/*.css dist/components/trace-viewer/ && cp src/styles.css dist/styles.css",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -r dist ||:",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "format": "biome format --write"
@@ -71,6 +72,7 @@
     "@types/react-dom": "19",
     "@workflow/tsconfig": "workspace:*",
     "ai": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
