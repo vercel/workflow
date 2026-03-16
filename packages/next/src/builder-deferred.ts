@@ -1718,7 +1718,8 @@ export async function getNextBuilderDeferred() {
             relativeFilename,
             source,
             'step',
-            stepFile
+            stepFile,
+            this.config.projectRoot || this.config.workingDir
           );
           this.mergeWorkflowManifest(workflowManifest, fileManifest);
         })
@@ -1738,7 +1739,8 @@ export async function getNextBuilderDeferred() {
               relativeFilename,
               source,
               'workflow',
-              workflowFile
+              workflowFile,
+              this.config.projectRoot || this.config.workingDir
             );
             this.mergeWorkflowManifest(workflowManifest, {
               workflows: fileManifest.workflows,

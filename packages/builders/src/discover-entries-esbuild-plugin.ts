@@ -58,11 +58,14 @@ export function parentHasChild(parent: string, childToFind: string): boolean {
   return false;
 }
 
-export function createDiscoverEntriesPlugin(state: {
-  discoveredSteps: string[];
-  discoveredWorkflows: string[];
-  discoveredSerdeFiles: string[];
-}): Plugin {
+export function createDiscoverEntriesPlugin(
+  state: {
+    discoveredSteps: string[];
+    discoveredWorkflows: string[];
+    discoveredSerdeFiles: string[];
+  },
+  projectRoot?: string
+): Plugin {
   return {
     name: 'discover-entries-esbuild-plugin',
     setup(build) {
@@ -147,7 +150,9 @@ export function createDiscoverEntriesPlugin(state: {
           const { code: transformedCode } = await applySwcTransform(
             args.path,
             source,
-            false
+            false,
+            args.path,
+            projectRoot || build.initialOptions.absWorkingDir || process.cwd()
           );
 
           return {
