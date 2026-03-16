@@ -22,13 +22,7 @@ if (!deploymentUrl) {
 // Next.js canary builds (16.2.0-canary.100+) have a regression where
 // @workflow/ai step files are missing from the step bundle, causing
 // "doStreamStep not found" errors. Skip agent tests on canary until fixed.
-const isCanary = (() => {
-  try {
-    return JSON.parse(process.env.DEV_TEST_CONFIG || '{}').canary === true;
-  } catch {
-    return false;
-  }
-})();
+const isCanary = process.env.NEXT_CANARY === '1';
 
 async function agentE2e(fn: string) {
   return getWorkflowMetadata(
