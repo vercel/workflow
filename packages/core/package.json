@@ -52,10 +52,6 @@
       "types": "./dist/class-serialization.d.ts",
       "default": "./dist/class-serialization.js"
     },
-    "./builtins": {
-      "types": "./dist/builtins.d.ts",
-      "default": "./dist/builtins.js"
-    },
     "./serialization": {
       "types": "./dist/serialization.d.ts",
       "default": "./dist/serialization.js"
