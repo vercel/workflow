@@ -181,9 +181,9 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
           id: chatId,
           messages,
           requestMetadata: options.metadata,
-          body: options.body,
+          body: undefined,
           credentials: undefined,
-          headers: options.headers,
+          headers: undefined,
           api: this.api,
           trigger,
           messageId,
@@ -193,9 +193,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
     const url = requestConfig?.api ?? this.api;
     const res = await this.fetch(url, {
       method: 'POST',
-      body: JSON.stringify(
-        requestConfig?.body ?? { messages, ...options.body }
-      ),
+      body: JSON.stringify(requestConfig?.body ?? { messages }),
       headers: requestConfig?.headers,
       credentials: requestConfig?.credentials,
       signal: abortSignal,

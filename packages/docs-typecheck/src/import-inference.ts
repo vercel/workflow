@@ -75,7 +75,6 @@ const SYMBOL_IMPORTS: Record<string, ImportMapping> = {
   UIMessage: { module: 'ai', isType: true },
   UIMessageChunk: { module: 'ai', isType: true },
   ModelMessage: { module: 'ai', isType: true },
-  LanguageModel: { module: 'ai', isType: true },
 };
 
 /**

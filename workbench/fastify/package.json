@@ -27,7 +27,6 @@
     "openai": "^6.6.0",
     "typescript": "catalog:",
     "workflow": "workspace:*",
-    "@workflow/ai": "workspace:*",
     "zod": "catalog:"
   }
 }

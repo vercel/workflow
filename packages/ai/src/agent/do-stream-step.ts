@@ -1,10 +1,10 @@
 import type {
-  LanguageModelV3CallOptions,
-  LanguageModelV3Prompt,
-  LanguageModelV3StreamPart,
-  LanguageModelV3ToolCall,
-  LanguageModelV3ToolChoice,
-  SharedV3ProviderOptions,
+  LanguageModelV2CallOptions,
+  LanguageModelV2Prompt,
+  LanguageModelV2StreamPart,
+  LanguageModelV2ToolCall,
+  LanguageModelV2ToolChoice,
+  SharedV2ProviderOptions,
 } from '@ai-sdk/provider';
 import {
   type FinishReason,
@@ -23,7 +23,7 @@ import type {
 } from './durable-agent.js';
 import type { CompatibleLanguageModel } from './types.js';
 
-export type FinishPart = Extract<LanguageModelV3StreamPart, { type: 'finish' }>;
+export type FinishPart = Extract<LanguageModelV2StreamPart, { type: 'finish' }>;
 
 export type ModelStopCondition = StopCondition<NoInfer<ToolSet>>;
 
@@ -70,7 +70,7 @@ export interface DoStreamStepOptions {
   includeRawChunks?: boolean;
   experimental_telemetry?: TelemetrySettings;
   transforms?: Array<StreamTextTransform<ToolSet>>;
-  responseFormat?: LanguageModelV3CallOptions['responseFormat'];
+  responseFormat?: LanguageModelV2CallOptions['responseFormat'];
   /**
    * If true, collects and returns all UIMessageChunks written to the stream.
    * This is used by DurableAgent when collectUIMessages is enabled.
@@ -79,11 +79,11 @@ export interface DoStreamStepOptions {
 }
 
 /**
- * Convert AI SDK ToolChoice to LanguageModelV3ToolChoice
+ * Convert AI SDK ToolChoice to LanguageModelV2ToolChoice
  */
 function toLanguageModelToolChoice(
   toolChoice: ToolChoice<ToolSet> | undefined
-): LanguageModelV3ToolChoice | undefined {
+): LanguageModelV2ToolChoice | undefined {
   if (toolChoice === undefined) {
     return undefined;
   }
@@ -103,19 +103,23 @@ function toLanguageModelToolChoice(
 }
 
 export async function doStreamStep(
-  conversationPrompt: LanguageModelV3Prompt,
+  conversationPrompt: LanguageModelV2Prompt,
   modelInit: string | (() => Promise<CompatibleLanguageModel>),
   writable: WritableStream<UIMessageChunk>,
-  tools?: LanguageModelV3CallOptions['tools'],
+  tools?: LanguageModelV2CallOptions['tools'],
   options?: DoStreamStepOptions
 ) {
   'use step';
 
+  // Model can be LanguageModelV2 (AI SDK v5) or LanguageModelV3 (AI SDK v6)
+  // Both have compatible doStream interfaces for our use case
   let model: CompatibleLanguageModel | undefined;
   if (typeof modelInit === 'string') {
+    // gateway() returns LanguageModelV2 in AI SDK v5 and LanguageModelV3 in AI SDK v6
+    // Both are compatible at runtime for doStream operations
     model = gateway(modelInit) as CompatibleLanguageModel;
   } else if (typeof modelInit === 'function') {
-    // User-provided model factory - returns V3
+    // User-provided model factory - could return V2 or V3
     model = await modelInit();
   } else {
     throw new Error(
@@ -124,7 +128,7 @@ export async function doStreamStep(
   }
 
   // Build call options with all generation settings
-  const callOptions: LanguageModelV3CallOptions = {
+  const callOptions: LanguageModelV2CallOptions = {
     prompt: conversationPrompt,
     tools,
     ...(options?.maxOutputTokens !== undefined && {
@@ -150,7 +154,7 @@ export async function doStreamStep(
     }),
     ...(options?.headers !== undefined && { headers: options.headers }),
     ...(options?.providerOptions !== undefined && {
-      providerOptions: options.providerOptions as SharedV3ProviderOptions,
+      providerOptions: options.providerOptions as SharedV2ProviderOptions,
     }),
     ...(options?.toolChoice !== undefined && {
       toolChoice: toLanguageModelToolChoice(options.toolChoice),
@@ -166,19 +170,19 @@ export async function doStreamStep(
   const result = await model.doStream(callOptions);
 
   let finish: FinishPart | undefined;
-  const toolCalls: LanguageModelV3ToolCall[] = [];
+  const toolCalls: LanguageModelV2ToolCall[] = [];
   // Map of tool call ID to provider-executed tool result
   const providerExecutedToolResults = new Map<
     string,
     ProviderExecutedToolResult
   >();
-  const chunks: LanguageModelV3StreamPart[] = [];
+  const chunks: LanguageModelV2StreamPart[] = [];
   const includeRawChunks = options?.includeRawChunks ?? false;
   const collectUIChunks = options?.collectUIChunks ?? false;
   const uiChunks: UIMessageChunk[] = [];
 
   // Build the stream pipeline
-  let stream: ReadableStream<LanguageModelV3StreamPart> = result.stream;
+  let stream: ReadableStream<LanguageModelV2StreamPart> = result.stream;
 
   // Apply custom transforms if provided
   if (options?.transforms && options.transforms.length > 0) {
@@ -209,13 +213,15 @@ export async function doStreamStep(
               input: chunk.input || '{}',
             });
           } else if (chunk.type === 'tool-result') {
-            // In V3, all tool-result stream parts are provider-executed by definition
-            providerExecutedToolResults.set(chunk.toolCallId, {
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              result: chunk.result,
-              isError: chunk.isError,
-            });
+            // Capture provider-executed tool results
+            if (chunk.providerExecuted) {
+              providerExecutedToolResults.set(chunk.toolCallId, {
+                toolCallId: chunk.toolCallId,
+                toolName: chunk.toolName,
+                result: chunk.result,
+                isError: chunk.isError,
+              });
+            }
           } else if (chunk.type === 'finish') {
             finish = chunk;
           }
@@ -225,7 +231,7 @@ export async function doStreamStep(
       })
     )
     .pipeThrough(
-      new TransformStream<LanguageModelV3StreamPart, UIMessageChunk>({
+      new TransformStream<LanguageModelV2StreamPart, UIMessageChunk>({
         start: (controller) => {
           if (options?.sendStart) {
             controller.enqueue({
@@ -421,6 +427,9 @@ export async function doStreamStep(
                 type: 'tool-output-available',
                 toolCallId: part.toolCallId,
                 output: part.result,
+                ...(part.providerExecuted != null
+                  ? { providerExecuted: part.providerExecuted }
+                  : {}),
               });
               break;
             }
@@ -501,36 +510,24 @@ export async function doStreamStep(
  * @internal Exported for testing
  */
 export function normalizeFinishReason(rawFinishReason: unknown): FinishReason {
-  const KNOWN_FINISH_REASONS = new Set<string>([
-    'stop',
-    'length',
-    'content-filter',
-    'tool-calls',
-    'error',
-    'other',
-  ]);
-
-  // Handle object-style finish reason (V3 returns { unified, raw })
+  // Handle object-style finish reason (possible in some AI SDK versions/providers)
   if (typeof rawFinishReason === 'object' && rawFinishReason !== null) {
-    const objReason = rawFinishReason as { unified?: string; type?: string };
-    const extracted = objReason.unified ?? objReason.type ?? 'other';
-    return (
-      KNOWN_FINISH_REASONS.has(extracted) ? extracted : 'other'
-    ) as FinishReason;
+    const objReason = rawFinishReason as { type?: string };
+    return (objReason.type as FinishReason) ?? 'unknown';
   }
   // Handle string finish reason (standard format)
   if (typeof rawFinishReason === 'string') {
     return rawFinishReason as FinishReason;
   }
-  return 'other';
+  return 'unknown';
 }
 
 // This is a stand-in for logic in the AI-SDK streamText code which aggregates
 // chunks into a single step result.
 function chunksToStep(
-  chunks: LanguageModelV3StreamPart[],
-  toolCalls: LanguageModelV3ToolCall[],
-  conversationPrompt: LanguageModelV3Prompt,
+  chunks: LanguageModelV2StreamPart[],
+  toolCalls: LanguageModelV2ToolCall[],
+  conversationPrompt: LanguageModelV2Prompt,
   finish?: FinishPart
 ): StepResult<any> {
   // Transform chunks to a single step result
@@ -603,24 +600,7 @@ function chunksToStep(
     )
     .map((chunk) => chunk);
 
-  // Extract the raw finish reason from the V3 finish reason object
-  const v3FinishReason = finish?.finishReason;
-  const rawFinishReason =
-    typeof v3FinishReason === 'object' && v3FinishReason !== null
-      ? (v3FinishReason as { raw?: string }).raw
-      : typeof v3FinishReason === 'string'
-        ? v3FinishReason
-        : undefined;
-
   const stepResult: StepResult<any> = {
-    stepNumber: 0, // Will be overridden by the caller
-    model: {
-      provider: responseMetadata?.modelId?.split(':')[0] ?? 'unknown',
-      modelId: responseMetadata?.modelId ?? 'unknown',
-    },
-    functionId: undefined,
-    metadata: undefined,
-    experimental_context: undefined,
     content: [
       ...(text ? [{ type: 'text' as const, text }] : []),
       ...toolCalls.map((toolCall) => ({
@@ -658,38 +638,7 @@ function chunksToStep(
     staticToolResults: [],
     dynamicToolResults: [],
     finishReason: normalizeFinishReason(finish?.finishReason),
-    rawFinishReason,
-    usage: finish?.usage
-      ? {
-          inputTokens: finish.usage.inputTokens?.total ?? 0,
-          inputTokenDetails: {
-            noCacheTokens: finish.usage.inputTokens?.noCache,
-            cacheReadTokens: finish.usage.inputTokens?.cacheRead,
-            cacheWriteTokens: finish.usage.inputTokens?.cacheWrite,
-          },
-          outputTokens: finish.usage.outputTokens?.total ?? 0,
-          outputTokenDetails: {
-            textTokens: finish.usage.outputTokens?.text,
-            reasoningTokens: finish.usage.outputTokens?.reasoning,
-          },
-          totalTokens:
-            (finish.usage.inputTokens?.total ?? 0) +
-            (finish.usage.outputTokens?.total ?? 0),
-        }
-      : {
-          inputTokens: 0,
-          inputTokenDetails: {
-            noCacheTokens: undefined,
-            cacheReadTokens: undefined,
-            cacheWriteTokens: undefined,
-          },
-          outputTokens: 0,
-          outputTokenDetails: {
-            textTokens: undefined,
-            reasoningTokens: undefined,
-          },
-          totalTokens: 0,
-        },
+    usage: finish?.usage || { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
     warnings: streamStart?.warnings,
     request: {
       body: JSON.stringify({

@@ -1,15 +1,13 @@
-import type { LanguageModelV3FunctionTool } from '@ai-sdk/provider';
+import type { LanguageModelV2FunctionTool } from '@ai-sdk/provider';
 import { asSchema, type ToolSet } from 'ai';
 
-export async function toolsToModelTools(
+export function toolsToModelTools(
   tools: ToolSet
-): Promise<LanguageModelV3FunctionTool[]> {
-  return Promise.all(
-    Object.entries(tools).map(async ([name, tool]) => ({
-      type: 'function' as const,
-      name,
-      description: tool.description,
-      inputSchema: await asSchema(tool.inputSchema).jsonSchema,
-    }))
-  );
+): LanguageModelV2FunctionTool[] {
+  return Object.entries(tools).map(([name, tool]) => ({
+    type: 'function',
+    name,
+    description: tool.description,
+    inputSchema: asSchema(tool.inputSchema).jsonSchema,
+  }));
 }

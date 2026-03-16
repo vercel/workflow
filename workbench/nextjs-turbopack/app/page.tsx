@@ -1,6 +1,6 @@
 import { WORKFLOW_DEFINITIONS } from '@/app/workflows/definitions';
-import { AppShell } from './app-shell';
+import HomeClient from './home-client';
 
 export default function Home() {
-  return <AppShell workflowDefinitions={WORKFLOW_DEFINITIONS} />;
+  return <HomeClient workflowDefinitions={WORKFLOW_DEFINITIONS} />;
 }
