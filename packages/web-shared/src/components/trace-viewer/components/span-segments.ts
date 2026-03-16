@@ -341,6 +341,26 @@ function computeRunSegments(node: SpanNode): Segment[] {
 
   if (duration <= 0) return segments;
 
+  // V1 runs (specVersion 1) don't emit run lifecycle events (run_created,
+  // run_started, run_completed). Detect this by checking for the absence of
+  // run_created — it's always the first event for v2 runs and is always
+  // loaded in the first page, so its absence reliably signals a v1 run.
+  // For v1, fall back to the run entity's status from span.attributes.data.
+  const hasRunCreated = events.some((e) => e.event.name === 'run_created');
+
+  if (!hasRunCreated) {
+    const runData = node.span.attributes?.data as
+      | Record<string, unknown>
+      | undefined;
+    const runStatus = runData?.status as string | undefined;
+    return computeV1RunSegments(
+      startTime,
+      duration,
+      activeStartTime,
+      runStatus
+    );
+  }
+
   const failedEvent = events.find((e) => e.event.name === 'run_failed');
   const completedEvent = events.find((e) => e.event.name === 'run_completed');
 
@@ -396,7 +416,56 @@ function computeRunSegments(node: SpanNode): Segment[] {
       status: 'succeeded',
     });
   } else {
-    // Running to completion
+    // Running to completion (or terminal events haven't loaded yet)
+    segments.push({
+      startFraction: cursor,
+      endFraction: 1,
+      status: 'running',
+    });
+  }
+
+  return segments;
+}
+
+/**
+ * Compute segments for a v1 run using only the run entity's status and
+ * activeStartTime (derived from run.startedAt). V1 runs have no run
+ * lifecycle events, so we infer the visual segments from entity fields.
+ */
+function computeV1RunSegments(
+  startTime: number,
+  duration: number,
+  activeStartTime: number | undefined,
+  runStatus: string | undefined
+): Segment[] {
+  const segments: Segment[] = [];
+
+  let cursor = 0;
+  if (activeStartTime && activeStartTime > startTime) {
+    const queuedFraction = timeToFraction(activeStartTime, startTime, duration);
+    if (queuedFraction > 0.001) {
+      segments.push({
+        startFraction: 0,
+        endFraction: queuedFraction,
+        status: 'queued',
+      });
+      cursor = queuedFraction;
+    }
+  }
+
+  if (runStatus === 'failed') {
+    segments.push({
+      startFraction: cursor,
+      endFraction: 1,
+      status: 'failed',
+    });
+  } else if (runStatus === 'completed' || runStatus === 'cancelled') {
+    segments.push({
+      startFraction: cursor,
+      endFraction: 1,
+      status: 'succeeded',
+    });
+  } else {
     segments.push({
       startFraction: cursor,
       endFraction: 1,
