@@ -643,8 +643,11 @@ function RowsSkeleton() {
             />
           </div>
           {/* Chevron placeholder */}
-          <div className="w-5 flex-shrink-0 flex items-center justify-center">
-            <Skeleton className="w-5 h-5" style={{ borderRadius: 4 }} />
+          <div
+            className="flex-shrink-0 flex items-center justify-center"
+            style={{ width: 20, height: 20 }}
+          >
+            <Skeleton style={{ width: 20, height: 20, borderRadius: 4 }} />
           </div>
           {/* Time */}
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
@@ -933,8 +936,10 @@ function EventRow({
         >
           {/* Expand chevron indicator */}
           <div
-            className="flex items-center justify-center w-5 h-5 flex-shrink-0 rounded"
+            className="flex items-center justify-center flex-shrink-0 rounded"
             style={{
+              width: 20,
+              height: 20,
               border: '1px solid var(--ds-gray-400)',
             }}
           >
@@ -1039,7 +1044,7 @@ function EventRow({
             continuationOnly
           />
           {/* Spacer for chevron column */}
-          <div className="w-5 flex-shrink-0" />
+          <div className="flex-shrink-0" style={{ width: 20 }} />
           <div
             className="flex-1 my-1.5 mr-3 ml-2 py-2 rounded-md border overflow-hidden"
             style={{
@@ -1353,7 +1358,7 @@ export function EventListView({
           style={{ borderColor: 'var(--ds-gray-alpha-200)' }}
         >
           <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
-          <div className="w-5 flex-shrink-0" />
+          <div className="flex-shrink-0" style={{ width: 20 }} />
           <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
             <Skeleton className="h-3" style={{ width: 40 }} />
           </div>
@@ -1487,7 +1492,7 @@ export function EventListView({
         }}
       >
         <div className="flex-shrink-0" style={{ width: GUTTER_WIDTH }} />
-        <div className="w-5 flex-shrink-0" />
+        <div className="flex-shrink-0" style={{ width: 20 }} />
         <div className="min-w-0 px-4" style={{ flex: '2 1 0%' }}>
           Time
         </div>
