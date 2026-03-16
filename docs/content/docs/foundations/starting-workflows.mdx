@@ -239,7 +239,10 @@ export async function GET(request: Request) {
 A workflow can start a new instance of itself. This is useful when a single long-running workflow would accumulate too many events — large event logs become slower to replay, more expensive to store, and harder to inspect in the UI. By breaking work into smaller runs that chain together, each run stays lean.
 
 ```typescript lineNumbers
-import { start, sleep } from "workflow";
+import { sleep } from "workflow";
+import { start } from "workflow/api";
+declare function fetchBatch(cursor?: string): Promise<{ items: string[]; nextCursor?: string }>; // @setup
+declare function processBatch(items: string[]): Promise<void>; // @setup
 
 export async function processQueue(cursor?: string) {
   "use workflow";
@@ -257,7 +260,9 @@ export async function processQueue(cursor?: string) {
 This pattern also enables **repeating cron-like workflows**. A workflow can complete its work, sleep, and then schedule a new instance of itself — creating an indefinite chain without any single run growing too large:
 
 ```typescript lineNumbers
-import { start, sleep } from "workflow";
+import { sleep } from "workflow";
+import { start } from "workflow/api";
+declare function refreshMetrics(): Promise<void>; // @setup
 
 export async function syncDashboard() {
   "use workflow";
@@ -275,7 +280,9 @@ export async function syncDashboard() {
 By default, `start()` schedules the child workflow on the **same deployment** as the caller. This is usually what you want for parent-child workflows within the same request. However, for self-chaining workflows that run over long periods, you may want the next run to use the **latest deployment** so it picks up new code:
 
 ```typescript lineNumbers
-import { start, sleep } from "workflow";
+import { sleep } from "workflow";
+import { start } from "workflow/api";
+declare function doWork(): Promise<void>; // @setup
 
 export async function repeatingJob() {
   "use workflow";

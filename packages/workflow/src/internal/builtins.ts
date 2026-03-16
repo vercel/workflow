@@ -50,46 +50,39 @@ export async function __builtin_run_status(runId: string) {
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).status;
 }
-__builtin_run_status.maxRetries = 0;
 
 export async function __builtin_run_return_value(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).returnValue;
 }
-__builtin_run_return_value.maxRetries = 0;
 
 export async function __builtin_run_workflow_name(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).workflowName;
 }
-__builtin_run_workflow_name.maxRetries = 0;
 
 export async function __builtin_run_created_at(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).createdAt;
 }
-__builtin_run_created_at.maxRetries = 0;
 
 export async function __builtin_run_started_at(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).startedAt;
 }
-__builtin_run_started_at.maxRetries = 0;
 
 export async function __builtin_run_completed_at(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).completedAt;
 }
-__builtin_run_completed_at.maxRetries = 0;
 
 export async function __builtin_run_exists(runId: string) {
   'use step';
   const { getRun } = await import('@workflow/core/runtime');
   return await getRun(runId).exists;
 }
-__builtin_run_exists.maxRetries = 0;
