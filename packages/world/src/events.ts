@@ -298,7 +298,7 @@ export type CreateEventRequest = Exclude<
 export interface CreateEventParams {
   v1Compat?: boolean;
   resolveData?: ResolveData;
-  /** Vercel request ID (x-vercel-id) for correlating request logs with workflow events. */
+  /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
   requestId?: string;
 }
 
