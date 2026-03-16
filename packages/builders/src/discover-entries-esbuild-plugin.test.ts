@@ -25,6 +25,10 @@ import {
 
 const realTmpdir = realpathSync(tmpdir());
 
+function normalizeSlashes(path: string): string {
+  return path.replace(/\\/g, '/');
+}
+
 function writeFile(path: string, contents = ''): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, contents, 'utf-8');
@@ -81,6 +85,7 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
 
   it('uses the explicit projectRoot during discovery transforms', async () => {
     const fixture = setupFixture();
+    const normalizedWorkflowFile = normalizeSlashes(fixture.workflowFile);
     const state = {
       discoveredSteps: [],
       discoveredWorkflows: [],
@@ -98,18 +103,19 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     });
 
     expect(result.errors).toHaveLength(0);
-    expect(state.discoveredWorkflows).toEqual([fixture.workflowFile]);
+    expect(state.discoveredWorkflows).toEqual([normalizedWorkflowFile]);
     expect(applySwcTransformMock).toHaveBeenCalledWith(
-      fixture.workflowFile,
+      normalizedWorkflowFile,
       expect.stringContaining('"use workflow"'),
       false,
-      fixture.workflowFile,
+      normalizedWorkflowFile,
       fixture.appRoot
     );
   });
 
   it('defaults discovery transforms to absWorkingDir when projectRoot is omitted', async () => {
     const fixture = setupFixture();
+    const normalizedWorkflowFile = normalizeSlashes(fixture.workflowFile);
     const state = {
       discoveredSteps: [],
       discoveredWorkflows: [],
@@ -127,12 +133,12 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     });
 
     expect(result.errors).toHaveLength(0);
-    expect(state.discoveredWorkflows).toEqual([fixture.workflowFile]);
+    expect(state.discoveredWorkflows).toEqual([normalizedWorkflowFile]);
     expect(applySwcTransformMock).toHaveBeenCalledWith(
-      fixture.workflowFile,
+      normalizedWorkflowFile,
       expect.stringContaining('"use workflow"'),
       false,
-      fixture.workflowFile,
+      normalizedWorkflowFile,
       fixture.packageRoot
     );
   });
