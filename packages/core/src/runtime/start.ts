@@ -26,7 +26,7 @@ export interface StartOptions {
    *
    * Set to `'latest'` to automatically resolve the most recent deployment
    * for the current environment (same production target or git branch).
-   * Requires a World that implements `resolveLatestDeploymentId()`.
+   * This is currently a Vercel-specific feature.
    */
   deploymentId?: 'latest' | (string & {});
 
