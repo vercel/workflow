@@ -1367,6 +1367,24 @@ describe('e2e', () => {
     }
   );
 
+  test(
+    'fibonacciWorkflow - recursive workflow composition via start()',
+    { timeout: 180_000 },
+    async () => {
+      // fib(6) = 8, spawns a tree of child workflow runs
+      const run = await start(await e2e('fibonacciWorkflow'), [6]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toBe(8);
+
+      collectedRunIds.push({
+        testName: 'fibonacciWorkflow',
+        runId: run.runId,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  );
+
   // Skipped for Vercel since VQS doesn't support direct HTTP calls
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',

@@ -1482,3 +1482,25 @@ export async function startFromWorkflow(inputValue: number) {
     signalFromChild: signal,
   };
 }
+
+//////////////////////////////////////////////////////////
+// Recursive Fibonacci via start() E2E Test
+//////////////////////////////////////////////////////////
+
+// Demonstrates recursive workflow composition: a workflow that starts
+// new instances of itself to compute Fibonacci numbers. Each run stays
+// small (few events) while the recursion fans out across independent runs.
+export async function fibonacciWorkflow(n: number): Promise<number> {
+  'use workflow';
+
+  if (n <= 1) return n;
+
+  const [runA, runB] = await Promise.all([
+    start(fibonacciWorkflow, [n - 1]),
+    start(fibonacciWorkflow, [n - 2]),
+  ]);
+
+  const [a, b] = await Promise.all([runA.returnValue, runB.returnValue]);
+
+  return a + b;
+}
