@@ -192,6 +192,18 @@ describe('Trace viewer with v1 events (no run lifecycle events)', () => {
     it('v2 baseline: shows "succeeded" from run_completed event', () => {
       const run = makeV1Run({ specVersion: 2, status: 'completed' });
       const stepEvents = makeStepEvents('step_1', 'add', 1000, 3000);
+      const runCreatedEvent: Event = {
+        eventId: 'evnt_run_created',
+        runId: 'wrun_v1test',
+        eventType: 'run_created',
+        createdAt: BASE_TIME,
+        specVersion: 2,
+        eventData: {
+          deploymentId: 'dep_1',
+          workflowName: 'v1-workflow',
+          input: {},
+        },
+      } as Event;
       const runCompletedEvent: Event = {
         eventId: 'evnt_run_completed',
         runId: 'wrun_v1test',
@@ -200,7 +212,7 @@ describe('Trace viewer with v1 events (no run lifecycle events)', () => {
         specVersion: 2,
         eventData: { output: { result: 'ok' } },
       } as Event;
-      const events = [...stepEvents, runCompletedEvent];
+      const events = [runCreatedEvent, ...stepEvents, runCompletedEvent];
       const trace = buildTrace(run, events, new Date());
       const { map } = parseTrace(trace);
 
@@ -209,6 +221,33 @@ describe('Trace viewer with v1 events (no run lifecycle events)', () => {
 
       const lastSegment = result.segments[result.segments.length - 1];
       expect(lastSegment.status).toBe('succeeded');
+    });
+
+    it('v2 mid-pagination: shows "running" when run_completed has not loaded yet', () => {
+      const run = makeV1Run({ specVersion: 2, status: 'completed' });
+      const stepEvents = makeStepEvents('step_1', 'add', 1000, 3000);
+      const runCreatedEvent: Event = {
+        eventId: 'evnt_run_created',
+        runId: 'wrun_v1test',
+        eventType: 'run_created',
+        createdAt: BASE_TIME,
+        specVersion: 2,
+        eventData: {
+          deploymentId: 'dep_1',
+          workflowName: 'v1-workflow',
+          input: {},
+        },
+      } as Event;
+      // run_created is present but run_completed hasn't loaded yet
+      const events = [runCreatedEvent, ...stepEvents];
+      const trace = buildTrace(run, events, new Date());
+      const { map } = parseTrace(trace);
+
+      const runNode = map[run.runId];
+      const result = computeSegments('run', runNode);
+
+      const lastSegment = result.segments[result.segments.length - 1];
+      expect(lastSegment.status).toBe('running');
     });
   });
 });
