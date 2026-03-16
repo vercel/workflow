@@ -43,6 +43,7 @@ export interface SuspensionHandlerParams {
   world: World;
   run: WorkflowRun;
   span?: Span;
+  requestId?: string;
 }
 
 export interface SuspensionHandlerResult {
@@ -63,6 +64,7 @@ export async function handleSuspension({
   world,
   run,
   span,
+  requestId,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
   const workflowName = run.workflowName;
@@ -124,7 +126,9 @@ export async function handleSuspension({
     await Promise.all(
       hookEvents.map(async (hookEvent) => {
         try {
-          const result = await world.events.create(runId, hookEvent);
+          const result = await world.events.create(runId, hookEvent, {
+            requestId,
+          });
           // Check if the world returned a hook_conflict event instead of hook_created
           // The hook_conflict event is stored in the event log and will be replayed
           // on the next workflow invocation, causing the hook's promise to reject
@@ -163,7 +167,7 @@ export async function handleSuspension({
           correlationId: queueItem.correlationId,
         };
         try {
-          await world.events.create(runId, hookDisposedEvent);
+          await world.events.create(runId, hookDisposedEvent, { requestId });
         } catch (err) {
           if (WorkflowAPIError.is(err)) {
             if (err.status === 410) {
@@ -231,7 +235,7 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, stepEvent);
+            await world.events.create(runId, stepEvent, { requestId });
           } catch (err) {
             if (WorkflowAPIError.is(err) && err.status === 409) {
               runtimeLogger.info('Step already exists, continuing', {
@@ -286,7 +290,7 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, waitEvent);
+            await world.events.create(runId, waitEvent, { requestId });
           } catch (err) {
             if (WorkflowAPIError.is(err) && err.status === 409) {
               runtimeLogger.info('Wait already exists, continuing', {
