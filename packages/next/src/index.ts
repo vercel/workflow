@@ -18,6 +18,7 @@ export function withWorkflow(
   }: {
     workflows?: {
       lazyDiscovery?: boolean;
+      dirs?: string[];
       local?: {
         port?: number;
         dataDir?: string;
@@ -87,7 +88,8 @@ export function withWorkflow(
           return new NextBuilder({
             watch: shouldWatch,
             // discover workflows from pages/app entries
-            dirs: ['pages', 'app', 'src/pages', 'src/app'],
+            dirs: workflows?.dirs || ['pages', 'app', 'src/pages', 'src/app'],
+            dirsAreEntrypoints: !workflows?.dirs,
             workingDir: process.cwd(),
             distDir: nextConfig.distDir || '.next',
             buildTarget: 'next',
