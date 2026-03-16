@@ -359,7 +359,8 @@ const attributeToDisplayFn: Record<
   workflowName: (value: unknown) =>
     parseWorkflowName(String(value))?.shortName ?? '?',
   moduleSpecifier: (value: unknown) => getModuleSpecifierFromName(value),
-  stepName: (value: unknown) => parseStepName(String(value))?.shortName ?? '?',
+  stepName: (value: unknown) =>
+    parseStepName(String(value))?.shortName ?? String(value),
   // IDs
   runId: (value: unknown) => String(value),
   stepId: (value: unknown) => String(value),

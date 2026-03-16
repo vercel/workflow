@@ -13,24 +13,28 @@ import { createUseStep } from '../step.js';
  * WorkflowRun instances in the workflow VM, and vice versa.
  */
 export function createWorkflowRun(ctx: WorkflowOrchestratorContext) {
-  const cancelStep = createUseStep(ctx)<[string], void>('__run_cancel');
+  const cancelStep = createUseStep(ctx)<[string], void>('__builtin_run_cancel');
   const statusStep = createUseStep(ctx)<[string], WorkflowRunStatus>(
-    '__run_status'
+    '__builtin_run_status'
   );
   const returnValueStep = createUseStep(ctx)<[string], unknown>(
-    '__run_return_value'
+    '__builtin_run_return_value'
   );
   const workflowNameStep = createUseStep(ctx)<[string], string>(
-    '__run_workflow_name'
+    '__builtin_run_workflow_name'
   );
-  const createdAtStep = createUseStep(ctx)<[string], Date>('__run_created_at');
+  const createdAtStep = createUseStep(ctx)<[string], Date>(
+    '__builtin_run_created_at'
+  );
   const startedAtStep = createUseStep(ctx)<[string], Date | undefined>(
-    '__run_started_at'
+    '__builtin_run_started_at'
   );
   const completedAtStep = createUseStep(ctx)<[string], Date | undefined>(
-    '__run_completed_at'
+    '__builtin_run_completed_at'
   );
-  const existsStep = createUseStep(ctx)<[string], boolean>('__run_exists');
+  const existsStep = createUseStep(ctx)<[string], boolean>(
+    '__builtin_run_exists'
+  );
 
   class WorkflowRun<TResult = unknown> {
     /**

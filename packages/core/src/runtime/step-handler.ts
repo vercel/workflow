@@ -87,65 +87,6 @@ const __workflowStartStep = async (
 __workflowStartStep.maxRetries = 0;
 registerStepFunction('__workflow_start', __workflowStartStep);
 
-// Register built-in steps for Run methods so that WorkflowRun instances in the VM
-// can delegate their method calls to the real Run class in the step context.
-// All use maxRetries = 0 since these are read/cancel operations that should not be retried.
-const __runCancel = async (runId: string): Promise<void> => {
-  const run = new Run(runId);
-  await run.cancel();
-};
-__runCancel.maxRetries = 0;
-registerStepFunction('__run_cancel', __runCancel);
-
-const __runStatus = async (runId: string) => {
-  const run = new Run(runId);
-  return await run.status;
-};
-__runStatus.maxRetries = 0;
-registerStepFunction('__run_status', __runStatus);
-
-const __runReturnValue = async (runId: string) => {
-  const run = new Run(runId);
-  return await run.returnValue;
-};
-__runReturnValue.maxRetries = 0;
-registerStepFunction('__run_return_value', __runReturnValue);
-
-const __runWorkflowName = async (runId: string) => {
-  const run = new Run(runId);
-  return await run.workflowName;
-};
-__runWorkflowName.maxRetries = 0;
-registerStepFunction('__run_workflow_name', __runWorkflowName);
-
-const __runCreatedAt = async (runId: string) => {
-  const run = new Run(runId);
-  return await run.createdAt;
-};
-__runCreatedAt.maxRetries = 0;
-registerStepFunction('__run_created_at', __runCreatedAt);
-
-const __runStartedAt = async (runId: string) => {
-  const run = new Run(runId);
-  return await run.startedAt;
-};
-__runStartedAt.maxRetries = 0;
-registerStepFunction('__run_started_at', __runStartedAt);
-
-const __runCompletedAt = async (runId: string) => {
-  const run = new Run(runId);
-  return await run.completedAt;
-};
-__runCompletedAt.maxRetries = 0;
-registerStepFunction('__run_completed_at', __runCompletedAt);
-
-const __runExists = async (runId: string) => {
-  const run = new Run(runId);
-  return await run.exists;
-};
-__runExists.maxRetries = 0;
-registerStepFunction('__run_exists', __runExists);
-
 const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',
   async (message_, metadata) => {
