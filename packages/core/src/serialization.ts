@@ -1053,11 +1053,12 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
       // In the VM, look up WorkflowRun from the class registry (registered under 'Run').
       // In the step context, look up the real Run class.
       const RunClass = getSerializationClass('Run', global);
-      if (RunClass) {
-        return new (RunClass as any)(value.runId);
+      if (!RunClass) {
+        throw new Error(
+          'Run class not found in the serialization registry. Make sure the Run class is registered.'
+        );
       }
-      // Fallback: return a plain object with runId (shouldn't happen in practice)
-      return { runId: value.runId };
+      return new (RunClass as any)(value.runId);
     },
     Class: (value) => {
       const classId = value.classId;

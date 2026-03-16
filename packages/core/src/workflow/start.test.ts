@@ -7,6 +7,7 @@ import { EventsConsumer } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
 import { dehydrateStepReturnValue } from '../serialization.js';
+import { WORKFLOW_CLASS_REGISTRY } from '../symbols.js';
 import { createContext } from '../vm/index.js';
 import { createStart } from './start.js';
 
@@ -54,6 +55,11 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     },
     pendingDeliveries: 0,
   };
+  // Register MockRun in the VM's class registry so the Run reviver can find it
+  const vmGlobal = context.globalThis as any;
+  const registry = new Map<string, Function>();
+  registry.set('Run', MockRun);
+  vmGlobal[WORKFLOW_CLASS_REGISTRY] = registry;
   return ctx;
 }
 
