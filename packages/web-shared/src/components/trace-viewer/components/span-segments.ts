@@ -344,6 +344,14 @@ function computeRunSegments(node: SpanNode): Segment[] {
   const failedEvent = events.find((e) => e.event.name === 'run_failed');
   const completedEvent = events.find((e) => e.event.name === 'run_completed');
 
+  // For v1 runs (specVersion 1), run lifecycle events (run_created,
+  // run_started, run_completed) are not present in the event log. Fall back
+  // to the run entity's status stored in span.attributes.data.
+  const runData = node.span.attributes?.data as
+    | Record<string, unknown>
+    | undefined;
+  const runStatus = runData?.status as string | undefined;
+
   // Queued period (from span start to activeStartTime)
   let cursor = 0;
   if (activeStartTime && activeStartTime > startTime) {
@@ -392,6 +400,18 @@ function computeRunSegments(node: SpanNode): Segment[] {
     }
     segments.push({
       startFraction: completedFraction,
+      endFraction: 1,
+      status: 'succeeded',
+    });
+  } else if (runStatus === 'failed') {
+    segments.push({
+      startFraction: cursor,
+      endFraction: 1,
+      status: 'failed',
+    });
+  } else if (runStatus === 'completed' || runStatus === 'cancelled') {
+    segments.push({
+      startFraction: cursor,
       endFraction: 1,
       status: 'succeeded',
     });
