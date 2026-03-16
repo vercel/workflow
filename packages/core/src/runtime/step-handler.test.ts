@@ -1,4 +1,4 @@
-import { FatalError, WorkflowAPIError } from '@workflow/errors';
+import { WorkflowAPIError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Use vi.hoisted so these are available in mock factories
@@ -266,7 +266,7 @@ describe('step-handler 409 handling', () => {
       // Should not throw, should return undefined (early return)
       expect(result).toBeUndefined();
       // Should have logged a warning, not an error
-      expect(mockRuntimeLogger.warn).toHaveBeenCalledWith(
+      expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried completing step, but step has already finished.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
@@ -316,7 +316,7 @@ describe('step-handler 409 handling', () => {
       );
 
       expect(result).toBeUndefined();
-      expect(mockRuntimeLogger.warn).toHaveBeenCalledWith(
+      expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
@@ -363,7 +363,7 @@ describe('step-handler 409 handling', () => {
       );
 
       expect(result).toBeUndefined();
-      expect(mockRuntimeLogger.warn).toHaveBeenCalledWith(
+      expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
@@ -413,7 +413,7 @@ describe('step-handler 409 handling', () => {
       );
 
       expect(result).toBeUndefined();
-      expect(mockRuntimeLogger.warn).toHaveBeenCalledWith(
+      expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried retrying step, but step has already finished.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',

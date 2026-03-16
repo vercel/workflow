@@ -142,7 +142,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   1,
                   typeof err.retryAfter === 'number' ? err.retryAfter : 1
                 );
-                runtimeLogger.warn(
+                runtimeLogger.info(
                   'Throttled again on retry, deferring to queue',
                   {
                     retryAfterSeconds: retryRetryAfter,
@@ -269,7 +269,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               );
             } catch (err) {
               if (WorkflowAPIError.is(err) && err.status === 409) {
-                runtimeLogger.warn(
+                runtimeLogger.info(
                   'Tried failing step, but step has already finished.',
                   {
                     workflowRunId,
@@ -500,7 +500,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   WorkflowAPIError.is(stepFailErr) &&
                   stepFailErr.status === 409
                 ) {
-                  runtimeLogger.warn(
+                  runtimeLogger.info(
                     'Tried failing step, but step has already finished.',
                     {
                       workflowRunId,
@@ -563,7 +563,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     WorkflowAPIError.is(stepFailErr) &&
                     stepFailErr.status === 409
                   ) {
-                    runtimeLogger.warn(
+                    runtimeLogger.info(
                       'Tried failing step, but step has already finished.',
                       {
                         workflowRunId,
@@ -584,7 +584,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               } else {
                 // Not at max retries yet - log as a retryable error
                 if (RetryableError.is(err)) {
-                  stepLogger.warn(
+                  stepLogger.info(
                     'Encountered RetryableError, step will be retried',
                     {
                       workflowRunId,
@@ -594,7 +594,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     }
                   );
                 } else {
-                  stepLogger.warn('Encountered Error, step will be retried', {
+                  stepLogger.info('Encountered Error, step will be retried', {
                     workflowRunId,
                     stepName,
                     attempt: currentAttempt,
@@ -625,7 +625,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     WorkflowAPIError.is(stepRetryErr) &&
                     stepRetryErr.status === 409
                   ) {
-                    runtimeLogger.warn(
+                    runtimeLogger.info(
                       'Tried retrying step, but step has already finished.',
                       {
                         workflowRunId,
@@ -724,7 +724,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               )
               .catch((err: unknown) => {
                 if (WorkflowAPIError.is(err) && err.status === 409) {
-                  runtimeLogger.warn(
+                  runtimeLogger.info(
                     'Tried completing step, but step has already finished.',
                     {
                       workflowRunId,
