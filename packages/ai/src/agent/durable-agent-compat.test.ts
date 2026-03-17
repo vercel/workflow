@@ -294,6 +294,82 @@ describe('DurableAgent (ToolLoopAgent compat)', () => {
       `);
     });
 
+    it('should use prepareStep from constructor', async () => {
+      const stepNumbers: number[] = [];
+
+      const agent = new DurableAgent({
+        model: asModelFactory(mockModel),
+        prepareStep: ({ stepNumber }) => {
+          stepNumbers.push(stepNumber);
+          return {};
+        },
+      });
+
+      const { writable } = createMockWritable();
+
+      await agent.stream({
+        messages: [{ role: 'user' as const, content: 'Hello' }],
+        writable,
+      });
+
+      expect(stepNumbers).toEqual([0]);
+    });
+
+    it('should prefer stream prepareStep over constructor prepareStep', async () => {
+      const source: string[] = [];
+
+      const agent = new DurableAgent({
+        model: asModelFactory(mockModel),
+        prepareStep: () => {
+          source.push('constructor');
+          return {};
+        },
+      });
+
+      const { writable } = createMockWritable();
+
+      await agent.stream({
+        messages: [{ role: 'user' as const, content: 'Hello' }],
+        writable,
+        prepareStep: () => {
+          source.push('stream');
+          return {};
+        },
+      });
+
+      // Stream-level prepareStep should override constructor-level
+      expect(source).toEqual(['stream']);
+    });
+
+    it('should call constructor prepareStep on each step in multi-step', async () => {
+      const toolCallModel = createToolCallStreamMockModel();
+      const stepNumbers: number[] = [];
+
+      const agent = new DurableAgent({
+        model: asModelFactory(toolCallModel),
+        tools: {
+          testTool: tool({
+            inputSchema: z.object({ value: z.string() }),
+            execute: async ({ value }: { value: string }) => `result: ${value}`,
+          }),
+        },
+        prepareStep: ({ stepNumber }) => {
+          stepNumbers.push(stepNumber);
+          return {};
+        },
+      });
+
+      const { writable } = createMockWritable();
+
+      await agent.stream({
+        messages: [{ role: 'user' as const, content: 'Hello' }],
+        writable,
+      });
+
+      // prepareStep called for both the tool-call step and the final text step
+      expect(stepNumbers).toEqual([0, 1]);
+    });
+
     it('should pass abortSignal to streamText', async () => {
       const abortController = new AbortController();
 

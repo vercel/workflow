@@ -12,8 +12,8 @@ If you want to use any other ORM, query builder or underlying database client, y
 graph LR
     Client --> PG[graphile-worker queue]
     PG --> Worker[Embedded Worker]
-    Worker --> Exec[Queue Executor]
-    Exec --> Handler[Workflow or Step Handler]
+    Worker --> HTTP[Workflow HTTP routes]
+    HTTP --> Handler[Workflow or Step Handler]
 
     PG -.-> F["${prefix}flows<br/>(workflows)"]
     PG -.-> S["${prefix}steps<br/>(steps)"]
@@ -33,11 +33,11 @@ Real-time data streaming via **PostgreSQL LISTEN/NOTIFY**:
 
 ## Setup
 
-Call `world.start()` to initialize graphile-worker workers. When `.start()` is called, workers begin listening to graphile-worker queues. When a job arrives, the worker executes the queue message directly through the shared queue executor and awaits completion before acknowledging the Graphile job.
+Call `world.start()` to initialize graphile-worker workers. When `.start()` is called, workers begin listening to graphile-worker queues. When a job arrives, the worker executes the queue message over the workflow HTTP routes and awaits completion before acknowledging the Graphile job.
 
 When the runtime returns `{ timeoutSeconds }`, the worker schedules a new Graphile job with a future `runAt` time before finishing the current task.
 
-The executor still falls back to the HTTP-compatible workflow endpoints (`.well-known/workflow/v1/flow` or `.well-known/workflow/v1/step`) when the route module has not been loaded yet.
+The worker targets the HTTP-compatible workflow endpoints directly: `.well-known/workflow/v1/flow` for workflows and `.well-known/workflow/v1/step` for steps.
 
 
 In **Next.js**, the `world.start()` call needs to be added to `instrumentation.ts|js` to ensure workers start before request handling. Use `workflow/runtime` for `getWorld` (same as the testing server and other framework plugins):

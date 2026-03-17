@@ -72,8 +72,14 @@
     "workflow": "workspace:*"
   },
   "peerDependencies": {
+    "@opentelemetry/api": "^1.0.0",
     "ai": "^6",
     "workflow": "workspace:^"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    }
   },
   "dependencies": {
     "@ai-sdk/provider": "^3.0.0",
