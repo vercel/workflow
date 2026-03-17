@@ -131,7 +131,7 @@ By default, custom class instances cannot be serialized because the serializatio
 
 ### Basic Example
 
-{/* @expect-error:2351 */}
+<!-- @expect-error:2351 -->
 
 ```typescript title="workflows/custom-class.ts" lineNumbers
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde"; // [!code highlight]
@@ -156,7 +156,7 @@ class Point {
 
 Once you've implemented these methods, instances of your class can be passed between workflow and step functions:
 
-{/* @expect-error:2351 */}
+<!-- @expect-error:2351 -->
 
 ```typescript title="workflows/geometry.ts" lineNumbers
 import { Point } from "./custom-class";
@@ -211,7 +211,7 @@ A class that uses Node.js APIs or other non-deterministic operations cannot be u
 
 This requires the class to implement `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`, so that the instance can be passed to the step execution context.
 
-{/* @expect-error:2351 */}
+<!-- @expect-error:2351 -->
 
 ```typescript title="workflows/order.ts" lineNumbers
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde"; // [!code highlight]
@@ -280,7 +280,7 @@ class Order {
 
 The class can then be used naturally inside a workflow function. Instance methods marked with `"use step"` are each executed as a step — with automatic caching, retry semantics, and full Node.js runtime access. Methods _without_ `"use step"` run directly in the workflow context, so they must follow the same constraints as workflow functions:
 
-{/* @expect-error:2693 */}
+<!-- @expect-error:2693 -->
 
 ```typescript title="workflows/process-order.ts" lineNumbers
 export async function processOrderWorkflow(
@@ -305,7 +305,7 @@ export async function processOrderWorkflow(
 
 Note that [pass-by-value semantics](#pass-by-value-semantics) also apply to the `this` context of `"use step"` instance methods. Modifying instance properties inside a step method will not affect the original instance in the workflow. If you need to update instance state, return `this` from the step method and re-assign the variable in the workflow:
 
-{/* @expect-error:2351 */}
+<!-- @expect-error:2351 -->
 
 ```typescript title="workflows/order.ts" lineNumbers
 export class Order {
@@ -319,7 +319,7 @@ export class Order {
 }
 ```
 
-{/* @expect-error:2693,2552,2304 */}
+<!-- @expect-error:2693,2552,2304 -->
 
 ```typescript title="workflows/process-order.ts" lineNumbers
 export async function processOrderWorkflow() {
