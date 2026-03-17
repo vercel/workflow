@@ -136,6 +136,8 @@ describe('createStart', () => {
       expect(queueItem.stepName).toMatch(
         /^step\/\/workflow\/internal\/builtins@[\d.]+-?[\w.]*\/\/start$/
       );
+      // Verify the step arguments correctly forward workflowId and args
+      expect(queueItem.args).toEqual(['test-child-workflow', [42], {}]);
     }
   });
 

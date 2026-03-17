@@ -75,6 +75,10 @@ export class Run {
     return await getRun(runId).status;
   }
 
+  // TODO: returnValue uses pollReturnValue() internally — a while(true) loop
+  // with 1s sleeps that holds a serverless worker alive for the duration of the
+  // child workflow. Replace with a system hook approach once the
+  // AbortSignal/AbortController PR lands.
   static async returnValue(runId: string) {
     'use step';
     const { getRun } = await import('@workflow/core/runtime');

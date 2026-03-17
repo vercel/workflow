@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow DevKit. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow devkit", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.5'
+  version: '1.6'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -219,7 +219,7 @@ export async function myAgentWorkflow(userMessage: string) {
 
 ## Starting Workflows & Child Workflows
 
-Use `start()` to launch workflows from API routes. **`start()` cannot be called directly in workflow context** — wrap it in a step function.
+Use `start()` to launch workflows from API routes or directly inside workflow functions.
 
 ```typescript
 import { start } from "workflow/api";
@@ -234,24 +234,20 @@ export async function POST() {
 const run = await start(noArgWorkflow);
 ```
 
-**Starting child workflows from inside a workflow — must use a step:**
+**Starting child workflows from inside a workflow:**
 
 ```typescript
 import { start } from "workflow/api";
 
-// Wrap start() in a step function
-async function triggerChild(data: string) {
-  "use step";
-  const run = await start(childWorkflow, [data]);
-  return run.runId;
-}
-
 export async function parentWorkflow() {
   "use workflow";
-  const childRunId = await triggerChild("some data");  // Fire-and-forget via step
-  await sleep("1h");
+  const childRun = await start(childWorkflow, ["some data"]);
+  // childRun is a full Run object — .runId, .status, .returnValue, .cancel()
+  const result = await childRun.returnValue;
 }
 ```
+
+Inside workflow functions, `start()` automatically executes through an internal step. The returned `Run` object works like normal — each property access or method call executes as a separate step.
 
 `start()` returns immediately — it doesn't wait for the workflow to complete. Use `run.returnValue` to await completion.
 

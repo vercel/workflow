@@ -101,6 +101,10 @@ When `start()` is called inside a workflow function, it automatically executes t
 Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.returnValue`) triggers a workflow step. This means each access is recorded in the event log and replayed deterministically.
 </Callout>
 
+<Callout type="warn">
+`returnValue` polls the child workflow every 1 second and holds a serverless worker alive for the entire duration of the child workflow. For long-running children, prefer a fire-and-forget pattern combined with [hooks](/docs/foundations/hooks) to receive a notification when the child completes.
+</Callout>
+
 ### Fire and Forget
 
 The most common pattern is to start a workflow and immediately return, letting it execute in the background:
