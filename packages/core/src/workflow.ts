@@ -464,11 +464,23 @@ export async function runWorkflow(
     }
     vmGlobalThis.Request = Request;
 
-    Request.prototype.arrayBuffer = useStep<[], ArrayBuffer>(
-      '__builtin_response_array_buffer'
-    );
-    Request.prototype.json = useStep<[], any>('__builtin_response_json');
-    Request.prototype.text = useStep<[], string>('__builtin_response_text');
+    Object.defineProperties(Request.prototype, {
+      arrayBuffer: {
+        value: useStep<[], ArrayBuffer>('__builtin_response_array_buffer'),
+        writable: true,
+        configurable: true,
+      },
+      json: {
+        value: useStep<[], any>('__builtin_response_json'),
+        writable: true,
+        configurable: true,
+      },
+      text: {
+        value: useStep<[], string>('__builtin_response_text'),
+        writable: true,
+        configurable: true,
+      },
+    });
 
     class Response implements globalThis.Response {
       type!: globalThis.Response['type'];
@@ -574,11 +586,23 @@ export async function runWorkflow(
     }
     vmGlobalThis.Response = Response;
 
-    Response.prototype.arrayBuffer = useStep<[], ArrayBuffer>(
-      '__builtin_response_array_buffer'
-    );
-    Response.prototype.json = useStep<[], any>('__builtin_response_json');
-    Response.prototype.text = useStep<[], string>('__builtin_response_text');
+    Object.defineProperties(Response.prototype, {
+      arrayBuffer: {
+        value: useStep<[], ArrayBuffer>('__builtin_response_array_buffer'),
+        writable: true,
+        configurable: true,
+      },
+      json: {
+        value: useStep<[], any>('__builtin_response_json'),
+        writable: true,
+        configurable: true,
+      },
+      text: {
+        value: useStep<[], string>('__builtin_response_text'),
+        writable: true,
+        configurable: true,
+      },
+    });
 
     class ReadableStream<T> implements globalThis.ReadableStream<T> {
       constructor() {
