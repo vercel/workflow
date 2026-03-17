@@ -1381,6 +1381,42 @@ async function addNumbers(a: number, b: number) {
 }
 
 /**
+ * Validates that sleep() inside a loop with step calls actually delays
+ * execution on each iteration (i.e., sleeps are honored on replay, not skipped).
+ *
+ * Reproduces the scenario from a user report claiming that:
+ *   for (let i = 0; i < N; i++) {
+ *     await someStep();
+ *     await sleep(duration);
+ *   }
+ * ...fires all iterations instantly with zero delay.
+ */
+async function noopStep(iteration: number) {
+  'use step';
+  return { iteration, ts: Date.now() };
+}
+
+export async function sleepInLoopWorkflow() {
+  'use workflow';
+  const iterations = 3;
+  const sleepMs = 3_000; // 3s between iterations (2 sleeps total)
+  const timestamps: number[] = [];
+
+  for (let i = 0; i < iterations; i++) {
+    const result = await noopStep(i);
+    timestamps.push(result.ts);
+    if (i < iterations - 1) {
+      await sleep(sleepMs);
+    }
+  }
+
+  const totalElapsed = timestamps[timestamps.length - 1] - timestamps[0];
+  return { timestamps, totalElapsed };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
  * Control workflow: sleep + sequential steps (no hooks).
  * Proves that void sleep().then() does NOT interfere with sequential steps
  * whose events all exist in the log. This is a control test to show

@@ -2,8 +2,10 @@ export type * from './events.js';
 export {
   BaseEventSchema,
   CreateEventSchema,
+  EVENT_DATA_REF_FIELDS,
   EventSchema,
   EventTypeSchema,
+  stripEventDataRefs,
 } from './events.js';
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';

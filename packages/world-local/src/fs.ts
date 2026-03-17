@@ -53,6 +53,98 @@ export function clearCreatedFilesCache(): void {
 
 export { ulidToDate } from '@workflow/world';
 
+/**
+ * Regex matching a tag suffix on a fileId (after `.json` has been stripped).
+ * E.g., `wrun_ABC.vitest-0` → the `.vitest-0` part.
+ * Tags start with a letter and contain alphanumeric chars and hyphens.
+ * Entity IDs (ULIDs, step_N, etc.) never contain dots, so the first dot
+ * always marks the tag boundary.
+ */
+const TAG_PATTERN = /\.[a-zA-Z][a-zA-Z0-9-]*$/;
+
+/**
+ * Strip a tag suffix from a fileId.
+ * `wrun_ABC.vitest-0` → `wrun_ABC`
+ * `wrun_ABC` → `wrun_ABC` (no-op if no tag)
+ */
+export function stripTag(fileId: string): string {
+  return fileId.replace(TAG_PATTERN, '');
+}
+
+/**
+ * Build the file path for an entity, with optional tag embedded in the filename.
+ * `taggedPath('runs', 'wrun_ABC', 'vitest-0')` → `runs/wrun_ABC.vitest-0.json`
+ * `taggedPath('runs', 'wrun_ABC')` → `runs/wrun_ABC.json`
+ */
+export function taggedPath(
+  basedir: string,
+  entityDir: string,
+  fileId: string,
+  tag?: string
+): string {
+  const filename = tag ? `${fileId}.${tag}.json` : `${fileId}.json`;
+  return path.join(basedir, entityDir, filename);
+}
+
+/**
+ * Read a JSON entity with tagged fallback.
+ * When a tag is set, tries the tagged path first, then falls back to the
+ * untagged path (so a tagged world can read entities written without a tag).
+ */
+export async function readJSONWithFallback<T>(
+  basedir: string,
+  entityDir: string,
+  fileId: string,
+  schema: z.ZodType<T>,
+  tag?: string
+): Promise<T | null> {
+  if (tag) {
+    const result = await readJSON(
+      path.join(basedir, entityDir, `${fileId}.${tag}.json`),
+      schema
+    );
+    if (result !== null) return result;
+  }
+  return readJSON(path.join(basedir, entityDir, `${fileId}.json`), schema);
+}
+
+/**
+ * List all filenames in a directory that have a specific tag.
+ * Returns full filenames (e.g., `wrun_ABC.vitest-0.json`).
+ */
+export async function listTaggedFiles(
+  dirPath: string,
+  tag: string
+): Promise<string[]> {
+  const suffix = `.${tag}.json`;
+  try {
+    const files = await fs.readdir(dirPath);
+    return files.filter((f) => f.endsWith(suffix));
+  } catch (error) {
+    if ((error as any).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+/**
+ * List all filenames in a directory that have a specific tag and extension.
+ * Returns full filenames (e.g., `stream-chnk_ABC.vitest-0.bin`).
+ */
+export async function listTaggedFilesByExtension(
+  dirPath: string,
+  tag: string,
+  extension: string
+): Promise<string[]> {
+  const suffix = `.${tag}${extension}`;
+  try {
+    const files = await fs.readdir(dirPath);
+    return files.filter((f) => f.endsWith(suffix));
+  } catch (error) {
+    if ((error as any).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
 export async function ensureDir(dirPath: string): Promise<void> {
   try {
     await fs.mkdir(dirPath, { recursive: true });

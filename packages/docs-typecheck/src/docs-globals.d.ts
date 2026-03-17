@@ -124,7 +124,7 @@ declare global {
   type LanguageModelV2 = any;
   type LanguageModelV2Prompt = any;
   const myModel: LanguageModelV2;
-  function convertToModelMessages(messages: any[]): any[];
+  function convertToModelMessages(messages: any[]): Promise<any[]>;
   function createUIMessageStreamResponse(options: any): Response;
 
   // Workflow-specific placeholders

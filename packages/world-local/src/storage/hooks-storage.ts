@@ -14,6 +14,7 @@ import {
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSON,
+  readJSONWithFallback,
 } from '../fs.js';
 import { filterHookData } from './filters.js';
 import { hashToken } from './helpers.js';
@@ -22,7 +23,10 @@ import { hashToken } from './helpers.js';
  * Creates a hooks storage implementation using the filesystem.
  * Implements the Storage['hooks'] interface with hook CRUD operations.
  */
-export function createHooksStorage(basedir: string): Storage['hooks'] {
+export function createHooksStorage(
+  basedir: string,
+  tag?: string
+): Storage['hooks'] {
   // Helper function to find a hook by token (shared between getByToken)
   async function findHookByToken(token: string): Promise<Hook | null> {
     const hooksDir = path.join(basedir, 'hooks');
@@ -40,8 +44,13 @@ export function createHooksStorage(basedir: string): Storage['hooks'] {
   }
 
   async function get(hookId: string, params?: GetHookParams): Promise<Hook> {
-    const hookPath = path.join(basedir, 'hooks', `${hookId}.json`);
-    const hook = await readJSON(hookPath, HookSchema);
+    const hook = await readJSONWithFallback(
+      basedir,
+      'hooks',
+      hookId,
+      HookSchema,
+      tag
+    );
     if (!hook) {
       throw new HookNotFoundError(hookId);
     }

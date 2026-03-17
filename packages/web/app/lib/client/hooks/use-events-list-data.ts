@@ -53,7 +53,7 @@ export function useEventsListData(
         fetchEvents(env, runId, {
           sortOrder,
           limit: INITIAL_PAGE_SIZE,
-          withData: true,
+          withData: false,
         })
       );
       if (fetchError) {
@@ -108,7 +108,7 @@ export function useEventsListData(
           cursor,
           sortOrder,
           limit: LOAD_MORE_PAGE_SIZE,
-          withData: true,
+          withData: false,
         })
       );
       if (fetchError) {

@@ -6,7 +6,11 @@ import type { Run } from '@workflow/core/runtime';
 import { setWorld } from '@workflow/core/runtime';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Event, Hook } from '@workflow/world';
-import { createLocalWorld, type LocalWorld } from '@workflow/world-local';
+import {
+  createLocalWorld,
+  initDataDir,
+  type LocalWorld,
+} from '@workflow/world-local';
 import type { Plugin } from 'vite';
 
 class VitestBuilder extends BaseBuilder {
@@ -109,6 +113,8 @@ export async function buildWorkflowTests(
   const outDir = getOutDir(cwd);
   const builder = new VitestBuilder(cwd, outDir);
   await builder.build();
+  // Pre-create the shared data directory so workers don't race on mkdir
+  await initDataDir(join(cwd, '.workflow-data'));
 }
 
 let world: LocalWorld | undefined;
@@ -145,9 +151,15 @@ export async function setupWorkflowTests(
   ) => Promise<Response>;
   const stepHandler = stepsModule.POST as (req: Request) => Promise<Response>;
 
-  // Each vitest worker gets its own data directory to avoid race conditions
+  // Each vitest worker uses a unique tag to isolate its test data.
+  // All workers write to the shared .workflow-data directory so runs
+  // are visible to the observability dashboard, but clear() only
+  // deletes files matching the worker's tag.
   const poolId = process.env.VITEST_POOL_ID ?? '0';
-  world = createLocalWorld({ dataDir: join(outDir, 'data', poolId) });
+  world = createLocalWorld({
+    dataDir: join(cwd, '.workflow-data'),
+    tag: `vitest-${poolId}`,
+  });
   await world.start?.();
   await world.clear();
 

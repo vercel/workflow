@@ -129,9 +129,14 @@ export const stepEventsToStepEntity = (
   const createdEvent = events.find(
     (event) => event.eventType === 'step_created'
   );
-  if (!createdEvent) {
+
+  // V1 runs don't emit step_created events. Fall back to the earliest event
+  // in the group so we can still build a step span.
+  const anchorEvent = createdEvent ?? events[0];
+  if (!anchorEvent) {
     return null;
   }
+
   // Walk events in order to derive status, attempt count, and timestamps.
   // Handles both step_retrying and consecutive step_started as retry signals.
   let status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' =
@@ -168,16 +173,16 @@ export const stepEventsToStepEntity = (
 
   const lastEvent = events[events.length - 1];
   return {
-    stepId: createdEvent.correlationId,
-    runId: createdEvent.runId,
-    stepName: createdEvent.eventData?.stepName ?? '',
+    stepId: anchorEvent.correlationId ?? '',
+    runId: anchorEvent.runId,
+    stepName: createdEvent?.eventData?.stepName ?? '',
     status,
     attempt,
-    createdAt: createdEvent.createdAt,
-    updatedAt: lastEvent?.createdAt ?? createdEvent.createdAt,
+    createdAt: anchorEvent.createdAt,
+    updatedAt: lastEvent?.createdAt ?? anchorEvent.createdAt,
     startedAt,
     completedAt,
-    specVersion: createdEvent.specVersion,
+    specVersion: anchorEvent.specVersion,
   };
 };
 

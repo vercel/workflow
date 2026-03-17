@@ -26,11 +26,12 @@ import {
   deleteJSON,
   listJSONFiles,
   paginatedFileSystemQuery,
-  readJSON,
+  readJSONWithFallback,
+  taggedPath,
   writeExclusive,
   writeJSON,
 } from '../fs.js';
-import { filterEventData } from './filters.js';
+import { stripEventDataRefs } from './filters.js';
 import { getObjectCreatedAt, hashToken, monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
 import { handleLegacyEvent } from './legacy.js';
@@ -47,6 +48,8 @@ async function deleteAllWaitsForRun(
   const files = await listJSONFiles(waitsDir);
 
   for (const file of files) {
+    // fileIds may contain tag suffixes (e.g., "wrun_ABC-corrId.vitest-0")
+    // but startsWith still matches correctly since the tag is a suffix.
     if (file.startsWith(`${runId}-`)) {
       const waitPath = path.join(waitsDir, `${file}.json`);
       await deleteJSON(waitPath);
@@ -58,7 +61,10 @@ async function deleteAllWaitsForRun(
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
  */
-export function createEventsStorage(basedir: string): Storage['events'] {
+export function createEventsStorage(
+  basedir: string,
+  tag?: string
+): Storage['events'] {
   return {
     async create(runId, data, params): Promise<EventResult> {
       const eventId = `evnt_${monotonicUlid()}`;
@@ -103,8 +109,13 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         data.eventType !== 'run_created' &&
         !skipRunValidationEvents.includes(data.eventType)
       ) {
-        const runPath = path.join(basedir, 'runs', `${effectiveRunId}.json`);
-        currentRun = await readJSON(runPath, WorkflowRunSchema);
+        currentRun = await readJSONWithFallback(
+          basedir,
+          'runs',
+          effectiveRunId,
+          WorkflowRunSchema,
+          tag
+        );
       }
 
       // ============================================================
@@ -159,16 +170,14 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             specVersion: effectiveSpecVersion,
           };
           const compositeKey = `${effectiveRunId}-${eventId}`;
-          const eventPath = path.join(
-            basedir,
-            'events',
-            `${compositeKey}.json`
+          await writeJSON(
+            taggedPath(basedir, 'events', compositeKey, tag),
+            event
           );
-          await writeJSON(eventPath, event);
           const resolveData =
             params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
           return {
-            event: filterEventData(event, resolveData),
+            event: stripEventDataRefs(event, resolveData),
             run: currentRun,
           };
         }
@@ -208,12 +217,13 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       ];
       if (stepEvents.includes(data.eventType) && data.correlationId) {
         const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-        const stepPath = path.join(
+        validatedStep = await readJSONWithFallback(
           basedir,
           'steps',
-          `${stepCompositeKey}.json`
+          stepCompositeKey,
+          StepSchema,
+          tag
         );
-        validatedStep = await readJSON(stepPath, StepSchema);
 
         // Event ordering: step must exist before these events
         if (!validatedStep) {
@@ -247,12 +257,13 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         hookEventsRequiringExistence.includes(data.eventType) &&
         data.correlationId
       ) {
-        const hookPath = path.join(
+        const existingHook = await readJSONWithFallback(
           basedir,
           'hooks',
-          `${data.correlationId}.json`
+          data.correlationId,
+          HookSchema,
+          tag
         );
-        const existingHook = await readJSON(hookPath, HookSchema);
 
         if (!existingHook) {
           throw new WorkflowAPIError(`Hook "${data.correlationId}" not found`, {
@@ -299,12 +310,10 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           createdAt: now,
           updatedAt: now,
         };
-        const runPath = path.join(basedir, 'runs', `${effectiveRunId}.json`);
-        await writeJSON(runPath, run);
+        await writeJSON(taggedPath(basedir, 'runs', effectiveRunId, tag), run);
       } else if (data.eventType === 'run_started') {
         // Reuse currentRun from validation (already read above)
         if (currentRun) {
-          const runPath = path.join(basedir, 'runs', `${effectiveRunId}.json`);
           run = {
             runId: currentRun.runId,
             deploymentId: currentRun.deploymentId,
@@ -321,13 +330,16 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             startedAt: currentRun.startedAt ?? now,
             updatedAt: now,
           };
-          await writeJSON(runPath, run, { overwrite: true });
+          await writeJSON(
+            taggedPath(basedir, 'runs', effectiveRunId, tag),
+            run,
+            { overwrite: true }
+          );
         }
       } else if (data.eventType === 'run_completed' && 'eventData' in data) {
         const completedData = data.eventData as { output?: any };
         // Reuse currentRun from validation (already read above)
         if (currentRun) {
-          const runPath = path.join(basedir, 'runs', `${effectiveRunId}.json`);
           run = {
             runId: currentRun.runId,
             deploymentId: currentRun.deploymentId,
@@ -344,7 +356,11 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             completedAt: now,
             updatedAt: now,
           };
-          await writeJSON(runPath, run, { overwrite: true });
+          await writeJSON(
+            taggedPath(basedir, 'runs', effectiveRunId, tag),
+            run,
+            { overwrite: true }
+          );
           await Promise.all([
             deleteAllHooksForRun(basedir, effectiveRunId),
             deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -357,7 +373,6 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         };
         // Reuse currentRun from validation (already read above)
         if (currentRun) {
-          const runPath = path.join(basedir, 'runs', `${effectiveRunId}.json`);
           run = {
             runId: currentRun.runId,
             deploymentId: currentRun.deploymentId,
@@ -381,7 +396,11 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             completedAt: now,
             updatedAt: now,
           };
-          await writeJSON(runPath, run, { overwrite: true });
+          await writeJSON(
+            taggedPath(basedir, 'runs', effectiveRunId, tag),
+            run,
+            { overwrite: true }
+          );
           await Promise.all([
             deleteAllHooksForRun(basedir, effectiveRunId),
             deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -390,7 +409,6 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       } else if (data.eventType === 'run_cancelled') {
         // Reuse currentRun from validation (already read above)
         if (currentRun) {
-          const runPath = path.join(basedir, 'runs', `${effectiveRunId}.json`);
           run = {
             runId: currentRun.runId,
             deploymentId: currentRun.deploymentId,
@@ -407,7 +425,11 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             completedAt: now,
             updatedAt: now,
           };
-          await writeJSON(runPath, run, { overwrite: true });
+          await writeJSON(
+            taggedPath(basedir, 'runs', effectiveRunId, tag),
+            run,
+            { overwrite: true }
+          );
           await Promise.all([
             deleteAllHooksForRun(basedir, effectiveRunId),
             deleteAllWaitsForRun(basedir, effectiveRunId),
@@ -440,12 +462,10 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           specVersion: effectiveSpecVersion,
         };
         const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-        const stepPath = path.join(
-          basedir,
-          'steps',
-          `${stepCompositeKey}.json`
+        await writeJSON(
+          taggedPath(basedir, 'steps', stepCompositeKey, tag),
+          step
         );
-        await writeJSON(stepPath, step);
       } else if (data.eventType === 'step_started') {
         // step_started: Increments attempt, sets status to 'running'
         // Sets startedAt only on the first start (not updated on retries)
@@ -469,11 +489,6 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           }
 
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const stepPath = path.join(
-            basedir,
-            'steps',
-            `${stepCompositeKey}.json`
-          );
           step = {
             ...validatedStep,
             status: 'running',
@@ -485,7 +500,11 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             retryAfter: undefined,
             updatedAt: now,
           };
-          await writeJSON(stepPath, step, { overwrite: true });
+          await writeJSON(
+            taggedPath(basedir, 'steps', stepCompositeKey, tag),
+            step,
+            { overwrite: true }
+          );
         }
       } else if (data.eventType === 'step_completed' && 'eventData' in data) {
         // step_completed: Terminal state with output
@@ -493,11 +512,6 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         const completedData = data.eventData as { result: any };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const stepPath = path.join(
-            basedir,
-            'steps',
-            `${stepCompositeKey}.json`
-          );
           step = {
             ...validatedStep,
             status: 'completed',
@@ -505,7 +519,11 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             completedAt: now,
             updatedAt: now,
           };
-          await writeJSON(stepPath, step, { overwrite: true });
+          await writeJSON(
+            taggedPath(basedir, 'steps', stepCompositeKey, tag),
+            step,
+            { overwrite: true }
+          );
         }
       } else if (data.eventType === 'step_failed' && 'eventData' in data) {
         // step_failed: Terminal state with error
@@ -516,11 +534,6 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const stepPath = path.join(
-            basedir,
-            'steps',
-            `${stepCompositeKey}.json`
-          );
           const error = {
             message:
               typeof failedData.error === 'string'
@@ -535,7 +548,11 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             completedAt: now,
             updatedAt: now,
           };
-          await writeJSON(stepPath, step, { overwrite: true });
+          await writeJSON(
+            taggedPath(basedir, 'steps', stepCompositeKey, tag),
+            step,
+            { overwrite: true }
+          );
         }
       } else if (data.eventType === 'step_retrying' && 'eventData' in data) {
         // step_retrying: Sets status back to 'pending', records error
@@ -547,11 +564,6 @@ export function createEventsStorage(basedir: string): Storage['events'] {
         };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const stepPath = path.join(
-            basedir,
-            'steps',
-            `${stepCompositeKey}.json`
-          );
           step = {
             ...validatedStep,
             status: 'pending',
@@ -565,7 +577,11 @@ export function createEventsStorage(basedir: string): Storage['events'] {
             retryAfter: retryData.retryAfter,
             updatedAt: now,
           };
-          await writeJSON(stepPath, step, { overwrite: true });
+          await writeJSON(
+            taggedPath(basedir, 'steps', stepCompositeKey, tag),
+            step,
+            { overwrite: true }
+          );
         }
       } else if (
         // Hook lifecycle events
@@ -612,16 +628,14 @@ export function createEventsStorage(basedir: string): Storage['events'] {
 
           // Store the conflict event
           const compositeKey = `${effectiveRunId}-${eventId}`;
-          const eventPath = path.join(
-            basedir,
-            'events',
-            `${compositeKey}.json`
+          await writeJSON(
+            taggedPath(basedir, 'events', compositeKey, tag),
+            conflictEvent
           );
-          await writeJSON(eventPath, conflictEvent);
 
           const resolveData =
             params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-          const filteredEvent = filterEventData(conflictEvent, resolveData);
+          const filteredEvent = stripEventDataRefs(conflictEvent, resolveData);
 
           // Return EventResult with conflict event (no hook entity created)
           return {
@@ -645,20 +659,20 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           specVersion: effectiveSpecVersion,
           isWebhook: hookData.isWebhook ?? false,
         };
-        const hookPath = path.join(
-          basedir,
-          'hooks',
-          `${data.correlationId}.json`
+        await writeJSON(
+          taggedPath(basedir, 'hooks', data.correlationId, tag),
+          hook
         );
-        await writeJSON(hookPath, hook);
       } else if (data.eventType === 'hook_disposed') {
         // Read the hook to get its token before deleting
-        const hookPath = path.join(
+        const hookPath = taggedPath(basedir, 'hooks', data.correlationId, tag);
+        const existingHook = await readJSONWithFallback(
           basedir,
           'hooks',
-          `${data.correlationId}.json`
+          data.correlationId,
+          HookSchema,
+          tag
         );
-        const existingHook = await readJSON(hookPath, HookSchema);
         if (existingHook) {
           // Delete the token constraint file to free up the token for reuse
           const disposedConstraintPath = path.join(
@@ -676,12 +690,13 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           resumeAt?: Date;
         };
         const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-        const waitPath = path.join(
+        const existingWait = await readJSONWithFallback(
           basedir,
           'waits',
-          `${waitCompositeKey}.json`
+          waitCompositeKey,
+          WaitSchema,
+          tag
         );
-        const existingWait = await readJSON(waitPath, WaitSchema);
         if (existingWait) {
           throw new WorkflowAPIError(
             `Wait "${data.correlationId}" already exists`,
@@ -698,16 +713,20 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           updatedAt: now,
           specVersion: effectiveSpecVersion,
         };
-        await writeJSON(waitPath, wait);
+        await writeJSON(
+          taggedPath(basedir, 'waits', waitCompositeKey, tag),
+          wait
+        );
       } else if (data.eventType === 'wait_completed') {
         // wait_completed: Transitions wait to 'completed', rejects duplicates
         const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-        const waitPath = path.join(
+        const existingWait = await readJSONWithFallback(
           basedir,
           'waits',
-          `${waitCompositeKey}.json`
+          waitCompositeKey,
+          WaitSchema,
+          tag
         );
-        const existingWait = await readJSON(waitPath, WaitSchema);
         if (!existingWait) {
           throw new WorkflowAPIError(`Wait "${data.correlationId}" not found`, {
             status: 404,
@@ -725,18 +744,21 @@ export function createEventsStorage(basedir: string): Storage['events'] {
           completedAt: now,
           updatedAt: now,
         };
-        await writeJSON(waitPath, wait, { overwrite: true });
+        await writeJSON(
+          taggedPath(basedir, 'waits', waitCompositeKey, tag),
+          wait,
+          { overwrite: true }
+        );
       }
       // Note: hook_received events are stored in the event log but don't
       // modify the Hook entity (which doesn't have a payload field)
 
       // Store event using composite key {runId}-{eventId}
       const compositeKey = `${effectiveRunId}-${eventId}`;
-      const eventPath = path.join(basedir, 'events', `${compositeKey}.json`);
-      await writeJSON(eventPath, event);
+      await writeJSON(taggedPath(basedir, 'events', compositeKey, tag), event);
 
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-      const filteredEvent = filterEventData(event, resolveData);
+      const filteredEvent = stripEventDataRefs(event, resolveData);
 
       // Return EventResult with event and any created/updated entity
       return {
@@ -750,13 +772,18 @@ export function createEventsStorage(basedir: string): Storage['events'] {
 
     async get(runId, eventId, params) {
       const compositeKey = `${runId}-${eventId}`;
-      const eventPath = path.join(basedir, 'events', `${compositeKey}.json`);
-      const event = await readJSON(eventPath, EventSchema);
+      const event = await readJSONWithFallback(
+        basedir,
+        'events',
+        compositeKey,
+        EventSchema,
+        tag
+      );
       if (!event) {
         throw new Error(`Event ${eventId} in run ${runId} not found`);
       }
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-      return filterEventData(event, resolveData);
+      return stripEventDataRefs(event, resolveData);
     },
 
     async list(params) {
@@ -779,10 +806,9 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       if (resolveData === 'none') {
         return {
           ...result,
-          data: result.data.map((event) => {
-            const { eventData: _eventData, ...rest } = event as any;
-            return rest;
-          }),
+          data: result.data.map((event) =>
+            stripEventDataRefs(event, resolveData)
+          ),
         };
       }
 
@@ -810,10 +836,9 @@ export function createEventsStorage(basedir: string): Storage['events'] {
       if (resolveData === 'none') {
         return {
           ...result,
-          data: result.data.map((event) => {
-            const { eventData: _eventData, ...rest } = event as any;
-            return rest;
-          }),
+          data: result.data.map((event) =>
+            stripEventDataRefs(event, resolveData)
+          ),
         };
       }
 

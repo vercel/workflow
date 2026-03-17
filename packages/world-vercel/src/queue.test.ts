@@ -608,6 +608,75 @@ describe('createQueue', () => {
       );
     });
 
+    it('should pass x-vercel-id as requestId in handler metadata', async () => {
+      let capturedMeta: any;
+      mockHandleCallback.mockImplementation((handler) => {
+        // Return a function that simulates VQS invoking the handler
+        return async (req: Request) => {
+          await handler(
+            {
+              payload: { runId: 'run-123' },
+              queueName: '__wkf_workflow_test',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: 1,
+              createdAt: new Date(),
+            }
+          );
+          return new Response('ok');
+        };
+      });
+
+      const queue = createQueue();
+      const routeHandler = queue.createQueueHandler(
+        '__wkf_workflow_',
+        async (_msg, meta) => {
+          capturedMeta = meta;
+        }
+      );
+
+      await routeHandler(
+        new Request('http://localhost', {
+          headers: { 'x-vercel-id': 'iad1::abc123' },
+        })
+      );
+
+      expect(capturedMeta.requestId).toBe('iad1::abc123');
+    });
+
+    it('should pass undefined requestId when x-vercel-id header is absent', async () => {
+      let capturedMeta: any;
+      mockHandleCallback.mockImplementation((handler) => {
+        return async (req: Request) => {
+          await handler(
+            {
+              payload: { runId: 'run-123' },
+              queueName: '__wkf_workflow_test',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: 1,
+              createdAt: new Date(),
+            }
+          );
+          return new Response('ok');
+        };
+      });
+
+      const queue = createQueue();
+      const routeHandler = queue.createQueueHandler(
+        '__wkf_workflow_',
+        async (_msg, meta) => {
+          capturedMeta = meta;
+        }
+      );
+
+      await routeHandler(new Request('http://localhost'));
+
+      expect(capturedMeta.requestId).toBeUndefined();
+    });
+
     it('should handle step payloads correctly', async () => {
       mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
 
