@@ -20,7 +20,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "clean": "tsc --build --clean && rm -rf dist"
+    "clean": "tsc --build --clean && rm -rf dist",
+    "test": "vitest run src"
   },
   "dependencies": {
     "ulid": "catalog:"
@@ -30,6 +31,7 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "vitest": "catalog:",
     "zod": "catalog:",
     "@workflow/tsconfig": "workspace:*"
   },

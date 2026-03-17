@@ -12,6 +12,7 @@ import {
   readJSON,
 } from './fs.js';
 import { initDataDir } from './init.js';
+import { createLimits } from './limits.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { createStorage } from './storage.js';
 import { hashToken } from './storage/helpers.js';
@@ -61,6 +62,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
   return {
+    limits: createLimits(mergedConfig.dataDir, tag),
     ...queue,
     ...createStorage(mergedConfig.dataDir, tag),
     ...createStreamer(mergedConfig.dataDir, tag),

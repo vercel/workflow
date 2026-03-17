@@ -10,6 +10,24 @@ export {
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
+export type * from './limits.js';
+export {
+  createLimitsNotImplementedError,
+  LimitAcquireAcquiredResultSchema,
+  LimitAcquireBlockedResultSchema,
+  LimitAcquireRequestSchema,
+  LimitAcquireResultSchema,
+  LimitAcquireStatusSchema,
+  LimitBlockedReasonSchema,
+  LimitConcurrencySchema,
+  LimitDefinitionSchema,
+  LimitHeartbeatRequestSchema,
+  LimitKeySchema,
+  LimitLeaseSchema,
+  LimitRateSchema,
+  LimitReleaseRequestSchema,
+  LIMITS_NOT_IMPLEMENTED_MESSAGE,
+} from './limits.js';
 export type * from './queue.js';
 export {
   HealthCheckPayloadSchema,

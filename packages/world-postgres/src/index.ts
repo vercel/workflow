@@ -3,6 +3,7 @@ import type { Storage, World } from '@workflow/world';
 import createPostgres from 'postgres';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
+import { createLimits } from './limits.js';
 import { createQueue } from './queue.js';
 import {
   createEventsStorage,
@@ -37,8 +38,10 @@ export function createWorld(
   const queue = createQueue(config, postgres);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(postgres, drizzle);
+  const limits = createLimits(config, drizzle);
 
   return {
+    limits,
     ...storage,
     ...streamer,
     ...queue,

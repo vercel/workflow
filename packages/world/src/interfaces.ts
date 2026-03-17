@@ -9,6 +9,7 @@ import type {
   RunCreatedEventRequest,
 } from './events.js';
 import type { GetHookParams, Hook, ListHooksParams } from './hooks.js';
+import type { Limits } from './limits.js';
 import type { Queue } from './queue.js';
 import type {
   GetWorkflowRunParams,
@@ -179,6 +180,8 @@ export interface Storage {
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
 export interface World extends Queue, Storage, Streamer {
+  limits: Limits;
+
   /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.

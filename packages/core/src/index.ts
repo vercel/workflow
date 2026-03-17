@@ -25,6 +25,12 @@ export {
   type WebhookOptions,
 } from './create-hook.js';
 export { defineHook, type TypedHook } from './define-hook.js';
+export {
+  lock,
+  type LockHandle,
+  type LockOptions,
+  LIMITS_NOT_IMPLEMENTED_MESSAGE,
+} from './lock.js';
 export { sleep } from './sleep.js';
 export {
   getStepMetadata,

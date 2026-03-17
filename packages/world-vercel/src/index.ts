@@ -1,5 +1,6 @@
 import type { World } from '@workflow/world';
 import { createGetEncryptionKeyForRun } from './encryption.js';
+import { createLimits } from './limits.js';
 import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
@@ -23,6 +24,7 @@ export function createVercelWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
+    limits: createLimits(config),
     ...createQueue(config),
     ...createStorage(config),
     ...createStreamer(config),
