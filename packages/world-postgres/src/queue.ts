@@ -344,26 +344,25 @@ export function createQueue(
         ? graphileAttempt.data.job.attempts
         : messageData.attempt;
       const queueName = `${queue}${messageData.id}` as const;
+      const bodyStream = Stream.Readable.toWeb(
+        Stream.Readable.from([messageData.data])
+      );
+      const body = await transport.deserialize(
+        bodyStream as ReadableStream<Uint8Array>
+      );
+      QueuePayloadSchema.parse(body);
       const workflowRunSerializationKey =
         queue === '__wkf_workflow_'
-          ? `workflow:${
-              WorkflowInvokePayloadSchema.parse(
-                await transport.deserialize(
-                  Stream.Readable.toWeb(
-                    Stream.Readable.from([messageData.data])
-                  ) as ReadableStream<Uint8Array>
-                )
-              ).runId
-            }`
+          ? (() => {
+              const workflowInvoke =
+                WorkflowInvokePayloadSchema.safeParse(body);
+              if (!workflowInvoke.success) {
+                return undefined;
+              }
+              return `workflow:${workflowInvoke.data.runId}`;
+            })()
           : undefined;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
-        const bodyStream = Stream.Readable.toWeb(
-          Stream.Readable.from([messageData.data])
-        );
-        const body = await transport.deserialize(
-          bodyStream as ReadableStream<Uint8Array>
-        );
-        QueuePayloadSchema.parse(body);
         const result = await executeMessageOverHttp({
           queueName,
           messageId: messageData.messageId,

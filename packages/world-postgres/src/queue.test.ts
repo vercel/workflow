@@ -316,6 +316,37 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('does not require a runId for workflow health-check payloads', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.WORKFLOW_LOCAL_BASE_URL = 'http://localhost:3000';
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, postgres);
+    try {
+      await queue.start();
+
+      const task = getTaskHandler('workflow_flows');
+      const payload = buildMessageData('__wkf_workflow_health_check', {
+        __healthCheck: true,
+        correlationId: 'hc_01ABC',
+      });
+
+      await expect(task(payload, {} as any)).resolves.toBeUndefined();
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost:3000/.well-known/workflow/v1/flow',
+        expect.objectContaining({
+          method: 'POST',
+          headers: expect.objectContaining({
+            'x-vqs-queue-name': '__wkf_workflow_health_check',
+          }),
+        })
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('queues producer delays and headers in graphile job metadata', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
