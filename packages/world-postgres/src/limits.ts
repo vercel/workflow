@@ -3,8 +3,8 @@ import type { PostgresWorldConfig } from './config.js';
 import type { Drizzle } from './drizzle/index.js';
 
 export function createLimits(
-  config: PostgresWorldConfig,
-  drizzle: Drizzle
+  _config: PostgresWorldConfig,
+  _drizzle: Drizzle
 ): Limits {
   return {
     async acquire() {

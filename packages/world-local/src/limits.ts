@@ -1,6 +1,6 @@
 import { createLimitsNotImplementedError, type Limits } from '@workflow/world';
 
-export function createLimits(dataDir: string, tag?: string): Limits {
+export function createLimits(_dataDir: string, _tag?: string): Limits {
   return {
     async acquire() {
       throw createLimitsNotImplementedError();
