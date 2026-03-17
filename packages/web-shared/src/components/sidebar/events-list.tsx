@@ -271,10 +271,10 @@ export function EventsList({
         Events {!isLoading && `(${sortedEvents.length})`}
       </h3>
       {isLoading ? (
-        <div className="flex flex-col gap-3">
-          <Skeleton className="h-[48px] w-full rounded-lg border" />
-          <Skeleton className="h-[48px] w-full rounded-lg border" />
-          <Skeleton className="h-[48px] w-full rounded-lg border" />
+        <div className="flex flex-col gap-4">
+          <Skeleton className="h-9 w-full rounded-md" />
+          <Skeleton className="h-9 w-full rounded-md" />
+          <Skeleton className="h-9 w-full rounded-md" />
         </div>
       ) : null}
       {!isLoading && !error && sortedEvents.length === 0 && (

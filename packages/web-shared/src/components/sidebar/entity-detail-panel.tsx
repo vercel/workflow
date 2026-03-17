@@ -479,11 +479,10 @@ export function EntityDetailPanel({
             />
           </section>
 
-          {resource !== 'run' && (rawEvents || loading) && (
+          {resource !== 'run' && rawEvents && (
             <section>
               <EventsList
-                events={rawEvents ?? []}
-                isLoading={loading}
+                events={rawEvents}
                 onLoadEventData={onLoadEventData}
                 encryptionKey={encryptionKey}
               />
