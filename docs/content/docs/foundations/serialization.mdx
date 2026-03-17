@@ -280,7 +280,7 @@ class Order {
 
 The class can then be used naturally inside a workflow function. Instance methods marked with `"use step"` are each executed as a step — with automatic caching, retry semantics, and full Node.js runtime access. Methods _without_ `"use step"` run directly in the workflow context, so they must follow the same constraints as workflow functions:
 
-{/* @expect-error:2351 */}
+{/* @expect-error:2693 */}
 
 ```typescript title="workflows/process-order.ts" lineNumbers
 export async function processOrderWorkflow(
@@ -319,7 +319,7 @@ export class Order {
 }
 ```
 
-{/* @expect-error:2351 */}
+{/* @expect-error:2693,2552,2304 */}
 
 ```typescript title="workflows/process-order.ts" lineNumbers
 export async function processOrderWorkflow() {
