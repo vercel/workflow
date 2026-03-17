@@ -251,6 +251,71 @@ describe('postgres queue http execution', () => {
     expect(getWorkflowPort).toHaveBeenCalled();
   });
 
+  it('serializes workflow queue execution for the same runId', async () => {
+    let resolveFirstRequestStarted!: () => void;
+    const firstRequestStarted = new Promise<void>((resolve) => {
+      resolveFirstRequestStarted = resolve;
+    });
+    let resolveReleaseFirstRequest!: () => void;
+    const releaseFirstRequest = new Promise<void>((resolve) => {
+      resolveReleaseFirstRequest = resolve;
+    });
+    let requestCount = 0;
+    let activeRequests = 0;
+    let maxActiveRequests = 0;
+    const fetchMock = vi.fn(async () => {
+      requestCount += 1;
+      activeRequests += 1;
+      maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+
+      if (requestCount === 1) {
+        resolveFirstRequestStarted();
+        await releaseFirstRequest;
+      }
+
+      activeRequests -= 1;
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    process.env.WORKFLOW_LOCAL_BASE_URL = 'http://localhost:3000';
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, postgres);
+    try {
+      await queue.start();
+
+      const task = getTaskHandler('workflow_flows');
+      const payload = {
+        runId: 'wrun_01ABC',
+      };
+      const firstExecution = task(
+        buildMessageData('__wkf_workflow_test-workflow', payload, {
+          messageId: MessageId.parse('msg_01ABC'),
+        }),
+        {} as any
+      );
+      const secondExecution = task(
+        buildMessageData('__wkf_workflow_test-workflow', payload, {
+          messageId: MessageId.parse('msg_01ABD'),
+        }),
+        {} as any
+      );
+
+      await firstRequestStarted;
+      await Promise.resolve();
+      expect(requestCount).toBe(1);
+      expect(maxActiveRequests).toBe(1);
+
+      resolveReleaseFirstRequest();
+      await Promise.all([firstExecution, secondExecution]);
+
+      expect(requestCount).toBe(2);
+      expect(maxActiveRequests).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('queues producer delays and headers in graphile job metadata', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
@@ -343,7 +408,13 @@ async function startWorkflowHttpServer(
     url: string | undefined;
     headers: Record<string, string | string[] | undefined>;
     body: string;
-  }>
+  }>,
+  handler?: (req: {
+    method: string | undefined;
+    url: string | undefined;
+    headers: Record<string, string | string[] | undefined>;
+    body: string;
+  }) => Promise<Response> | Response
 ) {
   const server = createServer(async (req, res) => {
     const body = await new Promise<string>((resolve, reject) => {
@@ -356,12 +427,23 @@ async function startWorkflowHttpServer(
       req.on('error', reject);
     });
 
-    requests.push({
+    const request = {
       method: req.method,
       url: req.url,
       headers: req.headers,
       body,
-    });
+    };
+    requests.push(request);
+
+    if (handler) {
+      const response = await handler(request);
+      res.writeHead(
+        response.status,
+        Object.fromEntries(response.headers.entries())
+      );
+      res.end(await response.text());
+      return;
+    }
 
     if (req.method === 'POST' && req.url === '/.well-known/workflow/v1/step') {
       res.writeHead(200, { 'content-type': 'application/json' });

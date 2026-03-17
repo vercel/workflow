@@ -7,6 +7,7 @@ import {
   QueuePayloadSchema,
   type QueuePrefix,
   type ValidQueueName,
+  WorkflowInvokePayloadSchema,
 } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
 import {
@@ -97,6 +98,10 @@ export function createQueue(
 
   const completedMessages = new Set<string>();
   const inflightMessages = new Map<string, Promise<void>>();
+  const inflightWorkflowRuns = new Map<
+    string,
+    Promise<'completed' | 'rescheduled'>
+  >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let startPromise: Promise<void> | null = null;
@@ -338,6 +343,19 @@ export function createQueue(
       const attempt = graphileAttempt.success
         ? graphileAttempt.data.job.attempts
         : messageData.attempt;
+      const queueName = `${queue}${messageData.id}` as const;
+      const workflowRunSerializationKey =
+        queue === '__wkf_workflow_'
+          ? `workflow:${
+              WorkflowInvokePayloadSchema.parse(
+                await transport.deserialize(
+                  Stream.Readable.toWeb(
+                    Stream.Readable.from([messageData.data])
+                  ) as ReadableStream<Uint8Array>
+                )
+              ).runId
+            }`
+          : undefined;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
         const bodyStream = Stream.Readable.toWeb(
           Stream.Readable.from([messageData.data])
@@ -346,7 +364,6 @@ export function createQueue(
           bodyStream as ReadableStream<Uint8Array>
         );
         QueuePayloadSchema.parse(body);
-        const queueName = `${queue}${messageData.id}` as const;
         const result = await executeMessageOverHttp({
           queueName,
           messageId: messageData.messageId,
@@ -383,6 +400,28 @@ export function createQueue(
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
+        if (workflowRunSerializationKey) {
+          // Preserve step fan-out while preventing two workflow replays from
+          // mutating the same run's event log at the same time.
+          const previous = inflightWorkflowRuns.get(
+            workflowRunSerializationKey
+          );
+          const execution = (previous ?? Promise.resolve())
+            .catch(() => {})
+            .then(() => executeTask())
+            .finally(() => {
+              if (
+                inflightWorkflowRuns.get(workflowRunSerializationKey) ===
+                execution
+              ) {
+                inflightWorkflowRuns.delete(workflowRunSerializationKey);
+              }
+            });
+          inflightWorkflowRuns.set(workflowRunSerializationKey, execution);
+          await execution;
+          return;
+        }
+
         await executeTask();
         return;
       }
