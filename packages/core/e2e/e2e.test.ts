@@ -5,28 +5,39 @@ import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
 } from '@workflow/errors';
-import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
+import {
+  afterAll,
+  assert,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from 'vitest';
 import type { Run } from '../src/runtime';
 import {
   getHookByToken,
   getRun,
   getWorld,
   healthCheck,
+  start as rawStart,
   resumeHook,
-  start,
 } from '../src/runtime';
 import {
   cliCancel,
   cliHealthJson,
   cliInspectJson,
   fetchManifest,
+  getCollectedRunIds,
   getProtectionBypassHeaders,
-  getWorkbenchAppPath,
   getWorkflowMetadata,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
   isLocalDeployment,
+  setupRunTracking,
   setupWorld,
+  trackRun,
+  writeDiagnosticsSidecar,
 } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
@@ -34,12 +45,17 @@ if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
-// Collect runIds for observability links (Vercel world only)
-const collectedRunIds: {
-  testName: string;
-  runId: string;
-  timestamp: string;
-}[] = [];
+/**
+ * Tracked wrapper around start() that automatically registers runs
+ * for diagnostics on test failure and observability metadata collection.
+ */
+async function start<T>(
+  ...args: Parameters<typeof rawStart<T>>
+): Promise<Run<T>> {
+  const run = await rawStart<T>(...args);
+  trackRun(run);
+  return run;
+}
 
 function getE2EMetadataPath() {
   const appName = process.env.APP_NAME || 'unknown';
@@ -54,7 +70,7 @@ function writeE2EMetadata() {
   if (!process.env.WORKFLOW_VERCEL_ENV) return;
 
   const metadata = {
-    runIds: collectedRunIds,
+    runIds: getCollectedRunIds(),
     vercel: {
       projectSlug: process.env.WORKFLOW_VERCEL_PROJECT_SLUG,
       environment: process.env.WORKFLOW_VERCEL_ENV,
@@ -111,6 +127,7 @@ async function startWorkflowViaHttp(
   }
   const result = await res.json();
   const run = getRun(result.runId);
+  trackRun(run, { workflowFile, workflowFn });
 
   return run;
 }
@@ -124,9 +141,15 @@ describe('e2e', () => {
     setupWorld(deploymentUrl);
   });
 
-  // Write E2E metadata file with runIds for observability links
+  // Enable automatic run diagnostics on test failure
+  beforeEach((ctx) => {
+    setupRunTracking(ctx.task.name);
+  });
+
+  // Write E2E metadata and diagnostics files
   afterAll(() => {
     writeE2EMetadata();
+    writeDiagnosticsSidecar();
   });
 
   test.each([

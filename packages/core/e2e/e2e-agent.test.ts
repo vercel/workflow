@@ -10,13 +10,27 @@
  *   2. DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack \
  *      pnpm vitest run packages/core/e2e/e2e-agent.test.ts
  */
-import { beforeAll, describe, expect, it } from 'vitest';
-import { start } from '../src/runtime';
-import { getWorkflowMetadata, setupWorld } from './utils';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { Run } from '../src/runtime';
+import { start as rawStart } from '../src/runtime';
+import {
+  getWorkflowMetadata,
+  setupRunTracking,
+  setupWorld,
+  trackRun,
+} from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
+}
+
+async function start<T>(
+  ...args: Parameters<typeof rawStart<T>>
+): Promise<Run<T>> {
+  const run = await rawStart<T>(...args);
+  trackRun(run);
+  return run;
 }
 
 // Next.js canary builds (16.2.0-canary.100+) have a regression where
@@ -34,6 +48,10 @@ async function agentE2e(fn: string) {
 
 beforeAll(async () => {
   setupWorld(deploymentUrl);
+});
+
+beforeEach((ctx) => {
+  setupRunTracking(ctx.task.name);
 });
 
 // ============================================================================
