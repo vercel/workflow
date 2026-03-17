@@ -101,6 +101,7 @@ const eventDataRefFieldMap: Record<string, string> = {
   step_failed: 'error',
   step_retrying: 'error',
   hook_created: 'metadata',
+  hook_received: 'payload',
 };
 
 // Events where the client uses the response entity data need 'resolve' (default).
