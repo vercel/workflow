@@ -102,7 +102,7 @@ Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.
 </Callout>
 
 <Callout type="warn">
-`returnValue` polls the child workflow every 1 second and holds a serverless worker alive for the entire duration of the child workflow. For long-running children, prefer a fire-and-forget pattern combined with [hooks](/docs/foundations/hooks) to receive a notification when the child completes.
+`returnValue` currently polls the child workflow every 1 second and holds a serverless worker alive for the entire duration of the child workflow. This is a temporary implementation — a future release will use internal hooks so the parent workflow can suspend and be resumed by the child, avoiding the polling overhead. For now, if the child workflow is long-running, prefer a fire-and-forget pattern combined with [hooks](/docs/foundations/hooks) to receive a notification when the child completes.
 </Callout>
 
 ### Fire and Forget
@@ -281,7 +281,7 @@ export async function syncDashboard() {
 
 #### Starting against the latest deployment
 
-By default, `start()` schedules the child workflow on the **same deployment** as the caller. This is usually what you want for parent-child workflows within the same request. However, for self-chaining workflows that run over long periods, you may want the next run to use the **latest deployment** so it picks up new code:
+For self-chaining workflows that run over long periods, you may want the next run to use the **latest deployment** so it picks up new code. Pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) to `start()`:
 
 ```typescript lineNumbers
 import { sleep } from "workflow";
@@ -299,9 +299,7 @@ export async function repeatingJob() {
 }
 ```
 
-<Callout type="warn">
-When using `deploymentId: "latest"`, type safety is not guaranteed across deployments. If the workflow's input arguments or return value types change between deployments, the daisy-chained workflow may receive unexpected data. It is your responsibility to ensure workflows remain backwards-compatible when using this pattern.
-</Callout>
+See the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for details on `deploymentId: "latest"` behavior, including compatibility considerations across deployments.
 
 ## Next Steps
 
