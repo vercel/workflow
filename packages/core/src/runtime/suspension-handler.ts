@@ -134,7 +134,7 @@ export async function handleSuspension({
           }
         } catch (err) {
           if (WorkflowAPIError.is(err)) {
-            if (err.status === 410) {
+            if (err.status === 409 || err.status === 410) {
               runtimeLogger.info(
                 'Workflow run already completed, skipping hook',
                 {
@@ -166,7 +166,7 @@ export async function handleSuspension({
           await world.events.create(runId, hookDisposedEvent);
         } catch (err) {
           if (WorkflowAPIError.is(err)) {
-            if (err.status === 410) {
+            if (err.status === 409 || err.status === 410) {
               runtimeLogger.info(
                 'Workflow run already completed, skipping hook disposal',
                 {
