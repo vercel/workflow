@@ -5,7 +5,7 @@ describe('lock', () => {
     throw new Error('TODO: implement');
   });
 
-  it.fails('returns a handle with release and heartbeat behavior', () => {
+  it.fails('returns a handle with dispose and heartbeat behavior', () => {
     throw new Error('TODO: implement');
   });
 

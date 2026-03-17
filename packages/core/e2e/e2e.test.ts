@@ -220,6 +220,9 @@ describe('e2e', () => {
 
   const isNext = process.env.APP_NAME?.includes('nextjs');
   const isLocal = deploymentUrl.includes('localhost');
+  const isPostgresWorld =
+    process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres';
+  const isLocalWorld = isLocalDeployment() && !isPostgresWorld;
   // only works with framework that transpiles react and
   // doesn't work on Vercel due to eval hack so react isn't
   // bundled in function
@@ -543,6 +546,46 @@ describe('e2e', () => {
     // Vercel with cold start overhead, but fail if it looks sequential (>25s).
     expect(elapsed).toBeLessThan(25_000);
   });
+
+  if (isLocalWorld) {
+    test.fails(
+      'workflowWithWorkflowAndStepLocks demonstrates workflow and step limits on local world',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('workflowWithWorkflowAndStepLocks'), [
+          'local-world',
+        ]);
+        const returnValue = await run.returnValue;
+
+        expect(returnValue).toMatchObject({
+          workflowKey: 'workflow:user:local-world',
+          dbKey: 'step:db:cheap',
+          aiKey: 'step:provider:openai',
+          summary: 'summary:profile:local-world',
+        });
+      }
+    );
+  }
+
+  if (isPostgresWorld) {
+    test.fails(
+      'workflowWithWorkflowAndStepLocks demonstrates workflow and step limits on postgres world',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('workflowWithWorkflowAndStepLocks'), [
+          'postgres-world',
+        ]);
+        const returnValue = await run.returnValue;
+
+        expect(returnValue).toMatchObject({
+          workflowKey: 'workflow:user:postgres-world',
+          dbKey: 'step:db:cheap',
+          aiKey: 'step:provider:openai',
+          summary: 'summary:profile:postgres-world',
+        });
+      }
+    );
+  }
 
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('nullByteWorkflow'), []);

@@ -21,8 +21,9 @@ export interface LockOptions extends LimitDefinition {
  */
 export interface LockHandle
   extends Pick<LimitLease, 'leaseId' | 'key' | 'holderId' | 'expiresAt'> {
-  release(): Promise<void>;
+  dispose(): Promise<void>;
   heartbeat(ttlMs?: number): Promise<void>;
+  [Symbol.asyncDispose](): Promise<void>;
 }
 
 /**

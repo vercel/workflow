@@ -9,6 +9,7 @@ import {
   getStepMetadata,
   getWorkflowMetadata,
   getWritable,
+  lock,
   type RequestWithResponse,
   RetryableError,
   sleep,
@@ -211,6 +212,53 @@ export async function parallelSleepWorkflow() {
   await Promise.all(Array.from({ length: 10 }, () => sleep('1s')));
   const endTime = Date.now();
   return { startTime, endTime };
+}
+
+async function cheapDbStep(userId: string) {
+  'use step';
+
+  await using _dbLimit = await lock({
+    key: 'step:db:cheap',
+    concurrency: { max: 20 },
+    leaseTtlMs: 30_000,
+  });
+
+  return {
+    userId,
+    prompt: `profile:${userId}`,
+  };
+}
+
+async function expensiveAIStep(prompt: string) {
+  'use step';
+
+  await using _aiLimit = await lock({
+    key: 'step:provider:openai',
+    rate: { count: 10, periodMs: 60_000 },
+    leaseTtlMs: 30_000,
+  });
+
+  return `summary:${prompt}`;
+}
+
+export async function workflowWithWorkflowAndStepLocks(userId = 'user-123') {
+  'use workflow';
+
+  await using userLimit = await lock({
+    key: `workflow:user:${userId}`,
+    concurrency: { max: 2 },
+    leaseTtlMs: 30_000,
+  });
+
+  const row = await cheapDbStep(userId);
+  const summary = await expensiveAIStep(row.prompt);
+
+  return {
+    workflowKey: userLimit.key,
+    dbKey: 'step:db:cheap',
+    aiKey: 'step:provider:openai',
+    summary,
+  };
 }
 
 //////////////////////////////////////////////////////////
