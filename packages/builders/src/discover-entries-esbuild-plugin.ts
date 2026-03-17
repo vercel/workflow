@@ -148,10 +148,10 @@ export function createDiscoverEntriesPlugin(
           }
 
           const { code: transformedCode } = await applySwcTransform(
-            args.path,
+            normalizedPath,
             source,
             false,
-            args.path,
+            normalizedPath,
             projectRoot || build.initialOptions.absWorkingDir || process.cwd()
           );
 
