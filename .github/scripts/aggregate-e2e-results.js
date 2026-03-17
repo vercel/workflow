@@ -493,15 +493,19 @@ function renderAggregatedSummary(
           // Extract just the test name without "e2e " prefix if present
           const testName = test.name.replace(/^e2e\s+/, '');
 
-          // Look up enriched diagnostics for this test
+          // Look up enriched diagnostics for this test.
+          // Only show observability links for vercel-prod tests — other
+          // categories (local, community) don't run on Vercel's world
+          // backend so there's no dashboard to link to.
+          const isVercelProd = catName === 'vercel-prod';
           const diag = diagnostics.get(test.name) || diagnostics.get(testName);
           const failureInfo = failures.get(testName) || failures.get(test.name);
-          const obsUrl =
-            catName === 'vercel-prod'
-              ? getObservabilityUrl(metadata, appName, test.name)
-              : null;
-          const dashboardUrl =
-            diag?.dashboardUrl || failureInfo?.dashboardUrl || obsUrl;
+          const obsUrl = isVercelProd
+            ? getObservabilityUrl(metadata, appName, test.name)
+            : null;
+          const dashboardUrl = isVercelProd
+            ? diag?.dashboardUrl || failureInfo?.dashboardUrl || obsUrl
+            : null;
           const runId = diag?.runId || failureInfo?.runId;
           const runStatus = failureInfo?.status;
 
