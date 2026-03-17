@@ -165,6 +165,19 @@ export function getCLIRevivers(): Revivers {
     Float32Array: (value: string) => new Float32Array(reviveArrayBuffer(value)),
     Float64Array: (value: string) => new Float64Array(reviveArrayBuffer(value)),
     Headers: (value) => new Headers(value),
+    Request: (value) =>
+      new Request(value.url, {
+        method: value.method,
+        headers: new Headers(value.headers),
+        body: value.body,
+        duplex: value.duplex,
+      }),
+    Response: (value) =>
+      new Response(value.body, {
+        status: value.status,
+        statusText: value.statusText,
+        headers: new Headers(value.headers),
+      }),
     Int8Array: (value: string) => new Int8Array(reviveArrayBuffer(value)),
     Int16Array: (value: string) => new Int16Array(reviveArrayBuffer(value)),
     Int32Array: (value: string) => new Int32Array(reviveArrayBuffer(value)),
