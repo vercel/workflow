@@ -1861,6 +1861,19 @@ describe('e2e', () => {
   );
 
   test(
+    'sleepInLoopWorkflow - sleep inside loop with steps actually delays each iteration',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('sleepInLoopWorkflow'), []);
+      const returnValue = await run.returnValue;
+
+      // 3 iterations with 3s sleep between each pair = ~6s minimum total elapsed
+      expect(returnValue.timestamps).toHaveLength(3);
+      expect(returnValue.totalElapsed).toBeGreaterThan(5_000);
+    }
+  );
+
+  test(
     'sleepWithSequentialStepsWorkflow - sequential steps work with concurrent sleep (control)',
     { timeout: 60_000 },
     async () => {
