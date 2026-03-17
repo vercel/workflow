@@ -4,7 +4,7 @@ import { getWorkflowPort } from '@workflow/utils/get-port';
 import { MessageId, type QueuePayload } from '@workflow/world';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLocalWorld, createQueueExecutor } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 import { stepEntrypoint } from '../../core/dist/runtime/step-handler.js';
 import { createQueue } from './queue.js';
 import { MessageData } from './message.js';
@@ -31,7 +31,6 @@ vi.mock('@workflow/world-local', async (importOriginal) => {
   return {
     ...actual,
     createLocalWorld: vi.fn(actual.createLocalWorld),
-    createQueueExecutor: vi.fn(actual.createQueueExecutor),
   };
 });
 
@@ -44,9 +43,6 @@ describe('postgres queue http execution', () => {
   const runnerMock = {
     stop: vi.fn(),
   };
-  const executeMessage = vi.fn();
-  const registerHandler = vi.fn();
-  const executorClose = vi.fn();
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
   const localWorldClose = vi.fn();
   const createQueueHandler = vi.fn(() => wrappedHandler);
@@ -58,11 +54,6 @@ describe('postgres queue http execution', () => {
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
     vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
     vi.mocked(run).mockResolvedValue(runnerMock as any);
-    vi.mocked(createQueueExecutor).mockReturnValue({
-      executeMessage,
-      registerHandler,
-      close: executorClose,
-    } as any);
     vi.mocked(createLocalWorld).mockReturnValue({
       createQueueHandler,
       close: localWorldClose,
@@ -93,59 +84,6 @@ describe('postgres queue http execution', () => {
     }> = [];
     const server = await startWorkflowHttpServer(requests);
     process.env.WORKFLOW_LOCAL_BASE_URL = server.baseUrl;
-
-    const directHandlers = new Map<
-      string,
-      (req: Request) => Promise<Response>
-    >();
-    registerHandler.mockImplementation((prefix, handler) => {
-      directHandlers.set(prefix, handler);
-    });
-    executeMessage.mockImplementation(
-      async ({ queueName, messageId, attempt, body, headers }) => {
-        const prefix = queueName.startsWith('__wkf_step_')
-          ? '__wkf_step_'
-          : '__wkf_workflow_';
-        const pathname = prefix === '__wkf_step_' ? 'step' : 'flow';
-        const handler = directHandlers.get(prefix);
-        if (!handler) {
-          return { type: 'completed' };
-        }
-
-        const response = await handler(
-          new Request(`http://localhost/.well-known/workflow/v1/${pathname}`, {
-            method: 'POST',
-            headers: {
-              ...headers,
-              'content-type': 'application/json',
-              'x-vqs-queue-name': queueName,
-              'x-vqs-message-id': messageId,
-              'x-vqs-message-attempt': String(attempt),
-            },
-            body,
-          })
-        );
-        const text = await response.text();
-
-        if (!response.ok) {
-          return {
-            type: 'error',
-            status: response.status,
-            text,
-            headers: Object.fromEntries(response.headers.entries()),
-          };
-        }
-
-        try {
-          const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
-          if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
-            return { type: 'reschedule', timeoutSeconds };
-          }
-        } catch {}
-
-        return { type: 'completed' };
-      }
-    );
     createQueueHandler.mockImplementation((queuePrefix) => {
       if (queuePrefix === '__wkf_step_') {
         return stepEntrypoint;
