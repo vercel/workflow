@@ -264,12 +264,12 @@ export async function flushablePipe(
     // on `state.reject(err)` for error handling.
 
     // Attempt to cancel the upstream reader so the source knows it should stop generating data.
-    reader.cancel(err).catch(() => {});
+    reader.cancel(err).catch((cancelErr) => console.warn("Failed to cancel reader during error propagation:", cancelErr));
     throw err;
   } finally {
     // If we're exiting normally but the stream was externally ended before completion,
     // we should cancel the reader to notify the source.
-    reader.cancel().catch(() => {});
+    reader.cancel().catch((cancelErr) => console.warn("Failed to cleanly cancel reader on exit:", cancelErr));
     reader.releaseLock();
     writer.releaseLock();
   }
