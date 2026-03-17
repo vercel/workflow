@@ -1,5 +1,6 @@
 import * as Stream from 'node:stream';
 import { JsonTransport } from '@vercel/queue';
+import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   MessageId,
   type Queue,
@@ -160,7 +161,7 @@ export function createQueue(
     );
   }
 
-  function resolveExecutionBaseUrl(): string {
+  async function resolveExecutionBaseUrl(): Promise<string> {
     if (process.env.WORKFLOW_LOCAL_BASE_URL) {
       return process.env.WORKFLOW_LOCAL_BASE_URL;
     }
@@ -171,6 +172,11 @@ export function createQueue(
 
     if (process.env.PORT) {
       return `http://localhost:${process.env.PORT}`;
+    }
+
+    const detectedPort = await getWorkflowPort();
+    if (typeof detectedPort === 'number') {
+      return `http://localhost:${detectedPort}`;
     }
 
     throw new Error('Unable to resolve base URL for workflow queue.');
@@ -206,7 +212,7 @@ export function createQueue(
       'x-vqs-message-id': messageId,
       'x-vqs-message-attempt': String(attempt),
     };
-    const baseUrl = resolveExecutionBaseUrl();
+    const baseUrl = await resolveExecutionBaseUrl();
     const pathname = getQueueRoute(queueName);
 
     const response = await fetch(

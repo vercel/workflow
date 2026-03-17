@@ -1,5 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
+import { getWorkflowPort } from '@workflow/utils/get-port';
 import { MessageId, type QueuePayload } from '@workflow/world';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,6 +19,10 @@ vi.mock('graphile-worker', () => ({
   },
   makeWorkerUtils: vi.fn(),
   run: vi.fn(),
+}));
+
+vi.mock('@workflow/utils/get-port', () => ({
+  getWorkflowPort: vi.fn(),
 }));
 
 vi.mock('@workflow/world-local', async (importOriginal) => {
@@ -51,6 +56,7 @@ describe('postgres queue http execution', () => {
     vi.clearAllMocks();
 
     vi.mocked(makeWorkerUtils).mockResolvedValue(workerUtilsMock);
+    vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
     vi.mocked(run).mockResolvedValue(runnerMock as any);
     vi.mocked(createQueueExecutor).mockReturnValue({
       executeMessage,
@@ -183,6 +189,66 @@ describe('postgres queue http execution', () => {
         }),
       }),
     ]);
+  });
+
+  it('uses a late-detected local port when the queue starts before PORT is available', async () => {
+    const requests: Array<{
+      method: string | undefined;
+      url: string | undefined;
+      headers: Record<string, string | string[] | undefined>;
+      body: string;
+    }> = [];
+    const server = await startWorkflowHttpServer(requests);
+    vi.mocked(getWorkflowPort).mockResolvedValue(
+      Number(new URL(server.baseUrl).port)
+    );
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, postgres);
+    await queue.start();
+
+    const task = getTaskHandler('workflow_steps');
+    const message = {
+      workflowName: 'test-workflow',
+      workflowRunId: 'run_01ABC',
+      workflowStartedAt: Date.now(),
+      stepId: 'step_01ABC',
+    } satisfies QueuePayload;
+    const payload = buildMessageData('__wkf_step_test-step', message, {
+      headers: { traceparent: 'trace-parent' },
+      idempotencyKey: 'step_01ABC',
+    });
+
+    await expect(task(payload, {} as any)).resolves.toBeUndefined();
+
+    expect(getWorkflowPort).toHaveBeenCalled();
+    expect(requests).toEqual([
+      expect.objectContaining({
+        method: 'POST',
+        url: '/.well-known/workflow/v1/step',
+      }),
+    ]);
+  });
+
+  it('keeps the base-url error when env vars and local port detection cannot resolve a target', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, postgres);
+    await queue.start();
+
+    const task = getTaskHandler('workflow_steps');
+    const message = {
+      workflowName: 'test-workflow',
+      workflowRunId: 'run_01ABC',
+      workflowStartedAt: Date.now(),
+      stepId: 'step_01ABC',
+    } satisfies QueuePayload;
+    const payload = buildMessageData('__wkf_step_test-step', message, {
+      idempotencyKey: 'step_01ABC',
+    });
+
+    await expect(task(payload, {} as any)).rejects.toThrow(
+      'Unable to resolve base URL for workflow queue.'
+    );
+
+    expect(getWorkflowPort).toHaveBeenCalled();
   });
 
   it('queues producer delays and headers in graphile job metadata', async () => {

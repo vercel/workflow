@@ -47,6 +47,7 @@
   "dependencies": {
     "@vercel/queue": "catalog:",
     "@workflow/errors": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",
     "cbor-x": "1.6.0",
