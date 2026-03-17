@@ -3,10 +3,10 @@ mod naming;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use swc_core::{
-    common::{DUMMY_SP, SyntaxContext, errors::HANDLER},
+    common::{errors::HANDLER, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
-        visit::{VisitMut, VisitMutWith, noop_visit_mut_type},
+        visit::{noop_visit_mut_type, VisitMut, VisitMutWith},
     },
 };
 
@@ -466,11 +466,18 @@ impl ClosureVariableCollector {
         }
     }
 
-    fn collect_from_function(function: &Function, module_imports: &HashSet<String>) -> Vec<String> {
+    fn collect_from_function(
+        function: &Function,
+        module_imports: &HashSet<String>,
+        module_declarations: &HashSet<String>,
+    ) -> Vec<String> {
         let mut collector = Self::new();
 
-        // Add module-level imports to local_vars so they're not considered closure vars
+        // Add module-level imports and declarations to local_vars so they're not considered closure vars
         collector.local_vars.extend(module_imports.iter().cloned());
+        collector
+            .local_vars
+            .extend(module_declarations.iter().cloned());
 
         // Collect parameters
         for param in &function.params {
@@ -488,11 +495,18 @@ impl ClosureVariableCollector {
         vars
     }
 
-    fn collect_from_arrow_expr(arrow: &ArrowExpr, module_imports: &HashSet<String>) -> Vec<String> {
+    fn collect_from_arrow_expr(
+        arrow: &ArrowExpr,
+        module_imports: &HashSet<String>,
+        module_declarations: &HashSet<String>,
+    ) -> Vec<String> {
         let mut collector = Self::new();
 
-        // Add module-level imports to local_vars so they're not considered closure vars
+        // Add module-level imports and declarations to local_vars so they're not considered closure vars
         collector.local_vars.extend(module_imports.iter().cloned());
+        collector
+            .local_vars
+            .extend(module_declarations.iter().cloned());
 
         // Collect parameters
         for param in &arrow.params {
@@ -572,7 +586,70 @@ impl ClosureVariableCollector {
                     }
                     Decl::Fn(fn_decl) => {
                         self.local_vars.insert(fn_decl.ident.sym.to_string());
-                        // Don't visit nested function bodies for closure detection
+                        // Walk into nested function bodies to find closure vars from the outer scope.
+                        for param in &fn_decl.function.params {
+                            self.collect_param_names(&param.pat);
+                        }
+                        if let Some(body) = &fn_decl.function.body {
+                            self.collect_from_block_stmt(body);
+                        }
+                    }
+                    Decl::Class(class_decl) => {
+                        self.local_vars.insert(class_decl.ident.sym.to_string());
+                        // Walk class body — reuse the same logic as Expr::Class
+                        if let Some(super_class) = &class_decl.class.super_class {
+                            self.collect_from_expr(super_class);
+                        }
+                        for member in &class_decl.class.body {
+                            match member {
+                                ClassMember::Method(method) => {
+                                    for param in &method.function.params {
+                                        self.collect_param_names(&param.pat);
+                                    }
+                                    if let Some(body) = &method.function.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                ClassMember::ClassProp(prop) => {
+                                    if let Some(value) = &prop.value {
+                                        self.collect_from_expr(value);
+                                    }
+                                }
+                                ClassMember::PrivateProp(prop) => {
+                                    if let Some(value) = &prop.value {
+                                        self.collect_from_expr(value);
+                                    }
+                                }
+                                ClassMember::Constructor(ctor) => {
+                                    for param in &ctor.params {
+                                        match param {
+                                            ParamOrTsParamProp::Param(p) => {
+                                                self.collect_param_names(&p.pat);
+                                            }
+                                            ParamOrTsParamProp::TsParamProp(ts_param) => {
+                                                match &ts_param.param {
+                                                    TsParamPropParam::Ident(i) => {
+                                                        self.local_vars
+                                                            .insert(i.id.sym.to_string());
+                                                    }
+                                                    TsParamPropParam::Assign(a) => {
+                                                        self.collect_declared_names(&a.left);
+                                                        self.collect_from_expr(&a.right);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if let Some(body) = &ctor.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                ClassMember::StaticBlock(block) => {
+                                    self.collect_from_block_stmt(&block.body);
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -622,6 +699,75 @@ impl ClosureVariableCollector {
             Stmt::While(while_stmt) => {
                 self.collect_from_expr(&while_stmt.test);
                 self.collect_from_stmt(&while_stmt.body);
+            }
+            Stmt::DoWhile(do_while) => {
+                self.collect_from_stmt(&do_while.body);
+                self.collect_from_expr(&do_while.test);
+            }
+            Stmt::Throw(throw_stmt) => {
+                self.collect_from_expr(&throw_stmt.arg);
+            }
+            Stmt::Try(try_stmt) => {
+                self.collect_from_block_stmt(&try_stmt.block);
+                if let Some(catch_clause) = &try_stmt.handler {
+                    // The catch parameter introduces a local binding
+                    if let Some(param) = &catch_clause.param {
+                        self.collect_declared_names(param);
+                    }
+                    self.collect_from_block_stmt(&catch_clause.body);
+                }
+                if let Some(finalizer) = &try_stmt.finalizer {
+                    self.collect_from_block_stmt(finalizer);
+                }
+            }
+            Stmt::Switch(switch_stmt) => {
+                self.collect_from_expr(&switch_stmt.discriminant);
+                for case in &switch_stmt.cases {
+                    if let Some(test) = &case.test {
+                        self.collect_from_expr(test);
+                    }
+                    for stmt in &case.cons {
+                        self.collect_from_stmt(stmt);
+                    }
+                }
+            }
+            Stmt::ForIn(for_in) => {
+                match &for_in.left {
+                    ForHead::VarDecl(var_decl) => {
+                        for declarator in &var_decl.decls {
+                            self.collect_declared_names(&declarator.name);
+                        }
+                    }
+                    ForHead::Pat(pat) => {
+                        // Pattern used as assignment target (e.g., `for (x in obj)`)
+                        if let Pat::Ident(ident) = &**pat {
+                            self.collect_from_ident_binding(&ident.id);
+                        }
+                    }
+                    _ => {}
+                }
+                self.collect_from_expr(&for_in.right);
+                self.collect_from_stmt(&for_in.body);
+            }
+            Stmt::ForOf(for_of) => {
+                match &for_of.left {
+                    ForHead::VarDecl(var_decl) => {
+                        for declarator in &var_decl.decls {
+                            self.collect_declared_names(&declarator.name);
+                        }
+                    }
+                    ForHead::Pat(pat) => {
+                        if let Pat::Ident(ident) = &**pat {
+                            self.collect_from_ident_binding(&ident.id);
+                        }
+                    }
+                    _ => {}
+                }
+                self.collect_from_expr(&for_of.right);
+                self.collect_from_stmt(&for_of.body);
+            }
+            Stmt::Labeled(labeled) => {
+                self.collect_from_stmt(&labeled.body);
             }
             _ => {}
         }
@@ -707,13 +853,48 @@ impl ClosureVariableCollector {
                     match prop {
                         PropOrSpread::Prop(prop) => {
                             match &**prop {
+                                Prop::Shorthand(ident) => {
+                                    // { foo } is shorthand for { foo: foo }
+                                    let name = ident.sym.to_string();
+                                    if !self.params.contains(&name)
+                                        && !self.local_vars.contains(&name)
+                                    {
+                                        if !is_global_identifier(&name) {
+                                            self.closure_vars.insert(name);
+                                        }
+                                    }
+                                }
                                 Prop::KeyValue(kv) => {
+                                    // Check computed key expressions (e.g., { [expr]: value })
+                                    if let PropName::Computed(computed) = &kv.key {
+                                        self.collect_from_expr(&computed.expr);
+                                    }
                                     self.collect_from_expr(&kv.value);
                                 }
-                                Prop::Method(_method) => {
-                                    // Don't visit nested method bodies
+                                Prop::Assign(assign) => {
+                                    // { key = default } — collect the default value expression
+                                    self.collect_from_expr(&assign.value);
                                 }
-                                _ => {}
+                                Prop::Method(method) => {
+                                    // Walk into method bodies to find closure vars from the outer scope.
+                                    for param in &method.function.params {
+                                        self.collect_param_names(&param.pat);
+                                    }
+                                    if let Some(body) = &method.function.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                Prop::Getter(getter) => {
+                                    if let Some(body) = &getter.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                Prop::Setter(setter) => {
+                                    self.collect_declared_names(&setter.param);
+                                    if let Some(body) = &setter.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
                             }
                         }
                         PropOrSpread::Spread(spread) => {
@@ -736,11 +917,33 @@ impl ClosureVariableCollector {
                     self.collect_from_expr(expr);
                 }
             }
-            Expr::Arrow(_arrow) => {
-                // Don't visit nested arrow function bodies for closure detection
+            Expr::Arrow(arrow) => {
+                // Walk into nested arrow bodies to find closure vars from the outer scope.
+                // Add the arrow's own params to local_vars so they don't get captured.
+                for param in &arrow.params {
+                    self.collect_declared_names(param);
+                }
+                match &*arrow.body {
+                    BlockStmtOrExpr::BlockStmt(block) => {
+                        self.collect_from_block_stmt(block);
+                    }
+                    BlockStmtOrExpr::Expr(expr) => {
+                        self.collect_from_expr(expr);
+                    }
+                }
             }
-            Expr::Fn(_) => {
-                // Don't visit nested function bodies for closure detection
+            Expr::Fn(fn_expr) => {
+                // Walk into nested function bodies to find closure vars from the outer scope.
+                // Add the function's own params and name to local_vars so they don't get captured.
+                if let Some(ident) = &fn_expr.ident {
+                    self.local_vars.insert(ident.sym.to_string());
+                }
+                for param in &fn_expr.function.params {
+                    self.collect_param_names(&param.pat);
+                }
+                if let Some(body) = &fn_expr.function.body {
+                    self.collect_from_block_stmt(body);
+                }
             }
             Expr::Assign(assign) => {
                 self.collect_from_expr(&assign.right);
@@ -767,7 +970,107 @@ impl ClosureVariableCollector {
             Expr::Await(await_expr) => {
                 self.collect_from_expr(&await_expr.arg);
             }
-            _ => {}
+            Expr::New(new_expr) => {
+                self.collect_from_expr(&new_expr.callee);
+                if let Some(args) = &new_expr.args {
+                    for arg in args {
+                        self.collect_from_expr(&arg.expr);
+                    }
+                }
+            }
+            Expr::Seq(seq) => {
+                for expr in &seq.exprs {
+                    self.collect_from_expr(expr);
+                }
+            }
+            Expr::Yield(yield_expr) => {
+                if let Some(arg) = &yield_expr.arg {
+                    self.collect_from_expr(arg);
+                }
+            }
+            Expr::OptChain(opt_chain) => match &*opt_chain.base {
+                OptChainBase::Member(member) => {
+                    self.collect_from_expr(&member.obj);
+                }
+                OptChainBase::Call(call) => {
+                    self.collect_from_expr(&call.callee);
+                    for arg in &call.args {
+                        self.collect_from_expr(&arg.expr);
+                    }
+                }
+            },
+            Expr::Class(class_expr) => {
+                // Walk into class body to find closure vars from the outer scope.
+                if let Some(super_class) = &class_expr.class.super_class {
+                    self.collect_from_expr(super_class);
+                }
+                for member in &class_expr.class.body {
+                    match member {
+                        ClassMember::Method(method) => {
+                            for param in &method.function.params {
+                                self.collect_param_names(&param.pat);
+                            }
+                            if let Some(body) = &method.function.body {
+                                self.collect_from_block_stmt(body);
+                            }
+                        }
+                        ClassMember::ClassProp(prop) => {
+                            if let Some(value) = &prop.value {
+                                self.collect_from_expr(value);
+                            }
+                        }
+                        ClassMember::Constructor(ctor) => {
+                            for param in &ctor.params {
+                                match param {
+                                    ParamOrTsParamProp::Param(p) => {
+                                        self.collect_param_names(&p.pat);
+                                    }
+                                    ParamOrTsParamProp::TsParamProp(ts_param) => {
+                                        match &ts_param.param {
+                                            TsParamPropParam::Ident(i) => {
+                                                self.local_vars.insert(i.id.sym.to_string());
+                                            }
+                                            TsParamPropParam::Assign(a) => {
+                                                self.collect_declared_names(&a.left);
+                                                self.collect_from_expr(&a.right);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(body) = &ctor.body {
+                                self.collect_from_block_stmt(body);
+                            }
+                        }
+                        ClassMember::PrivateProp(prop) => {
+                            if let Some(value) = &prop.value {
+                                self.collect_from_expr(value);
+                            }
+                        }
+                        ClassMember::StaticBlock(block) => {
+                            self.collect_from_block_stmt(&block.body);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // TypeScript expression wrappers — visit the inner expression
+            Expr::TsAs(e) => self.collect_from_expr(&e.expr),
+            Expr::TsNonNull(e) => self.collect_from_expr(&e.expr),
+            Expr::TsTypeAssertion(e) => self.collect_from_expr(&e.expr),
+            Expr::TsConstAssertion(e) => self.collect_from_expr(&e.expr),
+            Expr::TsInstantiation(e) => self.collect_from_expr(&e.expr),
+            Expr::TsSatisfies(e) => self.collect_from_expr(&e.expr),
+            _ => {
+                // Remaining variants that are safe to skip:
+                // - Expr::This (keyword)
+                // - Expr::Lit (literal values)
+                // - Expr::SuperProp (super keyword)
+                // - Expr::MetaProp (new.target, import.meta)
+                // - Expr::PrivateName (#foo)
+                // - Expr::Invalid (error recovery)
+                // - Expr::JSX* (JSX — stripped before this plugin runs)
+            }
         }
     }
 
@@ -850,11 +1153,30 @@ fn is_global_identifier(name: &str) -> bool {
             | "DataView"
             | "ArrayBuffer"
             | "SharedArrayBuffer"
+            | "ReadableStream"
+            | "WritableStream"
+            | "TransformStream"
+            | "Blob"
+            | "File"
+            | "FormData"
+            | "AbortController"
+            | "AbortSignal"
+            | "EventTarget"
+            | "Event"
+            | "MessageChannel"
+            | "MessagePort"
             | "Atomics"
             | "Proxy"
             | "Reflect"
             | "Intl"
             | "WebAssembly"
+            | "queueMicrotask"
+            | "structuredClone"
+            | "atob"
+            | "btoa"
+            | "crypto"
+            | "performance"
+            | "navigator"
             | "require"
             | "module"
             | "exports"
@@ -930,6 +1252,7 @@ impl StepTransform {
                                         ClosureVariableCollector::collect_from_function(
                                             &cloned_function,
                                             &self.module_imports,
+                                            &self.declared_identifiers,
                                         );
 
                                     let fn_expr = FnExpr {
@@ -947,42 +1270,10 @@ impl StepTransform {
                                             .unwrap_or_default(),
                                     ));
 
-                                    // Replace with const declaration referencing the hoisted function
-                                    let hoisted_name =
-                                        if let Some(parent) = &self.current_parent_function_name {
-                                            if !parent.is_empty() {
-                                                format!("{}${}", parent, fn_name)
-                                            } else {
-                                                fn_name.clone()
-                                            }
-                                        } else {
-                                            fn_name.clone()
-                                        };
-
-                                    let var_decl = Decl::Var(Box::new(VarDecl {
-                                        span: DUMMY_SP,
-                                        ctxt: SyntaxContext::empty(),
-                                        kind: VarDeclKind::Const,
-                                        decls: vec![VarDeclarator {
-                                            span: DUMMY_SP,
-                                            name: Pat::Ident(BindingIdent {
-                                                id: Ident::new(
-                                                    fn_name.clone().into(),
-                                                    DUMMY_SP,
-                                                    SyntaxContext::empty(),
-                                                ),
-                                                type_ann: None,
-                                            }),
-                                            init: Some(Box::new(Expr::Ident(Ident::new(
-                                                hoisted_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            )))),
-                                            definite: false,
-                                        }],
-                                        declare: false,
-                                    }));
-                                    *stmt = Stmt::Decl(var_decl);
+                                    // Keep the original function declaration with the directive stripped,
+                                    // so that direct (non-workflow) calls work with normal closure semantics.
+                                    // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                    self.remove_use_step_directive(&mut fn_decl.function.body);
                                     return;
                                 }
                                 TransformMode::Workflow => {
@@ -1005,6 +1296,7 @@ impl StepTransform {
                                         ClosureVariableCollector::collect_from_function(
                                             &fn_decl.function,
                                             &self.module_imports,
+                                            &self.declared_identifiers,
                                         );
                                     let proxy_ref =
                                         self.create_step_proxy_reference(&step_id, &closure_vars);
@@ -1702,34 +1994,19 @@ impl StepTransform {
                                 // Now handle the transformation based on mode
                                 match self.mode {
                                     TransformMode::Step => {
-                                        // In step mode, replace method with key-value property referencing the hoisted variable
-                                        // Replace slashes with $ in parent_var_name to create valid JS identifier
-                                        let safe_parent_name = parent_var_name.replace('/', "$");
-                                        let hoist_var_name = if let Some(ref workflow_name) =
-                                            self.current_workflow_function_name
-                                        {
-                                            format!(
-                                                "{}${}${}",
-                                                workflow_name, safe_parent_name, prop_key
-                                            )
-                                        } else {
-                                            format!("{}${}", safe_parent_name, prop_key)
-                                        };
+                                        // Keep the original method with the directive stripped,
+                                        // so that direct (non-workflow) calls work with normal closure semantics.
+                                        // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                        self.remove_use_step_directive(
+                                            &mut method_prop.function.body,
+                                        );
+                                        // Track for metadata generation
                                         let step_id = self.create_object_property_id(
                                             parent_var_name,
                                             &prop_key,
                                             false,
                                             self.current_workflow_function_name.as_deref(),
                                         );
-                                        // Replace the method with a key-value property referencing the hoisted function
-                                        *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
-                                            key: method_prop.key.clone(),
-                                            value: Box::new(Expr::Ident(Ident::new(
-                                                hoist_var_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                        }));
                                         self.object_property_workflow_conversions.push((
                                             parent_var_name.to_string(),
                                             prop_key,
@@ -1816,21 +2093,10 @@ impl StepTransform {
 
         match self.mode {
             TransformMode::Step => {
-                // In step mode, replace with reference to hoisted variable
-                // Replace slashes with $ in parent_var_name to create valid JS identifier
-                let safe_parent_name = parent_var_name.replace('/', "$");
-                let hoist_var_name =
-                    if let Some(ref workflow_name) = self.current_workflow_function_name {
-                        format!("{}${}${}", workflow_name, safe_parent_name, prop_key)
-                    } else {
-                        format!("{}${}", safe_parent_name, prop_key)
-                    };
-                *kv_prop.value = Expr::Ident(Ident::new(
-                    hoist_var_name.into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                ));
-                // Track for metadata
+                // Keep the original value (directive already stripped by caller),
+                // so that direct (non-workflow) calls work with normal closure semantics.
+                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                // Track for metadata generation
                 self.object_property_workflow_conversions.push((
                     parent_var_name.to_string(),
                     prop_key.to_string(),
@@ -6408,7 +6674,7 @@ impl VisitMut for StepTransform {
                                                 );
 
                                                 // Collect closure variables before conversion
-                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports);
+                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports, &self.declared_identifiers);
 
                                                 // Create a function expression from the arrow function
                                                 // (We need to convert it to a regular function for hoisting)
@@ -6470,23 +6736,12 @@ impl VisitMut for StepTransform {
                                                         .unwrap_or_default(),
                                                 ));
 
-                                                // Replace with identifier reference to the hoisted function
-                                                let hoisted_name = if let Some(parent) =
-                                                    &self.current_parent_function_name
-                                                {
-                                                    if !parent.is_empty() {
-                                                        format!("{}${}", parent, name)
-                                                    } else {
-                                                        name
-                                                    }
-                                                } else {
-                                                    name
-                                                };
-                                                *init = Box::new(Expr::Ident(Ident::new(
-                                                    hoisted_name.into(),
-                                                    DUMMY_SP,
-                                                    SyntaxContext::empty(),
-                                                )));
+                                                // Keep the original arrow with the directive stripped,
+                                                // so that direct (non-workflow) calls work with normal closure semantics.
+                                                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                                self.remove_use_step_directive_arrow(
+                                                    &mut arrow_expr.body,
+                                                );
                                             }
                                             TransformMode::Workflow => {
                                                 // Replace with proxy reference (not a function call)
@@ -6505,7 +6760,7 @@ impl VisitMut for StepTransform {
                                                 );
 
                                                 // Collect closure variables
-                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports);
+                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports, &self.declared_identifiers);
                                                 *init = Box::new(self.create_step_proxy_reference(
                                                     &step_id,
                                                     &closure_vars,
@@ -7268,6 +7523,7 @@ impl VisitMut for StepTransform {
                                 let closure_vars = ClosureVariableCollector::collect_from_function(
                                     &cloned_function,
                                     &self.module_imports,
+                                    &self.declared_identifiers,
                                 );
 
                                 let hoisted_fn_expr = FnExpr {
@@ -7290,23 +7546,11 @@ impl VisitMut for StepTransform {
                                         .unwrap_or_default(),
                                 ));
 
-                                // Replace with identifier reference
-                                let hoisted_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}${}", parent, name)
-                                        } else {
-                                            name
-                                        }
-                                    } else {
-                                        name
-                                    };
-                                *expr = Expr::Ident(Ident::new(
-                                    hoisted_name.into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                ));
-                                return; // Don't visit children since we replaced the expr
+                                // Keep the original function with the directive stripped,
+                                // so that direct (non-workflow) calls work with normal closure semantics.
+                                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                self.remove_use_step_directive(&mut fn_expr.function.body);
+                                return; // Don't visit children since we already processed
                             }
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
@@ -7330,6 +7574,7 @@ impl VisitMut for StepTransform {
                                 let closure_vars = ClosureVariableCollector::collect_from_function(
                                     &fn_expr.function,
                                     &self.module_imports,
+                                    &self.declared_identifiers,
                                 );
                                 *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
                                 return; // Don't visit children since we replaced the expr
@@ -7365,6 +7610,7 @@ impl VisitMut for StepTransform {
                                     ClosureVariableCollector::collect_from_arrow_expr(
                                         &cloned_arrow,
                                         &self.module_imports,
+                                        &self.declared_identifiers,
                                     );
 
                                 // Convert to function expression for hoisting
@@ -7416,23 +7662,11 @@ impl VisitMut for StepTransform {
                                         .unwrap_or_default(),
                                 ));
 
-                                // Replace with identifier reference
-                                let hoisted_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}${}", parent, name)
-                                        } else {
-                                            name
-                                        }
-                                    } else {
-                                        name
-                                    };
-                                *expr = Expr::Ident(Ident::new(
-                                    hoisted_name.into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                ));
-                                return; // Don't visit children since we replaced the expr
+                                // Keep the original arrow with the directive stripped,
+                                // so that direct (non-workflow) calls work with normal closure semantics.
+                                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                self.remove_use_step_directive_arrow(&mut arrow_expr.body);
+                                return; // Don't visit children since we already processed
                             }
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
@@ -7454,6 +7688,7 @@ impl VisitMut for StepTransform {
                                     ClosureVariableCollector::collect_from_arrow_expr(
                                         arrow_expr,
                                         &self.module_imports,
+                                        &self.declared_identifiers,
                                     );
                                 *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
                                 return; // Don't visit children since we replaced the expr
@@ -7920,7 +8155,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports, &self.declared_identifiers);
 
                                                         // Convert to function expression
                                                         let fn_expr = FnExpr {
@@ -7988,12 +8223,10 @@ impl VisitMut for StepTransform {
                                                                 .unwrap_or_default(),
                                                         ));
 
-                                                        // Replace with identifier reference
-                                                        *kv_prop.value = Expr::Ident(Ident::new(
-                                                            generated_name.into(),
-                                                            DUMMY_SP,
-                                                            SyntaxContext::empty(),
-                                                        ));
+                                                        // Keep the original arrow with the directive stripped
+                                                        self.remove_use_step_directive_arrow(
+                                                            &mut arrow_expr.body,
+                                                        );
                                                     }
                                                     TransformMode::Workflow => {
                                                         // Replace with step proxy reference
@@ -8015,7 +8248,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports, &self.declared_identifiers);
                                                         *kv_prop.value = self
                                                             .create_step_proxy_reference(
                                                                 &step_id,
@@ -8058,7 +8291,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&*cloned_fn.function, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&*cloned_fn.function, &self.module_imports, &self.declared_identifiers);
 
                                                         let hoisted_fn_expr = FnExpr {
                                                             ident: Some(Ident::new(
@@ -8080,12 +8313,10 @@ impl VisitMut for StepTransform {
                                                                 .unwrap_or_default(),
                                                         ));
 
-                                                        // Replace with identifier reference
-                                                        *kv_prop.value = Expr::Ident(Ident::new(
-                                                            generated_name.into(),
-                                                            DUMMY_SP,
-                                                            SyntaxContext::empty(),
-                                                        ));
+                                                        // Keep the original function with the directive stripped
+                                                        self.remove_use_step_directive(
+                                                            &mut fn_expr.function.body,
+                                                        );
                                                     }
                                                     TransformMode::Workflow => {
                                                         // Replace with step proxy reference
@@ -8107,7 +8338,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&fn_expr.function, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&fn_expr.function, &self.module_imports, &self.declared_identifiers);
                                                         *kv_prop.value = self
                                                             .create_step_proxy_reference(
                                                                 &step_id,
@@ -8157,6 +8388,7 @@ impl VisitMut for StepTransform {
                                                     ClosureVariableCollector::collect_from_function(
                                                         &cloned_function,
                                                         &self.module_imports,
+                                                        &self.declared_identifiers,
                                                     );
 
                                                 let fn_expr = FnExpr {
@@ -8179,16 +8411,10 @@ impl VisitMut for StepTransform {
                                                         .unwrap_or_default(),
                                                 ));
 
-                                                // Replace method with property pointing to identifier
-                                                *boxed_prop =
-                                                    Box::new(Prop::KeyValue(KeyValueProp {
-                                                        key: method_prop.key.clone(),
-                                                        value: Box::new(Expr::Ident(Ident::new(
-                                                            generated_name.into(),
-                                                            DUMMY_SP,
-                                                            SyntaxContext::empty(),
-                                                        ))),
-                                                    }));
+                                                // Keep the original method with the directive stripped
+                                                self.remove_use_step_directive(
+                                                    &mut method_prop.function.body,
+                                                );
                                             }
                                             TransformMode::Workflow => {
                                                 // Replace with step proxy reference
@@ -8214,6 +8440,7 @@ impl VisitMut for StepTransform {
                                                     ClosureVariableCollector::collect_from_function(
                                                         &method_prop.function,
                                                         &self.module_imports,
+                                                        &self.declared_identifiers,
                                                     );
 
                                                 // Replace method with property pointing to proxy
