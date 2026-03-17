@@ -4,4 +4,4 @@
 "@workflow/sveltekit": patch
 ---
 
-Set `maxDuration: "max"` in generated `.vc-config.json` for workflow functions
+Set `maxDuration` in generated `.vc-config.json` for workflow functions (`"max"` for step/webhook, `60` for flow)
