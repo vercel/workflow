@@ -1399,7 +1399,7 @@ async function noopStep(iteration: number) {
 export async function sleepInLoopWorkflow() {
   'use workflow';
   const iterations = 3;
-  const sleepMs = 3_000; // 3s per iteration
+  const sleepMs = 3_000; // 3s between iterations (2 sleeps total)
   const timestamps: number[] = [];
 
   for (let i = 0; i < iterations; i++) {
