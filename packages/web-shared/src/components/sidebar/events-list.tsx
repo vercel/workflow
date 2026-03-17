@@ -2,7 +2,6 @@
 
 import type { Event } from '@workflow/world';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { sanitizeErrorMessage } from '../../lib/utils';
 import { ErrorCard } from '../ui/error-card';
 import {
   ErrorStackBlock,
@@ -183,7 +182,7 @@ function EventItem({
       {loadError && (
         <ErrorCard
           title="Failed to load event data"
-          details={sanitizeErrorMessage(loadError)}
+          details={loadError}
           className="mt-2"
         />
       )}

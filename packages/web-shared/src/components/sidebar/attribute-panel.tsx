@@ -8,11 +8,7 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { isEncryptedMarker } from '../../lib/hydration';
-import {
-  extractConversation,
-  isDoStreamStep,
-  sanitizeErrorMessage,
-} from '../../lib/utils';
+import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { ErrorCard } from '../ui/error-card';
@@ -870,7 +866,7 @@ export const AttributePanel = ({
         {error ? (
           <ErrorCard
             title="Failed to load resource details"
-            details={sanitizeErrorMessage(error.message)}
+            details={error.message}
             className="my-4"
           />
         ) : hasExpired ? (

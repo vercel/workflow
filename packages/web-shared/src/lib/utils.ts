@@ -99,17 +99,6 @@ export function getPaginationDisplay(
   return `Page ${currentPage} of ${totalPages}`;
 }
 
-/**
- * Strip internal URLs, request IDs, and other noisy details from error
- * messages so they are readable in the UI without leaking server internals.
- */
-export function sanitizeErrorMessage(message: string): string {
-  return message
-    .replace(/https?:\/\/\S+/g, '[url]')
-    .replace(/x-request-id:\s*\S+/gi, '')
-    .trim();
-}
-
 // ============================================================================
 // Durable Agent Utilities
 // ============================================================================
