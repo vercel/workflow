@@ -8,7 +8,11 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { isEncryptedMarker } from '../../lib/hydration';
-import { extractConversation, isDoStreamStep } from '../../lib/utils';
+import {
+  extractConversation,
+  isDoStreamStep,
+  sanitizeErrorMessage,
+} from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
 import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { ErrorCard } from '../ui/error-card';
@@ -684,6 +688,7 @@ export const AttributePanel = ({
   error,
   expiredAt,
   onStreamClick,
+  resource,
 }: {
   data: Record<string, unknown>;
   moduleSpecifier?: string;
@@ -692,6 +697,8 @@ export const AttributePanel = ({
   expiredAt?: string | Date;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Resource type of the selected span — used to show targeted loading skeletons. */
+  resource?: string;
 }) => {
   const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
@@ -795,7 +802,11 @@ export const AttributePanel = ({
                   ? displayValue
                   : String(displayValue ?? displayData.moduleSpecifier ?? '');
               const shouldCapitalizeLabel = attribute !== 'workflowCoreVersion';
-              const showDivider = index < orderedBasicAttributes.length - 1;
+              const showResumeAtSkeleton =
+                isLoading && resource === 'sleep' && !displayData.resumeAt;
+              const showDivider =
+                index < orderedBasicAttributes.length - 1 ||
+                showResumeAtSkeleton;
 
               return (
                 <div key={attribute} className="py-1">
@@ -845,12 +856,25 @@ export const AttributePanel = ({
                 </div>
               );
             })}
+            {isLoading && resource === 'sleep' && !displayData.resumeAt && (
+              <div className="py-1">
+                <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                  <span
+                    className="text-[14px] first-letter:uppercase"
+                    style={{ color: 'var(--ds-gray-700)' }}
+                  >
+                    resumeAt
+                  </span>
+                  <Skeleton className="h-4 w-[55%]" />
+                </div>
+              </div>
+            )}
           </div>
         )}
         {error ? (
           <ErrorCard
             title="Failed to load resource details"
-            details={error.message}
+            details={sanitizeErrorMessage(error.message)}
             className="my-4"
           />
         ) : hasExpired ? (

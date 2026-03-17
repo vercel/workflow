@@ -475,13 +475,15 @@ export function EntityDetailPanel({
               isLoading={loading}
               error={error ?? undefined}
               onStreamClick={onStreamClick}
+              resource={resource}
             />
           </section>
 
-          {resource !== 'run' && rawEvents && (
+          {resource !== 'run' && (rawEvents || loading) && (
             <section>
               <EventsList
-                events={rawEvents}
+                events={rawEvents ?? []}
+                isLoading={loading}
                 onLoadEventData={onLoadEventData}
                 encryptionKey={encryptionKey}
               />
