@@ -672,21 +672,24 @@ function emitGitHubAnnotation(
 export function setupRunTracking(testName: string) {
   currentTestName = testName;
   trackedRuns = [];
-  onTestFailed(async (result) => {
-    const errorMessage = result.errors?.[0]?.message || 'Test failed';
+  onTestFailed(
+    async (result) => {
+      const errorMessage = result.errors?.[0]?.message || 'Test failed';
 
-    for (const tracked of trackedRuns) {
-      try {
-        const diagnostics = await getRunDiagnostics(tracked);
-        console.error(diagnostics);
-        emitGitHubAnnotation(testName, tracked, errorMessage);
-      } catch {
-        console.error(
-          `[diagnostics] Failed to fetch diagnostics for run ${tracked.run.runId}`
-        );
+      for (const tracked of trackedRuns) {
+        try {
+          const diagnostics = await getRunDiagnostics(tracked);
+          console.error(diagnostics);
+          emitGitHubAnnotation(testName, tracked, errorMessage);
+        } catch {
+          console.error(
+            `[diagnostics] Failed to fetch diagnostics for run ${tracked.run.runId}`
+          );
+        }
       }
-    }
-  });
+    },
+    30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
+  );
 }
 
 // Current test name for auto-tracking
