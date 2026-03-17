@@ -387,6 +387,7 @@ jobs:
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
+          NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -463,6 +464,7 @@ jobs:
           APP_NAME: ${{ matrix.app.name }}
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
+          NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -559,6 +561,7 @@ jobs:
           APP_NAME: ${{ matrix.app.name }}
           WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
+          NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
 
       - name: Generate E2E summary
         if: always()

@@ -19,6 +19,11 @@ if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
+// Next.js canary builds (16.2.0-canary.100+) have a regression where
+// @workflow/ai step files are missing from the step bundle, causing
+// "doStreamStep not found" errors. Skip agent tests on canary until fixed.
+const isCanary = process.env.NEXT_CANARY === '1';
+
 async function agentE2e(fn: string) {
   return getWorkflowMetadata(
     deploymentUrl,
@@ -35,7 +40,7 @@ beforeAll(async () => {
 // Core agent tests
 // ============================================================================
 
-describe('DurableAgent e2e', { timeout: 120_000 }, () => {
+describe.skipIf(isCanary)('DurableAgent e2e', { timeout: 120_000 }, () => {
   describe('core', () => {
     it('basic text response', async () => {
       const run = await start(await agentE2e('agentBasicE2e'), ['hello world']);
