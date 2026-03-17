@@ -646,18 +646,20 @@ function emitGitHubAnnotation(
 
   const annotation = parts.join(' | ');
 
+  // Write directly to stdout bypassing vitest's console interceptor.
+  // Vitest prefixes console.log output with ANSI codes which prevents
+  // GitHub Actions from parsing the ::error workflow command.
   if (workflowFile) {
-    // Point annotation at the workflow source file
     const appPath = getWorkbenchAppPath();
     const relPath = path.relative(
       process.cwd(),
       path.join(appPath, workflowFile)
     );
-    console.log(
-      `::error file=${relPath},title=E2E: ${testName}::${annotation}`
+    process.stdout.write(
+      `\n::error file=${relPath},title=E2E: ${testName}::${annotation}\n`
     );
   } else {
-    console.log(`::error title=E2E: ${testName}::${annotation}`);
+    process.stdout.write(`\n::error title=E2E: ${testName}::${annotation}\n`);
   }
 }
 

@@ -20,10 +20,16 @@ interface FailedTestInfo {
   fullName: string;
   file: string;
   errorMessage: string;
-  // Extracted from console output if diagnostics were dumped
   runId?: string;
   dashboardUrl?: string;
   status?: string;
+}
+
+interface DiagnosticsEntry {
+  testName: string;
+  runId: string;
+  dashboardUrl?: string;
+  timestamp: string;
 }
 
 export default class GithubAnnotationReporter implements Reporter {
@@ -46,7 +52,15 @@ export default class GithubAnnotationReporter implements Reporter {
     }
 
     if (this.failedTests.length > 0) {
+      // Enrich failures with diagnostics sidecar data (run IDs, dashboard URLs)
+      this.enrichFromDiagnosticsSidecar();
       this.writeFailuresSidecar();
+
+      // Emit GitHub Actions annotations — this runs after vitest's own
+      // output is done, so ::error commands won't be mangled by ANSI codes.
+      if (process.env.CI) {
+        this.emitAnnotations();
+      }
     }
   }
 
@@ -62,13 +76,13 @@ export default class GithubAnnotationReporter implements Reporter {
       const errors = task.result.errors || [];
       const errorMessage = errors.map((e) => e.message).join('\n');
 
-      // Try to extract run diagnostics from the test's stderr/stdout
-      // The onTestFailed hook in utils.ts writes diagnostics with specific markers
+      // Try to extract run diagnostics from error output.
+      // The onTestFailed hook in utils.ts writes diagnostics with specific markers.
       const diagnosticsMatch = errorMessage.match(/Run ID:\s+(wrun_\S+)/);
       const dashboardMatch = errorMessage.match(/Dashboard:\s+(https:\/\/\S+)/);
       const statusMatch = errorMessage.match(/Status:\s+(\S+)/);
 
-      const info: FailedTestInfo = {
+      this.failedTests.push({
         testName: task.name,
         fullName: this.getFullName(task),
         file: filepath,
@@ -76,9 +90,58 @@ export default class GithubAnnotationReporter implements Reporter {
         runId: diagnosticsMatch?.[1],
         dashboardUrl: dashboardMatch?.[1],
         status: statusMatch?.[1],
-      };
+      });
+    }
+  }
 
-      this.failedTests.push(info);
+  /**
+   * Try to read the diagnostics sidecar file written by writeDiagnosticsSidecar()
+   * in the test's afterAll hook. This has run ID → test name mappings with
+   * dashboard URLs that we can use to enrich failure info.
+   */
+  private enrichFromDiagnosticsSidecar() {
+    const appName = process.env.APP_NAME || 'unknown';
+    const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
+    const backend = isVercel ? 'vercel' : 'local';
+    const sidecarPath = path.resolve(
+      process.cwd(),
+      `e2e-diagnostics-${appName}-${backend}.json`
+    );
+
+    let entries: DiagnosticsEntry[];
+    try {
+      entries = JSON.parse(fs.readFileSync(sidecarPath, 'utf-8'));
+    } catch {
+      return; // Sidecar not written yet or unreadable
+    }
+
+    const byTestName = new Map(entries.map((e) => [e.testName, e]));
+
+    for (const test of this.failedTests) {
+      if (test.runId && test.dashboardUrl) continue; // Already have data from error output
+      const diag = byTestName.get(test.testName);
+      if (diag) {
+        test.runId ??= diag.runId;
+        test.dashboardUrl ??= diag.dashboardUrl ?? undefined;
+      }
+    }
+  }
+
+  /**
+   * Emit ::error workflow commands that GitHub Actions renders as annotations
+   * on the PR "Files changed" tab and in the job summary.
+   */
+  private emitAnnotations() {
+    for (const test of this.failedTests) {
+      const parts = [test.errorMessage.split('\n')[0].slice(0, 150)];
+      if (test.runId) parts.push(`Run: ${test.runId}`);
+      if (test.status) parts.push(`Status: ${test.status}`);
+      if (test.dashboardUrl) parts.push(test.dashboardUrl);
+      const body = parts.join(' | ');
+
+      const title = `E2E: ${test.testName}`;
+      // Write directly to stdout to avoid any interceptors
+      process.stdout.write(`\n::error title=${title}::${body}\n`);
     }
   }
 
