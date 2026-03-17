@@ -1103,6 +1103,7 @@ export const OPTIONS = handler;`;
       launcherType: config.launcherType ?? 'Nodejs',
       architecture: config.architecture ?? 'arm64',
       shouldAddHelpers: config.shouldAddHelpers ?? true,
+      maxDuration: 'max' as const,
       ...(config.shouldAddSourcemapSupport !== undefined && {
         shouldAddSourcemapSupport: config.shouldAddSourcemapSupport,
       }),
