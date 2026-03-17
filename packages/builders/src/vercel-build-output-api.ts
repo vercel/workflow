@@ -138,7 +138,6 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createPackageJson(webhookFuncDir, 'commonjs');
     await this.createVcConfig(webhookFuncDir, {
       shouldAddHelpers: false,
-      maxDuration: 'max',
       runtime: this.config.runtime,
     });
   }
