@@ -7,7 +7,9 @@ var vade$tools$VercelRequest$execute = async function(input, { experimental_cont
 export const vade = agent({
     tools: {
         VercelRequest: {
-            execute: vade$tools$VercelRequest$execute
+            async execute (input, { experimental_context }) {
+                return 1 + 1;
+            }
         }
     }
 });

@@ -1,5 +1,83 @@
 # @workflow/world-vercel
 
+## 4.1.0-beta.43
+
+### Patch Changes
+
+- [#1317](https://github.com/vercel/workflow/pull/1317) [`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Implement `resolveLatestDeploymentId()` that calls the Vercel API to resolve the latest deployment for the current environment
+
+- [#1322](https://github.com/vercel/workflow/pull/1322) [`d5bc418`](https://github.com/vercel/workflow/commit/d5bc418816748ab2b5109ca7b082f3be427c326b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Encode all user-supplied IDs in URL path segments with `encodeURIComponent()`
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7)]:
+  - @workflow/world@4.1.0-beta.12
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.1.0-beta.42
+
+### Patch Changes
+
+- [#1262](https://github.com/vercel/workflow/pull/1262) [`9781afb`](https://github.com/vercel/workflow/commit/9781afb490b252f5656e5d48c61c038c3aef794f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use VERCEL=1 to distinguish serverless runtime from external contexts for encryption key resolution
+
+- [#1309](https://github.com/vercel/workflow/pull/1309) [`d842ce1`](https://github.com/vercel/workflow/commit/d842ce1c435049805233cf218aa9ce07d9cab130) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Include response body and status text in fetchRunKey error message for better debuggability of rate limit and server errors.
+
+## 4.1.0-beta.41
+
+### Patch Changes
+
+- [#1287](https://github.com/vercel/workflow/pull/1287) [`d8daa2a`](https://github.com/vercel/workflow/commit/d8daa2a9a95e2d01a4e6fee4e8dde51d82db762d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `world.events.get(runId, eventId)` to the Storage interface for fetching a single event by ID.
+
+- Updated dependencies [[`d8daa2a`](https://github.com/vercel/workflow/commit/d8daa2a9a95e2d01a4e6fee4e8dde51d82db762d)]:
+  - @workflow/world@4.1.0-beta.11
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.1.0-beta.40
+
+### Patch Changes
+
+- [#1290](https://github.com/vercel/workflow/pull/1290) [`8b5a388`](https://github.com/vercel/workflow/commit/8b5a388a9451d7c7460481f0889da5037bd90893) Thanks [@pranaygp](https://github.com/pranaygp)! - Support `timeoutSeconds: 0` for immediate re-enqueue without arbitrary delay
+
+## 4.1.0-beta.39
+
+### Patch Changes
+
+- [#1273](https://github.com/vercel/workflow/pull/1273) [`11dcb64`](https://github.com/vercel/workflow/commit/11dcb646d33e7a2b251d9388c2c8ecdd6aca73f7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Locally validate run ID to be ULID when passed by user
+
+- Updated dependencies [[`11dcb64`](https://github.com/vercel/workflow/commit/11dcb646d33e7a2b251d9388c2c8ecdd6aca73f7)]:
+  - @workflow/world@4.1.0-beta.10
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.1.0-beta.38
+
+### Patch Changes
+
+- [#1270](https://github.com/vercel/workflow/pull/1270) [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `HookNotFoundError` to `@workflow/errors` and adopt it across all world backends
+
+- Updated dependencies [[`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d)]:
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/world@4.1.0-beta.9
+
+## 4.1.0-beta.37
+
+### Patch Changes
+
+- [#1222](https://github.com/vercel/workflow/pull/1222) [`2b1c2bd`](https://github.com/vercel/workflow/commit/2b1c2bd8e6b384334fbeb7ede8f517a5ca683716) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `run_failed` event schema validation failure in lazy ref mode
+
+## 4.1.0-beta.36
+
+### Patch Changes
+
+- [#1211](https://github.com/vercel/workflow/pull/1211) [`1cfb8b1`](https://github.com/vercel/workflow/commit/1cfb8b12e7d40e372d6e223add1518cd62fa0b5f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use undici v7 Agent for HTTP/2 multiplexing and automatic retry
+
+- [#1220](https://github.com/vercel/workflow/pull/1220) [`274ea8b`](https://github.com/vercel/workflow/commit/274ea8b5720c03d564b567edb3fdeb97a6db2c09) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Vary ref resolution concurrency based on header
+
+- [#1218](https://github.com/vercel/workflow/pull/1218) [`f3b2e08`](https://github.com/vercel/workflow/commit/f3b2e08adbb259670445bba7cea79cfd25c8370b) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Update to new queue client version
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- Updated dependencies [[`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - @workflow/world@4.1.0-beta.8
+  - @workflow/errors@4.1.0-beta.17
+
 ## 4.1.0-beta.35
 
 ### Patch Changes

@@ -156,4 +156,228 @@ describe('start', () => {
       );
     });
   });
+
+  describe('encryption', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+    let mockGetEncryptionKeyForRun: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+      mockGetEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_resolved'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        getEncryptionKeyForRun: mockGetEncryptionKeyForRun,
+      } as any);
+    });
+
+    afterEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should pass resolved deploymentId to getEncryptionKeyForRun even when not in opts', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      // Call start() without explicit deploymentId in options — it should
+      // be resolved from world.getDeploymentId() and forwarded to
+      // getEncryptionKeyForRun so the key can be fetched.
+      await start(validWorkflow, []);
+
+      expect(mockGetEncryptionKeyForRun).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          deploymentId: 'deploy_resolved',
+        })
+      );
+    });
+
+    it('should pass explicit deploymentId from opts to getEncryptionKeyForRun', async () => {
+      const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+        workflowId: 'test-workflow',
+      });
+
+      await start(validWorkflow, [], { deploymentId: 'deploy_explicit' });
+
+      expect(mockGetEncryptionKeyForRun).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          deploymentId: 'deploy_explicit',
+        })
+      );
+    });
+  });
+
+  describe('deploymentId: latest', () => {
+    let mockEventsCreate: ReturnType<typeof vi.fn>;
+    let mockQueue: ReturnType<typeof vi.fn>;
+
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    beforeEach(() => {
+      mockEventsCreate = vi.fn().mockImplementation((runId) => {
+        return Promise.resolve({
+          run: { runId: runId ?? 'wrun_test123', status: 'pending' },
+        });
+      });
+      mockQueue = vi.fn().mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should resolve "latest" to the actual deployment ID via resolveLatestDeploymentId', async () => {
+      const mockResolveLatest = vi
+        .fn()
+        .mockResolvedValue('dpl_resolved_abc123');
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        resolveLatestDeploymentId: mockResolveLatest,
+      } as any);
+
+      await start(validWorkflow, [], { deploymentId: 'latest' });
+
+      expect(mockResolveLatest).toHaveBeenCalledTimes(1);
+
+      // The resolved deployment ID should be used in the run_created event
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          eventData: expect.objectContaining({
+            deploymentId: 'dpl_resolved_abc123',
+          }),
+        }),
+        expect.anything()
+      );
+
+      // The resolved deployment ID should be used in the queue call
+      expect(mockQueue).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Object),
+        { deploymentId: 'dpl_resolved_abc123' }
+      );
+    });
+
+    it('should pass the resolved deployment ID to getEncryptionKeyForRun when using "latest"', async () => {
+      const mockResolveLatest = vi
+        .fn()
+        .mockResolvedValue('dpl_resolved_abc123');
+      const mockGetEncryptionKeyForRun = vi.fn();
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        resolveLatestDeploymentId: mockResolveLatest,
+        getEncryptionKeyForRun: mockGetEncryptionKeyForRun,
+      } as any);
+
+      await start(validWorkflow, [], { deploymentId: 'latest' });
+
+      expect(mockResolveLatest).toHaveBeenCalledTimes(1);
+      expect(mockGetEncryptionKeyForRun).toHaveBeenCalled();
+
+      const [, contextArg] =
+        mockGetEncryptionKeyForRun.mock.calls[
+          mockGetEncryptionKeyForRun.mock.calls.length - 1
+        ] || [];
+
+      expect(contextArg).toEqual(
+        expect.objectContaining({
+          deploymentId: 'dpl_resolved_abc123',
+        })
+      );
+    });
+
+    it('should throw WorkflowRuntimeError when "latest" is used with a World that does not implement resolveLatestDeploymentId', async () => {
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        // No resolveLatestDeploymentId
+      } as any);
+
+      await expect(
+        start(validWorkflow, [], { deploymentId: 'latest' })
+      ).rejects.toThrow(WorkflowRuntimeError);
+
+      await expect(
+        start(validWorkflow, [], { deploymentId: 'latest' })
+      ).rejects.toThrow(
+        "deploymentId 'latest' requires a World that implements resolveLatestDeploymentId()"
+      );
+    });
+
+    it('should not call resolveLatestDeploymentId when a normal deploymentId is provided', async () => {
+      const mockResolveLatest = vi
+        .fn()
+        .mockResolvedValue('dpl_resolved_abc123');
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        resolveLatestDeploymentId: mockResolveLatest,
+      } as any);
+
+      await start(validWorkflow, [], { deploymentId: 'dpl_specific_456' });
+
+      expect(mockResolveLatest).not.toHaveBeenCalled();
+
+      // The provided deployment ID should be used directly
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventData: expect.objectContaining({
+            deploymentId: 'dpl_specific_456',
+          }),
+        }),
+        expect.anything()
+      );
+    });
+
+    it('should not call resolveLatestDeploymentId when no deploymentId is provided', async () => {
+      const mockResolveLatest = vi
+        .fn()
+        .mockResolvedValue('dpl_resolved_abc123');
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('dpl_default_789'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+        resolveLatestDeploymentId: mockResolveLatest,
+      } as any);
+
+      await start(validWorkflow, []);
+
+      expect(mockResolveLatest).not.toHaveBeenCalled();
+
+      // Should use the default from getDeploymentId()
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventData: expect.objectContaining({
+            deploymentId: 'dpl_default_789',
+          }),
+        }),
+        expect.anything()
+      );
+    });
+  });
 });

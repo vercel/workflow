@@ -21,11 +21,19 @@ type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
 export interface EventsConsumerOptions {
   /**
    * Callback invoked when a non-null event cannot be consumed by any registered
-   * callback, indicating an orphaned or invalid event in the event log. Called
-   * asynchronously after a macrotask delay to allow pending callback
-   * subscriptions to settle first.
+   * callback, indicating an orphaned or invalid event in the event log. The
+   * check is deferred until after the promise queue has drained, ensuring that
+   * any pending async work (e.g., deserialization/decryption) completes and
+   * downstream subscribe() calls have a chance to cancel the check first.
    */
   onUnconsumedEvent: (event: Event) => void;
+  /**
+   * Returns the current promise queue. The unconsumed event check is chained
+   * onto this queue so it only fires after all pending async work (e.g.,
+   * deserialization) has completed. This prevents false positives when async
+   * deserialization delays the resolve() that triggers the next subscribe().
+   */
+  getPromiseQueue: () => Promise<void>;
 }
 
 export class EventsConsumer {
@@ -33,12 +41,16 @@ export class EventsConsumer {
   readonly events: Event[] = [];
   readonly callbacks: EventConsumerCallback[] = [];
   private onUnconsumedEvent: (event: Event) => void;
-  private pendingUnconsumedCheck: ReturnType<typeof setTimeout> | null = null;
+  private getPromiseQueue: () => Promise<void>;
+  private pendingUnconsumedCheck: Promise<void> | null = null;
+  private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
+  private unconsumedCheckVersion = 0;
 
   constructor(events: Event[], options: EventsConsumerOptions) {
     this.events = events;
     this.eventIndex = 0;
     this.onUnconsumedEvent = options.onUnconsumedEvent;
+    this.getPromiseQueue = options.getPromiseQueue;
   }
 
   /**
@@ -52,10 +64,16 @@ export class EventsConsumer {
    */
   subscribe(fn: EventConsumerCallback) {
     this.callbacks.push(fn);
-    // Cancel any pending unconsumed check since a new callback may consume the event
+    // Cancel any pending unconsumed check since a new callback may consume the event.
+    // Incrementing the version causes any in-flight promise chain check to no-op.
+    // Also clear the pending setTimeout if it hasn't fired yet.
     if (this.pendingUnconsumedCheck !== null) {
-      clearTimeout(this.pendingUnconsumedCheck);
+      this.unconsumedCheckVersion++;
       this.pendingUnconsumedCheck = null;
+      if (this.pendingUnconsumedTimeout !== null) {
+        clearTimeout(this.pendingUnconsumedTimeout);
+        this.pendingUnconsumedTimeout = null;
+      }
     }
     process.nextTick(this.consume);
   }
@@ -90,18 +108,29 @@ export class EventsConsumer {
 
     // If we reach here, all callbacks returned NotConsumed.
     // If the current event is non-null (a real event, not end-of-events),
-    // schedule a deferred check. We use setTimeout (macrotask) so that any
-    // pending process.nextTick microtasks (e.g., new subscribes from the
-    // workflow code) can complete first. If the event is still unconsumed
-    // when the timeout fires, it's truly orphaned.
+    // schedule a deferred check. We chain onto the promiseQueue so that any
+    // pending async work (e.g., deserialization/decryption that triggers
+    // resolve() → user code → subscribe()) completes first. If the event
+    // is still unconsumed after the queue drains, it's truly orphaned.
     if (currentEvent !== null) {
-      const unconsumedIndex = this.eventIndex;
-      this.pendingUnconsumedCheck = setTimeout(() => {
-        this.pendingUnconsumedCheck = null;
-        if (this.eventIndex === unconsumedIndex) {
-          this.onUnconsumedEvent(currentEvent);
-        }
-      }, 0);
+      const checkVersion = ++this.unconsumedCheckVersion;
+      this.pendingUnconsumedCheck = this.getPromiseQueue().then(() => {
+        // Use a delayed setTimeout after the queue drains. The delay must be
+        // long enough for promise chains to propagate across the VM boundary
+        // (from resolve() in the host context through to the workflow code
+        // calling subscribe() in the VM context). Node.js does not guarantee
+        // that setTimeout(0) fires after all cross-context microtasks settle,
+        // so we use a small but non-zero delay. Any subscribe() call that
+        // arrives during this window will cancel the check via version
+        // invalidation + clearTimeout.
+        this.pendingUnconsumedTimeout = setTimeout(() => {
+          this.pendingUnconsumedTimeout = null;
+          if (this.unconsumedCheckVersion === checkVersion) {
+            this.pendingUnconsumedCheck = null;
+            this.onUnconsumedEvent(currentEvent);
+          }
+        }, 100);
+      });
     }
   };
 }

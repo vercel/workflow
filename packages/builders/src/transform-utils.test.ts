@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   detectWorkflowPatterns,
+  isWorkflowSdkFile,
   useStepPattern,
   useWorkflowPattern,
   workflowSerdeComputedPropertyPattern,
@@ -330,6 +331,46 @@ describe('transform-utils patterns', () => {
       expect(result.hasDirective).toBe(true);
       expect(result.hasUseStep).toBe(true);
       expect(result.hasSerde).toBe(true);
+    });
+  });
+
+  describe('isWorkflowSdkFile', () => {
+    it('matches direct @workflow package path in node_modules', () => {
+      expect(
+        isWorkflowSdkFile(
+          '/tmp/app/node_modules/@workflow/core/dist/serialization.js'
+        )
+      ).toBe(true);
+    });
+
+    it('matches direct workflow package path in node_modules', () => {
+      expect(
+        isWorkflowSdkFile('/tmp/app/node_modules/workflow/dist/runtime.js')
+      ).toBe(true);
+    });
+
+    it('matches pnpm virtual store @workflow package path', () => {
+      expect(
+        isWorkflowSdkFile(
+          '/tmp/app/node_modules/.pnpm/@workflow+core@4.1.0/node_modules/@workflow/core/dist/serialization.js'
+        )
+      ).toBe(true);
+    });
+
+    it('matches pnpm virtual store workflow package path', () => {
+      expect(
+        isWorkflowSdkFile(
+          '/tmp/app/node_modules/.pnpm/workflow@4.1.0/node_modules/workflow/dist/runtime.js'
+        )
+      ).toBe(true);
+    });
+
+    it('does not match non-workflow package in pnpm store', () => {
+      expect(
+        isWorkflowSdkFile(
+          '/tmp/app/node_modules/.pnpm/lodash@4.17.21/node_modules/lodash/lodash.js'
+        )
+      ).toBe(false);
     });
   });
 });

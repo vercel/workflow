@@ -29,10 +29,15 @@ export const generatedWorkflowPathPattern =
 
 // Pattern to detect @workflow SDK packages that should be excluded from transformation
 // These are internal SDK packages that should not be treated as user entry points.
-// Matches both: node_modules/@workflow/* and monorepo packages/*/dist paths
+// Matches:
+// - node_modules/@workflow/*
+// - node_modules/workflow/*
+// - node_modules/.pnpm/.../node_modules/@workflow/* (pnpm virtual store)
+// - node_modules/.pnpm/.../node_modules/workflow/* (pnpm virtual store)
+// - monorepo packages/*/dist paths
 // User npm packages with workflows/steps/serde SHOULD still be discovered.
 export const workflowSdkPathPattern =
-  /[/\\](?:node_modules[/\\]@workflow[/\\]|packages[/\\](?:builders|core|rollup|vite|next|nitro|serde|workflow|swc-plugin-workflow)[/\\])/;
+  /[/\\](?:node_modules[/\\](?:@workflow[/\\]|workflow[/\\]|\.pnpm[/\\][^/\\]+[/\\]node_modules[/\\](?:@workflow[/\\]|workflow[/\\]))|packages[/\\](?:builders|core|rollup|vite|next|nitro|serde|workflow|swc-plugin-workflow)[/\\])/;
 
 /**
  * Detects workflow-related patterns in source code.

@@ -3,6 +3,7 @@ import type {
   CreateEventRequest,
   Event,
   EventResult,
+  GetEventParams,
   ListEventsByCorrelationIdParams,
   ListEventsParams,
   RunCreatedEventRequest,
@@ -155,6 +156,12 @@ export interface Storage {
       params?: CreateEventParams
     ): Promise<EventResult>;
 
+    get(
+      runId: string,
+      eventId: string,
+      params?: GetEventParams
+    ): Promise<Event>;
+
     list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
     listByCorrelationId(
       params: ListEventsByCorrelationIdParams
@@ -186,6 +193,19 @@ export interface World extends Queue, Storage, Streamer {
    * without relying on `process.exit()`.
    */
   close?(): Promise<void>;
+
+  /**
+   * Resolve the most recent deployment ID for the current deployment's environment.
+   *
+   * Used when `deploymentId: 'latest'` is passed to `start()`. The implementation
+   * determines the latest deployment that shares the same environment (e.g., same
+   * "production" target or same git branch for "preview" deployments) as the
+   * current deployment.
+   *
+   * Not all World implementations support this — it is only implemented by
+   * world-vercel where deployment routing is meaningful.
+   */
+  resolveLatestDeploymentId?(): Promise<string>;
 
   /**
    * Retrieve the AES-256 encryption key for a specific workflow run.

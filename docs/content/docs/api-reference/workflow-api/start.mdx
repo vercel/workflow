@@ -76,3 +76,27 @@ const run = await start(myWorkflow, ["arg1", "arg2"], { // [!code highlight]
   deploymentId: "custom-deployment-id" // [!code highlight]
 }); // [!code highlight]
 ```
+
+### Using `deploymentId: "latest"`
+
+Set `deploymentId` to `"latest"` to automatically resolve the most recent deployment for the current environment. This is useful when you want to ensure a workflow run targets the latest deployed version of your application rather than the deployment that initiated the call.
+
+```typescript
+import { start } from "workflow/api";
+import { myWorkflow } from "./workflows/my-workflow";
+
+const run = await start(myWorkflow, ["arg1", "arg2"], { // [!code highlight]
+  deploymentId: "latest" // [!code highlight]
+}); // [!code highlight]
+```
+
+<Callout type="info">
+The `deploymentId` option is currently a Vercel-specific feature. The `"latest"` value resolves to the most recent deployment matching your current environment — the same production target for production deployments, or the same git branch for preview deployments.
+</Callout>
+
+<Callout type="warn">
+When using `deploymentId: "latest"`, the workflow run will execute on a potentially different deployment than the one calling `start()`. Be mindful of forward and backward compatibility:
+
+- **Workflow identity**: The workflow ID is derived from the function name and file path. If the latest deployment has renamed the workflow function or moved it to a different directory, the workflow ID will no longer match and the run will fail to start.
+- **Input and output compatibility**: The arguments passed to `start()` are serialized by the calling deployment but deserialized by the target deployment. Similarly, the workflow's return value is serialized by the target deployment but deserialized by the caller. If the workflow's expected arguments or return type have changed (e.g. added required fields, removed fields, or changed types), the run may fail or behave unexpectedly. Ensure that input and output schemas remain backward-compatible across deployments.
+</Callout>

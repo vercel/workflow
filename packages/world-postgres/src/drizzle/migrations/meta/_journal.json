@@ -64,6 +64,13 @@
       "when": 1770000000000,
       "tag": "0008_migrate_pgboss_to_graphile",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1770500000000,
+      "tag": "0009_add_is_webhook",
+      "breakpoints": true
     }
   ]
 }

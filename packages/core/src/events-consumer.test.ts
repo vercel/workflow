@@ -16,16 +16,19 @@ function createMockEvent(overrides: Partial<Event> = {}): Event {
 }
 
 // Default options for tests that don't care about onUnconsumedEvent
-const defaultOptions = { onUnconsumedEvent: vi.fn() };
+const defaultOptions = {
+  onUnconsumedEvent: vi.fn(),
+  getPromiseQueue: () => Promise.resolve(),
+};
 
 // Helper function to wait for next tick
 function waitForNextTick(): Promise<void> {
   return new Promise((resolve) => process.nextTick(resolve));
 }
 
-// Helper to wait for setTimeout(0) macrotask (used by deferred unconsumed event check)
-function waitForMacrotask(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 0));
+// Helper to wait for the unconsumed event check (promiseQueue .then() + setTimeout(100ms))
+function waitForUnconsumedCheck(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 150));
 }
 
 describe('EventsConsumer', () => {
@@ -159,7 +162,10 @@ describe('EventsConsumer', () => {
     it('should process all callbacks when none return true and call onUnconsumedEvent', async () => {
       const event = createMockEvent();
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([event], { onUnconsumedEvent });
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+      });
       const callback1 = vi
         .fn()
         .mockReturnValue(EventConsumerResult.NotConsumed);
@@ -181,8 +187,9 @@ describe('EventsConsumer', () => {
       expect(consumer.eventIndex).toBe(0);
       expect(consumer.callbacks).toEqual([callback1, callback2, callback3]);
 
-      // onUnconsumedEvent is deferred via setTimeout to allow new subscribes
-      await waitForMacrotask();
+      // onUnconsumedEvent is deferred via promise queue .then() + setTimeout(0)
+      await waitForNextTick();
+      await waitForUnconsumedCheck();
       expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
     });
 
@@ -352,24 +359,33 @@ describe('EventsConsumer', () => {
     it('should call onUnconsumedEvent when a non-null event is not consumed by any callback', async () => {
       const event = createMockEvent();
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([event], { onUnconsumedEvent });
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+      });
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
+      // Wait for: nextTick(consume) → .then() microtask → setTimeout(0) macrotask
       await waitForNextTick();
-      await waitForMacrotask();
+      await waitForNextTick();
+      await waitForUnconsumedCheck();
 
       expect(onUnconsumedEvent).toHaveBeenCalledWith(event);
     });
 
     it('should NOT call onUnconsumedEvent for null event (end-of-events)', async () => {
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([], { onUnconsumedEvent });
+      const consumer = new EventsConsumer([], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+      });
       const callback = vi.fn().mockReturnValue(EventConsumerResult.NotConsumed);
 
       consumer.subscribe(callback);
       await waitForNextTick();
-      await waitForMacrotask();
+      await waitForNextTick();
+      await waitForUnconsumedCheck();
 
       expect(callback).toHaveBeenCalledWith(null);
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
@@ -378,7 +394,10 @@ describe('EventsConsumer', () => {
     it('should cancel pending unconsumed check when a new callback subscribes', async () => {
       const event = createMockEvent();
       const onUnconsumedEvent = vi.fn();
-      const consumer = new EventsConsumer([event], { onUnconsumedEvent });
+      const consumer = new EventsConsumer([event], {
+        onUnconsumedEvent,
+        getPromiseQueue: () => Promise.resolve(),
+      });
       const callback1 = vi
         .fn()
         .mockReturnValue(EventConsumerResult.NotConsumed);
@@ -390,7 +409,8 @@ describe('EventsConsumer', () => {
       const callback2 = vi.fn().mockReturnValue(EventConsumerResult.Finished);
       consumer.subscribe(callback2);
       await waitForNextTick();
-      await waitForMacrotask();
+      await waitForNextTick();
+      await waitForUnconsumedCheck();
 
       // The new callback consumed the event, so onUnconsumedEvent should NOT be called
       expect(onUnconsumedEvent).not.toHaveBeenCalled();

@@ -1,8 +1,9 @@
+import { createVercelWorld } from '@workflow/world-vercel';
 import fs from 'fs';
 import path from 'path';
 import { bench, describe } from 'vitest';
 import type { Run } from '../src/runtime';
-import { start } from '../src/runtime';
+import { setWorld, start } from '../src/runtime';
 import {
   getProtectionBypassHeaders,
   getWorkbenchAppPath,
@@ -28,6 +29,18 @@ if (isLocalDeployment()) {
       'VERCEL_DEPLOYMENT_ID is required for Vercel benchmarks but is not set'
     );
   }
+  // Build the Vercel world explicitly with CI-provided config
+  setWorld(
+    createVercelWorld({
+      token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN || undefined,
+      projectConfig: {
+        environment: process.env.WORKFLOW_VERCEL_ENV || undefined,
+        projectId: process.env.WORKFLOW_VERCEL_PROJECT || undefined,
+        projectName: process.env.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
+        teamId: process.env.WORKFLOW_VERCEL_TEAM || undefined,
+      },
+    })
+  );
 }
 
 // Manifest type and helpers (same as e2e tests)

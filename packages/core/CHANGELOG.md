@@ -1,5 +1,136 @@
 # @workflow/core
 
+## 4.2.0-beta.70
+
+### Patch Changes
+
+- [#1339](https://github.com/vercel/workflow/pull/1339) [`7df1385`](https://github.com/vercel/workflow/commit/7df13854f85529929ff1187fe831f4dbc51b9121) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Separate infrastructure vs user code error handling in workflow and step runtimes so transient network errors (ECONNRESET, etc.) propagate to the queue for retry instead of incorrectly marking runs as failed
+
+- [#1345](https://github.com/vercel/workflow/pull/1345) [`58e67ce`](https://github.com/vercel/workflow/commit/58e67ce11bd69b982214e2734363fa7fd252f5f6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Suppress stale `WORKFLOW_VERCEL_*` env var warning when running outside Vercel serverless (e.g. CLI, web observability app)
+
+- Updated dependencies [[`9feebee`](https://github.com/vercel/workflow/commit/9feebee15c7c35843b99254b23a2f7743ea3f8c6)]:
+  - @workflow/world-local@4.1.0-beta.43
+
+## 4.2.0-beta.69
+
+### Patch Changes
+
+- [#1317](https://github.com/vercel/workflow/pull/1317) [`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Support `deploymentId: 'latest'` in `start()` options to automatically resolve the most recent deployment ID for the current environment
+
+- [#1336](https://github.com/vercel/workflow/pull/1336) [`fb5a500`](https://github.com/vercel/workflow/commit/fb5a500eadba80efdef75e3ccf6e85e957820f38) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `exists` getter to `Run` class for checking if a workflow run exists without throwing
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`3648109`](https://github.com/vercel/workflow/commit/3648109861f1fbfe24101936dc35c9a36650b7e2), [`d5bc418`](https://github.com/vercel/workflow/commit/d5bc418816748ab2b5109ca7b082f3be427c326b)]:
+  - @workflow/world-vercel@4.1.0-beta.43
+  - @workflow/world@4.1.0-beta.12
+  - @workflow/world-local@4.1.0-beta.42
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.2.0-beta.68
+
+### Patch Changes
+
+- [#1304](https://github.com/vercel/workflow/pull/1304) [`83dbd46`](https://github.com/vercel/workflow/commit/83dbd46456a8dbfc89efd87895929cbb813feda3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Stop reading `WORKFLOW_VERCEL_*` env vars at runtime to prevent unintended proxy routing
+
+- [#1318](https://github.com/vercel/workflow/pull/1318) [`854a25f`](https://github.com/vercel/workflow/commit/854a25f9103f5f3a5769dec6e3e5c6b98ed119b0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `start()` not encrypting initial workflow input in external contexts (e2e tests, CLI). The resolved `deploymentId` was not being passed to `getEncryptionKeyForRun`, causing it to silently skip encryption when `deploymentId` was inferred from the environment rather than explicitly provided in options.
+
+- Updated dependencies [[`9781afb`](https://github.com/vercel/workflow/commit/9781afb490b252f5656e5d48c61c038c3aef794f), [`4a6ddd8`](https://github.com/vercel/workflow/commit/4a6ddd82c0fc1b3768f3a10befad77f43e81036e), [`d842ce1`](https://github.com/vercel/workflow/commit/d842ce1c435049805233cf218aa9ce07d9cab130)]:
+  - @workflow/world-vercel@4.1.0-beta.42
+  - @workflow/world-local@4.1.0-beta.41
+
+## 4.2.0-beta.67
+
+### Patch Changes
+
+- [#1294](https://github.com/vercel/workflow/pull/1294) [`c71befe`](https://github.com/vercel/workflow/commit/c71befe8ec73765e67b7f2e0627251643ab245d4) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix premature workflow suspension when hooks have buffered payloads and a concurrent sleep or incomplete step is pending
+
+- [#1285](https://github.com/vercel/workflow/pull/1285) [`36a901d`](https://github.com/vercel/workflow/commit/36a901d2d2f2ba37ec024073a7dd39a094b9e9c0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `workflowName` to `getWorkflowMetadata()` and `stepName` to `getStepMetadata()`
+
+- Updated dependencies [[`d8daa2a`](https://github.com/vercel/workflow/commit/d8daa2a9a95e2d01a4e6fee4e8dde51d82db762d)]:
+  - @workflow/world@4.1.0-beta.11
+  - @workflow/world-local@4.1.0-beta.40
+  - @workflow/world-vercel@4.1.0-beta.41
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.2.0-beta.66
+
+### Patch Changes
+
+- [#1290](https://github.com/vercel/workflow/pull/1290) [`8b5a388`](https://github.com/vercel/workflow/commit/8b5a388a9451d7c7460481f0889da5037bd90893) Thanks [@pranaygp](https://github.com/pranaygp)! - Support `timeoutSeconds: 0` for immediate re-enqueue without arbitrary delay
+
+- [#1283](https://github.com/vercel/workflow/pull/1283) [`dff00c9`](https://github.com/vercel/workflow/commit/dff00c94008f60cbfb4a398f2b98101d80ee8377) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Avoid port inference in Vercel environment
+
+- Updated dependencies [[`8b5a388`](https://github.com/vercel/workflow/commit/8b5a388a9451d7c7460481f0889da5037bd90893)]:
+  - @workflow/world-local@4.1.0-beta.39
+  - @workflow/world-vercel@4.1.0-beta.40
+
+## 4.2.0-beta.65
+
+### Patch Changes
+
+- Updated dependencies [[`456c1aa`](https://github.com/vercel/workflow/commit/456c1aa455d9d391a954b25e3d86ee9b06ad2f30), [`11dcb64`](https://github.com/vercel/workflow/commit/11dcb646d33e7a2b251d9388c2c8ecdd6aca73f7)]:
+  - @workflow/world-local@4.1.0-beta.38
+  - @workflow/world@4.1.0-beta.10
+  - @workflow/world-vercel@4.1.0-beta.39
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.2.0-beta.64
+
+### Minor Changes
+
+- [`30e24d4`](https://github.com/vercel/workflow/commit/30e24d441e735635ffa4522198e6905d0e51e175) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING CHANGE**: `createWebhook()` no longer accepts a `token` option. Webhook tokens are always randomly generated to prevent unauthorized access to the public webhook endpoint. Use `createHook()` with `resumeHook()` for deterministic server-side token patterns.
+
+### Patch Changes
+
+- [#1270](https://github.com/vercel/workflow/pull/1270) [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `HookNotFoundError` to `@workflow/errors` and adopt it across all world backends
+
+- [#1270](https://github.com/vercel/workflow/pull/1270) [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d) Thanks [@pranaygp](https://github.com/pranaygp)! - Prevent hooks from being resumed via the public webhook endpoint by default. Add `isWebhook` option to `createHook()` to opt-in to public resumption. `createWebhook()` always sets `isWebhook: true`.
+
+- [#1251](https://github.com/vercel/workflow/pull/1251) [`7618ac3`](https://github.com/vercel/workflow/commit/7618ac36c203d04e39513953e3b22a13b0c70829) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Wire AES-GCM encryption into serialization layer with stream support
+
+- [#1246](https://github.com/vercel/workflow/pull/1246) [`860531d`](https://github.com/vercel/workflow/commit/860531d182d74547acd12784cb825bb41c1a9342) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Route all event-driven promise resolutions through a sequential queue to ensure deterministic ordering
+
+- [#1254](https://github.com/vercel/workflow/pull/1254) [`60bc9d5`](https://github.com/vercel/workflow/commit/60bc9d5cb1022e169266884f4bcdd0fb99c45679) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix false positive unconsumed event detection during async deserialization and cross-VM promise propagation
+
+- [#1256](https://github.com/vercel/workflow/pull/1256) [`bbe40ff`](https://github.com/vercel/workflow/commit/bbe40ff00a5e372b040aec8fc7640c54d08c5636) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add encryption-aware o11y for CLI and web UI
+
+- [#1269](https://github.com/vercel/workflow/pull/1269) [`a7ae7e9`](https://github.com/vercel/workflow/commit/a7ae7e9a612905c911a59b631d62856d31333aeb) Thanks [@pranaygp](https://github.com/pranaygp)! - Improve deterministic VM context seed derivation to incorporate additional run metadata
+
+- Updated dependencies [[`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`02f706f`](https://github.com/vercel/workflow/commit/02f706fb99d2ffa3f862698092d17cedbdb8ba02)]:
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/world-local@4.1.0-beta.37
+  - @workflow/world-vercel@4.1.0-beta.38
+  - @workflow/world@4.1.0-beta.9
+
+## 4.1.0-beta.63
+
+### Patch Changes
+
+- [#1232](https://github.com/vercel/workflow/pull/1232) [`4ab4412`](https://github.com/vercel/workflow/commit/4ab4412ae6f4a64eb29fcb0e445f0b3314aa3b9b) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `Run.wakeUp()` method to programmatically interrupt pending `sleep()` calls
+
+- [#1230](https://github.com/vercel/workflow/pull/1230) [`a9fea91`](https://github.com/vercel/workflow/commit/a9fea9132ef3797dbda7683c36cc86ff2bd82f1f) Thanks [@ijjk](https://github.com/ijjk)! - Fix deferred build mode for Next.js
+
+- Updated dependencies [[`2b1c2bd`](https://github.com/vercel/workflow/commit/2b1c2bd8e6b384334fbeb7ede8f517a5ca683716)]:
+  - @workflow/world-vercel@4.1.0-beta.37
+
+## 4.1.0-beta.62
+
+### Patch Changes
+
+- [#1172](https://github.com/vercel/workflow/pull/1172) [`6f2cbcd`](https://github.com/vercel/workflow/commit/6f2cbcda9df55809f2dab15a05b0b72a78095439) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix custom Error subclass serialization precedence: move Instance reducer before Error reducer so that Error subclasses with WORKFLOW_SERIALIZE are serialized using custom class serialization instead of the generic Error serialization
+
+- [#1181](https://github.com/vercel/workflow/pull/1181) [`02681dc`](https://github.com/vercel/workflow/commit/02681dce4a504ff236c81a1ee976d2b04d1a5774) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `hook.dispose()` method to explicitly release hook tokens for reuse by other workflows while the current workflow is still running
+
+- [#1185](https://github.com/vercel/workflow/pull/1185) [`028a828`](https://github.com/vercel/workflow/commit/028a828de113f8b07f9bb70d91f75e97162ab37d) Thanks [@pranaygp](https://github.com/pranaygp)! - Warn when workflow completes with uncommitted operations (unawaited steps, hooks, or sleeps)
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- Updated dependencies [[`1cfb8b1`](https://github.com/vercel/workflow/commit/1cfb8b12e7d40e372d6e223add1518cd62fa0b5f), [`274ea8b`](https://github.com/vercel/workflow/commit/274ea8b5720c03d564b567edb3fdeb97a6db2c09), [`f3b2e08`](https://github.com/vercel/workflow/commit/f3b2e08adbb259670445bba7cea79cfd25c8370b), [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - @workflow/world-vercel@4.1.0-beta.36
+  - @workflow/world-local@4.1.0-beta.36
+  - @workflow/utils@4.1.0-beta.13
+  - @workflow/world@4.1.0-beta.8
+  - @workflow/errors@4.1.0-beta.17
+
 ## 4.1.0-beta.61
 
 ### Patch Changes

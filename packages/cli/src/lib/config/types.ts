@@ -22,4 +22,6 @@ export type InspectCLIOptions = {
   backend?: string;
   disableRelativeDates?: boolean;
   interactive?: boolean;
+  /** When true, decrypt encrypted values (triggers audit-logged key retrieval) */
+  decrypt?: boolean;
 };

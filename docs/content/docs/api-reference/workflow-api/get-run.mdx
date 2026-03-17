@@ -47,7 +47,52 @@ import type { WorkflowReadableStreamOptions } from "workflow/api";
 export default WorkflowReadableStreamOptions;`}
 />
 
+#### StopSleepOptions
+
+<TSDoc
+definition={`
+import type { StopSleepOptions } from "workflow/api";
+export default StopSleepOptions;`}
+/>
+
+#### StopSleepResult
+
+<TSDoc
+definition={`
+import type { StopSleepResult } from "workflow/api";
+export default StopSleepResult;`}
+/>
+
 ## Examples
+
+### Check if a Run Exists
+
+Use the `exists` getter to check whether a workflow run exists without throwing when the run is not found:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+
+  if (!runId) {
+    return Response.json({ error: "No runId provided" }, { status: 400 });
+  }
+
+  const run = getRun(runId);
+
+  if (!(await run.exists)) { // [!code highlight]
+    return Response.json(
+      { error: "Workflow run not found" },
+      { status: 404 }
+    );
+  }
+
+  const status = await run.status;
+  return Response.json({ status });
+}
+```
 
 ### Basic Status Check
 
@@ -76,6 +121,33 @@ export async function GET(req: Request) {
     );
   }
 }
+```
+
+### Wake Up a Sleeping Workflow
+
+Interrupt pending `sleep()` calls to resume a workflow early. This is useful for testing workflows or building custom UIs that let users skip wait periods:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+export async function POST(req: Request) {
+  const { runId } = await req.json();
+  const run = getRun(runId);
+
+  // Wake up all pending sleep calls
+  const { stoppedCount } = await run.wakeUp(); // [!code highlight]
+
+  return Response.json({ stoppedCount });
+}
+```
+
+You can also target specific sleep calls by correlation ID:
+
+```typescript lineNumbers
+const run = getRun("my-run-id"); // @setup
+const { stoppedCount } = await run.wakeUp({
+  correlationIds: ["wait_abc123"],
+});
 ```
 
 ## Related Functions

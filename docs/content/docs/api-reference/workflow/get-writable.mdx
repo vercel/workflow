@@ -209,7 +209,7 @@ Here's a more complex example showing how you might stream AI chat responses:
 import { getWritable } from "workflow";
 import { generateId, streamText, type UIMessageChunk } from "ai";
 
-export async function chat(messages: UIMessage[]) {
+export async function chat(messages: ModelMessage[]) {
   "use workflow";
 
   // Get typed writable stream for UI message chunks
@@ -223,7 +223,7 @@ export async function chat(messages: UIMessage[]) {
   // Process messages in steps
   for (let i = 0; i < MAX_STEPS; i++) {
     const result = await streamTextStep(currentMessages, writable);
-    currentMessages.push(result.messages);
+    currentMessages.push(...result.messages);
 
     if (result.finishReason !== "tool-calls") {
       break;
@@ -252,7 +252,7 @@ async function startStream(writable: WritableStream<UIMessageChunk>) {
 }
 
 async function streamTextStep(
-  messages: UIMessage[],
+  messages: ModelMessage[],
   writable: WritableStream<UIMessageChunk>
 ) {
   "use step";
@@ -261,9 +261,8 @@ async function streamTextStep(
 
   // Call streamText from the AI SDK
   const result = streamText({
-    model: "gpt-4",
+    model: myModel,
     messages,
-    /* other options */
   });
 
   // Pipe the AI stream into the writable stream

@@ -2,18 +2,24 @@ import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
+  WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
-import { importKey } from '../encryption.js';
+import { type CryptoKey, importKey } from '../encryption.js';
 import {
   getExternalRevivers,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import {
+  type StopSleepOptions,
+  type StopSleepResult,
+  wakeUpRun,
+} from './runs.js';
 import { getWorld } from './world.js';
 
 /**
@@ -58,9 +64,44 @@ export class Run<TResult> {
    */
   private world: World;
 
+  /**
+   * Cached encryption key resolution. Resolved once on first use and
+   * reused for returnValue, getReadable(), etc.
+   * @internal
+   */
+  private encryptionKeyPromise: Promise<CryptoKey | undefined> | null = null;
+
   constructor(runId: string) {
     this.runId = runId;
     this.world = getWorld();
+  }
+
+  /**
+   * Resolves and caches the encryption key for this run.
+   * The key is the same for the lifetime of a run, so it only needs
+   * to be resolved once.
+   * @internal
+   */
+  private getEncryptionKey(): Promise<CryptoKey | undefined> {
+    if (!this.encryptionKeyPromise) {
+      this.encryptionKeyPromise = (async () => {
+        const run = await this.world.runs.get(this.runId);
+        const rawKey = await this.world.getEncryptionKeyForRun?.(run);
+        return rawKey ? await importKey(rawKey) : undefined;
+      })();
+    }
+    return this.encryptionKeyPromise;
+  }
+
+  /**
+   * Interrupts pending `sleep()` calls, resuming the workflow early.
+   *
+   * @param options - Optional settings to target specific sleep calls by correlation ID.
+   *   If not provided, all pending sleep calls will be interrupted.
+   * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
+   */
+  async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
+    return wakeUpRun(this.world, this.runId, options);
   }
 
   /**
@@ -71,6 +112,21 @@ export class Run<TResult> {
       eventType: 'run_cancelled',
       specVersion: SPEC_VERSION_CURRENT,
     });
+  }
+
+  /**
+   * Whether the workflow run exists.
+   */
+  get exists(): Promise<boolean> {
+    return this.world.runs
+      .get(this.runId, { resolveData: 'none' })
+      .then(() => true)
+      .catch((error) => {
+        if (WorkflowRunNotFoundError.is(error)) {
+          return false;
+        }
+        throw error;
+      });
   }
 
   /**
@@ -137,7 +193,15 @@ export class Run<TResult> {
   ): ReadableStream<R> {
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
-    return getExternalRevivers(global, ops, this.runId).ReadableStream({
+    // Pass the key as a promise — it will be resolved lazily inside
+    // the first async transform() call of the deserialize stream.
+    const encryptionKey = this.getEncryptionKey();
+    return getExternalRevivers(
+      global,
+      ops,
+      this.runId,
+      encryptionKey
+    ).ReadableStream({
       name,
       startIndex,
     }) as ReadableStream<R>;
@@ -154,8 +218,7 @@ export class Run<TResult> {
         const run = await this.world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          const rawKey = await this.world.getEncryptionKeyForRun?.(run);
-          const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+          const encryptionKey = await this.getEncryptionKey();
           return await hydrateWorkflowReturnValue(
             run.output,
             this.runId,

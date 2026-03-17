@@ -1,5 +1,10 @@
 export interface WorkflowMetadata {
   /**
+   * The name of the workflow.
+   */
+  workflowName: string;
+
+  /**
    * Unique identifier for the workflow run.
    */
   workflowRunId: string;

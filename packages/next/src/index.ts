@@ -86,8 +86,15 @@ export function withWorkflow(
           const NextBuilder = await getNextBuilder(nextVersion);
           return new NextBuilder({
             watch: shouldWatch,
-            // discover workflows from pages/app entries
-            dirs: ['pages', 'app', 'src/pages', 'src/app'],
+            // discover workflows from pages/app entries and common workflow dirs
+            dirs: [
+              'pages',
+              'app',
+              'src/pages',
+              'src/app',
+              'workflows',
+              'src/workflows',
+            ],
             workingDir: process.cwd(),
             distDir: nextConfig.distDir || '.next',
             buildTarget: 'next',

@@ -1,6 +1,8 @@
 export type {
   Event,
   StartOptions,
+  StopSleepOptions,
+  StopSleepResult,
   WorkflowReadableStreamOptions,
   WorkflowRun,
 } from '@workflow/core/runtime';

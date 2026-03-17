@@ -97,27 +97,39 @@ export abstract class BaseBuilder {
    * and dependency directories.
    */
   protected async getInputFiles(): Promise<string[]> {
-    const patterns = this.config.dirs.map((dir) => {
-      const resolvedDir = resolve(this.config.workingDir, dir);
-      // Normalize path separators to forward slashes for glob compatibility
-      const normalizedDir = resolvedDir.replace(/\\/g, '/');
-      return `${normalizedDir}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`;
-    });
+    const ignore = [
+      '**/node_modules/**',
+      '**/.git/**',
+      '**/.next/**',
+      '**/.nuxt/**',
+      '**/.output/**',
+      '**/.vercel/**',
+      '**/.workflow-data/**',
+      '**/.well-known/workflow/**',
+      '**/.svelte-kit/**',
+      '**/.turbo/**',
+      '**/.cache/**',
+      '**/.yarn/**',
+      '**/.pnpm-store/**',
+    ];
 
-    const result = await glob(patterns, {
-      ignore: [
-        '**/node_modules/**',
-        '**/.git/**',
-        '**/.next/**',
-        '**/.vercel/**',
-        '**/.workflow-data/**',
-        '**/.well-known/workflow/**',
-        '**/.svelte-kit/**',
-      ],
-      absolute: true,
-    });
+    // Use relative patterns with `cwd` per directory so that `dot: true`
+    // applies consistently to both the search pattern *and* the ignore
+    // patterns. When absolute patterns are used with tinyglobby, the `**`
+    // in ignore patterns does not match dot-prefixed path segments.
+    const results = await Promise.all(
+      this.config.dirs.map((dir) => {
+        const cwd = resolve(this.config.workingDir, dir);
+        return glob(['**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'], {
+          cwd,
+          ignore,
+          absolute: true,
+          dot: true,
+        });
+      })
+    );
 
-    return result;
+    return results.flat();
   }
 
   /**
@@ -387,8 +399,10 @@ export abstract class BaseBuilder {
         /\\/g,
         '/'
       );
-      // Ensure relative paths start with ./ so esbuild resolves them correctly
-      if (!relativePath.startsWith('.')) {
+      // Ensure relative paths start with ./ so esbuild resolves them correctly.
+      // Paths like ".output/..." are not valid relative specifiers and must
+      // become "./.output/...".
+      if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
         relativePath = `./${relativePath}`;
       }
       return `import '${relativePath}';`;
@@ -614,8 +628,10 @@ export abstract class BaseBuilder {
         /\\/g,
         '/'
       );
-      // Ensure relative paths start with ./ so esbuild resolves them correctly
-      if (!relativePath.startsWith('.')) {
+      // Ensure relative paths start with ./ so esbuild resolves them correctly.
+      // Paths like ".output/..." are not valid relative specifiers and must
+      // become "./.output/...".
+      if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
         relativePath = `./${relativePath}`;
       }
       return `import '${relativePath}';`;
@@ -868,9 +884,21 @@ export const POST = workflowEntrypoint(workflowCode);`;
       (f) => !inputFilesNormalized.has(f)
     );
 
-    // Re-exports for input files (user's workflow/step definitions)
+    // Re-exports for input files (user's workflow/step definitions).
+    // These must use valid relative specifiers because some frameworks pass
+    // generated files like ".output/server/index.mjs" as input files.
     const reexports = inputFiles
-      .map((file) => `export * from '${file}';`)
+      .map((file) => {
+        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+        let relativePath = relative(normalizedWorkingDir, file).replace(
+          /\\/g,
+          '/'
+        );
+        if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
+          relativePath = `./${relativePath}`;
+        }
+        return `export * from '${relativePath}';`;
+      })
       .join('\n');
 
     // Side-effect imports for serde files not in inputFiles (for class registration)
@@ -881,7 +909,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
           /\\/g,
           '/'
         );
-        if (!relativePath.startsWith('.')) {
+        if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
           relativePath = `./${relativePath}`;
         }
         return `import '${relativePath}';`;
@@ -1059,6 +1087,7 @@ export const OPTIONS = handler;`;
       architecture?: string;
       shouldAddHelpers?: boolean;
       shouldAddSourcemapSupport?: boolean;
+      maxDuration?: number | 'max';
       experimentalTriggers?: Array<{
         type: 'queue/v2beta';
         topic: string;
@@ -1075,6 +1104,9 @@ export const OPTIONS = handler;`;
       launcherType: config.launcherType ?? 'Nodejs',
       architecture: config.architecture ?? 'arm64',
       shouldAddHelpers: config.shouldAddHelpers ?? true,
+      ...(config.maxDuration !== undefined && {
+        maxDuration: config.maxDuration,
+      }),
       ...(config.shouldAddSourcemapSupport !== undefined && {
         shouldAddSourcemapSupport: config.shouldAddSourcemapSupport,
       }),

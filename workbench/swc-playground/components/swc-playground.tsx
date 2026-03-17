@@ -1,12 +1,19 @@
 'use client';
 
-import { AlertCircle, Loader2, RotateCcw } from 'lucide-react';
+import { AlertCircle, ChevronDownIcon, Loader2, RotateCcw } from 'lucide-react';
 import { useCallback, useEffect, useState } from 'react';
+import {
+  ResizableHandle,
+  ResizablePanel,
+  ResizablePanelGroup,
+} from '@/components/ui/resizable';
+import { Switch } from '@/components/ui/switch';
 import { transformCode } from '@/lib/transform-action';
 import { CodeEditor } from './editor';
 
 const STORAGE_KEY = 'swc-playground-code';
 const MODULE_SPECIFIER_STORAGE_KEY = 'swc-playground-module-specifier';
+const VIM_MODE_STORAGE_KEY = 'swc-playground-vim-mode';
 
 const DEFAULT_CODE = `
 import { sleep } from 'workflow';
@@ -34,6 +41,11 @@ function getStoredModuleSpecifier(): string {
   return localStorage.getItem(MODULE_SPECIFIER_STORAGE_KEY) || '';
 }
 
+function getStoredVimMode(): boolean {
+  if (typeof window === 'undefined') return false;
+  return localStorage.getItem(VIM_MODE_STORAGE_KEY) === 'true';
+}
+
 type ViewMode = 'workflow' | 'step' | 'client';
 
 interface CompilationResult {
@@ -52,6 +64,7 @@ export function SwcPlayground({
 }: SwcPlaygroundProps) {
   const [code, setCode] = useState(DEFAULT_CODE);
   const [moduleSpecifier, setModuleSpecifier] = useState('');
+  const [vimMode, setVimMode] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
   const [results, setResults] = useState<Record<ViewMode, CompilationResult>>({
     workflow: { code: '' },
@@ -59,13 +72,18 @@ export function SwcPlayground({
     client: { code: '' },
   });
   const [isCompiling, setIsCompiling] = useState(false);
+  const [expandedPanels, setExpandedPanels] = useState<Set<ViewMode>>(
+    new Set(['workflow', 'step', 'client'])
+  );
 
-  // Hydrate code and moduleSpecifier from localStorage on mount
+  // Hydrate from localStorage on mount
   useEffect(() => {
     const stored = getStoredCode();
     setCode(stored);
     const storedModuleSpecifier = getStoredModuleSpecifier();
     setModuleSpecifier(storedModuleSpecifier);
+    const storedVimMode = getStoredVimMode();
+    setVimMode(storedVimMode);
     setIsHydrated(true);
   }, []);
 
@@ -91,6 +109,17 @@ export function SwcPlayground({
     }
   }, [moduleSpecifier, isHydrated]);
 
+  // Save vim mode to localStorage when it changes
+  useEffect(() => {
+    if (isHydrated) {
+      try {
+        localStorage.setItem(VIM_MODE_STORAGE_KEY, String(vimMode));
+      } catch {
+        // localStorage may be disabled or full
+      }
+    }
+  }, [vimMode, isHydrated]);
+
   const compile = useCallback(
     async (sourceCode: string) => {
       setIsCompiling(true);
@@ -104,7 +133,6 @@ export function SwcPlayground({
       } catch (err) {
         const errorMessage =
           err instanceof Error ? err.message : 'Server error';
-        // Set error state for all modes
         setResults({
           workflow: { code: '', error: errorMessage },
           step: { code: '', error: errorMessage },
@@ -123,6 +151,18 @@ export function SwcPlayground({
     }, 500);
     return () => clearTimeout(timer);
   }, [code, compile]);
+
+  const togglePanel = (mode: ViewMode) => {
+    setExpandedPanels((prev) => {
+      const next = new Set(prev);
+      if (next.has(mode)) {
+        next.delete(mode);
+      } else {
+        next.add(mode);
+      }
+      return next;
+    });
+  };
 
   return (
     <div className="flex flex-col h-screen bg-background text-foreground">
@@ -145,112 +185,128 @@ export function SwcPlayground({
             </a>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <label
-            htmlFor="module-specifier"
-            className="text-sm text-muted-foreground"
-          >
-            Module Specifier:
-          </label>
-          <input
-            id="module-specifier"
-            type="text"
-            value={moduleSpecifier}
-            onChange={(e) => setModuleSpecifier(e.target.value)}
-            placeholder="e.g., my-package@1.0.0"
-            className="text-sm px-3 py-1 bg-muted rounded border border-input focus:outline-none focus:ring-2 focus:ring-ring w-64"
-          />
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <label htmlFor="vim-mode" className="text-sm text-muted-foreground">
+              Vim
+            </label>
+            <Switch
+              id="vim-mode"
+              size="sm"
+              checked={vimMode}
+              onCheckedChange={setVimMode}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <label
+              htmlFor="module-specifier"
+              className="text-sm text-muted-foreground"
+            >
+              Module Specifier:
+            </label>
+            <input
+              id="module-specifier"
+              type="text"
+              value={moduleSpecifier}
+              onChange={(e) => setModuleSpecifier(e.target.value)}
+              placeholder="e.g., my-package@1.0.0"
+              className="text-sm px-3 py-1 bg-muted rounded border border-input focus:outline-none focus:ring-2 focus:ring-ring w-64"
+            />
+          </div>
         </div>
       </header>
 
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-2 gap-0 overflow-hidden">
-        {/* Input Section */}
-        <div className="h-full border-r flex flex-col">
-          <div className="bg-muted px-4 py-2 text-sm font-medium border-b flex items-center justify-between shrink-0">
-            <span>Input (TypeScript)</span>
-            <button
-              type="button"
-              onClick={() => setCode(DEFAULT_CODE)}
-              disabled={code === DEFAULT_CODE}
-              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
-              title="Reset to default code"
-            >
-              <RotateCcw className="w-3 h-3" />
-              Reset
-            </button>
-          </div>
-          <div className="flex-1 min-h-0">
-            <CodeEditor
-              language="typescript"
-              value={code}
-              onChange={(val) => setCode(val || '')}
-            />
-          </div>
-        </div>
-
-        {/* Output Section - 3 Views */}
-        <div className="h-full flex flex-col overflow-hidden bg-muted/10">
-          <div className="flex-1 border-b min-h-0">
-            <OutputView
-              mode="workflow"
-              result={results.workflow}
-              isCompiling={isCompiling}
-            />
-          </div>
-          <div className="flex-1 border-b min-h-0">
-            <OutputView
-              mode="step"
-              result={results.step}
-              isCompiling={isCompiling}
-            />
-          </div>
-          <div className="flex-1 min-h-0">
-            <OutputView
-              mode="client"
-              result={results.client}
-              isCompiling={isCompiling}
-            />
-          </div>
-        </div>
-      </main>
-    </div>
-  );
-}
-
-function OutputView({
-  mode,
-  result,
-  isCompiling,
-}: {
-  mode: string;
-  result: CompilationResult;
-  isCompiling: boolean;
-}) {
-  return (
-    <div className="h-full flex flex-col relative">
-      <div className="bg-muted px-4 py-2 text-sm font-medium border-b flex items-center justify-between shrink-0">
-        <span className="capitalize">{mode} Output</span>
-        {isCompiling && (
-          <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
-        )}
-      </div>
-      <div className="flex-1 relative overflow-hidden">
-        {result.error ? (
-          <div className="absolute inset-0 p-4 text-red-500 font-mono text-sm overflow-auto bg-red-50/10">
-            <div className="flex items-center gap-2 mb-2 font-bold">
-              <AlertCircle className="w-4 h-4" />
-              Compilation Error
+      <main className="flex-1 overflow-hidden">
+        <ResizablePanelGroup direction="horizontal">
+          {/* Input Section */}
+          <ResizablePanel defaultSize={50} minSize={25}>
+            <div className="h-full flex flex-col">
+              <div className="bg-muted px-4 py-2 text-sm font-medium border-b flex items-center justify-between shrink-0">
+                <span>Input (TypeScript)</span>
+                <button
+                  type="button"
+                  onClick={() => setCode(DEFAULT_CODE)}
+                  disabled={code === DEFAULT_CODE}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
+                  title="Reset to default code"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  Reset
+                </button>
+              </div>
+              <div className="flex-1 min-h-0">
+                <CodeEditor
+                  language="typescript"
+                  value={code}
+                  onChange={(val) => setCode(val || '')}
+                  vimMode={vimMode}
+                />
+              </div>
             </div>
-            {result.error}
-          </div>
-        ) : (
-          <CodeEditor
-            language="javascript"
-            value={result.code}
-            options={{ readOnly: true }}
-          />
-        )}
-      </div>
+          </ResizablePanel>
+
+          <ResizableHandle withHandle />
+
+          {/* Output Section - Collapsible Panels */}
+          <ResizablePanel defaultSize={50} minSize={25}>
+            <div className="h-full flex flex-col overflow-hidden bg-muted/10">
+              {(['workflow', 'step', 'client'] as const).map((mode) => {
+                const isOpen = expandedPanels.has(mode);
+                return (
+                  <div
+                    key={mode}
+                    className={`flex flex-col min-h-0 border-b last:border-b-0 ${
+                      isOpen ? 'flex-1' : ''
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => togglePanel(mode)}
+                      aria-expanded={isOpen}
+                      aria-controls={`output-panel-${mode}`}
+                      className="bg-muted px-4 py-2 text-sm font-medium border-b flex items-center justify-between shrink-0 hover:bg-muted/80 transition-colors cursor-pointer"
+                    >
+                      <div className="flex items-center gap-2">
+                        <ChevronDownIcon
+                          className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${
+                            isOpen ? '' : '-rotate-90'
+                          }`}
+                        />
+                        <span className="capitalize">{mode} Output</span>
+                        {isCompiling && (
+                          <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+                        )}
+                      </div>
+                    </button>
+                    {isOpen && (
+                      <div
+                        id={`output-panel-${mode}`}
+                        className="flex-1 min-h-0 relative"
+                      >
+                        {results[mode].error ? (
+                          <div className="absolute inset-0 p-4 text-red-500 font-mono text-sm overflow-auto bg-red-50/10">
+                            <div className="flex items-center gap-2 mb-2 font-bold">
+                              <AlertCircle className="w-4 h-4" />
+                              Compilation Error
+                            </div>
+                            {results[mode].error}
+                          </div>
+                        ) : (
+                          <CodeEditor
+                            language="javascript"
+                            value={results[mode].code}
+                            options={{ readOnly: true }}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
+      </main>
     </div>
   );
 }

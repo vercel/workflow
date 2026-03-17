@@ -35,6 +35,15 @@ export default async function WorldsPage() {
     ([, w]) => w.e2e?.status === 'passing'
   ).length;
 
+  const managedIds = new Set(['vercel']);
+  const embeddedIds = new Set(['local', 'redis', 'turso']);
+
+  const managedWorlds = sortedWorlds.filter(([id]) => managedIds.has(id));
+  const selfHostedWorlds = sortedWorlds.filter(
+    ([id]) => !managedIds.has(id) && !embeddedIds.has(id)
+  );
+  const embeddedWorlds = sortedWorlds.filter(([id]) => embeddedIds.has(id));
+
   return (
     <div className="[&_h1]:tracking-tighter [&_h2]:tracking-tighter [&_h3]:tracking-tighter">
       <div className="mx-auto w-full max-w-[1080px]">
@@ -79,10 +88,54 @@ export default async function WorldsPage() {
           </div>
         </div>
 
-        {/* World Cards Grid */}
-        <section className="px-4 py-8 sm:py-12">
+        {/* World Cards — Managed */}
+        <section className="px-4 pt-8 sm:pt-12 pb-4">
+          <div className="mb-4">
+            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
+              Managed
+            </h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Production grade &mdash; zero configuration, high throughput,
+              infinitely-scalable, e2e encrypted, and integrated observability
+            </p>
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {sortedWorlds.map(([id, world]) => (
+            {managedWorlds.map(([id, world]) => (
+              <WorldCardSimple key={id} id={id} world={world} />
+            ))}
+          </div>
+        </section>
+
+        {/* World Cards — Self-Hosted */}
+        <section className="px-4 py-4">
+          <div className="mb-4">
+            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
+              Self-Hosted
+            </h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Self hosted &mdash; control your data and scaling while running
+              workflows inside your own infrastructure
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {selfHostedWorlds.map(([id, world]) => (
+              <WorldCardSimple key={id} id={id} world={world} />
+            ))}
+          </div>
+        </section>
+
+        {/* World Cards — Embedded */}
+        <section className="px-4 pt-4 pb-8 sm:pb-12">
+          <div className="mb-4">
+            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
+              Embedded
+            </h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              Lightweight solutions for sidecars or local development
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {embeddedWorlds.map(([id, world]) => (
               <WorldCardSimple key={id} id={id} world={world} />
             ))}
           </div>

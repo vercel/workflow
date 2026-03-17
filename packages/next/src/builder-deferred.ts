@@ -73,6 +73,7 @@ export async function getNextBuilderDeferred() {
     private deferredBuildQueue = Promise.resolve();
     private cacheInitialized = false;
     private cacheWriteTimer: NodeJS.Timeout | null = null;
+    private deferredRebuildTimer: NodeJS.Timeout | null = null;
     private lastDeferredBuildSignature: string | null = null;
 
     async build() {
@@ -584,8 +585,10 @@ export async function getNextBuilderDeferred() {
         return;
       }
 
+      process.env.WORKFLOW_SOCKET_INFO_PATH = this.getSocketInfoFilePath();
       const config: SocketServerConfig = {
         isDevServer: Boolean(this.config.watch),
+        socketInfoFilePath: this.getSocketInfoFilePath(),
         onFileDiscovered: (
           filePath: string,
           hasWorkflow: boolean,
@@ -594,6 +597,8 @@ export async function getNextBuilderDeferred() {
         ) => {
           const normalizedFilePath = this.normalizeDiscoveredFilePath(filePath);
           let hasCacheTrackingChange = false;
+          const wasTrackedDependency =
+            this.trackedDependencyFiles.has(normalizedFilePath);
 
           if (hasWorkflow) {
             if (!this.discoveredWorkflowFiles.has(normalizedFilePath)) {
@@ -618,17 +623,32 @@ export async function getNextBuilderDeferred() {
           }
 
           if (hasSerde) {
+            if (!this.discoveredSerdeFiles.has(normalizedFilePath)) {
+              hasCacheTrackingChange = true;
+            }
             this.discoveredSerdeFiles.add(normalizedFilePath);
           } else {
-            this.discoveredSerdeFiles.delete(normalizedFilePath);
+            const wasDeleted =
+              this.discoveredSerdeFiles.delete(normalizedFilePath);
+            hasCacheTrackingChange = wasDeleted || hasCacheTrackingChange;
           }
 
           if (hasCacheTrackingChange) {
             this.scheduleWorkflowsCacheWrite();
           }
+
+          if (
+            hasWorkflow ||
+            hasStep ||
+            hasSerde ||
+            hasCacheTrackingChange ||
+            wasTrackedDependency
+          ) {
+            this.scheduleDeferredRebuild();
+          }
         },
         onTriggerBuild: () => {
-          // Deferred builder builds via onBeforeDeferredEntries callback.
+          this.scheduleDeferredRebuild();
         },
       };
 
@@ -641,7 +661,52 @@ export async function getNextBuilderDeferred() {
       }
 
       await this.loadWorkflowsCache();
+
+      // The cache only contains files discovered in previous builds. On the
+      // first build after adding new workflow files, those files won't be in
+      // the cache. In production builds (`watch: false`), the loader's socket
+      // notifications arrive too late — `scheduleDeferredRebuild()` is a no-op
+      // so newly discovered files never trigger a rebuild.
+      //
+      // To fix this, eagerly scan the dirs for files with workflow/step
+      // directives and seed the discovered sets before the build runs.
+      await this.seedDiscoveredFilesFromDirs();
+
       this.cacheInitialized = true;
+    }
+
+    /**
+     * Scans the configured dirs for files containing `'use workflow'` or
+     * `'use step'` directives and adds them to the discovered sets. This
+     * ensures new workflow files are included in the very first production
+     * build, without waiting for the loader's async socket notifications.
+     */
+    private async seedDiscoveredFilesFromDirs(): Promise<void> {
+      // Use the base builder's file scanning (which searches all TS/JS files
+      // in dirs, not just entrypoints). Call the base class version directly
+      // to bypass the deferred builder's entrypoint-only filter.
+      const allInputFiles = await this.getAllDirFiles();
+
+      await Promise.all(
+        allInputFiles.map(async (filePath) => {
+          try {
+            const source = await readFile(filePath, 'utf-8');
+            const patterns = detectWorkflowPatterns(source);
+
+            if (patterns.hasUseWorkflow) {
+              this.discoveredWorkflowFiles.add(filePath);
+            }
+            if (patterns.hasUseStep) {
+              this.discoveredStepFiles.add(filePath);
+            }
+            if (patterns.hasSerde && !isWorkflowSdkFile(filePath)) {
+              this.discoveredSerdeFiles.add(filePath);
+            }
+          } catch {
+            // File may have been deleted between glob and read — skip it.
+          }
+        })
+      );
     }
 
     private getDistDir(): string {
@@ -654,6 +719,15 @@ export async function getNextBuilderDeferred() {
         this.getDistDir(),
         'cache',
         'workflows.json'
+      );
+    }
+
+    private getSocketInfoFilePath(): string {
+      return join(
+        this.config.workingDir,
+        this.getDistDir(),
+        'cache',
+        'workflow-socket.json'
       );
     }
 
@@ -838,6 +912,26 @@ export async function getNextBuilderDeferred() {
       }, 50);
     }
 
+    private scheduleDeferredRebuild(): void {
+      if (!this.config.watch) {
+        return;
+      }
+
+      if (this.deferredRebuildTimer) {
+        clearTimeout(this.deferredRebuildTimer);
+      }
+
+      this.deferredRebuildTimer = setTimeout(() => {
+        this.deferredRebuildTimer = null;
+        void this.onBeforeDeferredEntries().catch((error) => {
+          console.warn(
+            '[workflow] Deferred rebuild after source update failed.',
+            error
+          );
+        });
+      }, 75);
+    }
+
     private async readWorkflowsCache(): Promise<{
       workflowFiles: string[];
       stepFiles: string[];
@@ -951,6 +1045,15 @@ export async function getNextBuilderDeferred() {
       );
     }
 
+    /**
+     * Returns ALL files from the configured dirs without filtering to
+     * entrypoints. Used by `seedDiscoveredFilesFromDirs` to scan for
+     * workflow/step directives on first build.
+     */
+    private async getAllDirFiles(): Promise<string[]> {
+      return super.getInputFiles();
+    }
+
     protected async getInputFiles(): Promise<string[]> {
       const inputFiles = await super.getInputFiles();
       return inputFiles.filter((item) => {
@@ -979,9 +1082,11 @@ export async function getNextBuilderDeferred() {
       const generatedConfig = {
         version: '0',
         steps: {
+          maxDuration: 'max',
           experimentalTriggers: [STEP_QUEUE_TRIGGER],
         },
         workflows: {
+          maxDuration: 60,
           experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
         },
       };
@@ -1337,18 +1442,25 @@ export async function getNextBuilderDeferred() {
       return null;
     }
 
-    private async collectTransitiveStepFiles(
-      stepFiles: string[]
-    ): Promise<string[]> {
-      const normalizedStepFiles = Array.from(
+    private async collectTransitiveStepFiles({
+      stepFiles,
+      seedFiles = [],
+    }: {
+      stepFiles: string[];
+      seedFiles?: string[];
+    }): Promise<string[]> {
+      const normalizedSeedFiles = Array.from(
         new Set(
-          stepFiles.map((stepFile) =>
+          [...stepFiles, ...seedFiles].map((stepFile) =>
             this.normalizeDiscoveredFilePath(stepFile)
           )
         )
       ).sort();
-      const discoveredStepFiles = new Set(normalizedStepFiles);
-      const queuedFiles = [...normalizedStepFiles];
+      // Intentionally re-validate step seeds against current file contents
+      // instead of blindly trusting callers. This prevents stale/manual seed
+      // paths from persisting when files no longer contain "use step".
+      const discoveredStepFiles = new Set<string>();
+      const queuedFiles = [...normalizedSeedFiles];
       const visitedFiles = new Set<string>();
       const sourceCache = new Map<string, string | null>();
       const patternCache = new Map<
@@ -1398,6 +1510,11 @@ export async function getNextBuilderDeferred() {
           continue;
         }
 
+        const currentPatterns = await getPatterns(currentFile);
+        if (currentPatterns?.hasUseStep) {
+          discoveredStepFiles.add(currentFile);
+        }
+
         const relativeImportSpecifiers =
           this.extractRelativeImportSpecifiers(currentSource);
         for (const specifier of relativeImportSpecifiers) {
@@ -1438,13 +1555,19 @@ export async function getNextBuilderDeferred() {
           )
         )
       ).sort();
-      const discoveredSerdeFiles = new Set(
-        serdeFiles.map((serdeFile) =>
-          this.normalizeDiscoveredFilePath(serdeFile)
+      const normalizedSerdeSeedFiles = Array.from(
+        new Set(
+          serdeFiles.map((serdeFile) =>
+            this.normalizeDiscoveredFilePath(serdeFile)
+          )
         )
-      );
+      ).sort();
+      // Intentionally re-validate serde seeds against source + SDK filtering.
+      // This keeps previously discovered/manual seed entries from sticking when
+      // files no longer match serde patterns or resolve to SDK internals.
+      const discoveredSerdeFiles = new Set<string>();
       const queuedFiles = Array.from(
-        new Set([...normalizedEntryFiles, ...discoveredSerdeFiles])
+        new Set([...normalizedEntryFiles, ...normalizedSerdeSeedFiles])
       );
       const visitedFiles = new Set<string>();
       const sourceCache = new Map<string, string | null>();
@@ -1482,6 +1605,13 @@ export async function getNextBuilderDeferred() {
         patternCache.set(filePath, patterns);
         return patterns;
       };
+
+      for (const serdeSeedFile of normalizedSerdeSeedFiles) {
+        const seedPatterns = await getPatterns(serdeSeedFile);
+        if (seedPatterns?.hasSerde && !isWorkflowSdkFile(serdeSeedFile)) {
+          discoveredSerdeFiles.add(serdeSeedFile);
+        }
+      }
 
       while (queuedFiles.length > 0) {
         const currentFile = queuedFiles.pop();
@@ -1694,10 +1824,13 @@ export async function getNextBuilderDeferred() {
       const stepsRouteDir = join(workflowGeneratedDir, 'step');
       await mkdir(stepsRouteDir, { recursive: true });
       const discovered = discoveredEntries;
-      const stepFiles = await this.collectTransitiveStepFiles(
-        [...discovered.discoveredSteps].sort()
-      );
       const workflowFiles = [...discovered.discoveredWorkflows].sort();
+      const stepFiles = await this.collectTransitiveStepFiles({
+        stepFiles: [...discovered.discoveredSteps].sort(),
+        // Workflow transforms can inline step IDs and remove runtime imports,
+        // so seed transitive traversal with workflow files too.
+        seedFiles: workflowFiles,
+      });
       const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
       const stepFileSet = new Set(stepFiles);
       const serdeOnlyFiles = serdeFiles.filter(

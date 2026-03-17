@@ -101,4 +101,43 @@ export interface WorkflowOrchestratorContext {
   onWorkflowError: (error: Error) => void;
   generateUlid: () => string;
   generateNanoid: () => string;
+  /**
+   * Sequential promise queue that ensures all event-driven promise resolutions
+   * (step results, hook payloads, failures, suspensions) happen in event log
+   * order. Every resolve, reject, or workflow error is chained through this
+   * queue so that even if individual operations take variable time (e.g.,
+   * async decryption), promises resolve deterministically.
+   */
+  promiseQueue: Promise<void>;
+  /**
+   * Counter of in-flight async data delivery operations (step result
+   * hydration, hook payload hydration). Suspensions must wait for this
+   * to reach 0 before firing, to avoid preempting data delivery.
+   */
+  pendingDeliveries: number;
+}
+
+/**
+ * Schedule a callback to fire only after all pending data deliveries
+ * (step results, hook payloads) and async deserialization have completed.
+ * Uses a polling loop: setTimeout(0) → check pendingDeliveries →
+ * if > 0, wait for promiseQueue → repeat. This handles the multi-round
+ * delivery pattern where each hook payload delivery cycle appends new
+ * async work to the promiseQueue.
+ */
+export function scheduleWhenIdle(
+  ctx: WorkflowOrchestratorContext,
+  fn: () => void
+): void {
+  const check = () => {
+    if (ctx.pendingDeliveries > 0) {
+      // Still delivering data — wait for queue to drain, then re-check
+      ctx.promiseQueue.then(() => {
+        setTimeout(check, 0);
+      });
+    } else {
+      fn();
+    }
+  };
+  setTimeout(check, 0);
 }

@@ -19,9 +19,7 @@ import type {
   HealthCheckEndpoint,
   HealthCheckResult,
   PaginatedResult,
-  PublicServerConfig,
   ResumeHookResult,
-  ServerActionError,
   ServerActionResult,
   StopSleepOptions,
   StopSleepResult,
@@ -117,17 +115,13 @@ export async function fetchEvents(
   return rpc('fetchEvents', { worldEnv, runId, params });
 }
 
-export async function fetchEventsByCorrelationId(
+export async function fetchEvent(
   worldEnv: EnvMap,
-  correlationId: string,
-  params: {
-    cursor?: string;
-    sortOrder?: 'asc' | 'desc';
-    limit?: number;
-    withData?: boolean;
-  }
-): Promise<ServerActionResult<PaginatedResult<Event>>> {
-  return rpc('fetchEventsByCorrelationId', { worldEnv, correlationId, params });
+  runId: string,
+  eventId: string,
+  resolveData: 'none' | 'all' = 'all'
+): Promise<ServerActionResult<Event>> {
+  return rpc('fetchEvent', { worldEnv, runId, eventId, resolveData });
 }
 
 export async function fetchHooks(
@@ -207,6 +201,13 @@ export async function runHealthCheck(
   options?: { timeout?: number }
 ): Promise<ServerActionResult<HealthCheckResult>> {
   return rpc('runHealthCheck', { worldEnv, endpoint, options });
+}
+
+export async function getEncryptionKeyForRun(
+  worldEnv: EnvMap,
+  runId: string
+): Promise<ServerActionResult<Uint8Array | null>> {
+  return rpc('getEncryptionKeyForRun', { worldEnv, runId });
 }
 
 // Note: readStreamServerAction returns a ReadableStream which can't go through CBOR RPC.

@@ -9,8 +9,8 @@
 import { decode, encode } from 'cbor-x';
 import {
   cancelRun,
+  fetchEvent,
   fetchEvents,
-  fetchEventsByCorrelationId,
   fetchHook,
   fetchHooks,
   fetchRun,
@@ -19,6 +19,7 @@ import {
   fetchSteps,
   fetchStreams,
   fetchWorkflowsManifest,
+  getEncryptionKeyForRun,
   getPublicServerConfig,
   recreateRun,
   reenqueueRun,
@@ -38,12 +39,8 @@ const handlers = {
     fetchStep(p.worldEnv ?? {}, p.runId, p.stepId, p.resolveData),
   fetchEvents: (p: any) =>
     fetchEvents(p.worldEnv ?? {}, p.runId, p.params ?? {}),
-  fetchEventsByCorrelationId: (p: any) =>
-    fetchEventsByCorrelationId(
-      p.worldEnv ?? {},
-      p.correlationId,
-      p.params ?? {}
-    ),
+  fetchEvent: (p: any) =>
+    fetchEvent(p.worldEnv ?? {}, p.runId, p.eventId, p.resolveData),
   fetchHooks: (p: any) => fetchHooks(p.worldEnv ?? {}, p.params ?? {}),
   fetchHook: (p: any) => fetchHook(p.worldEnv ?? {}, p.hookId, p.resolveData),
   cancelRun: (p: any) => cancelRun(p.worldEnv ?? {}, p.runId),
@@ -56,6 +53,8 @@ const handlers = {
   fetchWorkflowsManifest: (p: any) => fetchWorkflowsManifest(p.worldEnv ?? {}),
   runHealthCheck: (p: any) =>
     runHealthCheck(p.worldEnv ?? {}, p.endpoint, p.options),
+  getEncryptionKeyForRun: (p: any) =>
+    getEncryptionKeyForRun(p.worldEnv ?? {}, p.runId),
   getPublicServerConfig: () => getPublicServerConfig(),
 } as const;
 

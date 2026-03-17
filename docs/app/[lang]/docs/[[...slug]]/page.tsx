@@ -4,6 +4,7 @@ import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { AgentTraces } from '@/components/custom/agent-traces';
+import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import { AskAI } from '@/components/geistdocs/ask-ai';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
@@ -67,6 +68,7 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
 
             // Add your custom components here
             AgentTraces,
+            FluidComputeCallout,
             Badge,
             TSDoc,
             Step,

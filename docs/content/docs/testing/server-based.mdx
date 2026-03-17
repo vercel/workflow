@@ -1,0 +1,183 @@
+---
+title: Server-Based Testing
+description: Integration test workflows against a running server when you need to test the full HTTP layer.
+---
+
+The [Vitest plugin](/docs/testing#integration-testing-with-the-vitest-plugin) runs workflows entirely in-process and is the recommended approach for most testing scenarios. However, there are cases where you may want to test against a running server:
+
+- Testing the full HTTP layer (middleware, authentication, request handling)
+- Reproducing behavior that only occurs in a specific framework's runtime (e.g. Next.js, Nitro)
+- Testing webhook endpoints that receive real HTTP requests
+
+This guide shows how to set up integration tests that spawn a dev server as a sidecar process. The example below uses [Nitro](https://v3.nitro.build), but the same pattern works with any supported server framework. It is meant as a starting point — customize the server setup to match your own deployment environment.
+
+## Vitest Configuration
+
+Create a Vitest config with the `workflow()` Vite plugin for code transforms and a `globalSetup` script that manages the server lifecycle:
+
+```typescript title="vitest.server.config.ts" lineNumbers
+import { defineConfig } from "vitest/config";
+import { workflow } from "workflow/vite"; // [!code highlight]
+
+export default defineConfig({
+  plugins: [workflow()], // [!code highlight]
+  test: {
+    include: ["**/*.server.test.ts"],
+    testTimeout: 60_000,
+    globalSetup: "./vitest.server.setup.ts", // [!code highlight]
+    env: {
+      WORKFLOW_LOCAL_BASE_URL: "http://localhost:4000", // [!code highlight]
+    },
+  },
+});
+```
+
+<Callout type="info">
+Note the import path: `workflow/vite` (not `@workflow/vitest`). The Vite plugin handles code transforms but does not set up in-process execution. The server handles workflow execution instead.
+</Callout>
+
+## Global Setup Script
+
+The `globalSetup` script starts a dev server before tests run and tears it down afterwards. This example uses [Nitro](https://v3.nitro.build), but you can use any server framework that supports the workflow runtime.
+
+```typescript title="vitest.server.setup.ts" lineNumbers
+import { spawn } from "node:child_process";
+import { setTimeout as delay } from "node:timers/promises";
+import type { ChildProcess } from "node:child_process";
+
+let server: ChildProcess | null = null;
+const PORT = "4000";
+
+export async function setup() { // [!code highlight]
+  console.log("Starting server for workflow execution...");
+
+  server = spawn("npx", ["nitro", "dev", "--port", PORT], {
+    stdio: "pipe",
+    detached: false,
+    env: process.env,
+  });
+
+  // Wait for the server to be ready
+  const ready = await new Promise<boolean>((resolve) => {
+    const timeout = setTimeout(() => resolve(false), 15_000);
+
+    server?.stdout?.on("data", (data) => {
+      const output = data.toString();
+      console.log("[server]", output);
+      if (output.includes("listening") || output.includes("ready")) {
+        clearTimeout(timeout);
+        resolve(true);
+      }
+    });
+
+    server?.stderr?.on("data", (data) => {
+      console.error("[server]", data.toString());
+    });
+
+    server?.on("error", (error) => {
+      console.error("Failed to start server:", error);
+      clearTimeout(timeout);
+      resolve(false);
+    });
+  });
+
+  if (!ready) {
+    throw new Error("Server failed to start within 15 seconds");
+  }
+
+  await delay(2_000); // Allow full initialization
+
+  // Point the workflow runtime at the local server
+  process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${PORT}`; // [!code highlight]
+
+  console.log("Server ready for workflow execution");
+}
+
+export async function teardown() { // [!code highlight]
+  if (server) {
+    console.log("Stopping server...");
+    server.kill("SIGTERM");
+    await delay(1_000);
+    if (!server.killed) {
+      server.kill("SIGKILL");
+    }
+  }
+}
+```
+
+The setup script sets `WORKFLOW_LOCAL_BASE_URL` so the workflow runtime sends step execution requests to the running server.
+
+<Callout type="info">
+You can use any server framework that supports the workflow runtime. The example above uses [Nitro](https://v3.nitro.build), but you could also use [Next.js](https://nextjs.org), [Hono](https://hono.dev), or any other supported server.
+</Callout>
+
+## Writing Tests
+
+Tests are written the same way as [in-process integration tests](/docs/testing#writing-integration-tests). You can use the same programmatic APIs — [`start()`](/docs/api-reference/workflow-api/start), [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook), [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook), and [`getRun().wakeUp()`](/docs/api-reference/workflow-api/get-run) — to control workflow execution:
+
+```typescript title="workflows/calculate.server.test.ts" lineNumbers
+import { describe, it, expect } from "vitest";
+import { start, getRun, resumeHook } from "workflow/api";
+import { calculateWorkflow } from "./calculate";
+import { approvalWorkflow } from "./approval";
+
+describe("calculateWorkflow", () => {
+  it("should compute the correct result", async () => {
+    const run = await start(calculateWorkflow, [2, 7]);
+    const result = await run.returnValue;
+
+    expect(result).toEqual({
+      sum: 9,
+      product: 14,
+      combined: 23,
+    });
+  });
+});
+
+describe("approvalWorkflow", () => {
+  it("should publish when approved", async () => {
+    const run = await start(approvalWorkflow, ["doc-1"]);
+
+    // Use resumeHook and wakeUp to control workflow execution
+    await resumeHook("approval:doc-1", {
+      approved: true,
+      reviewer: "alice",
+    });
+
+    await getRun(run.runId).wakeUp();
+
+    const result = await run.returnValue;
+    expect(result).toEqual({
+      status: "published",
+      reviewer: "alice",
+    });
+  });
+});
+```
+
+<Callout type="info">
+In server-based tests, the `waitForSleep()` and `waitForHook()` helpers from `@workflow/vitest` are not available since there is no in-process world. Instead, use the programmatic APIs directly — you may need to add short delays or polling to ensure the workflow has reached the desired state before resuming.
+</Callout>
+
+## Running Tests
+
+Add a script to your `package.json`:
+
+```json title="package.json"
+{
+  "scripts": {
+    "test": "vitest",
+    "test:server": "vitest --config vitest.server.config.ts"
+  }
+}
+```
+
+## When to Use This Approach
+
+| Scenario | Recommended approach |
+| --- | --- |
+| Testing workflow logic, steps, hooks, retries | [In-process plugin](/docs/testing) |
+| Testing HTTP middleware or authentication | Server-based |
+| Testing webhook endpoints with real HTTP | Server-based |
+| CI/CD pipeline testing | [In-process plugin](/docs/testing) |
+| Reproducing framework-specific behavior | Server-based |

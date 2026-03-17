@@ -1,21 +1,26 @@
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { SpanSelectionInfo } from '@workflow/web-shared';
 import {
+  DecryptButton,
   ErrorBoundary,
   EventListView,
   hydrateResourceIO,
+  hydrateResourceIOWithKey,
   StreamViewer,
+  stepEventsToStepEntity,
   WorkflowTraceViewer,
 } from '@workflow/web-shared';
-import type { Event, Step, WorkflowRun } from '@workflow/world';
+import type { Event, WorkflowRun } from '@workflow/world';
 import {
   AlertCircle,
   GitBranch,
   HelpCircle,
   List,
   Loader2,
+  Lock,
+  Unlock,
 } from 'lucide-react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { Alert, AlertDescription, AlertTitle } from '~/components/ui/alert';
@@ -37,6 +42,7 @@ import {
   BreadcrumbPage,
   BreadcrumbSeparator,
 } from '~/components/ui/breadcrumb';
+import { Button } from '~/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import {
   Tooltip,
@@ -46,7 +52,10 @@ import {
 import { mapRunToExecution } from '~/lib/flow-graph/graph-execution-mapper';
 import { useWorkflowGraphManifest } from '~/lib/flow-graph/use-workflow-graph';
 import { useStreamReader } from '~/lib/hooks/use-stream-reader';
-import { fetchEvents, fetchEventsByCorrelationId } from '~/lib/rpc-client';
+
+import { fetchEvent, getEncryptionKeyForRun } from '~/lib/rpc-client';
+
+import { useEventsListData } from '~/lib/client/hooks/use-events-list-data';
 import type { EnvMap } from '~/lib/types';
 import {
   cancelRun,
@@ -74,12 +83,10 @@ import { Skeleton } from './ui/skeleton';
  */
 function GraphTabContent({
   run,
-  allSteps,
   allEvents,
   env,
 }: {
   run: WorkflowRun;
-  allSteps: Step[] | null;
   allEvents: Event[] | null;
   env: EnvMap;
 }) {
@@ -113,17 +120,36 @@ function GraphTabContent({
     );
   }, [graphManifest, run.workflowName]);
 
+  // Reconstruct step entities from events for the graph mapper
+  const stepsFromEvents = useMemo(() => {
+    if (!allEvents) return [];
+    const stepEventsMap = new Map<string, Event[]>();
+    for (const event of allEvents) {
+      if (event.eventType.startsWith('step_') && event.correlationId) {
+        const existing = stepEventsMap.get(event.correlationId);
+        if (existing) {
+          existing.push(event);
+        } else {
+          stepEventsMap.set(event.correlationId, [event]);
+        }
+      }
+    }
+    return Array.from(stepEventsMap.values())
+      .map(stepEventsToStepEntity)
+      .filter((s): s is NonNullable<typeof s> => s !== null);
+  }, [allEvents]);
+
   // Map run data to execution overlay
   const execution = useMemo(() => {
     if (!workflowGraph || !run.runId) return null;
 
     return mapRunToExecution(
       run,
-      allSteps || [],
+      stepsFromEvents as any,
       allEvents || [],
       workflowGraph
     );
-  }, [workflowGraph, run, allSteps, allEvents]);
+  }, [workflowGraph, run, stepsFromEvents, allEvents]);
 
   if (graphLoading) {
     return (
@@ -178,13 +204,6 @@ interface RunDetailViewProps {
 }
 
 type Tab = 'trace' | 'graph' | 'streams' | 'events';
-const RUN_LEVEL_EVENT_TYPES = new Set([
-  'run_created',
-  'run_started',
-  'run_completed',
-  'run_failed',
-  'run_cancelled',
-]);
 
 export function RunDetailView({
   runId,
@@ -255,6 +274,10 @@ export function RunDetailView({
     [env]
   );
 
+  // Ref for encryption key so event loading callbacks can access it
+  // without being recreated when the key changes
+  const encryptionKeyRef = useRef<Uint8Array | null>(null);
+
   const handleResolveHook = useCallback(
     async (hookToken: string, payload: unknown) => {
       await resumeHook(env, hookToken, payload);
@@ -264,54 +287,16 @@ export function RunDetailView({
 
   const handleLoadEventData = useCallback(
     async (event: Event) => {
-      const isRunLevelEvent = RUN_LEVEL_EVENT_TYPES.has(event.eventType);
-
-      if (!isRunLevelEvent && event.correlationId) {
-        const { error, result } = await unwrapServerActionResult(
-          fetchEventsByCorrelationId(env, event.correlationId, {
-            sortOrder: 'asc',
-            limit: 100,
-            withData: true,
-          })
-        );
-        if (error) {
-          throw error;
-        }
-        const rawEvent = result.data.find((e) => e.eventId === event.eventId);
-        const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
-        if (fullEvent && 'eventData' in fullEvent) {
-          return fullEvent.eventData;
-        }
-        return null;
-      }
-
       const { error, result } = await unwrapServerActionResult(
-        fetchEvents(env, event.runId, {
-          sortOrder: 'desc',
-          limit: 1000,
-          withData: true,
-        })
+        fetchEvent(env, event.runId, event.eventId, 'all')
       );
       if (error) {
         throw error;
       }
-      let rawEvent = result.data.find((e) => e.eventId === event.eventId);
-      if (!rawEvent) {
-        const { error: ascError, result: ascResult } =
-          await unwrapServerActionResult(
-            fetchEvents(env, event.runId, {
-              sortOrder: 'asc',
-              limit: 1000,
-              withData: true,
-            })
-          );
-        if (ascError) {
-          throw ascError;
-        }
-        rawEvent = ascResult.data.find((e) => e.eventId === event.eventId);
-      }
-      const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
-      if (fullEvent && 'eventData' in fullEvent) {
+      const fullEvent = encryptionKeyRef.current
+        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
+        : hydrateResourceIO(result);
+      if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
       return null;
@@ -321,25 +306,22 @@ export function RunDetailView({
 
   // Callback for sidebar EventsList — takes (correlationId, eventId)
   const handleLoadSidebarEventData = useCallback(
-    async (correlationId: string, eventId: string) => {
+    async (_correlationId: string, eventId: string) => {
       const { error, result } = await unwrapServerActionResult(
-        fetchEventsByCorrelationId(env, correlationId, {
-          sortOrder: 'asc',
-          limit: 100,
-          withData: true,
-        })
+        fetchEvent(env, runId, eventId, 'all')
       );
       if (error) {
         throw error;
       }
-      const rawEvent = result.data.find((e) => e.eventId === eventId);
-      const fullEvent = rawEvent ? hydrateResourceIO(rawEvent) : null;
-      if (fullEvent && 'eventData' in fullEvent) {
+      const fullEvent = encryptionKeyRef.current
+        ? await hydrateResourceIOWithKey(result, encryptionKeyRef.current)
+        : hydrateResourceIO(result);
+      if ('eventData' in fullEvent) {
         return fullEvent.eventData;
       }
       return null;
     },
-    [env]
+    [env, runId]
   );
 
   // Only show graph tab for local backend
@@ -347,21 +329,39 @@ export function RunDetailView({
     serverConfig.backendId === 'local' ||
     serverConfig.backendId === '@workflow/world-local';
 
-  // Fetch all run data with live updates
+  // Fetch run + events for the trace viewer (always asc)
   const {
     run: runData,
-    steps: allSteps,
-    hooks: allHooks,
     events: allEvents,
     loading,
-    auxiliaryDataLoading,
     error,
     update,
     loadMoreTraceData,
     hasMoreTraceData,
     isLoadingMoreTraceData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
+
   const run = runData ?? ({} as WorkflowRun);
+
+  // Encryption key persisted for the lifetime of this run page.
+  // Once fetched (via Decrypt button), it's used automatically for all
+  // subsequent resource + event hydration, even across span selection changes.
+  const [encryptionKey, setEncryptionKey] = useState<Uint8Array | null>(null);
+  encryptionKeyRef.current = encryptionKey;
+
+  // Separate event fetching for the Events tab with user-controlled sort order
+  const [eventsSortOrder, setEventsSortOrder] = useState<'asc' | 'desc'>('asc');
+  const {
+    events: eventsListData,
+    loading: eventsListLoading,
+    hasMore: hasMoreEventsTab,
+    loadingMore: loadingMoreEventsTab,
+    loadMore: loadMoreEventsTab,
+  } = useEventsListData(env, runId, {
+    sortOrder: eventsSortOrder,
+    encryptionKey: encryptionKey ?? undefined,
+    enabled: activeTab === 'events',
+  });
 
   const [spanSelection, setSpanSelection] = useState<SpanSelectionInfo | null>(
     null
@@ -370,6 +370,7 @@ export function RunDetailView({
     data: spanDetailData,
     loading: spanDetailLoading,
     error: spanDetailError,
+    refresh: refreshSpanDetail,
   } = useWorkflowResourceData(
     env,
     spanSelection?.resource ?? 'run',
@@ -381,8 +382,35 @@ export function RunDetailView({
           spanSelection?.resourceId &&
           spanSelection.resource !== 'hook'
       ),
+      encryptionKey: encryptionKey ?? undefined,
     }
   );
+
+  const [isDecrypting, setIsDecrypting] = useState(false);
+
+  const handleDecrypt = useCallback(async () => {
+    if (encryptionKey) {
+      refreshSpanDetail();
+      return;
+    }
+    setIsDecrypting(true);
+    try {
+      const { error: keyError, result: keyResult } =
+        await unwrapServerActionResult(getEncryptionKeyForRun(env, runId));
+      if (keyError) {
+        toast.error(`Failed to fetch encryption key: ${keyError.message}`);
+        return;
+      }
+      if (!keyResult) {
+        toast.error('Encryption is not configured for this deployment.');
+        return;
+      }
+      setEncryptionKey(keyResult);
+      toast.success('Run data decrypted successfully');
+    } finally {
+      setIsDecrypting(false);
+    }
+  }, [encryptionKey, env, runId, refreshSpanDetail]);
 
   const handleSpanSelect = useCallback((info: SpanSelectionInfo) => {
     setSpanSelection(info);
@@ -399,7 +427,7 @@ export function RunDetailView({
     chunks: streamChunks,
     isLive: streamIsLive,
     error: streamError,
-  } = useStreamReader(env, selectedStreamId);
+  } = useStreamReader(env, selectedStreamId, runId, encryptionKey);
 
   const handleCancelClick = () => {
     setShowCancelDialog(true);
@@ -549,14 +577,13 @@ export function RunDetailView({
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                {/* Right side controls */}
                 <LiveStatus hasError={hasError} errorMessage={errorMessage} />
                 <RunActionsButtons
                   env={env}
                   runId={runId}
                   runStatus={run.status}
                   events={allEvents}
-                  eventsLoading={auxiliaryDataLoading}
+                  eventsLoading={loading}
                   loading={loading}
                   onRerunClick={handleRerunClick}
                   onCancelClick={handleCancelClick}
@@ -713,9 +740,7 @@ export function RunDetailView({
                 <div className="h-full">
                   <WorkflowTraceViewer
                     error={error}
-                    steps={allSteps}
                     events={allEvents}
-                    hooks={allHooks}
                     run={run}
                     isLoading={loading}
                     spanDetailData={spanDetailData}
@@ -729,6 +754,9 @@ export function RunDetailView({
                     onLoadMoreSpans={loadMoreTraceData}
                     hasMoreSpans={hasMoreTraceData}
                     isLoadingMoreSpans={isLoadingMoreTraceData}
+                    encryptionKey={encryptionKey ?? undefined}
+                    onDecrypt={handleDecrypt}
+                    isDecrypting={isDecrypting}
                   />
                 </div>
               </ErrorBoundary>
@@ -738,10 +766,18 @@ export function RunDetailView({
               <ErrorBoundary title="Failed to load events list">
                 <div className="h-full">
                   <EventListView
-                    events={allEvents}
-                    steps={allSteps}
+                    events={eventsListData}
                     run={run}
                     onLoadEventData={handleLoadEventData}
+                    hasMoreEvents={hasMoreEventsTab}
+                    isLoadingMoreEvents={loadingMoreEventsTab}
+                    onLoadMoreEvents={loadMoreEventsTab}
+                    encryptionKey={encryptionKey ?? undefined}
+                    isLoading={eventsListLoading}
+                    sortOrder={eventsSortOrder}
+                    onSortOrderChange={setEventsSortOrder}
+                    onDecrypt={handleDecrypt}
+                    isDecrypting={isDecrypting}
                   />
                 </div>
               </ErrorBoundary>
@@ -809,12 +845,41 @@ export function RunDetailView({
                   {/* Stream viewer */}
                   <div className="flex-1 min-w-0">
                     {selectedStreamId ? (
-                      <StreamViewer
-                        streamId={selectedStreamId}
-                        chunks={streamChunks}
-                        isLive={streamIsLive}
-                        error={streamError}
-                      />
+                      streamError?.includes('encrypted') && !encryptionKey ? (
+                        <div
+                          className="h-full flex flex-col items-center justify-center gap-3 rounded-lg border p-4"
+                          style={{
+                            borderColor: 'var(--ds-gray-300)',
+                            backgroundColor: 'var(--ds-gray-100)',
+                          }}
+                        >
+                          <Lock
+                            className="h-6 w-6"
+                            style={{ color: 'var(--ds-gray-700)' }}
+                          />
+                          <div
+                            className="text-sm"
+                            style={{ color: 'var(--ds-gray-900)' }}
+                          >
+                            This stream is encrypted.
+                          </div>
+                          <DecryptButton
+                            onClick={handleDecrypt}
+                            loading={isDecrypting}
+                          />
+                        </div>
+                      ) : (
+                        <StreamViewer
+                          streamId={selectedStreamId}
+                          chunks={streamChunks}
+                          isLive={streamIsLive}
+                          error={
+                            streamError?.includes('encrypted')
+                              ? null
+                              : streamError
+                          }
+                        />
+                      )
                     ) : (
                       <div
                         className="h-full flex items-center justify-center rounded-lg border"
@@ -844,7 +909,6 @@ export function RunDetailView({
                   <div className="h-full min-h-[500px]">
                     <GraphTabContent
                       run={run}
-                      allSteps={allSteps}
                       allEvents={allEvents}
                       env={env}
                     />
@@ -853,13 +917,6 @@ export function RunDetailView({
               </TabsContent>
             )}
           </Tabs>
-
-          {auxiliaryDataLoading && (
-            <div className="fixed flex items-center gap-2 left-8 bottom-8 bg-background border rounded-md px-4 py-2 shadow-lg">
-              <Loader2 className="size-4 animate-spin" />
-              <span className="text-sm">Fetching data...</span>
-            </div>
-          )}
         </div>
       </div>
     </>

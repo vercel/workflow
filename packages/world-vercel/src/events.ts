@@ -1,3 +1,4 @@
+import { WorkflowAPIError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   type CreateEventParams,
@@ -5,11 +6,14 @@ import {
   type EventResult,
   EventSchema,
   EventTypeSchema,
+  type GetEventParams,
   HookSchema,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  stripEventDataRefs,
+  validateUlidTimestamp,
   type WorkflowRun,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -20,32 +24,51 @@ import {
   type RefWithRunId,
   resolveRefDescriptors,
 } from './refs.js';
-import { cancelWorkflowRunV1, createWorkflowRunV1 } from './runs.js';
+import {
+  cancelWorkflowRunV1,
+  createWorkflowRunV1,
+  WorkflowRunWireBaseSchema,
+} from './runs.js';
 import { deserializeStep, StepWireSchema } from './steps.js';
 import { trace } from './telemetry.js';
 import type { APIConfig } from './utils.js';
-import { DEFAULT_RESOLVE_DATA_OPTION, makeRequest } from './utils.js';
+import {
+  DEFAULT_RESOLVE_DATA_OPTION,
+  deserializeError,
+  makeRequest,
+} from './utils.js';
 
-// Helper to filter event data based on resolveData setting.
-// Strips both eventData and eventDataRef since the server always returns
-// lazy refs now, and callers with resolveData='none' should not see either.
-function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
-  if (resolveData === 'none') {
-    const {
-      eventData: _eventData,
-      eventDataRef: _eventDataRef,
-      ...rest
-    } = event;
-    return rest;
-  }
-  return event;
+// Wraps stripEventDataRefs to also strip the legacy eventDataRef field,
+// since the server always returns lazy refs and callers with
+// resolveData='none' should not see them.
+function stripEventAndLegacyRefs(
+  event: any,
+  resolveData: 'none' | 'all'
+): Event {
+  if (resolveData !== 'none') return event;
+  const { eventDataRef: _eventDataRef, ...withoutLegacyRef } = event;
+  return stripEventDataRefs(withoutLegacyRef, resolveData);
 }
 
-// Schema for EventResult wire format returned by events.create
-// Uses wire format schemas for step to handle field name mapping
-const EventResultWireSchema = z.object({
+// Schema for EventResult wire format returned by events.create.
+// Uses wire format schemas for step to handle field name mapping.
+// Two variants are used depending on `remoteRefBehavior`:
+// - 'resolve': the server returns fully resolved data, so we validate the run
+//   with the strict WorkflowRunSchema discriminated union (e.g. status:'failed'
+//   requires error to be present).
+// - 'lazy': the server may omit resolved fields (error may be a string or
+//   undefined), so we use the looser WorkflowRunWireBaseSchema and normalize
+//   the error via deserializeError() afterward.
+const EventResultResolveWireSchema = z.object({
   event: EventSchema,
   run: WorkflowRunSchema.optional(),
+  step: StepWireSchema.optional(),
+  hook: HookSchema.optional(),
+});
+
+const EventResultLazyWireSchema = z.object({
+  event: EventSchema,
+  run: WorkflowRunWireBaseSchema.optional(),
   step: StepWireSchema.optional(),
   hook: HookSchema.optional(),
 });
@@ -151,7 +174,8 @@ function collectPendingRefs(events: any[]): PendingRef[] {
  */
 async function hydrateEventRefs(
   events: any[],
-  config?: APIConfig
+  config?: APIConfig,
+  refResolveConcurrency?: number
 ): Promise<any[]> {
   const pending = collectPendingRefs(events);
   if (pending.length === 0) return events;
@@ -174,14 +198,16 @@ async function hydrateEventRefs(
     const deduped = Array.from(uniqueRefs.values());
 
     // Resolve unique descriptors in parallel with bounded concurrency
-    const dedupedResults = await resolveRefDescriptors(deduped, config).catch(
-      (err) => {
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
-        );
-      }
-    );
+    const dedupedResults = await resolveRefDescriptors(
+      deduped,
+      config,
+      refResolveConcurrency
+    ).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to hydrate ${pending.length} ref(s) across ${events.length} event(s): ${msg}`
+      );
+    });
 
     // Build a map from ref key → resolved value for fast lookup
     const resolvedMap = new Map<string, unknown>();
@@ -221,6 +247,31 @@ async function hydrateEventRefs(
 }
 
 // Functions
+export async function getEvent(
+  runId: string,
+  eventId: string,
+  params?: GetEventParams,
+  config?: APIConfig
+): Promise<Event> {
+  const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+  const remoteRefBehavior = resolveData === 'none' ? 'lazy' : 'resolve';
+
+  const searchParams = new URLSearchParams();
+  searchParams.set('remoteRefBehavior', remoteRefBehavior);
+
+  const queryString = searchParams.toString();
+  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}${queryString ? `?${queryString}` : ''}`;
+
+  const event = await makeRequest({
+    endpoint,
+    options: { method: 'GET' },
+    config,
+    schema: (resolveData === 'none' ? EventWithRefsSchema : EventSchema) as any,
+  });
+
+  return stripEventAndLegacyRefs(event as any, resolveData);
+}
+
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig
@@ -255,18 +306,32 @@ export async function getWorkflowRunEvents(
   const query = queryString ? `?${queryString}` : '';
   const endpoint = correlationId
     ? `/v2/events${query}`
-    : `/v2/runs/${runId}/events${query}`;
+    : `/v2/runs/${encodeURIComponent(runId!)}/events${query}`;
 
+  let refResolveConcurrency: number | undefined;
   const response = (await makeRequest({
     endpoint,
     options: { method: 'GET' },
     config,
     schema: PaginatedResponseSchema(EventWithRefsSchema),
+    onResponse: (res) => {
+      const header = res.headers.get('x-ref-resolve-concurrency');
+      if (header) {
+        const parsed = parseInt(header, 10);
+        if (!Number.isNaN(parsed) && parsed > 0) {
+          refResolveConcurrency = parsed;
+        }
+      }
+    },
   })) as PaginatedResponse<Event>;
 
   if (resolveData === 'all') {
     // Hydrate refs client-side: resolve all ref descriptors in parallel
-    const hydratedEvents = await hydrateEventRefs(response.data, config);
+    const hydratedEvents = await hydrateEventRefs(
+      response.data,
+      config,
+      refResolveConcurrency
+    );
 
     // Re-parse hydrated events through EventSchema to apply type coercions
     // (e.g., z.coerce.date() for resumeAt) that EventWithRefsSchema skips.
@@ -294,7 +359,7 @@ export async function getWorkflowRunEvents(
   return {
     ...response,
     data: response.data.map((event: any) =>
-      filterEventData(event, resolveData)
+      stripEventAndLegacyRefs(event, resolveData)
     ),
   };
 }
@@ -317,7 +382,7 @@ export async function createWorkflowRunEvent(
       return { run };
     }
     const wireResult = await makeRequest({
-      endpoint: `/v1/runs/${id}/events`,
+      endpoint: `/v1/runs/${encodeURIComponent(id!)}/events`,
       options: { method: 'POST' },
       data,
       config,
@@ -327,25 +392,66 @@ export async function createWorkflowRunEvent(
     return { event: wireResult };
   }
 
+  // Validate client-provided runId timestamp is within acceptable threshold
+  if (data.eventType === 'run_created' && id) {
+    const validationError = validateUlidTimestamp(id, 'wrun_');
+    if (validationError) {
+      throw new WorkflowAPIError(validationError, { status: 400 });
+    }
+  }
+
   // For run_created events, runId may be client-provided or null
-  const runIdPath = id === null ? 'null' : id;
+  const runIdPath = id === null ? 'null' : encodeURIComponent(id);
 
   const remoteRefBehavior = eventsNeedingResolve.has(data.eventType)
     ? 'resolve'
     : 'lazy';
 
+  // Use the strict schema when the server resolves all refs (preserves the
+  // WorkflowRunSchema discriminated union), and the loose wire schema when
+  // the server returns lazy refs (error may be a string or undefined).
+  if (remoteRefBehavior === 'resolve') {
+    const wireResult = await makeRequest({
+      endpoint: `/v2/runs/${runIdPath}/events`,
+      options: { method: 'POST' },
+      data: {
+        ...data,
+        remoteRefBehavior,
+        ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      },
+      config,
+      schema: EventResultResolveWireSchema,
+    });
+
+    return {
+      event: stripEventAndLegacyRefs(wireResult.event, resolveData),
+      run: wireResult.run,
+      step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
+      hook: wireResult.hook,
+    };
+  }
+
   const wireResult = await makeRequest({
     endpoint: `/v2/runs/${runIdPath}/events`,
     options: { method: 'POST' },
-    data: { ...data, remoteRefBehavior },
+    data: {
+      ...data,
+      remoteRefBehavior,
+      ...(params?.requestId ? { vercelId: params.requestId } : {}),
+    },
     config,
-    schema: EventResultWireSchema,
+    schema: EventResultLazyWireSchema,
   });
 
-  // Transform wire format to interface format
+  // Transform wire format to interface format.
+  // The run entity from the wire may have error as a string (legacy) or
+  // undefined (lazy ref mode), so deserializeError normalizes it into the
+  // StructuredError shape expected by WorkflowRun consumers.
   return {
-    event: filterEventData(wireResult.event, resolveData),
-    run: wireResult.run,
+    event: stripEventAndLegacyRefs(wireResult.event, resolveData),
+    run: wireResult.run
+      ? deserializeError<WorkflowRun>(wireResult.run)
+      : undefined,
     step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
     hook: wireResult.hook,
   };

@@ -252,6 +252,10 @@ export async function processOrder(orderId: string) {
 
 With background execution, the parent workflow continues immediately after starting the child. The child workflow runs independently with its own event log and can be monitored separately using the returned `runId`.
 
+<Callout type="info">
+If you want the child workflow to run on the latest deployment rather than the current one, you can pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) in the `start()` options. This is currently a Vercel-specific feature. Be aware that the child workflow's function name, file path, argument types, and return type must remain compatible across deployments — renaming the function or changing its location will change the workflow ID, and modifying expected inputs or outputs can cause serialization failures.
+</Callout>
+
 **Choose direct await when:**
 - The parent needs the child's result before continuing
 - You want a single, unified event log

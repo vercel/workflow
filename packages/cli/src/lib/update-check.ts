@@ -246,10 +246,17 @@ async function isCacheValid(
 /**
  * Check for updates with filesystem caching
  * Cache is valid unless the local version changes
+ *
+ * Set WORKFLOW_NO_UPDATE_CHECK=1 to skip the update check entirely.
  */
 export async function checkForUpdateCached(
   currentVersion: string
 ): Promise<VersionCheckResult> {
+  if (process.env.WORKFLOW_NO_UPDATE_CHECK === '1') {
+    logger.debug('Skipping update check (WORKFLOW_NO_UPDATE_CHECK=1)');
+    return { currentVersion, needsUpdate: false };
+  }
+
   const cacheFile = getVersionCheckCacheFile();
 
   // Check if cache is valid

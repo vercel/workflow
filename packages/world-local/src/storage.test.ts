@@ -1,7 +1,12 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { Storage } from '@workflow/world';
+import { WorkflowAPIError } from '@workflow/errors';
+import type { Event, Storage } from '@workflow/world';
+import {
+  DEFAULT_TIMESTAMP_THRESHOLD_MS,
+  stripEventDataRefs,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
@@ -14,6 +19,120 @@ import {
   updateRun,
   updateStep,
 } from './test-helpers.js';
+
+describe('stripEventDataRefs', () => {
+  const baseEvent = {
+    runId: 'wrun_test',
+    eventId: 'evnt_test',
+    createdAt: new Date(),
+    specVersion: 2,
+  };
+
+  it('should strip input ref from step_created, keep stepName', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_created' as const,
+      correlationId: 'step_1',
+      eventData: { stepName: 'my-step', input: new Uint8Array([1, 2, 3]) },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ stepName: 'my-step' });
+    expect(result.eventData).not.toHaveProperty('input');
+  });
+
+  it('should strip input ref from run_created, keep workflowName and deploymentId', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'run_created' as const,
+      eventData: {
+        deploymentId: 'dpl_123',
+        workflowName: 'my-workflow',
+        input: new Uint8Array([1, 2, 3]),
+      },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({
+      deploymentId: 'dpl_123',
+      workflowName: 'my-workflow',
+    });
+    expect(result.eventData).not.toHaveProperty('input');
+  });
+
+  it('should strip result ref from step_completed entirely', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_completed' as const,
+      correlationId: 'step_1',
+      eventData: { result: new Uint8Array([4, 5]) },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toBeUndefined();
+  });
+
+  it('should strip error from run_failed, keep errorCode', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'run_failed' as const,
+      eventData: { error: 'something broke', errorCode: 'TIMEOUT' },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ errorCode: 'TIMEOUT' });
+    expect(result.eventData).not.toHaveProperty('error');
+  });
+
+  it('should strip error from step_failed, keep stack', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_failed' as const,
+      correlationId: 'step_1',
+      eventData: { error: 'failed', stack: 'Error: failed\n  at ...' },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ stack: 'Error: failed\n  at ...' });
+    expect(result.eventData).not.toHaveProperty('error');
+  });
+
+  it('should not strip anything when resolveData is "all"', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_created' as const,
+      correlationId: 'step_1',
+      eventData: { stepName: 'my-step', input: new Uint8Array([1, 2, 3]) },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'all') as any;
+    expect(result.eventData.stepName).toBe('my-step');
+    expect(result.eventData.input).toBeDefined();
+  });
+
+  it('should pass through events with no ref fields (e.g. run_started)', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'run_started' as const,
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none');
+    expect(result).toEqual(event);
+  });
+
+  it('should strip metadata from hook_created, keep token', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'hook_created' as const,
+      correlationId: 'hook_1',
+      eventData: { token: 'tok_abc', metadata: { some: 'data' } },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ token: 'tok_abc' });
+    expect(result.eventData).not.toHaveProperty('metadata');
+  });
+});
 
 describe('Storage', () => {
   let testDir: string;
@@ -1022,7 +1141,12 @@ describe('Storage', () => {
 
         // step_created + step_completed = 2 events
         expect(result.data).toHaveLength(2);
-        expect((result.data[0] as any).eventData).toBeUndefined();
+        // step_created: ref field 'input' stripped, metadata like stepName preserved
+        expect((result.data[0] as any).eventData).toEqual({
+          stepName: 'test-step',
+        });
+        expect((result.data[0] as any).eventData).not.toHaveProperty('input');
+        // step_completed: only ref field 'result' exists, so eventData is removed entirely
         expect((result.data[1] as any).eventData).toBeUndefined();
         expect(result.data[0].correlationId).toBe(correlationId);
       });
@@ -1298,6 +1422,34 @@ describe('Storage', () => {
         expect((result.event as any).eventData.token).toBe(token);
         expect(result.hook).toBeUndefined();
       });
+
+      it('should reject concurrent creates for the same token atomically', async () => {
+        const token = 'concurrent-token';
+
+        // Fire 5 concurrent hook creations with the same token
+        const results = await Promise.allSettled(
+          Array.from({ length: 5 }, (_, i) =>
+            storage.events.create(testRunId, {
+              eventType: 'hook_created',
+              correlationId: `concurrent_hook_${i}`,
+              eventData: { token },
+            })
+          )
+        );
+
+        const fulfilled = results.filter(
+          (r) => r.status === 'fulfilled'
+        ) as PromiseFulfilledResult<any>[];
+        const created = fulfilled.filter(
+          (r) => r.value.event.eventType === 'hook_created'
+        );
+        const conflicts = fulfilled.filter(
+          (r) => r.value.event.eventType === 'hook_conflict'
+        );
+
+        expect(created).toHaveLength(1);
+        expect(conflicts).toHaveLength(4);
+      });
     });
 
     describe('get', () => {
@@ -1314,7 +1466,7 @@ describe('Storage', () => {
 
       it('should throw error for non-existent hook', async () => {
         await expect(storage.hooks.get('nonexistent_hook')).rejects.toThrow(
-          'Hook nonexistent_hook not found'
+          'Hook not found'
         );
       });
 
@@ -1354,7 +1506,7 @@ describe('Storage', () => {
       it('should throw error for non-existent token', async () => {
         await expect(
           storage.hooks.getByToken('nonexistent-token')
-        ).rejects.toThrow('Hook with token nonexistent-token not found');
+        ).rejects.toThrow('Hook not found');
       });
 
       it('should find the correct hook when multiple hooks exist', async () => {
@@ -1396,10 +1548,10 @@ describe('Storage', () => {
         const result = await storage.hooks.list({});
 
         expect(result.data).toHaveLength(2);
-        // Should be in descending order (most recent first)
-        expect(result.data[0].hookId).toBe(hook2.hookId);
-        expect(result.data[1].hookId).toBe(hook1.hookId);
-        expect(result.data[0].createdAt.getTime()).toBeGreaterThanOrEqual(
+        // Should be in ascending order (oldest first) by default
+        expect(result.data[0].hookId).toBe(hook1.hookId);
+        expect(result.data[1].hookId).toBe(hook2.hookId);
+        expect(result.data[0].createdAt.getTime()).toBeLessThanOrEqual(
           result.data[1].createdAt.getTime()
         );
       });
@@ -2511,6 +2663,112 @@ describe('Storage', () => {
         expect(result.run?.status).toBe('running');
         expect(result.event?.eventType).toBe('run_started');
       });
+    });
+  });
+
+  describe('custom runId validation', () => {
+    const runCreatedEvent = {
+      eventType: 'run_created' as const,
+      eventData: {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      },
+    };
+
+    /**
+     * Encode a timestamp into a Crockford base32 ULID timestamp component (10 chars).
+     */
+    function encodeUlidTime(timeMs: number): string {
+      const chars = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+      let result = '';
+      let remaining = timeMs;
+      for (let i = 0; i < 10; i++) {
+        result = chars[remaining % 32] + result;
+        remaining = Math.floor(remaining / 32);
+      }
+      return result;
+    }
+
+    function makeRunId(timestampMs: number): string {
+      // 10-char encoded timestamp + 16 random chars
+      return `wrun_${encodeUlidTime(timestampMs)}${'0'.repeat(16)}`;
+    }
+
+    it('should accept a client-provided runId with current timestamp', async () => {
+      const runId = makeRunId(Date.now());
+      const result = await storage.events.create(runId, runCreatedEvent);
+
+      expect(result.run).toBeDefined();
+      expect(result.run!.runId).toBe(runId);
+    });
+
+    it('should accept a runId within the threshold', async () => {
+      // 4 minutes ago — within the 5-minute default
+      const runId = makeRunId(Date.now() - 4 * 60 * 1000);
+      const result = await storage.events.create(runId, runCreatedEvent);
+
+      expect(result.run).toBeDefined();
+      expect(result.run!.runId).toBe(runId);
+    });
+
+    it('should reject a runId with a timestamp too far in the past', async () => {
+      // 10 minutes ago — exceeds the 5-minute threshold
+      const runId = makeRunId(Date.now() - 10 * 60 * 1000);
+
+      await expect(
+        storage.events.create(runId, runCreatedEvent)
+      ).rejects.toThrow(WorkflowAPIError);
+
+      await expect(
+        storage.events.create(runId, runCreatedEvent)
+      ).rejects.toThrow(/Invalid runId timestamp/);
+    });
+
+    it('should reject a runId with a timestamp too far in the future', async () => {
+      // 10 minutes from now
+      const runId = makeRunId(Date.now() + 10 * 60 * 1000);
+
+      await expect(
+        storage.events.create(runId, runCreatedEvent)
+      ).rejects.toThrow(WorkflowAPIError);
+
+      await expect(
+        storage.events.create(runId, runCreatedEvent)
+      ).rejects.toThrow(/Invalid runId timestamp/);
+    });
+
+    it('should reject a runId that is not a valid ULID', async () => {
+      await expect(
+        storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)
+      ).rejects.toThrow(WorkflowAPIError);
+
+      await expect(
+        storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)
+      ).rejects.toThrow(/not a valid ULID/);
+    });
+
+    it('should not validate runId for non-run_created events', async () => {
+      // Create a valid run first
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+
+      // run_started with the server-generated runId should work fine
+      const result = await storage.events.create(run.runId, {
+        eventType: 'run_started',
+      });
+
+      expect(result.run?.status).toBe('running');
+    });
+
+    it('should not validate when runId is null (server-generated)', async () => {
+      const result = await storage.events.create(null, runCreatedEvent);
+
+      expect(result.run).toBeDefined();
+      expect(result.run!.runId).toMatch(/^wrun_/);
     });
   });
 });

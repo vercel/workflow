@@ -1,5 +1,5 @@
 {
-  "name": "@workflow/example-nitro-v3",
+  "name": "@workflow/example-nitro",
   "private": true,
   "type": "module",
   "version": "0.0.0",
@@ -20,6 +20,7 @@
     "openai": "^6.1.0",
     "rollup": "^4.53.2",
     "workflow": "workspace:*",
+    "@workflow/ai": "workspace:*",
     "zod": "catalog:"
   },
   "dependencies": {

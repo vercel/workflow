@@ -19,6 +19,7 @@ process.on('beforeExit', () => {
     {
       file: '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
       config: {
+        maxDuration: 60,
         experimentalTriggers: [
           {
             type: 'queue/v2beta',
@@ -34,6 +35,7 @@ process.on('beforeExit', () => {
     {
       file: '.vercel/output/functions/.well-known/workflow/v1/step.func/.vc-config.json',
       config: {
+        maxDuration: 'max',
         experimentalTriggers: [
           {
             type: 'queue/v2beta',

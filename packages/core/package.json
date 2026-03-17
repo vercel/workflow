@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.1.0-beta.61",
+  "version": "4.2.0-beta.70",
   "description": "Core runtime and engine for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -52,10 +52,6 @@
       "types": "./dist/class-serialization.d.ts",
       "default": "./dist/class-serialization.js"
     },
-    "./builtins": {
-      "types": "./dist/builtins.d.ts",
-      "default": "./dist/builtins.js"
-    },
     "./serialization": {
       "types": "./dist/serialization.d.ts",
       "default": "./dist/serialization.js"
@@ -81,7 +77,7 @@
     "postpack": "rm -rf docs"
   },
   "dependencies": {
-    "@aws-sdk/credential-provider-web-identity": "3.609.0",
+    "@aws-sdk/credential-provider-web-identity": "3.972.13",
     "@jridgewell/trace-mapping": "0.3.31",
     "@standard-schema/spec": "1.0.0",
     "@types/ms": "2.1.0",
@@ -97,7 +93,7 @@
     "ms": "2.1.3",
     "nanoid": "5.1.6",
     "seedrandom": "3.0.5",
-    "ulid": "3.0.1",
+    "ulid": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

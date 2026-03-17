@@ -17,10 +17,12 @@ const {
 
   const mockSend = vi.fn();
   const mockHandleCallback = vi.fn();
-  const MockQueueClient = vi.fn().mockImplementation(() => ({
-    send: mockSend,
-    handleCallback: mockHandleCallback,
-  }));
+  const MockQueueClient = vi.fn().mockImplementation(function () {
+    return {
+      send: mockSend,
+      handleCallback: mockHandleCallback,
+    };
+  });
 
   return {
     mockSend,
@@ -451,6 +453,55 @@ describe('createQueue', () => {
       }
     });
 
+    it('should send new message without delaySeconds when handler returns timeoutSeconds: 0', async () => {
+      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+
+      const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+
+      try {
+        const queue = createQueue();
+        queue.createQueueHandler('__wkf_workflow_', async () => ({
+          timeoutSeconds: 0,
+        }));
+
+        await capturedHandler!(
+          {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+            deploymentId: 'dpl_original',
+          },
+          {
+            messageId: 'msg-123',
+            deliveryCount: 1,
+            createdAt: new Date(),
+            topicName: '__wkf_workflow_test',
+            consumerGroup: 'test',
+          }
+        );
+
+        expect(mockSend).toHaveBeenCalledTimes(1);
+        // send(topicName, payload, options)
+        const sendOpts = mockSend.mock.calls[0][2];
+        expect(sendOpts.delaySeconds).toBeUndefined();
+      } finally {
+        if (originalEnv !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
     it('should not send new message when handler returns void', async () => {
       let capturedHandler: (
         message: unknown,
@@ -555,6 +606,75 @@ describe('createQueue', () => {
           }),
         })
       );
+    });
+
+    it('should pass x-vercel-id as requestId in handler metadata', async () => {
+      let capturedMeta: any;
+      mockHandleCallback.mockImplementation((handler) => {
+        // Return a function that simulates VQS invoking the handler
+        return async (req: Request) => {
+          await handler(
+            {
+              payload: { runId: 'run-123' },
+              queueName: '__wkf_workflow_test',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: 1,
+              createdAt: new Date(),
+            }
+          );
+          return new Response('ok');
+        };
+      });
+
+      const queue = createQueue();
+      const routeHandler = queue.createQueueHandler(
+        '__wkf_workflow_',
+        async (_msg, meta) => {
+          capturedMeta = meta;
+        }
+      );
+
+      await routeHandler(
+        new Request('http://localhost', {
+          headers: { 'x-vercel-id': 'iad1::abc123' },
+        })
+      );
+
+      expect(capturedMeta.requestId).toBe('iad1::abc123');
+    });
+
+    it('should pass undefined requestId when x-vercel-id header is absent', async () => {
+      let capturedMeta: any;
+      mockHandleCallback.mockImplementation((handler) => {
+        return async (req: Request) => {
+          await handler(
+            {
+              payload: { runId: 'run-123' },
+              queueName: '__wkf_workflow_test',
+            },
+            {
+              messageId: 'msg-123',
+              deliveryCount: 1,
+              createdAt: new Date(),
+            }
+          );
+          return new Response('ok');
+        };
+      });
+
+      const queue = createQueue();
+      const routeHandler = queue.createQueueHandler(
+        '__wkf_workflow_',
+        async (_msg, meta) => {
+          capturedMeta = meta;
+        }
+      );
+
+      await routeHandler(new Request('http://localhost'));
+
+      expect(capturedMeta.requestId).toBeUndefined();
     });
 
     it('should handle step payloads correctly', async () => {

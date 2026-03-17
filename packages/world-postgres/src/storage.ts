@@ -1,7 +1,12 @@
-import { RunNotSupportedError, WorkflowAPIError } from '@workflow/errors';
+import {
+  HookNotFoundError,
+  RunNotSupportedError,
+  WorkflowAPIError,
+} from '@workflow/errors';
 import type {
   Event,
   EventResult,
+  GetEventParams,
   Hook,
   ListEventsParams,
   ListHooksParams,
@@ -22,9 +27,11 @@ import {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
+  stripEventDataRefs,
+  validateUlidTimestamp,
   WorkflowRunSchema,
 } from '@workflow/world';
-import { and, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
 import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
@@ -237,7 +244,7 @@ async function handleLegacyEventPostgres(
         runId,
         eventId,
       });
-      return { event: filterEventData(event, resolveData) };
+      return { event: stripEventDataRefs(event, resolveData) };
     }
 
     default:
@@ -308,6 +315,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         throw new Error('runId is required for non-run_created events');
       } else {
         effectiveRunId = runId;
+      }
+
+      // Validate client-provided runId timestamp is within acceptable threshold
+      if (data.eventType === 'run_created' && runId && runId !== '') {
+        const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
+        if (validationError) {
+          throw new WorkflowAPIError(validationError, { status: 400 });
+        }
       }
 
       // specVersion is always sent by the runtime, but we provide a fallback for safety
@@ -414,7 +429,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           const parsed = EventSchema.parse(result);
           const resolveData = params?.resolveData ?? 'all';
           return {
-            event: filterEventData(parsed, resolveData),
+            event: stripEventDataRefs(parsed, resolveData),
             run: fullRun ? deserializeRunError(compact(fullRun)) : undefined,
           };
         }
@@ -857,6 +872,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         const eventData = (data as any).eventData as {
           token: string;
           metadata?: any;
+          isWebhook?: boolean;
         };
 
         // Check for duplicate token using prepared statement
@@ -900,7 +916,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           const parsedConflict = EventSchema.parse(conflictResult);
           const resolveData = params?.resolveData ?? 'all';
           return {
-            event: filterEventData(parsedConflict, resolveData),
+            event: stripEventDataRefs(parsedConflict, resolveData),
             run,
             step,
             hook: undefined,
@@ -919,6 +935,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             environment: '', // TODO: get from context
             // Propagate specVersion from the event to the hook entity
             specVersion: effectiveSpecVersion,
+            isWebhook: eventData.isWebhook,
           })
           .onConflictDoNothing()
           .returning();
@@ -1039,12 +1056,34 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       const parsed = EventSchema.parse(result);
       const resolveData = params?.resolveData ?? 'all';
       return {
-        event: filterEventData(parsed, resolveData),
+        event: stripEventDataRefs(parsed, resolveData),
         run,
         step,
         hook,
         wait,
       };
+    },
+    async get(
+      runId: string,
+      eventId: string,
+      params?: GetEventParams
+    ): Promise<Event> {
+      const [value] = await drizzle
+        .select()
+        .from(events)
+        .where(and(eq(events.runId, runId), eq(events.eventId, eventId)))
+        .limit(1);
+
+      if (!value) {
+        throw new WorkflowAPIError(`Event not found: ${eventId}`, {
+          status: 404,
+        });
+      }
+
+      value.eventData ||= value.eventDataJson;
+      const parsed = EventSchema.parse(compact(value));
+      const resolveData = params?.resolveData ?? 'all';
+      return stripEventDataRefs(parsed, resolveData);
     },
     async list(params: ListEventsParams): Promise<PaginatedResponse<Event>> {
       const limit = params?.pagination?.limit ?? 100;
@@ -1074,7 +1113,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         data: values.map((v) => {
           v.eventData ||= v.eventDataJson;
           const parsed = EventSchema.parse(compact(v));
-          return filterEventData(parsed, resolveData);
+          return stripEventDataRefs(parsed, resolveData);
         }),
         cursor: values.at(-1)?.eventId ?? null,
         hasMore: all.length > limit,
@@ -1108,7 +1147,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         data: values.map((v) => {
           v.eventData ||= v.eventDataJson;
           const parsed = EventSchema.parse(compact(v));
-          return filterEventData(parsed, resolveData);
+          return stripEventDataRefs(parsed, resolveData);
         }),
         cursor: values.at(-1)?.eventId ?? null,
         hasMore: all.length > limit,
@@ -1135,34 +1174,37 @@ export function createHooksStorage(drizzle: Drizzle): Storage['hooks'] {
         .limit(1);
       value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
+      parsed.isWebhook ??= true;
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
     },
     async getByToken(token, params) {
       const [value] = await getByToken.execute({ token });
       if (!value) {
-        throw new WorkflowAPIError(`Hook not found for token: ${token}`, {
-          status: 404,
-        });
+        throw new HookNotFoundError(token);
       }
       value.metadata ||= value.metadataJson;
       const parsed = HookSchema.parse(compact(value));
+      parsed.isWebhook ??= true;
       const resolveData = params?.resolveData ?? 'all';
       return filterHookData(parsed, resolveData);
     },
     async list(params: ListHooksParams) {
       const limit = params?.pagination?.limit ?? 100;
       const fromCursor = params?.pagination?.cursor;
+      const sortOrder = params?.pagination?.sortOrder ?? 'asc';
+      const orderFn = sortOrder === 'asc' ? asc : desc;
+      const cursorFn = sortOrder === 'asc' ? gt : lt;
       const all = await drizzle
         .select()
         .from(hooks)
         .where(
           and(
             map(params.runId, (id) => eq(hooks.runId, id)),
-            map(fromCursor, (c) => lt(hooks.hookId, c))
+            map(fromCursor, (c) => cursorFn(hooks.hookId, c))
           )
         )
-        .orderBy(desc(hooks.hookId))
+        .orderBy(orderFn(hooks.hookId))
         .limit(limit + 1);
       const values = all.slice(0, limit);
       const hasMore = all.length > limit;
@@ -1291,13 +1333,4 @@ function filterHookData(hook: Hook, resolveData: ResolveData): Hook {
     return { metadata: undefined, ...rest };
   }
   return hook;
-}
-
-function filterEventData(event: Event, resolveData: ResolveData): Event {
-  if (resolveData === 'none' && 'eventData' in event) {
-    const { eventData: _, ...rest } = event;
-
-    return rest as Event;
-  }
-  return event;
 }

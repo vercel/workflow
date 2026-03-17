@@ -80,6 +80,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createPackageJson(stepsFuncDir, 'commonjs');
     await this.createVcConfig(stepsFuncDir, {
       shouldAddSourcemapSupport: true,
+      maxDuration: 'max',
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
       runtime: this.config.runtime,
     });
@@ -109,6 +110,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create package.json and .vc-config.json for workflows function
     await this.createPackageJson(workflowsFuncDir, 'commonjs');
     await this.createVcConfig(workflowsFuncDir, {
+      maxDuration: 60,
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       runtime: this.config.runtime,
     });

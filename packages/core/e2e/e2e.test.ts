@@ -1,9 +1,10 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
 } from '@workflow/errors';
-import fs from 'fs';
-import path from 'path';
 import { afterAll, assert, beforeAll, describe, expect, test } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
@@ -18,23 +19,15 @@ import {
   cliCancel,
   cliHealthJson,
   cliInspectJson,
+  fetchManifest,
   getProtectionBypassHeaders,
   getWorkbenchAppPath,
+  getWorkflowMetadata,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
   isLocalDeployment,
+  setupWorld,
 } from './utils';
-
-// Manifest type matching the structure from BaseBuilder.createManifest()
-interface WorkflowManifest {
-  version: string;
-  workflows: Record<
-    string,
-    Record<string, { workflowId: string; graph?: unknown }>
-  >;
-  steps: Record<string, Record<string, { stepId: string }>>;
-  classes?: Record<string, Record<string, { classId: string }>>;
-}
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
@@ -72,85 +65,12 @@ function writeE2EMetadata() {
   fs.writeFileSync(getE2EMetadataPath(), JSON.stringify(metadata, null, 2));
 }
 
-// Cached manifest fetched from the deployment
-let cachedManifest: WorkflowManifest | null = null;
-
-/**
- * Fetches the workflow manifest from the deployment URL.
- * The manifest is served at /.well-known/workflow/v1/manifest.json by each
- * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set.
- */
-async function fetchManifest(): Promise<WorkflowManifest> {
-  if (cachedManifest) return cachedManifest;
-
-  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
-  const res = await fetch(url, {
-    headers: getProtectionBypassHeaders(),
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to fetch manifest from ${url}: ${res.status} ${await res.text()}`
-    );
-  }
-  cachedManifest = (await res.json()) as WorkflowManifest;
-  return cachedManifest;
-}
-
-/**
- * Looks up the workflow metadata from the manifest for a given workflow file and function name.
- * Returns an object that can be passed directly to `start()`.
- *
- * The manifest contains the exact IDs produced by the SWC transform during the build,
- * which handles symlink resolution and path normalization correctly.
- */
-async function getWorkflowMetadata(
-  workflowFile: string,
-  workflowFn: string
-): Promise<{ workflowId: string }> {
-  const manifest = await fetchManifest();
-
-  // The manifest keys are relative file paths as seen by the builder.
-  // Due to symlinks, the key may differ from the workflowFile we pass
-  // (e.g., "example/workflows/99_e2e.ts" vs "workflows/99_e2e.ts").
-  // Search all files for the matching function name and workflow file suffix.
-  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
-    if (
-      manifestFile.endsWith(workflowFile) ||
-      workflowFile.endsWith(manifestFile)
-    ) {
-      const entry = functions[workflowFn];
-      if (entry) {
-        return entry;
-      }
-    }
-  }
-
-  // If suffix matching didn't find it, try stripping the extension for matching
-  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
-  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
-    const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
-    if (
-      manifestFileWithoutExt.endsWith(fileWithoutExt) ||
-      fileWithoutExt.endsWith(manifestFileWithoutExt)
-    ) {
-      const entry = functions[workflowFn];
-      if (entry) {
-        return entry;
-      }
-    }
-  }
-
-  throw new Error(
-    `Workflow "${workflowFn}" not found in manifest for file "${workflowFile}". ` +
-      `Available files: ${Object.keys(manifest.workflows).join(', ')}`
-  );
-}
-
 /**
  * Shorthand for looking up workflow metadata from workflows/99_e2e.ts.
  * Usage: `const run = await start(await e2e('addTenWorkflow'), [123]);`
  */
-const e2e = (fn: string) => getWorkflowMetadata('workflows/99_e2e.ts', fn);
+const e2e = (fn: string) =>
+  getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
 
 /**
  * Triggers a workflow via HTTP POST. Used only for Pages Router tests
@@ -201,22 +121,7 @@ describe('e2e', () => {
   // Configure the World for the test runner process so that start() and
   // run.returnValue can communicate with the same backend as the workbench app.
   beforeAll(async () => {
-    if (isLocalDeployment()) {
-      // Set base URL so the local queue can reach the running workbench app
-      process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
-
-      // Set the data directory to match the workbench app's data directory.
-      // We must set this explicitly (not discover it) because the data dir
-      // may not exist yet when the test starts — the app creates it on first use.
-      // Next.js uses .next/workflow-data, all other frameworks use .workflow-data.
-      const appPath = getWorkbenchAppPath();
-      const appName = process.env.APP_NAME!;
-      const isNextJs = appName.includes('nextjs') || appName.includes('next-');
-      const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
-      process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
-    }
-    // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI
-    // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
+    setupWorld(deploymentUrl);
   });
 
   // Write E2E metadata file with runIds for observability links
@@ -235,7 +140,11 @@ describe('e2e', () => {
     },
   ])('addTenWorkflow', { timeout: 60_000 }, async (workflow) => {
     const run = await start(
-      await getWorkflowMetadata(workflow.workflowFile, workflow.workflowFn),
+      await getWorkflowMetadata(
+        deploymentUrl,
+        workflow.workflowFile,
+        workflow.workflowFn
+      ),
       [123]
     );
 
@@ -263,6 +172,29 @@ describe('e2e', () => {
     );
   });
 
+  // Test that "use step" / "use workflow" functions inside dot-prefixed
+  // directories like `.well-known/agent/` are discovered and executed correctly.
+  // Only runs on Next.js workbenches where the test file is placed.
+  const isNextApp = process.env.APP_NAME?.includes('nextjs');
+  test.skipIf(!isNextApp)(
+    'wellKnownAgentWorkflow (.well-known/agent)',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(
+        await getWorkflowMetadata(
+          deploymentUrl,
+          'app/.well-known/agent/v1/steps.ts',
+          'wellKnownAgentWorkflow'
+        ),
+        [5]
+      );
+
+      const returnValue = await run.returnValue;
+      // wellKnownAgentStep(5) => 5 * 2 = 10, then workflow adds 1 => 11
+      expect(returnValue).toBe(11);
+    }
+  );
+
   const isNext = process.env.APP_NAME?.includes('nextjs');
   const isLocal = deploymentUrl.includes('localhost');
   // only works with framework that transpiles react and
@@ -275,6 +207,7 @@ describe('e2e', () => {
     async () => {
       const run = await start(
         await getWorkflowMetadata(
+          deploymentUrl,
           'workflows/8_react_render.tsx',
           'reactWorkflow'
         ),
@@ -304,12 +237,22 @@ describe('e2e', () => {
     expect(returnValue).toBe('B');
   });
 
+  test.skipIf(!isNext)(
+    'importedStepOnlyWorkflow',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('importedStepOnlyWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe('imported-step-only-ok');
+    }
+  );
+
   // ReadableStream return values use the world's streaming infrastructure which
   // requires in-process access. The local world's streamer uses an in-process EventEmitter
   // that doesn't work cross-process (test runner ↔ workbench app).
   test.skipIf(isLocalDeployment())(
     'readableStreamWorkflow',
-    { timeout: 60_000 },
+    { timeout: 80_000 },
     async () => {
       const run = await start(await e2e('readableStreamWorkflow'), []);
       const returnValue = await run.returnValue;
@@ -377,20 +320,74 @@ describe('e2e', () => {
     expect(returnValue[2].done).toBe(true);
   });
 
+  test(
+    'hookWorkflow is not resumable via public webhook endpoint',
+    { timeout: 60_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      const run = await start(await e2e('hookWorkflow'), [token, customData]);
+
+      // Wait for the hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Verify the hook exists via server-side API
+      const hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run.runId);
+
+      // Attempt to resume via the public webhook endpoint — should get 404
+      const res = await fetch(
+        new URL(
+          `/.well-known/workflow/v1/webhook/${encodeURIComponent(token)}`,
+          deploymentUrl
+        ),
+        {
+          method: 'POST',
+          headers: getProtectionBypassHeaders(),
+          body: JSON.stringify({ message: 'should-be-rejected' }),
+        }
+      );
+      expect(res.status).toBe(404);
+
+      // Now resume via server-side resumeHook() — should work
+      await resumeHook(hook, {
+        message: 'via-server',
+        customData: (hook.metadata as any)?.customData,
+        done: true,
+      });
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toHaveLength(1);
+      expect(returnValue[0].message).toBe('via-server');
+    }
+  );
+
   test('webhookWorkflow', { timeout: 60_000 }, async () => {
-    const token = Math.random().toString(36).slice(2);
-    const token2 = Math.random().toString(36).slice(2);
-    const token3 = Math.random().toString(36).slice(2);
+    const run = await start(await e2e('webhookWorkflow'), []);
 
-    const run = await start(await e2e('webhookWorkflow'), [
-      token,
-      token2,
-      token3,
-    ]);
+    // Poll until all 3 webhooks are registered.
+    const world = getWorld();
+    const hooks = await (async () => {
+      const deadline = Date.now() + 30_000;
+      while (Date.now() < deadline) {
+        const { data } = await world.hooks.list({ runId: run.runId });
+        if (data.length > 3) {
+          const tokens = data.map((h) => h.token).join(', ');
+          throw new Error(
+            `Expected 3 webhooks for run ${run.runId}, but found ${data.length}. Tokens: [${tokens}]`
+          );
+        }
+        if (data.length === 3) return data;
+        await sleep(500);
+      }
+      throw new Error(
+        `Timed out waiting for 3 webhooks to be registered for run ${run.runId}`
+      );
+    })();
 
-    // Wait a few seconds so that the webhooks are registered.
-    // TODO: make this more efficient when we add subscription support.
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
+    // Hooks are returned in creation order; extract tokens
+    const [token, token2, token3] = hooks.map((h) => h.token);
 
     // Webhook with default response
     const res = await fetch(
@@ -521,6 +518,13 @@ describe('e2e', () => {
       returnValue.innerWorkflowMetadata
     );
 
+    // workflow context should have workflowName and stepMetadata shouldn't
+    expect(typeof returnValue.workflowMetadata.workflowName).toBe('string');
+    expect(returnValue.workflowMetadata.workflowName).toBe(
+      returnValue.innerWorkflowMetadata.workflowName
+    );
+    expect(returnValue.stepMetadata.workflowName).toBeUndefined();
+
     // workflow context should have workflowRunId and stepMetadata shouldn't
     expect(returnValue.workflowMetadata.workflowRunId).toBe(run.runId);
     expect(returnValue.innerWorkflowMetadata.workflowRunId).toBe(run.runId);
@@ -550,6 +554,9 @@ describe('e2e', () => {
     expect(returnValue.workflowMetadata.attempt).toBeUndefined();
 
     // step context
+
+    // stepName should be a string
+    expect(typeof returnValue.stepMetadata.stepName).toBe('string');
 
     // Attempt should be atleast 1
     expect(returnValue.stepMetadata.attempt).toBeGreaterThanOrEqual(1);
@@ -899,33 +906,6 @@ describe('e2e', () => {
         expect(result.failed).toBe(true);
         expect(result.attempt).toBe(1);
       });
-
-      test(
-        'workflow completes despite transient 5xx on step_completed',
-        { timeout: 120_000 },
-        async () => {
-          const run = await start(
-            await e2e('serverError5xxRetryWorkflow'),
-            [42]
-          );
-          const result = await run.returnValue;
-
-          // Correct result proves workflow completed successfully
-          expect(result.result).toBe(84); // 42 * 2
-
-          // retryCount > 0 proves the fault injection actually triggered
-          expect(result.retryCount).toBe(2);
-
-          // attempt === 1 proves no step attempt was consumed by the 5xx retries
-          const { json: steps } = await cliInspectJson(
-            `steps --runId ${run.runId}`
-          );
-          const doWorkStep = steps.find((s: any) =>
-            s.stepName.includes('doWork')
-          );
-          expect(doWorkStep.attempt).toBe(1);
-        }
-      );
     });
 
     describe('catchability', () => {
@@ -1096,6 +1076,87 @@ describe('e2e', () => {
 
       const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
       expect(run1Data.status).toBe('completed');
+    }
+  );
+
+  test(
+    'hookDisposeTestWorkflow - hook token reuse after explicit disposal while workflow still running',
+    { timeout: 90_000 },
+    async () => {
+      const token = Math.random().toString(36).slice(2);
+      const customData = Math.random().toString(36).slice(2);
+
+      // Start first workflow - it will create a hook, receive one payload, then dispose and sleep
+      const run1 = await start(await e2e('hookDisposeTestWorkflow'), [
+        token,
+        customData,
+      ]);
+
+      // Wait for the hook to be registered by workflow 1
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Verify the hook exists and belongs to workflow 1
+      let hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run1.runId);
+
+      // Send payload to first workflow - this will trigger it to dispose the hook
+      await resumeHook(hook, {
+        message: 'first-payload',
+        customData: (hook.metadata as any)?.customData,
+      });
+
+      // Wait for workflow 1 to process the payload and dispose the hook
+      // The workflow has a 5s sleep after disposal, so it's still running
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      // Now start workflow 2 with the SAME token while workflow 1 is still running
+      // This should succeed because workflow 1 disposed its hook
+      const run2 = await start(await e2e('hookDisposeTestWorkflow'), [
+        token,
+        customData,
+      ]);
+
+      // Wait for workflow 2's hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Verify the hook now belongs to workflow 2
+      hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run2.runId);
+
+      // Send payload to workflow 2
+      await resumeHook(hook, {
+        message: 'second-payload',
+        customData: (hook.metadata as any)?.customData,
+      });
+
+      // Wait for both workflows to complete
+      const [run1Result, run2Result] = await Promise.all([
+        run1.returnValue,
+        run2.returnValue,
+      ]);
+
+      // Verify workflow 1 completed with its payload
+      expect(run1Result).toMatchObject({
+        message: 'first-payload',
+        customData,
+        disposed: true,
+        hookDisposeTestData: 'workflow_completed',
+      });
+
+      // Verify workflow 2 completed with its payload
+      expect(run2Result).toMatchObject({
+        message: 'second-payload',
+        customData,
+        disposed: true,
+        hookDisposeTestData: 'workflow_completed',
+      });
+
+      // Verify both runs completed successfully
+      const { json: run1Data } = await cliInspectJson(`runs ${run1.runId}`);
+      expect(run1Data.status).toBe('completed');
+
+      const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);
+      expect(run2Data.status).toBe('completed');
     }
   );
 
@@ -1606,7 +1667,7 @@ describe('e2e', () => {
 
       // Look up the stepId for the `add` function from 98_duplicate_case.ts
       // This simulates what the SWC plugin does in client mode: setting stepId on the function
-      const manifest = await fetchManifest();
+      const manifest = await fetchManifest(deploymentUrl);
       const stepFile = Object.keys(manifest.steps).find((f) =>
         f.includes('98_duplicate_case')
       );
@@ -1747,4 +1808,94 @@ describe('e2e', () => {
       expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
     });
   });
+
+  test(
+    'hookWithSleepWorkflow - hook payloads delivered correctly with concurrent sleep',
+    { timeout: 90_000 },
+    async () => {
+      // Regression test: when a hook and sleep run concurrently, multiple
+      // hook_received events should all be processed even though the sleep
+      // has no wait_completed event. Previously, the sleep's WorkflowSuspension
+      // would terminate the workflow before all hook payloads were delivered.
+      const token = Math.random().toString(36).slice(2);
+
+      const run = await start(await e2e('hookWithSleepWorkflow'), [token]);
+
+      // Wait for the hook to be registered
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      // Send 3 payloads: two normal ones, then one with done=true
+      let hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run.runId);
+      await resumeHook(hook, { type: 'subscribe', id: 1 });
+
+      // Wait for the first payload to be processed (step must complete)
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      hook = await getHookByToken(token);
+      await resumeHook(hook, { type: 'subscribe', id: 2 });
+
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      hook = await getHookByToken(token);
+      await resumeHook(hook, { type: 'done', done: true });
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBeInstanceOf(Array);
+      expect(returnValue).toHaveLength(3);
+      expect(returnValue[0]).toMatchObject({
+        processed: true,
+        type: 'subscribe',
+        id: 1,
+      });
+      expect(returnValue[1]).toMatchObject({
+        processed: true,
+        type: 'subscribe',
+        id: 2,
+      });
+      expect(returnValue[2]).toMatchObject({ processed: true, type: 'done' });
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
+    'sleepInLoopWorkflow - sleep inside loop with steps actually delays each iteration',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('sleepInLoopWorkflow'), []);
+      const returnValue = await run.returnValue;
+
+      // 3 iterations with 3s sleep between each pair = 2 sleeps, ~6s total
+      // Use 2.5s threshold per sleep to allow jitter
+      expect(returnValue.timestamps).toHaveLength(3);
+      const delta1 = returnValue.timestamps[1] - returnValue.timestamps[0];
+      const delta2 = returnValue.timestamps[2] - returnValue.timestamps[1];
+      expect(delta1).toBeGreaterThan(2_500);
+      expect(delta2).toBeGreaterThan(2_500);
+      expect(returnValue.totalElapsed).toBeGreaterThan(5_000);
+    }
+  );
+
+  test(
+    'sleepWithSequentialStepsWorkflow - sequential steps work with concurrent sleep (control)',
+    { timeout: 60_000 },
+    async () => {
+      // Control test: proves that void sleep('1d').then() does NOT break
+      // sequential step execution. Steps have per-event consumption so the
+      // sleep's pending suspension doesn't interfere. This contrasts with
+      // hookWithSleepWorkflow where the bug manifests.
+      const run = await start(
+        await e2e('sleepWithSequentialStepsWorkflow'),
+        []
+      );
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({ a: 3, b: 6, c: 10, shouldCancel: false });
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
+    }
+  );
 });

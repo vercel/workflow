@@ -3,11 +3,14 @@
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
+import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { useToast } from '../../lib/toast';
+import { isEncryptedMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
+import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { ErrorCard } from '../ui/error-card';
 import {
   ErrorStackBlock,
@@ -172,6 +175,26 @@ function ConversationWithTabs({
  * Render a value with the shared DataInspector (ObjectInspector with
  * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
  */
+/**
+ * Inline display for an encrypted field — no expand, just a flat label
+ * with the lucide Lock icon matching the title bar Decrypt button.
+ */
+function EncryptedFieldBlock() {
+  return (
+    <div
+      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'var(--ds-gray-100)',
+        color: 'var(--ds-gray-700)',
+      }}
+    >
+      <Lock className="h-3 w-3" />
+      <span className="font-medium">Encrypted</span>
+    </div>
+  );
+}
+
 function JsonBlock(value: unknown) {
   return <CopyableDataBlock data={value} />;
 }
@@ -193,7 +216,10 @@ type AttributeKey =
   | 'eventData'
   | 'resumeAt'
   | 'expiredAt'
-  | 'workflowCoreVersion';
+  | 'workflowCoreVersion'
+  | 'receivedCount'
+  | 'lastReceivedAt'
+  | 'disposedAt';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -206,6 +232,9 @@ const attributeOrder: AttributeKey[] = [
   'runId',
   'attempt',
   'token',
+  'receivedCount',
+  'lastReceivedAt',
+  'disposedAt',
   'correlationId',
   'eventType',
   'deploymentId',
@@ -240,6 +269,7 @@ const sortByAttributeOrder = (a: string, b: string): number => {
  */
 const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   workflowCoreVersion: '@workflow/core version',
+  receivedCount: 'times resolved',
 };
 
 /**
@@ -262,20 +292,24 @@ const getModuleSpecifierFromName = (value: unknown): string => {
   return raw;
 };
 
-export const localMillisecondTime = (value: unknown): string => {
-  let date: Date;
+const parseDateValue = (value: unknown): Date | null => {
+  if (value == null) {
+    return null;
+  }
   if (value instanceof Date) {
-    date = value;
-  } else if (typeof value === 'number') {
-    date = new Date(value);
-  } else if (typeof value === 'string') {
-    date = new Date(value);
-  } else {
-    date = new Date(String(value));
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === 'string' && value.trim().length === 0) {
+    return null;
   }
 
-  // e.g. 12/17/2025, 9:08:55.182 AM
-  return date.toLocaleString(undefined, {
+  const date =
+    typeof value === 'number' ? new Date(value) : new Date(String(value));
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
+const formatLocalMillisecondTime = (date: Date): string =>
+  date.toLocaleString(undefined, {
     year: 'numeric',
     month: 'numeric',
     day: 'numeric',
@@ -284,6 +318,33 @@ export const localMillisecondTime = (value: unknown): string => {
     second: 'numeric',
     fractionalSecondDigits: 3,
   });
+
+export const localMillisecondTime = (value: unknown): string => {
+  const date = parseDateValue(value);
+  if (!date) {
+    return '-';
+  }
+
+  // e.g. 12/17/2025, 9:08:55.182 AM
+  return formatLocalMillisecondTime(date);
+};
+
+const localMillisecondTimeOrNull = (value: unknown): string | null => {
+  const date = parseDateValue(value);
+  if (!date) {
+    return null;
+  }
+  return formatLocalMillisecondTime(date);
+};
+
+const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
+  const date = parseDateValue(value);
+  if (!date) return null;
+  return (
+    <TimestampTooltip date={date}>
+      <span>{formatLocalMillisecondTime(date)}</span>
+    </TimestampTooltip>
+  );
 };
 
 interface DisplayContext {
@@ -309,6 +370,10 @@ const attributeToDisplayFn: Record<
   attempt: (value: unknown) => String(value),
   // Hook details
   token: (value: unknown) => String(value),
+  isWebhook: (value: unknown) => String(value),
+  receivedCount: (value: unknown) => String(value),
+  lastReceivedAt: localMillisecondTimeOrNull,
+  disposedAt: localMillisecondTimeOrNull,
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),
@@ -321,21 +386,22 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
-  // Dates
-  // TODO: relative time with tooltips for ISO times
-  createdAt: localMillisecondTime,
-  startedAt: localMillisecondTime,
-  updatedAt: localMillisecondTime,
-  completedAt: localMillisecondTime,
-  expiredAt: localMillisecondTime,
-  retryAfter: localMillisecondTime,
-  resumeAt: localMillisecondTime,
+  // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  createdAt: timestampWithTooltipOrNull,
+  startedAt: timestampWithTooltipOrNull,
+  updatedAt: timestampWithTooltipOrNull,
+  completedAt: timestampWithTooltipOrNull,
+  expiredAt: timestampWithTooltipOrNull,
+  retryAfter: timestampWithTooltipOrNull,
+  resumeAt: timestampWithTooltipOrNull,
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
+    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
     return JsonBlock(value);
   },
   input: (value: unknown, context?: DisplayContext) => {
+    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
     // Check if input has args + closure vars structure
     if (value && typeof value === 'object' && 'args' in value) {
       const { args, closureVars, thisVal } = value as {
@@ -439,6 +505,7 @@ const attributeToDisplayFn: Record<
   },
   output: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
+    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
     return (
       <DetailCard
         summary="Output"
@@ -450,6 +517,7 @@ const attributeToDisplayFn: Record<
     );
   },
   error: (value: unknown) => {
+    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
     if (!hasDisplayContent(value)) return null;
 
     // If the error object has a `stack` field, render it as readable
@@ -477,6 +545,7 @@ const attributeToDisplayFn: Record<
     );
   },
   eventData: (value: unknown) => {
+    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
     if (!hasDisplayContent(value)) return null;
     return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
   },
@@ -624,6 +693,7 @@ export const AttributePanel = ({
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
 }) => {
+  const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
     const result = { ...data };
@@ -724,13 +794,18 @@ export const AttributePanel = ({
                 typeof displayValue === 'string'
                   ? displayValue
                   : String(displayValue ?? displayData.moduleSpecifier ?? '');
+              const shouldCapitalizeLabel = attribute !== 'workflowCoreVersion';
               const showDivider = index < orderedBasicAttributes.length - 1;
 
               return (
                 <div key={attribute} className="py-1">
                   <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
                     <span
-                      className="text-[14px] first-letter:uppercase"
+                      className={
+                        shouldCapitalizeLabel
+                          ? 'text-[14px] first-letter:uppercase'
+                          : 'text-[14px]'
+                      }
                       style={{ color: 'var(--ds-gray-700)' }}
                     >
                       {getAttributeDisplayName(attribute)}
@@ -781,15 +856,17 @@ export const AttributePanel = ({
         ) : hasExpired ? (
           <ExpiredDataMessage />
         ) : (
-          resolvedAttributes.map((attribute) => (
-            <AttributeBlock
-              isLoading={isLoading}
-              key={attribute}
-              attribute={attribute}
-              value={displayData[attribute as keyof typeof displayData]}
-              context={displayContext}
-            />
-          ))
+          <>
+            {resolvedAttributes.map((attribute) => (
+              <AttributeBlock
+                isLoading={isLoading}
+                key={attribute}
+                attribute={attribute}
+                value={displayData[attribute as keyof typeof displayData]}
+                context={displayContext}
+              />
+            ))}
+          </>
         )}
       </div>
     </StreamClickContext.Provider>

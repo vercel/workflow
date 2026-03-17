@@ -203,7 +203,8 @@ const checks = [
   },
   {
     name: 'OG docs reference image',
-    run: () => assertPngResponse('/og/api-reference/workflow/get-writable/image.png'),
+    run: () =>
+      assertPngResponse('/og/api-reference/workflow/get-writable/image.png'),
   },
   {
     name: 'OG worlds index image',
