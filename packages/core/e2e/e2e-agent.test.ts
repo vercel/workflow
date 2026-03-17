@@ -198,6 +198,54 @@ describe.skipIf(isCanary)('DurableAgent e2e', { timeout: 120_000 }, () => {
     });
   });
 
+  // ==========================================================================
+  // prepareStep on constructor (#1303)
+  // ==========================================================================
+
+  describe('prepareStep on constructor', () => {
+    it('agent-level prepareStep is called for each LLM step', async () => {
+      const run = await start(
+        await agentE2e('agentConstructorPrepareStepE2e'),
+        []
+      );
+      const rv = await run.returnValue;
+      // 2 LLM steps: tool-call + final text
+      expect(rv.stepCount).toBe(2);
+      expect(rv.prepareStepCallCount).toBe(2);
+      expect(rv.prepareStepNumbers).toEqual([0, 1]);
+    });
+
+    it('stream-level prepareStep overrides constructor-level', async () => {
+      const run = await start(
+        await agentE2e('agentStreamPrepareStepOverrideE2e'),
+        []
+      );
+      const rv = await run.returnValue;
+      // Only the stream-level callback should have fired
+      expect(rv.source).toEqual(['stream']);
+    });
+  });
+
+  // ==========================================================================
+  // Multimodal tool results (#848)
+  // ==========================================================================
+
+  describe('multimodal tool results', () => {
+    it('passes through LanguageModelV3ToolResultOutput from tools', async () => {
+      const run = await start(
+        await agentE2e('agentMultimodalToolResultE2e'),
+        []
+      );
+      const rv = await run.returnValue;
+      expect(rv.stepCount).toBe(2);
+      expect(rv.lastStepText).toBe('I see the image');
+    });
+  });
+
+  // ==========================================================================
+  // GAP tests
+  // ==========================================================================
+
   describe('tool approval (GAP)', () => {
     it('completes but needsApproval is not checked (GAP)', async () => {
       const run = await start(await agentE2e('agentToolApprovalE2e'), []);

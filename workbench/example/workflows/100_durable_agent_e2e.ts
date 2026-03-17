@@ -49,7 +49,11 @@ export async function agentToolCallE2e(a: number, b: number) {
   'use workflow';
   const agent = new DurableAgent({
     model: mockSequenceModel([
-      { type: 'tool-call', toolName: 'addNumbers', input: JSON.stringify({ a, b }) },
+      {
+        type: 'tool-call',
+        toolName: 'addNumbers',
+        input: JSON.stringify({ a, b }),
+      },
       { type: 'text', text: `The sum is ${a + b}` },
     ]),
     tools: {
@@ -76,9 +80,21 @@ export async function agentMultiStepE2e() {
   'use workflow';
   const agent = new DurableAgent({
     model: mockSequenceModel([
-      { type: 'tool-call', toolName: 'echoStep', input: JSON.stringify({ step: 1 }) },
-      { type: 'tool-call', toolName: 'echoStep', input: JSON.stringify({ step: 2 }) },
-      { type: 'tool-call', toolName: 'echoStep', input: JSON.stringify({ step: 3 }) },
+      {
+        type: 'tool-call',
+        toolName: 'echoStep',
+        input: JSON.stringify({ step: 1 }),
+      },
+      {
+        type: 'tool-call',
+        toolName: 'echoStep',
+        input: JSON.stringify({ step: 2 }),
+      },
+      {
+        type: 'tool-call',
+        toolName: 'echoStep',
+        input: JSON.stringify({ step: 3 }),
+      },
       { type: 'text', text: 'All done!' },
     ]),
     tools: {
@@ -134,7 +150,9 @@ export async function agentOnStepFinishE2e() {
   let capturedStepResult: any = null;
   const agent = new DurableAgent({
     model: mockTextModel('hello'),
-    onStepFinish: async () => { callSources.push('constructor'); },
+    onStepFinish: async () => {
+      callSources.push('constructor');
+    },
   });
   const result = await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
@@ -161,7 +179,9 @@ export async function agentOnFinishE2e() {
   let capturedEvent: any = null;
   const agent = new DurableAgent({
     model: mockTextModel('hello from finish'),
-    onFinish: async () => { callSources.push('constructor'); },
+    onFinish: async () => {
+      callSources.push('constructor');
+    },
   });
   const result = await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
@@ -229,12 +249,16 @@ export async function agentOnStartE2e() {
   const callSources: string[] = [];
   const agent = new DurableAgent({
     model: mockTextModel('hello'),
-    experimental_onStart: async () => { callSources.push('constructor'); },
+    experimental_onStart: async () => {
+      callSources.push('constructor');
+    },
   } as any);
   await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
-    experimental_onStart: async () => { callSources.push('method'); },
+    experimental_onStart: async () => {
+      callSources.push('method');
+    },
   } as any);
   return { callSources };
 }
@@ -248,12 +272,16 @@ export async function agentOnStepStartE2e() {
   const callSources: string[] = [];
   const agent = new DurableAgent({
     model: mockTextModel('hello'),
-    experimental_onStepStart: async () => { callSources.push('constructor'); },
+    experimental_onStepStart: async () => {
+      callSources.push('constructor');
+    },
   } as any);
   await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
-    experimental_onStepStart: async () => { callSources.push('method'); },
+    experimental_onStepStart: async () => {
+      callSources.push('method');
+    },
   } as any);
   return { callSources };
 }
@@ -267,7 +295,11 @@ export async function agentOnToolCallStartE2e() {
   const calls: string[] = [];
   const agent = new DurableAgent({
     model: mockSequenceModel([
-      { type: 'tool-call', toolName: 'echoStep', input: JSON.stringify({ step: 1 }) },
+      {
+        type: 'tool-call',
+        toolName: 'echoStep',
+        input: JSON.stringify({ step: 1 }),
+      },
       { type: 'text', text: 'done' },
     ]),
     tools: {
@@ -277,12 +309,16 @@ export async function agentOnToolCallStartE2e() {
         execute: echoStep,
       },
     },
-    experimental_onToolCallStart: async () => { calls.push('constructor'); },
+    experimental_onToolCallStart: async () => {
+      calls.push('constructor');
+    },
   } as any);
   await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
     writable: getWritable(),
-    experimental_onToolCallStart: async () => { calls.push('method'); },
+    experimental_onToolCallStart: async () => {
+      calls.push('method');
+    },
   } as any);
   return { calls };
 }
@@ -297,7 +333,11 @@ export async function agentOnToolCallFinishE2e() {
   let capturedEvent: any = null;
   const agent = new DurableAgent({
     model: mockSequenceModel([
-      { type: 'tool-call', toolName: 'addNumbers', input: JSON.stringify({ a: 1, b: 2 }) },
+      {
+        type: 'tool-call',
+        toolName: 'addNumbers',
+        input: JSON.stringify({ a: 1, b: 2 }),
+      },
       { type: 'text', text: 'done' },
     ]),
     tools: {
@@ -307,7 +347,9 @@ export async function agentOnToolCallFinishE2e() {
         execute: addNumbers,
       },
     },
-    experimental_onToolCallFinish: async () => { calls.push('constructor'); },
+    experimental_onToolCallFinish: async () => {
+      calls.push('constructor');
+    },
   } as any);
   await agent.stream({
     messages: [{ role: 'user', content: 'test' }],
@@ -356,7 +398,11 @@ export async function agentToolApprovalE2e() {
   'use workflow';
   const agent = new DurableAgent({
     model: mockSequenceModel([
-      { type: 'tool-call', toolName: 'riskyTool', input: JSON.stringify({ action: 'delete' }) },
+      {
+        type: 'tool-call',
+        toolName: 'riskyTool',
+        input: JSON.stringify({ action: 'delete' }),
+      },
       { type: 'text', text: 'done' },
     ]),
     tools: {
@@ -379,5 +425,130 @@ export async function agentToolApprovalE2e() {
     toolResultsCount: result.toolResults.length,
     stepCount: result.steps.length,
     firstToolCallName: result.toolCalls[0]?.toolName,
+  };
+}
+
+// ============================================================================
+// prepareStep on constructor
+// ============================================================================
+
+async function prepareStepStep(input: { n: number }): Promise<string> {
+  'use step';
+  return `prepared-${input.n}`;
+}
+
+/** Agent-level prepareStep should be used when stream does not provide one. */
+export async function agentConstructorPrepareStepE2e() {
+  'use workflow';
+  const stepNumbers: number[] = [];
+
+  const agent = new DurableAgent({
+    model: mockSequenceModel([
+      { type: 'tool-call', toolName: 'greet', input: JSON.stringify({ n: 1 }) },
+      { type: 'text', text: 'done' },
+    ]),
+    tools: {
+      greet: {
+        description: 'Greet',
+        inputSchema: z.object({ n: z.number() }),
+        execute: prepareStepStep,
+      },
+    },
+    prepareStep: ({ stepNumber }) => {
+      stepNumbers.push(stepNumber);
+      return {};
+    },
+  });
+
+  const result = await agent.stream({
+    messages: [{ role: 'user', content: 'go' }],
+    writable: getWritable(),
+  });
+
+  return {
+    stepCount: result.steps.length,
+    // prepareStep should have been called for each LLM step
+    prepareStepCallCount: stepNumbers.length,
+    prepareStepNumbers: stepNumbers,
+  };
+}
+
+/** Stream-level prepareStep should override constructor-level. */
+export async function agentStreamPrepareStepOverrideE2e() {
+  'use workflow';
+  const source: string[] = [];
+
+  const agent = new DurableAgent({
+    model: mockTextModel('ok'),
+    prepareStep: () => {
+      source.push('constructor');
+      return {};
+    },
+  });
+
+  await agent.stream({
+    messages: [{ role: 'user', content: 'go' }],
+    writable: getWritable(),
+    prepareStep: () => {
+      source.push('stream');
+      return {};
+    },
+  });
+
+  return {
+    // Only 'stream' should appear — constructor-level is overridden
+    source,
+  };
+}
+
+// ============================================================================
+// Multimodal tool results (#848)
+// ============================================================================
+
+async function multimodalToolStep(): Promise<{
+  type: 'content';
+  value: Array<{
+    type: string;
+    text?: string;
+    data?: string;
+    mediaType?: string;
+  }>;
+}> {
+  'use step';
+  return {
+    type: 'content',
+    value: [
+      { type: 'text', text: 'Here is the image' },
+      { type: 'file-data', data: 'iVBORw0KGgo=', mediaType: 'image/png' },
+    ],
+  };
+}
+
+/** Tools returning LanguageModelV3ToolResultOutput should pass through. */
+export async function agentMultimodalToolResultE2e() {
+  'use workflow';
+  const agent = new DurableAgent({
+    model: mockSequenceModel([
+      { type: 'tool-call', toolName: 'vision', input: '{}' },
+      { type: 'text', text: 'I see the image' },
+    ]),
+    tools: {
+      vision: {
+        description: 'Returns multimodal content',
+        inputSchema: z.object({}),
+        execute: multimodalToolStep,
+      },
+    },
+  });
+
+  const result = await agent.stream({
+    messages: [{ role: 'user', content: 'show me' }],
+    writable: getWritable(),
+  });
+
+  return {
+    stepCount: result.steps.length,
+    lastStepText: result.steps[result.steps.length - 1]?.text,
+    toolResults: result.toolResults,
   };
 }
