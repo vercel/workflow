@@ -331,7 +331,10 @@ export async function* streamTextIterator({
                 ...(meta != null ? { providerOptions: meta } : {}),
               };
             }),
-          ] as typeof toolCalls,
+          ] as Extract<
+            LanguageModelV3Prompt[number],
+            { role: 'assistant' }
+          >['content'],
         });
 
         // Yield the tool calls along with the current conversation messages

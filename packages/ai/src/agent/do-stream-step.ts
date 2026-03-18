@@ -594,7 +594,6 @@ function chunksToStep(
       const entry = reasoningById.get(chunk.id);
       if (entry) {
         entry.text += chunk.delta;
-        // Later deltas may carry updated providerMetadata
         if (chunk.providerMetadata != null) {
           entry.providerMetadata = chunk.providerMetadata;
         }
@@ -604,6 +603,13 @@ function chunksToStep(
           text: chunk.delta,
           providerMetadata: chunk.providerMetadata,
         });
+      }
+    } else if (chunk.type === 'reasoning-end') {
+      // Merge reasoning-end metadata, mirroring the AI SDK's behavior
+      // where reasoning-end can carry final providerMetadata.
+      const entry = reasoningById.get(chunk.id);
+      if (entry && chunk.providerMetadata != null) {
+        entry.providerMetadata = chunk.providerMetadata;
       }
     }
   }
