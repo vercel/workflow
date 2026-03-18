@@ -82,23 +82,15 @@ export class WorkflowError extends Error {
 }
 
 /**
- * Thrown when a Workflow API request fails.
+ * Thrown when a world (storage backend) operation fails unexpectedly.
  *
- * This error is thrown when HTTP requests to the Workflow backend fail,
- * typically due to network issues, invalid requests, or server errors.
- *
- * @example
- * ```ts
- * try {
- *   await startWorkflow('myWorkflow', input);
- * } catch (error) {
- *   if (error instanceof WorkflowAPIError) {
- *     console.error(`API error (${error.status}):`, error.message);
- *   }
- * }
- * ```
+ * This is the catch-all error for world implementations. Specific,
+ * well-known failure modes have dedicated error types (e.g.
+ * EntityConflictError, RunExpiredError, ThrottleError). This error
+ * covers everything else — validation failures, missing entities
+ * without a dedicated type, or unexpected HTTP errors from world-vercel.
  */
-export class WorkflowAPIError extends WorkflowError {
+export class WorkflowWorldError extends WorkflowError {
   status?: number;
   code?: string;
   url?: string;
@@ -118,15 +110,15 @@ export class WorkflowAPIError extends WorkflowError {
     super(message, {
       cause: options?.cause,
     });
-    this.name = 'WorkflowAPIError';
+    this.name = 'WorkflowWorldError';
     this.status = options?.status;
     this.code = options?.code;
     this.url = options?.url;
     this.retryAfter = options?.retryAfter;
   }
 
-  static is(value: unknown): value is WorkflowAPIError {
-    return isError(value) && value.name === 'WorkflowAPIError';
+  static is(value: unknown): value is WorkflowWorldError {
+    return isError(value) && value.name === 'WorkflowWorldError';
   }
 }
 
@@ -239,6 +231,72 @@ export class HookNotFoundError extends WorkflowError {
 
   static is(value: unknown): value is HookNotFoundError {
     return isError(value) && value.name === 'HookNotFoundError';
+  }
+}
+
+/**
+ * Thrown when an operation conflicts with the current state of an entity.
+ * This includes attempts to modify an entity already in a terminal state,
+ * create an entity that already exists, or any other 409-style conflict.
+ */
+export class EntityConflictError extends WorkflowError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'EntityConflictError';
+  }
+
+  static is(value: unknown): value is EntityConflictError {
+    return isError(value) && value.name === 'EntityConflictError';
+  }
+}
+
+/**
+ * Thrown when a run is no longer available — either because it has been
+ * cleaned up, expired, or already reached a terminal state (completed/failed).
+ */
+export class RunExpiredError extends WorkflowError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RunExpiredError';
+  }
+
+  static is(value: unknown): value is RunExpiredError {
+    return isError(value) && value.name === 'RunExpiredError';
+  }
+}
+
+/**
+ * Thrown when an operation cannot proceed because a required timestamp
+ * (e.g. retryAfter) has not been reached yet.
+ */
+export class TooEarlyError extends WorkflowError {
+  retryAfter?: Date;
+
+  constructor(message: string, options?: { retryAfter?: Date }) {
+    super(message);
+    this.name = 'TooEarlyError';
+    this.retryAfter = options?.retryAfter;
+  }
+
+  static is(value: unknown): value is TooEarlyError {
+    return isError(value) && value.name === 'TooEarlyError';
+  }
+}
+
+/**
+ * Thrown when a request is rate limited.
+ */
+export class ThrottleError extends WorkflowError {
+  retryAfter?: number;
+
+  constructor(message: string, options?: { retryAfter?: number }) {
+    super(message);
+    this.name = 'ThrottleError';
+    this.retryAfter = options?.retryAfter;
+  }
+
+  static is(value: unknown): value is ThrottleError {
+    return isError(value) && value.name === 'ThrottleError';
   }
 }
 

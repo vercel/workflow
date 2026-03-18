@@ -1,4 +1,4 @@
-import { HookNotFoundError, WorkflowAPIError } from '@workflow/errors';
+import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import type {
   CreateHookRequest,
   GetHookParams,
@@ -112,7 +112,7 @@ export async function getHookByToken(
       schema: HookSchema,
     });
   } catch (error) {
-    if (WorkflowAPIError.is(error) && error.status === 404) {
+    if (WorkflowWorldError.is(error) && error.status === 404) {
       throw new HookNotFoundError(token);
     }
     throw error;

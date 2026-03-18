@@ -107,8 +107,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await semaphore.acquire();
       }
       try {
-        let defaultRetriesLeft = 3;
-        const maxAttempts = defaultRetriesLeft;
+        const maxAttempts = 3;
+        let defaultRetriesLeft = maxAttempts;
         for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
           defaultRetriesLeft--;
 

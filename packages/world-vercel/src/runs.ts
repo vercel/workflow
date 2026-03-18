@@ -1,4 +1,4 @@
-import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
 import {
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
@@ -200,7 +200,7 @@ export async function getWorkflowRun(
 
     return filterRunData(run, resolveData);
   } catch (error) {
-    if (error instanceof WorkflowAPIError && error.status === 404) {
+    if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
     }
     throw error;
@@ -248,7 +248,7 @@ export async function cancelWorkflowRunV1(
 
     return filterRunData(run, resolveData);
   } catch (error) {
-    if (error instanceof WorkflowAPIError && error.status === 404) {
+    if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
     }
     throw error;

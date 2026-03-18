@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { WorkflowAPIError } from '@workflow/errors';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
 import {
   DEFAULT_TIMESTAMP_THRESHOLD_MS,
@@ -1883,10 +1883,9 @@ describe('Storage', () => {
 
       expect(fulfilled).toHaveLength(1);
       expect(rejected).toHaveLength(1);
-      expect(
-        ((rejected[0] as PromiseRejectedResult).reason as WorkflowAPIError)
-          .status
-      ).toBe(409);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
     });
 
     it('should reject concurrent step_failed for the same step', async () => {
@@ -1911,10 +1910,9 @@ describe('Storage', () => {
 
       expect(fulfilled).toHaveLength(1);
       expect(rejected).toHaveLength(1);
-      expect(
-        ((rejected[0] as PromiseRejectedResult).reason as WorkflowAPIError)
-          .status
-      ).toBe(409);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
     });
 
     it('should reject step_started after concurrent step_completed', async () => {
@@ -1950,10 +1948,9 @@ describe('Storage', () => {
 
       expect(fulfilled).toHaveLength(1);
       expect(rejected).toHaveLength(1);
-      expect(
-        ((rejected[0] as PromiseRejectedResult).reason as WorkflowAPIError)
-          .status
-      ).toBe(409);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
     });
   });
 
@@ -2829,7 +2826,7 @@ describe('Storage', () => {
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
@@ -2842,7 +2839,7 @@ describe('Storage', () => {
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
@@ -2852,7 +2849,7 @@ describe('Storage', () => {
     it('should reject a runId that is not a valid ULID', async () => {
       await expect(
         storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)
