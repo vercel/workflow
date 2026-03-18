@@ -173,6 +173,15 @@ export function workflowEntrypoint(
                     );
                   }
                 } catch (err) {
+                  // Run was concurrently completed/failed/cancelled
+                  // between the GET and the run_started event creation
+                  if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+                    runtimeLogger.info(
+                      'Run already finished during setup, skipping',
+                      { workflowRunId: runId, message: err.message }
+                    );
+                    return;
+                  }
                   if (err instanceof WorkflowRuntimeError) {
                     runtimeLogger.error(
                       'Fatal runtime error during workflow setup',

@@ -4,7 +4,8 @@
     "understanding-directives",
     "code-transform",
     "framework-integrations",
-    "event-sourcing"
+    "event-sourcing",
+    "encryption"
   ],
   "defaultOpen": false
 }

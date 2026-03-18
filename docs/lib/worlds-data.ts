@@ -4,7 +4,11 @@
  */
 
 import { unstable_cache } from 'next/cache';
-import type { World, WorldsStatus } from '@/components/worlds/types';
+import type {
+  World,
+  WorldFeature,
+  WorldsStatus,
+} from '@/components/worlds/types';
 
 // Import manifest data at build time
 import worldsManifest from '../../worlds-manifest.json';
@@ -90,6 +94,8 @@ function buildInitialWorldsStatus(): Record<string, World> {
       docs: world.docs,
       repository: (world as { repository?: string }).repository,
       example: (world as { example?: string }).example,
+      features: ((world as { features?: string[] }).features ??
+        []) as WorldFeature[],
       e2e: null,
       benchmark: null,
       benchmark10SeqMs: null,

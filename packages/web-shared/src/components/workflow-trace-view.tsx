@@ -615,8 +615,13 @@ function SelectionBridge({
   const { selected } = state;
   const onSelectionChangeRef = useRef(onSelectionChange);
   onSelectionChangeRef.current = onSelectionChange;
+  const prevSpanIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
+    const currentSpanId = selected?.span.spanId;
+    if (currentSpanId === prevSpanIdRef.current) return;
+    prevSpanIdRef.current = currentSpanId;
+
     if (selected) {
       onSelectionChangeRef.current({
         data: selected.span.attributes?.data,

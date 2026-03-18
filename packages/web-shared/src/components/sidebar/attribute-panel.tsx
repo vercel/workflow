@@ -590,12 +590,6 @@ export const AttributeBlock = ({
     attribute === 'output' ||
     attribute === 'eventData';
   if (isLoading && isExpandableLoadingTarget) {
-    const label =
-      attribute === 'eventData'
-        ? 'Event Data'
-        : attribute === 'output'
-          ? 'Output'
-          : 'Input';
     return (
       <div
         className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
@@ -606,19 +600,7 @@ export const AttributeBlock = ({
         >
           {attribute}
         </span>
-        <DetailCard
-          summary={label}
-          summaryClassName="text-base py-2"
-          disabled
-        />
-        <div
-          className="overflow-x-auto rounded-md border p-3"
-          style={{ borderColor: 'var(--ds-gray-300)' }}
-        >
-          <Skeleton className="h-4 w-[38%]" />
-          <Skeleton className="mt-2 h-4 w-[88%]" />
-          <Skeleton className="mt-2 h-4 w-[72%]" />
-        </div>
+        <Skeleton className="h-9 w-full rounded-md" />
       </div>
     );
   }
@@ -684,6 +666,7 @@ export const AttributePanel = ({
   error,
   expiredAt,
   onStreamClick,
+  resource,
 }: {
   data: Record<string, unknown>;
   moduleSpecifier?: string;
@@ -692,6 +675,8 @@ export const AttributePanel = ({
   expiredAt?: string | Date;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Resource type of the selected span — used to show targeted loading skeletons. */
+  resource?: string;
 }) => {
   const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
@@ -716,9 +701,23 @@ export const AttributePanel = ({
   const basicAttributes = Object.keys(displayData)
     .filter((key) => !resolvableAttributes.includes(key))
     .sort(sortByAttributeOrder);
-  const resolvedAttributes = Object.keys(displayData)
-    .filter((key) => resolvableAttributes.includes(key))
-    .sort(sortByAttributeOrder);
+  const resolvedAttributes = useMemo(() => {
+    const present = Object.keys(displayData)
+      .filter((key) => resolvableAttributes.includes(key))
+      .sort(sortByAttributeOrder);
+
+    if (!isLoading) return present;
+
+    // During loading, ensure input/output appear so their skeletons render
+    // in the correct position (above the events section).
+    const loadingDefaults = ['input', 'output'];
+    for (const key of loadingDefaults) {
+      if (!present.includes(key)) {
+        present.push(key);
+      }
+    }
+    return present.sort(sortByAttributeOrder);
+  }, [displayData, isLoading]);
 
   // Filter out attributes that return null
   const visibleBasicAttributes = basicAttributes.filter((attribute) => {
@@ -795,7 +794,11 @@ export const AttributePanel = ({
                   ? displayValue
                   : String(displayValue ?? displayData.moduleSpecifier ?? '');
               const shouldCapitalizeLabel = attribute !== 'workflowCoreVersion';
-              const showDivider = index < orderedBasicAttributes.length - 1;
+              const showResumeAtSkeleton =
+                isLoading && resource === 'sleep' && !displayData.resumeAt;
+              const showDivider =
+                index < orderedBasicAttributes.length - 1 ||
+                showResumeAtSkeleton;
 
               return (
                 <div key={attribute} className="py-1">
@@ -845,6 +848,19 @@ export const AttributePanel = ({
                 </div>
               );
             })}
+            {isLoading && resource === 'sleep' && !displayData.resumeAt && (
+              <div className="py-1">
+                <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                  <span
+                    className="text-[14px] first-letter:uppercase"
+                    style={{ color: 'var(--ds-gray-700)' }}
+                  >
+                    resumeAt
+                  </span>
+                  <Skeleton className="h-4 w-[55%]" />
+                </div>
+              </div>
+            )}
           </div>
         )}
         {error ? (

@@ -1,9 +1,12 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path, { dirname } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createVercelWorld } from '@workflow/world-vercel';
-import { setWorld } from '../src/runtime';
+import { onTestFailed } from 'vitest';
+import type { Run } from '../src/runtime';
+import { getWorld, setWorld } from '../src/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultCliTimeoutMs = Number(
@@ -450,6 +453,265 @@ export function setupWorld(deploymentUrl: string): void {
     );
   }
   // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
+}
+
+// ============================================================================
+// Run diagnostics & tracking
+// ============================================================================
+
+interface TrackedRun {
+  run: Run<any>;
+  workflowFile?: string;
+  workflowFn?: string;
+}
+
+// Per-test tracked runs — reset between tests via setupRunTracking()
+let trackedRuns: TrackedRun[] = [];
+
+// Global list of run IDs collected for metadata (observability links)
+const globalCollectedRunIds: {
+  testName: string;
+  runId: string;
+  timestamp: string;
+}[] = [];
+
+/**
+ * Returns the collected run IDs for observability metadata.
+ */
+export function getCollectedRunIds() {
+  return globalCollectedRunIds;
+}
+
+/**
+ * Track a workflow run for diagnostics. On test failure, all tracked runs
+ * will have their diagnostics dumped to the console automatically.
+ * Also collects the run ID for observability metadata.
+ *
+ * If testName is omitted, uses the name from the most recent setupRunTracking() call.
+ */
+export function trackRun<T>(
+  run: Run<T>,
+  options?: {
+    testName?: string;
+    workflowFile?: string;
+    workflowFn?: string;
+  }
+): Run<T> {
+  const testName = options?.testName ?? currentTestName;
+  trackedRuns.push({
+    run,
+    workflowFile: options?.workflowFile,
+    workflowFn: options?.workflowFn,
+  });
+  globalCollectedRunIds.push({
+    testName,
+    runId: run.runId,
+    timestamp: new Date().toISOString(),
+  });
+  return run;
+}
+
+/**
+ * Build a Vercel observability dashboard URL for a workflow run.
+ */
+function getObservabilityDashboardUrl(runId: string): string | null {
+  const teamSlug = 'vercel-labs';
+  const projectSlug = process.env.WORKFLOW_VERCEL_PROJECT_SLUG;
+  const env = process.env.WORKFLOW_VERCEL_ENV;
+  if (!projectSlug || !env) return null;
+
+  const environment = env === 'production' ? 'production' : 'preview';
+  return `https://vercel.com/${teamSlug}/${projectSlug}/observability/workflows/runs/${runId}?environment=${environment}`;
+}
+
+/**
+ * Fetch run diagnostics via the world API. Returns a formatted string.
+ */
+async function getRunDiagnostics(tracked: TrackedRun): Promise<string> {
+  const { run, workflowFile, workflowFn } = tracked;
+  const lines: string[] = [
+    '',
+    '━━━ Workflow Run Diagnostics ━━━',
+    `Run ID:     ${run.runId}`,
+  ];
+
+  try {
+    const world = getWorld();
+    const runData = await world.runs.get(run.runId);
+
+    lines.push(`Status:     ${runData.status}`);
+    lines.push(`Workflow:   ${runData.workflowName}`);
+
+    if (runData.createdAt) {
+      lines.push(`Created:    ${runData.createdAt.toISOString()}`);
+    }
+    if (runData.startedAt) {
+      lines.push(`Started:    ${runData.startedAt.toISOString()}`);
+    }
+    if (runData.completedAt) {
+      lines.push(`Completed:  ${runData.completedAt.toISOString()}`);
+    }
+
+    if (runData.input !== undefined) {
+      const inputStr = JSON.stringify(runData.input);
+      lines.push(
+        `Input:      ${inputStr.length > 200 ? `${inputStr.slice(0, 200)}...` : inputStr}`
+      );
+    }
+    if (runData.output !== undefined) {
+      const outputStr = JSON.stringify(runData.output);
+      lines.push(
+        `Output:     ${outputStr.length > 200 ? `${outputStr.slice(0, 200)}...` : outputStr}`
+      );
+    }
+    if (runData.error) {
+      lines.push(
+        `Error:      ${runData.error.message || JSON.stringify(runData.error)}`
+      );
+      if (runData.error.stack) {
+        lines.push(
+          `Stack:      ${runData.error.stack.split('\n').slice(0, 3).join('\n            ')}`
+        );
+      }
+    }
+
+    // Event timeline
+    try {
+      const { data: events } = await world.events.list({
+        runId: run.runId,
+      });
+      if (events.length > 0) {
+        lines.push('');
+        lines.push('Event Timeline:');
+        const baseTime = events[0].createdAt?.getTime?.() ?? 0;
+        for (const event of events) {
+          const elapsed = baseTime
+            ? ((event.createdAt?.getTime?.() ?? 0) - baseTime) / 1000
+            : 0;
+          const prefix = `  +${elapsed.toFixed(1)}s`;
+          let detail = event.eventType;
+          if ('eventData' in event) {
+            const data = (event as any).eventData;
+            if (data?.stepName) detail += ` (${data.stepName})`;
+            if (data?.error?.message) detail += ` — ${data.error.message}`;
+          }
+          if ('correlationId' in event && event.correlationId) {
+            detail += ` [${event.correlationId}]`;
+          }
+          lines.push(`${prefix}  ${detail}`);
+        }
+      }
+    } catch {
+      lines.push('Events:     (failed to fetch)');
+    }
+  } catch (e) {
+    lines.push(`Status:     (failed to fetch: ${(e as Error).message})`);
+  }
+
+  // Source reference
+  if (workflowFile) {
+    const source = workflowFn
+      ? `${workflowFile} → ${workflowFn}`
+      : workflowFile;
+    lines.push(`Source:     ${source}`);
+  }
+
+  // Dashboard link
+  const dashboardUrl = getObservabilityDashboardUrl(run.runId);
+  if (dashboardUrl) {
+    lines.push(`Dashboard:  ${dashboardUrl}`);
+  }
+
+  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+/**
+ * Emit a GitHub Actions annotation for a failed test.
+ *
+ * We intentionally omit `file=` here because the workflow source files
+ * in workbench/ are symlinks that GitHub can't resolve to repo paths.
+ * The custom reporter (github-reporter.ts) emits file-linked annotations
+ * using the actual test file paths instead.
+ */
+function emitGitHubAnnotation(
+  testName: string,
+  tracked: TrackedRun,
+  message: string
+) {
+  if (!process.env.CI) return;
+
+  const { run } = tracked;
+  const dashboardUrl = getObservabilityDashboardUrl(run.runId);
+  const parts = [`Run ${run.runId}`];
+  if (dashboardUrl) parts.push(dashboardUrl);
+  parts.push(message.split('\n')[0].slice(0, 200));
+
+  const annotation = parts.join(' | ');
+
+  // Write directly to stdout bypassing vitest's console interceptor.
+  // Vitest prefixes console.log output with ANSI codes which prevents
+  // GitHub Actions from parsing the ::error workflow command.
+  process.stdout.write(`\n::error title=E2E: ${testName}::${annotation}\n`);
+}
+
+/**
+ * Call inside a beforeEach() or at the start of a test to enable automatic
+ * diagnostics on failure. Registers a vitest `onTestFailed` hook that dumps
+ * run info for all tracked runs created during the test.
+ *
+ * Usage:
+ *   beforeEach((ctx) => { setupRunTracking(ctx.task.name); });
+ */
+export function setupRunTracking(testName: string) {
+  currentTestName = testName;
+  trackedRuns = [];
+  onTestFailed(
+    async (result) => {
+      const errorMessage = result.errors?.[0]?.message || 'Test failed';
+
+      for (const tracked of trackedRuns) {
+        try {
+          const diagnostics = await getRunDiagnostics(tracked);
+          console.error(diagnostics);
+          emitGitHubAnnotation(testName, tracked, errorMessage);
+        } catch {
+          console.error(
+            `[diagnostics] Failed to fetch diagnostics for run ${tracked.run.runId}`
+          );
+        }
+      }
+    },
+    30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
+  );
+}
+
+// Current test name for auto-tracking
+let currentTestName = 'unknown';
+
+/**
+ * Write diagnostics sidecar file with per-test run info for the aggregation script.
+ * Should be called in afterAll().
+ */
+export function writeDiagnosticsSidecar() {
+  if (globalCollectedRunIds.length === 0) return;
+
+  const appName = process.env.APP_NAME || 'unknown';
+  const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
+  const backend = isVercel ? 'vercel' : 'local';
+  const filePath = path.resolve(
+    process.cwd(),
+    `e2e-diagnostics-${appName}-${backend}.json`
+  );
+
+  const diagnostics = globalCollectedRunIds.map((entry) => ({
+    ...entry,
+    dashboardUrl: getObservabilityDashboardUrl(entry.runId),
+  }));
+
+  fs.writeFileSync(filePath, JSON.stringify(diagnostics, null, 2));
 }
 
 export const cliHealthJson = async (options?: {

@@ -141,7 +141,7 @@ export async function handleSuspension({
             hasHookConflict = true;
           }
         } catch (err) {
-          if (RunExpiredError.is(err)) {
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             runtimeLogger.info(
               'Workflow run already completed, skipping hook',
               {
@@ -169,7 +169,7 @@ export async function handleSuspension({
         try {
           await world.events.create(runId, hookDisposedEvent, { requestId });
         } catch (err) {
-          if (RunExpiredError.is(err)) {
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
             runtimeLogger.info(
               'Workflow run already completed, skipping hook disposal',
               {
