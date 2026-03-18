@@ -3,7 +3,7 @@
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { isEncryptedMarker } from '../../lib/hydration';
 import { DecryptButton } from '../ui/decrypt-button';
@@ -145,20 +145,26 @@ export function EntityDetailPanel({
     return { resource: undefined, resourceId: undefined, runId: undefined };
   }, [selectedSpan, data]);
 
-  // Notify parent when span selection changes
+  // Notify parent when span selection changes.
+  // Use a ref for the callback so the effect only fires when the actual
+  // selection values change, not when the callback identity changes due to
+  // parent re-renders from polling.
+  const onSpanSelectRef = useRef(onSpanSelect);
+  onSpanSelectRef.current = onSpanSelect;
+
   useEffect(() => {
     if (
       resource &&
       resourceId &&
       ['run', 'step', 'hook', 'sleep'].includes(resource)
     ) {
-      onSpanSelect({
+      onSpanSelectRef.current({
         resource: resource as 'run' | 'step' | 'hook' | 'sleep',
         resourceId,
         runId,
       });
     }
-  }, [resource, resourceId, runId, onSpanSelect]);
+  }, [resource, resourceId, runId]);
 
   // Check if this sleep is still pending and can be woken up
   const canWakeUp = useMemo(() => {
@@ -475,6 +481,7 @@ export function EntityDetailPanel({
               isLoading={loading}
               error={error ?? undefined}
               onStreamClick={onStreamClick}
+              resource={resource}
             />
           </section>
 

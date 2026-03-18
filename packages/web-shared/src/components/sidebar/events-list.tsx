@@ -2,6 +2,7 @@
 
 import type { Event } from '@workflow/world';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ErrorCard } from '../ui/error-card';
 import {
   ErrorStackBlock,
   isStructuredErrorWithStack,
@@ -179,15 +180,11 @@ function EventItem({
 
       {/* Error state */}
       {loadError && (
-        <div
-          className="mt-2 rounded-md border p-2 text-sm"
-          style={{
-            borderColor: 'var(--ds-red-300)',
-            color: 'var(--ds-red-700)',
-          }}
-        >
-          {loadError}
-        </div>
+        <ErrorCard
+          title="Failed to load event data"
+          details={loadError}
+          className="mt-2"
+        />
       )}
 
       {/* Event data */}
@@ -273,10 +270,10 @@ export function EventsList({
         Events {!isLoading && `(${sortedEvents.length})`}
       </h3>
       {isLoading ? (
-        <div className="flex flex-col gap-3">
-          <Skeleton className="h-[48px] w-full rounded-lg border" />
-          <Skeleton className="h-[48px] w-full rounded-lg border" />
-          <Skeleton className="h-[48px] w-full rounded-lg border" />
+        <div className="flex flex-col gap-4">
+          <Skeleton className="h-9 w-full rounded-md" />
+          <Skeleton className="h-9 w-full rounded-md" />
+          <Skeleton className="h-9 w-full rounded-md" />
         </div>
       ) : null}
       {!isLoading && !error && sortedEvents.length === 0 && (

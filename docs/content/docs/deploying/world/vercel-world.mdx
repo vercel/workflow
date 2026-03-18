@@ -6,6 +6,7 @@ summary: Deploy workflows to Vercel with fully-managed storage, queuing, and aut
 prerequisites:
   - /docs/deploying
 related:
+  - /docs/how-it-works/encryption
   - /docs/deploying/world/local-world
   - /docs/deploying/world/postgres-world
 ---
@@ -125,7 +126,7 @@ This ensures long-running workflows complete reliably without being affected by 
 
 The Vercel World uses Vercel's infrastructure for workflow execution:
 
-- **Storage** - Workflow data is stored in Vercel's cloud with automatic replication and encryption
+- **Storage** - Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption)
 - **Queuing** - Steps are distributed across serverless functions with automatic retries
 - **Authentication** - OIDC tokens provide secure, automatic authentication
 

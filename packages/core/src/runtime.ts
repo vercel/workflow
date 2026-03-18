@@ -167,6 +167,18 @@ export function workflowEntrypoint(
                     );
                   }
                 } catch (err) {
+                  // 409/410: run was concurrently completed/failed/cancelled
+                  // between the GET and the run_started event creation
+                  if (
+                    WorkflowAPIError.is(err) &&
+                    (err.status === 409 || err.status === 410)
+                  ) {
+                    runtimeLogger.info(
+                      'Run already finished during setup, skipping',
+                      { workflowRunId: runId, message: err.message }
+                    );
+                    return;
+                  }
                   if (err instanceof WorkflowRuntimeError) {
                     runtimeLogger.error(
                       'Fatal runtime error during workflow setup',
