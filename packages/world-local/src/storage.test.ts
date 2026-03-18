@@ -12,9 +12,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
 import { createStorage } from './storage.js';
 import {
+  completeWait,
   createHook,
   createRun,
   createStep,
+  createWait,
   disposeHook,
   updateRun,
   updateStep,
@@ -1843,6 +1845,115 @@ describe('Storage', () => {
           )
         ).rejects.toThrow(/terminal/i);
       });
+    });
+  });
+
+  describe('concurrent terminal state races', () => {
+    let testRunId: string;
+
+    beforeEach(async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+      await updateRun(storage, testRunId, 'run_started');
+    });
+
+    it('should reject concurrent step_completed for the same step', async () => {
+      await createStep(storage, testRunId, {
+        stepId: 'step_race_1',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(storage, testRunId, 'step_race_1', 'step_started');
+
+      const results = await Promise.allSettled([
+        updateStep(storage, testRunId, 'step_race_1', 'step_completed', {
+          result: new Uint8Array([1]),
+        }),
+        updateStep(storage, testRunId, 'step_race_1', 'step_completed', {
+          result: new Uint8Array([2]),
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(
+        ((rejected[0] as PromiseRejectedResult).reason as WorkflowAPIError)
+          .status
+      ).toBe(409);
+    });
+
+    it('should reject concurrent step_failed for the same step', async () => {
+      await createStep(storage, testRunId, {
+        stepId: 'step_race_2',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(storage, testRunId, 'step_race_2', 'step_started');
+
+      const results = await Promise.allSettled([
+        updateStep(storage, testRunId, 'step_race_2', 'step_failed', {
+          error: 'err1',
+        }),
+        updateStep(storage, testRunId, 'step_race_2', 'step_failed', {
+          error: 'err2',
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(
+        ((rejected[0] as PromiseRejectedResult).reason as WorkflowAPIError)
+          .status
+      ).toBe(409);
+    });
+
+    it('should reject step_started after concurrent step_completed', async () => {
+      await createStep(storage, testRunId, {
+        stepId: 'step_race_3',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(storage, testRunId, 'step_race_3', 'step_started');
+      await updateStep(storage, testRunId, 'step_race_3', 'step_completed', {
+        result: new Uint8Array([1]),
+      });
+
+      // step_started on a completed step should be rejected
+      await expect(
+        updateStep(storage, testRunId, 'step_race_3', 'step_started')
+      ).rejects.toThrow(/terminal/i);
+    });
+
+    it('should reject concurrent wait_completed for the same wait', async () => {
+      await createWait(storage, testRunId, {
+        waitId: 'wait_race_1',
+        resumeAt: new Date('2099-01-01'),
+      });
+
+      const results = await Promise.allSettled([
+        completeWait(storage, testRunId, 'wait_race_1'),
+        completeWait(storage, testRunId, 'wait_race_1'),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(
+        ((rejected[0] as PromiseRejectedResult).reason as WorkflowAPIError)
+          .status
+      ).toBe(409);
     });
   });
 

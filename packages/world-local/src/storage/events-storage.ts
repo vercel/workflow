@@ -1,3 +1,4 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
 import { RunNotSupportedError, WorkflowAPIError } from '@workflow/errors';
 import type {
@@ -97,7 +98,7 @@ export function createEventsStorage(
 
       // Helper to check if step is in terminal state
       const isStepTerminal = (status: string) =>
-        ['completed', 'failed'].includes(status);
+        ['completed', 'failed', 'cancelled'].includes(status);
 
       // Get current run state for validation (if not creating a new run)
       // Skip run validation for step_completed and step_retrying - they only operate
@@ -488,7 +489,31 @@ export function createEventsStorage(
             throw err;
           }
 
+          // Atomic guard: check if step already reached terminal state
+          // (prevents TOCTOU race between validation read and this write)
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+          const terminalLockPath = taggedPath(
+            basedir,
+            'steps',
+            `${stepCompositeKey}.terminal`,
+            tag
+          );
+          try {
+            await fs.access(terminalLockPath);
+            // Lock file exists — step already reached terminal state
+            throw new WorkflowAPIError(`Cannot modify step in terminal state`, {
+              status: 409,
+            });
+          } catch (err) {
+            if (
+              err instanceof WorkflowAPIError ||
+              (err as NodeJS.ErrnoException).code !== 'ENOENT'
+            ) {
+              throw err;
+            }
+            // ENOENT = lock doesn't exist, safe to proceed
+          }
+
           step = {
             ...validatedStep,
             status: 'running',
@@ -508,10 +533,23 @@ export function createEventsStorage(
         }
       } else if (data.eventType === 'step_completed' && 'eventData' in data) {
         // step_completed: Terminal state with output
-        // Reuse validatedStep from validation (already read above)
+        // Uses writeExclusive on a lock file to atomically prevent concurrent
+        // invocations from both completing the same step (TOCTOU race).
         const completedData = data.eventData as { result: any };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+          const terminalLockPath = taggedPath(
+            basedir,
+            'steps',
+            `${stepCompositeKey}.terminal`,
+            tag
+          );
+          const claimed = await writeExclusive(terminalLockPath, '');
+          if (!claimed) {
+            throw new WorkflowAPIError(`Cannot modify step in terminal state`, {
+              status: 409,
+            });
+          }
           step = {
             ...validatedStep,
             status: 'completed',
@@ -527,13 +565,26 @@ export function createEventsStorage(
         }
       } else if (data.eventType === 'step_failed' && 'eventData' in data) {
         // step_failed: Terminal state with error
-        // Reuse validatedStep from validation (already read above)
+        // Uses writeExclusive on a lock file to atomically prevent concurrent
+        // invocations from both failing the same step (TOCTOU race).
         const failedData = data.eventData as {
           error: any;
           stack?: string;
         };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+          const terminalLockPath = taggedPath(
+            basedir,
+            'steps',
+            `${stepCompositeKey}.terminal`,
+            tag
+          );
+          const claimed = await writeExclusive(terminalLockPath, '');
+          if (!claimed) {
+            throw new WorkflowAPIError(`Cannot modify step in terminal state`, {
+              status: 409,
+            });
+          }
           const error = {
             message:
               typeof failedData.error === 'string'
@@ -718,8 +769,23 @@ export function createEventsStorage(
           wait
         );
       } else if (data.eventType === 'wait_completed') {
-        // wait_completed: Transitions wait to 'completed', rejects duplicates
+        // wait_completed: Transitions wait to 'completed', rejects duplicates.
+        // Uses writeExclusive on a lock file to atomically prevent concurrent
+        // invocations from both completing the same wait (TOCTOU race).
         const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+        const lockPath = taggedPath(
+          basedir,
+          'waits',
+          `${waitCompositeKey}.completed`,
+          tag
+        );
+        const claimed = await writeExclusive(lockPath, '');
+        if (!claimed) {
+          throw new WorkflowAPIError(
+            `Wait "${data.correlationId}" already completed`,
+            { status: 409 }
+          );
+        }
         const existingWait = await readJSONWithFallback(
           basedir,
           'waits',
@@ -731,12 +797,6 @@ export function createEventsStorage(
           throw new WorkflowAPIError(`Wait "${data.correlationId}" not found`, {
             status: 404,
           });
-        }
-        if (existingWait.status === 'completed') {
-          throw new WorkflowAPIError(
-            `Wait "${data.correlationId}" already completed`,
-            { status: 409 }
-          );
         }
         wait = {
           ...existingWait,
