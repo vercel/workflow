@@ -365,11 +365,11 @@ export async function getWorkflowRunEvents(
   };
 }
 
-const hookEventTypes = new Set([
-  'hook_created',
+// Event types that require the hook to already exist — a 404 on these
+// means the hook was already disposed or never created.
+const hookEventsRequiringExistence = new Set([
   'hook_disposed',
   'hook_received',
-  'hook_conflict',
 ]);
 
 export async function createWorkflowRunEvent(
@@ -386,7 +386,7 @@ export async function createWorkflowRunEvent(
     // on the hook_disposed / hook_received path a 404 means the hook
     // was already disposed or never created.
     if (
-      hookEventTypes.has(data.eventType) &&
+      hookEventsRequiringExistence.has(data.eventType) &&
       WorkflowAPIError.is(err) &&
       err.status === 404 &&
       data.correlationId

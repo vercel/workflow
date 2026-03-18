@@ -315,17 +315,16 @@ export async function makeRequest<T>({
           );
         }
 
-        // Parse Retry-After header for 429 responses (value is in seconds)
+        // Parse Retry-After header (value is in seconds).
+        // Used by both 425 (TooEarlyError) and 429 (ThrottleError).
         // Note: RetryAgent handles most 429 retries automatically, but this
         // catches the case where retries are exhausted.
         let retryAfter: number | undefined;
-        if (response.status === 429) {
-          const retryAfterHeader = response.headers.get('Retry-After');
-          if (retryAfterHeader) {
-            const parsed = parseInt(retryAfterHeader, 10);
-            if (!Number.isNaN(parsed)) {
-              retryAfter = parsed;
-            }
+        const retryAfterHeader = response.headers.get('Retry-After');
+        if (retryAfterHeader) {
+          const parsed = parseInt(retryAfterHeader, 10);
+          if (!Number.isNaN(parsed)) {
+            retryAfter = parsed;
           }
         }
 
