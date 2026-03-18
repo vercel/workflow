@@ -698,7 +698,7 @@ function chunksToStep(
       type: 'reasoning' as const,
       text: r.text,
       ...(r.providerMetadata != null
-        ? { providerOptions: r.providerMetadata }
+        ? { providerOptions: r.providerMetadata as SharedV3ProviderOptions }
         : {}),
     })),
     reasoningText: reasoningText || undefined,
