@@ -1,19 +1,111 @@
-import { describe, it } from 'vitest';
+import { asc, eq } from 'drizzle-orm';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  test,
+} from 'vitest';
+import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.js';
+import * as Schema from './drizzle/schema.js';
+import { createLimits } from './limits.js';
 
-describe('postgres world limits', () => {
-  it.fails('exposes the required limits namespace', () => {
-    throw new Error('TODO: implement');
+if (process.platform === 'win32') {
+  test.skip('skipped on Windows since it relies on a docker container', () => {});
+} else {
+  let db: Awaited<
+    ReturnType<typeof import('../test/test-db.js').createPostgresTestDb>
+  >;
+
+  beforeAll(async () => {
+    const { createPostgresTestDb } = await import('../test/test-db.js');
+    db = await createPostgresTestDb();
+  }, 120_000);
+
+  beforeEach(async () => {
+    await db.truncateLimits();
   });
 
-  it.fails('respects the concurrency cap across concurrent acquires', () => {
-    throw new Error('TODO: implement');
+  afterAll(async () => {
+    await db.close();
   });
 
-  it.fails('wakes waiters in deterministic order when a lease is released', () => {
-    throw new Error('TODO: implement');
+  createLimitsContractSuite('postgres world limits', async () => {
+    return {
+      limits: createLimits(
+        { connectionString: db.connectionString, queueConcurrency: 1 },
+        db.drizzle
+      ),
+    };
   });
 
-  it.fails('reclaims stale leases after worker or process death', () => {
-    throw new Error('TODO: implement');
+  describe('postgres waiter promotion', () => {
+    it('promotes the earliest waiter on release', async () => {
+      const limits = createLimits(
+        { connectionString: db.connectionString, queueConcurrency: 1 },
+        db.drizzle
+      );
+
+      const first = await limits.acquire({
+        key: 'workflow:user:ordered',
+        holderId: 'holder-a',
+        definition: { concurrency: { max: 1 } },
+        leaseTtlMs: 1_000,
+      });
+      expect(first.status).toBe('acquired');
+      if (first.status !== 'acquired') throw new Error('expected acquisition');
+
+      const second = await limits.acquire({
+        key: 'workflow:user:ordered',
+        holderId: 'holder-b',
+        definition: { concurrency: { max: 1 } },
+        leaseTtlMs: 1_000,
+      });
+      const third = await limits.acquire({
+        key: 'workflow:user:ordered',
+        holderId: 'holder-c',
+        definition: { concurrency: { max: 1 } },
+        leaseTtlMs: 1_000,
+      });
+
+      expect(second.status).toBe('blocked');
+      expect(third.status).toBe('blocked');
+
+      await limits.release({
+        leaseId: first.lease.leaseId,
+        holderId: first.lease.holderId,
+        key: first.lease.key,
+      });
+
+      const leases = await db.drizzle
+        .select({ holderId: Schema.limitLeases.holderId })
+        .from(Schema.limitLeases)
+        .where(eq(Schema.limitLeases.limitKey, first.lease.key))
+        .orderBy(
+          asc(Schema.limitLeases.acquiredAt),
+          asc(Schema.limitLeases.leaseId)
+        );
+      const waiters = await db.drizzle
+        .select({ holderId: Schema.limitWaiters.holderId })
+        .from(Schema.limitWaiters)
+        .where(eq(Schema.limitWaiters.limitKey, first.lease.key))
+        .orderBy(
+          asc(Schema.limitWaiters.createdAt),
+          asc(Schema.limitWaiters.waiterId)
+        );
+
+      expect(leases).toEqual([{ holderId: 'holder-b' }]);
+      expect(waiters).toEqual([{ holderId: 'holder-c' }]);
+
+      const stillWaiting = await limits.acquire({
+        key: 'workflow:user:ordered',
+        holderId: 'holder-c',
+        definition: { concurrency: { max: 1 } },
+        leaseTtlMs: 1_000,
+      });
+      expect(stillWaiting.status).toBe('blocked');
+    });
   });
-});
+}

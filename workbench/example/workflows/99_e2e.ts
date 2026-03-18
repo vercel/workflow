@@ -261,6 +261,53 @@ export async function workflowWithWorkflowAndStepLocks(userId = 'user-123') {
   };
 }
 
+async function serializedLimitStep(label: string, holdMs: number) {
+  'use step';
+
+  const stepLock = await lock({
+    key: 'step:db:serialized',
+    concurrency: { max: 1 },
+    leaseTtlMs: holdMs + 5_000,
+  });
+
+  const acquiredAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, holdMs));
+  await stepLock.dispose();
+  const releasedAt = Date.now();
+
+  return {
+    label,
+    acquiredAt,
+    releasedAt,
+  };
+}
+
+export async function workflowLockContentionWorkflow(
+  userId = 'user-123',
+  holdMs = 750
+) {
+  'use workflow';
+
+  const workflowLock = await lock({
+    key: `workflow:user:${userId}`,
+    concurrency: { max: 1 },
+    leaseTtlMs: holdMs + 5_000,
+  });
+
+  const workflowLockAcquiredAt = Date.now();
+  const step = await serializedLimitStep(userId, holdMs);
+  await workflowLock.dispose();
+  const workflowLockReleasedAt = Date.now();
+
+  return {
+    userId,
+    workflowLockAcquiredAt,
+    workflowLockReleasedAt,
+    stepLockAcquiredAt: step.acquiredAt,
+    stepLockReleasedAt: step.releasedAt,
+  };
+}
+
 //////////////////////////////////////////////////////////
 
 async function nullByteStep() {

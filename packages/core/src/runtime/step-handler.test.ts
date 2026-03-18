@@ -1,5 +1,6 @@
 import { WorkflowAPIError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { StepLockBlockedError } from '../step/lock.js';
 
 // Use vi.hoisted so these are available in mock factories
 const {
@@ -221,6 +222,28 @@ describe('step-handler 409 handling', () => {
       event: {},
     });
     mockStepFn.mockResolvedValue('step-result');
+  });
+
+  it('returns a timeout when a step lock is blocked before user code can proceed', async () => {
+    mockEventsCreate.mockResolvedValue({
+      step: {
+        stepId: 'step_abc',
+        status: 'running',
+        attempt: 1,
+        startedAt: new Date(),
+        input: [],
+      },
+    });
+    mockStepFn.mockRejectedValue(new StepLockBlockedError(2_500));
+
+    const result = await capturedHandler(
+      createMessage(),
+      createMetadata('myStep')
+    );
+
+    expect(result).toEqual({ timeoutSeconds: 3 });
+    expect(mockQueueMessage).not.toHaveBeenCalled();
+    expect(mockEventsCreate).toHaveBeenCalledTimes(1);
   });
 
   afterEach(() => {

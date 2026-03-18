@@ -568,7 +568,7 @@ describe('e2e', () => {
   }
 
   if (isPostgresWorld) {
-    test.fails(
+    test(
       'workflowWithWorkflowAndStepLocks demonstrates workflow and step limits on postgres world',
       { timeout: 60_000 },
       async () => {
@@ -583,6 +583,31 @@ describe('e2e', () => {
           aiKey: 'step:provider:openai',
           summary: 'summary:profile:postgres-world',
         });
+      }
+    );
+  }
+
+  if (isPostgresWorld) {
+    test(
+      'workflowLockContentionWorkflow serializes workflow and step locks under contention',
+      { timeout: 60_000 },
+      async () => {
+        const workflow = await e2e('workflowLockContentionWorkflow');
+        const runA = await start(workflow, ['shared-user', 750]);
+        await sleep(100);
+        const runB = await start(workflow, ['shared-user', 750]);
+
+        const [resultA, resultB] = await Promise.all([
+          runA.returnValue,
+          runB.returnValue,
+        ]);
+
+        expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
+          resultA.workflowLockReleasedAt
+        );
+        expect(resultB.stepLockAcquiredAt).toBeGreaterThanOrEqual(
+          resultA.stepLockReleasedAt
+        );
       }
     );
   }

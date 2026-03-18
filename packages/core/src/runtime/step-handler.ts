@@ -16,7 +16,7 @@ import {
   hydrateStepArguments,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
-import { createStepLock } from '../step/lock.js';
+import { createStepLock, StepLockBlockedError } from '../step/lock.js';
 import { STEP_LOCK } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import {
@@ -437,6 +437,22 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           // --- Handle user code errors ---
           if (userCodeFailed) {
             const err = userCodeError;
+
+            if (StepLockBlockedError.is(err)) {
+              const timeoutSeconds = Math.max(
+                1,
+                Math.ceil((err.retryAfterMs ?? 1000) / 1000)
+              );
+              span?.setAttributes({
+                ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
+              });
+              span?.addEvent?.('step.lock_blocked', {
+                'retry.timeout_seconds': timeoutSeconds,
+                'step.id': stepId,
+                'step.name': stepName,
+              });
+              return { timeoutSeconds };
+            }
 
             // Infrastructure errors that somehow surfaced through user code
             // should propagate to the queue handler for retry, not consume

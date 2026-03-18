@@ -21,6 +21,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  uniqueIndex,
   varchar,
 } from 'drizzle-orm/pg-core';
 import { Cbor, type Cborized } from './cbor.js';
@@ -190,6 +191,54 @@ export const waits = schema.table(
     specVersion: integer('spec_version'),
   } satisfies DrizzlishOfType<Wait>,
   (tb) => [index().on(tb.runId)]
+);
+
+export const limitLeases = schema.table(
+  'workflow_limit_leases',
+  {
+    leaseId: varchar('lease_id').primaryKey(),
+    limitKey: varchar('limit_key').notNull(),
+    holderId: varchar('holder_id').notNull(),
+    acquiredAt: timestamp('acquired_at').defaultNow().notNull(),
+    expiresAt: timestamp('expires_at'),
+    concurrencyMax: integer('concurrency_max'),
+    rateCount: integer('rate_count'),
+    ratePeriodMs: integer('rate_period_ms'),
+  },
+  (tb) => [
+    uniqueIndex().on(tb.limitKey, tb.holderId),
+    index().on(tb.limitKey, tb.expiresAt),
+  ]
+);
+
+export const limitTokens = schema.table(
+  'workflow_limit_tokens',
+  {
+    tokenId: varchar('token_id').primaryKey(),
+    limitKey: varchar('limit_key').notNull(),
+    holderId: varchar('holder_id').notNull(),
+    acquiredAt: timestamp('acquired_at').defaultNow().notNull(),
+    expiresAt: timestamp('expires_at').notNull(),
+  },
+  (tb) => [index().on(tb.limitKey, tb.expiresAt)]
+);
+
+export const limitWaiters = schema.table(
+  'workflow_limit_waiters',
+  {
+    waiterId: varchar('waiter_id').primaryKey(),
+    limitKey: varchar('limit_key').notNull(),
+    holderId: varchar('holder_id').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    leaseTtlMs: integer('lease_ttl_ms'),
+    concurrencyMax: integer('concurrency_max'),
+    rateCount: integer('rate_count'),
+    ratePeriodMs: integer('rate_period_ms'),
+  },
+  (tb) => [
+    uniqueIndex().on(tb.limitKey, tb.holderId),
+    index().on(tb.limitKey, tb.createdAt),
+  ]
 );
 
 const bytea = customType<{ data: Buffer; notNull: false; default: false }>({

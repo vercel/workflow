@@ -1,4 +1,3 @@
-import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import type { LockHandle, LockOptions } from '../lock.js';
 import {
@@ -64,7 +63,8 @@ function createLockHandle(
 
 export function createLock(ctx: WorkflowOrchestratorContext) {
   return async function lockImpl(options: LockOptions): Promise<LockHandle> {
-    const holderId = `wflock_${ctx.generateUlid()}`;
+    const correlationId = `wflock_wait_${ctx.generateUlid()}`;
+    const holderId = `wflock_${ctx.runId}:${correlationId}:${ctx.generateUlid()}`;
     const definition = {
       concurrency: options.concurrency,
       rate: options.rate,
@@ -82,49 +82,19 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
         return createLockHandle(result.lease, ctx);
       }
 
-      const correlationId = `wflock_wait_${ctx.generateUlid()}`;
-      const resumeAt = new Date(Date.now() + (result.retryAfterMs || 1000));
       ctx.invocationsQueue.set(correlationId, {
-        type: 'wait',
+        type: 'limit_wait',
         correlationId,
-        resumeAt,
+        resumeAt: new Date(Date.now() + (result.retryAfterMs || 1000)),
       });
 
-      await new Promise<void>((resolve) => {
-        ctx.eventsConsumer.subscribe((event) => {
-          if (!event) {
-            scheduleWhenIdle(ctx, () => {
-              ctx.onWorkflowError(
-                new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
-              );
-            });
-            return EventConsumerResult.NotConsumed;
-          }
-
-          if (event.correlationId !== correlationId) {
-            return EventConsumerResult.NotConsumed;
-          }
-
-          if (event.eventType === 'wait_created') {
-            const queueItem = ctx.invocationsQueue.get(correlationId);
-            if (queueItem && queueItem.type === 'wait') {
-              queueItem.hasCreatedEvent = true;
-              queueItem.resumeAt = event.eventData.resumeAt;
-            }
-            return EventConsumerResult.Consumed;
-          }
-
-          if (event.eventType === 'wait_completed') {
-            ctx.invocationsQueue.delete(correlationId);
-            ctx.promiseQueue = ctx.promiseQueue.then(() => {
-              resolve();
-            });
-            return EventConsumerResult.Finished;
-          }
-
-          return EventConsumerResult.NotConsumed;
-        });
+      scheduleWhenIdle(ctx, () => {
+        ctx.onWorkflowError(
+          new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
+        );
       });
+
+      await new Promise<never>(() => {});
     }
   };
 }

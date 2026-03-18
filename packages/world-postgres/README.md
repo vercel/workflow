@@ -117,6 +117,7 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
 - **Queue Processing**: Uses graphile-worker as the durable queue and executes jobs over the workflow HTTP routes
 - **Durable Delays**: Re-schedules waits and retries in PostgreSQL
+- **Flow Limits**: Enforces durable concurrency/rate limits with PostgreSQL-backed leases, rate tokens, and waiter promotion
 - **Streaming**: Real-time event streaming capabilities
 - **Health Checks**: Built-in connection health monitoring
 - **Configurable Concurrency**: Adjustable worker concurrency for queue processing
@@ -127,6 +128,8 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - Graphile jobs are acknowledged only after the workflow or step execution finishes, or after the worker durably schedules a delayed follow-up job
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
+- Flow-limit waiters are stored durably in PostgreSQL and promoted in FIFO order per key
+- Blocked steps are re-queued instead of holding a worker slot while waiting for a lease
 - Workflow and step execution is sent through `/.well-known/workflow/v1/flow` and `/.well-known/workflow/v1/step`
 
 ## Development

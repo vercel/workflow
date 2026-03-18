@@ -2,6 +2,20 @@ import type { LimitLease, World } from '@workflow/world';
 import type { LockHandle, LockOptions } from '../lock.js';
 import { contextStorage } from './context-storage.js';
 
+export class StepLockBlockedError extends Error {
+  retryAfterMs?: number;
+
+  constructor(retryAfterMs?: number) {
+    super('Step lock blocked');
+    this.name = 'StepLockBlockedError';
+    this.retryAfterMs = retryAfterMs;
+  }
+
+  static is(value: unknown): value is StepLockBlockedError {
+    return value instanceof StepLockBlockedError;
+  }
+}
+
 function createStepLockHandle(lease: LimitLease, world: World): LockHandle {
   let currentLease = lease;
   let disposed = false;
@@ -58,21 +72,17 @@ export function createStepLock(world: World) {
       rate: options.rate,
     };
 
-    while (true) {
-      const result = await world.limits.acquire({
-        key: options.key,
-        holderId,
-        definition,
-        leaseTtlMs: options.leaseTtlMs,
-      });
+    const result = await world.limits.acquire({
+      key: options.key,
+      holderId,
+      definition,
+      leaseTtlMs: options.leaseTtlMs,
+    });
 
-      if (result.status === 'acquired') {
-        return createStepLockHandle(result.lease, world);
-      }
-
-      await new Promise((resolve) =>
-        setTimeout(resolve, result.retryAfterMs || 1000)
-      );
+    if (result.status === 'acquired') {
+      return createStepLockHandle(result.lease, world);
     }
+
+    throw new StepLockBlockedError(result.retryAfterMs);
   };
 }

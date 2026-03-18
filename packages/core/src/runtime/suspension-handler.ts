@@ -11,6 +11,7 @@ import {
 import { importKey } from '../encryption.js';
 import type {
   HookInvocationQueueItem,
+  LimitWaitInvocationQueueItem,
   StepInvocationQueueItem,
   WaitInvocationQueueItem,
   WorkflowSuspension,
@@ -78,6 +79,9 @@ export async function handleSuspension({
   );
   const waitItems = suspension.steps.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
+  );
+  const limitWaitItems = suspension.steps.filter(
+    (item): item is LimitWaitInvocationQueueItem => item.type === 'limit_wait'
   );
 
   // Split hooks by what actions they need
@@ -305,6 +309,34 @@ export async function handleSuspension({
         })()
       );
     }
+  }
+
+  // Lock waits: schedule a delayed workflow replay keyed by correlationId so a
+  // later immediate wake-up can replace it.
+  for (const queueItem of limitWaitItems) {
+    ops.push(
+      (async () => {
+        const delayMs = Math.max(
+          1000,
+          queueItem.resumeAt.getTime() - Date.now()
+        );
+        const traceCarrier = await serializeTraceCarrier();
+        await queueMessage(
+          world,
+          `__wkf_workflow_${workflowName}`,
+          {
+            runId,
+            traceCarrier,
+            requestedAt: new Date(),
+          },
+          {
+            delaySeconds: Math.ceil(delayMs / 1000),
+            idempotencyKey: queueItem.correlationId,
+            headers: extractTraceHeaders(traceCarrier),
+          }
+        );
+      })()
+    );
   }
 
   // Wait for all step and wait operations to complete

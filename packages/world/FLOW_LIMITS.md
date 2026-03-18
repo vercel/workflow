@@ -1,16 +1,18 @@
-# Planning to delete after PR is implemented / ready to merge
-
 # Flow Limits Design Notes
 
-This note summarizes the current direction for flow concurrency and rate limiting
-across `@workflow/core`, `@workflow/world`, and concrete world implementations.
+This note summarizes the implemented direction for flow concurrency and rate
+limiting across `@workflow/core`, `@workflow/world`, and concrete world
+implementations.
 
 ## Status
 
 - The shared `limits` interface and `lock()` API surface now exist.
-- Local world has an initial working implementation for acquire/release/heartbeat.
-- Postgres and Vercel worlds still expose `limits` as stubs.
-- There is a real local E2E example for workflow and step locks in the Next.js Turbopack workbench.
+- Local world has a working lease-based implementation for
+  acquire/release/heartbeat.
+- Postgres now has a PostgreSQL-backed implementation with leases, rate tokens,
+  and durable waiters.
+- Vercel still exposes `limits` as a stub.
+- The Next.js Turbopack workbench has E2E coverage for workflow and step locks.
 
 ## Goals
 
@@ -115,17 +117,19 @@ workflow scope, even though the workflow may suspend and resume many times.
 
 #### In steps
 
-`lock()` should act like a step gate.
+`lock()` acts like a step gate.
 
-The intended long-term behavior is:
+The current behavior is:
 
 - declare the limit at the top of the step
-- runtime/compiler hoists or interprets it as a pre-step requirement
-- the step should not occupy a worker just waiting for capacity
+- the runtime treats a blocked acquisition as step-boundary admission failure
+- the step does not keep executing user code while waiting for capacity
+- the step is re-queued and retried after promotion or timeout
 - lease is disposed automatically when the step attempt completes
 
-This means step `lock()` is conceptually the same API, but not a literal
-"block inside already-running user step code" implementation.
+This means step `lock()` is conceptually the same API, but it is not a literal
+"spin inside already-running user step code until capacity appears"
+implementation.
 
 ### 6. `await using` is the preferred user-facing shape
 
@@ -157,7 +161,7 @@ For workflows, `await using` must be tied to the logical workflow scope across:
 
 The lease must not be disposed merely because one host process invocation ends.
 
-### 8. Prefer Option B for deadlock avoidance
+### 8. Prefer step-boundary admission for deadlock avoidance
 
 Current preferred model:
 
@@ -174,7 +178,55 @@ This keeps the dependency direction one-way:
 That avoids the classic cycle where one workflow holds a workflow lock and
 another holds a step lock and each waits on the other.
 
-### 9. V1 semantics are intentionally opinionated
+### 9. Waiters are FIFO per key
+
+The PostgreSQL implementation uses a durable waiter queue and promotes waiters
+in FIFO order for a single limit key.
+
+Important details:
+
+- FIFO is per key, not global across all limit keys
+- promotion order is based on waiter creation order
+- a waiter may be skipped if it is no longer eligible when promotion runs
+- releasing a lease or reclaiming an expired lease can both trigger promotion
+- rate-window expiry can also make the head waiter eligible again
+
+This gives deterministic and inspectable fairness for a key without requiring a
+global scheduler.
+
+### 10. Blocked limits do not consume worker concurrency
+
+Blocked flow limits and worker concurrency are intentionally separate.
+
+In the PostgreSQL world:
+
+- blocked workflows are suspended and re-queued, not left running on a worker
+- blocked steps exit the current attempt and are re-queued instead of polling in
+  a live worker slot
+- backlog remains durable in PostgreSQL while worker slots are free to service
+  unrelated work
+
+This is the main practical difference between a durable waiter model and a pure
+polling loop.
+
+### 11. Wake-up is prompt, with a delayed fallback
+
+The PostgreSQL world uses Graphile for wake-up delivery, but PostgreSQL tables
+remain the source of truth for limit state.
+
+Current behavior:
+
+- leases, rate tokens, and waiters live in PostgreSQL tables
+- promotion decisions are made from SQL state
+- when a waiter is promoted, the runtime is woken by enqueuing the appropriate
+  workflow or step job
+- workflows also keep a delayed replay fallback so progress is still possible if
+  an immediate wake-up is missed
+
+This means Graphile is used to resume work quickly, not to decide fairness or
+capacity ownership.
+
+### 12. V1 semantics are intentionally opinionated
 
 For v1, the intended semantics are:
 
@@ -197,9 +249,8 @@ More concretely:
 For the current local implementation specifically:
 
 - workflow locks already behave like durable logical-scope leases
-- step locks currently use in-process retry polling once the step is already
-  executing, which is acceptable for local v1 but not the ideal long-term
-  admission model
+- step locks are still simpler than Postgres and do not provide the same durable
+  waiter/wake-up behavior
 
 This means the current v1 interpretation of a workflow lock is:
 
@@ -268,13 +319,19 @@ For example:
 So overall system throughput is not one simple global minimum. Different
 workflow paths may be bottlenecked by different limits at different times.
 
+Two more practical clarifications:
+
+- a blocked workflow lock should not monopolize
+  `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` or
+  `WORKFLOW_LOCAL_QUEUE_CONCURRENCY` just because it is waiting
+- a released concurrency lease frees concurrency immediately, but associated
+  rate usage still remains counted until its token ages out of the rate window
+
 ## Open Questions
 
-- Exact runtime/compiler behavior for step-scoped `lock()` hoisting.
 - Whether workflow-level locks should always be whole-run admission locks or
   also support narrower workflow-scoped blocks.
 - Whether `heartbeat()` should remain user-visible or become mostly internal.
 - Whether step limits should only be expressed through `lock()` or also through
   step metadata/config sugar.
-- Fairness/wake-up policy for waiters per key in local and Postgres worlds.
 - Exact event-log representation for acquire/block/dispose transitions.

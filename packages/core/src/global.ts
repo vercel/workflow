@@ -28,10 +28,17 @@ export interface WaitInvocationQueueItem {
   hasCreatedEvent?: boolean;
 }
 
+export interface LimitWaitInvocationQueueItem {
+  type: 'limit_wait';
+  correlationId: string;
+  resumeAt: Date;
+}
+
 export type QueueItem =
   | StepInvocationQueueItem
   | HookInvocationQueueItem
-  | WaitInvocationQueueItem;
+  | WaitInvocationQueueItem
+  | LimitWaitInvocationQueueItem;
 
 /**
  * An error that is thrown when one or more operations (steps/hooks/etc.) are called but do
@@ -61,7 +68,9 @@ export class WorkflowSuspension extends Error {
       else if (item.type === 'hook') {
         if (item.disposed) hookDisposedCount++;
         else hookCount++;
-      } else if (item.type === 'wait') waitCount++;
+      } else if (item.type === 'wait' || item.type === 'limit_wait') {
+        waitCount++;
+      }
     }
 
     // Build description parts
