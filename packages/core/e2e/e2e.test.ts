@@ -1348,22 +1348,9 @@ describe('e2e', () => {
 
       // Verify the child workflow also completed independently
       const childRun = getRun(returnValue.childRun.runId);
+      trackRun(childRun);
       const childResult = await childRun.returnValue;
       expect(childResult.processed).toBe(inputValue * 3);
-
-      // Collect run IDs for observability
-      collectedRunIds.push(
-        {
-          testName: 'startFromWorkflow (parent)',
-          runId: run.runId,
-          timestamp: new Date().toISOString(),
-        },
-        {
-          testName: 'startFromWorkflow (child)',
-          runId: returnValue.childRun.runId,
-          timestamp: new Date().toISOString(),
-        }
-      );
     }
   );
 
@@ -1376,12 +1363,6 @@ describe('e2e', () => {
       const returnValue = await run.returnValue;
 
       expect(returnValue).toBe(8);
-
-      collectedRunIds.push({
-        testName: 'fibonacciWorkflow',
-        runId: run.runId,
-        timestamp: new Date().toISOString(),
-      });
     }
   );
 

@@ -88,10 +88,9 @@ describe('WorkflowRun', () => {
     for (const { accessor, expectedSuffix } of methodsToTest) {
       // Reset context for each method
       const freshCtx = setupWorkflowContext();
-      let workflowError: Error | undefined;
-      freshCtx.onWorkflowError = (err) => {
-        workflowError = err;
-      };
+      const errorPromise = new Promise<Error>((resolve) => {
+        freshCtx.onWorkflowError = resolve;
+      });
       const FreshWorkflowRun = createWorkflowRun(freshCtx);
       const freshRun = new FreshWorkflowRun('wrun_test_789');
 
@@ -103,8 +102,8 @@ describe('WorkflowRun', () => {
         (freshRun as any)[expectedSuffix.replace('Run.', '')];
       }
 
-      // Wait for suspension to propagate
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      // Wait for the actual error callback — no arbitrary timeout
+      const workflowError = await errorPromise;
 
       expect(workflowError).toBeInstanceOf(WorkflowSuspension);
       expect(freshCtx.invocationsQueue.size).toBe(1);
