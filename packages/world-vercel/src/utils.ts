@@ -6,7 +6,7 @@ import {
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
-  WorkflowAPIError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
@@ -360,7 +360,7 @@ export async function makeRequest<T>({
         }
 
         throwWithTrace(
-          new WorkflowAPIError(defaultMessage, {
+          new WorkflowWorldError(defaultMessage, {
             url,
             status: response.status,
             code: errorData.code,
@@ -387,7 +387,7 @@ export async function makeRequest<T>({
         });
       } catch (error) {
         const contentType = response.headers.get('Content-Type') || 'unknown';
-        throw new WorkflowAPIError(
+        throw new WorkflowWorldError(
           `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
           { url, cause: error }
         );
@@ -406,7 +406,7 @@ export async function makeRequest<T>({
           const debugContext = process.env.DEBUG
             ? `\n\nResponse context: ${parseResult.getDebugContext()}`
             : '';
-          throw new WorkflowAPIError(
+          throw new WorkflowWorldError(
             `Schema validation failed for ${method} ${endpoint}:\n${issues}${debugContext}`,
             { url, cause: validationResult.error }
           );

@@ -1,4 +1,4 @@
-import { HookNotFoundError, WorkflowAPIError } from '@workflow/errors';
+import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   type CreateEventParams,
@@ -382,12 +382,12 @@ export async function createWorkflowRunEvent(
     return await createWorkflowRunEventInner(id, data, params, config);
   } catch (err) {
     // Translate 404 to HookNotFoundError for hook-related events.
-    // makeRequest() throws a generic WorkflowAPIError for all 404s;
+    // makeRequest() throws a generic WorkflowWorldError for all 404s;
     // on the hook_disposed / hook_received path a 404 means the hook
     // was already disposed or never created.
     if (
       hookEventsRequiringExistence.has(data.eventType) &&
-      WorkflowAPIError.is(err) &&
+      WorkflowWorldError.is(err) &&
       err.status === 404 &&
       data.correlationId
     ) {
@@ -429,7 +429,7 @@ async function createWorkflowRunEventInner(
   if (data.eventType === 'run_created' && id) {
     const validationError = validateUlidTimestamp(id, 'wrun_');
     if (validationError) {
-      throw new WorkflowAPIError(validationError, { status: 400 });
+      throw new WorkflowWorldError(validationError, { status: 400 });
     }
   }
 

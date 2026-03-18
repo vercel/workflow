@@ -6,7 +6,7 @@ import {
   RunExpiredError,
   RunNotSupportedError,
   TooEarlyError,
-  WorkflowAPIError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import type {
   Event,
@@ -92,7 +92,7 @@ export function createEventsStorage(
       if (data.eventType === 'run_created' && runId && runId !== '') {
         const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
         if (validationError) {
-          throw new WorkflowAPIError(validationError);
+          throw new WorkflowWorldError(validationError);
         }
       }
 
@@ -233,7 +233,9 @@ export function createEventsStorage(
 
         // Event ordering: step must exist before these events
         if (!validatedStep) {
-          throw new WorkflowAPIError(`Step "${data.correlationId}" not found`);
+          throw new WorkflowWorldError(
+            `Step "${data.correlationId}" not found`
+          );
         }
 
         // Step terminal state validation
@@ -785,7 +787,9 @@ export function createEventsStorage(
         if (!existingWait) {
           // Clean up the lock file we just claimed — the wait doesn't exist
           await fs.unlink(lockPath).catch(() => {});
-          throw new WorkflowAPIError(`Wait "${data.correlationId}" not found`);
+          throw new WorkflowWorldError(
+            `Wait "${data.correlationId}" not found`
+          );
         }
         // The lock file (writeExclusive above) already prevents concurrent
         // completions — no additional status check needed.

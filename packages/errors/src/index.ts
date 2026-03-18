@@ -82,23 +82,15 @@ export class WorkflowError extends Error {
 }
 
 /**
- * Thrown when a Workflow API request fails.
+ * Thrown when a world (storage backend) operation fails unexpectedly.
  *
- * This error is thrown when HTTP requests to the Workflow backend fail,
- * typically due to network issues, invalid requests, or server errors.
- *
- * @example
- * ```ts
- * try {
- *   await startWorkflow('myWorkflow', input);
- * } catch (error) {
- *   if (error instanceof WorkflowAPIError) {
- *     console.error(`API error (${error.status}):`, error.message);
- *   }
- * }
- * ```
+ * This is the catch-all error for world implementations. Specific,
+ * well-known failure modes have dedicated error types (e.g.
+ * EntityConflictError, RunExpiredError, ThrottleError). This error
+ * covers everything else — validation failures, missing entities
+ * without a dedicated type, or unexpected HTTP errors from world-vercel.
  */
-export class WorkflowAPIError extends WorkflowError {
+export class WorkflowWorldError extends WorkflowError {
   status?: number;
   code?: string;
   url?: string;
@@ -118,15 +110,15 @@ export class WorkflowAPIError extends WorkflowError {
     super(message, {
       cause: options?.cause,
     });
-    this.name = 'WorkflowAPIError';
+    this.name = 'WorkflowWorldError';
     this.status = options?.status;
     this.code = options?.code;
     this.url = options?.url;
     this.retryAfter = options?.retryAfter;
   }
 
-  static is(value: unknown): value is WorkflowAPIError {
-    return isError(value) && value.name === 'WorkflowAPIError';
+  static is(value: unknown): value is WorkflowWorldError {
+    return isError(value) && value.name === 'WorkflowWorldError';
   }
 }
 

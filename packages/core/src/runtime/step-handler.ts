@@ -6,7 +6,7 @@ import {
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
-  WorkflowAPIError,
+  WorkflowWorldError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
@@ -425,7 +425,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               });
               return;
             }
-            if (WorkflowAPIError.is(err)) {
+            if (WorkflowWorldError.is(err)) {
               if (err.status !== undefined && err.status >= 500) {
                 throw err;
               }

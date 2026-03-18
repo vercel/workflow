@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { WorkflowAPIError } from '@workflow/errors';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
 import {
   DEFAULT_TIMESTAMP_THRESHOLD_MS,
@@ -2826,7 +2826,7 @@ describe('Storage', () => {
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
@@ -2839,7 +2839,7 @@ describe('Storage', () => {
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
@@ -2849,7 +2849,7 @@ describe('Storage', () => {
     it('should reject a runId that is not a valid ULID', async () => {
       await expect(
         storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)

@@ -1,4 +1,8 @@
-import { EntityConflictError, WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  WorkflowWorldError,
+  WorkflowRunNotFoundError,
+} from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -85,7 +89,7 @@ describe('wakeUpRun', () => {
       },
     ];
 
-    const serverError = new WorkflowAPIError('Internal server error', {
+    const serverError = new WorkflowWorldError('Internal server error', {
       status: 500,
     });
 

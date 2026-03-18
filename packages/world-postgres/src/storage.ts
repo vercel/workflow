@@ -4,7 +4,7 @@ import {
   RunExpiredError,
   RunNotSupportedError,
   TooEarlyError,
-  WorkflowAPIError,
+  WorkflowWorldError,
   WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import type {
@@ -325,7 +325,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       if (data.eventType === 'run_created' && runId && runId !== '') {
         const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
         if (validationError) {
-          throw new WorkflowAPIError(validationError);
+          throw new WorkflowWorldError(validationError);
         }
       }
 
@@ -489,7 +489,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
         // Event ordering: step must exist before these events
         if (!validatedStep) {
-          throw new WorkflowAPIError(`Step "${data.correlationId}" not found`);
+          throw new WorkflowWorldError(
+            `Step "${data.correlationId}" not found`
+          );
         }
 
         // Step terminal state validation
@@ -800,7 +802,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             stepId: data.correlationId!,
           });
           if (!existing) {
-            throw new WorkflowAPIError(
+            throw new WorkflowWorldError(
               `Step "${data.correlationId}" not found`
             );
           }
@@ -840,7 +842,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             stepId: data.correlationId!,
           });
           if (!existing) {
-            throw new WorkflowAPIError(
+            throw new WorkflowWorldError(
               `Step "${data.correlationId}" not found`
             );
           }
@@ -891,7 +893,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             stepId: data.correlationId!,
           });
           if (!existing) {
-            throw new WorkflowAPIError(
+            throw new WorkflowWorldError(
               `Step "${data.correlationId}" not found`
             );
           }
@@ -943,7 +945,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             stepId: data.correlationId!,
           });
           if (!existing) {
-            throw new WorkflowAPIError(
+            throw new WorkflowWorldError(
               `Step "${data.correlationId}" not found`
             );
           }
@@ -1109,7 +1111,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             waitId,
           });
           if (!existing) {
-            throw new WorkflowAPIError(
+            throw new WorkflowWorldError(
               `Wait "${data.correlationId}" not found`
             );
           }
@@ -1158,7 +1160,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         .limit(1);
 
       if (!value) {
-        throw new WorkflowAPIError(`Event not found: ${eventId}`);
+        throw new WorkflowWorldError(`Event not found: ${eventId}`);
       }
 
       value.eventData ||= value.eventDataJson;
@@ -1321,7 +1323,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
         .limit(1);
 
       if (!value) {
-        throw new WorkflowAPIError(`Step not found: ${stepId}`);
+        throw new WorkflowWorldError(`Step not found: ${stepId}`);
       }
       value.output ||= value.outputJson;
       value.input ||= value.inputJson;

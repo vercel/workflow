@@ -1,4 +1,4 @@
-import { EntityConflictError, WorkflowAPIError } from '@workflow/errors';
+import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Use vi.hoisted so these are available in mock factories
@@ -437,7 +437,7 @@ describe('step-handler 409 handling', () => {
           }
           if (event.eventType === 'step_retrying') {
             return Promise.reject(
-              new WorkflowAPIError('Internal Server Error', { status: 500 })
+              new WorkflowWorldError('Internal Server Error', { status: 500 })
             );
           }
           return Promise.resolve({ event: {} });
