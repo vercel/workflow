@@ -2,7 +2,11 @@
  * E2E test workflows for DurableAgent using @workflow/ai/test mock providers.
  */
 import { DurableAgent } from '@workflow/ai/agent';
-import { mockTextModel, mockSequenceModel } from '@workflow/ai/test';
+import {
+  mockTextModel,
+  mockSequenceModel,
+  mockReasoningToolModel,
+} from '@workflow/ai/test';
 import { FatalError, getWritable } from 'workflow';
 import z from 'zod/v4';
 
@@ -521,6 +525,37 @@ async function multimodalToolStep(): Promise<{
       { type: 'text', text: 'Here is the image' },
       { type: 'file-data', data: 'iVBORw0KGgo=', mediaType: 'image/png' },
     ],
+  };
+}
+
+// ============================================================================
+// Reasoning preservation across tool loops (#1393)
+// ============================================================================
+
+/** Verifies reasoning content is preserved in conversation history across tool loop steps. */
+export async function agentReasoningPreservationE2e() {
+  'use workflow';
+  const agent = new DurableAgent({
+    model: mockReasoningToolModel(
+      'addNumbers',
+      JSON.stringify({ a: 2, b: 3 }),
+      'I should use the add tool to compute 2+3'
+    ),
+    tools: {
+      addNumbers: {
+        description: 'Add two numbers',
+        inputSchema: z.object({ a: z.number(), b: z.number() }),
+        execute: addNumbers,
+      },
+    },
+  });
+  const result = await agent.stream({
+    messages: [{ role: 'user', content: 'What is 2+3?' }],
+    writable: getWritable(),
+  });
+  return {
+    stepCount: result.steps.length,
+    lastStepText: result.steps[result.steps.length - 1]?.text,
   };
 }
 

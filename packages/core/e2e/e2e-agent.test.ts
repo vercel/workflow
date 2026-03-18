@@ -261,6 +261,26 @@ describe.skipIf(isCanary)('DurableAgent e2e', { timeout: 120_000 }, () => {
   });
 
   // ==========================================================================
+  // Reasoning preservation (#1393)
+  // ==========================================================================
+
+  describe('reasoning preservation', () => {
+    it('preserves reasoning content in conversation history across tool loop steps', async () => {
+      const run = await start(
+        await agentE2e('agentReasoningPreservationE2e'),
+        []
+      );
+      const rv = await run.returnValue;
+      expect(rv.stepCount).toBe(2);
+      // The mock model inspects the prompt on step 2 and returns the reasoning
+      // it found. If reasoning was preserved, text starts with "reasoning_found:".
+      expect(rv.lastStepText).toBe(
+        'reasoning_found:I should use the add tool to compute 2+3'
+      );
+    });
+  });
+
+  // ==========================================================================
   // GAP tests
   // ==========================================================================
 
