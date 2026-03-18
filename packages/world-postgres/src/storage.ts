@@ -3,6 +3,7 @@ import {
   HookNotFoundError,
   RunExpiredError,
   RunNotSupportedError,
+  TooEarlyError,
   WorkflowAPIError,
 } from '@workflow/errors';
 import type {
@@ -695,16 +696,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           validatedStep?.retryAfter &&
           validatedStep.retryAfter.getTime() > Date.now()
         ) {
-          const err = new WorkflowAPIError(
+          throw new TooEarlyError(
             `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
-            { status: 425 }
+            { retryAfter: validatedStep.retryAfter }
           );
-          // Add meta for step-handler to extract retryAfter timestamp
-          (err as any).meta = {
-            stepId: data.correlationId,
-            retryAfter: validatedStep.retryAfter.toISOString(),
-          };
-          throw err;
         }
 
         const isFirstStart = !validatedStep?.startedAt;
@@ -1041,9 +1036,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         })
         .returning({ createdAt: events.createdAt });
       if (!value) {
-        throw new EntityConflictError(
-          `Event ${eventId} could not be created`
-        );
+        throw new EntityConflictError(`Event ${eventId} could not be created`);
       }
       const result = { ...data, ...value, runId: effectiveRunId, eventId };
       const parsed = EventSchema.parse(result);

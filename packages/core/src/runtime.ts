@@ -405,6 +405,7 @@ export function workflowEntrypoint(
                         }
                       );
                       span?.setAttributes({
+                        ...Attribute.WorkflowErrorCode(errorCode),
                         ...Attribute.WorkflowErrorName(errorName),
                         ...Attribute.WorkflowErrorMessage(errorMessage),
                         ...Attribute.ErrorType(errorName),
@@ -417,6 +418,7 @@ export function workflowEntrypoint(
 
                   span?.setAttributes({
                     ...Attribute.WorkflowRunStatus('failed'),
+                    ...Attribute.WorkflowErrorCode(errorCode),
                     ...Attribute.WorkflowErrorName(errorName),
                     ...Attribute.WorkflowErrorMessage(errorMessage),
                     ...Attribute.ErrorType(errorName),
@@ -440,10 +442,7 @@ export function workflowEntrypoint(
                     { requestId }
                   );
                 } catch (err) {
-                  if (
-                    EntityConflictError.is(err) ||
-                    RunExpiredError.is(err)
-                  ) {
+                  if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
                     runtimeLogger.info(
                       'Tried completing workflow run, but run has already finished.',
                       {

@@ -243,8 +243,9 @@ export class HookNotFoundError extends WorkflowError {
 }
 
 /**
- * Thrown when attempting to modify an entity that is already in a terminal state.
- * Replaces WorkflowAPIError with status 409.
+ * Thrown when an operation conflicts with the current state of an entity.
+ * This includes attempts to modify an entity already in a terminal state,
+ * create an entity that already exists, or any other 409-style conflict.
  */
 export class EntityConflictError extends WorkflowError {
   constructor(message: string) {
@@ -258,8 +259,8 @@ export class EntityConflictError extends WorkflowError {
 }
 
 /**
- * Thrown when attempting to operate on a run that has been cleaned up or expired.
- * Replaces WorkflowAPIError with status 410.
+ * Thrown when a run is no longer available — either because it has been
+ * cleaned up, expired, or already reached a terminal state (completed/failed).
  */
 export class RunExpiredError extends WorkflowError {
   constructor(message: string) {
@@ -273,8 +274,28 @@ export class RunExpiredError extends WorkflowError {
 }
 
 /**
+ * Thrown when an operation cannot proceed because a required timestamp
+ * (e.g. retryAfter) has not been reached yet.
+ */
+export class TooEarlyError extends WorkflowError {
+  retryAfter?: Date;
+
+  constructor(
+    message: string,
+    options?: { retryAfter?: Date; meta?: Record<string, unknown> }
+  ) {
+    super(message);
+    this.name = 'TooEarlyError';
+    this.retryAfter = options?.retryAfter;
+  }
+
+  static is(value: unknown): value is TooEarlyError {
+    return isError(value) && value.name === 'TooEarlyError';
+  }
+}
+
+/**
  * Thrown when a request is rate limited.
- * Replaces WorkflowAPIError with status 429.
  */
 export class ThrottleError extends WorkflowError {
   retryAfter?: number;

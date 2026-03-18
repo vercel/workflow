@@ -5,6 +5,7 @@ import {
   EntityConflictError,
   RunExpiredError,
   ThrottleError,
+  TooEarlyError,
   WorkflowAPIError,
 } from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
@@ -306,6 +307,7 @@ export async function makeRequest<T>({
             .catch(() => ({}));
         if (process.env.DEBUG) {
           const stringifiedHeaders = Array.from(headers.entries())
+            .filter(([key]) => key.toLowerCase() !== 'authorization')
             .map(([key, value]: [string, string]) => `-H "${key}: ${value}"`)
             .join(' ');
           console.error(
@@ -348,6 +350,19 @@ export async function makeRequest<T>({
           span?.recordException?.(error);
           throw error;
         }
+        if (response.status === 425) {
+          const retryAfterDate = retryAfter
+            ? new Date(Date.now() + retryAfter * 1000)
+            : undefined;
+          const error = new TooEarlyError(defaultMessage, {
+            retryAfter: retryAfterDate,
+          });
+          span?.setAttributes({
+            ...ErrorType(errorData.code || `HTTP ${response.status}`),
+          });
+          span?.recordException?.(error);
+          throw error;
+        }
         if (response.status === 429) {
           const error = new ThrottleError(defaultMessage, { retryAfter });
           span?.setAttributes({
@@ -357,10 +372,12 @@ export async function makeRequest<T>({
           throw error;
         }
 
-        const error = new WorkflowAPIError(
-          defaultMessage,
-          { url, status: response.status, code: errorData.code, retryAfter }
-        );
+        const error = new WorkflowAPIError(defaultMessage, {
+          url,
+          status: response.status,
+          code: errorData.code,
+          retryAfter,
+        });
         // Record error attributes per OTEL conventions
         span?.setAttributes({
           ...ErrorType(errorData.code || `HTTP ${response.status}`),
@@ -398,7 +415,10 @@ export async function makeRequest<T>({
         const validationResult = schema.safeParse(parseResult.data);
         if (!validationResult.success) {
           const issues = validationResult.error.issues
-            .map((i) => `  ${i.path.length > 0 ? i.path.join('.') : '<root>'}: ${i.message}`)
+            .map(
+              (i) =>
+                `  ${i.path.length > 0 ? i.path.join('.') : '<root>'}: ${i.message}`
+            )
             .join('\n');
           const debugContext = process.env.DEBUG
             ? `\n\nResponse context: ${parseResult.getDebugContext()}`

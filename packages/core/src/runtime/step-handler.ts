@@ -5,6 +5,7 @@ import {
   RetryableError,
   RunExpiredError,
   ThrottleError,
+  TooEarlyError,
   WorkflowAPIError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -185,14 +186,10 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               return;
             }
 
-            // 425 Too Early: retryAfter timestamp not reached yet
+            // Too early: retryAfter timestamp not reached yet
             // Return timeout to queue so it retries later
-            if (WorkflowAPIError.is(err) && err.status === 425) {
-              // Parse retryAfter from error response meta
-              const retryAfterStr = (err as any).meta?.retryAfter;
-              const retryAfter = retryAfterStr
-                ? new Date(retryAfterStr)
-                : new Date(Date.now() + 1000);
+            if (TooEarlyError.is(err)) {
+              const retryAfter = err.retryAfter ?? new Date(Date.now() + 1000);
               const timeoutSeconds = Math.max(
                 1,
                 Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
@@ -206,15 +203,12 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 'delay.timeout_seconds': timeoutSeconds,
                 'delay.retry_after': retryAfter.toISOString(),
               });
-              runtimeLogger.debug(
-                'Step retryAfter timestamp not yet reached',
-                {
-                  stepName,
-                  stepId,
-                  retryAfter,
-                  timeoutSeconds,
-                }
-              );
+              runtimeLogger.debug('Step retryAfter timestamp not yet reached', {
+                stepName,
+                stepId,
+                retryAfter,
+                timeoutSeconds,
+              });
               return { timeoutSeconds };
             }
             // Re-throw other errors
@@ -424,14 +418,11 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // step attempts.
             if (RunExpiredError.is(err)) {
               // Workflow has already completed, so no-op
-              stepLogger.info(
-                'Workflow run already completed, skipping step',
-                {
-                  workflowRunId,
-                  stepId,
-                  message: err.message,
-                }
-              );
+              stepLogger.info('Workflow run already completed, skipping step', {
+                workflowRunId,
+                stepId,
+                message: err.message,
+              });
               return;
             }
             if (WorkflowAPIError.is(err)) {
@@ -491,9 +482,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   { requestId }
                 );
               } catch (stepFailErr) {
-                if (
-                  EntityConflictError.is(stepFailErr)
-                ) {
+                if (EntityConflictError.is(stepFailErr)) {
                   runtimeLogger.info(
                     'Tried failing step, but step has already finished.',
                     {
@@ -612,9 +601,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     { requestId }
                   );
                 } catch (stepRetryErr) {
-                  if (
-                    EntityConflictError.is(stepRetryErr)
-                  ) {
+                  if (EntityConflictError.is(stepRetryErr)) {
                     runtimeLogger.info(
                       'Tried retrying step, but step has already finished.',
                       {

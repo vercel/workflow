@@ -3,6 +3,7 @@ import {
   EntityConflictError,
   RunExpiredError,
   RunNotSupportedError,
+  TooEarlyError,
   WorkflowAPIError,
 } from '@workflow/errors';
 import type {
@@ -477,16 +478,10 @@ export function createEventsStorage(
             validatedStep.retryAfter &&
             validatedStep.retryAfter.getTime() > Date.now()
           ) {
-            const err = new WorkflowAPIError(
+            throw new TooEarlyError(
               `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
-              { status: 425 }
+              { retryAfter: validatedStep.retryAfter }
             );
-            // Add meta for step-handler to extract retryAfter timestamp
-            (err as any).meta = {
-              stepId: data.correlationId,
-              retryAfter: validatedStep.retryAfter.toISOString(),
-            };
-            throw err;
           }
 
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;

@@ -6,4 +6,4 @@
 "@workflow/world-postgres": patch
 ---
 
-Replace HTTP status code checks with semantic error types (EntityConflictError, RunExpiredError, ThrottleError)
+Replace HTTP status code checks with semantic error types (EntityConflictError, RunExpiredError, ThrottleError, TooEarlyError)

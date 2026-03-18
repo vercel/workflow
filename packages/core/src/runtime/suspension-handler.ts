@@ -1,6 +1,10 @@
 import type { Span } from '@opentelemetry/api';
 import { waitUntil } from '@vercel/functions';
-import { EntityConflictError, RunExpiredError, WorkflowAPIError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  HookNotFoundError,
+  RunExpiredError,
+} from '@workflow/errors';
 import {
   type CreateEventRequest,
   type SerializedData,
@@ -174,7 +178,7 @@ export async function handleSuspension({
                 message: err.message,
               }
             );
-          } else if (WorkflowAPIError.is(err) && err.status === 404) {
+          } else if (HookNotFoundError.is(err)) {
             // Hook may have already been disposed or never created
             runtimeLogger.info('Hook not found for disposal, continuing', {
               workflowRunId: runId,
