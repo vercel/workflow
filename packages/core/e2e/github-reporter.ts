@@ -130,6 +130,9 @@ export default class GithubAnnotationReporter implements Reporter {
   /**
    * Emit ::error workflow commands that GitHub Actions renders as annotations
    * on the PR "Files changed" tab and in the job summary.
+   *
+   * We link annotations to the e2e test file (which exists in the repo)
+   * rather than the workflow source file (which may be a symlink).
    */
   private emitAnnotations() {
     for (const test of this.failedTests) {
@@ -140,8 +143,12 @@ export default class GithubAnnotationReporter implements Reporter {
       const body = parts.join(' | ');
 
       const title = `E2E: ${test.testName}`;
-      // Write directly to stdout to avoid any interceptors
-      process.stdout.write(`\n::error title=${title}::${body}\n`);
+      // Use relative path to the test file so GitHub can link the annotation
+      // to the correct file in the "Files changed" tab.
+      const relFile = path.relative(process.cwd(), test.file);
+      process.stdout.write(
+        `\n::error file=${relFile},title=${title}::${body}\n`
+      );
     }
   }
 

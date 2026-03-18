@@ -630,6 +630,11 @@ async function getRunDiagnostics(tracked: TrackedRun): Promise<string> {
 
 /**
  * Emit a GitHub Actions annotation for a failed test.
+ *
+ * We intentionally omit `file=` here because the workflow source files
+ * in workbench/ are symlinks that GitHub can't resolve to repo paths.
+ * The custom reporter (github-reporter.ts) emits file-linked annotations
+ * using the actual test file paths instead.
  */
 function emitGitHubAnnotation(
   testName: string,
@@ -638,7 +643,7 @@ function emitGitHubAnnotation(
 ) {
   if (!process.env.CI) return;
 
-  const { run, workflowFile } = tracked;
+  const { run } = tracked;
   const dashboardUrl = getObservabilityDashboardUrl(run.runId);
   const parts = [`Run ${run.runId}`];
   if (dashboardUrl) parts.push(dashboardUrl);
@@ -649,18 +654,7 @@ function emitGitHubAnnotation(
   // Write directly to stdout bypassing vitest's console interceptor.
   // Vitest prefixes console.log output with ANSI codes which prevents
   // GitHub Actions from parsing the ::error workflow command.
-  if (workflowFile) {
-    const appPath = getWorkbenchAppPath();
-    const relPath = path.relative(
-      process.cwd(),
-      path.join(appPath, workflowFile)
-    );
-    process.stdout.write(
-      `\n::error file=${relPath},title=E2E: ${testName}::${annotation}\n`
-    );
-  } else {
-    process.stdout.write(`\n::error title=E2E: ${testName}::${annotation}\n`);
-  }
+  process.stdout.write(`\n::error title=E2E: ${testName}::${annotation}\n`);
 }
 
 /**
