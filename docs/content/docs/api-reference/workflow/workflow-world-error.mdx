@@ -1,0 +1,65 @@
+---
+title: WorkflowWorldError
+description: Base error for failures from workflow storage backends.
+type: reference
+summary: Catch WorkflowWorldError to handle any error originating from a workflow world (storage backend).
+related:
+  - /docs/api-reference/workflow/entity-conflict-error
+  - /docs/api-reference/workflow/run-expired-error
+  - /docs/api-reference/workflow/too-early-error
+  - /docs/api-reference/workflow/throttle-error
+---
+
+`WorkflowWorldError` is the base error class for failures originating from a workflow world (storage backend). World implementations (local, Postgres, Vercel) throw subclasses of this error when storage operations fail.
+
+You can use this class to catch any world-related error regardless of the specific backend or error type.
+
+<Callout>
+Most world errors are handled automatically by the Workflow runtime. You will typically only encounter these errors when interacting with world storage APIs directly or when there are infrastructure-level issues.
+</Callout>
+
+```typescript lineNumbers
+import { WorkflowWorldError } from "workflow/internal/errors"
+
+try {
+  await world.events.create(runId, event);
+} catch (error) {
+  if (WorkflowWorldError.is(error)) { // [!code highlight]
+    console.error("Storage backend error:", error.message);
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface WorkflowWorldError {
+  /** The error message. */
+  message: string;
+}
+export default WorkflowWorldError;`}
+/>
+
+### Static Methods
+
+#### `WorkflowWorldError.is(value)`
+
+Type-safe check for `WorkflowWorldError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+if (WorkflowWorldError.is(error)) {
+  // error is typed as WorkflowWorldError
+}
+```
+
+### Subclasses
+
+The following error types extend `WorkflowWorldError`:
+
+- [`EntityConflictError`](/docs/api-reference/workflow/entity-conflict-error) — operation conflicts with entity state
+- [`RunExpiredError`](/docs/api-reference/workflow/run-expired-error) — run has expired
+- [`TooEarlyError`](/docs/api-reference/workflow/too-early-error) — request made before system is ready
+- [`ThrottleError`](/docs/api-reference/workflow/throttle-error) — request was rate-limited

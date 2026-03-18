@@ -1,9 +1,15 @@
 export {
-  WorkflowWorldError,
+  EntityConflictError,
+  HookNotFoundError,
+  RunExpiredError,
+  RunNotSupportedError,
+  ThrottleError,
+  TooEarlyError,
   WorkflowError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
   WorkflowRunNotFoundError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
