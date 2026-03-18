@@ -123,6 +123,9 @@ The core code that makes all of this happen is quite simple. Here's a breakdown 
 Our API route makes a simple call to [AI SDK's `Agent` class](https://ai-sdk.dev/docs/agents/overview), which is a simple wrapper around [AI SDK's `streamText` function](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text#streamtext). This is also where we pass tools to the agent.
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
+import { Experimental_Agent as Agent } from "ai";
+import type { LanguageModel } from "ai";
+
 export async function POST(req: Request) {
   const { messages }: { messages: UIMessage[] } = await req.json();
   const agent = new Agent({ // [!code highlight]

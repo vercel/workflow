@@ -164,6 +164,8 @@ Workflow functions must be deterministic to support replay. Since streams bypass
 For more on determinism and replay, see [Workflows and Steps](/docs/foundations/workflows-and-steps).
 
 ```typescript title="workflows/bad-example.ts" lineNumbers
+import { getWritable } from "workflow";
+
 export async function badWorkflow() {
   "use workflow";
 
@@ -176,6 +178,8 @@ export async function badWorkflow() {
 ```
 
 ```typescript title="workflows/good-example.ts" lineNumbers
+import { getWritable } from "workflow";
+
 export async function goodWorkflow() {
   "use workflow";
 
@@ -501,6 +505,8 @@ If a lock is not released, the step function's HTTP request cannot terminate. Ev
 **Close streams when done:**
 
 ```typescript lineNumbers
+import { getWritable } from "workflow";
+
 async function finalizeStream() {
   "use step";
 
