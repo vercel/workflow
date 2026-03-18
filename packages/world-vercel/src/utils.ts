@@ -6,6 +6,29 @@ import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
+
+/**
+ * Lightweight debug logger for HTTP requests. Activated when the DEBUG
+ * env var includes "workflow:" (matching the standard `debug` module
+ * convention used by @workflow/core).
+ */
+const HTTP_DEBUG_ENABLED =
+  typeof process !== 'undefined' &&
+  typeof process.env.DEBUG === 'string' &&
+  (process.env.DEBUG.includes('workflow:') || process.env.DEBUG === '*');
+
+function httpLog(
+  method: string,
+  endpoint: string,
+  status: number,
+  ms: number
+): void {
+  if (HTTP_DEBUG_ENABLED) {
+    console.debug(
+      `[workflow:world-vercel:http] ${method} ${endpoint} -> ${status} (${ms}ms)`
+    );
+  }
+}
 import {
   ErrorType,
   getSpanKind,
@@ -281,9 +304,13 @@ export async function makeRequest<T>({
         headers,
       });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+      const fetchStart = Date.now();
       const response = await fetch(request, {
         dispatcher: getDispatcher(),
       } as any);
+      const fetchMs = Date.now() - fetchStart;
+
+      httpLog(method, endpoint, response.status, fetchMs);
 
       span?.setAttributes({
         ...HttpResponseStatusCode(response.status),
