@@ -797,7 +797,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             attempt: sql`${Schema.steps.attempt} + 1`,
             // Only set startedAt on first start — use COALESCE so concurrent
             // step_started calls can't clobber the original timestamp.
-            startedAt: sql`COALESCE(${Schema.steps.startedAt}, ${now})`,
+            startedAt: sql`COALESCE(${Schema.steps.startedAt}, ${now.toISOString()})`,
             // Always clear retryAfter now that the step has started
             retryAfter: null,
           })
