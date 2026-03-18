@@ -668,6 +668,9 @@ function chunksToStep(
     reasoning: reasoning.map((chunk) => ({
       type: 'reasoning' as const,
       text: chunk.delta,
+      ...(chunk.providerMetadata != null
+        ? { providerOptions: chunk.providerMetadata }
+        : {}),
     })),
     reasoningText: reasoningText || undefined,
     files,
