@@ -690,7 +690,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // Handle step_started event: increment attempt, set status to 'running'
       // Sets startedAt (maps to startedAt) only on first start
-      // Reuse validatedStep from validation (already read above)
+      // Uses conditional UPDATE to prevent re-starting a step that has already
+      // reached a terminal state (completed/failed). Without this guard a
+      // concurrent step_started could revert a completed step back to 'running',
+      // allowing a duplicate execution that corrupts the event log.
       if (data.eventType === 'step_started') {
         // Check if retryAfter timestamp hasn't been reached yet
         if (
@@ -726,12 +729,32 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.steps.runId, effectiveRunId),
-              eq(Schema.steps.stepId, data.correlationId!)
+              eq(Schema.steps.stepId, data.correlationId!),
+              // Only update if not already in terminal state (prevents TOCTOU race)
+              notInArray(Schema.steps.status, ['completed', 'failed'])
             )
           )
           .returning();
         if (stepValue) {
           step = deserializeStepError(compact(stepValue));
+        } else {
+          // Step not updated - check if it exists and why
+          const [existing] = await getStepForValidation.execute({
+            runId: effectiveRunId,
+            stepId: data.correlationId!,
+          });
+          if (!existing) {
+            throw new WorkflowAPIError(
+              `Step "${data.correlationId}" not found`,
+              { status: 404 }
+            );
+          }
+          if (['completed', 'failed'].includes(existing.status)) {
+            throw new WorkflowAPIError(
+              `Cannot modify step in terminal state "${existing.status}"`,
+              { status: 409 }
+            );
+          }
         }
       }
 
