@@ -535,8 +535,9 @@ export function createEventsStorage(
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
           const terminalLockPath = path.join(
             basedir,
+            '.locks',
             'steps',
-            `${stepCompositeKey}.terminal.lock`
+            `${stepCompositeKey}.terminal`
           );
           const claimed = await writeExclusive(terminalLockPath, '');
           if (!claimed) {
@@ -569,8 +570,9 @@ export function createEventsStorage(
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
           const terminalLockPath = path.join(
             basedir,
+            '.locks',
             'steps',
-            `${stepCompositeKey}.terminal.lock`
+            `${stepCompositeKey}.terminal`
           );
           const claimed = await writeExclusive(terminalLockPath, '');
           if (!claimed) {
@@ -768,8 +770,9 @@ export function createEventsStorage(
         const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
         const lockPath = path.join(
           basedir,
+          '.locks',
           'waits',
-          `${waitCompositeKey}.completed.lock`
+          `${waitCompositeKey}.completed`
         );
         const claimed = await writeExclusive(lockPath, '');
         if (!claimed) {
