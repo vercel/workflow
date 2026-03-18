@@ -489,28 +489,24 @@ export function createEventsStorage(
             throw err;
           }
 
-          // Atomic guard: check if step already reached terminal state
-          // (prevents TOCTOU race between validation read and this write)
+          // Best-effort guard: re-read the step entity to check if it
+          // reached terminal state between the validation read and now.
+          // This narrows the TOCTOU window but does not fully eliminate it
+          // (the local world is single-process / dev-only; the postgres
+          // world uses SQL-level atomic guards for production).
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const terminalLockPath = path.join(
+          const freshStep = await readJSONWithFallback(
             basedir,
             'steps',
-            `${stepCompositeKey}.terminal.lock`
+            stepCompositeKey,
+            StepSchema,
+            tag
           );
-          try {
-            await fs.access(terminalLockPath);
-            // Lock file exists — step already reached terminal state
-            throw new WorkflowAPIError(`Cannot modify step in terminal state`, {
-              status: 409,
-            });
-          } catch (err) {
-            if (
-              err instanceof WorkflowAPIError ||
-              (err as NodeJS.ErrnoException).code !== 'ENOENT'
-            ) {
-              throw err;
-            }
-            // ENOENT = lock doesn't exist, safe to proceed
+          if (freshStep && isStepTerminal(freshStep.status)) {
+            throw new WorkflowAPIError(
+              `Cannot modify step in terminal state "${freshStep.status}"`,
+              { status: 409 }
+            );
           }
 
           step = {
@@ -790,6 +786,8 @@ export function createEventsStorage(
           tag
         );
         if (!existingWait) {
+          // Clean up the lock file we just claimed — the wait doesn't exist
+          await fs.unlink(lockPath).catch(() => {});
           throw new WorkflowAPIError(`Wait "${data.correlationId}" not found`, {
             status: 404,
           });
