@@ -1,4 +1,4 @@
-import { WorkflowAPIError } from '@workflow/errors';
+import { HookNotFoundError, WorkflowAPIError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   type CreateEventParams,
@@ -365,7 +365,39 @@ export async function getWorkflowRunEvents(
   };
 }
 
+const hookEventTypes = new Set([
+  'hook_created',
+  'hook_disposed',
+  'hook_received',
+  'hook_conflict',
+]);
+
 export async function createWorkflowRunEvent(
+  id: string | null,
+  data: AnyEventRequest,
+  params?: CreateEventParams,
+  config?: APIConfig
+): Promise<EventResult> {
+  try {
+    return await createWorkflowRunEventInner(id, data, params, config);
+  } catch (err) {
+    // Translate 404 to HookNotFoundError for hook-related events.
+    // makeRequest() throws a generic WorkflowAPIError for all 404s;
+    // on the hook_disposed / hook_received path a 404 means the hook
+    // was already disposed or never created.
+    if (
+      hookEventTypes.has(data.eventType) &&
+      WorkflowAPIError.is(err) &&
+      err.status === 404 &&
+      data.correlationId
+    ) {
+      throw new HookNotFoundError(data.correlationId);
+    }
+    throw err;
+  }
+}
+
+async function createWorkflowRunEventInner(
   id: string | null,
   data: AnyEventRequest,
   params?: CreateEventParams,

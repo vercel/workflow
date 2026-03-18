@@ -4,7 +4,6 @@ import {
   EntityConflictError,
   HookNotFoundError,
   RunExpiredError,
-  WorkflowAPIError,
 } from '@workflow/errors';
 import {
   type CreateEventRequest,
@@ -179,14 +178,8 @@ export async function handleSuspension({
                 message: err.message,
               }
             );
-          } else if (
-            HookNotFoundError.is(err) ||
-            (WorkflowAPIError.is(err) && err.status === 404)
-          ) {
+          } else if (HookNotFoundError.is(err)) {
             // Hook may have already been disposed or never created
-            // Note: world-vercel returns WorkflowAPIError({ status: 404 })
-            // for missing hooks during event creation, while world-local
-            // and world-postgres throw HookNotFoundError directly.
             runtimeLogger.info('Hook not found for disposal, continuing', {
               workflowRunId: runId,
               correlationId: queueItem.correlationId,
