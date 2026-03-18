@@ -575,12 +575,41 @@ function chunksToStep(
     .map((chunk) => chunk.delta)
     .join('');
 
-  const reasoning = chunks.filter(
-    (chunk): chunk is Extract<typeof chunk, { type: 'reasoning-delta' }> =>
-      chunk.type === 'reasoning-delta'
-  );
+  // Collect reasoning parts by ID, mirroring how the AI SDK aggregates them:
+  // reasoning-start creates the part (with providerMetadata), reasoning-delta
+  // appends text, reasoning-end finalizes. For encrypted reasoning (e.g. OpenAI
+  // o-series), there may be no deltas — only start+end with providerMetadata
+  // carrying the itemId needed for Responses API item references.
+  const reasoningById = new Map<
+    string,
+    { text: string; providerMetadata?: unknown }
+  >();
+  for (const chunk of chunks) {
+    if (chunk.type === 'reasoning-start') {
+      reasoningById.set(chunk.id, {
+        text: '',
+        providerMetadata: chunk.providerMetadata,
+      });
+    } else if (chunk.type === 'reasoning-delta') {
+      const entry = reasoningById.get(chunk.id);
+      if (entry) {
+        entry.text += chunk.delta;
+        // Later deltas may carry updated providerMetadata
+        if (chunk.providerMetadata != null) {
+          entry.providerMetadata = chunk.providerMetadata;
+        }
+      } else {
+        // Delta without a preceding start — still collect it
+        reasoningById.set(chunk.id, {
+          text: chunk.delta,
+          providerMetadata: chunk.providerMetadata,
+        });
+      }
+    }
+  }
+  const reasoning = Array.from(reasoningById.values());
 
-  const reasoningText = reasoning.map((chunk) => chunk.delta).join('');
+  const reasoningText = reasoning.map((r) => r.text).join('');
 
   // Extract warnings from stream-start chunk
   const streamStart = chunks.find(
@@ -665,11 +694,11 @@ function chunksToStep(
       })),
     ],
     text,
-    reasoning: reasoning.map((chunk) => ({
+    reasoning: reasoning.map((r) => ({
       type: 'reasoning' as const,
-      text: chunk.delta,
-      ...(chunk.providerMetadata != null
-        ? { providerOptions: chunk.providerMetadata }
+      text: r.text,
+      ...(r.providerMetadata != null
+        ? { providerOptions: r.providerMetadata }
         : {}),
     })),
     reasoningText: reasoningText || undefined,
