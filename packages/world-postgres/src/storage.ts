@@ -5,6 +5,7 @@ import {
   RunNotSupportedError,
   TooEarlyError,
   WorkflowAPIError,
+  WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import type {
   Event,
@@ -114,7 +115,7 @@ export function createRunsStorage(drizzle: Drizzle): Storage['runs'] {
     get: (async (id, params) => {
       const [value] = await get.execute({ id });
       if (!value) {
-        throw new WorkflowAPIError(`Run not found: ${id}`, { status: 404 });
+        throw new WorkflowRunNotFoundError(id);
       }
       value.output ||= value.outputJson;
       value.input ||= value.inputJson;
@@ -324,7 +325,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       if (data.eventType === 'run_created' && runId && runId !== '') {
         const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
         if (validationError) {
-          throw new WorkflowAPIError(validationError, { status: 400 });
+          throw new WorkflowAPIError(validationError);
         }
       }
 
@@ -344,7 +345,13 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // Helper to check if step is in terminal state
       const isStepTerminal = (status: string) =>
-        ['completed', 'failed'].includes(status);
+        ['completed', 'failed', 'cancelled'].includes(status);
+
+      // Terminal step statuses for use in SQL WHERE clauses (atomic guard).
+      // Must match the Vercel world's conditional expressions:
+      //   ne(status, 'completed') AND ne(status, 'failed') AND ne(status, 'cancelled')
+      const terminalStepStatuses: (typeof Schema.steps.status.enumValues)[number][] =
+        ['completed', 'failed', 'cancelled'];
 
       // ============================================================
       // VALIDATION: Terminal state and event ordering checks
@@ -482,9 +489,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
         // Event ordering: step must exist before these events
         if (!validatedStep) {
-          throw new WorkflowAPIError(`Step "${data.correlationId}" not found`, {
-            status: 404,
-          });
+          throw new WorkflowAPIError(`Step "${data.correlationId}" not found`);
         }
 
         // Step terminal state validation
@@ -517,9 +522,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .limit(1);
 
         if (!existingHook) {
-          throw new WorkflowAPIError(`Hook "${data.correlationId}" not found`, {
-            status: 404,
-          });
+          throw new HookNotFoundError(data.correlationId);
         }
       }
 
@@ -572,7 +575,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
+      // Terminal run statuses for use in SQL WHERE clauses (atomic guard).
+      // Must match the Vercel world's conditional expressions:
+      //   ne(status, 'completed') AND ne(status, 'failed') AND ne(status, 'cancelled')
+      const terminalRunStatuses: (typeof Schema.runs.status.enumValues)[number][] =
+        ['completed', 'failed', 'cancelled'];
+
       // Handle run_completed event: update run status and cleanup hooks
+      // Uses conditional UPDATE to prevent completing an already-terminal run.
       if (data.eventType === 'run_completed') {
         const eventData = (data as any).eventData as { output?: any };
         const [runValue] = await drizzle
@@ -583,10 +593,27 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             completedAt: now,
             updatedAt: now,
           })
-          .where(eq(Schema.runs.runId, effectiveRunId))
+          .where(
+            and(
+              eq(Schema.runs.runId, effectiveRunId),
+              notInArray(Schema.runs.status, terminalRunStatuses)
+            )
+          )
           .returning();
         if (runValue) {
           run = deserializeRunError(compact(runValue));
+        } else {
+          const [existing] = await getRunForValidation.execute({
+            runId: effectiveRunId,
+          });
+          if (!existing) {
+            throw new WorkflowRunNotFoundError(effectiveRunId);
+          }
+          if (isRunTerminal(existing.status)) {
+            throw new EntityConflictError(
+              `Cannot transition run from terminal state "${existing.status}"`
+            );
+          }
         }
         // Delete all hooks and waits for this run to allow token reuse
         await Promise.all([
@@ -600,6 +627,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       }
 
       // Handle run_failed event: update run status and cleanup hooks
+      // Uses conditional UPDATE to prevent failing an already-terminal run.
       if (data.eventType === 'run_failed') {
         const eventData = (data as any).eventData as {
           error: any;
@@ -621,10 +649,27 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             completedAt: now,
             updatedAt: now,
           })
-          .where(eq(Schema.runs.runId, effectiveRunId))
+          .where(
+            and(
+              eq(Schema.runs.runId, effectiveRunId),
+              notInArray(Schema.runs.status, terminalRunStatuses)
+            )
+          )
           .returning();
         if (runValue) {
           run = deserializeRunError(compact(runValue));
+        } else {
+          const [existing] = await getRunForValidation.execute({
+            runId: effectiveRunId,
+          });
+          if (!existing) {
+            throw new WorkflowRunNotFoundError(effectiveRunId);
+          }
+          if (isRunTerminal(existing.status)) {
+            throw new EntityConflictError(
+              `Cannot transition run from terminal state "${existing.status}"`
+            );
+          }
         }
         // Delete all hooks and waits for this run to allow token reuse
         await Promise.all([
@@ -638,6 +683,9 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       }
 
       // Handle run_cancelled event: update run status and cleanup hooks
+      // Uses conditional UPDATE to prevent cancelling an already-terminal run.
+      // Note: idempotent run_cancelled on already-cancelled runs is handled
+      // earlier in the pre-validation block (creates event and returns early).
       if (data.eventType === 'run_cancelled') {
         const [runValue] = await drizzle
           .update(Schema.runs)
@@ -646,10 +694,27 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             completedAt: now,
             updatedAt: now,
           })
-          .where(eq(Schema.runs.runId, effectiveRunId))
+          .where(
+            and(
+              eq(Schema.runs.runId, effectiveRunId),
+              notInArray(Schema.runs.status, terminalRunStatuses)
+            )
+          )
           .returning();
         if (runValue) {
           run = deserializeRunError(compact(runValue));
+        } else {
+          const [existing] = await getRunForValidation.execute({
+            runId: effectiveRunId,
+          });
+          if (!existing) {
+            throw new WorkflowRunNotFoundError(effectiveRunId);
+          }
+          if (isRunTerminal(existing.status)) {
+            throw new EntityConflictError(
+              `Cannot transition run from terminal state "${existing.status}"`
+            );
+          }
         }
         // Delete all hooks and waits for this run to allow token reuse
         await Promise.all([
@@ -689,7 +754,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // Handle step_started event: increment attempt, set status to 'running'
       // Sets startedAt (maps to startedAt) only on first start
-      // Reuse validatedStep from validation (already read above)
+      // Uses conditional UPDATE to prevent re-starting a step that has already
+      // reached a terminal state (completed/failed). Without this guard a
+      // concurrent step_started could revert a completed step back to 'running',
+      // allowing a duplicate execution that corrupts the event log.
       if (data.eventType === 'step_started') {
         // Check if retryAfter timestamp hasn't been reached yet
         if (
@@ -702,49 +770,24 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           );
         }
 
-        const isFirstStart = !validatedStep?.startedAt;
-        const hadRetryAfter = !!validatedStep?.retryAfter;
-
         const [stepValue] = await drizzle
           .update(Schema.steps)
           .set({
             status: 'running',
             // Increment attempt counter using SQL
             attempt: sql`${Schema.steps.attempt} + 1`,
-            // Only set startedAt on first start (not updated on retries)
-            ...(isFirstStart ? { startedAt: now } : {}),
-            // Clear retryAfter now that the step has started
-            ...(hadRetryAfter ? { retryAfter: null } : {}),
-          })
-          .where(
-            and(
-              eq(Schema.steps.runId, effectiveRunId),
-              eq(Schema.steps.stepId, data.correlationId!)
-            )
-          )
-          .returning();
-        if (stepValue) {
-          step = deserializeStepError(compact(stepValue));
-        }
-      }
-
-      // Handle step_completed event: update step status
-      // Uses conditional UPDATE to skip validation query (performance optimization)
-      if (data.eventType === 'step_completed') {
-        const eventData = (data as any).eventData as { result?: any };
-        const [stepValue] = await drizzle
-          .update(Schema.steps)
-          .set({
-            status: 'completed',
-            output: eventData.result as SerializedContent | undefined,
-            completedAt: now,
+            // Only set startedAt on first start — use COALESCE so concurrent
+            // step_started calls can't clobber the original timestamp.
+            startedAt: sql`COALESCE(${Schema.steps.startedAt}, ${now.toISOString()})`,
+            // Always clear retryAfter now that the step has started
+            retryAfter: null,
           })
           .where(
             and(
               eq(Schema.steps.runId, effectiveRunId),
               eq(Schema.steps.stepId, data.correlationId!),
-              // Only update if not already in terminal state (validation in WHERE clause)
-              notInArray(Schema.steps.status, ['completed', 'failed'])
+              // Only update if not already in terminal state (prevents TOCTOU race)
+              notInArray(Schema.steps.status, terminalStepStatuses)
             )
           )
           .returning();
@@ -758,11 +801,50 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           });
           if (!existing) {
             throw new WorkflowAPIError(
-              `Step "${data.correlationId}" not found`,
-              { status: 404 }
+              `Step "${data.correlationId}" not found`
             );
           }
-          if (['completed', 'failed'].includes(existing.status)) {
+          if (isStepTerminal(existing.status)) {
+            throw new EntityConflictError(
+              `Cannot modify step in terminal state "${existing.status}"`
+            );
+          }
+        }
+      }
+
+      // Handle step_completed event: update step status
+      // Uses conditional UPDATE to prevent completing an already-terminal step.
+      if (data.eventType === 'step_completed') {
+        const eventData = (data as any).eventData as { result?: any };
+        const [stepValue] = await drizzle
+          .update(Schema.steps)
+          .set({
+            status: 'completed',
+            output: eventData.result as SerializedContent | undefined,
+            completedAt: now,
+          })
+          .where(
+            and(
+              eq(Schema.steps.runId, effectiveRunId),
+              eq(Schema.steps.stepId, data.correlationId!),
+              notInArray(Schema.steps.status, terminalStepStatuses)
+            )
+          )
+          .returning();
+        if (stepValue) {
+          step = deserializeStepError(compact(stepValue));
+        } else {
+          // Step not updated - check if it exists and why
+          const [existing] = await getStepForValidation.execute({
+            runId: effectiveRunId,
+            stepId: data.correlationId!,
+          });
+          if (!existing) {
+            throw new WorkflowAPIError(
+              `Step "${data.correlationId}" not found`
+            );
+          }
+          if (isStepTerminal(existing.status)) {
             throw new EntityConflictError(
               `Cannot modify step in terminal state "${existing.status}"`
             );
@@ -771,7 +853,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       }
 
       // Handle step_failed event: terminal state with error
-      // Uses conditional UPDATE to skip validation query (performance optimization)
+      // Uses conditional UPDATE to prevent failing an already-terminal step.
       if (data.eventType === 'step_failed') {
         const eventData = (data as any).eventData as {
           error?: any;
@@ -796,8 +878,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             and(
               eq(Schema.steps.runId, effectiveRunId),
               eq(Schema.steps.stepId, data.correlationId!),
-              // Only update if not already in terminal state (validation in WHERE clause)
-              notInArray(Schema.steps.status, ['completed', 'failed'])
+              notInArray(Schema.steps.status, terminalStepStatuses)
             )
           )
           .returning();
@@ -811,11 +892,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           });
           if (!existing) {
             throw new WorkflowAPIError(
-              `Step "${data.correlationId}" not found`,
-              { status: 404 }
+              `Step "${data.correlationId}" not found`
             );
           }
-          if (['completed', 'failed'].includes(existing.status)) {
+          if (isStepTerminal(existing.status)) {
             throw new EntityConflictError(
               `Cannot modify step in terminal state "${existing.status}"`
             );
@@ -824,6 +904,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       }
 
       // Handle step_retrying event: sets status back to 'pending', records error
+      // Uses conditional UPDATE to prevent retrying an already-terminal step.
       if (data.eventType === 'step_retrying') {
         const eventData = (data as any).eventData as {
           error?: any;
@@ -848,12 +929,29 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .where(
             and(
               eq(Schema.steps.runId, effectiveRunId),
-              eq(Schema.steps.stepId, data.correlationId!)
+              eq(Schema.steps.stepId, data.correlationId!),
+              notInArray(Schema.steps.status, terminalStepStatuses)
             )
           )
           .returning();
         if (stepValue) {
           step = deserializeStepError(compact(stepValue));
+        } else {
+          // Step not updated - check if it exists and why
+          const [existing] = await getStepForValidation.execute({
+            runId: effectiveRunId,
+            stepId: data.correlationId!,
+          });
+          if (!existing) {
+            throw new WorkflowAPIError(
+              `Step "${data.correlationId}" not found`
+            );
+          }
+          if (isStepTerminal(existing.status)) {
+            throw new EntityConflictError(
+              `Cannot modify step in terminal state "${existing.status}"`
+            );
+          }
         }
       }
 
@@ -1012,8 +1110,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           });
           if (!existing) {
             throw new WorkflowAPIError(
-              `Wait "${data.correlationId}" not found`,
-              { status: 404 }
+              `Wait "${data.correlationId}" not found`
             );
           }
           if (existing.status === 'completed') {
@@ -1061,9 +1158,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         .limit(1);
 
       if (!value) {
-        throw new WorkflowAPIError(`Event not found: ${eventId}`, {
-          status: 404,
-        });
+        throw new WorkflowAPIError(`Event not found: ${eventId}`);
       }
 
       value.eventData ||= value.eventDataJson;
@@ -1226,9 +1321,7 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
         .limit(1);
 
       if (!value) {
-        throw new WorkflowAPIError(`Step not found: ${stepId}`, {
-          status: 404,
-        });
+        throw new WorkflowAPIError(`Step not found: ${stepId}`);
       }
       value.output ||= value.outputJson;
       value.input ||= value.inputJson;

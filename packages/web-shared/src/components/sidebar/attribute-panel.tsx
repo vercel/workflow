@@ -589,7 +589,7 @@ export const AttributeBlock = ({
     attribute === 'input' ||
     attribute === 'output' ||
     attribute === 'eventData';
-  if (isLoading && isExpandableLoadingTarget) {
+  if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
     return (
       <div
         className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}

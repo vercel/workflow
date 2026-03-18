@@ -1,5 +1,16 @@
 # @workflow/builders
 
+## 4.0.1-beta.62
+
+### Patch Changes
+
+- [#1420](https://github.com/vercel/workflow/pull/1420) [`3cc2943`](https://github.com/vercel/workflow/commit/3cc29431b266832dd3d9b735da455d2b11612ea7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Set `maxDuration` in generated `.vc-config.json` for workflow functions (`"max"` for step, `60` for flow)
+
+- Updated dependencies [[`97e4384`](https://github.com/vercel/workflow/commit/97e43846f000f8ef0ea2f237a5c4cc696423e0f0), [`5d95abf`](https://github.com/vercel/workflow/commit/5d95abf9413462e82759bf68ab985e794ce05756), [`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597), [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a), [`a2c0c7e`](https://github.com/vercel/workflow/commit/a2c0c7e6d9d7349bd49aac6e6ea072c68efb7620), [`2cc42cb`](https://github.com/vercel/workflow/commit/2cc42cb8a934532d9ce5b05185322a2f9ce76024), [`f52afe7`](https://github.com/vercel/workflow/commit/f52afe77fffb981dd8812b84b39c2ecab2288f43)]:
+  - @workflow/core@4.2.0-beta.71
+  - @workflow/swc-plugin@4.1.0-beta.20
+  - @workflow/errors@4.1.0-beta.18
+
 ## 4.0.1-beta.61
 
 ### Patch Changes

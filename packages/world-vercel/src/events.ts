@@ -101,6 +101,7 @@ const eventDataRefFieldMap: Record<string, string> = {
   step_failed: 'error',
   step_retrying: 'error',
   hook_created: 'metadata',
+  hook_received: 'payload',
 };
 
 // Events where the client uses the response entity data need 'resolve' (default).
@@ -260,7 +261,7 @@ export async function getEvent(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v3/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}${queryString ? `?${queryString}` : ''}`;
 
   const event = await makeRequest({
     endpoint,
@@ -306,7 +307,7 @@ export async function getWorkflowRunEvents(
   const query = queryString ? `?${queryString}` : '';
   const endpoint = correlationId
     ? `/v2/events${query}`
-    : `/v2/runs/${encodeURIComponent(runId!)}/events${query}`;
+    : `/v3/runs/${encodeURIComponent(runId!)}/events${query}`;
 
   let refResolveConcurrency: number | undefined;
   const response = (await makeRequest({
@@ -412,7 +413,7 @@ export async function createWorkflowRunEvent(
   // the server returns lazy refs (error may be a string or undefined).
   if (remoteRefBehavior === 'resolve') {
     const wireResult = await makeRequest({
-      endpoint: `/v2/runs/${runIdPath}/events`,
+      endpoint: `/v3/runs/${runIdPath}/events`,
       options: { method: 'POST' },
       data: {
         ...data,
@@ -432,7 +433,7 @@ export async function createWorkflowRunEvent(
   }
 
   const wireResult = await makeRequest({
-    endpoint: `/v2/runs/${runIdPath}/events`,
+    endpoint: `/v3/runs/${runIdPath}/events`,
     options: { method: 'POST' },
     data: {
       ...data,
