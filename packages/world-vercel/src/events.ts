@@ -306,7 +306,7 @@ export async function getWorkflowRunEvents(
   const queryString = searchParams.toString();
   const query = queryString ? `?${queryString}` : '';
   const endpoint = correlationId
-    ? `/v3/events${query}`
+    ? `/v2/events${query}`
     : `/v3/runs/${encodeURIComponent(runId!)}/events${query}`;
 
   let refResolveConcurrency: number | undefined;

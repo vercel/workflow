@@ -52,7 +52,7 @@ const REF_RESOLVE_CONCURRENCY = 10;
  * descriptor's `_data` field — no network request is needed.
  *
  * For S3 refs (s3rf:) and Redis refs (kvrf:), a request is made to the
- * `GET /v3/runs/:runId/refs` endpoint on workflow-server which returns
+ * `GET /v2/runs/:runId/refs` endpoint on workflow-server which returns
  * raw CBOR or binary bytes.
  *
  * @param descriptor - The ref descriptor to resolve
@@ -88,7 +88,7 @@ export async function resolveRefDescriptor(
   // Uint8Array). We handle both content types directly rather than going
   // through makeRequest, which only handles JSON/CBOR API responses.
   const { baseUrl, headers } = await getHttpConfig(config);
-  const endpoint = `/v3/runs/${encodeURIComponent(runId)}/refs?ref=${encodeURIComponent(ref)}`;
+  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/refs?ref=${encodeURIComponent(ref)}`;
   const url = `${baseUrl}${endpoint}`;
 
   // Set headers that makeRequest normally adds: Accept for content
