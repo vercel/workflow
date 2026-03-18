@@ -36,6 +36,9 @@ const SYMBOL_IMPORTS: Record<string, ImportMapping> = {
   WorkflowWritableStreamOptions: { module: 'workflow', isType: true },
   RetryableErrorOptions: { module: 'workflow', isType: true },
 
+  // From '@workflow/errors'
+  WorkflowRunFailedError: { module: '@workflow/errors' },
+
   // From 'workflow/api'
   start: { module: 'workflow/api' },
   getRun: { module: 'workflow/api' },

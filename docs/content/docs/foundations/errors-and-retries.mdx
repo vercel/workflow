@@ -144,7 +144,7 @@ callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 When a workflow run fails, the error may include a `code` that classifies the failure. You can access it programmatically via the `Run` class:
 
 ```typescript lineNumbers
-import { WorkflowRunFailedError } from "workflow";
+import { WorkflowRunFailedError } from "@workflow/errors";
 import { start } from "workflow/api";
 
 const run = await start(myWorkflow, [input]);
