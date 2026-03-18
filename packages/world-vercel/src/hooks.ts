@@ -49,7 +49,7 @@ export async function listHooks(
   if (runId) searchParams.set('runId', runId);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/hooks${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v3/hooks${queryString ? `?${queryString}` : ''}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -72,7 +72,7 @@ export async function getHook(
   config?: APIConfig
 ): Promise<Hook> {
   const resolveData = params?.resolveData || 'all';
-  const endpoint = `/v2/hooks/${encodeURIComponent(hookId)}`;
+  const endpoint = `/v3/hooks/${encodeURIComponent(hookId)}`;
 
   const hook = await makeRequest({
     endpoint,
@@ -90,7 +90,7 @@ export async function createHook(
   config?: APIConfig
 ): Promise<Hook> {
   return makeRequest({
-    endpoint: `/v2/hooks/create`,
+    endpoint: `/v3/hooks/create`,
     options: { method: 'POST' },
     data: { runId, ...data },
     config,
@@ -104,7 +104,7 @@ export async function getHookByToken(
 ): Promise<Hook> {
   try {
     return await makeRequest({
-      endpoint: `/v2/hooks/by-token?token=${encodeURIComponent(token)}`,
+      endpoint: `/v3/hooks/by-token?token=${encodeURIComponent(token)}`,
       options: {
         method: 'GET',
       },
@@ -124,7 +124,7 @@ export async function disposeHook(
   config?: APIConfig
 ): Promise<Hook> {
   return makeRequest({
-    endpoint: `/v2/hooks/${encodeURIComponent(hookId)}`,
+    endpoint: `/v3/hooks/${encodeURIComponent(hookId)}`,
     options: { method: 'DELETE' },
     config,
     schema: HookSchema,

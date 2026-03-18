@@ -123,7 +123,7 @@ export async function listWorkflowRuns(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/runs${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v3/runs${queryString ? `?${queryString}` : ''}`;
 
   const response = (await makeRequest({
     endpoint,
@@ -183,7 +183,7 @@ export async function getWorkflowRun(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v3/runs/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({
