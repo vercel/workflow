@@ -83,6 +83,10 @@ export function createStepLock(world: World) {
       return createStepLockHandle(result.lease, world);
     }
 
+    /*
+    Steps do not sit inside user code polling for a lease.
+    The runtime catches this and re-queues the step attempt at the boundary.
+    */
     throw new StepLockBlockedError(result.retryAfterMs);
   };
 }

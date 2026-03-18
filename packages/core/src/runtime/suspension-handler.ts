@@ -316,6 +316,10 @@ export async function handleSuspension({
   for (const queueItem of limitWaitItems) {
     ops.push(
       (async () => {
+        /*
+        Lock waits are runtime control flow, not user-visible wait events.
+        We only enqueue a fallback replay here; promoted waiters can replace it.
+        */
         const delayMs = Math.max(
           1000,
           queueItem.resumeAt.getTime() - Date.now()

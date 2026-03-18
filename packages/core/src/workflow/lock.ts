@@ -63,6 +63,11 @@ function createLockHandle(
 
 export function createLock(ctx: WorkflowOrchestratorContext) {
   return async function lockImpl(options: LockOptions): Promise<LockHandle> {
+    /*
+    Blocked workflow locks suspend the workflow turn instead of creating a real
+    wait event. Postgres can wake this correlation id early when the waiter is
+    promoted, and the delayed replay is just a fallback.
+    */
     const correlationId = `wflock_wait_${ctx.generateUlid()}`;
     const holderId = `wflock_${ctx.runId}:${correlationId}:${ctx.generateUlid()}`;
     const definition = {
