@@ -1,10 +1,5 @@
 ---
 '@workflow/world-postgres': patch
-'@workflow/world-local': patch
 ---
 
-Add atomic terminal-state guards to all entity update operations across both postgres and local worlds to match the Vercel world's DynamoDB conditional expressions.
-
-**Postgres world**: Add conditional WHERE clauses to prevent TOCTOU races where concurrent requests bypass pre-validation and corrupt the event log.
-
-**Local world**: Use `writeExclusive` lock files to atomically prevent concurrent terminal state transitions for steps and waits. Add `cancelled` to `isStepTerminal`.
+Fix race condition in `step_started` that could corrupt the event log. The `UPDATE` for `step_started` now includes a conditional guard (`status NOT IN ('completed', 'failed', 'cancelled')`) to prevent a concurrent step execution from reverting a completed step back to running. Also adds terminal-state guards to `step_retrying`, `run_completed`, `run_failed`, and `run_cancelled`, and adds `cancelled` to the existing guards on `step_completed` and `step_failed`.

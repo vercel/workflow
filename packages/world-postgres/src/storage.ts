@@ -789,19 +789,17 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           throw err;
         }
 
-        const isFirstStart = !validatedStep?.startedAt;
-        const hadRetryAfter = !!validatedStep?.retryAfter;
-
         const [stepValue] = await drizzle
           .update(Schema.steps)
           .set({
             status: 'running',
             // Increment attempt counter using SQL
             attempt: sql`${Schema.steps.attempt} + 1`,
-            // Only set startedAt on first start (not updated on retries)
-            ...(isFirstStart ? { startedAt: now } : {}),
-            // Clear retryAfter now that the step has started
-            ...(hadRetryAfter ? { retryAfter: null } : {}),
+            // Only set startedAt on first start — use COALESCE so concurrent
+            // step_started calls can't clobber the original timestamp.
+            startedAt: sql`COALESCE(${Schema.steps.startedAt}, ${now})`,
+            // Always clear retryAfter now that the step has started
+            retryAfter: null,
           })
           .where(
             and(

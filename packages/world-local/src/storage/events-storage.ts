@@ -492,11 +492,10 @@ export function createEventsStorage(
           // Atomic guard: check if step already reached terminal state
           // (prevents TOCTOU race between validation read and this write)
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const terminalLockPath = taggedPath(
+          const terminalLockPath = path.join(
             basedir,
             'steps',
-            `${stepCompositeKey}.terminal`,
-            tag
+            `${stepCompositeKey}.terminal.lock`
           );
           try {
             await fs.access(terminalLockPath);
@@ -538,11 +537,10 @@ export function createEventsStorage(
         const completedData = data.eventData as { result: any };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const terminalLockPath = taggedPath(
+          const terminalLockPath = path.join(
             basedir,
             'steps',
-            `${stepCompositeKey}.terminal`,
-            tag
+            `${stepCompositeKey}.terminal.lock`
           );
           const claimed = await writeExclusive(terminalLockPath, '');
           if (!claimed) {
@@ -573,11 +571,10 @@ export function createEventsStorage(
         };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-          const terminalLockPath = taggedPath(
+          const terminalLockPath = path.join(
             basedir,
             'steps',
-            `${stepCompositeKey}.terminal`,
-            tag
+            `${stepCompositeKey}.terminal.lock`
           );
           const claimed = await writeExclusive(terminalLockPath, '');
           if (!claimed) {
@@ -773,11 +770,10 @@ export function createEventsStorage(
         // Uses writeExclusive on a lock file to atomically prevent concurrent
         // invocations from both completing the same wait (TOCTOU race).
         const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-        const lockPath = taggedPath(
+        const lockPath = path.join(
           basedir,
           'waits',
-          `${waitCompositeKey}.completed`,
-          tag
+          `${waitCompositeKey}.completed.lock`
         );
         const claimed = await writeExclusive(lockPath, '');
         if (!claimed) {
