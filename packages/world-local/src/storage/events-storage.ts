@@ -533,11 +533,14 @@ export function createEventsStorage(
         const completedData = data.eventData as { result: any };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+          const lockName = tag
+            ? `${stepCompositeKey}.terminal.${tag}`
+            : `${stepCompositeKey}.terminal`;
           const terminalLockPath = path.join(
             basedir,
             '.locks',
             'steps',
-            `${stepCompositeKey}.terminal`
+            lockName
           );
           const claimed = await writeExclusive(terminalLockPath, '');
           if (!claimed) {
@@ -568,11 +571,14 @@ export function createEventsStorage(
         };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+          const lockName = tag
+            ? `${stepCompositeKey}.terminal.${tag}`
+            : `${stepCompositeKey}.terminal`;
           const terminalLockPath = path.join(
             basedir,
             '.locks',
             'steps',
-            `${stepCompositeKey}.terminal`
+            lockName
           );
           const claimed = await writeExclusive(terminalLockPath, '');
           if (!claimed) {
@@ -768,12 +774,10 @@ export function createEventsStorage(
         // Uses writeExclusive on a lock file to atomically prevent concurrent
         // invocations from both completing the same wait (TOCTOU race).
         const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-        const lockPath = path.join(
-          basedir,
-          '.locks',
-          'waits',
-          `${waitCompositeKey}.completed`
-        );
+        const waitLockName = tag
+          ? `${waitCompositeKey}.completed.${tag}`
+          : `${waitCompositeKey}.completed`;
+        const lockPath = path.join(basedir, '.locks', 'waits', waitLockName);
         const claimed = await writeExclusive(lockPath, '');
         if (!claimed) {
           throw new WorkflowAPIError(
