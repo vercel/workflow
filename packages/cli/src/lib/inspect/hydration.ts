@@ -12,6 +12,7 @@ import {
   extractClassName,
   hydrateResourceIO as hydrateResourceIOGeneric,
   isEncryptedData,
+  isExpiredStub,
   observabilityRevivers,
   type Revivers,
 } from '@workflow/core/serialization-format';
@@ -98,6 +99,39 @@ const ENCRYPTED_REF = new EncryptedDataRef();
 /** Check if a value is an EncryptedDataRef (for custom table formatting in CLI) */
 export function isEncryptedRef(value: unknown): value is EncryptedDataRef {
   return value instanceof EncryptedDataRef;
+}
+
+// ---------------------------------------------------------------------------
+// CLI expired data placeholder with custom inspect
+// ---------------------------------------------------------------------------
+
+/**
+ * Placeholder object for expired data fields in CLI output.
+ *
+ * Uses `util.inspect.custom` to render as a styled, unquoted string
+ * (e.g., dim gray "<data expired>") instead of a raw stub object.
+ * Also provides `toJSON()` for `--json` output.
+ */
+class ExpiredDataRef {
+  [inspect.custom](): string {
+    return chalk.gray('<data expired>');
+  }
+
+  toJSON(): string {
+    return '<data expired>';
+  }
+
+  toString(): string {
+    return '<data expired>';
+  }
+}
+
+/** Singleton expired data placeholder for CLI display */
+const EXPIRED_REF = new ExpiredDataRef();
+
+/** Check if a value is an ExpiredDataRef (for custom table formatting in CLI) */
+export function isExpiredRef(value: unknown): value is ExpiredDataRef {
+  return value instanceof ExpiredDataRef;
 }
 
 // ---------------------------------------------------------------------------
@@ -251,27 +285,30 @@ async function maybeDecryptFields<
 // Public API
 // ---------------------------------------------------------------------------
 
+/** Replace a single field value with a display ref if it's encrypted or expired. */
+function toDisplayRef(value: unknown): unknown {
+  if (isEncryptedData(value)) return ENCRYPTED_REF;
+  if (isExpiredStub(value)) return EXPIRED_REF;
+  return value;
+}
+
 /**
- * Replace encrypted Uint8Array values with EncryptedDataRef objects
- * in known data fields so they render with custom inspect styling.
+ * Replace encrypted Uint8Array values and expired stubs with styled
+ * ref objects in known data fields for custom inspect rendering.
  */
-function replaceEncryptedWithRef<T>(resource: T): T {
+function replaceEncryptedAndExpiredWithRef<T>(resource: T): T {
   if (!resource || typeof resource !== 'object') return resource;
   const r = resource as Record<string, unknown>;
   const result = { ...r };
 
   for (const key of ['input', 'output', 'metadata', 'error']) {
-    if (isEncryptedData(result[key])) {
-      result[key] = ENCRYPTED_REF;
-    }
+    result[key] = toDisplayRef(result[key]);
   }
 
   if (result.eventData && typeof result.eventData === 'object') {
     const ed = { ...(result.eventData as Record<string, unknown>) };
     for (const key of ['result', 'input', 'output', 'metadata', 'payload']) {
-      if (isEncryptedData(ed[key])) {
-        ed[key] = ENCRYPTED_REF;
-      }
+      ed[key] = toDisplayRef(ed[key]);
     }
     result.eventData = ed;
   }
@@ -298,6 +335,6 @@ export async function hydrateResourceIO<T>(
     keyResolver ?? null
   );
   const hydrated = hydrateResourceIOGeneric(preprocessed, getRevivers()) as T;
-  // Post-process: swap encrypted Uint8Arrays for CLI-styled objects
-  return replaceEncryptedWithRef(hydrated);
+  // Post-process: swap encrypted Uint8Arrays and expired stubs for CLI-styled objects
+  return replaceEncryptedAndExpiredWithRef(hydrated);
 }

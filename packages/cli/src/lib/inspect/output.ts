@@ -27,6 +27,7 @@ import {
   type EncryptionKeyResolver,
   hydrateResourceIO,
   isEncryptedRef,
+  isExpiredRef,
 } from './hydration.js';
 
 /**
@@ -489,10 +490,21 @@ const showInspectInfoBox = (resource: string) => {
 const EXPIRED_DATA_MESSAGE = chalk.gray('<data expired>');
 
 /**
- * Checks if a run has expired data storage
+ * Checks if a run has expired data storage (run-level expiredAt field)
  */
 const hasExpiredData = (run: WorkflowRun): boolean => {
   return 'expiredAt' in run && run.expiredAt != null;
+};
+
+/**
+ * Checks if any data field in a hydrated resource has been replaced with an
+ * expired placeholder. Works for runs, steps, hooks, and events — unlike
+ * `hasExpiredData` which only checks the run-level `expiredAt` field.
+ */
+const hasExpiredFields = (resource: Record<string, unknown>): boolean => {
+  return ['input', 'output', 'error', 'metadata'].some((key) =>
+    isExpiredRef(resource[key])
+  );
 };
 
 /**
@@ -507,6 +519,8 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
     value = '<null>';
   } else if (isEncryptedRef(io)) {
     value = chalk.dim.yellow('\u{1F512} Encrypted');
+  } else if (isExpiredRef(io)) {
+    value = chalk.gray('<data expired>');
   } else if (io && Array.isArray(io)) {
     if (io.length === 0) {
       value = '<empty>';
@@ -801,6 +815,15 @@ export const showStep = async (
       showJson(stepWithHydratedIO);
       return;
     } else {
+      if (
+        hasExpiredFields(
+          stepWithHydratedIO as unknown as Record<string, unknown>
+        )
+      ) {
+        logger.warn(
+          "This step's data (input/output/error) has expired and is no longer available."
+        );
+      }
       logger.log(stepWithHydratedIO);
     }
   } catch (error) {
@@ -1115,6 +1138,13 @@ export const showHook = async (
       showJson(hydratedHook);
       return;
     } else {
+      if (
+        hasExpiredFields(hydratedHook as unknown as Record<string, unknown>)
+      ) {
+        logger.warn(
+          "This hook's data (metadata) has expired and is no longer available."
+        );
+      }
       logger.log(hydratedHook);
     }
   } catch (error) {
