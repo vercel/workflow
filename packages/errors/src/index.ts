@@ -280,10 +280,7 @@ export class RunExpiredError extends WorkflowError {
 export class TooEarlyError extends WorkflowError {
   retryAfter?: Date;
 
-  constructor(
-    message: string,
-    options?: { retryAfter?: Date; meta?: Record<string, unknown> }
-  ) {
+  constructor(message: string, options?: { retryAfter?: Date }) {
     super(message);
     this.name = 'TooEarlyError';
     this.retryAfter = options?.retryAfter;

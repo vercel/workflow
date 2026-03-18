@@ -334,56 +334,40 @@ export async function makeRequest<T>({
           `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`;
 
         // Map specific HTTP status codes to semantic error types
-        if (response.status === 409) {
-          const error = new EntityConflictError(defaultMessage);
+        const throwWithTrace = (error: Error): never => {
           span?.setAttributes({
             ...ErrorType(errorData.code || `HTTP ${response.status}`),
           });
           span?.recordException?.(error);
           throw error;
+        };
+
+        if (response.status === 409) {
+          throwWithTrace(new EntityConflictError(defaultMessage));
         }
         if (response.status === 410) {
-          const error = new RunExpiredError(defaultMessage);
-          span?.setAttributes({
-            ...ErrorType(errorData.code || `HTTP ${response.status}`),
-          });
-          span?.recordException?.(error);
-          throw error;
+          throwWithTrace(new RunExpiredError(defaultMessage));
         }
         if (response.status === 425) {
           const retryAfterDate = retryAfter
             ? new Date(Date.now() + retryAfter * 1000)
             : undefined;
-          const error = new TooEarlyError(defaultMessage, {
-            retryAfter: retryAfterDate,
-          });
-          span?.setAttributes({
-            ...ErrorType(errorData.code || `HTTP ${response.status}`),
-          });
-          span?.recordException?.(error);
-          throw error;
+          throwWithTrace(
+            new TooEarlyError(defaultMessage, { retryAfter: retryAfterDate })
+          );
         }
         if (response.status === 429) {
-          const error = new ThrottleError(defaultMessage, { retryAfter });
-          span?.setAttributes({
-            ...ErrorType(errorData.code || `HTTP ${response.status}`),
-          });
-          span?.recordException?.(error);
-          throw error;
+          throwWithTrace(new ThrottleError(defaultMessage, { retryAfter }));
         }
 
-        const error = new WorkflowAPIError(defaultMessage, {
-          url,
-          status: response.status,
-          code: errorData.code,
-          retryAfter,
-        });
-        // Record error attributes per OTEL conventions
-        span?.setAttributes({
-          ...ErrorType(errorData.code || `HTTP ${response.status}`),
-        });
-        span?.recordException?.(error);
-        throw error;
+        throwWithTrace(
+          new WorkflowAPIError(defaultMessage, {
+            url,
+            status: response.status,
+            code: errorData.code,
+            retryAfter,
+          })
+        );
       }
 
       // Expose response headers to caller before consuming the body

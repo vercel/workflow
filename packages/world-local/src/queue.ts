@@ -107,7 +107,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await semaphore.acquire();
       }
       try {
-        let defaultRetriesLeft = 3;
+        const maxAttempts = 3;
+        let defaultRetriesLeft = maxAttempts;
         for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
           defaultRetriesLeft--;
 
@@ -170,7 +171,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
 
           console.error(
-            `[world-local] Queue message failed (attempt ${attempt + 1}/${attempt + 1 + defaultRetriesLeft}, status ${response.status}): ${text}`,
+            `[world-local] Queue message failed (attempt ${attempt + 1}/${maxAttempts}, status ${response.status}): ${text}`,
             { queueName, messageId }
           );
         }
