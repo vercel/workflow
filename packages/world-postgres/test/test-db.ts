@@ -31,7 +31,7 @@ export async function createPostgresTestDb(): Promise<PostgresTestDb> {
     env: process.env,
   });
 
-  const sql = postgres(connectionString, { max: 1 });
+  const sql = postgres(connectionString, { max: 10 });
   const drizzle = createClient(sql);
 
   return {

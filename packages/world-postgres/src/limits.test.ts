@@ -42,6 +42,42 @@ if (process.platform === 'win32') {
   });
 
   describe('postgres waiter promotion', () => {
+    it('serializes concurrent acquires for the same key', async () => {
+      const limits = createLimits(
+        { connectionString: db.connectionString, queueConcurrency: 1 },
+        db.drizzle
+      );
+
+      const results = await Promise.all(
+        Array.from({ length: 12 }, (_, index) =>
+          limits.acquire({
+            key: 'workflow:user:concurrent',
+            holderId: `holder-${index}`,
+            definition: { concurrency: { max: 1 } },
+            leaseTtlMs: 1_000,
+          })
+        )
+      );
+
+      const acquired = results.filter((result) => result.status === 'acquired');
+      const blocked = results.filter((result) => result.status === 'blocked');
+
+      expect(acquired).toHaveLength(1);
+      expect(blocked).toHaveLength(11);
+
+      const leases = await db.drizzle
+        .select({ holderId: Schema.limitLeases.holderId })
+        .from(Schema.limitLeases)
+        .where(eq(Schema.limitLeases.limitKey, 'workflow:user:concurrent'));
+      const waiters = await db.drizzle
+        .select({ holderId: Schema.limitWaiters.holderId })
+        .from(Schema.limitWaiters)
+        .where(eq(Schema.limitWaiters.limitKey, 'workflow:user:concurrent'));
+
+      expect(leases).toHaveLength(1);
+      expect(waiters).toHaveLength(11);
+    });
+
     it('promotes the earliest waiter on release', async () => {
       const limits = createLimits(
         { connectionString: db.connectionString, queueConcurrency: 1 },

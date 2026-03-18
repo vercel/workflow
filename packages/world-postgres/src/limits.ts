@@ -357,6 +357,16 @@ async function getActiveState(
   return { leases, tokens, waiters };
 }
 
+/*
+We serialize limit mutations per key inside the transaction so concurrent
+acquire/release flows cannot both observe the same free capacity.
+*/
+async function lockLimitKey(tx: Db, key: string): Promise<void> {
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`
+  );
+}
+
 async function promoteWaiters(
   tx: Db,
   config: PostgresWorldConfig,
@@ -439,6 +449,7 @@ export function createLimits(
       const parsed = LimitAcquireRequestSchema.parse(request);
 
       return drizzle.transaction(async (tx) => {
+        await lockLimitKey(tx, parsed.key);
         // Prune expired leases and tokens, promote pre-existing waiters before attempting to acquire a new lease or token.
         await pruneExpired(tx, parsed.key);
         await promoteWaiters(tx, config, parsed.key);
@@ -552,6 +563,19 @@ export function createLimits(
       const parsed = LimitReleaseRequestSchema.parse(request);
 
       await drizzle.transaction(async (tx) => {
+        const key =
+          parsed.key ??
+          (
+            await tx.query.limitLeases.findFirst({
+              columns: { limitKey: true },
+              where: eq(Schema.limitLeases.leaseId, parsed.leaseId),
+            })
+          )?.limitKey;
+
+        if (key) {
+          await lockLimitKey(tx, key);
+        }
+
         let where = eq(Schema.limitLeases.leaseId, parsed.leaseId);
         if (parsed.key) {
           where = and(where, eq(Schema.limitLeases.limitKey, parsed.key))!;
@@ -586,6 +610,8 @@ export function createLimits(
             status: 404,
           });
         }
+
+        await lockLimitKey(tx, existing.limitKey);
 
         const now = Date.now();
         const currentExpiry = toMillis(existing.expiresAt);
