@@ -548,7 +548,7 @@ describe('e2e', () => {
   });
 
   if (isLocalWorld) {
-    test.fails(
+    test(
       'workflowWithWorkflowAndStepLocks demonstrates workflow and step limits on local world',
       { timeout: 60_000 },
       async () => {

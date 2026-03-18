@@ -1,6 +1,8 @@
-import type { NextConfig } from 'next';
 import path from 'node:path';
+import type { NextConfig } from 'next';
 import { withWorkflow } from 'workflow/next';
+
+process.env.WORKFLOW_PUBLIC_MANIFEST ??= '1';
 
 const turbopackRoot = path.resolve(process.cwd(), '../..');
 

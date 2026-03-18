@@ -16,6 +16,8 @@ import {
   hydrateStepArguments,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
+import { createStepLock } from '../step/lock.js';
+import { STEP_LOCK } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import {
   getSpanKind,
@@ -117,7 +119,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           // - Step not in terminal state (returns 409)
           // - retryAfter timestamp reached (returns 425 with Retry-After header)
           // - Workflow still active (returns 410 if completed)
-          let step;
+          let step: Awaited<ReturnType<typeof world.steps.get>>;
           try {
             const startResult = await world.events.create(
               workflowRunId,
@@ -384,31 +386,43 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
           const executionStartTime = Date.now();
           try {
+            const previousStepLock = (globalThis as any)[STEP_LOCK];
+            (globalThis as any)[STEP_LOCK] = createStepLock(world);
+
             result = await trace('step.execute', {}, async () => {
-              return await contextStorage.run(
-                {
-                  stepMetadata: {
-                    stepName,
-                    stepId,
-                    stepStartedAt: new Date(+stepStartedAt),
-                    attempt,
+              try {
+                return await contextStorage.run(
+                  {
+                    stepMetadata: {
+                      stepName,
+                      stepId,
+                      stepStartedAt: new Date(+stepStartedAt),
+                      attempt,
+                    },
+                    workflowMetadata: {
+                      workflowName,
+                      workflowRunId,
+                      workflowStartedAt: new Date(+workflowStartedAt),
+                      // TODO: there should be a getUrl method on the world interface itself. This
+                      // solution only works for vercel + local worlds.
+                      url: isVercel
+                        ? `https://${process.env.VERCEL_URL}`
+                        : `http://localhost:${port ?? 3000}`,
+                    },
+                    ops,
+                    closureVars: hydratedInput.closureVars,
+                    encryptionKey,
+                    lockCounter: 0,
                   },
-                  workflowMetadata: {
-                    workflowName,
-                    workflowRunId,
-                    workflowStartedAt: new Date(+workflowStartedAt),
-                    // TODO: there should be a getUrl method on the world interface itself. This
-                    // solution only works for vercel + local worlds.
-                    url: isVercel
-                      ? `https://${process.env.VERCEL_URL}`
-                      : `http://localhost:${port ?? 3000}`,
-                  },
-                  ops,
-                  closureVars: hydratedInput.closureVars,
-                  encryptionKey,
-                },
-                () => stepFn.apply(thisVal, args)
-              );
+                  () => stepFn.apply(thisVal, args)
+                );
+              } finally {
+                if (previousStepLock === undefined) {
+                  delete (globalThis as any)[STEP_LOCK];
+                } else {
+                  (globalThis as any)[STEP_LOCK] = previousStepLock;
+                }
+              }
             });
           } catch (err) {
             userCodeError = err;

@@ -14,8 +14,8 @@ import {
 import { initDataDir } from './init.js';
 import { createLimits } from './limits.js';
 import { createQueue, type DirectHandler } from './queue.js';
-import { createStorage } from './storage.js';
 import { hashToken } from './storage/helpers.js';
+import { createStorage } from './storage.js';
 import { createStreamer } from './streamer.js';
 
 // Re-export init types and utilities for consumers
@@ -28,7 +28,7 @@ export {
   parseVersion,
 } from './init.js';
 
-export { type DirectHandler } from './queue.js';
+export type { DirectHandler } from './queue.js';
 
 export type LocalWorld = World & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
@@ -104,6 +104,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
           'steps',
           'events',
           'hooks',
+          'limits',
           'waits',
           'streams/runs',
         ];

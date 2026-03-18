@@ -4,6 +4,7 @@ import {
   type LimitKey,
   type LimitLease,
 } from '@workflow/world';
+import { STEP_LOCK, WORKFLOW_LOCK } from './symbols.js';
 
 export { LIMITS_NOT_IMPLEMENTED_MESSAGE } from '@workflow/world';
 
@@ -28,10 +29,23 @@ export interface LockHandle
 
 /**
  * Reserved workflow API for future concurrency and rate limiting.
- *
- * This placeholder intentionally throws until the runtime and world
- * implementations gain real support.
  */
-export async function lock(_options: LockOptions): Promise<LockHandle> {
+export async function lock(options: LockOptions): Promise<LockHandle> {
+  const workflowLock = (globalThis as any)[WORKFLOW_LOCK] as
+    | ((options: LockOptions) => Promise<LockHandle>)
+    | undefined;
+
+  if (workflowLock) {
+    return workflowLock(options);
+  }
+
+  const stepLock = (globalThis as any)[STEP_LOCK] as
+    | ((options: LockOptions) => Promise<LockHandle>)
+    | undefined;
+
+  if (stepLock) {
+    return stepLock(options);
+  }
+
   throw createLimitsNotImplementedError();
 }

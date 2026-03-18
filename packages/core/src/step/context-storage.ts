@@ -9,4 +9,5 @@ export const contextStorage = /* @__PURE__ */ new AsyncLocalStorage<{
   ops: Promise<void>[];
   closureVars?: Record<string, any>;
   encryptionKey?: CryptoKey;
+  lockCounter: number;
 }>();

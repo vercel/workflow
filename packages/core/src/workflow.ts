@@ -22,6 +22,7 @@ import {
   STABLE_ULID,
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
+  WORKFLOW_LOCK,
   WORKFLOW_SLEEP,
   WORKFLOW_USE_STEP,
 } from './symbols.js';
@@ -32,6 +33,7 @@ import { createContext } from './vm/index.js';
 import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
+import { createLock } from './workflow/lock.js';
 import { createSleep } from './workflow/sleep.js';
 
 /**
@@ -184,12 +186,15 @@ export async function runWorkflow(
 
     const useStep = createUseStep(workflowContext);
     const createHook = createCreateHook(workflowContext);
+    const lock = createLock(workflowContext);
     const sleep = createSleep(workflowContext);
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_USE_STEP] = useStep;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
+    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
+    vmGlobalThis[WORKFLOW_LOCK] = lock;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_SLEEP] = sleep;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
