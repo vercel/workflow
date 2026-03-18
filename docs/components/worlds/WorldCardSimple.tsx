@@ -150,7 +150,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
                     'h-3.5 w-3.5',
                     world.features.includes('encryption')
                       ? 'text-green-600/70'
-                      : 'text-muted-foreground'
+                      : 'text-red-600/70'
                   )}
                 />
                 <span className="text-muted-foreground">Encrypted</span>
@@ -159,10 +159,10 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
                     'font-mono',
                     world.features.includes('encryption')
                       ? 'text-green-600/70'
-                      : 'text-muted-foreground'
+                      : 'text-red-600/70'
                   )}
                 >
-                  {world.features.includes('encryption') ? 'Yes' : '—'}
+                  {world.features.includes('encryption') ? 'Yes' : 'No'}
                 </span>
               </div>
             </TooltipTrigger>

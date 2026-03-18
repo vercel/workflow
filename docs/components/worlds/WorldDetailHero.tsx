@@ -321,7 +321,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
               <TooltipContent
                 side="top"
                 align="start"
-                className="max-w-[240px]"
+                className="max-w-[200px]"
               >
                 <p className="text-xs">
                   User data is encrypted end-to-end in the event log

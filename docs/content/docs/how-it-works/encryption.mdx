@@ -38,7 +38,7 @@ Metadata such as workflow names, step names, entity IDs, timestamps, and lifecyc
 
 Each workflow run is encrypted with its own unique key, provided by the `World` implementation via `getEncryptionKeyForRun()`. How the key is generated and stored is up to the `World`.
 
-For example, the [Vercel World](/docs/deploying/world/vercel-world) uses a two-level key hierarchy: each deployment receives a unique 32-byte random key, and per-run keys are derived from it using [HKDF-SHA256](https://datatracker.ietf.org/doc/html/rfc5869) with the project ID and run ID as context. This ensures that a key derived for one run cannot be used to decrypt data from another run.
+For example, the [Vercel World](/docs/deploying/world/vercel-world) provides unique keys per run and execution environment, ensuring that a given run can only decrypt data from that run itself.
 
 ### Encryption Algorithm
 
