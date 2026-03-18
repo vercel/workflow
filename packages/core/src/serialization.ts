@@ -557,7 +557,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
         await world.closeStream(name, runId);
       },
-      abort() {
+      abort(reason) {
         // Clean up timer to prevent leaks
         if (flushTimer) {
           clearTimeout(flushTimer);
@@ -565,6 +565,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         }
         // Discard buffered chunks - they won't be written
         buffer = [];
+        // Reject any pending flushWaiters so the write() promises settle
+        // and don't leak. Without this, write() hangs forever on an
+        // unsettled promise because the cleared timer will never fire.
+        const waiters = flushWaiters;
+        flushWaiters = [];
+        const abortError =
+          reason ?? new Error("Stream aborted");
+        for (const w of waiters) w.reject(abortError);
       },
     });
   }
