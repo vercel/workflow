@@ -162,11 +162,15 @@ function capturedHandler(
   return capturedHandlerRef.current(message, metadata);
 }
 
-function createMetadata(stepName: string) {
+function createMetadata(
+  stepName: string,
+  overrides: Record<string, unknown> = {}
+) {
   return {
     queueName: `__wkf_step_${stepName}`,
     messageId: 'msg_test123',
     attempt: 1,
+    ...overrides,
   };
 }
 
@@ -447,6 +451,53 @@ describe('step-handler 409 handling', () => {
       await expect(
         capturedHandler(createMessage(), createMetadata('myStep'))
       ).rejects.toThrow('Internal Server Error');
+    });
+  });
+
+  describe('requestId propagation', () => {
+    it('should pass requestId to events.create for step_started', async () => {
+      await capturedHandler(
+        createMessage(),
+        createMetadata('myStep', { requestId: 'iad1::req-abc' })
+      );
+
+      const startedCall = mockEventsCreate.mock.calls.find(
+        ([, event]: [string, { eventType: string }]) =>
+          event.eventType === 'step_started'
+      );
+      expect(startedCall).toBeDefined();
+      expect(startedCall![2]).toEqual(
+        expect.objectContaining({ requestId: 'iad1::req-abc' })
+      );
+    });
+
+    it('should pass requestId to events.create for step_completed', async () => {
+      await capturedHandler(
+        createMessage(),
+        createMetadata('myStep', { requestId: 'iad1::req-abc' })
+      );
+
+      const completedCall = mockEventsCreate.mock.calls.find(
+        ([, event]: [string, { eventType: string }]) =>
+          event.eventType === 'step_completed'
+      );
+      expect(completedCall).toBeDefined();
+      expect(completedCall![2]).toEqual(
+        expect.objectContaining({ requestId: 'iad1::req-abc' })
+      );
+    });
+
+    it('should pass undefined requestId when not provided in metadata', async () => {
+      await capturedHandler(createMessage(), createMetadata('myStep'));
+
+      const startedCall = mockEventsCreate.mock.calls.find(
+        ([, event]: [string, { eventType: string }]) =>
+          event.eventType === 'step_started'
+      );
+      expect(startedCall).toBeDefined();
+      expect(startedCall![2]).toEqual(
+        expect.objectContaining({ requestId: undefined })
+      );
     });
   });
 });

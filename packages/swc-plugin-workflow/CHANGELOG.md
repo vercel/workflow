@@ -1,5 +1,11 @@
 # @workflow/swc-plugin
 
+## 4.1.0-beta.20
+
+### Patch Changes
+
+- [#1368](https://github.com/vercel/workflow/pull/1368) [`5d95abf`](https://github.com/vercel/workflow/commit/5d95abf9413462e82759bf68ab985e794ce05756) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix closure variable detection for `new` expressions, exclude module-level declarations from being over-captured, preserve original step function bodies in enclosing functions for direct calls, and walk into nested function/method bodies to detect deeply nested closure variable usage
+
 ## 4.1.0-beta.19
 
 ### Patch Changes

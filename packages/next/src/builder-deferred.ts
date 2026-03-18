@@ -1082,9 +1082,11 @@ export async function getNextBuilderDeferred() {
       const generatedConfig = {
         version: '0',
         steps: {
+          maxDuration: 'max',
           experimentalTriggers: [STEP_QUEUE_TRIGGER],
         },
         workflows: {
+          maxDuration: 60,
           experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
         },
       };

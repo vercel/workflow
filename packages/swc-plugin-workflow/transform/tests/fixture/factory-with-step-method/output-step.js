@@ -5,7 +5,9 @@ var myFactory$myStep = async function() {
     await fs.mkdir('test');
 };
 const myFactory = ()=>({
-        myStep: myFactory$myStep
+        myStep: async ()=>{
+            await fs.mkdir('test');
+        }
     });
 export default myFactory;
 registerStepFunction("step//./input//myFactory/myStep", myFactory$myStep);

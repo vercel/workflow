@@ -7,6 +7,7 @@ import type {
 import { HealthCheckPayloadSchema } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
+import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { getWorld } from './world.js';
@@ -286,10 +287,12 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
     let pagesLoaded = 0;
 
     const world = getWorld();
+    const loadStart = Date.now();
     while (hasMore) {
       // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
       // to lazyload the data from the world instead so that we can optimize and make the event log loading
       // much faster and memory efficient
+      const pageStart = Date.now();
       const response = await world.events.list({
         runId,
         pagination: {
@@ -302,7 +305,23 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
       hasMore = response.hasMore;
       cursor = response.cursor;
       pagesLoaded++;
+
+      runtimeLogger.debug('Loaded event page', {
+        workflowRunId: runId,
+        page: pagesLoaded,
+        pageEvents: response.data.length,
+        totalEvents: allEvents.length,
+        hasMore,
+        pageMs: Date.now() - pageStart,
+      });
     }
+
+    runtimeLogger.debug('Event loading complete', {
+      workflowRunId: runId,
+      totalEvents: allEvents.length,
+      pagesLoaded,
+      totalMs: Date.now() - loadStart,
+    });
 
     span?.setAttributes({
       ...Attribute.WorkflowEventsCount(allEvents.length),

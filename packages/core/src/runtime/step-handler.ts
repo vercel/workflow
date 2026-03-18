@@ -62,6 +62,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       traceCarrier: traceContext,
       requestedAt,
     } = StepInvokePayloadSchema.parse(message_);
+    const { requestId } = metadata;
     const spanLinks = await linkToCurrentContext();
     // Execute step within the propagated trace context
     return await withTraceContext(traceContext, async () => {
@@ -118,11 +119,15 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           // - Workflow still active (returns 410 if completed)
           let step;
           try {
-            const startResult = await world.events.create(workflowRunId, {
-              eventType: 'step_started',
-              specVersion: SPEC_VERSION_CURRENT,
-              correlationId: stepId,
-            });
+            const startResult = await world.events.create(
+              workflowRunId,
+              {
+                eventType: 'step_started',
+                specVersion: SPEC_VERSION_CURRENT,
+                correlationId: stepId,
+              },
+              { requestId }
+            );
 
             if (!startResult.step) {
               throw new WorkflowRuntimeError(
@@ -249,15 +254,19 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             });
             // Fail the step via event (event-sourced architecture)
             try {
-              await world.events.create(workflowRunId, {
-                eventType: 'step_failed',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: stepId,
-                eventData: {
-                  error: errorMessage,
-                  stack: step.error?.stack,
+              await world.events.create(
+                workflowRunId,
+                {
+                  eventType: 'step_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                  eventData: {
+                    error: errorMessage,
+                    stack: step.error?.stack,
+                  },
                 },
-              });
+                { requestId }
+              );
             } catch (err) {
               if (WorkflowAPIError.is(err) && err.status === 409) {
                 runtimeLogger.info(
@@ -306,15 +315,19 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               error: errorMessage,
             });
             try {
-              await world.events.create(workflowRunId, {
-                eventType: 'step_failed',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: stepId,
-                eventData: {
-                  error: errorMessage,
-                  stack: new Error(errorMessage).stack ?? '',
+              await world.events.create(
+                workflowRunId,
+                {
+                  eventType: 'step_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                  eventData: {
+                    error: errorMessage,
+                    stack: new Error(errorMessage).stack ?? '',
+                  },
                 },
-              });
+                { requestId }
+              );
             } catch (failErr) {
               if (WorkflowAPIError.is(failErr) && failErr.status === 409) {
                 return;
@@ -469,15 +482,19 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               );
               // Fail the step via event (event-sourced architecture)
               try {
-                await world.events.create(workflowRunId, {
-                  eventType: 'step_failed',
-                  specVersion: SPEC_VERSION_CURRENT,
-                  correlationId: stepId,
-                  eventData: {
-                    error: normalizedError.message,
-                    stack: normalizedStack,
+                await world.events.create(
+                  workflowRunId,
+                  {
+                    eventType: 'step_failed',
+                    specVersion: SPEC_VERSION_CURRENT,
+                    correlationId: stepId,
+                    eventData: {
+                      error: normalizedError.message,
+                      stack: normalizedStack,
+                    },
                   },
-                });
+                  { requestId }
+                );
               } catch (stepFailErr) {
                 if (
                   WorkflowAPIError.is(stepFailErr) &&
@@ -528,15 +545,19 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
                 // Fail the step via event (event-sourced architecture)
                 try {
-                  await world.events.create(workflowRunId, {
-                    eventType: 'step_failed',
-                    specVersion: SPEC_VERSION_CURRENT,
-                    correlationId: stepId,
-                    eventData: {
-                      error: errorMessage,
-                      stack: normalizedStack,
+                  await world.events.create(
+                    workflowRunId,
+                    {
+                      eventType: 'step_failed',
+                      specVersion: SPEC_VERSION_CURRENT,
+                      correlationId: stepId,
+                      eventData: {
+                        error: errorMessage,
+                        stack: normalizedStack,
+                      },
                     },
-                  });
+                    { requestId }
+                  );
                 } catch (stepFailErr) {
                   if (
                     WorkflowAPIError.is(stepFailErr) &&
@@ -583,18 +604,22 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 // Set step to pending for retry via event (event-sourced architecture)
                 // step_retrying records the error and sets status to pending
                 try {
-                  await world.events.create(workflowRunId, {
-                    eventType: 'step_retrying',
-                    specVersion: SPEC_VERSION_CURRENT,
-                    correlationId: stepId,
-                    eventData: {
-                      error: normalizedError.message,
-                      stack: normalizedStack,
-                      ...(RetryableError.is(err) && {
-                        retryAfter: err.retryAfter,
-                      }),
+                  await world.events.create(
+                    workflowRunId,
+                    {
+                      eventType: 'step_retrying',
+                      specVersion: SPEC_VERSION_CURRENT,
+                      correlationId: stepId,
+                      eventData: {
+                        error: normalizedError.message,
+                        stack: normalizedStack,
+                        ...(RetryableError.is(err) && {
+                          retryAfter: err.retryAfter,
+                        }),
+                      },
                     },
-                  });
+                    { requestId }
+                  );
                 } catch (stepRetryErr) {
                   if (
                     WorkflowAPIError.is(stepRetryErr) &&
@@ -685,14 +710,18 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           let stepCompleted409 = false;
           const [, traceCarrier] = await Promise.all([
             world.events
-              .create(workflowRunId, {
-                eventType: 'step_completed',
-                specVersion: SPEC_VERSION_CURRENT,
-                correlationId: stepId,
-                eventData: {
-                  result: result as Uint8Array,
+              .create(
+                workflowRunId,
+                {
+                  eventType: 'step_completed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                  eventData: {
+                    result: result as Uint8Array,
+                  },
                 },
-              })
+                { requestId }
+              )
               .catch((err: unknown) => {
                 if (WorkflowAPIError.is(err) && err.status === 409) {
                   runtimeLogger.info(

@@ -1,5 +1,22 @@
 # @workflow/web-shared
 
+## 4.1.0-beta.66
+
+### Patch Changes
+
+- [#1404](https://github.com/vercel/workflow/pull/1404) [`0e2eb5c`](https://github.com/vercel/workflow/commit/0e2eb5c7758901af869e829ac24b399e08ae542e) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix trace viewer construction of traces for v1 runs
+
+- [#1406](https://github.com/vercel/workflow/pull/1406) [`29eb8bb`](https://github.com/vercel/workflow/commit/29eb8bbea8d8a92a246612483c2053c69e0c8676) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix trace construction for v1 runs
+
+- [#1381](https://github.com/vercel/workflow/pull/1381) [`7b9b3c1`](https://github.com/vercel/workflow/commit/7b9b3c1a484a4effff2190ac9899a2608704f375) Thanks [@karthikscale3](https://github.com/karthikscale3)! - web-shared: Timestamp tooltips, toast adapter, improved skeletons, and encrypted data detection for lazy-loaded events
+  web: Add toast for decryption
+
+- [#1427](https://github.com/vercel/workflow/pull/1427) [`11f45b2`](https://github.com/vercel/workflow/commit/11f45b2eb706a6a9e33fbc329bd21e8483a5b434) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix re-rendering of side panel inputs during live poll, sanitize error messages and add loading state for side panel.
+
+- Updated dependencies [[`97e4384`](https://github.com/vercel/workflow/commit/97e43846f000f8ef0ea2f237a5c4cc696423e0f0), [`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597), [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a), [`a2c0c7e`](https://github.com/vercel/workflow/commit/a2c0c7e6d9d7349bd49aac6e6ea072c68efb7620), [`2cc42cb`](https://github.com/vercel/workflow/commit/2cc42cb8a934532d9ce5b05185322a2f9ce76024), [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08), [`f52afe7`](https://github.com/vercel/workflow/commit/f52afe77fffb981dd8812b84b39c2ecab2288f43)]:
+  - @workflow/core@4.2.0-beta.71
+  - @workflow/world@4.1.0-beta.13
+
 ## 4.1.0-beta.65
 
 ### Patch Changes

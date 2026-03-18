@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { QueueClient, DuplicateMessageError } from '@vercel/queue';
 import {
   MessageId,
@@ -10,6 +11,8 @@ import {
 import * as z from 'zod';
 import { getDispatcher } from './http-client.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
+
+const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 
 const MessageWrapper = z.object({
   payload: QueuePayloadSchema,
@@ -169,35 +172,45 @@ export function createQueue(config?: APIConfig): Queue {
     handler
   ) => {
     const client = new QueueClient(clientOptions);
-    return client.handleCallback(async (message: unknown, metadata) => {
-      if (!message || !metadata) {
-        return;
+    const vqsHandler = client.handleCallback(
+      async (message: unknown, metadata) => {
+        if (!message || !metadata) {
+          return;
+        }
+
+        const requestId = requestIdStorage.getStore();
+        const { payload, queueName, deploymentId } =
+          MessageWrapper.parse(message);
+
+        const result = await handler(payload, {
+          queueName,
+          messageId: MessageId.parse(metadata.messageId),
+          attempt: metadata.deliveryCount,
+          requestId,
+        });
+
+        if (typeof result?.timeoutSeconds === 'number') {
+          // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
+          // Otherwise, clamp to max delay (23h) - for longer sleeps, the workflow will chain
+          // multiple delayed messages until the full sleep duration has elapsed.
+          const delaySeconds =
+            result.timeoutSeconds > 0
+              ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
+              : undefined;
+
+          // Send new message BEFORE acknowledging current message.
+          // This ensures crash safety: if process dies after send but before ack,
+          // we may get a duplicate invocation but won't lose the scheduled wakeup.
+          await queue(queueName, payload, { deploymentId, delaySeconds });
+        }
       }
+    );
 
-      const { payload, queueName, deploymentId } =
-        MessageWrapper.parse(message);
-
-      const result = await handler(payload, {
-        queueName,
-        messageId: MessageId.parse(metadata.messageId),
-        attempt: metadata.deliveryCount,
-      });
-
-      if (typeof result?.timeoutSeconds === 'number') {
-        // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
-        // Otherwise, clamp to max delay (23h) - for longer sleeps, the workflow will chain
-        // multiple delayed messages until the full sleep duration has elapsed.
-        const delaySeconds =
-          result.timeoutSeconds > 0
-            ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
-            : undefined;
-
-        // Send new message BEFORE acknowledging current message.
-        // This ensures crash safety: if process dies after send but before ack,
-        // we may get a duplicate invocation but won't lose the scheduled wakeup.
-        await queue(queueName, payload, { deploymentId, delaySeconds });
-      }
-    });
+    return async (req: Request) => {
+      const rawId = req.headers.get('x-vercel-id');
+      const requestId = rawId?.trim() || undefined;
+      return requestIdStorage.run(requestId, () => vqsHandler(req));
+    };
   };
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {

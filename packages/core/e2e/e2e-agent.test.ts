@@ -10,14 +10,33 @@
  *   2. DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack \
  *      pnpm vitest run packages/core/e2e/e2e-agent.test.ts
  */
-import { beforeAll, describe, expect, it } from 'vitest';
-import { start } from '../src/runtime';
-import { getWorkflowMetadata, setupWorld } from './utils';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { Run } from '../src/runtime';
+import { start as rawStart } from '../src/runtime';
+import {
+  getWorkflowMetadata,
+  setupRunTracking,
+  setupWorld,
+  trackRun,
+} from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
+
+async function start<T>(
+  ...args: Parameters<typeof rawStart<T>>
+): Promise<Run<T>> {
+  const run = await rawStart<T>(...args);
+  trackRun(run);
+  return run;
+}
+
+// Next.js canary builds (16.2.0-canary.100+) have a regression where
+// @workflow/ai step files are missing from the step bundle, causing
+// "doStreamStep not found" errors. Skip agent tests on canary until fixed.
+const isCanary = process.env.NEXT_CANARY === '1';
 
 async function agentE2e(fn: string) {
   return getWorkflowMetadata(
@@ -31,11 +50,15 @@ beforeAll(async () => {
   setupWorld(deploymentUrl);
 });
 
+beforeEach((ctx) => {
+  setupRunTracking(ctx.task.name);
+});
+
 // ============================================================================
 // Core agent tests
 // ============================================================================
 
-describe('DurableAgent e2e', { timeout: 120_000 }, () => {
+describe.skipIf(isCanary)('DurableAgent e2e', { timeout: 120_000 }, () => {
   describe('core', () => {
     it('basic text response', async () => {
       const run = await start(await agentE2e('agentBasicE2e'), ['hello world']);
@@ -192,6 +215,54 @@ describe('DurableAgent e2e', { timeout: 120_000 }, () => {
       expect(rv.stepCount).toBe(1);
     });
   });
+
+  // ==========================================================================
+  // prepareStep on constructor (#1303)
+  // ==========================================================================
+
+  describe('prepareStep on constructor', () => {
+    it('agent-level prepareStep is called for each LLM step', async () => {
+      const run = await start(
+        await agentE2e('agentConstructorPrepareStepE2e'),
+        []
+      );
+      const rv = await run.returnValue;
+      // 2 LLM steps: tool-call + final text
+      expect(rv.stepCount).toBe(2);
+      expect(rv.prepareStepCallCount).toBe(2);
+      expect(rv.prepareStepNumbers).toEqual([0, 1]);
+    });
+
+    it('stream-level prepareStep overrides constructor-level', async () => {
+      const run = await start(
+        await agentE2e('agentStreamPrepareStepOverrideE2e'),
+        []
+      );
+      const rv = await run.returnValue;
+      // Only the stream-level callback should have fired
+      expect(rv.source).toEqual(['stream']);
+    });
+  });
+
+  // ==========================================================================
+  // Multimodal tool results (#848)
+  // ==========================================================================
+
+  describe('multimodal tool results', () => {
+    it('passes through LanguageModelV3ToolResultOutput from tools', async () => {
+      const run = await start(
+        await agentE2e('agentMultimodalToolResultE2e'),
+        []
+      );
+      const rv = await run.returnValue;
+      expect(rv.stepCount).toBe(2);
+      expect(rv.lastStepText).toBe('I see the image');
+    });
+  });
+
+  // ==========================================================================
+  // GAP tests
+  // ==========================================================================
 
   describe('tool approval (GAP)', () => {
     it('completes but needsApproval is not checked (GAP)', async () => {

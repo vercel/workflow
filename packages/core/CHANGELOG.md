@@ -1,5 +1,27 @@
 # @workflow/core
 
+## 4.2.0-beta.71
+
+### Patch Changes
+
+- [#1409](https://github.com/vercel/workflow/pull/1409) [`97e4384`](https://github.com/vercel/workflow/commit/97e43846f000f8ef0ea2f237a5c4cc696423e0f0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Remove `@deprecated` tag from `deploymentId` in `StartOptions`
+
+- [#1413](https://github.com/vercel/workflow/pull/1413) [`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Refactor builtin step functions to use `this` value serialization instead of explicit parameter passing. Remove unused duplicate builtins file from `@workflow/core`.
+
+- [#1396](https://github.com/vercel/workflow/pull/1396) [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Track Vercel request IDs (`x-vercel-id`) on all workflow events for correlating request logs with workflow executions
+
+- [#1400](https://github.com/vercel/workflow/pull/1400) [`a2c0c7e`](https://github.com/vercel/workflow/commit/a2c0c7e6d9d7349bd49aac6e6ea072c68efb7620) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Seed lazy workflow file discovery in NextJS. Require workflow definitions to be in manifest for Vercel environments.
+
+- [#1418](https://github.com/vercel/workflow/pull/1418) [`2cc42cb`](https://github.com/vercel/workflow/commit/2cc42cb8a934532d9ce5b05185322a2f9ce76024) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Don't fail to queue on 409 responses
+
+- [#1402](https://github.com/vercel/workflow/pull/1402) [`f52afe7`](https://github.com/vercel/workflow/commit/f52afe77fffb981dd8812b84b39c2ecab2288f43) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Reduce log severity for 409/429 logs from `warn` to `info`, as they can't be meaningfully acted on by the consumer.
+
+- Updated dependencies [[`02ea057`](https://github.com/vercel/workflow/commit/02ea0574422b342e6a467de073e003b73e099830), [`d6e8727`](https://github.com/vercel/workflow/commit/d6e8727a948ce60d15af635763239d8321cd7cee), [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a), [`0f07403`](https://github.com/vercel/workflow/commit/0f074030a408078e7db0ae0e494f64125d7444e4), [`e902980`](https://github.com/vercel/workflow/commit/e9029807733d6a7dba76626ae61bd751e9a18fbe), [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08)]:
+  - @workflow/world-local@4.1.0-beta.44
+  - @workflow/world-vercel@4.1.0-beta.44
+  - @workflow/world@4.1.0-beta.13
+  - @workflow/errors@4.1.0-beta.18
+
 ## 4.2.0-beta.70
 
 ### Patch Changes
