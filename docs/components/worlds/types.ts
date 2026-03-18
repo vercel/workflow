@@ -49,7 +49,8 @@ export interface WorldBenchmark {
  * Known world features declared in worlds-manifest.json.
  * Each feature corresponds to an optional World interface method.
  */
-export type WorldFeature = 'encryption';
+export const WORLD_FEATURES = ['encryption'] as const;
+export type WorldFeature = (typeof WORLD_FEATURES)[number];
 
 export interface World {
   type: 'official' | 'community';
