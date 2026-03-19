@@ -12,6 +12,9 @@ const eventTag = cva(['rounded-sm p-1'], {
       sleep: 'bg-gray-200 text-gray-900',
       default: 'bg-gray-200 text-gray-900',
     },
+    isErrored: {
+      true: 'bg-red-200 text-red-900',
+    },
   },
 });
 
@@ -39,6 +42,8 @@ const EventRow = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   const durationMs = getHighResInMs(span.duration);
+  const isErrored = span.attributes.data.status === 'failed';
+  console.log(span);
 
   return (
     <li
@@ -51,7 +56,12 @@ const EventRow = ({
     >
       <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 rounded-sm px-2 h-9 py-1.5 flex">
         <div className="flex items-center gap-2">
-          <span className={eventTag({ eventType: toEventType(span.resource) })}>
+          <span
+            className={eventTag({
+              eventType: toEventType(span.resource),
+              isErrored: isErrored || undefined,
+            })}
+          >
             <StepForward className="w-4 h-4" />
           </span>
           <span className="text-label-14">{span.name}</span>

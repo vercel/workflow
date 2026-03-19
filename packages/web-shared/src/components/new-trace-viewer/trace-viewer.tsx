@@ -235,7 +235,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       style={{
         display: 'grid',
         gridTemplateColumns: activeSpan
-          ? 'minmax(100px, 1fr) 3px clamp(50px, 430px, 100%)'
+          ? 'minmax(100px, 1fr) clamp(50px, 430px, 100%)'
           : 'minmax(100px, 1fr)',
         height: '100%',
       }}

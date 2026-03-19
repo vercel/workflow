@@ -76,7 +76,7 @@ const TimelineBar = memo(function TimelineBar({
         {hasQueued ? (
           <div className="flex gap-0.5 w-full">
             <div
-              className="h-4 rounded-[2px]"
+              className="h-4 rounded-sm"
               style={{
                 width: `${queuedBarPct}%`,
                 minWidth: 4,
@@ -84,7 +84,7 @@ const TimelineBar = memo(function TimelineBar({
               }}
             />
             <div
-              className="h-4 rounded-[2px]"
+              className="h-4 rounded-sm"
               style={{
                 width: `${activeBarPct}%`,
                 minWidth: 4,
@@ -94,7 +94,7 @@ const TimelineBar = memo(function TimelineBar({
           </div>
         ) : (
           <div
-            className="h-4 rounded-[2px]"
+            className="h-4 rounded-sm"
             style={{
               width: '100%',
               minWidth: 4,
