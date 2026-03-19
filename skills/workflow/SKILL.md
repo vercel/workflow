@@ -558,38 +558,100 @@ await resumeWebhook(hook.token, new Request("https://example.com/webhook", {
 - Set generous `testTimeout` — workflows may run longer than typical unit tests
 - `vi.mock()` does **not** work in integration tests — step dependencies are bundled by esbuild
 
-## Observability & Data Hydration
+## Observability & World SDK
 
-Use the World SDK to build observability dashboards and inspect workflow state. Key docs:
+Use `getWorld()` to build observability dashboards, admin panels, and inspect workflow state.
 
-- `api-reference/workflow-api/world/runs.mdx` — list/filter runs, pagination, status checks
-- `api-reference/workflow-api/world/steps.mdx` — step I/O inspection, duration calculation
-- `api-reference/workflow-api/world/observability.mdx` — hydration, name parsing, encryption
-
-**Grep hints for finding observability patterns:**
-```bash
-grep -r "world.runs" node_modules/workflow/docs/
-grep -r "world.steps" node_modules/workflow/docs/
-grep -r "hydrateResourceIO" node_modules/workflow/docs/
-grep -r "parseStepName" node_modules/workflow/docs/
-grep -r "workflow/observability" node_modules/workflow/docs/
-```
-
-**Key imports for observability:**
+**Key imports:**
 ```typescript
 import { getWorld } from "workflow/runtime";
-import { hydrateResourceIO, observabilityRevivers } from "workflow/observability";
-import { parseStepName, parseWorkflowName } from "workflow/observability";
+import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowName } from "workflow/observability";
 ```
 
-Step I/O is serialized via devalue format — always hydrate before displaying:
+**Key docs** (grep `node_modules/workflow/docs/` for full details):
+- `api-reference/workflow-api/world/runs.mdx` — runs, pagination, status
+- `api-reference/workflow-api/world/steps.mdx` — step I/O, duration
+- `api-reference/workflow-api/world/events.mdx` — event log, cancellation
+- `api-reference/workflow-api/world/observability.mdx` — hydration, parsing, encryption
+
+### World SDK Method Signatures
+
+⚠️ Pagination is nested: `{ pagination: { cursor } }` — NOT `{ cursor }` directly.
+
 ```typescript
-const step = await world.steps.get(runId, stepId);
-const hydrated = hydrateResourceIO(step, observabilityRevivers);
-// hydrated.input and hydrated.output are now plain objects
+const world = getWorld();
+
+// Runs
+const { data, cursor } = await world.runs.list({ pagination: { cursor }, resolveData: 'all' | 'none' });
+const run = await world.runs.get(runId, { resolveData: 'all' | 'none' });
+const run = await world.runs.cancel(runId);
+
+// Steps — runId is top-level, NOT inside pagination
+const { data, cursor } = await world.steps.list({ runId, pagination: { cursor }, resolveData: 'all' | 'none' });
+const step = await world.steps.get(runId, stepId, { resolveData: 'all' | 'none' });
+
+// Events
+const { data, cursor } = await world.events.list({ runId, pagination: { cursor } });
+await world.events.create(runId, { eventType: 'run_cancelled' });
+
+// Hooks
+const hook = await world.hooks.get(hookId);
+const hook = await world.hooks.getByToken(token);
+
+// Streams
+await world.streams.writeToStream(name, runId, chunk);
+const readable = await world.streams.readFromStream(name);
 ```
 
-For encrypted workflows, use `getEncryptionKeyForRun()` + `hydrateResourceIOWithKey()`.
+### `resolveData` Parameter
+
+Controls whether input/output data is hydrated. Accepts `'all'` (default) or `'none'`.
+
+- **Use `'none'`** for status polling, progress dashboards, run listings
+- **Use `'all'`** (or omit) when you need to inspect actual step I/O data
+
+```typescript
+// Lightweight status check — no I/O loaded
+const run = await world.runs.get(runId, { resolveData: 'none' });
+console.log(run.status); // 'running' | 'completed' | 'failed' | 'cancelled'
+
+// Full inspection with hydrated I/O
+const step = await world.steps.get(runId, stepId); // defaults to 'all'
+const hydrated = hydrateResourceIO(step, observabilityRevivers);
+```
+
+### Data Hydration (Devalue Format)
+
+Step I/O is serialized via [devalue](https://github.com/Rich-Harris/devalue). Without hydration, `input`/`output` are opaque arrays (e.g., `[["Object", ...]]`), NOT plain objects. Always hydrate:
+
+```typescript
+const hydrated = hydrateResourceIO(step, observabilityRevivers);
+// hydrated.input and hydrated.output are now usable plain objects
+```
+
+`hydrateResourceIO` works on both `Step` and `WorkflowRun` objects. For encrypted workflows, use `getEncryptionKeyForRun()` + `hydrateResourceIOWithKey()`.
+
+### Name Parsing
+
+`parseWorkflowName()`, `parseStepName()`, and `parseClassName()` return `{ shortName: string, moduleSpecifier: string } | null`. Always use optional chaining:
+
+```typescript
+const parsed = parseWorkflowName("workflow//./src/workflows/order//processOrder");
+// parsed?.shortName → "processOrder"
+// parsed?.moduleSpecifier → "./src/workflows/order"
+// ⚠️ Returns null if format doesn't match
+```
+
+### Event Types
+
+Events are the append-only source of truth. Runs/Steps/Hooks are materialized views.
+
+| Category | Types |
+|----------|-------|
+| Run | `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled` |
+| Step | `step_created`, `step_started`, `step_completed`, `step_failed`, `step_retrying` |
+| Hook | `hook_created`, `hook_received`, `hook_disposed`, `hook_conflict` |
+| Wait | `wait_created`, `wait_completed` |
 
 ## Error Handling Patterns
 
