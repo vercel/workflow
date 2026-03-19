@@ -1,8 +1,12 @@
 import { waitUntil } from '@vercel/functions';
 import {
+  EntityConflictError,
   FatalError,
   RetryableError,
-  WorkflowAPIError,
+  RunExpiredError,
+  ThrottleError,
+  TooEarlyError,
+  WorkflowWorldError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
@@ -57,7 +61,10 @@ async function getDeferredStepLock(
   try {
     step = await world.steps.get(workflowRunId, stepId);
   } catch (error) {
-    if (WorkflowAPIError.is(error) && error.status === 404) {
+    if (
+      WorkflowWorldError.is(error) &&
+      (error.status === 404 || error.message === `Step not found: ${stepId}`)
+    ) {
       return null;
     }
     throw error;
@@ -252,96 +259,82 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             }
             step = startResult.step;
           } catch (err) {
-            if (WorkflowAPIError.is(err)) {
-              if (err.status === 429) {
-                await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
-                const retryRetryAfter = Math.max(
-                  1,
-                  typeof err.retryAfter === 'number' ? err.retryAfter : 1
-                );
-                runtimeLogger.info(
-                  'Throttled again on retry, deferring to queue',
-                  {
-                    retryAfterSeconds: retryRetryAfter,
-                  }
-                );
-                return { timeoutSeconds: retryRetryAfter };
-              }
-              // 410 Gone: Workflow has already completed
-              if (err.status === 410) {
-                await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
-                runtimeLogger.info(
-                  `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
-                );
-                return;
-              }
-
-              // 409 Conflict: Step in terminal state (completed/failed/cancelled)
-              // Re-enqueue the workflow to continue processing
-              if (err.status === 409) {
-                await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
-                runtimeLogger.debug(
-                  'Step in terminal state, re-enqueuing workflow',
-                  {
-                    stepName,
-                    stepId,
-                    workflowRunId,
-                    error: err.message,
-                  }
-                );
-                span?.setAttributes({
-                  ...Attribute.StepSkipped(true),
-                  // Use 'completed' as a representative terminal state for the skip reason
-                  ...Attribute.StepSkipReason('completed'),
-                });
-                // Add span event for step skip
-                span?.addEvent?.('step.skipped', {
-                  'skip.reason': 'terminal_state',
-                  'step.name': stepName,
-                  'step.id': stepId,
-                });
-                await queueMessage(world, getWorkflowQueueName(workflowName), {
-                  runId: workflowRunId,
-                  traceCarrier: await serializeTraceCarrier(),
-                  requestedAt: new Date(),
-                });
-                return;
-              }
-
-              // 425 Too Early: retryAfter timestamp not reached yet
-              // Return timeout to queue so it retries later
-              if (err.status === 425) {
-                await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
-                // Parse retryAfter from error response meta
-                const retryAfterStr = (err as any).meta?.retryAfter;
-                const retryAfter = retryAfterStr
-                  ? new Date(retryAfterStr)
-                  : new Date(Date.now() + 1000);
-                const timeoutSeconds = Math.max(
-                  1,
-                  Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
-                );
-                span?.setAttributes({
-                  ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
-                });
-                // Add span event for delayed retry
-                span?.addEvent?.('step.delayed', {
-                  'delay.reason': 'retry_after_not_reached',
-                  'delay.timeout_seconds': timeoutSeconds,
-                  'delay.retry_after': retryAfter.toISOString(),
-                });
-                runtimeLogger.debug(
-                  'Step retryAfter timestamp not yet reached',
-                  {
-                    stepName,
-                    stepId,
-                    retryAfter,
-                    timeoutSeconds,
-                  }
-                );
-                return { timeoutSeconds };
-              }
+            if (ThrottleError.is(err)) {
+              await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
+              const retryRetryAfter = Math.max(
+                1,
+                typeof err.retryAfter === 'number' ? err.retryAfter : 1
+              );
+              runtimeLogger.info(
+                'Throttled again on retry, deferring to queue',
+                {
+                  retryAfterSeconds: retryRetryAfter,
+                }
+              );
+              return { timeoutSeconds: retryRetryAfter };
             }
+            if (RunExpiredError.is(err)) {
+              await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
+              runtimeLogger.info(
+                `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
+              );
+              return;
+            }
+            if (EntityConflictError.is(err)) {
+              await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
+              runtimeLogger.debug(
+                'Step in terminal state, re-enqueuing workflow',
+                {
+                  stepName,
+                  stepId,
+                  workflowRunId,
+                  error: err.message,
+                }
+              );
+              span?.setAttributes({
+                ...Attribute.StepSkipped(true),
+                ...Attribute.StepSkipReason('completed'),
+              });
+              span?.addEvent?.('step.skipped', {
+                'skip.reason': 'terminal_state',
+                'step.name': stepName,
+                'step.id': stepId,
+              });
+              await queueMessage(world, getWorkflowQueueName(workflowName), {
+                runId: workflowRunId,
+                traceCarrier: await serializeTraceCarrier(),
+                requestedAt: new Date(),
+              });
+              return;
+            }
+
+            // Too early: retryAfter timestamp not reached yet
+            // Return timeout to queue so it retries later
+            if (TooEarlyError.is(err)) {
+              await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
+              const retryAfter = err.retryAfter ?? new Date(Date.now() + 1000);
+              const timeoutSeconds = Math.max(
+                1,
+                Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
+              );
+              span?.setAttributes({
+                ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
+              });
+              // Add span event for delayed retry
+              span?.addEvent?.('step.delayed', {
+                'delay.reason': 'retry_after_not_reached',
+                'delay.timeout_seconds': timeoutSeconds,
+                'delay.retry_after': retryAfter.toISOString(),
+              });
+              runtimeLogger.debug('Step retryAfter timestamp not yet reached', {
+                stepName,
+                stepId,
+                retryAfter,
+                timeoutSeconds,
+              });
+              return { timeoutSeconds };
+            }
+            await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
             // Re-throw other errors
             throw err;
           }
@@ -388,7 +381,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 { requestId }
               );
             } catch (err) {
-              if (WorkflowAPIError.is(err) && err.status === 409) {
+              if (EntityConflictError.is(err)) {
                 runtimeLogger.info(
                   'Tried failing step, but step has already finished.',
                   {
@@ -449,7 +442,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 { requestId }
               );
             } catch (failErr) {
-              if (WorkflowAPIError.is(failErr) && failErr.status === 409) {
+              if (EntityConflictError.is(failErr)) {
                 return;
               }
               throw failErr;
@@ -589,10 +582,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   { requestId }
                 );
               } catch (stepDeferredErr) {
-                if (
-                  WorkflowAPIError.is(stepDeferredErr) &&
-                  stepDeferredErr.status === 409
-                ) {
+                if (EntityConflictError.is(stepDeferredErr)) {
                   runtimeLogger.info(
                     'Tried deferring step, but step has already finished.',
                     {
@@ -612,19 +602,16 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // Infrastructure errors that somehow surfaced through user code
             // should propagate to the queue handler for retry, not consume
             // step attempts.
-            if (WorkflowAPIError.is(err)) {
-              if (err.status === 410) {
-                // Workflow has already completed, so no-op
-                stepLogger.info(
-                  'Workflow run already completed, skipping step',
-                  {
-                    workflowRunId,
-                    stepId,
-                    message: err.message,
-                  }
-                );
-                return;
-              }
+            if (RunExpiredError.is(err)) {
+              // Workflow has already completed, so no-op
+              stepLogger.info('Workflow run already completed, skipping step', {
+                workflowRunId,
+                stepId,
+                message: err.message,
+              });
+              return;
+            }
+            if (WorkflowWorldError.is(err)) {
               if (err.status !== undefined && err.status >= 500) {
                 throw err;
               }
@@ -681,10 +668,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   { requestId }
                 );
               } catch (stepFailErr) {
-                if (
-                  WorkflowAPIError.is(stepFailErr) &&
-                  stepFailErr.status === 409
-                ) {
+                if (EntityConflictError.is(stepFailErr)) {
                   runtimeLogger.info(
                     'Tried failing step, but step has already finished.',
                     {
@@ -744,10 +728,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     { requestId }
                   );
                 } catch (stepFailErr) {
-                  if (
-                    WorkflowAPIError.is(stepFailErr) &&
-                    stepFailErr.status === 409
-                  ) {
+                  if (EntityConflictError.is(stepFailErr)) {
                     runtimeLogger.info(
                       'Tried failing step, but step has already finished.',
                       {
@@ -806,10 +787,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     { requestId }
                   );
                 } catch (stepRetryErr) {
-                  if (
-                    WorkflowAPIError.is(stepRetryErr) &&
-                    stepRetryErr.status === 409
-                  ) {
+                  if (EntityConflictError.is(stepRetryErr)) {
                     runtimeLogger.info(
                       'Tried retrying step, but step has already finished.',
                       {
@@ -908,7 +886,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 { requestId }
               )
               .catch((err: unknown) => {
-                if (WorkflowAPIError.is(err) && err.status === 409) {
+                if (EntityConflictError.is(err)) {
                   runtimeLogger.info(
                     'Tried completing step, but step has already finished.',
                     {

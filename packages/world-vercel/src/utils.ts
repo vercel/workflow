@@ -1,7 +1,13 @@
 import os from 'node:os';
 import { inspect } from 'node:util';
 import { getVercelOidcToken } from '@vercel/oidc';
-import { WorkflowAPIError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  RunExpiredError,
+  ThrottleError,
+  TooEarlyError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
@@ -336,31 +342,58 @@ export async function makeRequest<T>({
           );
         }
 
-        // Parse Retry-After header for 429 responses (value is in seconds)
+        // Parse Retry-After header (value is in seconds).
+        // Used by both 425 (TooEarlyError) and 429 (ThrottleError).
         // Note: RetryAgent handles most 429 retries automatically, but this
         // catches the case where retries are exhausted.
         let retryAfter: number | undefined;
-        if (response.status === 429) {
-          const retryAfterHeader = response.headers.get('Retry-After');
-          if (retryAfterHeader) {
-            const parsed = parseInt(retryAfterHeader, 10);
-            if (!Number.isNaN(parsed)) {
-              retryAfter = parsed;
-            }
+        const retryAfterHeader = response.headers.get('Retry-After');
+        if (retryAfterHeader) {
+          const parsed = parseInt(retryAfterHeader, 10);
+          if (!Number.isNaN(parsed)) {
+            retryAfter = parsed;
           }
         }
 
-        const error = new WorkflowAPIError(
+        const defaultMessage =
           errorData.message ||
-            `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`,
-          { url, status: response.status, code: errorData.code, retryAfter }
+          `${request.method} ${endpoint} -> HTTP ${response.status}: ${response.statusText}`;
+
+        // Map specific HTTP status codes to semantic error types
+        const throwWithTrace = (error: Error): never => {
+          span?.setAttributes({
+            ...ErrorType(errorData.code || `HTTP ${response.status}`),
+          });
+          span?.recordException?.(error);
+          throw error;
+        };
+
+        if (response.status === 409) {
+          throwWithTrace(new EntityConflictError(defaultMessage));
+        }
+        if (response.status === 410) {
+          throwWithTrace(new RunExpiredError(defaultMessage));
+        }
+        if (response.status === 425) {
+          const retryAfterDate = retryAfter
+            ? new Date(Date.now() + retryAfter * 1000)
+            : undefined;
+          throwWithTrace(
+            new TooEarlyError(defaultMessage, { retryAfter: retryAfterDate })
+          );
+        }
+        if (response.status === 429) {
+          throwWithTrace(new ThrottleError(defaultMessage, { retryAfter }));
+        }
+
+        throwWithTrace(
+          new WorkflowWorldError(defaultMessage, {
+            url,
+            status: response.status,
+            code: errorData.code,
+            retryAfter,
+          })
         );
-        // Record error attributes per OTEL conventions
-        span?.setAttributes({
-          ...ErrorType(errorData.code || `HTTP ${response.status}`),
-        });
-        span?.recordException?.(error);
-        throw error;
       }
 
       // Expose response headers to caller before consuming the body
@@ -381,7 +414,7 @@ export async function makeRequest<T>({
         });
       } catch (error) {
         const contentType = response.headers.get('Content-Type') || 'unknown';
-        throw new WorkflowAPIError(
+        throw new WorkflowWorldError(
           `Failed to parse response body for ${request.method} ${endpoint} (Content-Type: ${contentType}):\n\n${error}`,
           { url, cause: error }
         );
@@ -400,7 +433,7 @@ export async function makeRequest<T>({
           const debugContext = process.env.DEBUG
             ? `\n\nResponse context: ${parseResult.getDebugContext()}`
             : '';
-          throw new WorkflowAPIError(
+          throw new WorkflowWorldError(
             `Schema validation failed for ${method} ${endpoint}:\n${issues}${debugContext}`,
             { url, cause: validationResult.error }
           );

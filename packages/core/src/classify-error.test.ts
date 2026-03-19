@@ -1,6 +1,6 @@
 import {
   RUN_ERROR_CODES,
-  WorkflowAPIError,
+  WorkflowWorldError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
@@ -25,10 +25,10 @@ describe('classifyRunError', () => {
     );
   });
 
-  it('classifies WorkflowAPIError as USER_ERROR (from user code fetch)', () => {
+  it('classifies WorkflowWorldError as USER_ERROR (from user code fetch)', () => {
     expect(
       classifyRunError(
-        new WorkflowAPIError('Internal Server Error', { status: 500 })
+        new WorkflowWorldError('Internal Server Error', { status: 500 })
       )
     ).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
