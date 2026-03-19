@@ -13,7 +13,7 @@ import {
 } from '../utils';
 
 const QUEUED_BACKGROUND =
-  'radial-gradient(circle at center, var(--ds-gray-800) 0 2.5px, transparent 2.6px) center / 52px 100% repeat-x, var(--ds-gray-300)';
+  'radial-gradient(circle, var(--ds-gray-400) 2px, transparent 2px) center / 20px 20px space no-repeat, var(--ds-gray-500)';
 
 const TimelineBar = memo(function TimelineBar({
   span,
@@ -174,6 +174,7 @@ export function Timeline({
   selectedId: string | null;
   onSelect: (spanId: string) => void;
 }): ReactNode {
+  console.log('spans', spans);
   return (
     <div className="relative py-2">
       {spans.map((span) => (
