@@ -57,9 +57,12 @@ const TimelineBar = memo(function TimelineBar({
 
   return (
     <div
+      role="treeitem"
+      aria-selected={isSelected}
+      aria-expanded={isSelected}
+      aria-level={1}
       className={cn(
-        'h-9 relative flex items-center cursor-pointer transition-[background-color] duration-[120ms] ease-in-out',
-        isSelected ? 'bg-gray-alpha-200' : 'hover:bg-gray-alpha-100'
+        'h-9 relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 rounded-sm aria-selected:hover:bg-gray-200'
       )}
       onClick={onClick}
     >

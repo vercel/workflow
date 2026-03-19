@@ -255,7 +255,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           </div>
           <div
             ref={timelineRef}
-            className="block min-h-0 overflow-visible relative"
+            className="block min-h-0 overflow-visible relative px-2"
             onDoubleClick={resetZoom}
           >
             <Timeline
