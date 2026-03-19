@@ -7,12 +7,13 @@ implementations.
 ## Status
 
 - The shared `limits` interface and `lock()` API surface now exist.
-- Local world has a working lease-based implementation for
-  acquire/release/heartbeat.
-- Postgres now has a PostgreSQL-backed implementation with leases, rate tokens,
-  and durable waiters.
+- Local world now implements the shared live-process limits semantics with
+  leases, rate tokens, FIFO waiters, and prompt wake-up with delayed fallback.
+- Postgres implements the same limits semantics with PostgreSQL-backed leases,
+  rate tokens, durable waiters, and durable queue wake-up.
 - Vercel still exposes `limits` as a stub.
-- The Next.js Turbopack workbench has E2E coverage for workflow and step locks.
+- The Next.js Turbopack workbench has shared E2E coverage for workflow and step
+  locks on implemented worlds.
 
 ## Goals
 
@@ -29,6 +30,34 @@ implementations.
 - `workflow limit`: admission control for workflow runs that share a key.
 - `step limit`: execution control for a specific step/resource key.
 - `lease`: durable record that a workflow or step currently occupies capacity for a key.
+
+## Shared Contract vs World-Specific Behavior
+
+The limits contract is intended to describe one shared set of observable
+semantics across implemented worlds. That shared contract includes:
+
+- `acquire()`, `release()`, and `heartbeat()` surface behavior
+- `WorkflowWorldError` when heartbeating a missing lease
+- per-key concurrency and rate limiting outcomes
+- same-holder lease reuse
+- serialization of concurrent acquires for a single key
+- FIFO waiter promotion per key
+- pruning cancelled workflow waiters and failed/completed step waiters
+- blocked acquisitions not consuming execution concurrency
+- prompt wake-up with delayed fallback replay
+
+World-specific behavior should be limited to implementation mechanics and
+durability characteristics, for example:
+
+- how waiter state is stored internally
+- how per-key mutations are serialized internally
+- how prompt wake-up is delivered
+- whether queued wake-ups survive process or host loss
+- backend-specific observability or debugging surfaces
+
+That means SQL row layout, advisory locks, and Graphile jobs are PostgreSQL
+implementation details, while FIFO fairness and waiter skipping are contract
+behavior that local and Postgres should both exhibit.
 
 ## Decisions So Far
 
@@ -185,8 +214,8 @@ another holds a step lock and each waits on the other.
 
 ### 9. Waiters are FIFO per key
 
-The PostgreSQL implementation uses a durable waiter queue and promotes waiters
-in FIFO order for a single limit key.
+Implemented worlds use a waiter queue and promote waiters in FIFO order for a
+single limit key.
 
 Important details:
 
@@ -204,33 +233,37 @@ global scheduler.
 
 Blocked flow limits and worker concurrency are intentionally separate.
 
-In the PostgreSQL world:
+For implemented worlds:
 
 - blocked workflows are suspended and re-queued, not left running on a worker
 - blocked steps exit the current attempt and are re-queued instead of polling in
   a live worker slot
-- backlog remains durable in PostgreSQL while worker slots are free to service
-  unrelated work
+- worker slots are free to service unrelated work while the blocked execution is
+  waiting to be retried or promoted
 
-This is the main practical difference between a durable waiter model and a pure
-polling loop.
+PostgreSQL additionally keeps that backlog durable in the database. The local
+world keeps queue delivery in-memory, so cross-process crash recovery for the
+backlog is explicitly outside the shared limits contract today.
 
 ### 11. Wake-up is prompt, with a delayed fallback
 
-The PostgreSQL world uses Graphile for wake-up delivery, but PostgreSQL tables
-remain the source of truth for limit state.
+Implemented worlds use the world-owned limit state as the source of truth and
+try to resume promoted waiters promptly, with a delayed fallback still in place
+so progress is possible if an immediate wake-up is missed.
 
 Current behavior:
 
-- leases, rate tokens, and waiters live in PostgreSQL tables
-- promotion decisions are made from SQL state
+- leases, rate tokens, and waiters live in world-owned limit state
+- promotion decisions are made from that limit state
 - when a waiter is promoted, the runtime is woken by enqueuing the appropriate
   workflow or step job
 - workflows also keep a delayed replay fallback so progress is still possible if
   an immediate wake-up is missed
 
-This means Graphile is used to resume work quickly, not to decide fairness or
-capacity ownership.
+PostgreSQL uses Graphile jobs for that wake-up path and keeps the backlog
+durable across host/process failure. The local world uses an in-memory queue, so
+prompt wake behavior matches while the process is alive, but durable backlog
+survival is not guaranteed after process loss.
 
 ### 12. V1 semantics are intentionally opinionated
 
@@ -254,9 +287,10 @@ More concretely:
 
 For the current local implementation specifically:
 
-- workflow locks already behave like durable logical-scope leases
-- step locks are still simpler than Postgres and do not provide the same durable
-  waiter/wake-up behavior
+- workflow and step locks now follow the same live-process waiter/fairness
+  semantics as Postgres
+- the queue remains in-memory, so queued wake-ups are not durable across process
+  loss
 
 This means the current v1 interpretation of a workflow lock is:
 

@@ -3,6 +3,7 @@
     "target": "es2022",
     "module": "NodeNext",
     "lib": ["dom", "dom.iterable", "esnext"],
+    "baseUrl": ".",
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,

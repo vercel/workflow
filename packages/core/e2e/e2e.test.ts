@@ -14,7 +14,8 @@ import {
   expect,
   test,
 } from 'vitest';
-import type { Run } from '../src/runtime';
+import { createLimitsRuntimeSuite } from '../../world-testing/src/limits-runtime.js';
+import type { Run, StartOptions } from '../src/runtime.js';
 import {
   cancelRun,
   getHookByToken,
@@ -23,7 +24,7 @@ import {
   healthCheck,
   start as rawStart,
   resumeHook,
-} from '../src/runtime';
+} from '../src/runtime.js';
 import {
   cliCancel,
   cliHealthJson,
@@ -50,10 +51,25 @@ if (!deploymentUrl) {
  * Tracked wrapper around start() that automatically registers runs
  * for diagnostics on test failure and observability metadata collection.
  */
-async function start<T>(
-  ...args: Parameters<typeof rawStart<T>>
-): Promise<Run<T>> {
-  const run = await rawStart<T>(...args);
+type E2EWorkflowMetadata = Awaited<ReturnType<typeof getWorkflowMetadata>>;
+
+async function start<TResult = any>(
+  workflow: E2EWorkflowMetadata,
+  options?: StartOptions
+): Promise<Run<TResult>>;
+async function start<TArgs extends unknown[], TResult = any>(
+  workflow: E2EWorkflowMetadata,
+  args: TArgs,
+  options?: StartOptions
+): Promise<Run<TResult>>;
+async function start<TResult = any>(
+  workflow: E2EWorkflowMetadata,
+  argsOrOptions?: unknown[] | StartOptions,
+  options?: StartOptions
+): Promise<Run<TResult>> {
+  const run = Array.isArray(argsOrOptions)
+    ? await rawStart<unknown[], TResult>(workflow, argsOrOptions, options)
+    : await rawStart<TResult>(workflow, argsOrOptions);
   trackRun(run);
   return run;
 }
@@ -228,6 +244,90 @@ describe('e2e', () => {
   // doesn't work on Vercel due to eval hack so react isn't
   // bundled in function
   const shouldSkipReactRenderTest = !(isNext && isLocal);
+
+  if (isLocalWorld || isPostgresWorld) {
+    createLimitsRuntimeSuite(
+      `limits runtime (${isPostgresWorld ? 'postgres' : 'local'})`,
+      async () => ({
+        async runWorkflowWithWorkflowAndStepLocks(userId) {
+          const run = await start(
+            await e2e('workflowWithWorkflowAndStepLocks'),
+            [userId]
+          );
+          return await run.returnValue;
+        },
+        async runWorkflowLockContention(userId, holdMs) {
+          const workflow = await e2e('workflowLockContentionWorkflow');
+          const runA = await start(workflow, [userId, holdMs]);
+          await sleep(100);
+          const runB = await start(workflow, [userId, holdMs]);
+          return await Promise.all([runA.returnValue, runB.returnValue]);
+        },
+        async runStepLockNoRetriesContention(userId, holdMs) {
+          const workflow = await e2e('stepLockNoRetriesContentionWorkflow');
+          const runA = await start(workflow, [userId, holdMs, 'A']);
+          await sleep(100);
+          const runB = await start(workflow, [userId, holdMs, 'B']);
+          await sleep(100);
+          const runC = await start(workflow, [userId, holdMs, 'C']);
+          return await Promise.all([
+            runA.returnValue,
+            runB.returnValue,
+            runC.returnValue,
+          ]);
+        },
+        async runWorkflowLockAcrossSuspension(userId, holdMs) {
+          const workflow = await e2e('workflowOnlyLockContentionWorkflow');
+          const runA = await start(workflow, [userId, holdMs, 'A']);
+          await sleep(100);
+          const runB = await start(workflow, [userId, holdMs, 'B']);
+          return await Promise.all([runA.returnValue, runB.returnValue]);
+        },
+        async runWorkflowRateLimitContention(userId, holdMs, periodMs) {
+          const workflow = await e2e('workflowRateLimitContentionWorkflow');
+          const runA = await start(workflow, [userId, holdMs, periodMs, 'A']);
+          await sleep(100);
+          const runB = await start(workflow, [userId, holdMs, periodMs, 'B']);
+          return await Promise.all([runA.returnValue, runB.returnValue]);
+        },
+        async runWorkflowFifoThreeWaiters(userId, holdMs) {
+          const workflow = await e2e('workflowOnlyLockContentionWorkflow');
+          const runA = await start(workflow, [userId, holdMs, 'A']);
+          await sleep(100);
+          const runB = await start(workflow, [userId, holdMs, 'B']);
+          await sleep(100);
+          const runC = await start(workflow, [userId, holdMs, 'C']);
+          return await Promise.all([
+            runA.returnValue,
+            runB.returnValue,
+            runC.returnValue,
+          ]);
+        },
+        async runCancelledWorkflowWaiter(userId, holdMs) {
+          const workflow = await e2e('workflowOnlyLockContentionWorkflow');
+          const runA = await start(workflow, [userId, holdMs, 'A']);
+          await sleep(100);
+          const runB = await start(workflow, [userId, holdMs, 'B']);
+          await sleep(100);
+          await cancelRun(getWorld(), runB.runId);
+          const cancelledError = await runB.returnValue.catch((error) => error);
+          const runC = await start(workflow, [userId, holdMs, 'C']);
+          const [resultA, resultC] = await Promise.all([
+            runA.returnValue,
+            runC.returnValue,
+          ]);
+          return { cancelledError, resultA, resultC };
+        },
+        async runIndependentWorkflowKeys(holdMs) {
+          const workflow = await e2e('workflowOnlyLockContentionWorkflow');
+          const runA = await start(workflow, ['user-a', holdMs]);
+          await sleep(100);
+          const runB = await start(workflow, ['user-b', holdMs]);
+          return await Promise.all([runA.returnValue, runB.returnValue]);
+        },
+      })
+    );
+  }
 
   test.skipIf(shouldSkipReactRenderTest)(
     'should work with react rendering in step',
@@ -547,126 +647,6 @@ describe('e2e', () => {
     // Vercel with cold start overhead, but fail if it looks sequential (>25s).
     expect(elapsed).toBeLessThan(25_000);
   });
-
-  if (isLocalWorld) {
-    test(
-      'workflowWithWorkflowAndStepLocks demonstrates workflow and step limits on local world',
-      { timeout: 60_000 },
-      async () => {
-        const run = await start(await e2e('workflowWithWorkflowAndStepLocks'), [
-          'local-world',
-        ]);
-        const returnValue = await run.returnValue;
-
-        expect(returnValue).toMatchObject({
-          workflowKey: 'workflow:user:local-world',
-          dbKey: 'step:db:cheap',
-          aiKey: 'step:provider:openai',
-          summary: 'summary:profile:local-world',
-        });
-      }
-    );
-  }
-
-  if (isPostgresWorld) {
-    test(
-      'workflowWithWorkflowAndStepLocks demonstrates workflow and step limits on postgres world',
-      { timeout: 60_000 },
-      async () => {
-        const run = await start(await e2e('workflowWithWorkflowAndStepLocks'), [
-          'postgres-world',
-        ]);
-        const returnValue = await run.returnValue;
-
-        expect(returnValue).toMatchObject({
-          workflowKey: 'workflow:user:postgres-world',
-          dbKey: 'step:db:cheap',
-          aiKey: 'step:provider:openai',
-          summary: 'summary:profile:postgres-world',
-        });
-      }
-    );
-  }
-
-  if (isPostgresWorld) {
-    test(
-      'workflowLockContentionWorkflow serializes workflow and step locks under contention',
-      { timeout: 60_000 },
-      async () => {
-        const workflow = await e2e('workflowLockContentionWorkflow');
-        const runA = await start(workflow, ['shared-user', 750]);
-        await sleep(100);
-        const runB = await start(workflow, ['shared-user', 750]);
-
-        const [resultA, resultB] = await Promise.all([
-          runA.returnValue,
-          runB.returnValue,
-        ]);
-
-        expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
-          resultA.workflowLockReleasedAt
-        );
-        expect(resultB.stepLockAcquiredAt).toBeGreaterThanOrEqual(
-          resultA.stepLockReleasedAt
-        );
-      }
-    );
-  }
-
-  test(
-    'stepLockNoRetriesContentionWorkflow does not consume retries while blocked on a step lock',
-    { timeout: 60_000 },
-    async () => {
-      const workflow = await e2e('stepLockNoRetriesContentionWorkflow');
-      const runA = await start(workflow, ['shared-user', 750]);
-      await sleep(100);
-      const runB = await start(workflow, ['shared-user', 750]);
-
-      const [resultA, resultB] = await Promise.all([
-        runA.returnValue,
-        runB.returnValue,
-      ]);
-      const [firstResult, secondResult] = [resultA, resultB].sort(
-        (left, right) => left.acquiredAt - right.acquiredAt
-      );
-
-      expect(resultA.attempt).toBe(1);
-      expect(resultB.attempt).toBe(1);
-      expect(secondResult.acquiredAt).toBeGreaterThanOrEqual(
-        firstResult.releasedAt
-      );
-    }
-  );
-
-  if (isPostgresWorld) {
-    test(
-      'cancelled workflow waiters are skipped before the next waiter is promoted',
-      { timeout: 60_000 },
-      async () => {
-        const workflow = await e2e('workflowLockContentionWorkflow');
-        const runA = await start(workflow, ['shared-user', 1_500]);
-        await sleep(100);
-        const runB = await start(workflow, ['shared-user', 1_500]);
-        await sleep(100);
-        await cancelRun(getWorld(), runB.runId);
-        const cancelledError = await runB.returnValue.catch((error) => error);
-        const runC = await start(workflow, ['shared-user', 1_500]);
-
-        const [resultA, resultC] = await Promise.all([
-          runA.returnValue,
-          runC.returnValue,
-        ]);
-
-        expect(cancelledError).toBeInstanceOf(WorkflowRunCancelledError);
-        expect(resultC.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
-          resultA.workflowLockReleasedAt
-        );
-        expect(
-          resultC.workflowLockAcquiredAt - resultA.workflowLockReleasedAt
-        ).toBeLessThan(4_000);
-      }
-    );
-  }
 
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('nullByteWorkflow'), []);
@@ -1900,7 +1880,7 @@ describe('e2e', () => {
       // Cancel the run using the core runtime cancelRun function.
       // This exercises the same cancelRun code path that the CLI uses
       // (the CLI delegates directly to this function).
-      const { cancelRun } = await import('../src/runtime');
+      const { cancelRun } = await import('../src/runtime.js');
       await cancelRun(getWorld(), run.runId);
 
       // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError

@@ -117,7 +117,7 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - **Durable Storage**: Stores workflow runs, events, steps, hooks, and webhooks in PostgreSQL
 - **Queue Processing**: Uses graphile-worker as the durable queue and executes jobs over the workflow HTTP routes
 - **Durable Delays**: Re-schedules waits and retries in PostgreSQL
-- **Flow Limits**: Enforces durable concurrency/rate limits with PostgreSQL-backed leases, rate tokens, and waiter promotion
+- **Flow Limits**: Implements the shared concurrency/rate-limit contract with PostgreSQL-backed leases, rate tokens, FIFO waiters, and prompt wake-ups
 - **Streaming**: Real-time event streaming capabilities
 - **Health Checks**: Built-in connection health monitoring
 - **Configurable Concurrency**: Adjustable worker concurrency for queue processing
@@ -129,8 +129,11 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Flow-limit waiters are stored durably in PostgreSQL and promoted in FIFO order per key
+- Cancelled workflow and failed/completed step waiters are pruned before promotion
 - Blocked steps are re-queued instead of holding a worker slot while waiting for a lease
 - Workflow and step execution is sent through `/.well-known/workflow/v1/flow` and `/.well-known/workflow/v1/step`
+
+PostgreSQL's main advantage over the local world is durability of the queue/backlog itself across host or process loss. The flow-limit behavior is intended to match other implemented worlds while the process is alive.
 
 ## Development
 

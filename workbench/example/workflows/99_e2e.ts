@@ -1,6 +1,6 @@
 // Test path alias resolution - imports a helper from outside the workbench directory
 /** biome-ignore-all lint/complexity/noStaticOnlyClass: <explanation> */
-import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test';
+import { pathsAliasHelper } from '@repo/lib/steps/paths-alias-test.js';
 import {
   createHook,
   createWebhook,
@@ -15,8 +15,8 @@ import {
   sleep,
 } from 'workflow';
 import { getRun, start } from 'workflow/api';
-import { importedStepOnly } from './_imported_step_only';
-import { callThrower, stepThatThrowsFromHelper } from './helpers';
+import { importedStepOnly } from './_imported_step_only.js';
+import { callThrower, stepThatThrowsFromHelper } from './helpers.js';
 
 //////////////////////////////////////////////////////////
 
@@ -333,11 +333,66 @@ stepLockNoRetriesStep.maxRetries = 0;
 
 export async function stepLockNoRetriesContentionWorkflow(
   userId = 'user-123',
-  holdMs = 750
+  holdMs = 750,
+  label = userId
 ) {
   'use workflow';
 
-  return await stepLockNoRetriesStep(userId, holdMs);
+  return await stepLockNoRetriesStep(label, holdMs);
+}
+
+//////////////////////////////////////////////////////////
+
+export async function workflowOnlyLockContentionWorkflow(
+  userId = 'user-123',
+  holdMs = 750,
+  label = userId
+) {
+  'use workflow';
+
+  await using _workflowLock = await lock({
+    key: `workflow:user:${userId}`,
+    concurrency: { max: 1 },
+    leaseTtlMs: holdMs + 5_000,
+  });
+
+  const workflowLockAcquiredAt = Date.now();
+  await sleep(holdMs);
+  const workflowLockReleasedAt = Date.now();
+
+  return {
+    label,
+    userId,
+    workflowLockAcquiredAt,
+    workflowLockReleasedAt,
+  };
+}
+
+export async function workflowRateLimitContentionWorkflow(
+  userId = 'user-123',
+  holdMs = 250,
+  periodMs = 1_500,
+  label = userId
+) {
+  'use workflow';
+
+  await using _workflowRateLimit = await lock({
+    key: `workflow:rate:${userId}`,
+    rate: { count: 1, periodMs },
+    leaseTtlMs: periodMs + 5_000,
+  });
+
+  const workflowRateAcquiredAt = Date.now();
+  await sleep(holdMs);
+  const workflowRateReleasedAt = Date.now();
+
+  return {
+    label,
+    userId,
+    periodMs,
+    workflowRateAcquiredAt,
+    workflowRateReleasedAt,
+  };
 }
 
 //////////////////////////////////////////////////////////
@@ -1277,7 +1332,7 @@ import {
   createVector,
   scaleVector,
   sumVectors,
-} from './serde-steps';
+} from './serde-steps.js';
 
 /**
  * Workflow that tests cross-context class registration.

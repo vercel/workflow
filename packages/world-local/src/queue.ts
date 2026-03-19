@@ -1,4 +1,3 @@
-import { setTimeout } from 'node:timers/promises';
 import { JsonTransport } from '@vercel/queue';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { Sema } from 'async-sema';
@@ -9,20 +8,10 @@ import type { Config } from './config.js';
 import { resolveBaseUrl } from './config.js';
 import { getPackageInfo } from './init.js';
 
-// For local queue, there is no technical limit on the message visibility lifespan,
-// but the environment variable can be used for testing purposes to set a max visibility limit.
 const LOCAL_QUEUE_MAX_VISIBILITY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_MAX_VISIBILITY ?? '0', 10) ||
   Infinity;
 
-// Maximum safe delay for setTimeout in Node.js (2^31 - 1 milliseconds ≈ 24.85 days)
-// Larger values cause "TimeoutOverflowWarning: X does not fit into a 32-bit signed integer"
-// When the clamped timeout fires, the handler will recalculate remaining time from
-// persistent state and return another timeoutSeconds if needed.
-const MAX_SAFE_TIMEOUT_MS = 2147483647;
-
-// The local workers share the same Node.js process and event loop,
-// so we need to limit concurrency to avoid overwhelming the system.
 const DEFAULT_CONCURRENCY_LIMIT = 1000;
 const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
@@ -31,13 +20,25 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
 export type DirectHandler = (req: Request) => Promise<Response>;
 
 export type LocalQueue = Queue & {
-  /** Close the HTTP agent and release resources. */
   close(): Promise<void>;
-  /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
   registerHandler(
     prefix: '__wkf_step_' | '__wkf_workflow_',
     handler: DirectHandler
   ): void;
+};
+
+type ScheduledMessage = {
+  attempt: number;
+  body: Uint8Array;
+  headers?: Record<string, string>;
+  idempotencyKey?: string;
+  messageId: MessageId;
+  pendingExecution: boolean;
+  queueName: ValidQueueName;
+  remainingServerRetries: number;
+  running: boolean;
+  timer?: ReturnType<typeof globalThis.setTimeout>;
+  version: number;
 };
 
 function getQueueRoute(queueName: ValidQueueName): {
@@ -54,11 +55,6 @@ function getQueueRoute(queueName: ValidQueueName): {
 }
 
 export function createQueue(config: Partial<Config>): LocalQueue {
-  // Create a custom agent optimized for high-concurrency local workflows:
-  // - headersTimeout: 0 allows long-running steps
-  // - connections: 1000 allows many parallel connections to the same host
-  // - pipelining: 1 (default) for HTTP/1.1 compatibility
-  // - keepAliveTimeout: 30s keeps connections warm for rapid step execution
   const httpAgent = new Agent({
     headersTimeout: 0,
     connections: 1000,
@@ -67,139 +63,240 @@ export function createQueue(config: Partial<Config>): LocalQueue {
   const transport = new JsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
-
-  /**
-   * holds inflight messages by idempotency key to ensure
-   * that we don't queue the same message multiple times
-   */
-  const inflightMessages = new Map<string, MessageId>();
-  /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
+  const scheduledMessages = new Map<string, ScheduledMessage>();
   const directHandlers = new Map<string, DirectHandler>();
+  let closed = false;
 
-  const queue: Queue['queue'] = async (queueName, message, opts) => {
-    const cleanup = [] as (() => void)[];
+  const cleanupMessage = (message: ScheduledMessage) => {
+    if (message.timer) {
+      clearTimeout(message.timer);
+      message.timer = undefined;
+    }
+    if (message.idempotencyKey) {
+      scheduledMessages.delete(message.idempotencyKey);
+    }
+  };
 
-    if (opts?.idempotencyKey) {
-      const existing = inflightMessages.get(opts.idempotencyKey);
-      if (existing) {
-        return { messageId: existing };
-      }
+  const scheduleExecution = (message: ScheduledMessage, delayMs: number) => {
+    if (closed) {
+      cleanupMessage(message);
+      return;
     }
 
-    const body = transport.serialize(message);
-    const { pathname, prefix } = getQueueRoute(queueName);
-    const messageId = MessageId.parse(`msg_${generateId()}`);
-
-    if (opts?.idempotencyKey) {
-      const key = opts.idempotencyKey;
-      inflightMessages.set(key, messageId);
-      cleanup.push(() => {
-        inflightMessages.delete(key);
-      });
+    if (message.timer) {
+      clearTimeout(message.timer);
+      message.timer = undefined;
     }
 
-    (async () => {
-      const token = semaphore.tryAcquire();
-      if (!token) {
-        console.warn(
-          `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
-        );
-        await semaphore.acquire();
+    const version = ++message.version;
+    const enqueueRun = () => {
+      message.pendingExecution = true;
+      if (!message.running) {
+        void executeMessage(message);
       }
+    };
+
+    if (delayMs <= 0) {
+      enqueueRun();
+      return;
+    }
+
+    message.timer = globalThis.setTimeout(() => {
+      if (message.version !== version || closed) {
+        return;
+      }
+      message.timer = undefined;
+      enqueueRun();
+    }, delayMs);
+  };
+
+  const deliverMessage = async (
+    message: ScheduledMessage
+  ): Promise<
+    | { kind: 'success' }
+    | { kind: 'timeout'; delayMs: number }
+    | { kind: 'server_error'; status: number; text: string }
+  > => {
+    const { pathname, prefix } = getQueueRoute(message.queueName);
+    const headers: Record<string, string> = {
+      ...message.headers,
+      'content-type': 'application/json',
+      'x-vqs-queue-name': message.queueName,
+      'x-vqs-message-id': message.messageId,
+      'x-vqs-message-attempt': String(message.attempt + 1),
+    };
+    const directHandler = directHandlers.get(prefix);
+    let response: Response;
+
+    if (directHandler) {
+      const req = new Request(
+        `http://localhost/.well-known/workflow/v1/${pathname}`,
+        {
+          method: 'POST',
+          headers,
+          body: message.body,
+        }
+      );
+      response = await directHandler(req);
+    } else {
+      const baseUrl = await resolveBaseUrl(config);
+      response = await fetch(`${baseUrl}/.well-known/workflow/v1/${pathname}`, {
+        method: 'POST',
+        duplex: 'half',
+        dispatcher: httpAgent,
+        headers,
+        body: message.body,
+      } as any);
+    }
+
+    const text = await response.text();
+
+    if (response.ok) {
       try {
-        const maxAttempts = 3;
-        let defaultRetriesLeft = maxAttempts;
-        for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
-          defaultRetriesLeft--;
-
-          const headers: Record<string, string> = {
-            ...opts?.headers,
-            'content-type': 'application/json',
-            'x-vqs-queue-name': queueName,
-            'x-vqs-message-id': messageId,
-            'x-vqs-message-attempt': String(attempt + 1),
+        const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
+        if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
+          return {
+            kind: 'timeout',
+            delayMs: timeoutSeconds > 0 ? timeoutSeconds * 1000 : 0,
           };
-          const directHandler = directHandlers.get(prefix);
-          let response: Response;
+        }
+      } catch {}
 
-          if (directHandler) {
-            const req = new Request(
-              `http://localhost/.well-known/workflow/v1/${pathname}`,
-              {
-                method: 'POST',
-                headers,
-                body,
-              }
-            );
-            response = await directHandler(req);
-          } else {
-            const baseUrl = await resolveBaseUrl(config);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-            response = await fetch(
-              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
-              {
-                method: 'POST',
-                duplex: 'half',
-                dispatcher: httpAgent,
-                headers,
-                body,
-              } as any
-            );
-          }
+      return { kind: 'success' };
+    }
 
-          const text = await response.text();
+    return {
+      kind: 'server_error',
+      status: response.status,
+      text,
+    };
+  };
 
-          if (response.ok) {
-            try {
-              const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
-              if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
-                // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
-                // When this fires early, the handler recalculates remaining time from
-                // persistent state and returns another timeoutSeconds if needed.
-                if (timeoutSeconds > 0) {
-                  const timeoutMs = Math.min(
-                    timeoutSeconds * 1000,
-                    MAX_SAFE_TIMEOUT_MS
-                  );
-                  await setTimeout(timeoutMs);
-                }
-                defaultRetriesLeft++;
-                continue;
-              }
-            } catch {}
+  const executeMessage = async (message: ScheduledMessage): Promise<void> => {
+    if (closed || message.running) {
+      return;
+    }
+
+    message.running = true;
+
+    try {
+      while (message.pendingExecution && !closed) {
+        message.pendingExecution = false;
+        const version = message.version;
+        const token = semaphore.tryAcquire();
+        if (!token) {
+          console.warn(
+            `[world-local]: concurrency limit (${WORKFLOW_LOCAL_QUEUE_CONCURRENCY}) reached, waiting for queue to free up`
+          );
+          await semaphore.acquire();
+        }
+
+        try {
+          if (closed) {
+            cleanupMessage(message);
             return;
           }
 
+          if (version !== message.version) {
+            continue;
+          }
+
+          const result = await deliverMessage(message);
+
+          if (result.kind === 'success') {
+            cleanupMessage(message);
+            return;
+          }
+
+          if (result.kind === 'timeout') {
+            message.attempt += 1;
+            scheduleExecution(
+              message,
+              result.delayMs === 0
+                ? 0
+                : Math.min(result.delayMs, LOCAL_QUEUE_MAX_VISIBILITY * 1000)
+            );
+            continue;
+          }
+
           console.error(
-            `[world-local] Queue message failed (attempt ${attempt + 1}/${maxAttempts}, status ${response.status}): ${text}`,
-            { queueName, messageId }
+            `[world-local] Queue message failed (attempt ${
+              message.attempt + 1
+            }/3, status ${result.status}): ${result.text}`,
+            { queueName: message.queueName, messageId: message.messageId }
           );
-        }
 
-        console.error(`[world-local] Queue message exhausted all retries`, {
-          queueName,
-          messageId,
-        });
-      } finally {
-        semaphore.release();
+          message.attempt += 1;
+          message.remainingServerRetries -= 1;
+          if (message.remainingServerRetries > 0) {
+            scheduleExecution(message, 0);
+            continue;
+          }
+
+          console.error(`[world-local] Queue message exhausted all retries`, {
+            queueName: message.queueName,
+            messageId: message.messageId,
+          });
+          cleanupMessage(message);
+          return;
+        } finally {
+          semaphore.release();
+        }
       }
-    })()
-      .catch((err) => {
-        // Silently ignore client disconnect errors (e.g., browser refresh during streaming)
-        // These are expected and should not cause unhandled rejection warnings
-        const isAbortError =
-          err?.name === 'AbortError' || err?.name === 'ResponseAborted';
-        if (!isAbortError) {
-          console.error('[local world] Queue operation failed:', err);
-        }
-      })
-      .finally(() => {
-        for (const fn of cleanup) {
-          fn();
-        }
-      });
+    } catch (err) {
+      const queueError = err as { name?: string };
+      const isAbortError =
+        queueError.name === 'AbortError' ||
+        queueError.name === 'ResponseAborted';
+      if (!isAbortError) {
+        console.error('[local world] Queue operation failed:', err);
+      }
+      cleanupMessage(message);
+    } finally {
+      message.running = false;
+      if (message.pendingExecution && !closed) {
+        void executeMessage(message);
+      }
+    }
+  };
 
-    return { messageId };
+  const queue: Queue['queue'] = async (queueName, message, opts) => {
+    const body = transport.serialize(message);
+    const delayMs =
+      typeof opts?.delaySeconds === 'number' && opts.delaySeconds > 0
+        ? opts.delaySeconds * 1000
+        : 0;
+
+    if (opts?.idempotencyKey) {
+      const existing = scheduledMessages.get(opts.idempotencyKey);
+      if (existing) {
+        existing.queueName = queueName;
+        existing.body = body;
+        existing.headers = opts.headers;
+        scheduleExecution(existing, delayMs);
+        return { messageId: existing.messageId };
+      }
+    }
+
+    const scheduledMessage: ScheduledMessage = {
+      attempt: 0,
+      body,
+      headers: opts?.headers,
+      idempotencyKey: opts?.idempotencyKey,
+      messageId: MessageId.parse(`msg_${generateId()}`),
+      pendingExecution: false,
+      queueName,
+      remainingServerRetries: 3,
+      running: false,
+      version: 0,
+    };
+
+    if (opts?.idempotencyKey) {
+      scheduledMessages.set(opts.idempotencyKey, scheduledMessage);
+    }
+
+    scheduleExecution(scheduledMessage, delayMs);
+    return { messageId: scheduledMessage.messageId };
   };
 
   const HeaderParser = z.object({
@@ -270,6 +367,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       directHandlers.set(prefix, handler);
     },
     async close() {
+      closed = true;
+      for (const message of scheduledMessages.values()) {
+        cleanupMessage(message);
+      }
+      scheduledMessages.clear();
       await httpAgent.close();
     },
   };

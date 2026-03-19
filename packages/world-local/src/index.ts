@@ -61,10 +61,15 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
+  const storage = createStorage(mergedConfig.dataDir, tag);
   return {
-    limits: createLimits(mergedConfig.dataDir, tag),
+    limits: createLimits(mergedConfig.dataDir, {
+      tag,
+      queue,
+      storage,
+    }),
     ...queue,
-    ...createStorage(mergedConfig.dataDir, tag),
+    ...storage,
     ...createStreamer(mergedConfig.dataDir, tag),
     async start() {
       await initDataDir(mergedConfig.dataDir);

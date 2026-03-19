@@ -1,5 +1,11 @@
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
+import type {
+  Queue,
+  Storage,
+  WorkflowRunWithoutData,
+  StepWithoutData,
+} from '@workflow/world';
 import {
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
@@ -20,23 +26,56 @@ const LimitTokenSchema = z.object({
   expiresAt: z.coerce.date(),
 });
 
+const LimitWaiterSchema = z.object({
+  waiterId: z.string(),
+  holderId: z.string(),
+  createdAt: z.coerce.date(),
+  leaseTtlMs: z.number().int().positive().optional(),
+  concurrencyMax: z.number().int().positive().nullable(),
+  rateCount: z.number().int().positive().nullable(),
+  ratePeriodMs: z.number().int().positive().nullable(),
+});
+
 const KeyStateSchema = z.object({
   key: z.string(),
   leases: z.array(LimitLeaseSchema),
   tokens: z.array(LimitTokenSchema),
+  waiters: z.array(LimitWaiterSchema),
 });
 
 const LimitsStateSchema = z.object({
-  version: z.literal(1),
+  version: z.literal(2),
   keys: z.record(z.string(), KeyStateSchema),
 });
 
 type LimitToken = z.infer<typeof LimitTokenSchema>;
+type LimitWaiter = z.infer<typeof LimitWaiterSchema>;
 type KeyState = z.infer<typeof KeyStateSchema>;
 type LimitsState = z.infer<typeof LimitsStateSchema>;
 
+type HolderTarget =
+  | {
+      kind: 'workflow';
+      runId: string;
+      correlationId: string;
+    }
+  | {
+      kind: 'step';
+      runId: string;
+      stepId: string;
+    }
+  | {
+      kind: 'opaque';
+    };
+
+export interface LocalLimitsOptions {
+  tag?: string;
+  queue?: Pick<Queue, 'queue'>;
+  storage?: Pick<Storage, 'runs' | 'steps'>;
+}
+
 const EMPTY_STATE: LimitsState = {
-  version: 1,
+  version: 2,
   keys: {},
 };
 
@@ -48,17 +87,26 @@ function cloneToken(token: LimitToken): LimitToken {
   return { ...token };
 }
 
+function cloneWaiter(waiter: LimitWaiter): LimitWaiter {
+  return { ...waiter };
+}
+
+function normalizeKeyState(keyState: KeyState): KeyState {
+  return {
+    key: keyState.key,
+    leases: keyState.leases.map((lease) => ({ ...lease })),
+    tokens: keyState.tokens.map(cloneToken),
+    waiters: keyState.waiters.map(cloneWaiter),
+  };
+}
+
 function cloneState(state: LimitsState): LimitsState {
   return {
-    version: 1,
+    version: 2,
     keys: Object.fromEntries(
       Object.entries(state.keys).map(([key, keyState]) => [
         key,
-        {
-          key: keyState.key,
-          leases: keyState.leases.map((lease) => ({ ...lease })),
-          tokens: keyState.tokens.map(cloneToken),
-        },
+        normalizeKeyState(keyState),
       ])
     ),
   };
@@ -72,6 +120,7 @@ function pruneKeyState(keyState: KeyState, now = Date.now()): KeyState {
         lease.expiresAt === undefined || lease.expiresAt.getTime() > now
     ),
     tokens: keyState.tokens.filter((token) => token.expiresAt.getTime() > now),
+    waiters: keyState.waiters.map(cloneWaiter),
   };
 }
 
@@ -113,14 +162,91 @@ function getRetryAfterMs(
   return Math.min(...candidates);
 }
 
-export function createLimits(dataDir: string, tag?: string): Limits {
-  const statePath = getStatePath(dataDir, tag);
+function createLease(
+  key: string,
+  holderId: string,
+  definition: LimitLease['definition'],
+  acquiredAt: Date,
+  leaseTtlMs?: number
+): LimitLease {
+  return {
+    leaseId: `lmt_${monotonicUlid()}`,
+    key,
+    holderId,
+    acquiredAt,
+    expiresAt:
+      leaseTtlMs !== undefined
+        ? new Date(acquiredAt.getTime() + leaseTtlMs)
+        : undefined,
+    definition,
+  };
+}
+
+function insertToken(
+  keyState: KeyState,
+  holderId: string,
+  acquiredAt: Date,
+  periodMs: number
+) {
+  keyState.tokens.push({
+    tokenId: `lmttok_${monotonicUlid()}`,
+    holderId,
+    acquiredAt,
+    expiresAt: new Date(acquiredAt.getTime() + periodMs),
+  });
+}
+
+function parseHolderId(holderId: string): HolderTarget {
+  if (holderId.startsWith('wflock_')) {
+    const [runId, correlationId] = holderId.slice('wflock_'.length).split(':');
+    if (runId && correlationId) {
+      return { kind: 'workflow', runId, correlationId };
+    }
+  }
+
+  if (holderId.startsWith('stplock_')) {
+    const [runId, stepId] = holderId.slice('stplock_'.length).split(':');
+    if (runId && stepId) {
+      return { kind: 'step', runId, stepId };
+    }
+  }
+
+  return { kind: 'opaque' };
+}
+
+function isTerminalRun(run: WorkflowRunWithoutData | undefined) {
+  return !run || ['completed', 'failed', 'cancelled'].includes(run.status);
+}
+
+function isTerminalStep(step: StepWithoutData | undefined) {
+  return !step || ['completed', 'failed', 'cancelled'].includes(step.status);
+}
+
+function toMillis(value: Date | undefined): number | undefined {
+  return value ? value.getTime() : undefined;
+}
+
+function deleteEmptyKey(state: LimitsState, key: string) {
+  const keyState = state.keys[key];
+  if (!keyState) return;
+  if (
+    keyState.leases.length === 0 &&
+    keyState.tokens.length === 0 &&
+    keyState.waiters.length === 0
+  ) {
+    delete state.keys[key];
+  }
+}
+
+export function createLimits(
+  dataDir: string,
+  tagOrOptions?: string | LocalLimitsOptions
+): Limits {
+  const options =
+    typeof tagOrOptions === 'string' ? { tag: tagOrOptions } : tagOrOptions;
+  const statePath = getStatePath(dataDir, options?.tag);
   let stateOp = Promise.resolve();
 
-  // This block is an in-process async mutex / operation queue.
-  // stateOp starts as an already-resolved promise.
-  // Each call to withStateLock() chains a new operation onto the tail of that promise.
-  // Because every new operation waits for the previous one, reads/modifies/writes to the limits state file happen serially.
   const withStateLock = async <T>(fn: () => Promise<T>): Promise<T> => {
     const run = stateOp.then(fn, fn);
     stateOp = run.then(
@@ -131,13 +257,177 @@ export function createLimits(dataDir: string, tag?: string): Limits {
   };
 
   const readState = async (): Promise<LimitsState> => {
-    return (
-      (await readJSON(statePath, LimitsStateSchema)) ?? cloneState(EMPTY_STATE)
-    );
+    const raw =
+      (await readJSON(statePath, LimitsStateSchema)) ?? cloneState(EMPTY_STATE);
+
+    return cloneState(raw);
   };
 
   const writeState = async (state: LimitsState): Promise<void> => {
     await writeJSON(statePath, state, { overwrite: true });
+  };
+
+  const getRun = async (
+    runId: string
+  ): Promise<WorkflowRunWithoutData | undefined> => {
+    try {
+      return await options?.storage?.runs.get(runId, { resolveData: 'none' });
+    } catch {
+      return undefined;
+    }
+  };
+
+  const getStep = async (
+    runId: string,
+    stepId: string
+  ): Promise<StepWithoutData | undefined> => {
+    try {
+      return await options?.storage?.steps.get(runId, stepId, {
+        resolveData: 'none',
+      });
+    } catch {
+      return undefined;
+    }
+  };
+
+  const isHolderLive = async (holderId: string): Promise<boolean> => {
+    const target = parseHolderId(holderId);
+    if (target.kind === 'opaque' || !options?.storage) {
+      return true;
+    }
+
+    if (target.kind === 'workflow') {
+      const run = await getRun(target.runId);
+      return !isTerminalRun(run);
+    }
+
+    const [run, step] = await Promise.all([
+      getRun(target.runId),
+      getStep(target.runId, target.stepId),
+    ]);
+    return !isTerminalRun(run) && !isTerminalStep(step);
+  };
+
+  const queueWakeForHolder = async (holderId: string): Promise<void> => {
+    const target = parseHolderId(holderId);
+    if (target.kind === 'opaque' || !options?.queue || !options?.storage) {
+      return;
+    }
+
+    try {
+      if (target.kind === 'workflow') {
+        const run = await getRun(target.runId);
+        if (isTerminalRun(run) || !run) return;
+
+        await options.queue.queue(
+          `__wkf_workflow_${run.workflowName}`,
+          {
+            runId: target.runId,
+            requestedAt: new Date(),
+          },
+          {
+            idempotencyKey: target.correlationId,
+          }
+        );
+        return;
+      }
+
+      const [run, step] = await Promise.all([
+        getRun(target.runId),
+        getStep(target.runId, target.stepId),
+      ]);
+      if (isTerminalRun(run) || isTerminalStep(step) || !run || !step) return;
+
+      await options.queue.queue(
+        `__wkf_step_${step.stepName}`,
+        {
+          workflowName: run.workflowName,
+          workflowRunId: target.runId,
+          workflowStartedAt: toMillis(run.startedAt) ?? Date.now(),
+          stepId: target.stepId,
+          requestedAt: new Date(),
+        },
+        {
+          idempotencyKey: target.stepId,
+        }
+      );
+    } catch (error) {
+      console.warn('[world-local] Failed to queue lock wake-up', error);
+    }
+  };
+
+  const promoteWaiters = async (
+    key: string,
+    keyState: KeyState
+  ): Promise<{ keyState: KeyState; wakeHolders: string[] }> => {
+    const wakeHolders: string[] = [];
+    const promotedKeyState = pruneKeyState(keyState);
+    const remainingWaiters: LimitWaiter[] = [];
+    let activeLeases = promotedKeyState.leases.length;
+    let activeTokens = promotedKeyState.tokens.length;
+
+    for (let index = 0; index < promotedKeyState.waiters.length; index++) {
+      const waiter = promotedKeyState.waiters[index];
+
+      if (!(await isHolderLive(waiter.holderId))) {
+        continue;
+      }
+
+      const concurrencyBlocked =
+        waiter.concurrencyMax !== null && activeLeases >= waiter.concurrencyMax;
+      const rateBlocked =
+        waiter.rateCount !== null && activeTokens >= waiter.rateCount;
+
+      if (concurrencyBlocked || rateBlocked) {
+        remainingWaiters.push(
+          waiter,
+          ...promotedKeyState.waiters.slice(index + 1)
+        );
+        promotedKeyState.waiters = remainingWaiters;
+        return { keyState: promotedKeyState, wakeHolders };
+      }
+
+      const acquiredAt = new Date();
+      const definition = {
+        concurrency:
+          waiter.concurrencyMax !== null
+            ? { max: waiter.concurrencyMax }
+            : undefined,
+        rate:
+          waiter.rateCount !== null && waiter.ratePeriodMs !== null
+            ? {
+                count: waiter.rateCount,
+                periodMs: waiter.ratePeriodMs,
+              }
+            : undefined,
+      };
+
+      promotedKeyState.leases.push(
+        createLease(
+          key,
+          waiter.holderId,
+          definition,
+          acquiredAt,
+          waiter.leaseTtlMs
+        )
+      );
+      activeLeases += 1;
+
+      if (waiter.rateCount !== null && waiter.ratePeriodMs !== null) {
+        insertToken(
+          promotedKeyState,
+          waiter.holderId,
+          acquiredAt,
+          waiter.ratePeriodMs
+        );
+        activeTokens += 1;
+      }
+
+      wakeHolders.push(waiter.holderId);
+    }
+
+    promotedKeyState.waiters = remainingWaiters;
+    return { keyState: promotedKeyState, wakeHolders };
   };
 
   return {
@@ -146,23 +436,26 @@ export function createLimits(dataDir: string, tag?: string): Limits {
 
       return withStateLock(async (): Promise<LimitAcquireResult> => {
         const state = cloneState(await readState());
-        const now = new Date();
-        const nowMs = now.getTime();
-        const keyState = pruneKeyState(
+        const baseKeyState = pruneKeyState(
           state.keys[parsed.key] ?? {
             key: parsed.key,
             leases: [],
             tokens: [],
-          },
-          nowMs
+            waiters: [],
+          }
         );
+        const { keyState, wakeHolders } = await promoteWaiters(
+          parsed.key,
+          baseKeyState
+        );
+        state.keys[parsed.key] = keyState;
 
         const existingLease = keyState.leases.find(
           (lease) => lease.holderId === parsed.holderId
         );
         if (existingLease) {
-          state.keys[parsed.key] = keyState;
           await writeState(state);
+          await Promise.all(wakeHolders.map(queueWakeForHolder));
           return {
             status: 'acquired',
             lease: existingLease,
@@ -175,47 +468,66 @@ export function createLimits(dataDir: string, tag?: string): Limits {
         const rateBlocked =
           parsed.definition.rate !== undefined &&
           keyState.tokens.length >= parsed.definition.rate.count;
+        const existingWaiter = keyState.waiters.find(
+          (waiter) => waiter.holderId === parsed.holderId
+        );
 
-        if (concurrencyBlocked || rateBlocked) {
+        if (
+          existingWaiter ||
+          concurrencyBlocked ||
+          rateBlocked ||
+          keyState.waiters.length > 0
+        ) {
+          if (!existingWaiter) {
+            keyState.waiters.push({
+              waiterId: `lmtwait_${monotonicUlid()}`,
+              holderId: parsed.holderId,
+              createdAt: new Date(),
+              leaseTtlMs: parsed.leaseTtlMs,
+              concurrencyMax: parsed.definition.concurrency?.max ?? null,
+              rateCount: parsed.definition.rate?.count ?? null,
+              ratePeriodMs: parsed.definition.rate?.periodMs ?? null,
+            });
+          }
+
           state.keys[parsed.key] = keyState;
           await writeState(state);
+          await Promise.all(wakeHolders.map(queueWakeForHolder));
           return {
             status: 'blocked',
             reason: getBlockedReason(concurrencyBlocked, rateBlocked),
             retryAfterMs: getRetryAfterMs(
               keyState,
-              nowMs,
+              Date.now(),
               concurrencyBlocked,
               rateBlocked
             ),
           };
         }
 
-        const lease: LimitLease = {
-          leaseId: `lmt_${monotonicUlid()}`,
-          key: parsed.key,
-          holderId: parsed.holderId,
-          acquiredAt: now,
-          expiresAt:
-            parsed.leaseTtlMs !== undefined
-              ? new Date(nowMs + parsed.leaseTtlMs)
-              : undefined,
-          definition: parsed.definition,
-        };
+        const acquiredAt = new Date();
+        const lease = createLease(
+          parsed.key,
+          parsed.holderId,
+          parsed.definition,
+          acquiredAt,
+          parsed.leaseTtlMs
+        );
 
         keyState.leases.push(lease);
 
         if (parsed.definition.rate) {
-          keyState.tokens.push({
-            tokenId: `lmttok_${monotonicUlid()}`,
-            holderId: parsed.holderId,
-            acquiredAt: now,
-            expiresAt: new Date(nowMs + parsed.definition.rate.periodMs),
-          });
+          insertToken(
+            keyState,
+            parsed.holderId,
+            acquiredAt,
+            parsed.definition.rate.periodMs
+          );
         }
 
         state.keys[parsed.key] = keyState;
         await writeState(state);
+        await Promise.all(wakeHolders.map(queueWakeForHolder));
 
         return {
           status: 'acquired',
@@ -229,10 +541,12 @@ export function createLimits(dataDir: string, tag?: string): Limits {
 
       await withStateLock(async () => {
         const state = cloneState(await readState());
+        const wakeHolders: string[] = [];
 
         for (const [key, keyStateValue] of Object.entries(state.keys)) {
           const keyState = pruneKeyState(keyStateValue);
-          const nextLeases = keyState.leases.filter((lease) => {
+          const beforeLeases = keyState.leases.length;
+          keyState.leases = keyState.leases.filter((lease) => {
             if (lease.leaseId !== parsed.leaseId) return true;
             if (parsed.key && lease.key !== parsed.key) return true;
             if (parsed.holderId && lease.holderId !== parsed.holderId) {
@@ -241,20 +555,19 @@ export function createLimits(dataDir: string, tag?: string): Limits {
             return false;
           });
 
-          state.keys[key] = {
-            ...keyState,
-            leases: nextLeases,
-          };
-
-          if (
-            state.keys[key].leases.length === 0 &&
-            state.keys[key].tokens.length === 0
-          ) {
-            delete state.keys[key];
+          if (keyState.leases.length !== beforeLeases) {
+            const promoted = await promoteWaiters(key, keyState);
+            state.keys[key] = promoted.keyState;
+            wakeHolders.push(...promoted.wakeHolders);
+          } else {
+            state.keys[key] = keyState;
           }
+
+          deleteEmptyKey(state, key);
         }
 
         await writeState(state);
+        await Promise.all(wakeHolders.map(queueWakeForHolder));
       });
     },
 
