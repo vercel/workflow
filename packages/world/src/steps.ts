@@ -28,13 +28,24 @@ export const StepSchema = z.object({
   runId: z.string(),
   stepId: z.string(),
   /**
-   * The human-readable name of the step function.
+   * The machine-readable name of the step function.
    *
-   * This is the display name derived from the step function's name in your code.
-   * Use this field to show user-friendly step names in progress UIs or dashboards
-   * instead of the internal `stepId`.
+   * This field contains a structured identifier like `step//./src/workflows/order//processPayment`
+   * that encodes the step's module specifier and function name.
    *
-   * @example "fetchUserData", "processPayment", "sendNotification"
+   * Use `parseStepName()` from `@workflow/utils/parse-name` to extract:
+   * - `shortName`: User-friendly display name (e.g., `"processPayment"`)
+   * - `moduleSpecifier`: The module path or package (e.g., `"./src/workflows/order"`)
+   * - `functionName`: The full function path (e.g., `"processPayment"` or `"outer/nested"`)
+   *
+   * @example
+   * ```ts
+   * import { parseStepName } from "@workflow/utils/parse-name";
+   *
+   * const parsed = parseStepName(step.stepName);
+   * // parsed.shortName → "processPayment"
+   * // parsed.moduleSpecifier → "./src/workflows/order"
+   * ```
    */
   stepName: z.string(),
   status: StepStatusSchema,

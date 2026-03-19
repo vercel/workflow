@@ -91,12 +91,13 @@ export async function POST(req: Request) {
 }
 ```
 
-### List Steps for a Run
+### List Steps for a Run (Without Data)
 
-List all steps for a workflow run to track progress. Each step includes a `stepName` field with the human-readable function name:
+List steps for a workflow run with `resolveData: 'none'` to efficiently get step metadata without fetching serialized input/output. Use `parseStepName` to extract user-friendly display names:
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
+import { parseStepName } from "@workflow/utils/parse-name"; // [!code highlight]
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -108,15 +109,25 @@ export async function GET(req: Request) {
 
   try {
     const world = getWorld(); // [!code highlight]
-    const steps = await world.steps.list({ runId }); // [!code highlight]
+    const steps = await world.steps.list({ // [!code highlight]
+      runId, // [!code highlight]
+      resolveData: "none", // Skip fetching input/output for performance // [!code highlight]
+    }); // [!code highlight]
 
-    // Map steps to a progress view using stepName
-    const progress = steps.data.map((step) => ({
-      name: step.stepName, // Human-readable step name // [!code highlight]
-      status: step.status,
-      startedAt: step.startedAt,
-      completedAt: step.completedAt,
-    }));
+    // Map steps to a progress view using parseStepName for display
+    const progress = steps.data.map((step) => {
+      const parsed = parseStepName(step.stepName); // [!code highlight]
+      return {
+        stepId: step.stepId,
+        // Use shortName for UI display (e.g., "fetchUserData") // [!code highlight]
+        displayName: parsed?.shortName ?? step.stepName, // [!code highlight]
+        // Module info available for debugging // [!code highlight]
+        module: parsed?.moduleSpecifier, // [!code highlight]
+        status: step.status,
+        startedAt: step.startedAt,
+        completedAt: step.completedAt,
+      };
+    });
 
     return Response.json({ progress, cursor: steps.cursor });
   } catch (error) {
@@ -128,12 +139,17 @@ export async function GET(req: Request) {
 }
 ```
 
-### Get a Single Step
+### Get Step with Hydrated Input/Output
 
-Retrieve details for a specific step by its ID:
+Retrieve a step with its serialized data and hydrate it for display. This example shows how to decrypt and deserialize step input/output:
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
+import { parseStepName } from "@workflow/utils/parse-name"; // [!code highlight]
+import { // [!code highlight]
+  hydrateResourceIO, // [!code highlight]
+  observabilityRevivers, // [!code highlight]
+} from "@workflow/core/serialization-format"; // [!code highlight]
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -146,15 +162,24 @@ export async function GET(req: Request) {
 
   try {
     const world = getWorld(); // [!code highlight]
+    // Fetch step with data (default resolveData behavior) // [!code highlight]
     const step = await world.steps.get(runId, stepId); // [!code highlight]
 
+    // Hydrate serialized input/output for display // [!code highlight]
+    const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+
+    // Parse the stepName for user-friendly display
+    const parsed = parseStepName(step.stepName);
+
     return Response.json({
-      stepId: step.stepId,
-      stepName: step.stepName, // [!code highlight]
-      status: step.status,
-      attempt: step.attempt,
-      input: step.input,
-      output: step.output,
+      stepId: hydrated.stepId,
+      displayName: parsed?.shortName ?? step.stepName, // [!code highlight]
+      module: parsed?.moduleSpecifier, // [!code highlight]
+      status: hydrated.status,
+      attempt: hydrated.attempt,
+      // Hydrated input/output ready for rendering // [!code highlight]
+      input: hydrated.input, // [!code highlight]
+      output: hydrated.output, // [!code highlight]
     });
   } catch (error) {
     return Response.json(
@@ -164,6 +189,12 @@ export async function GET(req: Request) {
   }
 }
 ```
+
+<Callout type="info">
+  The `stepName` field contains a machine-readable identifier like `step//./src/workflows/order//processPayment`.
+  Use `parseStepName()` from `@workflow/utils/parse-name` to extract the `shortName` (e.g., `"processPayment"`)
+  and `moduleSpecifier` for display in your UI.
+</Callout>
 
 ## Related Functions
 
