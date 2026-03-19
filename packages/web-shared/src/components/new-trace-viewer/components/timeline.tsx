@@ -32,30 +32,28 @@ const TimelineRow = ({
   children,
   isSelected,
   onClick,
-  title,
 }: {
   children: ReactNode;
   isSelected: boolean;
   onClick: () => void;
-  title: string;
 }) => {
   return (
-    <button
-      type="button"
-      title={title}
-      className="overflow-clip w-full px-2 group block cursor-pointer"
+    <div
+      className="overflow-clip w-full group"
       role="treeitem"
       aria-selected={isSelected}
+      aria-expanded={isSelected}
+      aria-level={1}
       onClick={onClick}
     >
       <div
         className={cn(
-          'relative flex h-9 items-center hover:bg-gray-100 rounded-sm px-2 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200'
+          'relative flex h-9 items-center hover:bg-gray-100 rounded-sm group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200'
         )}
       >
         {children}
       </div>
-    </button>
+    </div>
   );
 };
 
@@ -78,31 +76,34 @@ export const resourceStatus = cva('', {
   },
 });
 
-const spanVariants = cva('relative block h-full w-full min-w-0.5 rounded-xs', {
-  variants: {
-    status: {
-      running: 'bg-green-700',
-      failed: 'bg-red-700',
-      succeeded: 'bg-blue-700',
-      retrying: 'bg-yellow-700',
-      queued: 'bg-gray-500',
-      waiting: 'bg-gray-700',
-      sleeping: 'bg-amber-700',
-      received: 'bg-blue-700',
+const spanVariants = cva(
+  'relative flex h-5 w-full min-w-0.5 rounded-xs items-center',
+  {
+    variants: {
+      status: {
+        running: 'bg-green-700',
+        failed: 'bg-red-700',
+        succeeded: 'bg-blue-700',
+        retrying: 'bg-amber-700',
+        queued: 'bg-gray-500',
+        waiting: 'bg-gray-700',
+        sleeping: 'bg-amber-700',
+        received: 'bg-blue-700',
+      },
+      errored: {
+        true: 'bg-red-700',
+        false: '',
+      },
+      resourceType: {
+        run: 'bg-blue-700',
+        step: 'bg-green-700',
+        hook: 'bg-amber-700',
+        sleep: 'bg-purple-700',
+        default: 'bg-gray-500',
+      },
     },
-    errored: {
-      true: 'bg-red-700',
-      false: '',
-    },
-    resourceType: {
-      run: 'bg-blue-700',
-      step: 'bg-green-700',
-      hook: 'bg-amber-700',
-      sleep: 'bg-purple-700',
-      default: 'bg-gray-500',
-    },
-  },
-});
+  }
+);
 
 export const TimelineBar = memo(function TimelineBar({
   span,
@@ -147,14 +148,9 @@ export const TimelineBar = memo(function TimelineBar({
 
   const isErrored = span.status.code === 2;
   const activeStatus: SegmentStatus = isErrored ? 'failed' : 'running';
-  const durationLabel = formatDuration(Math.max(endTime - startTime, 0), true);
 
   return (
-    <TimelineRow
-      isSelected={isSelected}
-      onClick={onClick}
-      title={`${span.name} - ${durationLabel}`}
-    >
+    <TimelineRow isSelected={isSelected} onClick={onClick}>
       <div
         className="absolute top-2 h-5 min-w-0.5"
         style={{
@@ -162,7 +158,7 @@ export const TimelineBar = memo(function TimelineBar({
           width: `${widthPct}%`,
         }}
       >
-        <div className="flex h-full w-full overflow-hidden rounded-xs ring-1 ring-black/5">
+        <div className="flex flex-row space-x-0.5 w-full">
           {hasQueued && queuedBarPct > 0 ? (
             <Span status="queued" resourceType="default" width={queuedBarPct} />
           ) : null}

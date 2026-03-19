@@ -1,12 +1,12 @@
 'use client';
 
-// import { cn } from "../../lib/utils";
-import EventList from './components/event-list';
-import type { Trace } from '../trace-viewer/types';
-import { useMemo, type ReactNode } from 'react';
 import { X } from 'lucide-react';
-import { Timeline, TimelineBar } from './components/timeline';
+import { type ReactNode, useMemo } from 'react';
+import type { Trace } from '../trace-viewer/types';
 import { getHighResInMs } from '../trace-viewer/util/timing';
+import { Divider, SplitPane } from './components/alt-split-pane';
+import EventList from './components/event-list';
+import { Timeline, TimelineBar } from './components/timeline';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 
 interface NewTraceViewerProps {
@@ -32,7 +32,6 @@ export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
 function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
     useActiveSpan();
-  const splitRatio = 0.5;
   const compression = useMemo(() => {
     let minStart = Number.POSITIVE_INFINITY;
     let maxEnd = Number.NEGATIVE_INFINITY;
@@ -62,7 +61,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   return (
     <div
       data-pane="pane-root"
-      className="flex w-full overflow-hidden h-full max-h-full"
+      className="flex w-full h-full max-h-full"
       style={{
         display: 'grid',
         gridTemplateColumns: activeSpan
@@ -71,22 +70,17 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         height: '100%',
       }}
     >
-      <div>
+      <div
+        id="trace-parent"
+        className="grid grid-rows-[auto_1fr] h-full min-h-0 overflow-hidden relative border"
+      >
         <TraceHeader />
-        <div
-          data-pane="left-pane"
-          style={{
-            display: 'grid',
-            gridTemplateColumns: `minmax(50px, ${splitRatio * 100}%) 3px minmax(50px, ${(1 - splitRatio) * 100}%)`,
-            height: '100%',
-          }}
-        >
+        <SplitPane>
           <EventList
             spans={trace.spans}
             activeSpanId={activeSpanId}
             onSelectSpan={setActiveSpan}
           />
-          <div className="w-px bg-gray-alpha-400 h-full" role="separator" />
           <Timeline>
             {trace.spans.map((span) => (
               <TimelineBar
@@ -98,11 +92,11 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               />
             ))}
           </Timeline>
-        </div>
+        </SplitPane>
       </div>
       {activeSpan ? (
         <>
-          <div className="w-px bg-gray-alpha-400 h-full" role="separator"></div>
+          <Divider />
           <aside
             id="side-panel"
             className="grid h-full max-h-full grid-rows-[2.5rem_1fr] overflow-hidden bg-background-200"

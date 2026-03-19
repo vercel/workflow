@@ -1,5 +1,5 @@
-import { StepForward } from 'lucide-react';
 import { cva } from 'class-variance-authority';
+import { StepForward } from 'lucide-react';
 import type { Span } from '../../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
 
@@ -42,14 +42,14 @@ const EventRow = ({
 
   return (
     <li
-      role="treeitem"
-      aria-level={0}
-      aria-selected={isSelected}
-      aria-expanded="false"
       className="overflow-clip group"
+      role="treeitem"
+      aria-selected={isSelected}
+      aria-expanded={isSelected}
+      aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 rounded-sm px-2 h-9 py-1.5 cursor-pointer flex">
+      <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 rounded-sm px-2 h-9 py-1.5 flex">
         <div className="flex items-center gap-2">
           <span className={eventTag({ eventType: toEventType(span.resource) })}>
             <StepForward className="w-4 h-4" />
