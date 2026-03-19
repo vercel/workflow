@@ -6,7 +6,7 @@
  * step calls. This tests cross-context class registration.
  */
 
-import { Vector } from './serde-models.js';
+import { Vector } from './serde-models';
 
 /**
  * Step that receives a Vector and scales it.
