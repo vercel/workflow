@@ -7,7 +7,12 @@ import {
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
-import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
+import {
+  LimitAcquireRequestSchema,
+  SPEC_VERSION_CURRENT,
+  StepInvokePayloadSchema,
+  type LimitLease,
+} from '@workflow/world';
 import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -42,6 +47,65 @@ import {
 import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
+
+async function getDeferredStepLock(
+  world: ReturnType<typeof getWorld>,
+  workflowRunId: string,
+  stepId: string
+) {
+  let step: Awaited<ReturnType<typeof world.steps.get>>;
+  try {
+    step = await world.steps.get(workflowRunId, stepId);
+  } catch (error) {
+    if (WorkflowAPIError.is(error) && error.status === 404) {
+      return null;
+    }
+    throw error;
+  }
+  if (step.status !== 'pending') {
+    return null;
+  }
+
+  const result = await world.events.listByCorrelationId({
+    correlationId: stepId,
+    pagination: {
+      limit: 1,
+      sortOrder: 'desc',
+    },
+  });
+  const latestEvent = result.data[0];
+
+  if (
+    !latestEvent ||
+    latestEvent.runId !== workflowRunId ||
+    latestEvent.eventType !== 'step_deferred' ||
+    !latestEvent.eventData.lockRequest
+  ) {
+    return null;
+  }
+
+  return {
+    step,
+    lockRequest: LimitAcquireRequestSchema.parse(
+      latestEvent.eventData.lockRequest
+    ),
+  };
+}
+
+async function releaseUnusedPreAcquiredLocks(
+  world: ReturnType<typeof getWorld>,
+  preAcquiredLocks: Record<string, LimitLease>
+) {
+  await Promise.all(
+    Object.values(preAcquiredLocks).map((lease) =>
+      world.limits.release({
+        leaseId: lease.leaseId,
+        key: lease.key,
+        holderId: lease.holderId,
+      })
+    )
+  );
+}
 
 const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',
@@ -114,6 +178,56 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...Attribute.StepTracePropagated(!!traceContext),
           });
 
+          const preAcquiredLocks: Record<string, LimitLease> = {};
+          const deferredStepLock = await getDeferredStepLock(
+            world,
+            workflowRunId,
+            stepId
+          );
+          if (deferredStepLock) {
+            const retryAfter = deferredStepLock.step.retryAfter;
+            if (retryAfter && retryAfter.getTime() > Date.now()) {
+              const timeoutSeconds = Math.max(
+                1,
+                Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
+              );
+              span?.setAttributes({
+                ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
+              });
+              return { timeoutSeconds };
+            }
+
+            const lockResult = await world.limits.acquire(
+              deferredStepLock.lockRequest
+            );
+            if (lockResult.status === 'blocked') {
+              const retryAfterMs = Math.max(1, lockResult.retryAfterMs ?? 1000);
+              const timeoutSeconds = Math.max(
+                1,
+                Math.ceil(retryAfterMs / 1000)
+              );
+              await world.events.create(
+                workflowRunId,
+                {
+                  eventType: 'step_deferred',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                  eventData: {
+                    retryAfter: new Date(Date.now() + retryAfterMs),
+                    lockRequest: deferredStepLock.lockRequest,
+                  },
+                },
+                { requestId }
+              );
+              span?.setAttributes({
+                ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
+              });
+              return { timeoutSeconds };
+            }
+
+            preAcquiredLocks[lockResult.lease.holderId] = lockResult.lease;
+          }
+
           // step_started validates state and returns the step entity, so no separate
           // world.steps.get() call is needed. The server checks:
           // - Step not in terminal state (returns 409)
@@ -140,6 +254,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           } catch (err) {
             if (WorkflowAPIError.is(err)) {
               if (err.status === 429) {
+                await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
                 const retryRetryAfter = Math.max(
                   1,
                   typeof err.retryAfter === 'number' ? err.retryAfter : 1
@@ -154,6 +269,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               }
               // 410 Gone: Workflow has already completed
               if (err.status === 410) {
+                await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
                 runtimeLogger.info(
                   `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
                 );
@@ -163,6 +279,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               // 409 Conflict: Step in terminal state (completed/failed/cancelled)
               // Re-enqueue the workflow to continue processing
               if (err.status === 409) {
+                await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
                 runtimeLogger.debug(
                   'Step in terminal state, re-enqueuing workflow',
                   {
@@ -194,6 +311,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               // 425 Too Early: retryAfter timestamp not reached yet
               // Return timeout to queue so it retries later
               if (err.status === 425) {
+                await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
                 // Parse retryAfter from error response meta
                 const retryAfterStr = (err as any).meta?.retryAfter;
                 const retryAfter = retryAfterStr
@@ -413,6 +531,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     closureVars: hydratedInput.closureVars,
                     encryptionKey,
                     lockCounter: 0,
+                    preAcquiredLocks,
                   },
                   () => stepFn.apply(thisVal, args)
                 );
@@ -427,6 +546,8 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           } catch (err) {
             userCodeError = err;
             userCodeFailed = true;
+          } finally {
+            await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
           }
           const executionTimeMs = Date.now() - executionStartTime;
 
@@ -439,10 +560,12 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             const err = userCodeError;
 
             if (StepLockBlockedError.is(err)) {
+              const retryAfterMs = Math.max(1, err.retryAfterMs ?? 1000);
               const timeoutSeconds = Math.max(
                 1,
-                Math.ceil((err.retryAfterMs ?? 1000) / 1000)
+                Math.ceil(retryAfterMs / 1000)
               );
+              const retryAfter = new Date(Date.now() + retryAfterMs);
               span?.setAttributes({
                 ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
               });
@@ -451,6 +574,38 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                 'step.id': stepId,
                 'step.name': stepName,
               });
+              try {
+                await world.events.create(
+                  workflowRunId,
+                  {
+                    eventType: 'step_deferred',
+                    specVersion: SPEC_VERSION_CURRENT,
+                    correlationId: stepId,
+                    eventData: {
+                      retryAfter,
+                      lockRequest: err.request,
+                    },
+                  },
+                  { requestId }
+                );
+              } catch (stepDeferredErr) {
+                if (
+                  WorkflowAPIError.is(stepDeferredErr) &&
+                  stepDeferredErr.status === 409
+                ) {
+                  runtimeLogger.info(
+                    'Tried deferring step, but step has already finished.',
+                    {
+                      workflowRunId,
+                      stepId,
+                      stepName,
+                      message: stepDeferredErr.message,
+                    }
+                  );
+                  return;
+                }
+                throw stepDeferredErr;
+              }
               return { timeoutSeconds };
             }
 

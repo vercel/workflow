@@ -308,6 +308,38 @@ export async function workflowLockContentionWorkflow(
   };
 }
 
+async function stepLockNoRetriesStep(label: string, holdMs: number) {
+  'use step';
+
+  await using _stepLock = await lock({
+    key: 'step:db:no-retries',
+    concurrency: { max: 1 },
+    leaseTtlMs: holdMs + 5_000,
+  });
+
+  const metadata = getStepMetadata();
+  const acquiredAt = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, holdMs));
+  const releasedAt = Date.now();
+
+  return {
+    label,
+    attempt: metadata.attempt,
+    acquiredAt,
+    releasedAt,
+  };
+}
+stepLockNoRetriesStep.maxRetries = 0;
+
+export async function stepLockNoRetriesContentionWorkflow(
+  userId = 'user-123',
+  holdMs = 750
+) {
+  'use workflow';
+
+  return await stepLockNoRetriesStep(userId, holdMs);
+}
+
 //////////////////////////////////////////////////////////
 
 async function nullByteStep() {

@@ -1,14 +1,16 @@
-import type { LimitLease, World } from '@workflow/world';
+import type { LimitAcquireRequest, LimitLease, World } from '@workflow/world';
 import type { LockHandle, LockOptions } from '../lock.js';
 import { contextStorage } from './context-storage.js';
 
 export class StepLockBlockedError extends Error {
   retryAfterMs?: number;
+  request: LimitAcquireRequest;
 
-  constructor(retryAfterMs?: number) {
+  constructor(request: LimitAcquireRequest, retryAfterMs?: number) {
     super('Step lock blocked');
     this.name = 'StepLockBlockedError';
     this.retryAfterMs = retryAfterMs;
+    this.request = request;
   }
 
   static is(value: unknown): value is StepLockBlockedError {
@@ -71,13 +73,22 @@ export function createStepLock(world: World) {
       concurrency: options.concurrency,
       rate: options.rate,
     };
-
-    const result = await world.limits.acquire({
+    const request = {
       key: options.key,
       holderId,
       definition,
       leaseTtlMs: options.leaseTtlMs,
-    });
+    } satisfies LimitAcquireRequest;
+
+    const preAcquiredLease = store.preAcquiredLocks?.[holderId];
+    if (preAcquiredLease) {
+      if (store.preAcquiredLocks) {
+        delete store.preAcquiredLocks[holderId];
+      }
+      return createStepLockHandle(preAcquiredLease, world);
+    }
+
+    const result = await world.limits.acquire(request);
 
     if (result.status === 'acquired') {
       return createStepLockHandle(result.lease, world);
@@ -87,6 +98,6 @@ export function createStepLock(world: World) {
     Steps do not sit inside user code polling for a lease.
     The runtime catches this and re-queues the step attempt at the boundary.
     */
-    throw new StepLockBlockedError(result.retryAfterMs);
+    throw new StepLockBlockedError(request, result.retryAfterMs);
   };
 }

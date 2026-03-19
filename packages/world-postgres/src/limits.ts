@@ -367,6 +367,46 @@ async function lockLimitKey(tx: Db, key: string): Promise<void> {
   );
 }
 
+async function isHolderLive(tx: Db, holderId: string): Promise<boolean> {
+  const target = parseHolderId(holderId);
+  if (target.kind === 'opaque') {
+    return true;
+  }
+
+  if (target.kind === 'workflow') {
+    const [run] = (await tx
+      .select({
+        status: Schema.runs.status,
+      })
+      .from(Schema.runs)
+      .where(eq(Schema.runs.runId, target.runId))
+      .limit(1)) as Pick<typeof Schema.runs.$inferSelect, 'status'>[];
+
+    return !!run && !['completed', 'failed', 'cancelled'].includes(run.status);
+  }
+
+  const [step] = (await tx
+    .select({
+      status: Schema.steps.status,
+    })
+    .from(Schema.steps)
+    .where(eq(Schema.steps.stepId, target.stepId))
+    .limit(1)) as Pick<typeof Schema.steps.$inferSelect, 'status'>[];
+  if (!step || ['completed', 'failed'].includes(step.status)) {
+    return false;
+  }
+
+  const [run] = (await tx
+    .select({
+      status: Schema.runs.status,
+    })
+    .from(Schema.runs)
+    .where(eq(Schema.runs.runId, target.runId))
+    .limit(1)) as Pick<typeof Schema.runs.$inferSelect, 'status'>[];
+
+  return !!run && !['completed', 'failed', 'cancelled'].includes(run.status);
+}
+
 async function promoteWaiters(
   tx: Db,
   config: PostgresWorldConfig,
@@ -381,6 +421,13 @@ async function promoteWaiters(
   let activeTokens = state.tokens.length;
 
   for (const waiter of state.waiters) {
+    if (!(await isHolderLive(tx, waiter.holderId))) {
+      await tx
+        .delete(Schema.limitWaiters)
+        .where(eq(Schema.limitWaiters.waiterId, waiter.waiterId));
+      continue;
+    }
+
     const concurrencyBlocked =
       waiter.concurrencyMax !== null && activeLeases >= waiter.concurrencyMax;
     const rateBlocked =

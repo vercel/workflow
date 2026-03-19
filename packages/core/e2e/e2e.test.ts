@@ -612,6 +612,61 @@ describe('e2e', () => {
     );
   }
 
+  test(
+    'stepLockNoRetriesContentionWorkflow does not consume retries while blocked on a step lock',
+    { timeout: 60_000 },
+    async () => {
+      const workflow = await e2e('stepLockNoRetriesContentionWorkflow');
+      const runA = await start(workflow, ['shared-user', 750]);
+      await sleep(100);
+      const runB = await start(workflow, ['shared-user', 750]);
+
+      const [resultA, resultB] = await Promise.all([
+        runA.returnValue,
+        runB.returnValue,
+      ]);
+      const [firstResult, secondResult] = [resultA, resultB].sort(
+        (left, right) => left.acquiredAt - right.acquiredAt
+      );
+
+      expect(resultA.attempt).toBe(1);
+      expect(resultB.attempt).toBe(1);
+      expect(secondResult.acquiredAt).toBeGreaterThanOrEqual(
+        firstResult.releasedAt
+      );
+    }
+  );
+
+  if (isPostgresWorld) {
+    test(
+      'cancelled workflow waiters are skipped before the next waiter is promoted',
+      { timeout: 60_000 },
+      async () => {
+        const workflow = await e2e('workflowLockContentionWorkflow');
+        const runA = await start(workflow, ['shared-user', 500]);
+        await sleep(100);
+        const runB = await start(workflow, ['shared-user', 500]);
+        await sleep(200);
+        await cliCancel(runB.runId);
+        const cancelledError = await runB.returnValue.catch((error) => error);
+        const runC = await start(workflow, ['shared-user', 500]);
+
+        const [resultA, resultC] = await Promise.all([
+          runA.returnValue,
+          runC.returnValue,
+        ]);
+
+        expect(cancelledError).toBeInstanceOf(WorkflowRunCancelledError);
+        expect(resultC.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
+          resultA.workflowLockReleasedAt
+        );
+        expect(
+          resultC.workflowLockAcquiredAt - resultA.workflowLockReleasedAt
+        ).toBeLessThan(4_000);
+      }
+    );
+  }
+
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('nullByteWorkflow'), []);
     const returnValue = await run.returnValue;

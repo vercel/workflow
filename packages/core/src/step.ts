@@ -96,7 +96,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             return EventConsumerResult.Finished;
           }
           queueItem.hasCreatedEvent = true;
-          // Continue waiting for step_started/step_completed/step_failed events
+          // Continue waiting for later step lifecycle events.
           return EventConsumerResult.Consumed;
         }
 
@@ -109,6 +109,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
 
         if (event.eventType === 'step_retrying') {
           // Step is being retried - just consume the event and wait for next step_started
+          return EventConsumerResult.Consumed;
+        }
+
+        if (event.eventType === 'step_deferred') {
+          // Admission was blocked before user work could proceed, so keep waiting.
           return EventConsumerResult.Consumed;
         }
 

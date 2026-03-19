@@ -412,6 +412,42 @@ describe('createUseStep', () => {
     expect(ctx.invocationsQueue.size).toBe(1);
   });
 
+  it('should consume step_deferred event and continue waiting', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_deferred',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          retryAfter: new Date(),
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    let workflowErrorReject: (err: Error) => void;
+    const workflowErrorPromise = new Promise<Error>((_, reject) => {
+      workflowErrorReject = reject;
+    });
+    ctx.onWorkflowError = (err) => {
+      workflowErrorReject(err);
+    };
+
+    const useStep = createUseStep(ctx);
+    const add = useStep('add');
+
+    let error: Error | undefined;
+    try {
+      await Promise.race([add(1, 2), workflowErrorPromise]);
+    } catch (err_) {
+      error = err_ as Error;
+    }
+
+    expect(error).toBeInstanceOf(WorkflowSuspension);
+    expect(ctx.invocationsQueue.size).toBe(1);
+  });
+
   it('should remove queue item when step_completed (terminal state)', async () => {
     const ctx = setupWorkflowContext([
       {

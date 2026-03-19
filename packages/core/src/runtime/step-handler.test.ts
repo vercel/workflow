@@ -6,9 +6,14 @@ import { StepLockBlockedError } from '../step/lock.js';
 const {
   capturedHandlerRef,
   mockEventsCreate,
+  mockEventsListByCorrelationId,
+  mockLimitsAcquire,
+  mockLimitsHeartbeat,
+  mockLimitsRelease,
   mockQueue,
   mockRuntimeLogger,
   mockStepLogger,
+  mockStepGet,
   mockQueueMessage,
   mockStepFn,
 } = vi.hoisted(() => {
@@ -20,6 +25,14 @@ const {
       current: null as null | ((...args: unknown[]) => Promise<unknown>),
     },
     mockEventsCreate: vi.fn(),
+    mockEventsListByCorrelationId: vi.fn().mockResolvedValue({
+      data: [],
+      cursor: null,
+      hasMore: false,
+    }),
+    mockLimitsAcquire: vi.fn(),
+    mockLimitsHeartbeat: vi.fn(),
+    mockLimitsRelease: vi.fn().mockResolvedValue(undefined),
     mockQueue: vi.fn().mockResolvedValue({ messageId: 'msg_test' }),
     mockRuntimeLogger: {
       warn: vi.fn(),
@@ -34,6 +47,16 @@ const {
       error: vi.fn(),
     },
     mockQueueMessage: vi.fn().mockResolvedValue(undefined),
+    mockStepGet: vi.fn().mockResolvedValue({
+      stepId: 'step_abc',
+      runId: 'wrun_test123',
+      stepName: 'myStep',
+      status: 'pending',
+      input: [],
+      attempt: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }),
     mockStepFn,
   };
 });
@@ -49,7 +72,18 @@ vi.mock('@vercel/functions', () => ({
 // Mock the world module - createQueueHandler captures the handler
 vi.mock('./world.js', () => ({
   getWorld: vi.fn(() => ({
-    events: { create: mockEventsCreate },
+    events: {
+      create: mockEventsCreate,
+      listByCorrelationId: mockEventsListByCorrelationId,
+    },
+    limits: {
+      acquire: mockLimitsAcquire,
+      heartbeat: mockLimitsHeartbeat,
+      release: mockLimitsRelease,
+    },
+    steps: {
+      get: mockStepGet,
+    },
     queue: mockQueue,
     getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
   })),
@@ -204,9 +238,38 @@ describe('step-handler 409 handling', () => {
     mockStepFn.mockReset().mockResolvedValue('step-result');
     mockStepFn.maxRetries = 3;
     mockQueueMessage.mockResolvedValue(undefined);
+    mockEventsListByCorrelationId.mockReset().mockResolvedValue({
+      data: [],
+      cursor: null,
+      hasMore: false,
+    });
+    mockLimitsAcquire.mockReset();
+    mockLimitsHeartbeat.mockReset();
+    mockLimitsRelease.mockReset().mockResolvedValue(undefined);
+    mockStepGet.mockReset().mockResolvedValue({
+      stepId: 'step_abc',
+      runId: 'wrun_test123',
+      stepName: 'myStep',
+      status: 'pending',
+      input: [],
+      attempt: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
     // Re-set getWorld mock since clearAllMocks resets it
     vi.mocked(getWorld).mockReturnValue({
-      events: { create: mockEventsCreate },
+      events: {
+        create: mockEventsCreate,
+        listByCorrelationId: mockEventsListByCorrelationId,
+      },
+      limits: {
+        acquire: mockLimitsAcquire,
+        heartbeat: mockLimitsHeartbeat,
+        release: mockLimitsRelease,
+      },
+      steps: {
+        get: mockStepGet,
+      },
       queue: mockQueue,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
     } as any);
@@ -234,7 +297,17 @@ describe('step-handler 409 handling', () => {
         input: [],
       },
     });
-    mockStepFn.mockRejectedValue(new StepLockBlockedError(2_500));
+    mockStepFn.mockRejectedValue(
+      new StepLockBlockedError(
+        {
+          key: 'step:db:no-retries',
+          holderId: 'stplock_wrun_test123:step_abc:0',
+          definition: { concurrency: { max: 1 } },
+          leaseTtlMs: 5_000,
+        },
+        2_500
+      )
+    );
 
     const result = await capturedHandler(
       createMessage(),
@@ -243,7 +316,83 @@ describe('step-handler 409 handling', () => {
 
     expect(result).toEqual({ timeoutSeconds: 3 });
     expect(mockQueueMessage).not.toHaveBeenCalled();
+    expect(mockEventsCreate).toHaveBeenCalledTimes(2);
+    expect(mockEventsCreate).toHaveBeenNthCalledWith(
+      1,
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_started',
+      }),
+      expect.anything()
+    );
+    expect(mockEventsCreate).toHaveBeenNthCalledWith(
+      2,
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_deferred',
+        correlationId: 'step_abc',
+        eventData: {
+          retryAfter: expect.any(Date),
+          lockRequest: expect.objectContaining({
+            key: expect.any(String),
+            holderId: 'stplock_wrun_test123:step_abc:0',
+          }),
+        },
+      }),
+      expect.anything()
+    );
+  });
+
+  it('rechecks a deferred lock before step_started and re-defers without running user code', async () => {
+    mockEventsListByCorrelationId.mockResolvedValue({
+      data: [
+        {
+          eventId: 'evnt_1',
+          runId: 'wrun_test123',
+          eventType: 'step_deferred',
+          correlationId: 'step_abc',
+          eventData: {
+            retryAfter: new Date(Date.now() - 1_000),
+            lockRequest: {
+              key: 'step:db:no-retries',
+              holderId: 'stplock_wrun_test123:step_abc:0',
+              definition: { concurrency: { max: 1 } },
+              leaseTtlMs: 5_000,
+            },
+          },
+          createdAt: new Date(),
+        },
+      ],
+      cursor: null,
+      hasMore: false,
+    });
+    mockLimitsAcquire.mockResolvedValue({
+      status: 'blocked',
+      reason: 'concurrency',
+      retryAfterMs: 2_500,
+    });
+
+    const result = await capturedHandler(
+      createMessage(),
+      createMetadata('myStep')
+    );
+
+    expect(result).toEqual({ timeoutSeconds: 3 });
+    expect(mockStepFn).not.toHaveBeenCalled();
+    expect(mockLimitsAcquire).toHaveBeenCalledWith({
+      key: 'step:db:no-retries',
+      holderId: 'stplock_wrun_test123:step_abc:0',
+      definition: { concurrency: { max: 1 } },
+      leaseTtlMs: 5_000,
+    });
     expect(mockEventsCreate).toHaveBeenCalledTimes(1);
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_deferred',
+      }),
+      expect.anything()
+    );
   });
 
   afterEach(() => {

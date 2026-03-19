@@ -101,11 +101,15 @@ export function createEventsStorage(
         ['completed', 'failed', 'cancelled'].includes(status);
 
       // Get current run state for validation (if not creating a new run)
-      // Skip run validation for step_completed and step_retrying - they only operate
+      // Skip run validation for step_completed, step_deferred, and step_retrying - they only operate
       // on running steps, and running steps are always allowed to modify regardless
       // of run state. This optimization saves filesystem reads per step event.
       let currentRun: WorkflowRun | null = null;
-      const skipRunValidationEvents = ['step_completed', 'step_retrying'];
+      const skipRunValidationEvents = [
+        'step_completed',
+        'step_deferred',
+        'step_retrying',
+      ];
       if (
         data.eventType !== 'run_created' &&
         !skipRunValidationEvents.includes(data.eventType)
@@ -123,7 +127,7 @@ export function createEventsStorage(
       // VERSION COMPATIBILITY: Check run spec version
       // ============================================================
       // For events that have fetched the run, check version compatibility.
-      // Skip for run_created (no existing run) and runtime events (step_completed, step_retrying).
+      // Skip for run_created (no existing run) and runtime events (step_completed, step_deferred, step_retrying).
       if (currentRun) {
         // Check if run requires a newer world version
         if (requiresNewerWorld(currentRun.specVersion)) {
@@ -214,6 +218,7 @@ export function createEventsStorage(
         'step_started',
         'step_completed',
         'step_failed',
+        'step_deferred',
         'step_retrying',
       ];
       if (stepEvents.includes(data.eventType) && data.correlationId) {
@@ -598,6 +603,27 @@ export function createEventsStorage(
             status: 'failed',
             error,
             completedAt: now,
+            updatedAt: now,
+          };
+          await writeJSON(
+            taggedPath(basedir, 'steps', stepCompositeKey, tag),
+            step,
+            { overwrite: true }
+          );
+        }
+      } else if (data.eventType === 'step_deferred' && 'eventData' in data) {
+        // step_deferred: returns the step to pending without recording a failure
+        if (validatedStep) {
+          const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+          const rolledBackAttempt = Math.max(0, validatedStep.attempt - 1);
+          step = {
+            ...validatedStep,
+            status: 'pending',
+            attempt: rolledBackAttempt,
+            startedAt:
+              rolledBackAttempt === 0 ? undefined : validatedStep.startedAt,
+            error: undefined,
+            retryAfter: data.eventData.retryAfter,
             updatedAt: now,
           };
           await writeJSON(

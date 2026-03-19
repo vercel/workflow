@@ -354,12 +354,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // ============================================================
 
       // Get current run state for validation (if not creating a new run)
-      // Skip run validation for step_completed and step_retrying - they only operate
+      // Skip run validation for step_completed, step_deferred, and step_retrying - they only operate
       // on running steps, and running steps are always allowed to modify regardless
       // of run state. This optimization saves database queries per step event.
       let currentRun: { status: string; specVersion: number | null } | null =
         null;
-      const skipRunValidationEvents = ['step_completed', 'step_retrying'];
+      const skipRunValidationEvents = [
+        'step_completed',
+        'step_deferred',
+        'step_retrying',
+      ];
       if (
         data.eventType !== 'run_created' &&
         !skipRunValidationEvents.includes(data.eventType)
@@ -375,7 +379,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // VERSION COMPATIBILITY: Check run spec version
       // ============================================================
       // For events that have fetched the run, check version compatibility.
-      // Skip for run_created (no existing run) and runtime events (step_completed, step_retrying).
+      // Skip for run_created (no existing run) and runtime events (step_completed, step_deferred, step_retrying).
       if (currentRun) {
         // Check if run requires a newer world version
         if (requiresNewerWorld(currentRun.specVersion)) {
@@ -472,7 +476,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         startedAt: Date | null;
         retryAfter: Date | null;
       } | null = null;
-      const stepEventsNeedingValidation = ['step_started', 'step_retrying'];
+      const stepEventsNeedingValidation = [
+        'step_started',
+        'step_deferred',
+        'step_retrying',
+      ];
       if (
         stepEventsNeedingValidation.includes(data.eventType) &&
         data.correlationId
@@ -909,6 +917,51 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           step = deserializeStepError(compact(stepValue));
         } else {
           // Step not updated - check if it exists and why
+          const [existing] = await getStepForValidation.execute({
+            runId: effectiveRunId,
+            stepId: data.correlationId!,
+          });
+          if (!existing) {
+            throw new WorkflowAPIError(
+              `Step "${data.correlationId}" not found`,
+              { status: 404 }
+            );
+          }
+          if (isStepTerminal(existing.status)) {
+            throw new WorkflowAPIError(
+              `Cannot modify step in terminal state "${existing.status}"`,
+              { status: 409 }
+            );
+          }
+        }
+      }
+
+      // Handle step_deferred event: returns the step to pending without recording a failure
+      if (data.eventType === 'step_deferred') {
+        const eventData = (data as any).eventData as {
+          retryAfter?: Date;
+        };
+
+        const [stepValue] = await drizzle
+          .update(Schema.steps)
+          .set({
+            status: 'pending',
+            attempt: sql`GREATEST(${Schema.steps.attempt} - 1, 0)`,
+            startedAt: sql`CASE WHEN ${Schema.steps.attempt} <= 1 THEN NULL ELSE ${Schema.steps.startedAt} END`,
+            error: null,
+            retryAfter: eventData.retryAfter,
+          })
+          .where(
+            and(
+              eq(Schema.steps.runId, effectiveRunId),
+              eq(Schema.steps.stepId, data.correlationId!),
+              notInArray(Schema.steps.status, terminalStepStatuses)
+            )
+          )
+          .returning();
+        if (stepValue) {
+          step = deserializeStepError(compact(stepValue));
+        } else {
           const [existing] = await getStepForValidation.execute({
             runId: effectiveRunId,
             stepId: data.correlationId!,

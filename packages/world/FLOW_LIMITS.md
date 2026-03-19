@@ -127,6 +127,11 @@ The current behavior is:
 - the step is re-queued and retried after promotion or timeout
 - lease is disposed automatically when the step attempt completes
 
+Important caveat:
+
+- zero-attempt semantics are only guaranteed when `lock()` is used as a top-of-step admission gate
+- calling `lock()` after side effects or meaningful user work is unsupported/best-effort
+
 This means step `lock()` is conceptually the same API, but it is not a literal
 "spin inside already-running user step code until capacity appears"
 implementation.
@@ -187,7 +192,8 @@ Important details:
 
 - FIFO is per key, not global across all limit keys
 - promotion order is based on waiter creation order
-- a waiter may be skipped if it is no longer eligible when promotion runs
+- dead or terminal waiters are pruned before promotion
+- a live waiter may still be skipped if it is no longer eligible when promotion runs
 - releasing a lease or reclaiming an expired lease can both trigger promotion
 - rate-window expiry can also make the head waiter eligible again
 

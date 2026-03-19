@@ -143,5 +143,163 @@ if (process.platform === 'win32') {
       });
       expect(stillWaiting.status).toBe('blocked');
     });
+
+    it('skips cancelled workflow waiters before promotion', async () => {
+      const limits = createLimits(
+        { connectionString: db.connectionString, queueConcurrency: 1 },
+        db.drizzle
+      );
+
+      await db.drizzle.insert(Schema.runs).values([
+        {
+          runId: 'wrun_dead_workflow',
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          status: 'cancelled',
+        },
+      ]);
+
+      const first = await limits.acquire({
+        key: 'workflow:user:skip-dead-workflow',
+        holderId: 'holder-a',
+        definition: {
+          concurrency: { max: 1 },
+          rate: { count: 2, periodMs: 5_000 },
+        },
+        leaseTtlMs: 5_000,
+      });
+      expect(first.status).toBe('acquired');
+      if (first.status !== 'acquired') throw new Error('expected acquisition');
+
+      await limits.acquire({
+        key: 'workflow:user:skip-dead-workflow',
+        holderId: 'wflock_wrun_dead_workflow:limitwait_dead',
+        definition: {
+          concurrency: { max: 1 },
+          rate: { count: 2, periodMs: 5_000 },
+        },
+        leaseTtlMs: 5_000,
+      });
+      await limits.acquire({
+        key: 'workflow:user:skip-dead-workflow',
+        holderId: 'holder-live',
+        definition: {
+          concurrency: { max: 1 },
+          rate: { count: 2, periodMs: 5_000 },
+        },
+        leaseTtlMs: 5_000,
+      });
+
+      await limits.release({
+        leaseId: first.lease.leaseId,
+        holderId: first.lease.holderId,
+        key: first.lease.key,
+      });
+
+      const leases = await db.drizzle
+        .select({ holderId: Schema.limitLeases.holderId })
+        .from(Schema.limitLeases)
+        .where(eq(Schema.limitLeases.limitKey, first.lease.key))
+        .orderBy(asc(Schema.limitLeases.acquiredAt));
+      const tokens = await db.drizzle
+        .select({ holderId: Schema.limitTokens.holderId })
+        .from(Schema.limitTokens)
+        .where(eq(Schema.limitTokens.limitKey, first.lease.key))
+        .orderBy(asc(Schema.limitTokens.acquiredAt));
+      const waiters = await db.drizzle
+        .select({ holderId: Schema.limitWaiters.holderId })
+        .from(Schema.limitWaiters)
+        .where(eq(Schema.limitWaiters.limitKey, first.lease.key))
+        .orderBy(asc(Schema.limitWaiters.createdAt));
+
+      expect(leases).toEqual([{ holderId: 'holder-live' }]);
+      expect(tokens).toEqual([
+        { holderId: first.lease.holderId },
+        { holderId: 'holder-live' },
+      ]);
+      expect(waiters).toEqual([]);
+    });
+
+    it('skips failed step waiters before promotion', async () => {
+      const limits = createLimits(
+        { connectionString: db.connectionString, queueConcurrency: 1 },
+        db.drizzle
+      );
+
+      await db.drizzle.insert(Schema.runs).values([
+        {
+          runId: 'wrun_dead_step',
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          status: 'running',
+          startedAt: new Date(),
+        },
+        {
+          runId: 'wrun_live_step',
+          deploymentId: 'deployment-123',
+          workflowName: 'test-workflow',
+          status: 'running',
+          startedAt: new Date(),
+        },
+      ]);
+      await db.drizzle.insert(Schema.steps).values([
+        {
+          runId: 'wrun_dead_step',
+          stepId: 'step_dead',
+          stepName: 'test-step',
+          status: 'failed',
+          attempt: 1,
+        },
+        {
+          runId: 'wrun_live_step',
+          stepId: 'step_live',
+          stepName: 'test-step',
+          status: 'pending',
+          attempt: 0,
+        },
+      ]);
+
+      const first = await limits.acquire({
+        key: 'workflow:user:skip-dead-step',
+        holderId: 'holder-a',
+        definition: { concurrency: { max: 1 } },
+        leaseTtlMs: 5_000,
+      });
+      expect(first.status).toBe('acquired');
+      if (first.status !== 'acquired') throw new Error('expected acquisition');
+
+      await limits.acquire({
+        key: 'workflow:user:skip-dead-step',
+        holderId: 'stplock_wrun_dead_step:step_dead:0',
+        definition: { concurrency: { max: 1 } },
+        leaseTtlMs: 5_000,
+      });
+      await limits.acquire({
+        key: 'workflow:user:skip-dead-step',
+        holderId: 'holder-live',
+        definition: { concurrency: { max: 1 } },
+        leaseTtlMs: 5_000,
+      });
+
+      await limits.release({
+        leaseId: first.lease.leaseId,
+        holderId: first.lease.holderId,
+        key: first.lease.key,
+      });
+
+      const leases = await db.drizzle
+        .select({ holderId: Schema.limitLeases.holderId })
+        .from(Schema.limitLeases)
+        .where(eq(Schema.limitLeases.limitKey, first.lease.key))
+        .orderBy(asc(Schema.limitLeases.acquiredAt));
+      const waiters = await db.drizzle
+        .select({ holderId: Schema.limitWaiters.holderId })
+        .from(Schema.limitWaiters)
+        .where(eq(Schema.limitWaiters.limitKey, first.lease.key))
+        .orderBy(asc(Schema.limitWaiters.createdAt));
+
+      expect(leases).toEqual([{ holderId: 'holder-live' }]);
+      expect(waiters).toEqual([]);
+    });
   });
 }

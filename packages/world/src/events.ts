@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LimitAcquireRequestSchema } from './limits.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
@@ -64,6 +65,7 @@ export const EventTypeSchema = z.enum([
   'step_created',
   'step_completed',
   'step_failed',
+  'step_deferred',
   'step_retrying',
   'step_started',
   // Hook lifecycle events
@@ -106,6 +108,19 @@ const StepFailedEventSchema = BaseEventSchema.extend({
   eventData: z.object({
     error: z.any(),
     stack: z.string().optional(),
+  }),
+});
+
+/**
+ * Event created when a step is blocked on admission and should be retried
+ * without counting the blocked attempt against maxRetries.
+ */
+const StepDeferredEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('step_deferred'),
+  correlationId: z.string(),
+  eventData: z.object({
+    retryAfter: z.coerce.date().optional(),
+    lockRequest: LimitAcquireRequestSchema.optional(),
   }),
 });
 
@@ -272,6 +287,7 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   StepCreatedEventSchema,
   StepCompletedEventSchema,
   StepFailedEventSchema,
+  StepDeferredEventSchema,
   StepRetryingEventSchema,
   StepStartedEventSchema,
   // Hook lifecycle events
@@ -296,6 +312,7 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   StepCreatedEventSchema,
   StepCompletedEventSchema,
   StepFailedEventSchema,
+  StepDeferredEventSchema,
   StepRetryingEventSchema,
   StepStartedEventSchema,
   // Hook lifecycle events
