@@ -220,7 +220,7 @@ describe('Storage (Postgres integration)', () => {
 
       it('should throw error for non-existent run', async () => {
         await expect(runs.get('missing')).rejects.toMatchObject({
-          status: 404,
+          name: 'WorkflowRunNotFoundError',
         });
       });
     });
@@ -414,9 +414,9 @@ describe('Storage (Postgres integration)', () => {
       });
 
       it('should throw error for non-existent step', async () => {
-        await expect(
-          steps.get(testRunId, 'missing-step')
-        ).rejects.toMatchObject({ status: 404 });
+        await expect(steps.get(testRunId, 'missing-step')).rejects.toThrow(
+          'Step not found'
+        );
       });
     });
 

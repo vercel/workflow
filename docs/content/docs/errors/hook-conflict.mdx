@@ -46,6 +46,8 @@ export async function processPayment() {
 **Solution:** Use unique tokens that include the run ID or other unique identifiers.
 
 ```typescript lineNumbers
+import { createHook } from "workflow";
+
 export async function processPayment(orderId: string) {
   "use workflow";
 
@@ -60,6 +62,8 @@ export async function processPayment(orderId: string) {
 The safest approach is to let the Workflow runtime generate a unique token automatically:
 
 ```typescript lineNumbers
+import { createHook } from "workflow";
+
 export async function processPayment() {
   "use workflow";
 
@@ -71,10 +75,11 @@ export async function processPayment() {
 
 ## Handling Hook Conflicts in Your Workflow
 
-When a hook conflict occurs, awaiting the hook will throw a `WorkflowRuntimeError`. You can catch this error to handle the conflict gracefully:
+When a hook conflict occurs, awaiting the hook will throw a `HookConflictError`. You can catch this error to handle the conflict gracefully:
 
 ```typescript lineNumbers
-import { WorkflowRuntimeError } from "@workflow/errors";
+import { createHook } from "workflow";
+import { HookConflictError } from "@workflow/errors";
 
 export async function processPayment(orderId: string) {
   "use workflow";
@@ -85,8 +90,9 @@ export async function processPayment(orderId: string) {
     const payment = await hook; // [!code highlight]
     return { success: true, payment };
   } catch (error) {
-    if (error instanceof WorkflowRuntimeError && error.message.includes("hook-conflict")) { // [!code highlight]
+    if (HookConflictError.is(error)) { // [!code highlight]
       // Another workflow is already processing this order
+      console.log(`Conflicting token: ${error.token}`);
       return { success: false, reason: "duplicate-processing" };
     }
     throw error; // Re-throw other errors

@@ -16,7 +16,7 @@ import {
 } from '@workflow/core/runtime/helpers';
 import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-hook';
 
-import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
   Event,
@@ -463,7 +463,7 @@ function createServerActionError<T>(
   const err = error instanceof Error ? error : new Error(String(error));
   let errorResponse: ServerActionError;
 
-  if (WorkflowAPIError.is(error)) {
+  if (WorkflowWorldError.is(error)) {
     // API-level errors (4xx/5xx from the world backend).
     // 4xx errors are client-recoverable and shouldn't spam logs.
     const status = error.status ?? 500;

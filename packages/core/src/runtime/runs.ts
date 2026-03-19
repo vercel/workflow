@@ -1,4 +1,4 @@
-import { WorkflowAPIError } from '@workflow/errors';
+import { EntityConflictError } from '@workflow/errors';
 import {
   type Event,
   isLegacySpecVersion,
@@ -192,7 +192,7 @@ export async function wakeUpRun(
         await world.events.create(runId, eventData, { v1Compat: compatMode });
         stoppedCount++;
       } catch (err) {
-        if (WorkflowAPIError.is(err) && err.status === 409) {
+        if (EntityConflictError.is(err)) {
           stoppedCount++;
         } else {
           errors.push(err instanceof Error ? err : new Error(String(err)));

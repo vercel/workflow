@@ -43,6 +43,8 @@ export async function webhookWorkflow() {
 **Solution:** Use `"manual"` or provide a `Response` object.
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Fixed - use "manual"
 export async function webhookWorkflow() {
   "use workflow";
@@ -74,6 +76,8 @@ export async function webhookWorkflow() {
 **Solution:** Create a proper `Response` object.
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Fixed - use Response constructor
 export async function webhookWorkflow() {
   "use workflow";
@@ -89,6 +93,8 @@ export async function webhookWorkflow() {
 ### Default Behavior (202 Response)
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Returns 202 Accepted automatically
 const webhook = await createWebhook();
 const request = await webhook;
@@ -98,6 +104,8 @@ const request = await webhook;
 ### Manual Response
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Manual response control
 const webhook = await createWebhook({
   respondWith: "manual",
@@ -120,6 +128,8 @@ await request.respondWith(
 ### Pre-defined Response
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Immediate response
 const webhook = await createWebhook({
   respondWith: new Response("Request received", { status: 200 }),
