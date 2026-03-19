@@ -9,7 +9,7 @@ import {
   useState,
 } from 'react';
 import type { Trace } from '../trace-viewer/types';
-import { SplitPane } from './components/alt-split-pane';
+import { SplitPane } from './components/split-pane';
 import EventList from './components/event-list';
 import { Timeline } from './components/timeline';
 import { ActiveSpanProvider, useActiveSpan } from './context';
@@ -47,8 +47,28 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     end: root.startTime + root.duration,
   });
 
+  const prevRootRef = useRef<Viewport>({
+    start: root.startTime,
+    end: root.startTime + root.duration,
+  });
+
   useEffect(() => {
-    setViewport({ start: root.startTime, end: root.startTime + root.duration });
+    const prevRoot = prevRootRef.current;
+    const newStart = root.startTime;
+    const newEnd = root.startTime + root.duration;
+
+    setViewport((prev) => {
+      const wasAtFullExtent =
+        Math.abs(prev.start - prevRoot.start) < 0.01 &&
+        Math.abs(prev.end - prevRoot.end) < 0.01;
+
+      if (wasAtFullExtent) {
+        return { start: newStart, end: newEnd };
+      }
+      return prev;
+    });
+
+    prevRootRef.current = { start: newStart, end: newEnd };
   }, [root.startTime, root.duration]);
 
   const viewDuration = viewport.end - viewport.start;

@@ -21,7 +21,7 @@ export function DetailPanel({
   const offsetMs = startMs - rootStart;
 
   return (
-    <aside className="grid h-full max-h-full grid-rows-[2.5rem_1fr] overflow-hidden bg-background-200">
+    <aside className="grid h-full max-h-full grid-rows-[2.5rem_1fr] bg-background-200">
       <div className="flex items-center justify-between px-3 border-b border-gray-alpha-400">
         <span className="text-sm font-medium text-gray-1000 truncate">
           {span.name}
