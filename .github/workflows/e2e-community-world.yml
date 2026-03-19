@@ -219,7 +219,7 @@ jobs:
         run: |
           docker stop mongodb 2>/dev/null || true
           docker stop redis 2>/dev/null || true
-          if [ '${{ inputs.service-type }}' = 'custom' ]; then
+          if [ '${{ inputs.service-type }}' = 'docker' ]; then
             echo '${{ inputs.services }}' | jq -r '.[].name' 2>/dev/null | while read -r name; do
               docker stop "$name" 2>/dev/null || true
             done
