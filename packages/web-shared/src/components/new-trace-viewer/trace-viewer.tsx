@@ -12,7 +12,7 @@ import type { Trace } from '../trace-viewer/types';
 import { getHighResInMs } from '../trace-viewer/util/timing';
 import { SplitPane } from './components/split-pane';
 import EventList from './components/event-list';
-import { Timeline } from './components/timeline';
+import { Timeline, TimelineHeader } from './components/timeline';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { DetailPanel } from './detail-panel';
 import { buildTimeCompression, computeRootBounds } from './utils';
@@ -231,22 +231,29 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   return (
     <div
       data-pane="pane-root"
-      className="flex w-full h-full max-h-full"
-      style={{
-        display: 'grid',
-        gridTemplateColumns: activeSpan
-          ? 'minmax(100px, 1fr) clamp(50px, 430px, 100%)'
-          : 'minmax(100px, 1fr)',
-        height: '100%',
-      }}
+      data-has-detail={activeSpan ? '' : undefined}
+      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(50px,430px,100%)]"
     >
       <div
         id="trace-parent"
         className="grid grid-rows-[1fr] h-full min-h-0 overflow-hidden relative border border-gray-400 rounded-lg bg-background-100"
       >
-        <SplitPane>
+        <SplitPane
+          startHeader={
+            <div className="bg-background-100 border-b border-gray-alpha-400 h-8 min-h-8" />
+          }
+          endHeader={
+            <TimelineHeader
+              viewStart={viewport.start}
+              viewDuration={viewDuration}
+              rootStart={root.startTime}
+              compression={compression}
+              isZoomed={isZoomed}
+              onResetZoom={resetZoom}
+            />
+          }
+        >
           <div className="block min-h-0 overflow-visible">
-            <div className="sticky top-0 z-[4] bg-background-100 border-b border-gray-alpha-400 h-8 min-h-8" />
             <EventList
               spans={trace.spans}
               activeSpanId={activeSpanId}
@@ -260,12 +267,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           >
             <Timeline
               spans={trace.spans}
-              viewStart={viewport.start}
-              viewDuration={viewDuration}
-              rootStart={root.startTime}
               compression={compression}
-              isZoomed={isZoomed}
-              onResetZoom={resetZoom}
               selectedId={activeSpanId}
               onSelect={handleSelectSpan}
             />

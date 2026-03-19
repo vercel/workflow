@@ -109,26 +109,20 @@ const TimelineBar = memo(function TimelineBar({
 
 export { TimelineBar };
 
-export function Timeline({
-  spans,
+export function TimelineHeader({
   viewStart,
   viewDuration,
   rootStart,
   compression,
   isZoomed,
   onResetZoom,
-  selectedId,
-  onSelect,
 }: {
-  spans: Span[];
   viewStart: number;
   viewDuration: number;
   rootStart: number;
   compression: TimeCompression;
   isZoomed: boolean;
   onResetZoom: () => void;
-  selectedId: string | null;
-  onSelect: (spanId: string) => void;
 }): ReactNode {
   const viewEnd = viewStart + viewDuration;
 
@@ -146,38 +140,51 @@ export function Timeline({
   );
 
   return (
-    <>
-      <div className="sticky top-0 z-[4] bg-background-100 border-b border-gray-alpha-400 h-8 min-h-8 flex items-end px-4 pb-1">
-        {markers.map((m, i) => (
-          <span
-            key={i}
-            className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap -translate-x-1/2"
-            style={{ left: `${m.position * 100}%` }}
-          >
-            {m.label}
-          </span>
-        ))}
-        {isZoomed && (
-          <button
-            type="button"
-            className="absolute right-2 top-1/2 -translate-y-1/2 z-[5] flex items-center py-0.5 px-2 border border-gray-alpha-400 rounded-md bg-background-100 font-sans text-[11px] font-medium text-gray-900 cursor-pointer whitespace-nowrap transition-[color,border-color] duration-[120ms] ease-in-out hover:text-gray-1000 hover:border-gray-600"
-            onClick={onResetZoom}
-          >
-            Reset zoom
-          </button>
-        )}
-      </div>
-      <div className="relative py-2">
-        {spans.map((span) => (
-          <TimelineBar
-            key={span.spanId}
-            span={span}
-            compression={compression}
-            isSelected={selectedId === span.spanId}
-            onClick={() => onSelect(span.spanId)}
-          />
-        ))}
-      </div>
-    </>
+    <div className="relative bg-background-100 border-b border-gray-alpha-400 h-8 min-h-8 flex items-end px-4 pb-1">
+      {markers.map((m, i) => (
+        <span
+          key={i}
+          className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap -translate-x-1/2"
+          style={{ left: `${m.position * 100}%` }}
+        >
+          {m.label}
+        </span>
+      ))}
+      {isZoomed && (
+        <button
+          type="button"
+          className="absolute right-2 top-1/2 -translate-y-1/2 z-[5] flex items-center py-0.5 px-2 border border-gray-alpha-400 rounded-md bg-background-100 font-sans text-[11px] font-medium text-gray-900 cursor-pointer whitespace-nowrap transition-[color,border-color] duration-[120ms] ease-in-out hover:text-gray-1000 hover:border-gray-600"
+          onClick={onResetZoom}
+        >
+          Reset zoom
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function Timeline({
+  spans,
+  compression,
+  selectedId,
+  onSelect,
+}: {
+  spans: Span[];
+  compression: TimeCompression;
+  selectedId: string | null;
+  onSelect: (spanId: string) => void;
+}): ReactNode {
+  return (
+    <div className="relative py-2">
+      {spans.map((span) => (
+        <TimelineBar
+          key={span.spanId}
+          span={span}
+          compression={compression}
+          isSelected={selectedId === span.spanId}
+          onClick={() => onSelect(span.spanId)}
+        />
+      ))}
+    </div>
   );
 }

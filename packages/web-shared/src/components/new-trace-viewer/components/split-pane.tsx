@@ -26,6 +26,10 @@ export interface SplitPaneProps {
   className?: string;
   /** Initial width fraction for the first pane (0.15–0.85). */
   defaultRatio?: number;
+  /** Fixed (non-scrolling) header rendered above the start pane. */
+  startHeader?: ReactNode;
+  /** Fixed (non-scrolling) header rendered above the end pane. */
+  endHeader?: ReactNode;
 }
 
 function clampRatio(v: number) {
@@ -84,6 +88,8 @@ export function SplitPane({
   children,
   className,
   defaultRatio = 0.45,
+  startHeader,
+  endHeader,
 }: SplitPaneProps) {
   const parts = Children.toArray(children);
   if (parts.length !== 2) {
@@ -168,6 +174,65 @@ export function SplitPane({
   };
 
   const ratioPercent = Math.round(splitRatio * 100);
+  const colTemplate = `minmax(50px, ${splitRatio * 100}%) ${GUTTER_PX}px minmax(50px, ${(1 - splitRatio) * 100}%)`;
+
+  const hasHeaders = startHeader != null || endHeader != null;
+
+  const gutter = (
+    <div
+      ref={gutterRef}
+      role="slider"
+      aria-orientation="horizontal"
+      aria-valuenow={ratioPercent}
+      aria-valuemin={15}
+      aria-valuemax={85}
+      aria-valuetext={`${ratioPercent}%`}
+      tabIndex={0}
+      className={cn(
+        'relative z-20 isolate flex shrink-0 cursor-col-resize justify-center outline-none focus-visible:ring-2 focus-visible:ring-ring'
+      )}
+      onPointerDown={handleSplitPointerDown}
+      onLostPointerCapture={handleLostPointerCapture}
+      onKeyDown={handleSplitKeyDown}
+    >
+      <span
+        className="pointer-events-none relative z-10 h-full w-px shrink-0 bg-gray-alpha-400"
+        aria-hidden
+      />
+    </div>
+  );
+
+  if (hasHeaders) {
+    return (
+      <div className={cn('flex flex-col h-full min-h-0', className)}>
+        <div
+          className="shrink-0 grid"
+          style={{ gridTemplateColumns: colTemplate }}
+        >
+          <div>{startHeader}</div>
+          <div className="flex justify-center">
+            <span className="h-full w-px bg-gray-alpha-400" aria-hidden />
+          </div>
+          <div>{endHeader}</div>
+        </div>
+        <div
+          ref={innerGridRef}
+          className={cn(
+            'grid flex-1 min-h-0 content-start overflow-x-hidden overflow-y-auto',
+            isDraggingSplit && 'select-none'
+          )}
+          style={{
+            display: 'grid',
+            gridTemplateColumns: colTemplate,
+          }}
+        >
+          {start}
+          {gutter}
+          {end}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -179,32 +244,12 @@ export function SplitPane({
       )}
       style={{
         display: 'grid',
-        gridTemplateColumns: `minmax(50px, ${splitRatio * 100}%) ${GUTTER_PX}px minmax(50px, ${(1 - splitRatio) * 100}%)`,
+        gridTemplateColumns: colTemplate,
         height: '100%',
       }}
     >
       {start}
-      <div
-        ref={gutterRef}
-        role="slider"
-        aria-orientation="horizontal"
-        aria-valuenow={ratioPercent}
-        aria-valuemin={15}
-        aria-valuemax={85}
-        aria-valuetext={`${ratioPercent}%`}
-        tabIndex={0}
-        className={cn(
-          'relative z-20 isolate flex shrink-0 cursor-col-resize justify-center outline-none focus-visible:ring-2 focus-visible:ring-ring'
-        )}
-        onPointerDown={handleSplitPointerDown}
-        onLostPointerCapture={handleLostPointerCapture}
-        onKeyDown={handleSplitKeyDown}
-      >
-        <span
-          className="pointer-events-none relative z-10 h-full w-px shrink-0 bg-gray-alpha-400"
-          aria-hidden
-        />
-      </div>
+      {gutter}
       {end}
     </div>
   );
