@@ -129,7 +129,7 @@ export function createLimitsContractSuite(
           key: 'workflow:user:123',
           holderId: 'holder-a',
           definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 100,
+          leaseTtlMs: 500,
         });
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
@@ -137,13 +137,13 @@ export function createLimitsContractSuite(
 
         const heartbeat = await harness.limits.heartbeat({
           leaseId: first.lease.leaseId,
-          ttlMs: 200,
+          ttlMs: 1_000,
         });
         expect(heartbeat.expiresAt?.getTime()).toBeGreaterThan(
           first.lease.expiresAt?.getTime() ?? 0
         );
 
-        await sleep(250);
+        await sleep(1_100);
 
         const second = await harness.limits.acquire({
           key: 'workflow:user:123',
