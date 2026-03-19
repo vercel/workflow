@@ -50,10 +50,13 @@ const matrix = {
     let serviceType = 'none';
     if (world.services && world.services.length > 0) {
       // Use the first service's name as the service type
-      // Currently supports: mongodb, redis
+      // mongodb and redis have dedicated CI steps; everything else
+      // is started generically via the manifest services definition
       const serviceName = world.services[0].name;
       if (['mongodb', 'redis'].includes(serviceName)) {
         serviceType = serviceName;
+      } else {
+        serviceType = 'docker';
       }
     }
 
@@ -63,6 +66,7 @@ const matrix = {
       package: world.package,
       'service-type': serviceType,
       'env-vars': JSON.stringify(world.env || {}),
+      services: JSON.stringify(world.services || []),
     };
   }),
 };
