@@ -1,4 +1,4 @@
-import type { Span } from '../trace-viewer/types';
+import type { Span, SpanEvent } from '../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 
 // ---------------------------------------------------------------------------
@@ -155,4 +155,380 @@ export function getResourceColor(resource: string): {
   errorBar?: string;
 } {
   return RESOURCE_COLORS[resource] ?? RESOURCE_COLORS.default;
+}
+
+// ---------------------------------------------------------------------------
+// Span segments — split a timeline bar into colored sections by event state
+// ---------------------------------------------------------------------------
+
+export type SegmentStatus =
+  | 'queued'
+  | 'running'
+  | 'failed'
+  | 'retrying'
+  | 'succeeded'
+  | 'waiting'
+  | 'sleeping'
+  | 'received';
+
+export interface Segment {
+  startFraction: number;
+  endFraction: number;
+  status: SegmentStatus;
+}
+
+function clampFraction(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function timeToFraction(
+  time: number,
+  spanStart: number,
+  spanDuration: number
+): number {
+  if (spanDuration <= 0) return 0;
+  return clampFraction((time - spanStart) / spanDuration);
+}
+
+interface EventMark {
+  time: number;
+  type: string;
+}
+
+function sortedEventMarks(
+  events: SpanEvent[],
+  relevantNames: string[]
+): EventMark[] {
+  return events
+    .filter((e) => relevantNames.includes(e.name))
+    .map((e) => ({ time: getHighResInMs(e.timestamp), type: e.name }))
+    .sort((a, b) => a.time - b.time);
+}
+
+function computeStepSegmentsFromSpan(
+  startMs: number,
+  duration: number,
+  events: SpanEvent[]
+): Segment[] {
+  const segments: Segment[] = [];
+  if (duration <= 0) return segments;
+
+  const marks = sortedEventMarks(events, [
+    'step_started',
+    'step_retrying',
+    'step_failed',
+    'step_completed',
+  ]);
+
+  if (marks.length === 0) {
+    segments.push({ startFraction: 0, endFraction: 1, status: 'running' });
+    return segments;
+  }
+
+  const firstFraction = timeToFraction(marks[0].time, startMs, duration);
+  if (firstFraction > 0.001) {
+    segments.push({
+      startFraction: 0,
+      endFraction: firstFraction,
+      status: 'queued',
+    });
+  }
+
+  for (let i = 0; i < marks.length; i++) {
+    const mark = marks[i];
+    const markFrac = timeToFraction(mark.time, startMs, duration);
+    const nextMark = marks[i + 1];
+    const nextFrac = nextMark
+      ? timeToFraction(nextMark.time, startMs, duration)
+      : 1;
+
+    if (mark.type === 'step_started') {
+      if (i === marks.length - 1) {
+        segments.push({
+          startFraction: markFrac,
+          endFraction: 1,
+          status: 'succeeded',
+        });
+      } else {
+        const nextType = nextMark.type;
+        const attemptStatus: SegmentStatus =
+          nextType === 'step_retrying' || nextType === 'step_failed'
+            ? 'failed'
+            : nextType === 'step_completed'
+              ? 'succeeded'
+              : 'running';
+        segments.push({
+          startFraction: markFrac,
+          endFraction: nextFrac,
+          status: attemptStatus,
+        });
+      }
+    } else if (mark.type === 'step_retrying') {
+      segments.push({
+        startFraction: markFrac,
+        endFraction: nextFrac,
+        status: 'retrying',
+      });
+    } else if (mark.type === 'step_failed') {
+      if (markFrac < 0.999) {
+        segments.push({
+          startFraction: markFrac,
+          endFraction: 1,
+          status: 'failed',
+        });
+      }
+    }
+  }
+
+  return segments;
+}
+
+function computeHookSegmentsFromSpan(
+  startMs: number,
+  duration: number,
+  events: SpanEvent[]
+): Segment[] {
+  const segments: Segment[] = [];
+  if (duration <= 0) return segments;
+
+  const sorted = [...events]
+    .map((e) => ({ name: e.name, time: getHighResInMs(e.timestamp) }))
+    .sort((a, b) => a.time - b.time);
+
+  const received = sorted.find((e) => e.name === 'hook_received');
+  const disposed = sorted.find((e) => e.name === 'hook_disposed');
+
+  if (!received && !disposed) {
+    segments.push({ startFraction: 0, endFraction: 1, status: 'waiting' });
+    return segments;
+  }
+
+  const receivedFrac = received
+    ? timeToFraction(received.time, startMs, duration)
+    : null;
+  const disposedFrac = disposed
+    ? timeToFraction(disposed.time, startMs, duration)
+    : null;
+
+  if (receivedFrac !== null && receivedFrac > 0.001) {
+    segments.push({
+      startFraction: 0,
+      endFraction: receivedFrac,
+      status: 'waiting',
+    });
+  } else if (receivedFrac === null && disposedFrac !== null) {
+    segments.push({
+      startFraction: 0,
+      endFraction: disposedFrac,
+      status: 'waiting',
+    });
+  }
+
+  if (receivedFrac !== null) {
+    segments.push({
+      startFraction: receivedFrac,
+      endFraction: disposedFrac ?? 1,
+      status: 'received',
+    });
+  }
+
+  if (disposedFrac !== null && disposedFrac < 0.999) {
+    segments.push({
+      startFraction: disposedFrac,
+      endFraction: 1,
+      status: 'succeeded',
+    });
+  }
+
+  return segments;
+}
+
+function computeSleepSegmentsFromSpan(
+  startMs: number,
+  duration: number,
+  events: SpanEvent[]
+): Segment[] {
+  const segments: Segment[] = [];
+  if (duration <= 0) return segments;
+
+  const completedTime = events
+    .filter((e) => e.name === 'wait_completed')
+    .map((e) => getHighResInMs(e.timestamp))
+    .sort((a, b) => a - b)[0];
+
+  if (completedTime === undefined) {
+    segments.push({ startFraction: 0, endFraction: 1, status: 'sleeping' });
+    return segments;
+  }
+
+  const completedFrac = timeToFraction(completedTime, startMs, duration);
+  if (completedFrac > 0.001) {
+    segments.push({
+      startFraction: 0,
+      endFraction: completedFrac,
+      status: 'sleeping',
+    });
+  }
+
+  segments.push({
+    startFraction: completedFrac,
+    endFraction: 1,
+    status: 'succeeded',
+  });
+
+  return segments;
+}
+
+function computeRunSegmentsFromSpan(
+  startMs: number,
+  duration: number,
+  activeStartMs: number | undefined,
+  events: SpanEvent[],
+  attributes: Record<string, unknown>
+): Segment[] {
+  const segments: Segment[] = [];
+  if (duration <= 0) return segments;
+
+  const sorted = [...events]
+    .map((e) => ({ name: e.name, time: getHighResInMs(e.timestamp) }))
+    .sort((a, b) => a.time - b.time);
+
+  const hasRunCreated = sorted.some((e) => e.name === 'run_created');
+
+  if (!hasRunCreated) {
+    const runData = attributes?.data as Record<string, unknown> | undefined;
+    const runStatus = runData?.status as string | undefined;
+    return computeV1RunSegments(startMs, duration, activeStartMs, runStatus);
+  }
+
+  const failedEvent = sorted.find((e) => e.name === 'run_failed');
+  const completedEvent = sorted.find((e) => e.name === 'run_completed');
+
+  let cursor = 0;
+  if (activeStartMs !== undefined && activeStartMs > startMs) {
+    const queuedFrac = timeToFraction(activeStartMs, startMs, duration);
+    if (queuedFrac > 0.001) {
+      segments.push({
+        startFraction: 0,
+        endFraction: queuedFrac,
+        status: 'queued',
+      });
+      cursor = queuedFrac;
+    }
+  }
+
+  if (failedEvent) {
+    const failedFrac = timeToFraction(failedEvent.time, startMs, duration);
+    if (failedFrac > cursor + 0.001) {
+      segments.push({
+        startFraction: cursor,
+        endFraction: failedFrac,
+        status: 'running',
+      });
+    }
+    segments.push({
+      startFraction: failedFrac,
+      endFraction: 1,
+      status: 'failed',
+    });
+  } else if (completedEvent) {
+    const completedFrac = timeToFraction(
+      completedEvent.time,
+      startMs,
+      duration
+    );
+    if (completedFrac > cursor + 0.001) {
+      segments.push({
+        startFraction: cursor,
+        endFraction: completedFrac,
+        status: 'running',
+      });
+    }
+    segments.push({
+      startFraction: completedFrac,
+      endFraction: 1,
+      status: 'succeeded',
+    });
+  } else {
+    segments.push({
+      startFraction: cursor,
+      endFraction: 1,
+      status: 'running',
+    });
+  }
+
+  return segments;
+}
+
+function computeV1RunSegments(
+  startMs: number,
+  duration: number,
+  activeStartMs: number | undefined,
+  runStatus: string | undefined
+): Segment[] {
+  const segments: Segment[] = [];
+
+  let cursor = 0;
+  if (activeStartMs !== undefined && activeStartMs > startMs) {
+    const queuedFrac = timeToFraction(activeStartMs, startMs, duration);
+    if (queuedFrac > 0.001) {
+      segments.push({
+        startFraction: 0,
+        endFraction: queuedFrac,
+        status: 'queued',
+      });
+      cursor = queuedFrac;
+    }
+  }
+
+  if (runStatus === 'failed') {
+    segments.push({ startFraction: cursor, endFraction: 1, status: 'failed' });
+  } else if (runStatus === 'completed' || runStatus === 'cancelled') {
+    segments.push({
+      startFraction: cursor,
+      endFraction: 1,
+      status: 'succeeded',
+    });
+  } else {
+    segments.push({
+      startFraction: cursor,
+      endFraction: 1,
+      status: 'running',
+    });
+  }
+
+  return segments;
+}
+
+/**
+ * Compute event-based segments for a span. Dispatches on `span.resource`
+ * to the appropriate resource-type-specific segment builder.
+ * Returns an empty array for generic (non-workflow) spans.
+ */
+export function computeSpanSegments(span: Span): Segment[] {
+  const startMs = getHighResInMs(span.startTime);
+  const endMs = getHighResInMs(span.endTime);
+  const duration = endMs - startMs;
+  const activeStartMs = span.activeStartTime
+    ? getHighResInMs(span.activeStartTime)
+    : undefined;
+
+  switch (span.resource) {
+    case 'step':
+      return computeStepSegmentsFromSpan(startMs, duration, span.events);
+    case 'hook':
+      return computeHookSegmentsFromSpan(startMs, duration, span.events);
+    case 'sleep':
+      return computeSleepSegmentsFromSpan(startMs, duration, span.events);
+    case 'run':
+      return computeRunSegmentsFromSpan(
+        startMs,
+        duration,
+        activeStartMs,
+        span.events,
+        span.attributes
+      );
+    default:
+      return [];
+  }
 }

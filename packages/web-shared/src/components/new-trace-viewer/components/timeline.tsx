@@ -5,15 +5,24 @@ import { memo, useMemo } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { getHighResInMs } from '../../trace-viewer/util/timing';
-import type { TimeCompression } from '../utils';
+import type { SegmentStatus, TimeCompression } from '../utils';
 import {
   computeCompressedTimeMarkers,
+  computeSpanSegments,
   computeTimeMarkers,
   getResourceColor,
 } from '../utils';
 
-const QUEUED_BACKGROUND =
-  'radial-gradient(circle, var(--ds-gray-400) 2px, transparent 2px) center / 20px 20px space no-repeat, var(--ds-gray-500)';
+const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
+  queued: 'segment-queued',
+  retrying: 'segment-hatched',
+  waiting: 'segment-hatched',
+  running: 'bg-blue-700',
+  failed: 'bg-red-700',
+  succeeded: 'bg-green-700',
+  sleeping: 'bg-amber-700',
+  received: 'bg-blue-700',
+};
 
 const TimelineBar = memo(function TimelineBar({
   span,
@@ -28,9 +37,6 @@ const TimelineBar = memo(function TimelineBar({
 }): ReactNode {
   const startTime = getHighResInMs(span.startTime);
   const endTime = getHighResInMs(span.endTime);
-  const activeStartTime = span.activeStartTime
-    ? getHighResInMs(span.activeStartTime)
-    : undefined;
 
   const leftFrac = compression.toVisual(startTime);
   const rightFrac = compression.toVisual(endTime);
@@ -39,21 +45,13 @@ const TimelineBar = memo(function TimelineBar({
   const leftPct = leftFrac * 100;
   const widthPct = widthFrac * 100;
 
+  const segments = useMemo(() => computeSpanSegments(span), [span]);
+
   const isErrored = span.status.code === 2;
   const colors = getResourceColor(span.resource);
-  const barColor = isErrored
+  const fallbackColor = isErrored
     ? (colors.errorBar ?? 'var(--ds-red-700)')
     : colors.bar;
-
-  const hasQueued = activeStartTime != null && activeStartTime > startTime;
-
-  let queuedBarPct = 0;
-  let activeBarPct = 100;
-  if (hasQueued && widthFrac > 0) {
-    const activeFrac = compression.toVisual(activeStartTime);
-    queuedBarPct = ((activeFrac - leftFrac) / widthFrac) * 100;
-    activeBarPct = 100 - queuedBarPct;
-  }
 
   return (
     <div
@@ -67,38 +65,36 @@ const TimelineBar = memo(function TimelineBar({
       onClick={onClick}
     >
       <div
-        className="absolute h-6 top-1.5 flex items-center rounded-sm"
+        className="absolute h-6 top-1.5 rounded-sm"
         style={{
           left: `${leftPct}%`,
           width: `max(${widthPct}%, 4px)`,
         }}
       >
-        {hasQueued ? (
-          <div className="flex gap-0.5 w-full">
-            <div
-              className="h-4 rounded-sm"
-              style={{
-                width: `${queuedBarPct}%`,
-                minWidth: 4,
-                background: QUEUED_BACKGROUND,
-              }}
-            />
-            <div
-              className="h-4 rounded-sm"
-              style={{
-                width: `${activeBarPct}%`,
-                minWidth: 4,
-                background: barColor,
-              }}
-            />
+        {segments.length > 0 ? (
+          <div className="relative w-full h-4 top-1 [&>*:nth-child(2)]:rounded-l-sm">
+            {segments.map((seg, i) => (
+              <div
+                key={`${seg.status}-${i}`}
+                className={cn(
+                  'absolute h-full first:rounded-sm last:rounded-r-sm border-r border-white',
+                  SEGMENT_CLASSES[seg.status]
+                )}
+                style={{
+                  left: `${seg.startFraction * 100}%`,
+                  width: `${(seg.endFraction - seg.startFraction) * 100}%`,
+                  minWidth: 2,
+                }}
+              />
+            ))}
           </div>
         ) : (
           <div
-            className="h-4 rounded-sm"
+            className="h-4 rounded-sm relative top-1"
             style={{
               width: '100%',
               minWidth: 4,
-              background: barColor,
+              background: fallbackColor,
             }}
           />
         )}
@@ -174,7 +170,6 @@ export function Timeline({
   selectedId: string | null;
   onSelect: (spanId: string) => void;
 }): ReactNode {
-  console.log('spans', spans);
   return (
     <div className="relative py-2">
       {spans.map((span) => (
