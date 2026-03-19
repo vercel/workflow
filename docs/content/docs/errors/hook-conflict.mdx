@@ -85,7 +85,7 @@ export async function processPayment(orderId: string) {
     const payment = await hook; // [!code highlight]
     return { success: true, payment };
   } catch (error) {
-    if (error instanceof HookConflictError) { // [!code highlight]
+    if (HookConflictError.is(error)) { // [!code highlight]
       // Another workflow is already processing this order
       console.log(`Conflicting token: ${error.token}`);
       return { success: false, reason: "duplicate-processing" };
