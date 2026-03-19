@@ -16,6 +16,7 @@ import {
 } from 'vitest';
 import type { Run } from '../src/runtime';
 import {
+  cancelRun,
   getHookByToken,
   getRun,
   getWorld,
@@ -643,13 +644,13 @@ describe('e2e', () => {
       { timeout: 60_000 },
       async () => {
         const workflow = await e2e('workflowLockContentionWorkflow');
-        const runA = await start(workflow, ['shared-user', 500]);
+        const runA = await start(workflow, ['shared-user', 1_500]);
         await sleep(100);
-        const runB = await start(workflow, ['shared-user', 500]);
-        await sleep(200);
-        await cliCancel(runB.runId);
+        const runB = await start(workflow, ['shared-user', 1_500]);
+        await sleep(100);
+        await cancelRun(getWorld(), runB.runId);
         const cancelledError = await runB.returnValue.catch((error) => error);
-        const runC = await start(workflow, ['shared-user', 500]);
+        const runC = await start(workflow, ['shared-user', 1_500]);
 
         const [resultA, resultC] = await Promise.all([
           runA.returnValue,
