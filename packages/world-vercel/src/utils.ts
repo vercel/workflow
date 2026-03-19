@@ -12,6 +12,21 @@ import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
+import {
+  ErrorType,
+  getSpanKind,
+  HttpRequestMethod,
+  HttpResponseStatusCode,
+  PeerService,
+  RpcService,
+  RpcSystem,
+  ServerAddress,
+  ServerPort,
+  trace,
+  UrlFull,
+  WorldParseFormat,
+} from './telemetry.js';
+import { version } from './version.js';
 
 /**
  * Lightweight debug logger for HTTP requests. Activated when the DEBUG
@@ -35,21 +50,6 @@ function httpLog(
     );
   }
 }
-import {
-  ErrorType,
-  getSpanKind,
-  HttpRequestMethod,
-  HttpResponseStatusCode,
-  PeerService,
-  RpcService,
-  RpcSystem,
-  ServerAddress,
-  ServerPort,
-  trace,
-  UrlFull,
-  WorldParseFormat,
-} from './telemetry.js';
-import { version } from './version.js';
 
 /**
  * Hard-coded workflow-server URL override for testing.

@@ -172,4 +172,7 @@ declare global {
   const MAX_STEPS: number;
   const reportId: string;
   const userId: string;
+
+  // Workflow placeholders used in examples
+  const myWorkflow: (...args: any[]) => Promise<any>;
 }

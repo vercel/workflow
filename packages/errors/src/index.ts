@@ -255,6 +255,30 @@ export class WorkflowRunNotFoundError extends WorkflowError {
 }
 
 /**
+ * Thrown when a hook token is already in use by another active workflow run.
+ *
+ * This is a user error — it means the same custom token was passed to
+ * `createHook` in two or more concurrent runs. Use a unique token per run
+ * (or omit the token to let the runtime generate one automatically).
+ */
+export class HookConflictError extends WorkflowError {
+  token: string;
+
+  constructor(token: string) {
+    super(
+      `Hook token "${token}" is already in use by another workflow`,
+      { slug: ERROR_SLUGS.HOOK_CONFLICT }
+    );
+    this.name = 'HookConflictError';
+    this.token = token;
+  }
+
+  static is(value: unknown): value is HookConflictError {
+    return isError(value) && value.name === 'HookConflictError';
+  }
+}
+
+/**
  * Thrown when calling `resumeHook()` or `resumeWebhook()` with a token that
  * does not match any active hook.
  *
@@ -305,7 +329,7 @@ export class HookNotFoundError extends WorkflowError {
  * The workflow runtime handles this error automatically. Users interacting
  * with world storage backends directly may encounter it.
  */
-export class EntityConflictError extends WorkflowError {
+export class EntityConflictError extends WorkflowWorldError {
   constructor(message: string) {
     super(message);
     this.name = 'EntityConflictError';
@@ -323,7 +347,7 @@ export class EntityConflictError extends WorkflowError {
  * The workflow runtime handles this error automatically. Users interacting
  * with world storage backends directly may encounter it.
  */
-export class RunExpiredError extends WorkflowError {
+export class RunExpiredError extends WorkflowWorldError {
   constructor(message: string) {
     super(message);
     this.name = 'RunExpiredError';
@@ -341,15 +365,15 @@ export class RunExpiredError extends WorkflowError {
  * The workflow runtime handles this error automatically. Users interacting
  * with world storage backends directly may encounter it.
  *
- * @property retryAfter - The `Date` after which the operation can be retried.
+ * @property retryAfterDate - The `Date` after which the operation can be retried.
  */
-export class TooEarlyError extends WorkflowError {
-  retryAfter?: Date;
+export class TooEarlyError extends WorkflowWorldError {
+  retryAfterDate?: Date;
 
   constructor(message: string, options?: { retryAfter?: Date }) {
     super(message);
     this.name = 'TooEarlyError';
-    this.retryAfter = options?.retryAfter;
+    this.retryAfterDate = options?.retryAfter;
   }
 
   static is(value: unknown): value is TooEarlyError {
@@ -366,7 +390,7 @@ export class TooEarlyError extends WorkflowError {
  *
  * @property retryAfter - Delay in seconds before the request can be retried.
  */
-export class ThrottleError extends WorkflowError {
+export class ThrottleError extends WorkflowWorldError {
   retryAfter?: number;
 
   constructor(message: string, options?: { retryAfter?: number }) {

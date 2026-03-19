@@ -10,7 +10,7 @@ related:
 
 `TooEarlyError` is thrown by world implementations when a request is made before the system is ready to process it. It corresponds to HTTP 425 Too Early semantics.
 
-The `retryAfter` property contains a `Date` indicating when the operation can be retried.
+The `retryAfterDate` property contains a `Date` indicating when the operation can be retried.
 
 <Callout>
 The Workflow runtime handles this error automatically by retrying after the specified delay. You will only encounter it when interacting with world storage APIs directly.
@@ -23,7 +23,7 @@ try {
   await world.events.create(runId, event);
 } catch (error) {
   if (TooEarlyError.is(error)) { // [!code highlight]
-    console.log(`Retry after ${error.retryAfter.toISOString()}`);
+    console.log(`Retry after ${error.retryAfterDate.toISOString()}`);
   }
 }
 ```
@@ -36,7 +36,7 @@ try {
 definition={`
 interface TooEarlyError {
   /** The Date after which the operation can be retried. */
-  retryAfter: Date;
+  retryAfterDate: Date;
   /** The error message. */
   message: string;
 }

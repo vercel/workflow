@@ -91,6 +91,111 @@ export async function POST(req: Request) {
 }
 ```
 
+### List Steps for a Run (Without Data)
+
+List steps for a workflow run with `resolveData: 'none'` to efficiently get step metadata without fetching serialized input/output. Use `parseStepName` to extract user-friendly display names:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { parseStepName } from "@workflow/utils/parse-name"; // [!code highlight]
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+
+  if (!runId) {
+    return Response.json({ error: "No runId provided" }, { status: 400 });
+  }
+
+  try {
+    const world = getWorld(); // [!code highlight]
+    const steps = await world.steps.list({ // [!code highlight]
+      runId, // [!code highlight]
+      resolveData: "none", // Skip fetching input/output for performance // [!code highlight]
+    }); // [!code highlight]
+
+    // Map steps to a progress view using parseStepName for display
+    const progress = steps.data.map((step) => {
+      const parsed = parseStepName(step.stepName); // [!code highlight]
+      return {
+        stepId: step.stepId,
+        // Use shortName for UI display (e.g., "fetchUserData") // [!code highlight]
+        displayName: parsed?.shortName ?? step.stepName, // [!code highlight]
+        // Module info available for debugging // [!code highlight]
+        module: parsed?.moduleSpecifier, // [!code highlight]
+        status: step.status,
+        startedAt: step.startedAt,
+        completedAt: step.completedAt,
+      };
+    });
+
+    return Response.json({ progress, cursor: steps.cursor });
+  } catch (error) {
+    return Response.json(
+      { error: "Failed to list steps" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+### Get Step with Hydrated Input/Output
+
+Retrieve a step with its serialized data and hydrate it for display. This example shows how to decrypt and deserialize step input/output:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { parseStepName } from "@workflow/utils/parse-name"; // [!code highlight]
+import { // [!code highlight]
+  hydrateResourceIO, // [!code highlight]
+  observabilityRevivers, // [!code highlight]
+} from "@workflow/core/serialization-format"; // [!code highlight]
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+  const stepId = url.searchParams.get("stepId");
+
+  if (!runId || !stepId) {
+    return Response.json({ error: "runId and stepId required" }, { status: 400 });
+  }
+
+  try {
+    const world = getWorld(); // [!code highlight]
+    // Fetch step with data (default resolveData behavior) // [!code highlight]
+    const step = await world.steps.get(runId, stepId); // [!code highlight]
+
+    // Hydrate serialized input/output for display // [!code highlight]
+    const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+
+    // Parse the stepName for user-friendly display
+    const parsed = parseStepName(step.stepName);
+
+    return Response.json({
+      stepId: hydrated.stepId,
+      displayName: parsed?.shortName ?? step.stepName, // [!code highlight]
+      module: parsed?.moduleSpecifier, // [!code highlight]
+      status: hydrated.status,
+      attempt: hydrated.attempt,
+      // Hydrated input/output ready for rendering // [!code highlight]
+      input: hydrated.input, // [!code highlight]
+      output: hydrated.output, // [!code highlight]
+    });
+  } catch (error) {
+    return Response.json(
+      { error: "Step not found" },
+      { status: 404 }
+    );
+  }
+}
+```
+
+<Callout type="info">
+  The `stepName` field contains a machine-readable identifier like `step//./src/workflows/order//processPayment`.
+  Use `parseStepName()` from `@workflow/utils/parse-name` to extract the `shortName` (e.g., `"processPayment"`)
+  and `moduleSpecifier` for display in your UI.
+</Callout>
+
 ## Related Functions
 
 - [`getRun()`](/docs/api-reference/workflow-api/get-run) - Higher-level API for working with individual runs by ID.

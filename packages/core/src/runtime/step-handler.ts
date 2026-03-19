@@ -189,7 +189,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // Too early: retryAfter timestamp not reached yet
             // Return timeout to queue so it retries later
             if (TooEarlyError.is(err)) {
-              const retryAfter = err.retryAfter ?? new Date(Date.now() + 1000);
+              const retryAfter = err.retryAfterDate ?? new Date(Date.now() + 1000);
               const timeoutSeconds = Math.max(
                 1,
                 Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
