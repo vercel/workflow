@@ -29,53 +29,58 @@ const streams = world.streams; // [!code highlight]
 
 ### writeToStream()
 
-Write data chunks to a stream.
+Write data chunks to a named stream for a workflow run.
 
 ```typescript lineNumbers
-await world.streams.writeToStream(streamId, chunk); // [!code highlight]
+await world.streams.writeToStream("default", runId, chunk); // [!code highlight]
 ```
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `streamId` | `string` | The stream identifier |
-| `chunk` | `any` | Data to write to the stream |
+| `name` | `string` | The stream name |
+| `runId` | `string` | The workflow run ID |
+| `chunk` | `string \| Uint8Array` | Data to write to the stream |
 
 ### readFromStream()
 
-Read data from a stream.
+Read data from a named stream as a `ReadableStream`.
 
 ```typescript lineNumbers
-const data = await world.streams.readFromStream(streamId); // [!code highlight]
+const readable = await world.streams.readFromStream("default"); // [!code highlight]
 ```
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `streamId` | `string` | The stream identifier |
+| `name` | `string` | The stream name |
+| `startIndex` | `number` | Optional starting index for partial reads |
+
+**Returns:** `ReadableStream<Uint8Array>`
 
 ### closeStream()
 
 Close a stream when done writing.
 
 ```typescript lineNumbers
-await world.streams.closeStream(streamId); // [!code highlight]
+await world.streams.closeStream("default", runId); // [!code highlight]
 ```
 
 **Parameters:**
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `streamId` | `string` | The stream identifier |
+| `name` | `string` | The stream name |
+| `runId` | `string` | The workflow run ID |
 
 ### listStreamsByRunId()
 
-List all streams associated with a workflow run.
+List all stream names associated with a workflow run.
 
 ```typescript lineNumbers
-const streams = await world.streams.listStreamsByRunId(runId); // [!code highlight]
+const streamNames = await world.streams.listStreamsByRunId(runId); // [!code highlight]
 ```
 
 **Parameters:**
@@ -84,7 +89,7 @@ const streams = await world.streams.listStreamsByRunId(runId); // [!code highlig
 |-----------|------|-------------|
 | `runId` | `string` | The workflow run ID |
 
-**Returns:** List of stream metadata
+**Returns:** `string[]` — Array of stream names
 
 ## Examples
 
@@ -102,29 +107,31 @@ export async function GET(req: Request) {
   }
 
   const world = getWorld();
-  const streams = await world.streams.listStreamsByRunId(runId); // [!code highlight]
+  const streamNames = await world.streams.listStreamsByRunId(runId); // [!code highlight]
 
-  return Response.json(streams);
+  return Response.json({ streams: streamNames });
 }
 ```
 
-### Read Stream Data from a Client
+### Read a Stream as a Response
 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const streamId = url.searchParams.get("streamId");
+  const streamName = url.searchParams.get("name");
 
-  if (!streamId) {
-    return Response.json({ error: "streamId required" }, { status: 400 });
+  if (!streamName) {
+    return Response.json({ error: "name required" }, { status: 400 });
   }
 
   const world = getWorld();
-  const data = await world.streams.readFromStream(streamId); // [!code highlight]
+  const readable = await world.streams.readFromStream(streamName); // [!code highlight]
 
-  return Response.json(data);
+  return new Response(readable, {
+    headers: { "Content-Type": "application/octet-stream" },
+  });
 }
 ```
 

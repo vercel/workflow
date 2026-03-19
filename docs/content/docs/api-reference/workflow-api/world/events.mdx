@@ -108,7 +108,8 @@ Events are grouped by the entity they affect:
 
 | Event Type | Description |
 |-----------|-------------|
-| `run_started` | Workflow run was initiated |
+| `run_created` | Workflow run was created |
+| `run_started` | Workflow run execution began |
 | `run_completed` | Workflow run completed successfully |
 | `run_failed` | Workflow run failed with an error |
 | `run_cancelled` | Workflow run was cancelled |
@@ -117,24 +118,26 @@ Events are grouped by the entity they affect:
 
 | Event Type | Description |
 |-----------|-------------|
+| `step_created` | Step was created |
 | `step_started` | Step execution began |
 | `step_completed` | Step completed successfully |
 | `step_failed` | Step failed with an error |
-| `step_retry` | Step scheduled for retry |
+| `step_retrying` | Step scheduled for retry |
 
 ### Hook Events
 
 | Event Type | Description |
 |-----------|-------------|
 | `hook_created` | Hook was created (workflow paused) |
-| `hook_resumed` | Hook was resumed with a payload |
-| `hook_expired` | Hook expired without being resumed |
+| `hook_received` | Hook received a payload |
+| `hook_disposed` | Hook was disposed (workflow reached terminal state) |
+| `hook_conflict` | Hook token conflict detected |
 
 ### Wait Events
 
 | Event Type | Description |
 |-----------|-------------|
-| `wait_started` | Workflow entered a wait state (e.g., `sleep()`) |
+| `wait_created` | Workflow entered a wait state (e.g., `sleep()`) |
 | `wait_completed` | Wait state completed |
 
 <Callout type="info">

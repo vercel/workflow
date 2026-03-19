@@ -200,10 +200,17 @@ declare global {
       listByCorrelationId: (...args: any[]) => Promise<any>;
     };
     streams: {
-      writeToStream: (...args: any[]) => Promise<any>;
-      readFromStream: (...args: any[]) => Promise<any>;
-      closeStream: (...args: any[]) => Promise<any>;
-      listStreamsByRunId: (...args: any[]) => Promise<any>;
+      writeToStream: (
+        name: string,
+        runId: string,
+        chunk: string | Uint8Array
+      ) => Promise<void>;
+      readFromStream: (
+        name: string,
+        startIndex?: number
+      ) => Promise<ReadableStream<Uint8Array>>;
+      closeStream: (name: string, runId: string) => Promise<void>;
+      listStreamsByRunId: (runId: string) => Promise<string[]>;
     };
     queue: {
       getDeploymentId: (...args: any[]) => Promise<any>;
@@ -212,6 +219,7 @@ declare global {
     };
   };
   const streamId: string;
+  const streamName: string;
   const hookId: string;
   const eventId: string;
   const cursor: string | undefined;
