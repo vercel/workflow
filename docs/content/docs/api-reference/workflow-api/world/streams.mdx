@@ -8,6 +8,15 @@ prerequisites:
 related:
   - /docs/foundations/streaming
   - /docs/api-reference/workflow/get-writable
+keywords:
+  - world.streams
+  - writeToStream
+  - readFromStream
+  - closeStream
+  - listStreamsByRunId
+  - Streamer interface
+  - real-time streaming
+  - stream lifecycle
 ---
 
 The `world.streams` interface (via the `Streamer` interface) provides low-level access to workflow data streams. Use it to write chunks, read streams, and manage stream lifecycle outside of the standard `getWritable()` pattern.
@@ -96,6 +105,7 @@ const streamNames = await world.streams.listStreamsByRunId(runId); // [!code hig
 ### List All Streams for a Workflow Run
 
 ```typescript lineNumbers
+// app/api/workflow-streams/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
@@ -116,6 +126,7 @@ export async function GET(req: Request) {
 ### Read a Stream as a Response
 
 ```typescript lineNumbers
+// app/api/workflow-streams/read/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {

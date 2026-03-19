@@ -8,6 +8,19 @@ prerequisites:
 related:
   - /docs/api-reference/workflow-api/world/steps
   - /docs/api-reference/workflow-api/world/runs
+keywords:
+  - workflow/observability
+  - hydrateResourceIO
+  - observabilityRevivers
+  - parseStepName
+  - parseWorkflowName
+  - parseClassName
+  - getEncryptionKeyForRun
+  - hydrateResourceIOWithKey
+  - data hydration
+  - devalue deserialization
+  - encryption decryption
+  - display name parsing
 ---
 
 The `workflow/observability` module provides utilities for working with workflow data in observability and debugging tools. It includes functions to hydrate serialized step I/O, parse machine-readable names into display-friendly formats, and decrypt encrypted workflow data.
@@ -175,6 +188,7 @@ const hydrated = hydrateResourceIOWithKey(step, key); // [!code highlight]
 ### Hydrate Step Input and Output Data
 
 ```typescript lineNumbers
+// app/api/workflow-steps/hydrate/route.ts
 import { getWorld } from "workflow/runtime";
 import { // [!code highlight]
   hydrateResourceIO, // [!code highlight]
@@ -211,6 +225,7 @@ For teams with encryption enabled, step data must be decrypted before hydration:
 
 {/* @expect-error:2305,2724 */}
 ```typescript lineNumbers
+// app/api/workflow-steps/decrypt/route.ts
 import { getWorld } from "workflow/runtime";
 import { // [!code highlight]
   getEncryptionKeyForRun, // [!code highlight]

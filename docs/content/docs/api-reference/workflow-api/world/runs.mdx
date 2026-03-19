@@ -9,6 +9,17 @@ related:
   - /docs/api-reference/workflow-api/world/steps
   - /docs/api-reference/workflow-api/world/events
   - /docs/api-reference/workflow-api/get-run
+keywords:
+  - world.runs
+  - world.runs.get
+  - world.runs.list
+  - WorkflowRun
+  - cursor pagination
+  - run status
+  - resolveData
+  - parseWorkflowName
+  - list workflow runs
+  - filter runs
 ---
 
 The `world.runs` interface provides direct access to workflow run data. Use it to list runs with pagination, filter by status, and inspect individual run metadata.
@@ -105,6 +116,7 @@ const run = await world.runs.cancel(runId); // [!code highlight]
 ### List Workflow Runs with Cursor Pagination
 
 ```typescript lineNumbers
+// app/api/workflow-runs/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
@@ -125,6 +137,7 @@ export async function GET(req: Request) {
 Use `resolveData: 'all'` (the default) to fetch the complete run including input and output:
 
 ```typescript lineNumbers
+// app/api/workflow-runs/[runId]/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
@@ -185,6 +198,7 @@ for (const run of runs.data) {
 ### Cancel a Running Workflow
 
 ```typescript lineNumbers
+// app/api/workflow-runs/cancel/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function POST(req: Request) {

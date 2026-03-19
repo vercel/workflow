@@ -8,6 +8,14 @@ prerequisites:
 related:
   - /docs/api-reference/workflow-api/start
   - /docs/foundations/starting-workflows
+keywords:
+  - world.queue
+  - getDeploymentId
+  - queue
+  - createQueueHandler
+  - background processing
+  - enqueue workflow
+  - ValidQueueName
 ---
 
 The `world.queue` interface provides access to workflow run queuing and processing. Use it to enqueue runs for background execution and create handlers to process queued items.
@@ -73,6 +81,7 @@ const handler = world.queue.createQueueHandler(prefix, callback); // [!code high
 ### Enqueue a Workflow Run for Background Processing
 
 ```typescript lineNumbers
+// app/api/workflow-queue/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function POST(req: Request) {

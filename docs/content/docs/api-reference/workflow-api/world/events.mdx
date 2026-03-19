@@ -8,6 +8,18 @@ prerequisites:
 related:
   - /docs/api-reference/workflow-api/world/runs
   - /docs/api-reference/workflow-api/world/steps
+keywords:
+  - world.events
+  - world.events.create
+  - world.events.get
+  - world.events.list
+  - world.events.listByCorrelationId
+  - event log
+  - audit trail
+  - run_cancelled
+  - event types
+  - correlation ID
+  - cancel workflow run
 ---
 
 The `world.events` interface provides access to the append-only event log that drives all workflow state. Runs, steps, and hooks are materialized views derived from events. Use this interface for audit trails, debugging, and programmatic run cancellation.
@@ -149,6 +161,7 @@ Events are grouped by the entity they affect:
 ### List Events for a Run as Audit Trail
 
 ```typescript lineNumbers
+// app/api/workflow-events/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
@@ -171,6 +184,7 @@ export async function GET(req: Request) {
 Cancelling a run is done by creating a `run_cancelled` event:
 
 ```typescript lineNumbers
+// app/api/workflow-runs/cancel/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function POST(req: Request) {

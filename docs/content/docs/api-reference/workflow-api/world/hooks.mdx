@@ -9,6 +9,16 @@ related:
   - /docs/api-reference/workflow-api/world/events
   - /docs/api-reference/workflow-api/resume-hook
   - /docs/api-reference/workflow-api/resume-webhook
+keywords:
+  - world.hooks
+  - world.hooks.get
+  - world.hooks.getByToken
+  - world.hooks.list
+  - Hook
+  - webhook token
+  - hook metadata
+  - resume flow
+  - pending approvals
 ---
 
 The `world.hooks` interface provides access to workflow hook data. Hooks are pause points in workflows that wait for external input. Use this interface to look up hooks by ID or token, inspect metadata, and build admin UIs for pending approvals.
@@ -96,6 +106,7 @@ const result = await world.hooks.list({ // [!code highlight]
 ### Look Up Hook by ID
 
 ```typescript lineNumbers
+// app/api/workflow-hooks/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
@@ -123,6 +134,7 @@ export async function GET(req: Request) {
 When you receive a webhook callback with a token, look up the hook to inspect metadata before resuming:
 
 ```typescript lineNumbers
+// app/api/workflow-hooks/resume/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function POST(req: Request) {
@@ -145,6 +157,7 @@ export async function POST(req: Request) {
 ### List All Hooks for Pending Approvals Dashboard
 
 ```typescript lineNumbers
+// app/api/workflow-hooks/pending/route.ts
 import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
