@@ -1,7 +1,7 @@
 import { StepForward } from 'lucide-react';
 import { cva } from 'class-variance-authority';
-import { Span } from '../../trace-viewer/types';
-import { formatDuration } from '../../../lib/utils';
+import type { Span } from '../../trace-viewer/types';
+import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
 
 const eventTag = cva(['rounded-sm p-1'], {
   variants: {
@@ -29,19 +29,25 @@ const toEventType = (resource: string): EventType => {
   }
 };
 
-const EventRow = ({ span }: { span: Span }) => {
+const EventRow = ({
+  span,
+  isSelected,
+  onSelectSpan,
+}: {
+  span: Span;
+  isSelected: boolean;
+  onSelectSpan: (spanId: string) => void;
+}) => {
+  const durationMs = getHighResInMs(span.duration);
+
   return (
     <li
-      key={span.spanId}
       role="treeitem"
       aria-level={0}
-      aria-selected={false}
+      aria-selected={isSelected}
       aria-expanded="false"
       className="overflow-clip group"
-      // onClick={() => {
-      //   setActiveSpan(span.spanId);
-      //   console.log(span.spanId);
-      // }}
+      onClick={() => onSelectSpan(span.spanId)}
     >
       <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 rounded-sm px-2 h-9 py-1.5 cursor-pointer flex">
         <div className="flex items-center gap-2">
@@ -52,7 +58,7 @@ const EventRow = ({ span }: { span: Span }) => {
         </div>
         <div className="ml-auto">
           <span className="text-label-14 text-gray-900 tabular-nums">
-            {formatDuration(span.duration[1])}
+            {formatDuration(durationMs)}
           </span>
         </div>
       </div>
@@ -60,7 +66,15 @@ const EventRow = ({ span }: { span: Span }) => {
   );
 };
 
-const EventList = ({ spans }: { spans: Span[] }) => {
+const EventList = ({
+  spans,
+  activeSpanId,
+  onSelectSpan,
+}: {
+  spans: Span[];
+  activeSpanId: string | null;
+  onSelectSpan: (spanId: string) => void;
+}) => {
   return (
     <ul
       id="event-list"
@@ -68,7 +82,14 @@ const EventList = ({ spans }: { spans: Span[] }) => {
       className="block min-h-0 overflow-visible px-2 py-2"
     >
       {spans.map((span) => {
-        return <EventRow key={span.spanId} span={span} />;
+        return (
+          <EventRow
+            key={span.spanId}
+            span={span}
+            isSelected={span.spanId === activeSpanId}
+            onSelectSpan={onSelectSpan}
+          />
+        );
       })}
     </ul>
   );

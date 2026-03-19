@@ -7,6 +7,7 @@ import { useMemo, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { Timeline, TimelineBar } from './components/timeline';
 import { getHighResInMs } from '../trace-viewer/util/timing';
+import { ActiveSpanProvider, useActiveSpan } from './context';
 
 interface NewTraceViewerProps {
   trace: Trace;
@@ -21,7 +22,16 @@ const TraceHeader = () => {
 };
 
 export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
-  const activeSpan = trace.spans[0];
+  return (
+    <ActiveSpanProvider spans={trace.spans}>
+      <NewTraceViewerContent trace={trace} />
+    </ActiveSpanProvider>
+  );
+}
+
+function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
+  const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
+    useActiveSpan();
   const splitRatio = 0.5;
   const compression = useMemo(() => {
     let minStart = Number.POSITIVE_INFINITY;
@@ -71,7 +81,11 @@ export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
             height: '100%',
           }}
         >
-          <EventList spans={trace.spans} />
+          <EventList
+            spans={trace.spans}
+            activeSpanId={activeSpanId}
+            onSelectSpan={setActiveSpan}
+          />
           <div className="w-px bg-gray-alpha-400 h-full" role="separator" />
           <Timeline>
             {trace.spans.map((span) => (
@@ -79,8 +93,8 @@ export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
                 key={span.spanId}
                 span={span}
                 compression={compression}
-                isSelected={false}
-                onClick={() => {}}
+                isSelected={span.spanId === activeSpanId}
+                onClick={() => setActiveSpan(span.spanId)}
               />
             ))}
           </Timeline>
@@ -93,10 +107,7 @@ export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
             id="side-panel"
             className="grid h-full max-h-full grid-rows-[2.5rem_1fr] overflow-hidden bg-background-200"
           >
-            <button
-              type="button"
-              onClick={() => console.log('close side panel')}
-            >
+            <button type="button" onClick={clearActiveSpan}>
               <X />
             </button>
           </aside>
