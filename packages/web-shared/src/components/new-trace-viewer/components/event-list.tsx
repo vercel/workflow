@@ -1,36 +1,36 @@
-import { cva } from 'class-variance-authority';
-import { StepForward } from 'lucide-react';
+import { Circle, Clock, Play, StepForward, Webhook } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
 
-const eventTag = cva(['rounded-sm p-1'], {
-  variants: {
-    eventType: {
-      run: 'bg-blue-200 text-blue-900',
-      step: 'bg-green-200 text-green-900',
-      hook: 'bg-yellow-200 text-yellow-900',
-      sleep: 'bg-gray-200 text-gray-900',
-      default: 'bg-gray-200 text-gray-900',
-    },
-    isErrored: {
-      true: 'bg-red-200 text-red-900',
-    },
-  },
-});
+interface EventStyle {
+  icon: LucideIcon;
+  className: string;
+}
 
-type EventType = 'run' | 'step' | 'hook' | 'sleep' | 'default';
-
-const toEventType = (resource: string): EventType => {
-  switch (resource) {
-    case 'run':
-    case 'step':
-    case 'hook':
-    case 'sleep':
-      return resource;
-    default:
-      return 'default';
-  }
+const eventStyles: Record<string, EventStyle> = {
+  run: { icon: Play, className: 'bg-blue-200 text-blue-900' },
+  step: { icon: StepForward, className: 'bg-green-200 text-green-900' },
+  hook: { icon: Webhook, className: 'bg-yellow-200 text-yellow-900' },
+  sleep: { icon: Clock, className: 'bg-gray-200 text-gray-900' },
 };
+
+const defaultStyle: EventStyle = {
+  icon: Circle,
+  className: 'bg-gray-200 text-gray-900',
+};
+
+function getEventStyle(resource: string, isErrored: boolean): EventStyle {
+  const style = eventStyles[resource] ?? defaultStyle;
+  return {
+    icon: style.icon,
+    className: cn(
+      'rounded-sm p-1',
+      isErrored ? 'bg-red-200 text-red-900' : style.className
+    ),
+  };
+}
 
 const EventRow = ({
   span,
@@ -44,7 +44,10 @@ const EventRow = ({
   const durationMs = getHighResInMs(span.duration);
   const isErrored =
     (span.attributes.data as Record<string, unknown>).status === 'failed';
-  console.log(span);
+  const { icon: Icon, className: tagClassName } = getEventStyle(
+    span.resource,
+    isErrored
+  );
 
   return (
     <li
@@ -57,13 +60,8 @@ const EventRow = ({
     >
       <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 rounded-sm px-2 h-9 py-1.5 flex">
         <div className="flex items-center gap-2">
-          <span
-            className={eventTag({
-              eventType: toEventType(span.resource),
-              isErrored: isErrored || undefined,
-            })}
-          >
-            <StepForward className="w-4 h-4" />
+          <span className={tagClassName}>
+            <Icon className="w-4 h-4" />
           </span>
           <span className="text-label-14">{span.name}</span>
         </div>

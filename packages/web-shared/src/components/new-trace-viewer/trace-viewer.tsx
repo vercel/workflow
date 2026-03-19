@@ -1,5 +1,6 @@
 'use client';
 
+import { Search, X } from 'lucide-react';
 import {
   type ReactNode,
   useCallback,
@@ -40,6 +41,17 @@ export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
 function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
     useActiveSpan();
+
+  const [searchQuery, setSearchQuery] = useState('');
+
+  const filteredSpans = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return trace.spans;
+    return trace.spans.filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) || s.resource.toLowerCase().includes(q)
+    );
+  }, [trace.spans, searchQuery]);
 
   const root = useMemo(() => computeRootBounds(trace.spans), [trace.spans]);
 
@@ -236,11 +248,29 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     >
       <div
         id="trace-parent"
-        className="grid grid-rows-[1fr] h-full min-h-0 overflow-hidden relative border border-gray-400 rounded-lg bg-background-100"
+        className="grid grid-rows-[1fr] h-full min-h-0 overflow-hidden relative bg-background-100"
       >
         <SplitPane
           startHeader={
-            <div className="bg-background-100 border-b border-gray-alpha-400 h-8 min-h-8" />
+            <div className="bg-background-100 border-b border-gray-alpha-400 h-8 min-h-8 flex items-center px-2 gap-1.5">
+              <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Filter events..."
+                className="flex-1 min-w-0 bg-transparent text-sm text-gray-1000 placeholder:text-gray-800 outline-none"
+              />
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery('')}
+                  className="shrink-0 p-0.5 rounded-sm text-gray-800 hover:text-gray-1000 hover:bg-gray-200 transition-colors"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
+            </div>
           }
           endHeader={
             <TimelineHeader
@@ -255,7 +285,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         >
           <div className="block min-h-0 overflow-visible">
             <EventList
-              spans={trace.spans}
+              spans={filteredSpans}
               activeSpanId={activeSpanId}
               onSelectSpan={handleSelectSpan}
             />
@@ -266,7 +296,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             onDoubleClick={resetZoom}
           >
             <Timeline
-              spans={trace.spans}
+              spans={filteredSpans}
               compression={compression}
               selectedId={activeSpanId}
               onSelect={handleSelectSpan}
