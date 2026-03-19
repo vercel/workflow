@@ -1,118 +1,28 @@
-import { cva } from 'class-variance-authority';
-import { memo, type ReactNode } from 'react';
+'use client';
+
+import type { ReactNode } from 'react';
+import { memo, useMemo } from 'react';
 import { cn } from '../../../lib/utils';
-import { SegmentStatus } from '../../trace-viewer/components/span-segments';
-import type { ResourceType } from '../../trace-viewer/components/span-strategies';
 import type { Span } from '../../trace-viewer/types';
-import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
+import { getHighResInMs } from '../../trace-viewer/util/timing';
+import type { TimeCompression } from '../utils';
+import {
+  computeCompressedTimeMarkers,
+  computeTimeMarkers,
+  getResourceColor,
+} from '../utils';
 
-const MIN_BAR_WIDTH_PCT = 0.8;
+const QUEUED_BACKGROUND =
+  'radial-gradient(circle at center, var(--ds-gray-800) 0 2.5px, transparent 2.6px) center / 52px 100% repeat-x, var(--ds-gray-300)';
 
-export interface TimelineCompression {
-  toVisual: (time: number) => number;
-}
-
-const clamp = (value: number, min: number, max: number): number => {
-  return Math.min(Math.max(value, min), max);
-};
-
-const toResourceType = (resource: string): ResourceType => {
-  switch (resource) {
-    case 'run':
-    case 'step':
-    case 'hook':
-    case 'sleep':
-      return resource;
-    default:
-      return 'default';
-  }
-};
-
-const TimelineRow = ({
-  children,
-  isSelected,
-  onClick,
-}: {
-  children: ReactNode;
-  isSelected: boolean;
-  onClick: () => void;
-}) => {
-  return (
-    <div
-      className="overflow-clip w-full group"
-      role="treeitem"
-      aria-selected={isSelected}
-      aria-expanded={isSelected}
-      aria-level={1}
-      onClick={onClick}
-    >
-      <div
-        className={cn(
-          'relative flex h-9 items-center hover:bg-gray-100 rounded-sm group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200'
-        )}
-      >
-        {children}
-      </div>
-    </div>
-  );
-};
-
-export const resourceStatus = cva('', {
-  variants: {
-    resourceType: {
-      run: 'bg-blue-200 text-blue-900',
-      step: 'bg-green-200 text-green-900',
-      hook: 'bg-amber-200 text-amber-900',
-      sleep: 'bg-purple-200 text-purple-900',
-      default: 'bg-gray-200 text-gray-900',
-    },
-    errored: {
-      true: 'bg-red-200 text-red-900',
-      false: '',
-    },
-  },
-  defaultVariants: {
-    resourceType: 'default',
-  },
-});
-
-const spanVariants = cva(
-  'relative flex h-5 w-full min-w-0.5 rounded-xs items-center',
-  {
-    variants: {
-      status: {
-        running: 'bg-green-700',
-        failed: 'bg-red-700',
-        succeeded: 'bg-blue-700',
-        retrying: 'bg-amber-700',
-        queued: 'bg-gray-500',
-        waiting: 'bg-gray-700',
-        sleeping: 'bg-amber-700',
-        received: 'bg-blue-700',
-      },
-      errored: {
-        true: 'bg-red-700',
-        false: '',
-      },
-      resourceType: {
-        run: 'bg-blue-700',
-        step: 'bg-green-700',
-        hook: 'bg-amber-700',
-        sleep: 'bg-purple-700',
-        default: 'bg-gray-500',
-      },
-    },
-  }
-);
-
-export const TimelineBar = memo(function TimelineBar({
+const TimelineBar = memo(function TimelineBar({
   span,
   compression,
   isSelected,
   onClick,
 }: {
   span: Span;
-  compression: TimelineCompression;
+  compression: TimeCompression;
   isSelected: boolean;
   onClick: () => void;
 }): ReactNode {
@@ -124,80 +34,147 @@ export const TimelineBar = memo(function TimelineBar({
 
   const leftFrac = compression.toVisual(startTime);
   const rightFrac = compression.toVisual(endTime);
-  const widthFrac = Math.max(rightFrac - leftFrac, 0);
+  const widthFrac = rightFrac - leftFrac;
 
-  const leftPct = clamp(leftFrac * 100, 0, 100);
-  const maxWidthPct = Math.max(100 - leftPct, MIN_BAR_WIDTH_PCT);
-  const widthPct =
-    widthFrac > 0
-      ? clamp(widthFrac * 100, MIN_BAR_WIDTH_PCT, maxWidthPct)
-      : MIN_BAR_WIDTH_PCT;
+  const leftPct = leftFrac * 100;
+  const widthPct = widthFrac * 100;
 
-  const hasQueued =
-    activeStartTime != null &&
-    activeStartTime > startTime &&
-    activeStartTime < endTime;
+  const isErrored = span.status.code === 2;
+  const colors = getResourceColor(span.resource);
+  const barColor = isErrored
+    ? (colors.errorBar ?? 'var(--ds-red-700)')
+    : colors.bar;
+
+  const hasQueued = activeStartTime != null && activeStartTime > startTime;
 
   let queuedBarPct = 0;
   let activeBarPct = 100;
   if (hasQueued && widthFrac > 0) {
     const activeFrac = compression.toVisual(activeStartTime);
-    queuedBarPct = clamp(((activeFrac - leftFrac) / widthFrac) * 100, 0, 100);
+    queuedBarPct = ((activeFrac - leftFrac) / widthFrac) * 100;
     activeBarPct = 100 - queuedBarPct;
   }
 
-  const isErrored = span.status.code === 2;
-  const activeStatus: SegmentStatus = isErrored ? 'failed' : 'running';
-
   return (
-    <TimelineRow isSelected={isSelected} onClick={onClick}>
+    <div
+      className={cn(
+        'h-9 relative flex items-center cursor-pointer transition-[background-color] duration-[120ms] ease-in-out',
+        isSelected ? 'bg-gray-alpha-200' : 'hover:bg-gray-alpha-100'
+      )}
+      onClick={onClick}
+    >
       <div
-        className="absolute top-2 h-5 min-w-0.5"
+        className="absolute h-6 top-1.5 flex items-center rounded-sm"
         style={{
           left: `${leftPct}%`,
-          width: `${widthPct}%`,
+          width: `max(${widthPct}%, 4px)`,
         }}
       >
-        <div className="flex flex-row space-x-0.5 w-full">
-          {hasQueued && queuedBarPct > 0 ? (
-            <Span status="queued" resourceType="default" width={queuedBarPct} />
-          ) : null}
-          <Span
-            status={activeStatus}
-            resourceType={toResourceType(span.resource)}
-            width={activeBarPct}
+        {hasQueued ? (
+          <div className="flex gap-0.5 w-full">
+            <div
+              className="h-4 rounded-[2px]"
+              style={{
+                width: `${queuedBarPct}%`,
+                minWidth: 4,
+                background: QUEUED_BACKGROUND,
+              }}
+            />
+            <div
+              className="h-4 rounded-[2px]"
+              style={{
+                width: `${activeBarPct}%`,
+                minWidth: 4,
+                background: barColor,
+              }}
+            />
+          </div>
+        ) : (
+          <div
+            className="h-4 rounded-[2px]"
+            style={{
+              width: '100%',
+              minWidth: 4,
+              background: barColor,
+            }}
           />
-        </div>
+        )}
       </div>
-    </TimelineRow>
+    </div>
   );
 });
 
-const Span = ({
-  status,
-  resourceType,
-  width,
-}: {
-  status: SegmentStatus;
-  resourceType: ResourceType;
-  width: number;
-}) => {
-  return (
-    <span
-      style={{
-        width: `${clamp(width, 0, 100)}%`,
-      }}
-      className="block h-full"
-    >
-      <span className={cn(spanVariants({ status, resourceType }))} />
-    </span>
-  );
-};
+export { TimelineBar };
 
-export const Timeline = memo(function Timeline({
-  children,
+export function Timeline({
+  spans,
+  viewStart,
+  viewDuration,
+  rootStart,
+  compression,
+  isZoomed,
+  onResetZoom,
+  selectedId,
+  onSelect,
 }: {
-  children: ReactNode;
+  spans: Span[];
+  viewStart: number;
+  viewDuration: number;
+  rootStart: number;
+  compression: TimeCompression;
+  isZoomed: boolean;
+  onResetZoom: () => void;
+  selectedId: string | null;
+  onSelect: (spanId: string) => void;
 }): ReactNode {
-  return <div className="w-full h-full py-2">{children}</div>;
-});
+  const viewEnd = viewStart + viewDuration;
+
+  const markers = useMemo(
+    () =>
+      compression.isCompressed
+        ? computeCompressedTimeMarkers(
+            compression,
+            viewStart,
+            viewEnd,
+            rootStart
+          )
+        : computeTimeMarkers(viewDuration, viewStart - rootStart),
+    [compression, viewStart, viewEnd, viewDuration, rootStart]
+  );
+
+  return (
+    <>
+      <div className="sticky top-0 z-[4] bg-background-100 border-b border-gray-alpha-400 h-8 min-h-8 flex items-end px-4 pb-1">
+        {markers.map((m, i) => (
+          <span
+            key={i}
+            className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap -translate-x-1/2"
+            style={{ left: `${m.position * 100}%` }}
+          >
+            {m.label}
+          </span>
+        ))}
+        {isZoomed && (
+          <button
+            type="button"
+            className="absolute right-2 top-1/2 -translate-y-1/2 z-[5] flex items-center py-0.5 px-2 border border-gray-alpha-400 rounded-md bg-background-100 font-sans text-[11px] font-medium text-gray-900 cursor-pointer whitespace-nowrap transition-[color,border-color] duration-[120ms] ease-in-out hover:text-gray-1000 hover:border-gray-600"
+            onClick={onResetZoom}
+          >
+            Reset zoom
+          </button>
+        )}
+      </div>
+      <div className="relative py-2">
+        {spans.map((span) => (
+          <TimelineBar
+            key={span.spanId}
+            span={span}
+            compression={compression}
+            isSelected={selectedId === span.spanId}
+            onClick={() => onSelect(span.spanId)}
+          />
+        ))}
+      </div>
+    </>
+  );
+}

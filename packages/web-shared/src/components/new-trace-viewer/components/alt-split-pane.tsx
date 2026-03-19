@@ -4,9 +4,9 @@ import {
   Children,
   type Dispatch,
   type KeyboardEvent,
-  type MutableRefObject,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
+  type RefObject,
   type SetStateAction,
   useEffect,
   useRef,
@@ -14,7 +14,8 @@ import {
 } from 'react';
 import { cn } from '../../../lib/utils';
 
-const GUTTER_PX = 3;
+/** Wide enough for comfortable dragging; visual line stays 1px centered. */
+const GUTTER_PX = 9;
 
 export function Divider() {
   return <div aria-hidden className="h-full w-px shrink-0 bg-gray-alpha-400" />;
@@ -32,7 +33,7 @@ function clampRatio(v: number) {
 }
 
 function markUndoBaseline(
-  initialRatioRef: MutableRefObject<number | null>,
+  initialRatioRef: RefObject<number | null>,
   splitRatio: number
 ) {
   if (initialRatioRef.current === null) initialRatioRef.current = splitRatio;
@@ -41,7 +42,7 @@ function markUndoBaseline(
 function handleSplitKeyboard(
   e: KeyboardEvent<HTMLDivElement>,
   splitRatio: number,
-  initialRatioRef: MutableRefObject<number | null>,
+  initialRatioRef: RefObject<number | null>,
   setSplitRatio: Dispatch<SetStateAction<number>>
 ): void {
   const step = e.shiftKey ? 0.1 : 0.02;
@@ -192,12 +193,17 @@ export function SplitPane({
         aria-valuemax={85}
         aria-valuetext={`${ratioPercent}%`}
         tabIndex={0}
-        className="relative z-10 flex shrink-0 cursor-col-resize justify-center outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className={cn(
+          'relative z-20 isolate flex shrink-0 cursor-col-resize justify-center outline-none focus-visible:ring-2 focus-visible:ring-ring'
+        )}
         onPointerDown={handleSplitPointerDown}
         onLostPointerCapture={handleLostPointerCapture}
         onKeyDown={handleSplitKeyDown}
       >
-        <span className="h-full w-px bg-gray-alpha-400" aria-hidden />
+        <span
+          className="pointer-events-none relative z-10 h-full w-px shrink-0 bg-gray-alpha-400"
+          aria-hidden
+        />
       </div>
       {end}
     </div>
