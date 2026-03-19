@@ -91,6 +91,80 @@ export async function POST(req: Request) {
 }
 ```
 
+### List Steps for a Run
+
+List all steps for a workflow run to track progress. Each step includes a `stepName` field with the human-readable function name:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+
+  if (!runId) {
+    return Response.json({ error: "No runId provided" }, { status: 400 });
+  }
+
+  try {
+    const world = getWorld(); // [!code highlight]
+    const steps = await world.steps.list({ runId }); // [!code highlight]
+
+    // Map steps to a progress view using stepName
+    const progress = steps.data.map((step) => ({
+      name: step.stepName, // Human-readable step name // [!code highlight]
+      status: step.status,
+      startedAt: step.startedAt,
+      completedAt: step.completedAt,
+    }));
+
+    return Response.json({ progress, cursor: steps.cursor });
+  } catch (error) {
+    return Response.json(
+      { error: "Failed to list steps" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+### Get a Single Step
+
+Retrieve details for a specific step by its ID:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+  const stepId = url.searchParams.get("stepId");
+
+  if (!runId || !stepId) {
+    return Response.json({ error: "runId and stepId required" }, { status: 400 });
+  }
+
+  try {
+    const world = getWorld(); // [!code highlight]
+    const step = await world.steps.get(runId, stepId); // [!code highlight]
+
+    return Response.json({
+      stepId: step.stepId,
+      stepName: step.stepName, // [!code highlight]
+      status: step.status,
+      attempt: step.attempt,
+      input: step.input,
+      output: step.output,
+    });
+  } catch (error) {
+    return Response.json(
+      { error: "Step not found" },
+      { status: 404 }
+    );
+  }
+}
+```
+
 ## Related Functions
 
 - [`getRun()`](/docs/api-reference/workflow-api/get-run) - Higher-level API for working with individual runs by ID.

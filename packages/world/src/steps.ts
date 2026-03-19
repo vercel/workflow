@@ -27,6 +27,15 @@ export const StepStatusSchema = z.enum([
 export const StepSchema = z.object({
   runId: z.string(),
   stepId: z.string(),
+  /**
+   * The human-readable name of the step function.
+   *
+   * This is the display name derived from the step function's name in your code.
+   * Use this field to show user-friendly step names in progress UIs or dashboards
+   * instead of the internal `stepId`.
+   *
+   * @example "fetchUserData", "processPayment", "sendNotification"
+   */
   stepName: z.string(),
   status: StepStatusSchema,
   input: SerializedDataSchema,
