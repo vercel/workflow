@@ -73,7 +73,14 @@ const compilerOptions: ts.CompilerOptions = {
     'workflow/errors': [
       path.join(repoRoot, 'packages/workflow/dist/internal/errors'),
     ],
+    'workflow/observability': [
+      path.join(repoRoot, 'packages/workflow/dist/observability'),
+    ],
     '@workflow/core': [path.join(repoRoot, 'packages/core/dist/index')],
+    '@workflow/core/serialization-format': [
+      path.join(repoRoot, 'packages/core/dist/serialization-format'),
+    ],
+    '@workflow/utils': [path.join(repoRoot, 'packages/utils/dist/index')],
     '@workflow/ai': [path.join(repoRoot, 'packages/ai/dist/index')],
     '@workflow/ai/agent': [
       path.join(repoRoot, 'packages/ai/dist/agent/durable-agent'),

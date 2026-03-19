@@ -24,6 +24,7 @@ Documentation structure in `node_modules/workflow/docs/`:
 - `foundations/` - Core concepts (workflows-and-steps.mdx, hooks.mdx, streaming.mdx, etc.)
 - `api-reference/workflow/` - API docs (sleep.mdx, create-hook.mdx, fatal-error.mdx, etc.)
 - `api-reference/workflow-api/` - Client API (start.mdx, get-run.mdx, resume-hook.mdx, etc.)
+- `api-reference/workflow-api/world/` - World SDK (runs.mdx, steps.mdx, hooks.mdx, events.mdx, streams.mdx, queue.mdx, observability.mdx)
 - `ai/` - AI SDK integration docs
 - `errors/` - Error code documentation
 
@@ -59,6 +60,9 @@ import { getWorkflowMetadata, getStepMetadata } from "workflow";
 
 // API operations
 import { start, getRun, resumeHook, resumeWebhook } from "workflow/api";
+
+// Observability & data hydration
+import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowName } from "workflow/observability";
 
 // Framework integrations
 import { withWorkflow } from "workflow/next";
@@ -553,3 +557,65 @@ await resumeWebhook(hook.token, new Request("https://example.com/webhook", {
 - Use deterministic hook tokens based on test data for easier resumption
 - Set generous `testTimeout` — workflows may run longer than typical unit tests
 - `vi.mock()` does **not** work in integration tests — step dependencies are bundled by esbuild
+
+## Observability & Data Hydration
+
+Use the World SDK to build observability dashboards and inspect workflow state. Key docs:
+
+- `api-reference/workflow-api/world/runs.mdx` — list/filter runs, pagination, status checks
+- `api-reference/workflow-api/world/steps.mdx` — step I/O inspection, duration calculation
+- `api-reference/workflow-api/world/observability.mdx` — hydration, name parsing, encryption
+
+**Grep hints for finding observability patterns:**
+```bash
+grep -r "world.runs" node_modules/workflow/docs/
+grep -r "world.steps" node_modules/workflow/docs/
+grep -r "hydrateResourceIO" node_modules/workflow/docs/
+grep -r "parseStepName" node_modules/workflow/docs/
+grep -r "workflow/observability" node_modules/workflow/docs/
+```
+
+**Key imports for observability:**
+```typescript
+import { getWorld } from "workflow/runtime";
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability";
+import { parseStepName, parseWorkflowName } from "workflow/observability";
+```
+
+Step I/O is serialized via devalue format — always hydrate before displaying:
+```typescript
+const step = await world.steps.get(runId, stepId);
+const hydrated = hydrateResourceIO(step, observabilityRevivers);
+// hydrated.input and hydrated.output are now plain objects
+```
+
+For encrypted workflows, use `getEncryptionKeyForRun()` + `hydrateResourceIOWithKey()`.
+
+## Error Handling Patterns
+
+Three error strategies for different failure modes:
+
+| Error Type | Use When | Behavior |
+|------------|----------|----------|
+| `FatalError` | Permanent failure (bad input, auth denied) | Terminates workflow immediately, no retry |
+| `RetryableError` | Transient failure (rate limit, timeout) | Retries with optional `retryAfter` delay |
+| `Promise.allSettled` | Parallel steps with mixed criticality | Continues even if some steps fail |
+
+```typescript
+import { FatalError, RetryableError } from "workflow";
+
+// Permanent failure — workflow terminates
+throw new FatalError("Invalid input: missing required field");
+
+// Transient failure — will retry
+throw new RetryableError("API rate limited", { retryAfter: "5m" });
+
+// Mixed criticality parallel execution
+const results = await Promise.allSettled([
+  criticalStep(data),    // Must succeed
+  optionalStep(data),    // OK to fail
+  enrichmentStep(data),  // OK to fail
+]);
+const [critical, optional, enrichment] = results;
+if (critical.status === "rejected") throw new FatalError(critical.reason);
+```

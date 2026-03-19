@@ -1,0 +1,135 @@
+---
+title: world.streams
+description: Read, write, and manage real-time data streams for workflow runs.
+type: reference
+summary: "Methods: writeToStream(), readFromStream(), closeStream(), listStreamsByRunId(). Real-time streaming via the Streamer interface."
+prerequisites:
+  - /docs/api-reference/workflow-api/get-world
+related:
+  - /docs/foundations/streaming
+  - /docs/api-reference/workflow/get-writable
+---
+
+The `world.streams` interface (via the `Streamer` interface) provides low-level access to workflow data streams. Use it to write chunks, read streams, and manage stream lifecycle outside of the standard `getWritable()` pattern.
+
+<Callout type="info">
+  For most streaming use cases, use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside steps. The `world.streams` interface is for advanced scenarios like building custom stream consumers or managing streams from outside a workflow.
+</Callout>
+
+## Import
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+const streams = world.streams; // [!code highlight]
+```
+
+## Methods
+
+### writeToStream()
+
+Write data chunks to a stream.
+
+```typescript lineNumbers
+await world.streams.writeToStream(streamId, chunk); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `streamId` | `string` | The stream identifier |
+| `chunk` | `any` | Data to write to the stream |
+
+### readFromStream()
+
+Read data from a stream.
+
+```typescript lineNumbers
+const data = await world.streams.readFromStream(streamId); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `streamId` | `string` | The stream identifier |
+
+### closeStream()
+
+Close a stream when done writing.
+
+```typescript lineNumbers
+await world.streams.closeStream(streamId); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `streamId` | `string` | The stream identifier |
+
+### listStreamsByRunId()
+
+List all streams associated with a workflow run.
+
+```typescript lineNumbers
+const streams = await world.streams.listStreamsByRunId(runId); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string` | The workflow run ID |
+
+**Returns:** List of stream metadata
+
+## Examples
+
+### List All Streams for a Workflow Run
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+
+  if (!runId) {
+    return Response.json({ error: "runId required" }, { status: 400 });
+  }
+
+  const world = getWorld();
+  const streams = await world.streams.listStreamsByRunId(runId); // [!code highlight]
+
+  return Response.json(streams);
+}
+```
+
+### Read Stream Data from a Client
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const streamId = url.searchParams.get("streamId");
+
+  if (!streamId) {
+    return Response.json({ error: "streamId required" }, { status: 400 });
+  }
+
+  const world = getWorld();
+  const data = await world.streams.readFromStream(streamId); // [!code highlight]
+
+  return Response.json(data);
+}
+```
+
+## Related
+
+- [Streaming](/docs/foundations/streaming) — Core concepts for streaming data from workflows
+- [getWritable()](/docs/api-reference/workflow/get-writable) — The standard way to write to streams from within steps
+- [world.runs](/docs/api-reference/workflow-api/world/runs) — List runs that may have associated streams
