@@ -37,6 +37,7 @@ import {
   getCustomSpanEventClassName,
 } from './workflow-traces/trace-colors';
 import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
+import { NewTraceViewer } from './new-trace-viewer/trace-viewer';
 
 /**
  * While a run is live, continuously grow root.duration and rescale so the
@@ -966,6 +967,7 @@ export const WorkflowTraceViewer = ({
 
   return (
     <div className="relative w-full h-full flex">
+      <NewTraceViewer trace={trace} />
       {/* Timeline (takes remaining space) */}
       <div className="flex-1 min-w-0 relative">
         <TraceViewerContextProvider
