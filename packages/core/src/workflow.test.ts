@@ -895,7 +895,7 @@ describe('runWorkflow', () => {
   });
 
   describe('error handling', () => {
-    it('should throw ReferenceError when workflow code does not return a function', async () => {
+    it('should throw WorkflowRuntimeError when workflow function is not found', async () => {
       let error: Error | undefined;
       try {
         const ops: Promise<any>[] = [];
@@ -927,9 +927,9 @@ describe('runWorkflow', () => {
         error = err as Error;
       }
       assert(error);
-      expect(error.name).toEqual('ReferenceError');
+      expect(error.name).toEqual('WorkflowRuntimeError');
       expect(error.message).toEqual(
-        'Workflow "value" must be a function, but got "undefined" instead'
+        'Workflow "value" not found. This usually means the workflow was removed or renamed in a newer deployment while the run was in progress.'
       );
     });
 

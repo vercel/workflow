@@ -704,10 +704,14 @@ export async function runWorkflow(
     );
 
     if (typeof workflowFn !== 'function') {
-      throw new ReferenceError(
+      // Use WorkflowRuntimeError so this is caught and properly fails the run
+      // rather than bubbling up to the queue for infinite retries.
+      // A missing workflow function indicates a code deployment mismatch that
+      // retries won't fix.
+      throw new WorkflowRuntimeError(
         `Workflow ${JSON.stringify(
           workflowRun.workflowName
-        )} must be a function, but got "${typeof workflowFn}" instead`
+        )} not found. This usually means the workflow was removed or renamed in a newer deployment while the run was in progress.`
       );
     }
 

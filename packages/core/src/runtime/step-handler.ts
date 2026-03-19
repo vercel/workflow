@@ -3,11 +3,12 @@ import {
   EntityConflictError,
   FatalError,
   RetryableError,
+  RUN_ERROR_CODES,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
-  WorkflowWorldError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
@@ -96,14 +97,56 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...getQueueOverhead({ requestedAt }),
           });
 
+          // Validate step function exists before attempting to start it.
+          // A missing step function indicates a code deployment mismatch that
+          // retries won't fix, so we fail the run immediately.
           const stepFn = getStepFunction(stepName);
-          if (!stepFn) {
-            throw new Error(`Step "${stepName}" not found`);
-          }
-          if (typeof stepFn !== 'function') {
-            throw new Error(
-              `Step "${stepName}" is not a function (got ${typeof stepFn})`
-            );
+          if (!stepFn || typeof stepFn !== 'function') {
+            const errorMessage = !stepFn
+              ? `Step "${stepName}" not found. This usually means the step was removed or renamed in a newer deployment while the run was in progress.`
+              : `Step "${stepName}" is not a function (got ${typeof stepFn})`;
+
+            runtimeLogger.error('Fatal step lookup error, failing run', {
+              workflowRunId,
+              stepName,
+              error: errorMessage,
+            });
+
+            // Fail the run via event - this is a fatal condition that retries won't fix
+            try {
+              await world.events.create(
+                workflowRunId,
+                {
+                  eventType: 'run_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  eventData: {
+                    error: {
+                      message: errorMessage,
+                      stack: new Error(errorMessage).stack,
+                    },
+                    errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+                  },
+                },
+                { requestId }
+              );
+            } catch (failErr) {
+              if (
+                EntityConflictError.is(failErr) ||
+                RunExpiredError.is(failErr)
+              ) {
+                runtimeLogger.info(
+                  'Tried failing run for missing step, but run has already finished.',
+                  {
+                    workflowRunId,
+                    stepName,
+                    message: failErr.message,
+                  }
+                );
+                return;
+              }
+              throw failErr;
+            }
+            return;
           }
 
           const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
