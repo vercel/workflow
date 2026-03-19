@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 import type { Trace } from '../trace-viewer/types';
+import { getHighResInMs } from '../trace-viewer/util/timing';
 import { SplitPane } from './components/split-pane';
 import EventList from './components/event-list';
 import { Timeline } from './components/timeline';
@@ -85,6 +86,53 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const resetZoom = useCallback(() => {
     setViewport({ start: root.startTime, end: root.startTime + root.duration });
   }, [root.startTime, root.duration]);
+
+  const handleSelectSpan = useCallback(
+    (spanId: string) => {
+      setActiveSpan(spanId);
+
+      const span = trace.spans.find((s) => s.spanId === spanId);
+      if (!span) return;
+
+      const spanStart = getHighResInMs(span.startTime);
+      const spanEnd = getHighResInMs(span.endTime);
+      const spanDuration = spanEnd - spanStart;
+
+      const rootS = root.startTime;
+      const rootE = root.startTime + root.duration;
+      const rootD = root.duration;
+
+      if (spanDuration > rootD * 0.8) {
+        setViewport({ start: rootS, end: rootE });
+        return;
+      }
+
+      const padding = Math.max(spanDuration * 0.2, rootD / MAX_ZOOM / 2);
+      let newStart = spanStart - padding;
+      let newEnd = spanEnd + padding;
+
+      const minViewport = Math.max(10, rootD / MAX_ZOOM);
+      if (newEnd - newStart < minViewport) {
+        const center = (spanStart + spanEnd) / 2;
+        newStart = center - minViewport / 2;
+        newEnd = center + minViewport / 2;
+      }
+
+      if (newStart < rootS) {
+        const duration = newEnd - newStart;
+        newStart = rootS;
+        newEnd = Math.min(rootE, rootS + duration);
+      }
+      if (newEnd > rootE) {
+        const duration = newEnd - newStart;
+        newEnd = rootE;
+        newStart = Math.max(rootS, rootE - duration);
+      }
+
+      setViewport({ start: newStart, end: newEnd });
+    },
+    [setActiveSpan, trace.spans, root.startTime, root.duration]
+  );
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
@@ -202,7 +250,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             <EventList
               spans={trace.spans}
               activeSpanId={activeSpanId}
-              onSelectSpan={setActiveSpan}
+              onSelectSpan={handleSelectSpan}
             />
           </div>
           <div
@@ -219,7 +267,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               isZoomed={isZoomed}
               onResetZoom={resetZoom}
               selectedId={activeSpanId}
-              onSelect={setActiveSpan}
+              onSelect={handleSelectSpan}
             />
           </div>
         </SplitPane>
