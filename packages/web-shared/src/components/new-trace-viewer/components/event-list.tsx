@@ -42,7 +42,8 @@ const EventRow = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   const durationMs = getHighResInMs(span.duration);
-  const isErrored = span.attributes.data.status === 'failed';
+  const isErrored =
+    (span.attributes.data as Record<string, unknown>).status === 'failed';
   console.log(span);
 
   return (
