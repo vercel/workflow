@@ -3,7 +3,6 @@ import {
   EntityConflictError,
   FatalError,
   RetryableError,
-  RUN_ERROR_CODES,
   RunExpiredError,
   ThrottleError,
   TooEarlyError,
@@ -97,65 +96,15 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...getQueueOverhead({ requestedAt }),
           });
 
-          // Validate step function exists before attempting to start it.
-          // A missing step function indicates a code deployment mismatch that
-          // retries won't fix, so we fail the run immediately.
+          // Note: Step function validation happens after step_started so we can
+          // properly fail the step (not the run) if the function is missing.
+          // This allows the workflow to handle the step failure gracefully.
           const stepFn = getStepFunction(stepName);
-          if (!stepFn || typeof stepFn !== 'function') {
-            const errorMessage = !stepFn
-              ? `Step "${stepName}" not found. This usually means the step was removed or renamed in a newer deployment while the run was in progress.`
-              : `Step "${stepName}" is not a function (got ${typeof stepFn})`;
-
-            runtimeLogger.error('Fatal step lookup error, failing run', {
-              workflowRunId,
-              stepName,
-              error: errorMessage,
-            });
-
-            // Fail the run via event - this is a fatal condition that retries won't fix
-            try {
-              await world.events.create(
-                workflowRunId,
-                {
-                  eventType: 'run_failed',
-                  specVersion: SPEC_VERSION_CURRENT,
-                  eventData: {
-                    error: {
-                      message: errorMessage,
-                      stack: new Error(errorMessage).stack,
-                    },
-                    errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
-                  },
-                },
-                { requestId }
-              );
-            } catch (failErr) {
-              if (
-                EntityConflictError.is(failErr) ||
-                RunExpiredError.is(failErr)
-              ) {
-                runtimeLogger.info(
-                  'Tried failing run for missing step, but run has already finished.',
-                  {
-                    workflowRunId,
-                    stepName,
-                    message: failErr.message,
-                  }
-                );
-                return;
-              }
-              throw failErr;
-            }
-            return;
-          }
-
-          const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
 
           span?.setAttributes({
             ...Attribute.WorkflowName(workflowName),
             ...Attribute.WorkflowRunId(workflowRunId),
             ...Attribute.StepId(stepId),
-            ...Attribute.StepMaxRetries(maxRetries),
             ...Attribute.StepTracePropagated(!!traceContext),
           });
 
@@ -267,6 +216,77 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
           span?.setAttributes({
             ...Attribute.StepStatus(step.status),
+          });
+
+          // Validate step function exists AFTER step_started so we can
+          // properly fail the step (not the run) if the function is missing.
+          // This allows the workflow to handle the step failure gracefully,
+          // similar to how FatalError is handled.
+          if (!stepFn || typeof stepFn !== 'function') {
+            const errorMessage = !stepFn
+              ? `Step "${stepName}" not found. This usually means the step was removed or renamed in a newer deployment while the run was in progress.`
+              : `Step "${stepName}" is not a function (got ${typeof stepFn})`;
+
+            runtimeLogger.error(
+              'Step function not found, failing step (not run)',
+              {
+                workflowRunId,
+                stepName,
+                stepId,
+                error: errorMessage,
+              }
+            );
+
+            // Fail the step via event (event-sourced architecture)
+            // This matches the FatalError pattern - fail the step and re-queue workflow
+            try {
+              await world.events.create(
+                workflowRunId,
+                {
+                  eventType: 'step_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                  eventData: {
+                    error: errorMessage,
+                    stack: new Error(errorMessage).stack,
+                  },
+                },
+                { requestId }
+              );
+            } catch (stepFailErr) {
+              if (EntityConflictError.is(stepFailErr)) {
+                runtimeLogger.info(
+                  'Tried failing step for missing function, but step has already finished.',
+                  {
+                    workflowRunId,
+                    stepId,
+                    stepName,
+                    message: stepFailErr.message,
+                  }
+                );
+                return;
+              }
+              throw stepFailErr;
+            }
+
+            span?.setAttributes({
+              ...Attribute.StepStatus('failed'),
+              ...Attribute.StepFatalError(true),
+            });
+
+            // Re-invoke the workflow to handle the failed step
+            await queueMessage(world, getWorkflowQueueName(workflowName), {
+              runId: workflowRunId,
+              traceCarrier: await serializeTraceCarrier(),
+              requestedAt: new Date(),
+            });
+            return;
+          }
+
+          const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+
+          span?.setAttributes({
+            ...Attribute.StepMaxRetries(maxRetries),
           });
 
           let result: unknown;
