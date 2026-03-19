@@ -1,5 +1,20 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.46
+
+### Patch Changes
+
+- [#1417](https://github.com/vercel/workflow/pull/1417) [`02ea057`](https://github.com/vercel/workflow/commit/02ea0574422b342e6a467de073e003b73e099830) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Remove the unused world-local queue executor API and clean up postgres queue tests.
+
+- [#1417](https://github.com/vercel/workflow/pull/1417) [`02ea057`](https://github.com/vercel/workflow/commit/02ea0574422b342e6a467de073e003b73e099830) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix world-postgres queue execution to use workflow HTTP routes instead of in-process handlers.
+
+- [#1364](https://github.com/vercel/workflow/pull/1364) [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Strip only ref/payload fields from eventData when resolveData is 'none', preserving all other metadata
+
+- Updated dependencies [[`02ea057`](https://github.com/vercel/workflow/commit/02ea0574422b342e6a467de073e003b73e099830), [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a), [`0f07403`](https://github.com/vercel/workflow/commit/0f074030a408078e7db0ae0e494f64125d7444e4), [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08)]:
+  - @workflow/world-local@4.1.0-beta.44
+  - @workflow/world@4.1.0-beta.13
+  - @workflow/errors@4.1.0-beta.18
+
 ## 4.1.0-beta.45
 
 ### Patch Changes

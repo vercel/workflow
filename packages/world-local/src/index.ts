@@ -114,6 +114,10 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
             );
           })
         );
+        // Clean up lock files used for atomic terminal-state guards
+        await fs
+          .rm(path.join(basedir, '.locks'), { recursive: true, force: true })
+          .catch(() => {});
         // Delete tagged stream chunks (.{tag}.bin files)
         const chunksDir = path.join(basedir, 'streams', 'chunks');
         const taggedBinFiles = await listTaggedFilesByExtension(

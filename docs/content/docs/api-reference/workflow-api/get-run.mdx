@@ -144,6 +144,8 @@ export async function POST(req: Request) {
 You can also target specific sleep calls by correlation ID:
 
 ```typescript lineNumbers
+import { getRun } from "workflow/api";
+
 const run = getRun("my-run-id"); // @setup
 const { stoppedCount } = await run.wakeUp({
   correlationIds: ["wait_abc123"],

@@ -102,6 +102,11 @@ export const WorkflowErrorMessage = SemanticConvention<string>(
   'workflow.error.message'
 );
 
+/** Error classification code (USER_ERROR, RUNTIME_ERROR, etc.) */
+export const WorkflowErrorCode = SemanticConvention<string>(
+  'workflow.error.code'
+);
+
 /** Number of steps created during workflow execution */
 export const WorkflowStepsCreated = SemanticConvention<number>(
   'workflow.steps.created'

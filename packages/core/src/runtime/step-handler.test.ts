@@ -1,4 +1,4 @@
-import { WorkflowAPIError } from '@workflow/errors';
+import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Use vi.hoisted so these are available in mock factories
@@ -248,9 +248,8 @@ describe('step-handler 409 handling', () => {
           if (event.eventType === 'step_completed') {
             callCount++;
             return Promise.reject(
-              new WorkflowAPIError(
-                'Cannot complete step because it is already completed',
-                { status: 409 }
+              new EntityConflictError(
+                'Cannot complete step because it is already completed'
               )
             );
           }
@@ -300,9 +299,8 @@ describe('step-handler 409 handling', () => {
           }
           if (event.eventType === 'step_failed') {
             return Promise.reject(
-              new WorkflowAPIError(
-                'Cannot fail step because it is already completed',
-                { status: 409 }
+              new EntityConflictError(
+                'Cannot fail step because it is already completed'
               )
             );
           }
@@ -347,9 +345,8 @@ describe('step-handler 409 handling', () => {
           }
           if (event.eventType === 'step_failed') {
             return Promise.reject(
-              new WorkflowAPIError(
-                'Cannot fail step because it is already completed',
-                { status: 409 }
+              new EntityConflictError(
+                'Cannot fail step because it is already completed'
               )
             );
           }
@@ -397,9 +394,8 @@ describe('step-handler 409 handling', () => {
           }
           if (event.eventType === 'step_retrying') {
             return Promise.reject(
-              new WorkflowAPIError(
-                'Cannot retry step because it is already completed',
-                { status: 409 }
+              new EntityConflictError(
+                'Cannot retry step because it is already completed'
               )
             );
           }
@@ -441,7 +437,7 @@ describe('step-handler 409 handling', () => {
           }
           if (event.eventType === 'step_retrying') {
             return Promise.reject(
-              new WorkflowAPIError('Internal Server Error', { status: 500 })
+              new WorkflowWorldError('Internal Server Error', { status: 500 })
             );
           }
           return Promise.resolve({ event: {} });

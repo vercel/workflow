@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { WorkflowAPIError } from '@workflow/errors';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { Event, Storage } from '@workflow/world';
 import {
   DEFAULT_TIMESTAMP_THRESHOLD_MS,
@@ -12,9 +12,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
 import { createStorage } from './storage.js';
 import {
+  completeWait,
   createHook,
   createRun,
   createStep,
+  createWait,
   disposeHook,
   updateRun,
   updateStep,
@@ -1846,6 +1848,112 @@ describe('Storage', () => {
     });
   });
 
+  describe('concurrent terminal state races', () => {
+    let testRunId: string;
+
+    beforeEach(async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+      await updateRun(storage, testRunId, 'run_started');
+    });
+
+    it('should reject concurrent step_completed for the same step', async () => {
+      await createStep(storage, testRunId, {
+        stepId: 'step_race_1',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(storage, testRunId, 'step_race_1', 'step_started');
+
+      const results = await Promise.allSettled([
+        updateStep(storage, testRunId, 'step_race_1', 'step_completed', {
+          result: new Uint8Array([1]),
+        }),
+        updateStep(storage, testRunId, 'step_race_1', 'step_completed', {
+          result: new Uint8Array([2]),
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+    });
+
+    it('should reject concurrent step_failed for the same step', async () => {
+      await createStep(storage, testRunId, {
+        stepId: 'step_race_2',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(storage, testRunId, 'step_race_2', 'step_started');
+
+      const results = await Promise.allSettled([
+        updateStep(storage, testRunId, 'step_race_2', 'step_failed', {
+          error: 'err1',
+        }),
+        updateStep(storage, testRunId, 'step_race_2', 'step_failed', {
+          error: 'err2',
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+    });
+
+    it('should reject step_started after concurrent step_completed', async () => {
+      await createStep(storage, testRunId, {
+        stepId: 'step_race_3',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(storage, testRunId, 'step_race_3', 'step_started');
+      await updateStep(storage, testRunId, 'step_race_3', 'step_completed', {
+        result: new Uint8Array([1]),
+      });
+
+      // step_started on a completed step should be rejected
+      await expect(
+        updateStep(storage, testRunId, 'step_race_3', 'step_started')
+      ).rejects.toThrow(/terminal/i);
+    });
+
+    it('should reject concurrent wait_completed for the same wait', async () => {
+      await createWait(storage, testRunId, {
+        waitId: 'wait_race_1',
+        resumeAt: new Date('2099-01-01'),
+      });
+
+      const results = await Promise.allSettled([
+        completeWait(storage, testRunId, 'wait_race_1'),
+        completeWait(storage, testRunId, 'wait_race_1'),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+    });
+  });
+
   describe('run terminal state validation', () => {
     describe('completed run', () => {
       it('should reject run_started on completed run', async () => {
@@ -2718,7 +2826,7 @@ describe('Storage', () => {
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
@@ -2731,7 +2839,7 @@ describe('Storage', () => {
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
@@ -2741,7 +2849,7 @@ describe('Storage', () => {
     it('should reject a runId that is not a valid ULID', async () => {
       await expect(
         storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)

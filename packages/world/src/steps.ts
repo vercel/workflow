@@ -27,6 +27,26 @@ export const StepStatusSchema = z.enum([
 export const StepSchema = z.object({
   runId: z.string(),
   stepId: z.string(),
+  /**
+   * The machine-readable name of the step function.
+   *
+   * This field contains a structured identifier like `step//./src/workflows/order//processPayment`
+   * that encodes the step's module specifier and function name.
+   *
+   * Use `parseStepName()` from `@workflow/utils/parse-name` to extract:
+   * - `shortName`: User-friendly display name (e.g., `"processPayment"`)
+   * - `moduleSpecifier`: The module path or package (e.g., `"./src/workflows/order"`)
+   * - `functionName`: The full function path (e.g., `"processPayment"` or `"outer/nested"`)
+   *
+   * @example
+   * ```ts
+   * import { parseStepName } from "@workflow/utils/parse-name";
+   *
+   * const parsed = parseStepName(step.stepName);
+   * // parsed.shortName → "processPayment"
+   * // parsed.moduleSpecifier → "./src/workflows/order"
+   * ```
+   */
   stepName: z.string(),
   status: StepStatusSchema,
   input: SerializedDataSchema,

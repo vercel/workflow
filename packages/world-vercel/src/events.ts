@@ -1,4 +1,4 @@
-import { WorkflowAPIError } from '@workflow/errors';
+import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   type CreateEventParams,
@@ -101,6 +101,7 @@ const eventDataRefFieldMap: Record<string, string> = {
   step_failed: 'error',
   step_retrying: 'error',
   hook_created: 'metadata',
+  hook_received: 'payload',
 };
 
 // Events where the client uses the response entity data need 'resolve' (default).
@@ -260,7 +261,7 @@ export async function getEvent(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v3/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}${queryString ? `?${queryString}` : ''}`;
 
   const event = await makeRequest({
     endpoint,
@@ -306,7 +307,7 @@ export async function getWorkflowRunEvents(
   const query = queryString ? `?${queryString}` : '';
   const endpoint = correlationId
     ? `/v2/events${query}`
-    : `/v2/runs/${encodeURIComponent(runId!)}/events${query}`;
+    : `/v3/runs/${encodeURIComponent(runId!)}/events${query}`;
 
   let refResolveConcurrency: number | undefined;
   const response = (await makeRequest({
@@ -364,7 +365,39 @@ export async function getWorkflowRunEvents(
   };
 }
 
+// Event types that require the hook to already exist — a 404 on these
+// means the hook was already disposed or never created.
+const hookEventsRequiringExistence = new Set([
+  'hook_disposed',
+  'hook_received',
+]);
+
 export async function createWorkflowRunEvent(
+  id: string | null,
+  data: AnyEventRequest,
+  params?: CreateEventParams,
+  config?: APIConfig
+): Promise<EventResult> {
+  try {
+    return await createWorkflowRunEventInner(id, data, params, config);
+  } catch (err) {
+    // Translate 404 to HookNotFoundError for hook-related events.
+    // makeRequest() throws a generic WorkflowWorldError for all 404s;
+    // on the hook_disposed / hook_received path a 404 means the hook
+    // was already disposed or never created.
+    if (
+      hookEventsRequiringExistence.has(data.eventType) &&
+      WorkflowWorldError.is(err) &&
+      err.status === 404 &&
+      data.correlationId
+    ) {
+      throw new HookNotFoundError(data.correlationId);
+    }
+    throw err;
+  }
+}
+
+async function createWorkflowRunEventInner(
   id: string | null,
   data: AnyEventRequest,
   params?: CreateEventParams,
@@ -396,7 +429,7 @@ export async function createWorkflowRunEvent(
   if (data.eventType === 'run_created' && id) {
     const validationError = validateUlidTimestamp(id, 'wrun_');
     if (validationError) {
-      throw new WorkflowAPIError(validationError, { status: 400 });
+      throw new WorkflowWorldError(validationError, { status: 400 });
     }
   }
 
@@ -412,7 +445,7 @@ export async function createWorkflowRunEvent(
   // the server returns lazy refs (error may be a string or undefined).
   if (remoteRefBehavior === 'resolve') {
     const wireResult = await makeRequest({
-      endpoint: `/v2/runs/${runIdPath}/events`,
+      endpoint: `/v3/runs/${runIdPath}/events`,
       options: { method: 'POST' },
       data: {
         ...data,
@@ -432,7 +465,7 @@ export async function createWorkflowRunEvent(
   }
 
   const wireResult = await makeRequest({
-    endpoint: `/v2/runs/${runIdPath}/events`,
+    endpoint: `/v3/runs/${runIdPath}/events`,
     options: { method: 'POST' },
     data: {
       ...data,

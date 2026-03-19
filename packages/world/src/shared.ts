@@ -53,7 +53,7 @@ export type ResolveData = 'none' | 'all';
 export const StructuredErrorSchema = z.object({
   message: z.string(),
   stack: z.string().optional(),
-  code: z.string().optional(), // TODO: currently unused. make this an enum maybe
+  code: z.string().optional(), // Populated with RunErrorCode values (USER_ERROR, RUNTIME_ERROR) for run_failed events
 });
 
 export type StructuredError = z.infer<typeof StructuredErrorSchema>;

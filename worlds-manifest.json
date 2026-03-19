@@ -8,7 +8,8 @@
       "description": "Zero-config world bundled with Workflow for local development. No external services required.",
       "docs": "/docs/deploying/world/local-world",
       "env": {},
-      "services": []
+      "services": [],
+      "features": []
     },
     {
       "id": "postgres",
@@ -18,6 +19,7 @@
       "description": "Production-ready, self-hosted world using PostgreSQL for durable storage and graphile-worker for reliable job processing.",
       "docs": "/docs/deploying/world/postgres-world",
       "example": "https://github.com/vercel/workflow-examples/tree/main/postgres",
+      "features": [],
       "env": {
         "WORKFLOW_TARGET_WORLD": "@workflow/world-postgres",
         "WORKFLOW_POSTGRES_URL": "postgres://world:world@localhost:5432/world"
@@ -49,6 +51,7 @@
       "name": "Vercel",
       "description": "Fully-managed world for Vercel deployments. Zero config, infinitely scalable, built-in authentication.",
       "docs": "/docs/deploying/world/vercel-world",
+      "features": ["encryption"],
       "env": {
         "WORKFLOW_VERCEL_ENV": "production"
       },
@@ -63,6 +66,7 @@
       "description": "Turso/libSQL World for embedded or remote SQLite databases",
       "repository": "https://github.com/mizzle-dev/workflow-worlds",
       "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/turso",
+      "features": [],
       "env": {
         "WORKFLOW_TARGET_WORLD": "@workflow-worlds/turso",
         "WORKFLOW_TURSO_DATABASE_URL": "file:workflow.db"
@@ -78,6 +82,7 @@
       "description": "MongoDB World using native driver",
       "repository": "https://github.com/mizzle-dev/workflow-worlds",
       "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/mongodb",
+      "features": [],
       "env": {
         "WORKFLOW_TARGET_WORLD": "@workflow-worlds/mongodb",
         "WORKFLOW_MONGODB_URI": "mongodb://localhost:27017",
@@ -105,6 +110,7 @@
       "description": "Redis World using BullMQ for queues, Redis Streams for output",
       "repository": "https://github.com/mizzle-dev/workflow-worlds",
       "docs": "https://github.com/mizzle-dev/workflow-worlds/tree/main/packages/redis",
+      "features": [],
       "env": {
         "WORKFLOW_TARGET_WORLD": "@workflow-worlds/redis",
         "WORKFLOW_REDIS_URI": "redis://localhost:6379"
@@ -131,6 +137,7 @@
       "description": "Jazz Cloud world for local-first sync and real-time collaboration",
       "repository": "https://github.com/garden-co/workflow-world-jazz",
       "docs": "https://github.com/garden-co/workflow-world-jazz",
+      "features": [],
       "env": {
         "WORKFLOW_TARGET_WORLD": "workflow-world-jazz"
       },

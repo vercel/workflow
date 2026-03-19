@@ -1,5 +1,5 @@
 export {
-  WorkflowAPIError,
+  WorkflowWorldError,
   WorkflowError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
