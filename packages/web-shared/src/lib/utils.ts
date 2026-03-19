@@ -54,7 +54,7 @@ export function formatDuration(ms: number, compact = false): string {
     if (ms < MS_IN_HOUR) {
       return `${durationFormatter.format(ms / MS_IN_MINUTE)}m`;
     }
-    return `${durationFormatter.format(ms / MS_IN_HOUR)}h`;
+    return `${Math.round(ms / MS_IN_HOUR)}h`;
   }
 
   // Full format: human-readable multi-part
