@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
+import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import type { Hook, Step, WorkflowRun } from '@workflow/world';
 import { encode } from 'cbor-x';
 import postgres from 'postgres';
@@ -1881,6 +1882,45 @@ describe('Storage (Postgres integration)', () => {
         error: undefined,
       });
       expect(result.step?.startedAt).toEqual(started1.startedAt);
+    });
+
+    it('throws WorkflowWorldError when step_deferred targets a missing step', async () => {
+      await expect(
+        events.create(testRunId, {
+          eventType: 'step_deferred',
+          correlationId: 'step_missing_deferred',
+          eventData: {
+            retryAfter: new Date(Date.now() + 5_000),
+          },
+        })
+      ).rejects.toBeInstanceOf(WorkflowWorldError);
+    });
+
+    it('throws EntityConflictError when step_deferred targets a terminal step', async () => {
+      await createStep(events, testRunId, {
+        stepId: 'step_deferred_terminal',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(
+        events,
+        testRunId,
+        'step_deferred_terminal',
+        'step_failed',
+        {
+          error: 'already failed',
+        }
+      );
+
+      await expect(
+        events.create(testRunId, {
+          eventType: 'step_deferred',
+          correlationId: 'step_deferred_terminal',
+          eventData: {
+            retryAfter: new Date(Date.now() + 5_000),
+          },
+        })
+      ).rejects.toBeInstanceOf(EntityConflictError);
     });
   });
 

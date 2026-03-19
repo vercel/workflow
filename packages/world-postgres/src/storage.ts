@@ -944,15 +944,13 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             stepId: data.correlationId!,
           });
           if (!existing) {
-            throw new WorkflowAPIError(
-              `Step "${data.correlationId}" not found`,
-              { status: 404 }
+            throw new WorkflowWorldError(
+              `Step "${data.correlationId}" not found`
             );
           }
           if (isStepTerminal(existing.status)) {
-            throw new WorkflowAPIError(
-              `Cannot modify step in terminal state "${existing.status}"`,
-              { status: 409 }
+            throw new EntityConflictError(
+              `Cannot modify step in terminal state "${existing.status}"`
             );
           }
         }

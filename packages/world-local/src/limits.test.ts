@@ -1,4 +1,6 @@
+import { WorkflowWorldError } from '@workflow/errors';
 import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.js';
+import { describe, expect, it } from 'vitest';
 import { createLocalWorld } from './index.js';
 import { createLimits } from './limits.js';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -16,4 +18,21 @@ createLimitsContractSuite('local world limits', async () => {
       await rm(dir, { recursive: true, force: true });
     },
   };
+});
+
+describe('local limits', () => {
+  it('throws WorkflowWorldError when heartbeating a missing lease', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'workflow-limits-'));
+    const limits = createLimits(dir);
+
+    try {
+      await expect(
+        limits.heartbeat({
+          leaseId: 'lmt_missing',
+        })
+      ).rejects.toBeInstanceOf(WorkflowWorldError);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

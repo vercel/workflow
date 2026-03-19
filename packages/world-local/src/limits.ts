@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { WorkflowAPIError } from '@workflow/errors';
+import { WorkflowWorldError } from '@workflow/errors';
 import {
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
@@ -291,9 +291,7 @@ export function createLimits(dataDir: string, tag?: string): Limits {
           return updatedLease;
         }
 
-        throw new WorkflowAPIError(`Lease "${parsed.leaseId}" not found`, {
-          status: 404,
-        });
+        throw new WorkflowWorldError(`Lease "${parsed.leaseId}" not found`);
       });
     },
   };

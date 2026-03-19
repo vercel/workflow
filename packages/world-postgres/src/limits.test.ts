@@ -1,4 +1,5 @@
 import { asc, eq } from 'drizzle-orm';
+import { WorkflowWorldError } from '@workflow/errors';
 import {
   afterAll,
   beforeAll,
@@ -42,6 +43,19 @@ if (process.platform === 'win32') {
   });
 
   describe('postgres waiter promotion', () => {
+    it('throws WorkflowWorldError when heartbeating a missing lease', async () => {
+      const limits = createLimits(
+        { connectionString: db.connectionString, queueConcurrency: 1 },
+        db.drizzle
+      );
+
+      await expect(
+        limits.heartbeat({
+          leaseId: 'lmt_missing',
+        })
+      ).rejects.toBeInstanceOf(WorkflowWorldError);
+    });
+
     it('serializes concurrent acquires for the same key', async () => {
       const limits = createLimits(
         { connectionString: db.connectionString, queueConcurrency: 1 },

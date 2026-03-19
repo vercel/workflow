@@ -1,6 +1,6 @@
 import { JsonTransport } from '@vercel/queue';
 import { and, asc, eq, isNotNull, lte, sql } from 'drizzle-orm';
-import { WorkflowAPIError } from '@workflow/errors';
+import { WorkflowWorldError } from '@workflow/errors';
 import {
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
@@ -653,9 +653,7 @@ export function createLimits(
         });
 
         if (!existing) {
-          throw new WorkflowAPIError(`Lease "${parsed.leaseId}" not found`, {
-            status: 404,
-          });
+          throw new WorkflowWorldError(`Lease "${parsed.leaseId}" not found`);
         }
 
         await lockLimitKey(tx, existing.limitKey);
