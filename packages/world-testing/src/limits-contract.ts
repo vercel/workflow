@@ -209,7 +209,7 @@ export function createLimitsContractSuite(
         });
         const deadline = Date.now() + periodMs + 1_000;
         while (third.status === 'blocked' && Date.now() < deadline) {
-          await sleep(Math.max(25, third.retryAfterMs) + 50);
+          await sleep(Math.max(25, third.retryAfterMs ?? 0) + 50);
           third = await harness.limits.acquire({
             key: 'step:provider:openai',
             holderId: 'holder-c',
