@@ -150,20 +150,22 @@ workflow scope, even though the workflow may suspend and resume many times.
 
 The current behavior is:
 
-- declare the limit at the top of the step
+- declare the limit at the top of the step when possible
 - the runtime treats a blocked acquisition as step-boundary admission failure
 - the step does not keep executing user code while waiting for capacity
 - the step is re-queued and retried after promotion or timeout
 - lease is disposed automatically when the step attempt completes
 
-Important caveat:
+If `lock()` is called in the middle of a step, the intended contract is:
 
-- zero-attempt semantics are only guaranteed when `lock()` is used as a top-of-step admission gate
-- calling `lock()` after side effects or meaningful user work is unsupported/best-effort
+- the current attempt stops at the blocked `lock()` call
+- the step is deferred and re-queued rather than polling in-process
+- code before the blocked `lock()` may replay on the next attempt
+- code after the `lock()` runs only after the lock is actually acquired
 
-This means step `lock()` is conceptually the same API, but it is not a literal
-"spin inside already-running user step code until capacity appears"
-implementation.
+This means zero-attempt semantics are still strongest when `lock()` is used as
+a top-of-step admission gate, but mid-step `lock()` is now part of the shared
+runtime contract rather than unsupported behavior.
 
 ### 6. `await using` is the preferred user-facing shape
 
@@ -200,9 +202,8 @@ The lease must not be disposed merely because one host process invocation ends.
 Current preferred model:
 
 - workflow-level limits may be held by a run
-- step-level limits are acquired only at step boundaries
+- blocked step-level limits return control to the runtime at the step boundary
 - step-level limits are short-lived
-- step code should not acquire additional locks dynamically
 - step execution should not wait on workflow-level locks
 
 This keeps the dependency direction one-way:
@@ -280,7 +281,8 @@ More concretely:
 - if a workflow is parked waiting for a step-level limit, it still counts as
   active for its workflow-level lock
 - a step-level lock should conceptually be an admission gate for the step
-  attempt, not a second workflow-level lock
+  attempt, not a second workflow-level lock, even when the `lock()` call
+  appears in the middle of user code
 - step-level rate limits should consume rate capacity when the step starts, and
   that rate usage should remain counted until the window expires even if the
   step releases its lease quickly

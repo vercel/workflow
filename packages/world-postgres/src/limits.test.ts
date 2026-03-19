@@ -46,6 +46,34 @@ if (process.platform === 'win32') {
         steps: createStepsStorage(db.drizzle),
         events: createEventsStorage(db.drizzle),
       },
+      inspectKeyState: async (key) => {
+        const [leases, waiters, tokens] = await Promise.all([
+          db.sql<{ holderId: string }[]>`
+            select holder_id as "holderId"
+            from workflow.workflow_limit_leases
+            where limit_key = ${key}
+            order by holder_id asc
+          `,
+          db.sql<{ holderId: string }[]>`
+            select holder_id as "holderId"
+            from workflow.workflow_limit_waiters
+            where limit_key = ${key}
+            order by created_at asc, holder_id asc
+          `,
+          db.sql<{ holderId: string }[]>`
+            select holder_id as "holderId"
+            from workflow.workflow_limit_tokens
+            where limit_key = ${key}
+            order by acquired_at asc, holder_id asc
+          `,
+        ]);
+
+        return {
+          leaseHolderIds: leases.map((row) => row.holderId),
+          waiterHolderIds: waiters.map((row) => row.holderId),
+          tokenHolderIds: tokens.map((row) => row.holderId),
+        };
+      },
     };
   });
 }

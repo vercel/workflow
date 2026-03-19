@@ -518,19 +518,22 @@ export function createLimits(
         // If there are already waiters for this key and holder no need to queue a new waiter.
         if (existingWaiter) {
           const now = Date.now();
+          const concurrencyBlocked =
+            parsed.definition.concurrency !== undefined &&
+            state.leases.length >= parsed.definition.concurrency.max;
+          const rateBlocked =
+            parsed.definition.rate !== undefined &&
+            state.tokens.length >= parsed.definition.rate.count;
           return {
             status: 'blocked',
-            reason: getBlockedReason(
-              parsed.definition.concurrency !== undefined,
-              parsed.definition.rate !== undefined
-            ),
+            reason: getBlockedReason(concurrencyBlocked, rateBlocked),
             retryAfterMs:
               getRetryAfterMs(
                 state.leases,
                 state.tokens,
                 now,
-                parsed.definition.concurrency !== undefined,
-                parsed.definition.rate !== undefined
+                concurrencyBlocked,
+                rateBlocked
               ) ?? 1000,
           } satisfies LimitAcquireResult;
         }
