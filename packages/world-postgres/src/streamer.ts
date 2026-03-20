@@ -223,7 +223,9 @@ export function createStreamer(
         .where(
           and(
             eq(streams.streamId, name),
-            ...(cursorChunkId ? [gt(streams.chunkId, cursorChunkId)] : [])
+            ...(cursorChunkId
+              ? [gt(streams.chunkId, cursorChunkId as `chnk_${string}`)]
+              : [])
           )
         )
         .orderBy(asc(streams.chunkId))
@@ -402,7 +404,7 @@ export function createStreamer(
           buffer = null;
         },
         cancel() {
-          cleanups.forEach((fn) => fn());
+          cleanups.forEach((fn) => void fn());
         },
       });
     },
