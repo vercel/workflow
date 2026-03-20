@@ -98,17 +98,17 @@ export interface Storage {
 
   steps: {
     get(
-      runId: string | undefined,
+      runId: string,
       stepId: string,
       params: GetStepParams & { resolveData: 'none' }
     ): Promise<StepWithoutData>;
     get(
-      runId: string | undefined,
+      runId: string,
       stepId: string,
       params?: GetStepParams & { resolveData?: 'all' }
     ): Promise<Step>;
     get(
-      runId: string | undefined,
+      runId: string,
       stepId: string,
       params?: GetStepParams
     ): Promise<Step | StepWithoutData>;
