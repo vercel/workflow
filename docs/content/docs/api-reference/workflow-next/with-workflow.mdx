@@ -27,6 +27,26 @@ const workflowConfig = {}
 export default withWorkflow(nextConfig, workflowConfig); // [!code highlight]
 ```
 
+### Monorepos and Workspace Imports
+
+If your Next.js app lives in a subdirectory such as `apps/web` and your workflows import code from sibling workspace packages, set `outputFileTracingRoot` to the workspace root. `withWorkflow()` uses this value as the builder project root so workflow transforms can resolve workspace module specifiers correctly.
+
+```typescript title="apps/web/next.config.ts" lineNumbers
+import { resolve } from "node:path";
+import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
+
+const nextConfig: NextConfig = {
+  outputFileTracingRoot: resolve(process.cwd(), "../.."),
+};
+
+export default withWorkflow(nextConfig);
+```
+
+<Callout type="info">
+Use the smallest directory that contains every workspace package imported by your workflows. If your app already lives at the repository root, you do not need to set `outputFileTracingRoot`.
+</Callout>
+
 If you are exporting a function in your `next.config` you will need to ensure you call the function returned from `withWorkflow`.
 
 ```typescript title="next.config.ts" lineNumbers
