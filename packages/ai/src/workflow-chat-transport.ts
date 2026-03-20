@@ -327,11 +327,17 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
 
     let gotFinish = false;
     let consecutiveErrors = 0;
+    // When a negative startIndex is used but the tail-index header is absent,
+    // retries fall back to startIndex 0 (replay everything) instead of using
+    // the incremental chunkIndex which would be wrong.
+    let replayFromStart = false;
 
     while (!gotFinish) {
       const startIndex = useExplicitStartIndex
         ? explicitStartIndex
-        : chunkIndex;
+        : replayFromStart
+          ? 0
+          : chunkIndex;
 
       const url = `${baseUrl}?startIndex=${startIndex}`;
       const res = await this.fetch(url, {
@@ -361,10 +367,11 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
           console.warn(
             '[WorkflowChatTransport] Negative initialStartIndex is configured ' +
               `(${explicitStartIndex}) but the reconnection endpoint did not ` +
-              'return the "x-workflow-stream-tail-index" header. Retries after ' +
-              'a disconnect may resume from the wrong position. See: ' +
+              'return the "x-workflow-stream-tail-index" header. Retries will ' +
+              'replay the stream from the beginning. See: ' +
               'https://workflow.dev/docs/ai/resumable-streams#resuming-from-the-end-of-the-stream'
           );
+          replayFromStart = true;
         }
       }
       useExplicitStartIndex = false;

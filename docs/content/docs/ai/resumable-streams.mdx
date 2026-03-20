@@ -191,7 +191,7 @@ const { messages, sendMessage } = useChat({
 This avoids replaying potentially thousands of chunks and lets the UI render faster. The negative value is resolved server-side, so `-20` on a 500-chunk stream starts at chunk 480.
 
 <Callout>
-When using a negative `initialStartIndex`, the reconnection endpoint **must** return the `x-workflow-stream-tail-index` header (as shown in [Step 2](#add-a-stream-reconnection-endpoint) above). The transport uses this header to compute absolute chunk positions so that retries after a disconnect resume from the correct position. If the header is missing, the transport will log a warning.
+When using a negative `initialStartIndex`, the reconnection endpoint **must** return the `x-workflow-stream-tail-index` header (as shown in [Step 2](#add-a-stream-reconnection-endpoint) above). The transport uses this header to compute absolute chunk positions so that retries after a disconnect resume from the correct position. If the header is missing, the transport falls back to `startIndex: 0` (replaying the entire stream) and logs a warning.
 </Callout>
 
 ## Related Documentation

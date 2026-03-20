@@ -72,7 +72,7 @@ export default WorkflowChatTransportOptions;`}
 - Stream interruptions are automatically detected when a "finish" chunk is not received in the initial response
 - The `maxConsecutiveErrors` option controls how many reconnection attempts are made before giving up (default: 3)
 - When reconnecting, you can pass a `startIndex` option to `reconnectToStream` to control where to resume from. Negative values (e.g. `-10`) read from the end of the stream, which is useful for showing only recent output without replaying the full conversation
-- When using a negative `initialStartIndex`, the reconnection endpoint must return the `x-workflow-stream-tail-index` response header (via `readable.getTailIndex()`). The transport reads this header to compute absolute chunk positions for retries. Without it, a disconnection during a negative-startIndex reconnection may resume from the wrong position
+- When using a negative `initialStartIndex`, the reconnection endpoint must return the `x-workflow-stream-tail-index` response header (via `readable.getTailIndex()`). The transport reads this header to compute absolute chunk positions for retries. Without it, startIndex is assumed to be 0, replaying the entire stream
 
 ## Examples
 
