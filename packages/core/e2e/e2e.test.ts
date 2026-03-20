@@ -705,6 +705,70 @@ describe('e2e', () => {
     }
   });
 
+  describe.skipIf(isLocalDeployment())(
+    'outputStreamWorkflow - getTailIndex and getChunks',
+    () => {
+      test(
+        'getTailIndex returns correct index after stream completes',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+          await run.returnValue;
+
+          const readable = run.getReadable();
+          const tailIndex = await readable.getTailIndex();
+
+          // outputStreamWorkflow writes 2 chunks to the default stream
+          expect(tailIndex).toBe(1);
+        }
+      );
+
+      test(
+        'getChunks returns same content as reading the stream',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+          await run.returnValue;
+
+          // Read all chunks via the stream
+          const reader = run.getReadable().getReader();
+          const streamChunks: unknown[] = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            streamChunks.push(value);
+          }
+
+          // Read all chunks via getChunks pagination
+          const world = getWorld();
+          const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
+          const paginatedChunks: Uint8Array[] = [];
+          let cursor: string | null = null;
+          do {
+            const page = await world.getChunks(streamName, run.runId, {
+              limit: 1, // small page size to exercise pagination
+              ...(cursor ? { cursor } : {}),
+            });
+            for (const chunk of page.data) {
+              paginatedChunks.push(chunk.data);
+            }
+            cursor = page.cursor;
+            if (!page.hasMore) {
+              expect(page.done).toBe(true);
+            }
+          } while (cursor);
+
+          // Both methods should return the same number of chunks
+          expect(paginatedChunks).toHaveLength(streamChunks.length);
+        }
+      );
+    }
+  );
+
   test.skipIf(isLocalDeployment())(
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
     { timeout: 60_000 },
