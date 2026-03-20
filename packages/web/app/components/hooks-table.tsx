@@ -3,7 +3,7 @@ import {
   ResolveHookDropdownItem,
   useHookActions,
 } from '@workflow/web-shared';
-import type { Event, Hook } from '@workflow/world';
+import type { Hook } from '@workflow/world';
 import {
   AlertCircle,
   ChevronLeft,
@@ -35,16 +35,16 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '~/components/ui/tooltip';
-import { CopyableText } from './display-utils/copyable-text';
-import { RelativeTime } from './display-utils/relative-time';
-import { TableSkeleton } from './display-utils/table-skeleton';
+import { fetchEvents } from '~/lib/rpc-client';
+import type { EnvMap } from '~/lib/types';
 import {
   getErrorMessage,
   resumeHook,
   useWorkflowHooks,
 } from '~/lib/workflow-api-client';
-import type { EnvMap } from '~/lib/types';
-import { fetchEvents } from '~/lib/rpc-client';
+import { CopyableText } from './display-utils/copyable-text';
+import { RelativeTime } from './display-utils/relative-time';
+import { TableSkeleton } from './display-utils/table-skeleton';
 
 interface HooksTableProps {
   runId?: string;
@@ -142,7 +142,11 @@ export function HooksTable({
           setInvocationData((prev) => {
             const updated = new Map(prev);
             for (const hook of hooks) {
-              updated.set(hook.hookId, { count: 0, hasMore: false, loading: false });
+              updated.set(hook.hookId, {
+                count: 0,
+                hasMore: false,
+                loading: false,
+              });
             }
             return updated;
           });
@@ -182,7 +186,11 @@ export function HooksTable({
         setInvocationData((prev) => {
           const updated = new Map(prev);
           for (const hook of hooks) {
-            updated.set(hook.hookId, { count: 0, hasMore: false, loading: false });
+            updated.set(hook.hookId, {
+              count: 0,
+              hasMore: false,
+              loading: false,
+            });
           }
           return updated;
         });
@@ -270,7 +278,7 @@ export function HooksTable({
       ) : !loading && (!hooks || hooks.length === 0) ? (
         <div className="text-center py-8 text-muted-foreground">
           No active hooks found. <br />
-          <DocsLink href="https://useworkflow.dev/docs/api-reference/workflow/create-hook">
+          <DocsLink href="https://useworkflow.dev/docs/foundations/hooks">
             Learn how to create a hook
           </DocsLink>
         </div>

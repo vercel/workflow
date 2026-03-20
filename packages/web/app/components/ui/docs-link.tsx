@@ -1,4 +1,3 @@
-import { Link } from 'react-router';
 import * as React from 'react';
 
 import { cn } from '~/lib/utils';
@@ -20,7 +19,7 @@ const DocsLink = React.forwardRef<HTMLAnchorElement, DocsLinkProps>(
       : `https://useworkflow.dev/docs/${href.replace(/^\//, '')}`;
 
     return (
-      <Link
+      <a
         href={fullHref}
         className={cn(
           'font-medium underline underline-offset-4 transition-colors',
@@ -35,7 +34,7 @@ const DocsLink = React.forwardRef<HTMLAnchorElement, DocsLinkProps>(
         {...props}
       >
         {children}
-      </Link>
+      </a>
     );
   }
 );
