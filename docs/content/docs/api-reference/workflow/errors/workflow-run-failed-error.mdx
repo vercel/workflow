@@ -4,18 +4,18 @@ description: Thrown when awaiting the return value of a failed workflow run.
 type: reference
 summary: Catch WorkflowRunFailedError when awaiting run.returnValue on a run that encountered a fatal error.
 related:
-  - /docs/api-reference/workflow/fatal-error
-  - /docs/api-reference/workflow/workflow-run-cancelled-error
-  - /docs/api-reference/workflow/workflow-run-not-found-error
+  - /docs/api-reference/workflow/errors/fatal-error
+  - /docs/api-reference/workflow/errors/workflow-run-cancelled-error
+  - /docs/api-reference/workflow/errors/workflow-run-not-found-error
 ---
 
 `WorkflowRunFailedError` is thrown when awaiting `run.returnValue` on a workflow run whose status is `'failed'`. This indicates that the workflow encountered a fatal error during execution and cannot produce a return value.
 
 The `cause` property contains the underlying error with its message, stack trace, and optional error code.
 
-{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
-import { WorkflowRunFailedError } from "workflow/internal/errors"
+import { WorkflowRunFailedError } from "workflow/errors"
+declare const run: { status: Promise<string>; returnValue: Promise<any> }; // @setup
 
 try {
   const result = await run.returnValue;
@@ -52,8 +52,10 @@ export default WorkflowRunFailedError;`}
 
 Type-safe check for `WorkflowRunFailedError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
-{/* @skip-typecheck: inline snippet */}
 ```typescript
+import { WorkflowRunFailedError } from "workflow/errors"
+declare const error: unknown; // @setup
+
 if (WorkflowRunFailedError.is(error)) {
   // error is typed as WorkflowRunFailedError
 }

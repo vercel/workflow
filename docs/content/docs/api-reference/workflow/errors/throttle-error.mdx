@@ -4,8 +4,8 @@ description: Thrown when a request is rate-limited by the workflow backend.
 type: reference
 summary: Catch ThrottleError when a workflow storage operation is rate-limited (HTTP 429).
 related:
-  - /docs/api-reference/workflow/workflow-world-error
-  - /docs/api-reference/workflow/too-early-error
+  - /docs/api-reference/workflow/errors/workflow-world-error
+  - /docs/api-reference/workflow/errors/too-early-error
 ---
 
 `ThrottleError` is thrown when a request to the workflow backend is rate-limited. It corresponds to HTTP 429 Too Many Requests semantics.
@@ -16,9 +16,11 @@ The `retryAfter` property contains the number of seconds to wait before retrying
 The Workflow runtime handles this error automatically by backing off and retrying. You will only encounter it when interacting with world storage APIs directly.
 </Callout>
 
-{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
-import { ThrottleError } from "workflow/internal/errors"
+import { ThrottleError } from "workflow/errors"
+declare const world: { events: { create(...args: any[]): Promise<any> } }; // @setup
+declare const runId: string; // @setup
+declare const event: any; // @setup
 
 try {
   await world.events.create(runId, event);
@@ -50,8 +52,10 @@ export default ThrottleError;`}
 
 Type-safe check for `ThrottleError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
-{/* @skip-typecheck: inline snippet */}
 ```typescript
+import { ThrottleError } from "workflow/errors"
+declare const error: unknown; // @setup
+
 if (ThrottleError.is(error)) {
   // error is typed as ThrottleError
 }

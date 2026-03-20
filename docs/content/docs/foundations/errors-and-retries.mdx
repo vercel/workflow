@@ -6,8 +6,8 @@ summary: Control how steps handle failures and customize retry behavior.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
-  - /docs/api-reference/workflow/fatal-error
-  - /docs/api-reference/workflow/retryable-error
+  - /docs/api-reference/workflow/errors/fatal-error
+  - /docs/api-reference/workflow/errors/retryable-error
 ---
 
 By default, errors thrown inside steps are retried. Additionally, Workflow DevKit provides two new types of errors you can use to customize retries.
@@ -44,7 +44,7 @@ Steps get enqueued immediately after a failure. Read on to see how this can be c
 
 ## Intentional Errors
 
-When your step needs to intentionally throw an error and skip retrying, simply throw a [`FatalError`](/docs/api-reference/workflow/fatal-error).
+When your step needs to intentionally throw an error and skip retrying, simply throw a [`FatalError`](/docs/api-reference/workflow/errors/fatal-error).
 
 ```typescript lineNumbers
 import { FatalError } from "workflow";
@@ -69,7 +69,7 @@ async function callApi(endpoint: string) {
 
 ## Customize Retry Behavior
 
-When you need to customize the delay on a retry, use [`RetryableError`](/docs/api-reference/workflow/retryable-error) and set the `retryAfter` property.
+When you need to customize the delay on a retry, use [`RetryableError`](/docs/api-reference/workflow/errors/retryable-error) and set the `retryAfter` property.
 
 ```typescript lineNumbers
 import { FatalError, RetryableError } from "workflow";

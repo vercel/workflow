@@ -4,8 +4,8 @@ description: Thrown when a request is made before the system is ready to process
 type: reference
 summary: Catch TooEarlyError when a world operation is attempted before the system is ready.
 related:
-  - /docs/api-reference/workflow/workflow-world-error
-  - /docs/api-reference/workflow/throttle-error
+  - /docs/api-reference/workflow/errors/workflow-world-error
+  - /docs/api-reference/workflow/errors/throttle-error
 ---
 
 `TooEarlyError` is thrown by world implementations when a request is made before the system is ready to process it. It corresponds to HTTP 425 Too Early semantics.
@@ -16,9 +16,11 @@ The `retryAfterDate` property contains a `Date` indicating when the operation ca
 The Workflow runtime handles this error automatically by retrying after the specified delay. You will only encounter it when interacting with world storage APIs directly.
 </Callout>
 
-{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
-import { TooEarlyError } from "workflow/internal/errors"
+import { TooEarlyError } from "workflow/errors"
+declare const world: { events: { create(...args: any[]): Promise<any> } }; // @setup
+declare const runId: string; // @setup
+declare const event: any; // @setup
 
 try {
   await world.events.create(runId, event);
@@ -50,8 +52,10 @@ export default TooEarlyError;`}
 
 Type-safe check for `TooEarlyError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
-{/* @skip-typecheck: inline snippet */}
 ```typescript
+import { TooEarlyError } from "workflow/errors"
+declare const error: unknown; // @setup
+
 if (TooEarlyError.is(error)) {
   // error is typed as TooEarlyError
 }

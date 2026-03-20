@@ -14,9 +14,11 @@ related:
 - The hook was already consumed and disposed
 - The workflow has not started yet, so the hook does not exist
 
-{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
-import { HookNotFoundError } from "workflow/internal/errors"
+import { HookNotFoundError } from "workflow/errors"
+declare function resumeHook(token: string, payload: any): Promise<any>; // @setup
+declare const token: string; // @setup
+declare const payload: any; // @setup
 
 try {
   await resumeHook(token, payload);
@@ -48,8 +50,10 @@ export default HookNotFoundError;`}
 
 Type-safe check for `HookNotFoundError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
-{/* @skip-typecheck: inline snippet */}
 ```typescript
+import { HookNotFoundError } from "workflow/errors"
+declare const error: unknown; // @setup
+
 if (HookNotFoundError.is(error)) {
   // error is typed as HookNotFoundError
 }
@@ -65,9 +69,10 @@ A common pattern for idempotent workflows is to try resuming a hook, and if it d
 This "resume or start" pattern is not atomic — there is a small window where a race condition is possible. A better native approach is being worked on, but this pattern works well for many use cases.
 </Callout>
 
-{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
-import { HookNotFoundError } from "workflow/internal/errors"
+import { HookNotFoundError } from "workflow/errors"
+declare function resumeHook(token: string, data: unknown): Promise<any>; // @setup
+declare function startWorkflow(name: string, data: unknown): Promise<any>; // @setup
 
 async function handleIncomingEvent(token: string, data: unknown) {
   try {
