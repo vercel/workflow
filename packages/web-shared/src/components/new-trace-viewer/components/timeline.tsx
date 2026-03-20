@@ -13,15 +13,24 @@ import {
   getResourceColor,
 } from '../utils';
 
-const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
-  queued: 'segment-queued',
-  retrying: 'segment-hatched',
-  waiting: 'segment-hatched',
-  running: 'bg-blue-700',
-  failed: 'bg-red-700',
-  succeeded: 'bg-green-700',
-  sleeping: 'bg-amber-700',
-  received: 'bg-blue-700',
+const QUEUED_BACKGROUND =
+  'radial-gradient(circle, var(--ds-gray-400) 2px, transparent 2px) center / 20px 20px space no-repeat, var(--ds-gray-500)';
+
+const HATCHED_BACKGROUND =
+  'repeating-linear-gradient(-45deg, var(--ds-gray-400) 0px, var(--ds-gray-400) 3px, var(--ds-gray-500) 3px, var(--ds-gray-500) 6px)';
+
+const SEGMENT_CONFIG: Record<
+  SegmentStatus,
+  { className?: string; style?: React.CSSProperties }
+> = {
+  queued: { style: { background: QUEUED_BACKGROUND } },
+  retrying: { style: { background: HATCHED_BACKGROUND } },
+  waiting: { style: { background: HATCHED_BACKGROUND } },
+  running: { className: 'bg-blue-700' },
+  failed: { className: 'bg-red-700' },
+  succeeded: { className: 'bg-green-700' },
+  sleeping: { className: 'bg-amber-700' },
+  received: { className: 'bg-blue-700' },
 };
 
 const TimelineBar = memo(function TimelineBar({
@@ -77,13 +86,17 @@ const TimelineBar = memo(function TimelineBar({
               <div
                 key={`${seg.status}-${i}`}
                 className={cn(
-                  'absolute h-full first:rounded-sm last:rounded-r-sm border-r border-white',
-                  SEGMENT_CLASSES[seg.status]
+                  'absolute h-full first:rounded-sm last:rounded-r-sm',
+                  SEGMENT_CONFIG[seg.status].className
                 )}
                 style={{
                   left: `${seg.startFraction * 100}%`,
-                  width: `${(seg.endFraction - seg.startFraction) * 100}%`,
+                  width:
+                    seg.status === 'queued'
+                      ? `calc(${(seg.endFraction - seg.startFraction) * 100}% - 2px)`
+                      : `${(seg.endFraction - seg.startFraction) * 100}%`,
                   minWidth: 2,
+                  ...SEGMENT_CONFIG[seg.status].style,
                 }}
               />
             ))}
