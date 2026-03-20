@@ -30,6 +30,69 @@ interface Viewport {
   end: number;
 }
 
+function useAnimatedViewport(initial: Viewport) {
+  const [viewport, setViewportState] = useState<Viewport>(initial);
+  const animRef = useRef<{
+    raf: number;
+    from: Viewport;
+    to: Viewport;
+    start: number;
+  } | null>(null);
+  const currentRef = useRef(initial);
+  currentRef.current = viewport;
+
+  const cancel = useCallback(() => {
+    if (animRef.current) {
+      cancelAnimationFrame(animRef.current.raf);
+      animRef.current = null;
+    }
+  }, []);
+
+  const animateTo = useCallback(
+    (target: Viewport) => {
+      cancel();
+      const from = currentRef.current;
+      const anim = { raf: 0, from, to: target, start: performance.now() };
+
+      const tick = () => {
+        const t = Math.min((performance.now() - anim.start) / 150, 1);
+        const e = 1 - (1 - t) * (1 - t);
+        setViewportState({
+          start: anim.from.start + (anim.to.start - anim.from.start) * e,
+          end: anim.from.end + (anim.to.end - anim.from.end) * e,
+        });
+        if (t < 1) anim.raf = requestAnimationFrame(tick);
+        else animRef.current = null;
+      };
+
+      animRef.current = anim;
+      anim.raf = requestAnimationFrame(tick);
+    },
+    [cancel]
+  );
+
+  const setViewport = useCallback(
+    (update: Viewport | ((prev: Viewport) => Viewport)) => {
+      cancel();
+      if (typeof update === 'function') {
+        setViewportState((prev) => {
+          const next = update(prev);
+          currentRef.current = next;
+          return next;
+        });
+      } else {
+        currentRef.current = update;
+        setViewportState(update);
+      }
+    },
+    [cancel]
+  );
+
+  useEffect(() => cancel, [cancel]);
+
+  return { viewport, setViewport, animateTo };
+}
+
 export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
   return (
     <ActiveSpanProvider spans={trace.spans}>
@@ -55,7 +118,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
   const root = useMemo(() => computeRootBounds(trace.spans), [trace.spans]);
 
-  const [viewport, setViewport] = useState<Viewport>({
+  const { viewport, setViewport, animateTo } = useAnimatedViewport({
     start: root.startTime,
     end: root.startTime + root.duration,
   });
@@ -96,8 +159,8 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     viewport.end < root.startTime + root.duration - 0.01;
 
   const resetZoom = useCallback(() => {
-    setViewport({ start: root.startTime, end: root.startTime + root.duration });
-  }, [root.startTime, root.duration]);
+    animateTo({ start: root.startTime, end: root.startTime + root.duration });
+  }, [animateTo, root.startTime, root.duration]);
 
   const handleSelectSpan = useCallback(
     (spanId: string) => {
@@ -115,7 +178,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       const rootD = root.duration;
 
       if (spanDuration > rootD * 0.8) {
-        setViewport({ start: rootS, end: rootE });
+        animateTo({ start: rootS, end: rootE });
         return;
       }
 
@@ -141,9 +204,9 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         newStart = Math.max(rootS, rootE - duration);
       }
 
-      setViewport({ start: newStart, end: newEnd });
+      animateTo({ start: newStart, end: newEnd });
     },
-    [setActiveSpan, trace.spans, root.startTime, root.duration]
+    [animateTo, setActiveSpan, trace.spans, root.startTime, root.duration]
   );
 
   useEffect(() => {
@@ -244,7 +307,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     <div
       data-pane="pane-root"
       data-has-detail={activeSpan ? '' : undefined}
-      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(50px,430px,100%)]"
+      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(50px,320px,100%)]"
     >
       <div
         id="trace-parent"
