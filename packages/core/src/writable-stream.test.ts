@@ -31,26 +31,26 @@ describe('WorkflowServerWritableStream', () => {
   describe('constructor validation', () => {
     it('should throw error when runId is not a string', () => {
       expect(() => {
-        new WorkflowServerWritableStream('test-stream', 123 as any);
+        new WorkflowServerWritableStream(123 as any, 'test-stream');
       }).toThrow('"runId" must be a string');
     });
 
     it('should throw error when name is empty', () => {
       expect(() => {
-        new WorkflowServerWritableStream('', 'run-123');
+        new WorkflowServerWritableStream('run-123', '');
       }).toThrow('"name" is required');
     });
 
     it('should accept a string runId', () => {
       expect(() => {
-        new WorkflowServerWritableStream('test-stream', 'run-123');
+        new WorkflowServerWritableStream('run-123', 'test-stream');
       }).not.toThrow();
     });
   });
 
   describe('flush-on-write behavior', () => {
     it('write() resolves only after data reaches server', async () => {
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array([1, 2, 3]));
@@ -67,7 +67,7 @@ describe('WorkflowServerWritableStream', () => {
     });
 
     it('should use write for single chunk', async () => {
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array([1, 2, 3]));
@@ -83,7 +83,7 @@ describe('WorkflowServerWritableStream', () => {
       // Remove writeMulti from mock world
       delete (mockStreams as any).writeMulti;
 
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array([1, 2, 3]));
@@ -94,7 +94,7 @@ describe('WorkflowServerWritableStream', () => {
     });
 
     it('should handle multiple sequential writes (multiple flush cycles)', async () => {
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       // Each write triggers its own flush cycle
@@ -129,7 +129,7 @@ describe('WorkflowServerWritableStream', () => {
           })
       );
 
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       // Start first write — it will wait for the slow flush
@@ -155,7 +155,7 @@ describe('WorkflowServerWritableStream', () => {
 
   describe('close behavior', () => {
     it('should call close on close', async () => {
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
       await writer.write(new Uint8Array([1, 2, 3]));
       await writer.close();
@@ -164,7 +164,7 @@ describe('WorkflowServerWritableStream', () => {
     });
 
     it('should flush remaining buffer on close', async () => {
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array([1, 2, 3]));
@@ -176,7 +176,7 @@ describe('WorkflowServerWritableStream', () => {
     });
 
     it('should not call write methods when buffer is empty on close', async () => {
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       // Close without writing — should only call close
@@ -190,7 +190,7 @@ describe('WorkflowServerWritableStream', () => {
 
   describe('abort behavior', () => {
     it('should discard buffer and not call close on abort', async () => {
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       await writer.write(new Uint8Array([1, 2, 3]));
@@ -206,7 +206,7 @@ describe('WorkflowServerWritableStream', () => {
     it('should propagate write errors to the caller', async () => {
       mockStreams.write.mockRejectedValueOnce(new Error('write error'));
 
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       await expect(writer.write(new Uint8Array([1, 2, 3]))).rejects.toThrow(
@@ -217,7 +217,7 @@ describe('WorkflowServerWritableStream', () => {
     it('should propagate close errors', async () => {
       mockStreams.close.mockRejectedValueOnce(new Error('close error'));
 
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
       await writer.write(new Uint8Array([1, 2, 3]));
 
@@ -231,7 +231,7 @@ describe('WorkflowServerWritableStream', () => {
         .mockResolvedValueOnce(undefined)
         .mockRejectedValueOnce(new Error('flush error on close'));
 
-      const stream = new WorkflowServerWritableStream('test-stream', 'run-123');
+      const stream = new WorkflowServerWritableStream('run-123', 'test-stream');
       const writer = stream.getWriter();
 
       // First write succeeds

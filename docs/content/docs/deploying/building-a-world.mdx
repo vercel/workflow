@@ -163,23 +163,29 @@ The Streamer interface enables real-time data streaming:
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface Streamer {
-  writeToStream(
-    name: string,
-    runId: string | Promise<string>,
-    chunk: string | Uint8Array
-  ): Promise<void>;
+  streams: {
+    write(
+      runId: string,
+      name: string,
+      chunk: string | Uint8Array
+    ): Promise<void>;
 
-  closeStream(
-    name: string,
-    runId: string | Promise<string>
-  ): Promise<void>;
+    writeMulti?(
+      runId: string,
+      name: string,
+      chunks: (string | Uint8Array)[]
+    ): Promise<void>;
 
-  readFromStream(
-    name: string,
-    startIndex?: number
-  ): Promise<ReadableStream<Uint8Array>>;
+    close(runId: string, name: string): Promise<void>;
 
-  listStreamsByRunId(runId: string): Promise<string[]>;
+    get(
+      runId: string,
+      name: string,
+      startIndex?: number
+    ): Promise<ReadableStream<Uint8Array>>;
+
+    list(runId: string): Promise<string[]>;
+  };
 }
 ```
 

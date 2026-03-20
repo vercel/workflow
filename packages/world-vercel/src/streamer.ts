@@ -60,8 +60,8 @@ export function createStreamer(config?: APIConfig): Streamer {
   return {
     streams: {
       async write(
-        name: string,
         runId: string | Promise<string>,
+        name: string,
         chunk: string | Uint8Array
       ) {
         // Await runId if it's a promise to ensure proper flushing
@@ -80,8 +80,8 @@ export function createStreamer(config?: APIConfig): Streamer {
       },
 
       async writeMulti(
-        name: string,
         runId: string | Promise<string>,
+        name: string,
         chunks: (string | Uint8Array)[]
       ) {
         if (chunks.length === 0) return;
@@ -106,7 +106,7 @@ export function createStreamer(config?: APIConfig): Streamer {
         await response.text();
       },
 
-      async close(name: string, runId: string | Promise<string>) {
+      async close(runId: string | Promise<string>, name: string) {
         // Await runId if it's a promise to ensure proper flushing
         const resolvedRunId = await runId;
 
@@ -122,7 +122,7 @@ export function createStreamer(config?: APIConfig): Streamer {
         await response.text();
       },
 
-      async get(name: string, startIndex?: number) {
+      async get(_runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
         const url = getStreamUrl(name, undefined, httpConfig);
         if (typeof startIndex === 'number') {

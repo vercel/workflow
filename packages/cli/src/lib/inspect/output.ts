@@ -821,7 +821,7 @@ export const showStream = async (
       'Filtering by step-id is not supported when showing a stream, ignoring filter.'
     );
   }
-  const rawStream = await world.streams.get(streamId);
+  const rawStream = await world.streams.get(opts.runId ?? '', streamId);
 
   // Only resolve the encryption key when --decrypt is passed and --run is provided.
   // We fetch the full WorkflowRun object so that getEncryptionKeyForRun has

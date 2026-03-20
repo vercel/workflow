@@ -8,4 +8,4 @@
 "@workflow/web": patch
 ---
 
-Restructure stream methods on World interface to use `world.streams.*` namespace. `writeToStream` → `streams.write`, `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get`, `listStreamsByRunId` → `streams.list(runId)`.
+**BREAKING CHANGE**: Restructure stream methods on World interface to use `world.streams.*` namespace with `runId` as the first parameter. `writeToStream(name, runId, chunk)` → `streams.write(runId, name, chunk)`, `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get(runId, name, startIndex?)`, `listStreamsByRunId` → `streams.list(runId)`.

@@ -931,13 +931,14 @@ export async function resumeHook(
 export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,
-  startIndex?: number
+  startIndex?: number,
+  runId?: string
 ): Promise<ReadableStream<Uint8Array> | ServerActionError> {
   try {
     const world = await getWorldFromEnv(env);
     // Return the raw binary stream — deserialization and decryption
     // happen entirely client-side.
-    return await world.streams.get(streamId, startIndex);
+    return await world.streams.get(runId ?? '', streamId, startIndex);
   } catch (error) {
     const actionError = createServerActionError(error, 'world.streams.get', {
       streamId,
