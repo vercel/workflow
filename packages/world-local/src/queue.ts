@@ -90,6 +90,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const { pathname, prefix } = getQueueRoute(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
 
+    // Extract identifiers from the message for structured logging.
+    // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
+    const msg = message as Record<string, unknown>;
+    const runId = (msg.runId ?? msg.workflowRunId ?? undefined) as
+      | string
+      | undefined;
+    const stepId = (msg.stepId ?? undefined) as string | undefined;
+
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
       inflightMessages.set(key, messageId);
@@ -106,12 +114,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         );
         await semaphore.acquire();
       }
+      // Safety limit to prevent infinite loops in the local queue.
+      // The actual max delivery enforcement happens in the workflow/step handlers.
+      const MAX_LOCAL_SAFETY_LIMIT = 1000;
       try {
-        const maxAttempts = 3;
-        let defaultRetriesLeft = maxAttempts;
-        for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
-          defaultRetriesLeft--;
-
+        for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
@@ -163,7 +170,6 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   );
                   await setTimeout(timeoutMs);
                 }
-                defaultRetriesLeft++;
                 continue;
               }
             } catch {}
@@ -171,15 +177,29 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
 
           console.error(
-            `[world-local] Queue message failed (attempt ${attempt + 1}/${maxAttempts}, status ${response.status}): ${text}`,
-            { queueName, messageId }
+            `[world-local] Queue message failed (attempt ${attempt + 1}, HTTP ${response.status})`,
+            {
+              queueName,
+              messageId,
+              ...(runId && { runId }),
+              ...(stepId && { stepId }),
+              handlerError: text,
+            }
           );
+
+          // Small backoff to avoid tight retry loops on persistent failures
+          await setTimeout(Math.min(1000, 100 * (attempt + 1)));
         }
 
-        console.error(`[world-local] Queue message exhausted all retries`, {
-          queueName,
-          messageId,
-        });
+        console.error(
+          `[world-local] Queue message exhausted safety limit (${MAX_LOCAL_SAFETY_LIMIT} attempts)`,
+          {
+            queueName,
+            messageId,
+            ...(runId && { runId }),
+            ...(stepId && { stepId }),
+          }
+        );
       } finally {
         semaphore.release();
       }
