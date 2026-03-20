@@ -1827,7 +1827,13 @@ export async function getNextBuilderDeferred() {
         (file) => !stepFileSet.has(file)
       );
       const builtInStepFilePath = this.resolveBuiltInStepFilePath();
-      const copiedStepSourceFiles = builtInStepFilePath
+      // Keep SDK step sources (including workflow/internal/builtins) imported
+      // from package context so transitive SDK imports resolve correctly in
+      // staged/tarball workbenches.
+      const copiedStepSourceFiles = stepFiles.filter(
+        (stepFile) => !isWorkflowSdkFile(stepFile)
+      );
+      const manifestStepFiles = builtInStepFilePath
         ? [
             builtInStepFilePath,
             ...stepFiles.filter((stepFile) => stepFile !== builtInStepFilePath),
@@ -1870,7 +1876,7 @@ export async function getNextBuilderDeferred() {
       const routeContents = [
         '// biome-ignore-all lint: generated file',
         '/* eslint-disable */',
-        builtInStepFilePath ? '' : "import 'workflow/internal/builtins';",
+        "import 'workflow/internal/builtins';",
         copiedStepImports,
         serdeImports
           ? `// Serde files for cross-context class registration\n${serdeImports}`
@@ -1883,7 +1889,7 @@ export async function getNextBuilderDeferred() {
       await this.writeFileIfChanged(stepRouteFile, routeContents);
 
       const manifest = await this.createDeferredStepsManifest({
-        stepFiles: copiedStepSourceFiles,
+        stepFiles: manifestStepFiles,
         workflowFiles,
         serdeOnlyFiles,
       });
