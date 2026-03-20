@@ -585,6 +585,14 @@ export interface SerializableSpecial {
     body: Response['body'];
     redirected: boolean;
   };
+  /**
+   * Serialized Run/WorkflowRun instance.
+   * Handled separately from Instance to avoid SWC plugin injecting
+   * class-serialization imports into the Run module.
+   */
+  Run: {
+    runId: string;
+  };
   Class: {
     classId: string;
   };
@@ -651,6 +659,16 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       value instanceof global.BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof global.BigUint64Array && viewToBase64(value),
+    // Run instances are serialized to { runId } so they can be deserialized
+    // as WorkflowRun in the workflow VM. Uses __serializable marker instead
+    // of WORKFLOW_SERIALIZE to avoid the SWC plugin injecting class-serialization
+    // imports into run.ts (which breaks the step bundle).
+    Run: (value) => {
+      if (value === null || typeof value !== 'object') return false;
+      const cls = value.constructor;
+      if (!cls || (cls as any).__serializable !== 'Run') return false;
+      return { runId: (value as any).runId };
+    },
     // Class and Instance are intentionally placed before Error so that
     // custom Error subclasses with WORKFLOW_SERIALIZE take precedence
     // over the generic Error serialization (devalue uses first-match-wins).
@@ -1031,6 +1049,17 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     },
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
+    Run: (value) => {
+      // In the VM, look up WorkflowRun from the class registry (registered under 'Run').
+      // In the step context, look up the real Run class.
+      const RunClass = getSerializationClass('Run', global);
+      if (!RunClass) {
+        throw new Error(
+          'Run class not found in the serialization registry. Make sure the Run class is registered.'
+        );
+      }
+      return new (RunClass as any)(value.runId);
+    },
     Class: (value) => {
       const classId = value.classId;
       // Pass the global object to support VM contexts where classes are registered
