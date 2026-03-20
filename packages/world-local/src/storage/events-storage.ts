@@ -1,5 +1,13 @@
+import fs from 'node:fs/promises';
 import path from 'node:path';
-import { RunNotSupportedError, WorkflowAPIError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  HookNotFoundError,
+  RunExpiredError,
+  RunNotSupportedError,
+  TooEarlyError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type {
   Event,
   EventResult,
@@ -84,7 +92,7 @@ export function createEventsStorage(
       if (data.eventType === 'run_created' && runId && runId !== '') {
         const validationError = validateUlidTimestamp(effectiveRunId, 'wrun_');
         if (validationError) {
-          throw new WorkflowAPIError(validationError, { status: 400 });
+          throw new WorkflowWorldError(validationError);
         }
       }
 
@@ -97,7 +105,7 @@ export function createEventsStorage(
 
       // Helper to check if step is in terminal state
       const isStepTerminal = (status: string) =>
-        ['completed', 'failed'].includes(status);
+        ['completed', 'failed', 'cancelled'].includes(status);
 
       // Get current run state for validation (if not creating a new run)
       // Skip run validation for step_completed and step_retrying - they only operate
@@ -187,9 +195,8 @@ export function createEventsStorage(
           runTerminalEvents.includes(data.eventType) ||
           data.eventType === 'run_cancelled'
         ) {
-          throw new WorkflowAPIError(
-            `Cannot transition run from terminal state "${currentRun.status}"`,
-            { status: 409 }
+          throw new EntityConflictError(
+            `Cannot transition run from terminal state "${currentRun.status}"`
           );
         }
 
@@ -199,9 +206,8 @@ export function createEventsStorage(
           data.eventType === 'hook_created' ||
           data.eventType === 'wait_created'
         ) {
-          throw new WorkflowAPIError(
-            `Cannot create new entities on run in terminal state "${currentRun.status}"`,
-            { status: 409 }
+          throw new EntityConflictError(
+            `Cannot create new entities on run in terminal state "${currentRun.status}"`
           );
         }
       }
@@ -227,25 +233,23 @@ export function createEventsStorage(
 
         // Event ordering: step must exist before these events
         if (!validatedStep) {
-          throw new WorkflowAPIError(`Step "${data.correlationId}" not found`, {
-            status: 404,
-          });
+          throw new WorkflowWorldError(
+            `Step "${data.correlationId}" not found`
+          );
         }
 
         // Step terminal state validation
         if (isStepTerminal(validatedStep.status)) {
-          throw new WorkflowAPIError(
-            `Cannot modify step in terminal state "${validatedStep.status}"`,
-            { status: 409 }
+          throw new EntityConflictError(
+            `Cannot modify step in terminal state "${validatedStep.status}"`
           );
         }
 
         // On terminal runs: only allow completing/failing in-progress steps
         if (currentRun && isRunTerminal(currentRun.status)) {
           if (validatedStep.status !== 'running') {
-            throw new WorkflowAPIError(
-              `Cannot modify non-running step on run in terminal state "${currentRun.status}"`,
-              { status: 410 }
+            throw new RunExpiredError(
+              `Cannot modify non-running step on run in terminal state "${currentRun.status}"`
             );
           }
         }
@@ -266,9 +270,7 @@ export function createEventsStorage(
         );
 
         if (!existingHook) {
-          throw new WorkflowAPIError(`Hook "${data.correlationId}" not found`, {
-            status: 404,
-          });
+          throw new HookNotFoundError(data.correlationId);
         }
       }
       const event: Event = {
@@ -476,19 +478,31 @@ export function createEventsStorage(
             validatedStep.retryAfter &&
             validatedStep.retryAfter.getTime() > Date.now()
           ) {
-            const err = new WorkflowAPIError(
+            throw new TooEarlyError(
               `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
-              { status: 425 }
+              { retryAfter: validatedStep.retryAfter }
             );
-            // Add meta for step-handler to extract retryAfter timestamp
-            (err as any).meta = {
-              stepId: data.correlationId,
-              retryAfter: validatedStep.retryAfter.toISOString(),
-            };
-            throw err;
           }
 
+          // Best-effort guard: re-read the step entity to check if it
+          // reached terminal state between the validation read and now.
+          // This narrows the TOCTOU window but does not fully eliminate it
+          // (the local world is single-process / dev-only; the postgres
+          // world uses SQL-level atomic guards for production).
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+          const freshStep = await readJSONWithFallback(
+            basedir,
+            'steps',
+            stepCompositeKey,
+            StepSchema,
+            tag
+          );
+          if (freshStep && isStepTerminal(freshStep.status)) {
+            throw new EntityConflictError(
+              `Cannot modify step in terminal state "${freshStep.status}"`
+            );
+          }
+
           step = {
             ...validatedStep,
             status: 'running',
@@ -508,10 +522,26 @@ export function createEventsStorage(
         }
       } else if (data.eventType === 'step_completed' && 'eventData' in data) {
         // step_completed: Terminal state with output
-        // Reuse validatedStep from validation (already read above)
+        // Uses writeExclusive on a lock file to atomically prevent concurrent
+        // invocations from both completing the same step (TOCTOU race).
         const completedData = data.eventData as { result: any };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+          const lockName = tag
+            ? `${stepCompositeKey}.terminal.${tag}`
+            : `${stepCompositeKey}.terminal`;
+          const terminalLockPath = path.join(
+            basedir,
+            '.locks',
+            'steps',
+            lockName
+          );
+          const claimed = await writeExclusive(terminalLockPath, '');
+          if (!claimed) {
+            throw new EntityConflictError(
+              'Cannot modify step in terminal state'
+            );
+          }
           step = {
             ...validatedStep,
             status: 'completed',
@@ -527,13 +557,29 @@ export function createEventsStorage(
         }
       } else if (data.eventType === 'step_failed' && 'eventData' in data) {
         // step_failed: Terminal state with error
-        // Reuse validatedStep from validation (already read above)
+        // Uses writeExclusive on a lock file to atomically prevent concurrent
+        // invocations from both failing the same step (TOCTOU race).
         const failedData = data.eventData as {
           error: any;
           stack?: string;
         };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+          const lockName = tag
+            ? `${stepCompositeKey}.terminal.${tag}`
+            : `${stepCompositeKey}.terminal`;
+          const terminalLockPath = path.join(
+            basedir,
+            '.locks',
+            'steps',
+            lockName
+          );
+          const claimed = await writeExclusive(terminalLockPath, '');
+          if (!claimed) {
+            throw new EntityConflictError(
+              'Cannot modify step in terminal state'
+            );
+          }
           const error = {
             message:
               typeof failedData.error === 'string'
@@ -698,9 +744,8 @@ export function createEventsStorage(
           tag
         );
         if (existingWait) {
-          throw new WorkflowAPIError(
-            `Wait "${data.correlationId}" already exists`,
-            { status: 409 }
+          throw new EntityConflictError(
+            `Wait "${data.correlationId}" already exists`
           );
         }
         wait = {
@@ -718,8 +763,20 @@ export function createEventsStorage(
           wait
         );
       } else if (data.eventType === 'wait_completed') {
-        // wait_completed: Transitions wait to 'completed', rejects duplicates
+        // wait_completed: Transitions wait to 'completed', rejects duplicates.
+        // Uses writeExclusive on a lock file to atomically prevent concurrent
+        // invocations from both completing the same wait (TOCTOU race).
         const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
+        const waitLockName = tag
+          ? `${waitCompositeKey}.completed.${tag}`
+          : `${waitCompositeKey}.completed`;
+        const lockPath = path.join(basedir, '.locks', 'waits', waitLockName);
+        const claimed = await writeExclusive(lockPath, '');
+        if (!claimed) {
+          throw new EntityConflictError(
+            `Wait "${data.correlationId}" already completed`
+          );
+        }
         const existingWait = await readJSONWithFallback(
           basedir,
           'waits',
@@ -728,16 +785,14 @@ export function createEventsStorage(
           tag
         );
         if (!existingWait) {
-          throw new WorkflowAPIError(`Wait "${data.correlationId}" not found`, {
-            status: 404,
-          });
-        }
-        if (existingWait.status === 'completed') {
-          throw new WorkflowAPIError(
-            `Wait "${data.correlationId}" already completed`,
-            { status: 409 }
+          // Clean up the lock file we just claimed — the wait doesn't exist
+          await fs.unlink(lockPath).catch(() => {});
+          throw new WorkflowWorldError(
+            `Wait "${data.correlationId}" not found`
           );
         }
+        // The lock file (writeExclusive above) already prevents concurrent
+        // completions — no additional status check needed.
         wait = {
           ...existingWait,
           status: 'completed',

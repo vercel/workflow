@@ -162,6 +162,8 @@ Aside from providing `sleep()` as a tool, there are other use cases for Agents t
 When hitting API rate limits, use `RetryableError` with a delay:
 
 ```typescript lineNumbers
+import { RetryableError } from "workflow";
+
 async function callRateLimitedAPI(endpoint: string) {
   "use step";
 

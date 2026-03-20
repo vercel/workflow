@@ -4,7 +4,6 @@ import { fileURLToPath } from 'node:url';
 import { globSync } from 'glob';
 import { describe, expect, it } from 'vitest';
 import { extractCodeSamples } from '../extractor.js';
-import { addInferredImports } from '../import-inference.js';
 import { formatResult, typeCheckBatch } from '../type-checker.js';
 import type {
   CodeSample,
@@ -79,7 +78,11 @@ for (const relativeFile of allDocFiles) {
     if (sample.skipTypeCheck) {
       skippedSamples.push({ relativeFile, sample });
     } else {
-      const processed = addInferredImports(sample);
+      const processed: ProcessedCodeSample = {
+        ...sample,
+        processedSource: sample.source,
+        addedImports: [],
+      };
       allSamples.push({ relativeFile, sample, processed });
     }
   }
