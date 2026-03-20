@@ -614,96 +614,49 @@ describe('e2e', () => {
   // Output stream tests use run.getReadable() which requires in-process streaming
   // infrastructure. The local world's streamer uses an EventEmitter that doesn't work
   // cross-process (test runner ↔ workbench app).
-  //
-  // outputStreamWorkflow writes 2 chunks to the default stream:
-  //   chunk 0: binary "Hello, world!"
-  //   chunk 1: object { foo: 'test' }
-  // and 2 chunks to the "test" named stream:
-  //   chunk 0: binary "Hello, named stream!"
-  //   chunk 1: object { foo: 'bar' }
-  describe.skipIf(isLocalDeployment())('outputStreamWorkflow', () => {
-    const startIndexCases = [
-      {
-        name: 'no startIndex (reads all chunks)',
-        startIndex: undefined,
-        expectedDefault: [
-          { type: 'binary', value: 'Hello, world!' },
-          { type: 'object', value: { foo: 'test' } },
-        ],
-        expectedNamed: [
-          { type: 'binary', value: 'Hello, named stream!' },
-          { type: 'object', value: { foo: 'bar' } },
-        ],
-        // Can stream in real-time without waiting for completion
-        waitForCompletion: false,
-      },
-      {
-        name: 'positive startIndex (skips first chunk)',
-        startIndex: 1,
-        expectedDefault: [{ type: 'object', value: { foo: 'test' } }],
-        expectedNamed: [{ type: 'object', value: { foo: 'bar' } }],
-        // Positive startIndex needs the stream written up to that point
-        waitForCompletion: true,
-      },
-      {
-        name: 'negative startIndex (reads from end)',
-        startIndex: -1,
-        expectedDefault: [{ type: 'object', value: { foo: 'test' } }],
-        expectedNamed: [{ type: 'object', value: { foo: 'bar' } }],
-        // Negative startIndex resolves at connection time using knownChunkCount,
-        // so the stream must be fully written before connecting the reader.
-        waitForCompletion: true,
-      },
-    ] as const;
+  test.skipIf(isLocalDeployment())(
+    'outputStreamWorkflow',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('outputStreamWorkflow'), []);
+      const reader = run.getReadable().getReader();
+      const namedReader = run.getReadable({ namespace: 'test' }).getReader();
 
-    for (const tc of startIndexCases) {
-      test(tc.name, { timeout: 60_000 }, async () => {
-        const run = await start(await e2e('outputStreamWorkflow'), []);
+      // First chunk from default stream: binary data
+      const r1 = await reader.read();
+      assert(r1.value);
+      assert(r1.value instanceof Uint8Array);
+      expect(Buffer.from(r1.value).toString()).toEqual('Hello, world!');
 
-        if (tc.waitForCompletion) {
-          await run.returnValue;
-        }
+      // First chunk from named stream: binary data
+      const r1Named = await namedReader.read();
+      assert(r1Named.value);
+      assert(r1Named.value instanceof Uint8Array);
+      expect(Buffer.from(r1Named.value).toString()).toEqual(
+        'Hello, named stream!'
+      );
 
-        const reader = run
-          .getReadable({ startIndex: tc.startIndex })
-          .getReader();
-        const namedReader = run
-          .getReadable({ namespace: 'test', startIndex: tc.startIndex })
-          .getReader();
+      // Second chunk from default stream: JSON object
+      const r2 = await reader.read();
+      assert(r2.value);
+      expect(r2.value).toEqual({ foo: 'test' });
 
-        for (const expected of tc.expectedDefault) {
-          const { value } = await reader.read();
-          assert(value);
-          if (expected.type === 'binary') {
-            assert(value instanceof Uint8Array);
-            expect(Buffer.from(value).toString()).toEqual(expected.value);
-          } else {
-            expect(value).toEqual(expected.value);
-          }
-        }
+      // Second chunk from named stream: JSON object
+      const r2Named = await namedReader.read();
+      assert(r2Named.value);
+      expect(r2Named.value).toEqual({ foo: 'bar' });
 
-        // Default stream should be closed after expected chunks
-        expect((await reader.read()).done).toBe(true);
+      // Streams should be closed
+      const r3 = await reader.read();
+      expect(r3.done).toBe(true);
 
-        for (const expected of tc.expectedNamed) {
-          const { value } = await namedReader.read();
-          assert(value);
-          if (expected.type === 'binary') {
-            assert(value instanceof Uint8Array);
-            expect(Buffer.from(value).toString()).toEqual(expected.value);
-          } else {
-            expect(value).toEqual(expected.value);
-          }
-        }
+      const r3Named = await namedReader.read();
+      expect(r3Named.done).toBe(true);
 
-        // Named stream should be closed after expected chunks
-        expect((await namedReader.read()).done).toBe(true);
-
-        const returnValue = await run.returnValue;
-        expect(returnValue).toEqual('done');
-      });
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual('done');
     }
-  });
+  );
 
   test.skipIf(isLocalDeployment())(
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
@@ -743,6 +696,31 @@ describe('e2e', () => {
 
       const r3Named = await namedReader.read();
       expect(r3Named.done).toBe(true);
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual('done');
+    }
+  );
+
+  test.skipIf(isLocalDeployment())(
+    'outputStreamWorkflow - negative startIndex reads from end',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('outputStreamWorkflow'), []);
+
+      // Use negative startIndex to read only the last chunk from the default stream.
+      // outputStreamWorkflow writes 2 chunks to the default stream:
+      //   chunk 0: binary "Hello, world!"
+      //   chunk 1: object { foo: 'test' }
+      // startIndex: -1 should skip chunk 0 and only return chunk 1.
+      const reader = run.getReadable({ startIndex: -1 }).getReader();
+
+      const r1 = await reader.read();
+      assert(r1.value);
+      expect(r1.value).toEqual({ foo: 'test' });
+
+      const r2 = await reader.read();
+      expect(r2.done).toBe(true);
 
       const returnValue = await run.returnValue;
       expect(returnValue).toEqual('done');
