@@ -1,4 +1,5 @@
 import {
+  HookConflictError,
   RUN_ERROR_CODES,
   WorkflowWorldError,
   WorkflowRuntimeError,
@@ -43,5 +44,11 @@ describe('classifyRunError', () => {
 
   it('classifies undefined throw as USER_ERROR', () => {
     expect(classifyRunError(undefined)).toBe(RUN_ERROR_CODES.USER_ERROR);
+  });
+
+  it('classifies HookConflictError as USER_ERROR (duplicate token is user mistake)', () => {
+    expect(
+      classifyRunError(new HookConflictError('my-token'))
+    ).toBe(RUN_ERROR_CODES.USER_ERROR);
   });
 });

@@ -220,6 +220,30 @@ export class WorkflowRunNotFoundError extends WorkflowError {
   }
 }
 
+/**
+ * Thrown when a hook token is already in use by another active workflow run.
+ *
+ * This is a user error — it means the same custom token was passed to
+ * `createHook` in two or more concurrent runs. Use a unique token per run
+ * (or omit the token to let the runtime generate one automatically).
+ */
+export class HookConflictError extends WorkflowError {
+  token: string;
+
+  constructor(token: string) {
+    super(
+      `Hook token "${token}" is already in use by another workflow`,
+      { slug: ERROR_SLUGS.HOOK_CONFLICT }
+    );
+    this.name = 'HookConflictError';
+    this.token = token;
+  }
+
+  static is(value: unknown): value is HookConflictError {
+    return isError(value) && value.name === 'HookConflictError';
+  }
+}
+
 export class HookNotFoundError extends WorkflowError {
   token: string;
 

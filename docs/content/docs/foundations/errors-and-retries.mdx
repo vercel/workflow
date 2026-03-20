@@ -139,6 +139,35 @@ callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
   step can run up to 4 times total (1 initial attempt + 3 retries).
 </Callout>
 
+## Error Codes
+
+When a workflow run fails, the error may include a `code` that classifies the failure. You can access it programmatically via the `Run` class:
+
+```typescript lineNumbers
+import { WorkflowRunFailedError } from "@workflow/errors";
+import { start } from "workflow/api";
+
+const run = await start(myWorkflow, [input]);
+
+try {
+  const result = await run.returnValue;
+} catch (err) {
+  if (WorkflowRunFailedError.is(err)) {
+    console.log(err.cause.code); // "USER_ERROR", "RUNTIME_ERROR", or undefined
+    console.log(err.cause.message); // The error message
+  }
+}
+```
+
+| Code | Meaning |
+| --- | --- |
+| `USER_ERROR` | An error thrown in your workflow or step code (including propagated step failures like `FatalError`) |
+| `RUNTIME_ERROR` | An internal runtime error such as a corrupted event log or missing data. If you see this, please [file an issue](https://github.com/vercel/workflow/issues) |
+
+<Callout type="info">
+  The error code is also available on the run entity via the CLI (`npx workflow inspect runs <runId>`) in the `error.code` field, and as an OTEL span attribute (`workflow.error.code`) for observability.
+</Callout>
+
 ## Rolling Back Failed Steps
 
 When a workflow fails partway through, it can leave the system in an inconsistent state.
