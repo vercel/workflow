@@ -18,6 +18,7 @@ describe('start() troubleshooting docs stay aligned with runtime behavior', () =
       'docs/content/docs/api-reference/workflow-api/start.mdx'
     );
     const nextGuide = read('docs/content/docs/getting-started/next.mdx');
+    const nestGuide = read('docs/content/docs/getting-started/nestjs.mdx');
 
     expect(errorDoc).toContain(
       "'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive."
@@ -26,5 +27,11 @@ describe('start() troubleshooting docs stay aligned with runtime behavior', () =
     expect(errorDoc).toContain('withWorkflow');
     expect(startDoc).toContain('/docs/errors/start-invalid-workflow-function');
     expect(nextGuide).toContain('/docs/errors/start-invalid-workflow-function');
+
+    expect(nestGuide).toContain('/docs/errors/start-invalid-workflow-function');
+    expect(nestGuide).toContain('"use workflow"');
+    expect(nestGuide).toContain(
+      'Workflow files must be inside the `src/` directory'
+    );
   });
 });

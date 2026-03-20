@@ -210,6 +210,15 @@ Create a new file for our first workflow in the `src/workflows` directory:
 Workflow files must be inside the `src/` directory so they get compiled with the SWC plugin that enables the `start()` function to work correctly.
 </Callout>
 
+<Callout type="info">
+If `start()` says it received an invalid workflow function, check both of these first:
+
+1. The workflow function includes `"use workflow"`.
+2. The workflow file lives inside `src/` so NestJS compiles it with the SWC plugin.
+
+See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function) for full examples and fixes.
+</Callout>
+
 ```typescript title="src/workflows/user-signup.ts" lineNumbers
 import { sleep } from "workflow";
 

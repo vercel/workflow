@@ -28,6 +28,15 @@ describe('observability and agent docs stay aligned with public APIs', () => {
     );
   });
 
+  it('documents parseWorkflowName for machine-readable workflowName fields', () => {
+    const doc = read(
+      'docs/content/docs/api-reference/workflow-api/get-world.mdx'
+    );
+
+    expect(doc).toContain('parseWorkflowName');
+    expect(doc).toContain('workflowName');
+  });
+
   it('documents both encryption key overload styles', () => {
     const doc = read('docs/content/docs/how-it-works/encryption.mdx');
 
