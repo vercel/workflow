@@ -27,8 +27,8 @@ import type {
 export interface Streamer {
   streams: {
     write(
-      name: string,
       runId: string,
+      name: string,
       chunk: string | Uint8Array
     ): Promise<void>;
 
@@ -39,18 +39,30 @@ export interface Streamer {
      *
      * If not implemented, the caller should fall back to sequential write() calls.
      *
-     * @param name - The stream name
      * @param runId - The run ID
+     * @param name - The stream name
      * @param chunks - Array of chunks to write, in order
      */
     writeMulti?(
-      name: string,
       runId: string,
+      name: string,
       chunks: (string | Uint8Array)[]
     ): Promise<void>;
 
-    close(name: string, runId: string): Promise<void>;
-    get(name: string, startIndex?: number): Promise<ReadableStream<Uint8Array>>;
+    close(runId: string, name: string): Promise<void>;
+
+    /**
+     * Read from a stream starting at the given chunk index.
+     * Positive values skip that many chunks from the start (0-based).
+     * Negative values start that many chunks before the current end
+     * (e.g. -3 on a 10-chunk stream starts at chunk 7). Clamped to 0.
+     */
+    get(
+      runId: string,
+      name: string,
+      startIndex?: number
+    ): Promise<ReadableStream<Uint8Array>>;
+
     list(runId: string): Promise<string[]>;
   };
 }

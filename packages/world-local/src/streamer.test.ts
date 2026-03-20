@@ -471,6 +471,63 @@ describe('streamer', () => {
         // Should successfully read remaining chunks
         expect(chunks.join('')).toBe('chunk2chunk3');
       });
+
+      it('should support negative startIndex to read from the end', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'negative-index-stream';
+
+        // Write 4 chunks
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk0');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk1');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk2');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk3');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        // Read with startIndex=-2 → last 2 chunks
+        const stream = await streamer.readFromStream(streamName, -2);
+        const reader = stream.getReader();
+
+        const chunks: string[] = [];
+        let done = false;
+        while (!done) {
+          const result = await reader.read();
+          done = result.done;
+          if (result.value) {
+            chunks.push(Buffer.from(result.value).toString());
+          }
+        }
+
+        expect(chunks.join('')).toBe('chunk2chunk3');
+      });
+
+      it('should clamp negative startIndex that exceeds chunk count to 0', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'negative-clamped-stream';
+
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk0');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'chunk1');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        // -100 exceeds total count, should clamp to 0 and return all chunks
+        const stream = await streamer.readFromStream(streamName, -100);
+        const reader = stream.getReader();
+
+        const chunks: string[] = [];
+        let done = false;
+        while (!done) {
+          const result = await reader.read();
+          done = result.done;
+          if (result.value) {
+            chunks.push(Buffer.from(result.value).toString());
+          }
+        }
+
+        expect(chunks.join('')).toBe('chunk0chunk1');
+      });
     });
 
     describe('integration scenarios', () => {

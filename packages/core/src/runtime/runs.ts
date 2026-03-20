@@ -23,6 +23,7 @@ export interface StopSleepResult {
 export interface ReadStreamOptions {
   /**
    * The index to start reading from. Defaults to 0.
+   * Negative values start from the end (e.g. -3 reads the last 3 chunks).
    */
   startIndex?: number;
 }

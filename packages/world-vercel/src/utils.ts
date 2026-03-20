@@ -35,6 +35,7 @@ function httpLog(
     );
   }
 }
+
 import {
   ErrorType,
   getSpanKind,

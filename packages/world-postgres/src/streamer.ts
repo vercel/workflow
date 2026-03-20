@@ -100,8 +100,8 @@ export function createStreamer(
   return {
     streams: {
       async write(
-        name: string,
         _runId: string | Promise<string>,
+        name: string,
         chunk: string | Uint8Array
       ) {
         // Await runId if it's a promise to ensure proper flushing
@@ -127,8 +127,8 @@ export function createStreamer(
       },
 
       async writeMulti(
-        name: string,
         _runId: string | Promise<string>,
+        name: string,
         chunks: (string | Uint8Array)[]
       ) {
         if (chunks.length === 0) return;
@@ -164,8 +164,8 @@ export function createStreamer(
         }
       },
       async close(
-        name: string,
-        _runId: string | Promise<string>
+        _runId: string | Promise<string>,
+        name: string
       ): Promise<void> {
         // Await runId if it's a promise to ensure proper flushing
         const runId = await _runId;
@@ -189,6 +189,7 @@ export function createStreamer(
         );
       },
       async get(
+        _runId: string,
         name: string,
         startIndex?: number
       ): Promise<ReadableStream<Uint8Array>> {
@@ -247,6 +248,16 @@ export function createStreamer(
               .from(streams)
               .where(and(eq(streams.streamId, name)))
               .orderBy(streams.chunkId);
+
+            // Resolve negative offset relative to the data chunk count
+            // (excluding the trailing EOF marker, if present)
+            if (typeof offset === 'number' && offset < 0) {
+              const dataCount =
+                chunks.length > 0 && chunks[chunks.length - 1].eof
+                  ? chunks.length - 1
+                  : chunks.length;
+              offset = Math.max(0, dataCount + offset);
+            }
 
             for (const chunk of [...chunks, ...(buffer ?? [])]) {
               enqueue(chunk);
