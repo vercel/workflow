@@ -72,7 +72,8 @@ import specifier rather than the file path. This is useful for:
 - `step//@myorg/tasks@2.0.0//processOrder`
 
 **With module specifier (npm package subpath export):**
-- `step//workflow/internal/builtins@4.0.0//__builtin_response_json`
+- `step//workflow/internal/builtins@4.0.0//start`
+- `step//workflow/internal/builtins@4.0.0//Run_cancel`
 - `class//@myorg/shared/models@1.0.0//User`
 
 **Without module specifier (local files):**

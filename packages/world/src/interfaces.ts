@@ -49,6 +49,12 @@ export interface Streamer {
   ): Promise<void>;
 
   closeStream(name: string, runId: string): Promise<void>;
+  /**
+   * Read from a stream starting at the given chunk index.
+   * Positive values skip that many chunks from the start (0-based).
+   * Negative values start that many chunks before the current end
+   * (e.g. -3 on a 10-chunk stream starts at chunk 7). Clamped to 0.
+   */
   readFromStream(
     name: string,
     startIndex?: number
