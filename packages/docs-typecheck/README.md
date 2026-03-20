@@ -70,7 +70,7 @@ For code samples that intentionally show errors:
 
 1. **Extraction**: Scans MDX/MD files for fenced `ts`, `typescript`, `js`, and `javascript` code blocks.
 2. **Filtering**: Applies `@skip-typecheck` / `@expect-error` markers and automatically skips incomplete or error-demo snippets.
-3. **Batch type checking**: Runs the remaining samples in a single TypeScript program using explicit workspace `paths` mappings from `src/type-checker.ts` and shared placeholder declarations from `src/docs-globals.d.ts`.
+3. **Batch type checking**: Runs the remaining **TypeScript** samples in a single TypeScript program using explicit workspace `paths` mappings from `src/type-checker.ts` and shared placeholder declarations from `src/docs-globals.d.ts`.
 
 ## What gets checked
 
@@ -78,7 +78,9 @@ The docs test suite includes:
 - `docs/content/docs/**/*.mdx`
 - `packages/*/README.md`
 
-Code samples are type-checked exactly as written. The tool does **not** auto-insert or infer imports.
+Within those files, fenced `ts` / `typescript` samples are type-checked exactly as written. The tool does **not** auto-insert or infer imports.
+
+Fenced `js` / `javascript` samples are currently extracted by the parser, but they are not part of the verification pass yet.
 
 ## Extending module resolution
 
