@@ -321,7 +321,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Filter events..."
+                placeholder="Search events..."
                 className="flex-1 min-w-0 bg-transparent text-sm text-gray-1000 placeholder:text-gray-800 outline-none"
               />
               {searchQuery && (

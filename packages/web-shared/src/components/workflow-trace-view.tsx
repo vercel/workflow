@@ -967,7 +967,6 @@ export const WorkflowTraceViewer = ({
 
   return (
     <div className="relative w-full h-full flex">
-      <NewTraceViewer trace={trace} />
       {/* Timeline (takes remaining space) */}
       <div className="flex-1 min-w-0 relative">
         <TraceViewerContextProvider

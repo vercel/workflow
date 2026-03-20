@@ -1,0 +1,33 @@
+import { useMemo } from 'react';
+import { WorkflowRun } from '@workflow/core/runtime';
+import { buildTrace, TraceWithMeta } from '../lib/trace-builder';
+import { Event } from '@workflow/world';
+import { NewTraceViewer as NewTraceViewerComponent } from './new-trace-viewer/trace-viewer';
+import { Trace } from './trace-viewer/types';
+
+const NewTraceViewer = ({
+  run,
+  events,
+}: {
+  run: WorkflowRun;
+  events: Event[];
+}) => {
+  // Build trace only when actual data changes — no timer-driven rebuilds.
+  // Active span widths are animated imperatively by useLiveTick at 60fps.
+  const traceWithMeta: TraceWithMeta | undefined = useMemo(() => {
+    if (!run?.runId) {
+      return undefined;
+    }
+    return buildTrace(run, events, new Date());
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `new Date()` is intentionally not a dep; useLiveTick handles live growth
+  }, [run, events]);
+  const trace = traceWithMeta;
+
+  return (
+    <div className="relative w-full h-full flex">
+      <NewTraceViewerComponent trace={trace as Trace} />
+    </div>
+  );
+};
+
+export { NewTraceViewer };
