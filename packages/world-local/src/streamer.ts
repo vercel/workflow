@@ -3,8 +3,8 @@ import path from 'node:path';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
-  StreamInfoResponse,
   Streamer,
+  StreamInfoResponse,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
@@ -249,7 +249,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
       return data?.streams ?? [];
     },
 
-    async getChunks(
+    async getStreamChunks(
       name: string,
       _runId: string,
       options?: GetChunksOptions

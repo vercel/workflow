@@ -70,7 +70,7 @@ export interface Streamer {
    * Fetch stream chunks with cursor-based pagination.
    *
    * Unlike `readFromStream` (which returns a live `ReadableStream` that waits
-   * for new chunks in real-time), `getChunks` returns a snapshot of currently
+   * for new chunks in real-time), `getStreamChunks` returns a snapshot of currently
    * available chunks in a standard paginated response.
    *
    * @param name - The stream name/ID
@@ -78,7 +78,7 @@ export interface Streamer {
    * @param options - Pagination options (limit defaults to 100, max 1000)
    * @returns Paginated chunks with a `done` flag indicating stream completion
    */
-  getChunks(
+  getStreamChunks(
     name: string,
     runId: string,
     options?: GetChunksOptions

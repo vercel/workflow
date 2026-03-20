@@ -1,8 +1,8 @@
 import type {
   GetChunksOptions,
   StreamChunksResponse,
-  StreamInfoResponse,
   Streamer,
+  StreamInfoResponse,
 } from '@workflow/world';
 import { z } from 'zod';
 import {
@@ -172,7 +172,7 @@ export function createStreamer(config?: APIConfig): Streamer {
       return response.body as ReadableStream<Uint8Array>;
     },
 
-    async getChunks(
+    async getStreamChunks(
       name: string,
       runId: string,
       options?: GetChunksOptions

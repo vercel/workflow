@@ -2,8 +2,8 @@ import { EventEmitter } from 'node:events';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
-  StreamInfoResponse,
   Streamer,
+  StreamInfoResponse,
 } from '@workflow/world';
 import { and, asc, eq, gt } from 'drizzle-orm';
 import type { Sql } from 'postgres';
@@ -192,7 +192,7 @@ export function createStreamer(
         )
       );
     },
-    async getChunks(
+    async getStreamChunks(
       name: string,
       _runId: string,
       options?: GetChunksOptions
