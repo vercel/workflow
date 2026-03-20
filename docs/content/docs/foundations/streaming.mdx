@@ -89,6 +89,7 @@ This allows clients to reconnect and continue receiving data from where they lef
 
 `startIndex` also supports **negative values** to read relative to the end of the stream. For example, `startIndex: -5` starts 5 chunks before the current end. This is useful when you want to show the most recent output without reading the entire stream history:
 
+{/* @skip-typecheck: incomplete code sample */}
 ```typescript
 // Read only the last 10 chunks
 const stream = run.getReadable({ startIndex: -10 });
