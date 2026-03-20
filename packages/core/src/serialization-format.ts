@@ -205,6 +205,32 @@ export interface StreamRef {
   streamId: string;
 }
 
+/** Marker for Run reference objects rendered as links in the UI */
+export const RUN_REF_TYPE = '__workflow_run_ref__';
+
+/** A Run reference for UI display */
+export interface RunRef {
+  __type: typeof RUN_REF_TYPE;
+  runId: string;
+}
+
+/** Check if a value is a RunRef object */
+export const isRunRef = (value: unknown): value is RunRef => {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    '__type' in value &&
+    value.__type === RUN_REF_TYPE &&
+    'runId' in value &&
+    typeof value.runId === 'string'
+  );
+};
+
+/** Convert a serialized Run value to a RunRef for display */
+export const serializedRunToRunRef = (value: { runId: string }): RunRef => {
+  return { __type: RUN_REF_TYPE, runId: value.runId };
+};
+
 /** Marker for custom class instance references */
 export const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
 
@@ -334,6 +360,7 @@ export const observabilityRevivers: Revivers = {
   ReadableStream: streamToStreamRef,
   WritableStream: streamToStreamRef,
   TransformStream: streamToStreamRef,
+  Run: serializedRunToRunRef,
   StepFunction: serializedStepFunctionToString,
   Instance: serializedInstanceToRef,
   Class: serializedClassToString,
