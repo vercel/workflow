@@ -4,8 +4,8 @@ description: Thrown when a storage operation conflicts with the current entity s
 type: reference
 summary: Catch EntityConflictError when a world operation conflicts with entity state (e.g. duplicate events or runs).
 related:
-  - /docs/api-reference/workflow/errors/workflow-world-error
-  - /docs/api-reference/workflow/errors/run-expired-error
+  - /docs/api-reference/workflow-errors/workflow-world-error
+  - /docs/api-reference/workflow-errors/run-expired-error
 ---
 
 `EntityConflictError` is thrown by world implementations when a storage operation conflicts with the current entity state. This includes cases like creating a run that already exists or writing an event that has already been persisted.

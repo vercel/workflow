@@ -1,8 +1,6 @@
 {
-  "title": "Errors",
+  "title": "workflow/errors",
   "pages": [
-    "fatal-error",
-    "retryable-error",
     "hook-not-found-error",
     "workflow-run-not-found-error",
     "workflow-run-failed-error",

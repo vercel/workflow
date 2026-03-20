@@ -4,9 +4,9 @@ description: Thrown when awaiting the return value of a failed workflow run.
 type: reference
 summary: Catch WorkflowRunFailedError when awaiting run.returnValue on a run that encountered a fatal error.
 related:
-  - /docs/api-reference/workflow/errors/fatal-error
-  - /docs/api-reference/workflow/errors/workflow-run-cancelled-error
-  - /docs/api-reference/workflow/errors/workflow-run-not-found-error
+  - /docs/api-reference/workflow/fatal-error
+  - /docs/api-reference/workflow-errors/workflow-run-cancelled-error
+  - /docs/api-reference/workflow-errors/workflow-run-not-found-error
 ---
 
 `WorkflowRunFailedError` is thrown when awaiting `run.returnValue` on a workflow run whose status is `'failed'`. This indicates that the workflow encountered a fatal error during execution and cannot produce a return value.
