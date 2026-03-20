@@ -7,8 +7,6 @@ import { WorkflowTraceViewer } from './workflow-trace-view';
 
 interface RunTraceViewProps {
   run: WorkflowRun;
-  steps: Step[];
-  hooks: Hook[];
   events: Event[];
   isLoading?: boolean;
   error?: Error | null;
@@ -34,8 +32,6 @@ interface RunTraceViewProps {
 
 export function RunTraceView({
   run,
-  steps,
-  hooks,
   events,
   isLoading,
   error,
@@ -65,9 +61,7 @@ export function RunTraceView({
     <div className="w-full h-full relative">
       <WorkflowTraceViewer
         error={error}
-        steps={steps}
         events={events}
-        hooks={hooks}
         run={run}
         isLoading={isLoading}
         spanDetailData={spanDetailData}

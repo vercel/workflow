@@ -1,4 +1,8 @@
-import { WorkflowAPIError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  WorkflowWorldError,
+  WorkflowRunNotFoundError,
+} from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -64,9 +68,7 @@ describe('wakeUpRun', () => {
       },
     ];
 
-    const conflict = new WorkflowAPIError('Wait already completed', {
-      status: 409,
-    });
+    const conflict = new EntityConflictError('Wait already completed');
 
     const world = createMockWorld({ events, createError: conflict });
     const result = await wakeUpRun(world, 'wrun_123');
@@ -87,13 +89,53 @@ describe('wakeUpRun', () => {
       },
     ];
 
-    const serverError = new WorkflowAPIError('Internal server error', {
+    const serverError = new WorkflowWorldError('Internal server error', {
       status: 500,
     });
 
     const world = createMockWorld({ events, createError: serverError });
 
     await expect(wakeUpRun(world, 'wrun_123')).rejects.toThrow(AggregateError);
+  });
+});
+
+describe('Run.exists', () => {
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('should return true when the run exists', async () => {
+    const world = createMockWorld();
+    setWorld(world);
+
+    const run = new Run('wrun_123');
+    const result = await run.exists;
+
+    expect(result).toBe(true);
+  });
+
+  it('should return false when the run does not exist', async () => {
+    const world = createMockWorld();
+    (world.runs.get as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new WorkflowRunNotFoundError('wrun_nonexistent')
+    );
+    setWorld(world);
+
+    const run = new Run('wrun_nonexistent');
+    const result = await run.exists;
+
+    expect(result).toBe(false);
+  });
+
+  it('should re-throw non-WorkflowRunNotFoundError errors', async () => {
+    const world = createMockWorld();
+    (world.runs.get as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error('Internal server error')
+    );
+    setWorld(world);
+
+    const run = new Run('wrun_123');
+    await expect(run.exists).rejects.toThrow('Internal server error');
   });
 });
 

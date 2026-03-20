@@ -6,10 +6,11 @@ import type { ModelMessage } from 'ai';
 import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
-import { toast } from 'sonner';
+import { useToast } from '../../lib/toast';
 import { isEncryptedMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
+import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { ErrorCard } from '../ui/error-card';
 import {
   ErrorStackBlock,
@@ -215,7 +216,10 @@ type AttributeKey =
   | 'eventData'
   | 'resumeAt'
   | 'expiredAt'
-  | 'workflowCoreVersion';
+  | 'workflowCoreVersion'
+  | 'receivedCount'
+  | 'lastReceivedAt'
+  | 'disposedAt';
 
 const attributeOrder: AttributeKey[] = [
   'workflowName',
@@ -228,6 +232,9 @@ const attributeOrder: AttributeKey[] = [
   'runId',
   'attempt',
   'token',
+  'receivedCount',
+  'lastReceivedAt',
+  'disposedAt',
   'correlationId',
   'eventType',
   'deploymentId',
@@ -262,6 +269,7 @@ const sortByAttributeOrder = (a: string, b: string): number => {
  */
 const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   workflowCoreVersion: '@workflow/core version',
+  receivedCount: 'times resolved',
 };
 
 /**
@@ -329,6 +337,16 @@ const localMillisecondTimeOrNull = (value: unknown): string | null => {
   return formatLocalMillisecondTime(date);
 };
 
+const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
+  const date = parseDateValue(value);
+  if (!date) return null;
+  return (
+    <TimestampTooltip date={date}>
+      <span>{formatLocalMillisecondTime(date)}</span>
+    </TimestampTooltip>
+  );
+};
+
 interface DisplayContext {
   stepName?: string;
 }
@@ -353,6 +371,9 @@ const attributeToDisplayFn: Record<
   // Hook details
   token: (value: unknown) => String(value),
   isWebhook: (value: unknown) => String(value),
+  receivedCount: (value: unknown) => String(value),
+  lastReceivedAt: localMillisecondTimeOrNull,
+  disposedAt: localMillisecondTimeOrNull,
   // Event details
   eventType: (value: unknown) => String(value),
   correlationId: (value: unknown) => String(value),
@@ -365,15 +386,14 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
-  // Dates
-  // TODO: relative time with tooltips for ISO times
-  createdAt: localMillisecondTimeOrNull,
-  startedAt: localMillisecondTimeOrNull,
-  updatedAt: localMillisecondTimeOrNull,
-  completedAt: localMillisecondTimeOrNull,
-  expiredAt: localMillisecondTimeOrNull,
-  retryAfter: localMillisecondTimeOrNull,
-  resumeAt: localMillisecondTimeOrNull,
+  // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  createdAt: timestampWithTooltipOrNull,
+  startedAt: timestampWithTooltipOrNull,
+  updatedAt: timestampWithTooltipOrNull,
+  completedAt: timestampWithTooltipOrNull,
+  expiredAt: timestampWithTooltipOrNull,
+  retryAfter: timestampWithTooltipOrNull,
+  resumeAt: timestampWithTooltipOrNull,
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
@@ -569,13 +589,7 @@ export const AttributeBlock = ({
     attribute === 'input' ||
     attribute === 'output' ||
     attribute === 'eventData';
-  if (isLoading && isExpandableLoadingTarget) {
-    const label =
-      attribute === 'eventData'
-        ? 'Event Data'
-        : attribute === 'output'
-          ? 'Output'
-          : 'Input';
+  if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
     return (
       <div
         className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
@@ -586,19 +600,7 @@ export const AttributeBlock = ({
         >
           {attribute}
         </span>
-        <DetailCard
-          summary={label}
-          summaryClassName="text-base py-2"
-          disabled
-        />
-        <div
-          className="overflow-x-auto rounded-md border p-3"
-          style={{ borderColor: 'var(--ds-gray-300)' }}
-        >
-          <Skeleton className="h-4 w-[38%]" />
-          <Skeleton className="mt-2 h-4 w-[88%]" />
-          <Skeleton className="mt-2 h-4 w-[72%]" />
-        </div>
+        <Skeleton className="h-9 w-full rounded-md" />
       </div>
     );
   }
@@ -664,6 +666,7 @@ export const AttributePanel = ({
   error,
   expiredAt,
   onStreamClick,
+  resource,
 }: {
   data: Record<string, unknown>;
   moduleSpecifier?: string;
@@ -672,7 +675,10 @@ export const AttributePanel = ({
   expiredAt?: string | Date;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Resource type of the selected span — used to show targeted loading skeletons. */
+  resource?: string;
 }) => {
+  const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
     const result = { ...data };
@@ -695,9 +701,23 @@ export const AttributePanel = ({
   const basicAttributes = Object.keys(displayData)
     .filter((key) => !resolvableAttributes.includes(key))
     .sort(sortByAttributeOrder);
-  const resolvedAttributes = Object.keys(displayData)
-    .filter((key) => resolvableAttributes.includes(key))
-    .sort(sortByAttributeOrder);
+  const resolvedAttributes = useMemo(() => {
+    const present = Object.keys(displayData)
+      .filter((key) => resolvableAttributes.includes(key))
+      .sort(sortByAttributeOrder);
+
+    if (!isLoading) return present;
+
+    // During loading, ensure input/output appear so their skeletons render
+    // in the correct position (above the events section).
+    const loadingDefaults = ['input', 'output'];
+    for (const key of loadingDefaults) {
+      if (!present.includes(key)) {
+        present.push(key);
+      }
+    }
+    return present.sort(sortByAttributeOrder);
+  }, [displayData, isLoading]);
 
   // Filter out attributes that return null
   const visibleBasicAttributes = basicAttributes.filter((attribute) => {
@@ -773,13 +793,22 @@ export const AttributePanel = ({
                 typeof displayValue === 'string'
                   ? displayValue
                   : String(displayValue ?? displayData.moduleSpecifier ?? '');
-              const showDivider = index < orderedBasicAttributes.length - 1;
+              const shouldCapitalizeLabel = attribute !== 'workflowCoreVersion';
+              const showResumeAtSkeleton =
+                isLoading && resource === 'sleep' && !displayData.resumeAt;
+              const showDivider =
+                index < orderedBasicAttributes.length - 1 ||
+                showResumeAtSkeleton;
 
               return (
                 <div key={attribute} className="py-1">
                   <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
                     <span
-                      className="text-[14px] first-letter:uppercase"
+                      className={
+                        shouldCapitalizeLabel
+                          ? 'text-[14px] first-letter:uppercase'
+                          : 'text-[14px]'
+                      }
                       style={{ color: 'var(--ds-gray-700)' }}
                     >
                       {getAttributeDisplayName(attribute)}
@@ -819,6 +848,19 @@ export const AttributePanel = ({
                 </div>
               );
             })}
+            {isLoading && resource === 'sleep' && !displayData.resumeAt && (
+              <div className="py-1">
+                <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                  <span
+                    className="text-[14px] first-letter:uppercase"
+                    style={{ color: 'var(--ds-gray-700)' }}
+                  >
+                    resumeAt
+                  </span>
+                  <Skeleton className="h-4 w-[55%]" />
+                </div>
+              </div>
+            )}
           </div>
         )}
         {error ? (

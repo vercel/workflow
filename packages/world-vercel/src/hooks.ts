@@ -1,4 +1,4 @@
-import { HookNotFoundError, WorkflowAPIError } from '@workflow/errors';
+import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import type {
   CreateHookRequest,
   GetHookParams,
@@ -72,7 +72,7 @@ export async function getHook(
   config?: APIConfig
 ): Promise<Hook> {
   const resolveData = params?.resolveData || 'all';
-  const endpoint = `/v2/hooks/${hookId}`;
+  const endpoint = `/v2/hooks/${encodeURIComponent(hookId)}`;
 
   const hook = await makeRequest({
     endpoint,
@@ -112,7 +112,7 @@ export async function getHookByToken(
       schema: HookSchema,
     });
   } catch (error) {
-    if (WorkflowAPIError.is(error) && error.status === 404) {
+    if (WorkflowWorldError.is(error) && error.status === 404) {
       throw new HookNotFoundError(token);
     }
     throw error;
@@ -124,7 +124,7 @@ export async function disposeHook(
   config?: APIConfig
 ): Promise<Hook> {
   return makeRequest({
-    endpoint: `/v2/hooks/${hookId}`,
+    endpoint: `/v2/hooks/${encodeURIComponent(hookId)}`,
     options: { method: 'DELETE' },
     config,
     schema: HookSchema,

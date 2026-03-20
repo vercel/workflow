@@ -4,7 +4,9 @@ import {
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
 } from 'workflow/internal/errors';
-import { allWorkflows } from '@/_workflows';
+// Use a relative import instead of @/_workflows path alias because esbuild's
+// discovery build cannot resolve tsconfig path aliases without baseUrl set.
+import { allWorkflows } from '../../_workflows';
 
 export default async function handler(
   req: NextApiRequest,

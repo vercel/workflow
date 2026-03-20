@@ -1,5 +1,54 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.60
+
+### Patch Changes
+
+- [#1420](https://github.com/vercel/workflow/pull/1420) [`3cc2943`](https://github.com/vercel/workflow/commit/3cc29431b266832dd3d9b735da455d2b11612ea7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Set `maxDuration` in generated `.vc-config.json` for workflow functions (`"max"` for step, `60` for flow)
+
+- Updated dependencies [[`5d95abf`](https://github.com/vercel/workflow/commit/5d95abf9413462e82759bf68ab985e794ce05756), [`3cc2943`](https://github.com/vercel/workflow/commit/3cc29431b266832dd3d9b735da455d2b11612ea7)]:
+  - @workflow/swc-plugin@4.1.0-beta.20
+  - @workflow/builders@4.0.1-beta.62
+  - @workflow/rollup@4.0.0-beta.28
+  - @workflow/vite@4.0.0-beta.21
+
+## 4.0.0-beta.59
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.61
+  - @workflow/rollup@4.0.0-beta.27
+  - @workflow/vite@4.0.0-beta.20
+
+## 4.0.0-beta.58
+
+### Patch Changes
+
+- Updated dependencies [[`d72c822`](https://github.com/vercel/workflow/commit/d72c82220f0c56bb26edbc918e485b8bd14c959b)]:
+  - @workflow/builders@4.0.1-beta.60
+  - @workflow/swc-plugin@4.1.0-beta.19
+  - @workflow/rollup@4.0.0-beta.26
+  - @workflow/vite@4.0.0-beta.19
+
+## 4.0.0-beta.57
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.59
+  - @workflow/rollup@4.0.0-beta.25
+  - @workflow/vite@4.0.0-beta.18
+
+## 4.0.0-beta.56
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/builders@4.0.1-beta.58
+  - @workflow/rollup@4.0.0-beta.24
+  - @workflow/vite@4.0.0-beta.17
+
 ## 4.0.0-beta.55
 
 ### Patch Changes

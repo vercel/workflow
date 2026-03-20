@@ -16,6 +16,7 @@
     "@workflow/world-postgres": "workspace:*",
     "@types/node": "catalog:",
     "workflow": "workspace:*",
+    "@workflow/ai": "workspace:*",
     "ai": "catalog:",
     "h3": "^1.15.4",
     "lodash.chunk": "^4.2.0",

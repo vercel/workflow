@@ -14,8 +14,8 @@ import {
   sleep,
 } from 'workflow';
 import { getRun, start } from 'workflow/api';
-import { importedStepOnly } from './_imported_step_only.js';
-import { callThrower, stepThatThrowsFromHelper } from './helpers.js';
+import { importedStepOnly } from './_imported_step_only';
+import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
 //////////////////////////////////////////////////////////
 
@@ -79,8 +79,8 @@ export async function promiseAnyWorkflow() {
   'use workflow';
   const winner = await Promise.any([
     stepThatFails(),
-    specificDelay(1000, 'b'), // "b" should always win
-    specificDelay(3000, 'c'),
+    specificDelay(100, 'b'), // "b" should always win
+    specificDelay(6000, 'c'),
   ]);
   return winner;
 }
@@ -1016,139 +1016,6 @@ export class ChainableService {
 // E2E test for `this` serialization with .call() and .apply()
 //////////////////////////////////////////////////////////
 
-// ============================================================
-// 5XX SERVER ERROR RETRY E2E TEST
-// ============================================================
-// Tests that withServerErrorRetry in the step handler correctly
-// retries transient 5xx errors from workflow-server without
-// consuming step attempts.
-// ============================================================
-
-const FAULT_MAP_SYMBOL = Symbol.for('__test_5xx_fault_map');
-const FAULT_WRAPPER_INSTALLED_SYMBOL = Symbol.for(
-  '__test_5xx_fault_wrapper_installed'
-);
-
-type FaultState = {
-  installStepId: string;
-  targetStepId?: string;
-  remaining: number;
-  triggered: number;
-};
-
-function shouldInjectStepCompletedFault(state: FaultState, data: any): boolean {
-  if (data?.eventType !== 'step_completed') return false;
-
-  const correlationId =
-    typeof data?.correlationId === 'string' ? data.correlationId : null;
-  if (!correlationId) return false;
-
-  // Never inject on the install step itself. This avoids flakiness when
-  // workflow-server transiently retries install step_completed.
-  if (correlationId === state.installStepId) return false;
-
-  // Target exactly one non-install step (the first one encountered).
-  // Retries of that same step share correlationId and are intercepted.
-  state.targetStepId ??= correlationId;
-
-  if (correlationId !== state.targetStepId) return false;
-  if (state.remaining <= 0) return false;
-
-  state.remaining--;
-  state.triggered++;
-  return true;
-}
-
-/**
- * Step that installs a fault injection patch on world.events.create,
- * scoped to the current runId. Only intercepts step_completed events
- * for the target run; all other runs pass through unmodified.
- */
-async function installServerErrorFaultInjection(failCount: number) {
-  'use step';
-  const { workflowRunId } = getWorkflowMetadata();
-  const { stepId: installStepId } = getStepMetadata();
-  const world = (globalThis as any)[Symbol.for('@workflow/world//cache')];
-
-  // Process-level map for run-scoped fault state
-  (globalThis as any)[FAULT_MAP_SYMBOL] ??= new Map<string, FaultState>();
-  const faultMap = (globalThis as any)[FAULT_MAP_SYMBOL] as Map<
-    string,
-    FaultState
-  >;
-
-  faultMap.set(workflowRunId, {
-    installStepId,
-    remaining: failCount,
-    triggered: 0,
-  });
-
-  // Install the wrapper once per process to avoid nested wrappers across runs.
-  if (!(world.events.create as any)[FAULT_WRAPPER_INSTALLED_SYMBOL]) {
-    const original = world.events.create.bind(world.events);
-
-    const wrappedCreate = async (
-      rid: string,
-      data: any,
-      ...rest: any[]
-    ): Promise<any> => {
-      const state = faultMap.get(rid);
-      if (state && shouldInjectStepCompletedFault(state, data)) {
-        // Create an error that matches WorkflowAPIError.is() check:
-        // isError(value) && value.name === 'WorkflowAPIError'
-        const err: any = new Error('Injected 5xx');
-        err.name = 'WorkflowAPIError';
-        err.status = 500;
-        throw err;
-      }
-
-      return original(rid, data, ...rest);
-    };
-
-    (wrappedCreate as any)[FAULT_WRAPPER_INSTALLED_SYMBOL] = true;
-    world.events.create = wrappedCreate;
-  }
-}
-
-/**
- * Simple step that does computation (input * 2).
- * Its step_completed event will be intercepted by the fault injection.
- */
-async function doWork(input: number) {
-  'use step';
-  return input * 2;
-}
-
-/**
- * Cleanup step that reads and clears the fault injection state for this run.
- * Returns how many times the fault was triggered.
- */
-async function cleanupFaultInjection() {
-  'use step';
-  const { workflowRunId } = getWorkflowMetadata();
-  const faultMap = (globalThis as any)[FAULT_MAP_SYMBOL] as
-    | Map<string, FaultState>
-    | undefined;
-  const state = faultMap?.get(workflowRunId);
-  const triggered = state?.triggered ?? 0;
-  faultMap?.delete(workflowRunId);
-  return triggered;
-}
-
-/**
- * Workflow that exercises the 5xx retry codepath in the step handler.
- * 1. Installs fault injection (scoped to this run's step_completed events)
- * 2. Runs a computation step (its step_completed will fail with 5xx twice)
- * 3. Cleans up and returns result + retry count for assertions
- */
-export async function serverError5xxRetryWorkflow(input: number) {
-  'use workflow';
-  await installServerErrorFaultInjection(2);
-  const result = await doWork(input);
-  const retryCount = await cleanupFaultInjection();
-  return { result, retryCount };
-}
-
 //////////////////////////////////////////////////////////
 // E2E test for `this` serialization with .call() and .apply()
 //////////////////////////////////////////////////////////
@@ -1283,7 +1150,7 @@ import {
   createVector,
   scaleVector,
   sumVectors,
-} from './serde-steps.js';
+} from './serde-steps';
 
 /**
  * Workflow that tests cross-context class registration.
@@ -1465,4 +1332,107 @@ export async function stepFunctionAsStartArgWorkflow(
   const doubled = await stepFn(directResult, directResult);
 
   return { directResult, viaStepResult, doubled };
+}
+
+//////////////////////////////////////////////////////////
+
+async function processPayload(payload: { type: string; id?: number }) {
+  'use step';
+  return { processed: true, type: payload.type, id: payload.id };
+}
+
+/**
+ * Workflow that uses a hook with concurrent sleep — tests that multiple
+ * hook payloads are delivered correctly even when a sleep has no wait_completed.
+ *
+ * This is a regression test for a bug where the sleep's WorkflowSuspension
+ * would terminate the workflow before all hook payloads were processed.
+ */
+export async function hookWithSleepWorkflow(token: string) {
+  'use workflow';
+
+  type Payload = { type: string; id?: number; done?: boolean };
+
+  using hook = createHook<Payload>({ token });
+
+  // Concurrent sleep that won't complete during the test
+  void sleep('1d');
+
+  const results: any[] = [];
+
+  for await (const payload of hook) {
+    // Process each payload through a step to prove we reached it
+    const result = await processPayload(payload);
+    results.push(result);
+
+    if (payload.done) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+//////////////////////////////////////////////////////////
+
+async function addNumbers(a: number, b: number) {
+  'use step';
+  return a + b;
+}
+
+/**
+ * Validates that sleep() inside a loop with step calls actually delays
+ * execution on each iteration (i.e., sleeps are honored on replay, not skipped).
+ *
+ * Reproduces the scenario from a user report claiming that:
+ *   for (let i = 0; i < N; i++) {
+ *     await someStep();
+ *     await sleep(duration);
+ *   }
+ * ...fires all iterations instantly with zero delay.
+ */
+async function noopStep(iteration: number) {
+  'use step';
+  return { iteration, ts: Date.now() };
+}
+
+export async function sleepInLoopWorkflow() {
+  'use workflow';
+  const iterations = 3;
+  const sleepMs = 3_000; // 3s between iterations (2 sleeps total)
+  const timestamps: number[] = [];
+
+  for (let i = 0; i < iterations; i++) {
+    const result = await noopStep(i);
+    timestamps.push(result.ts);
+    if (i < iterations - 1) {
+      await sleep(sleepMs);
+    }
+  }
+
+  const totalElapsed = timestamps[timestamps.length - 1] - timestamps[0];
+  return { timestamps, totalElapsed };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Control workflow: sleep + sequential steps (no hooks).
+ * Proves that void sleep().then() does NOT interfere with sequential steps
+ * whose events all exist in the log. This is a control test to show
+ * the promiseQueue regression is specific to hooks.
+ */
+export async function sleepWithSequentialStepsWorkflow() {
+  'use workflow';
+
+  // Fire-and-forget sleep (same pattern as agent-stop)
+  let shouldCancel = false;
+  void sleep('1d').then(() => {
+    shouldCancel = true;
+  });
+
+  const a = await addNumbers(1, 2);
+  const b = await addNumbers(a, 3);
+  const c = await addNumbers(b, 4);
+  return { a, b, c, shouldCancel };
 }

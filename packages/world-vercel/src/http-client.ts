@@ -8,12 +8,6 @@ let _dispatcher: RetryAgent | undefined;
  * - Connection pooling (up to 8 connections per origin)
  * - Retry: Automatic retry on 429/5xx or network errors with exponential backoff
  *   - Observes Retry-After header if received and lower than 30s
- *
- * Note: HTTP/2 is disabled because undici's experimental H2 support hangs
- * in certain Vercel runtime environments (sveltekit). HTTP/1.1 pipelining
- * is also disabled (pipelining: 1) because it causes head-of-line blocking
- * that deadlocks the webhook respondWith mechanism. The primary benefits
- * from undici here are retry logic and connection pooling.
  */
 export function getDispatcher(): RetryAgent {
   if (!_dispatcher) {
@@ -21,6 +15,12 @@ export function getDispatcher(): RetryAgent {
       new Agent({
         connections: 8,
         keepAliveTimeout: 10_000,
+        // H2 is specifically incompatible with SvelteKit on Vercel prod. Everything else
+        // runs fine.
+        // TODO: Investigate/fix the failure on SvelteKit so we can re-enable H2.
+        allowH2: false,
+        // HTTP/1.1 pipelining is disabled (pipelining: 1) because it causes
+        // head-of-line blocking that deadlocks the webhook respondWith mechanism.
         pipelining: 1,
       }),
       {

@@ -18,7 +18,9 @@ export class Service {
     // Instance method step that contains a nested step function
     async process(input) {
         // This nested step should be transformed
-        const helper = Service$process$helper;
+        const helper = async (x)=>{
+            return x * 2;
+        };
         const doubled = await helper(input);
         return doubled + this.value;
     }

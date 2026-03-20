@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-postgres",
-  "version": "4.1.0-beta.41",
+  "version": "4.1.0-beta.46",
   "description": "A reference World implementation based on PostgreSQL",
   "type": "module",
   "main": "dist/index.js",
@@ -47,6 +47,7 @@
   "dependencies": {
     "@vercel/queue": "catalog:",
     "@workflow/errors": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "@workflow/world-local": "workspace:*",
     "cbor-x": "1.6.0",

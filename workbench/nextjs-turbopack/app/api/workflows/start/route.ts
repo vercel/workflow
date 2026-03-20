@@ -2,10 +2,8 @@ import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
 import { start } from 'workflow/api';
 import { allWorkflows } from '@/_workflows';
-import {
-  WORKFLOW_DEFINITIONS,
-  type WorkflowName,
-} from '@/app/workflows/definitions';
+import { WORKFLOW_DEFINITIONS } from '@/app/workflows/definitions';
+import type { WorkflowName } from '@/app/workflows/types';
 
 export async function POST(request: NextRequest) {
   try {

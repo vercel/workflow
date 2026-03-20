@@ -1,6 +1,12 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path, { dirname } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { createVercelWorld } from '@workflow/world-vercel';
+import { onTestFailed } from 'vitest';
+import type { Run } from '../src/runtime';
+import { getWorld, setWorld } from '../src/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultCliTimeoutMs = Number(
@@ -137,6 +143,7 @@ const awaitCommand = async (
         env: {
           ...process.env,
           DEBUG: '1',
+          WORKFLOW_NO_UPDATE_CHECK: '1',
           ...envOverrides,
         },
       });
@@ -165,7 +172,19 @@ const awaitCommand = async (
       }
 
       child.on('error', (err) => reject(err));
-      child.on('close', () => {
+      child.on('close', (code, signal) => {
+        if (code !== 0) {
+          const exitReason = signal
+            ? `killed by signal ${signal}`
+            : `exited with code ${code}`;
+          const errorMessage = [
+            `CLI command failed (${exitReason}): ${command} ${args.join(' ')}`,
+            stderr ? `\n--- stderr ---\n${stderr}` : '',
+            stdout ? `\n--- stdout ---\n${stdout}` : '',
+          ].join('');
+          reject(new Error(errorMessage));
+          return;
+        }
         resolve({ stdout, stderr });
       });
     }
@@ -196,14 +215,23 @@ export const cliInspectJson = async (args: string) => {
       './node_modules/workflow/bin/run.js',
       'inspect',
       '--json',
+      '--decrypt',
       ...inspectArgs,
       ...cliArgs,
     ],
     cliAppPath
   );
+  if (!result.stdout.trim()) {
+    throw new Error(
+      [
+        'CLI produced no stdout output (expected JSON)',
+        result.stderr ? `\n--- stderr ---\n${result.stderr}` : '',
+      ].join('')
+    );
+  }
   try {
     console.log('Result:', result.stdout);
-    const json = JSON.parse(result.stdout || '{}');
+    const json = JSON.parse(result.stdout);
     return { json, stdout: result.stdout, stderr: result.stderr };
   } catch (err) {
     console.error('Stdout:', result.stdout);
@@ -233,6 +261,459 @@ export const cliCancel = async (runId: string) => {
  * Executes the `workflow health` CLI command and returns the parsed JSON result.
  * Uses --json flag for machine-readable output.
  */
+// ============================================================================
+// Shared manifest & world setup utilities
+// ============================================================================
+
+// Manifest type matching the structure from BaseBuilder.createManifest()
+export interface WorkflowManifest {
+  version: string;
+  workflows: Record<
+    string,
+    Record<string, { workflowId: string; graph?: unknown }>
+  >;
+  steps: Record<string, Record<string, { stepId: string }>>;
+  classes?: Record<string, Record<string, { classId: string }>>;
+}
+
+// Cached manifest fetched from the deployment
+let cachedManifest: WorkflowManifest | null = null;
+const manifestRetryTimeoutMs = Number(
+  process.env.WORKFLOW_E2E_MANIFEST_RETRY_MS ?? '10000'
+);
+const manifestRetryIntervalMs = 250;
+
+/**
+ * Fetches the workflow manifest from the deployment URL.
+ * The manifest is served at /.well-known/workflow/v1/manifest.json by each
+ * workbench app when WORKFLOW_PUBLIC_MANIFEST=1 is set.
+ */
+export async function fetchManifest(
+  deploymentUrl: string,
+  options?: { forceRefresh?: boolean }
+): Promise<WorkflowManifest> {
+  const forceRefresh = options?.forceRefresh ?? false;
+  if (cachedManifest && !forceRefresh) return cachedManifest;
+
+  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
+  const res = await fetch(url, {
+    headers: getProtectionBypassHeaders(),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Failed to fetch manifest from ${url}: ${res.status} ${await res.text()}`
+    );
+  }
+  cachedManifest = (await res.json()) as WorkflowManifest;
+  return cachedManifest;
+}
+
+export function findWorkflowMetadataInManifest(
+  manifest: WorkflowManifest,
+  workflowFile: string,
+  workflowFn: string
+): { workflowId: string } | null {
+  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
+    if (
+      manifestFile.endsWith(workflowFile) ||
+      workflowFile.endsWith(manifestFile)
+    ) {
+      const entry = functions[workflowFn];
+      if (entry) {
+        return entry;
+      }
+    }
+  }
+
+  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
+    const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
+    if (
+      manifestFileWithoutExt.endsWith(fileWithoutExt) ||
+      fileWithoutExt.endsWith(manifestFileWithoutExt)
+    ) {
+      const entry = functions[workflowFn];
+      if (entry) {
+        return entry;
+      }
+    }
+  }
+
+  return null;
+}
+
+export function getFallbackWorkflowId(
+  workflowFile: string,
+  workflowFn: string
+): string {
+  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  // Keep this in sync with the SWC transform ID format. This fallback is
+  // intentionally coupled so tests can continue running when deferred manifest
+  // publication lags behind discovery in staged/out-of-monorepo scenarios.
+  return `workflow//./${fileWithoutExt}//${workflowFn}`;
+}
+
+/**
+ * Looks up the workflow metadata from the manifest for a given workflow file and function name.
+ * Returns an object that can be passed directly to `start()`.
+ *
+ * The manifest contains the exact IDs produced by the SWC transform during the build,
+ * which handles symlink resolution and path normalization correctly.
+ */
+export async function getWorkflowMetadata(
+  deploymentUrl: string,
+  workflowFile: string,
+  workflowFn: string
+): Promise<{ workflowId: string }> {
+  let manifest = await fetchManifest(deploymentUrl);
+  let metadata = findWorkflowMetadataInManifest(
+    manifest,
+    workflowFile,
+    workflowFn
+  );
+  if (metadata) {
+    return metadata;
+  }
+
+  // Deferred discovery can grow the manifest during test execution, so poll
+  // briefly before failing to avoid races in staged/out-of-monorepo mode.
+  const deadline = Date.now() + manifestRetryTimeoutMs;
+  while (Date.now() < deadline) {
+    manifest = await fetchManifest(deploymentUrl, { forceRefresh: true });
+    metadata = findWorkflowMetadataInManifest(
+      manifest,
+      workflowFile,
+      workflowFn
+    );
+    if (metadata) {
+      return metadata;
+    }
+    await sleep(manifestRetryIntervalMs);
+  }
+
+  // For Vercel deployments, the workflow must be in the manifest. A missing
+  // workflow means the deployment's build didn't include it, so a fallback ID
+  // would just create a run that never executes and times out silently.
+  if (!isLocalDeployment()) {
+    const availableWorkflows = Object.entries(manifest.workflows)
+      .flatMap(([file, fns]) => Object.keys(fns).map((fn) => `${file}:${fn}`))
+      .join(', ');
+    throw new Error(
+      `Workflow "${workflowFn}" not found in manifest for "${workflowFile}" ` +
+        `after ${manifestRetryTimeoutMs}ms. The deployment may not include this workflow. ` +
+        `Available workflows: ${availableWorkflows || '(none)'}`
+    );
+  }
+
+  // For local development, fall back to the deterministic workflow ID format
+  // used by the transform. Deferred discovery can lag behind manifest
+  // publication in staged/out-of-monorepo tests.
+  const fallbackWorkflowId = getFallbackWorkflowId(workflowFile, workflowFn);
+  console.warn(
+    `Workflow "${workflowFn}" not found in manifest for "${workflowFile}" after ${manifestRetryTimeoutMs}ms; ` +
+      `falling back to ${fallbackWorkflowId}`
+  );
+  return { workflowId: fallbackWorkflowId };
+}
+
+/**
+ * Configures the world based on the current environment:
+ * - Local: sets env vars for local filesystem backend
+ * - Vercel: creates and sets a Vercel world
+ * - Postgres: relies on WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL env vars set by CI
+ */
+export function setupWorld(deploymentUrl: string): void {
+  if (isLocalDeployment()) {
+    // Set base URL so the local queue can reach the running workbench app
+    process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
+
+    // Set the data directory to match the workbench app's data directory.
+    // We must set this explicitly (not discover it) because the data dir
+    // may not exist yet when the test starts — the app creates it on first use.
+    // Next.js uses .next/workflow-data, all other frameworks use .workflow-data.
+    const appPath = getWorkbenchAppPath();
+    const appName = process.env.APP_NAME!;
+    const isNextJs = appName.includes('nextjs') || appName.includes('next-');
+    const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
+    process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+  } else if (process.env.WORKFLOW_VERCEL_ENV) {
+    // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI.
+    // Build the Vercel world explicitly with the CI-provided config rather than relying on
+    // createWorld() reading these env vars (which no longer happens at runtime).
+    setWorld(
+      createVercelWorld({
+        token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+        projectConfig: {
+          environment: process.env.WORKFLOW_VERCEL_ENV || undefined,
+          projectId: process.env.WORKFLOW_VERCEL_PROJECT || undefined,
+          projectName: process.env.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
+          teamId: process.env.WORKFLOW_VERCEL_TEAM || undefined,
+        },
+      })
+    );
+  }
+  // For Postgres tests: WORKFLOW_TARGET_WORLD and WORKFLOW_POSTGRES_URL are set by CI
+}
+
+// ============================================================================
+// Run diagnostics & tracking
+// ============================================================================
+
+interface TrackedRun {
+  run: Run<any>;
+  workflowFile?: string;
+  workflowFn?: string;
+}
+
+// Per-test tracked runs — reset between tests via setupRunTracking()
+let trackedRuns: TrackedRun[] = [];
+
+// Global list of run IDs collected for metadata (observability links)
+const globalCollectedRunIds: {
+  testName: string;
+  runId: string;
+  timestamp: string;
+}[] = [];
+
+/**
+ * Returns the collected run IDs for observability metadata.
+ */
+export function getCollectedRunIds() {
+  return globalCollectedRunIds;
+}
+
+/**
+ * Track a workflow run for diagnostics. On test failure, all tracked runs
+ * will have their diagnostics dumped to the console automatically.
+ * Also collects the run ID for observability metadata.
+ *
+ * If testName is omitted, uses the name from the most recent setupRunTracking() call.
+ */
+export function trackRun<T>(
+  run: Run<T>,
+  options?: {
+    testName?: string;
+    workflowFile?: string;
+    workflowFn?: string;
+  }
+): Run<T> {
+  const testName = options?.testName ?? currentTestName;
+  trackedRuns.push({
+    run,
+    workflowFile: options?.workflowFile,
+    workflowFn: options?.workflowFn,
+  });
+  globalCollectedRunIds.push({
+    testName,
+    runId: run.runId,
+    timestamp: new Date().toISOString(),
+  });
+  return run;
+}
+
+/**
+ * Build a Vercel observability dashboard URL for a workflow run.
+ */
+function getObservabilityDashboardUrl(runId: string): string | null {
+  const teamSlug = 'vercel-labs';
+  const projectSlug = process.env.WORKFLOW_VERCEL_PROJECT_SLUG;
+  const env = process.env.WORKFLOW_VERCEL_ENV;
+  if (!projectSlug || !env) return null;
+
+  const environment = env === 'production' ? 'production' : 'preview';
+  return `https://vercel.com/${teamSlug}/${projectSlug}/observability/workflows/runs/${runId}?environment=${environment}`;
+}
+
+/**
+ * Fetch run diagnostics via the world API. Returns a formatted string.
+ */
+async function getRunDiagnostics(tracked: TrackedRun): Promise<string> {
+  const { run, workflowFile, workflowFn } = tracked;
+  const lines: string[] = [
+    '',
+    '━━━ Workflow Run Diagnostics ━━━',
+    `Run ID:     ${run.runId}`,
+  ];
+
+  try {
+    const world = getWorld();
+    const runData = await world.runs.get(run.runId);
+
+    lines.push(`Status:     ${runData.status}`);
+    lines.push(`Workflow:   ${runData.workflowName}`);
+
+    if (runData.createdAt) {
+      lines.push(`Created:    ${runData.createdAt.toISOString()}`);
+    }
+    if (runData.startedAt) {
+      lines.push(`Started:    ${runData.startedAt.toISOString()}`);
+    }
+    if (runData.completedAt) {
+      lines.push(`Completed:  ${runData.completedAt.toISOString()}`);
+    }
+
+    if (runData.input !== undefined) {
+      const inputStr = JSON.stringify(runData.input);
+      lines.push(
+        `Input:      ${inputStr.length > 200 ? `${inputStr.slice(0, 200)}...` : inputStr}`
+      );
+    }
+    if (runData.output !== undefined) {
+      const outputStr = JSON.stringify(runData.output);
+      lines.push(
+        `Output:     ${outputStr.length > 200 ? `${outputStr.slice(0, 200)}...` : outputStr}`
+      );
+    }
+    if (runData.error) {
+      lines.push(
+        `Error:      ${runData.error.message || JSON.stringify(runData.error)}`
+      );
+      if (runData.error.stack) {
+        lines.push(
+          `Stack:      ${runData.error.stack.split('\n').slice(0, 3).join('\n            ')}`
+        );
+      }
+    }
+
+    // Event timeline
+    try {
+      const { data: events } = await world.events.list({
+        runId: run.runId,
+      });
+      if (events.length > 0) {
+        lines.push('');
+        lines.push('Event Timeline:');
+        const baseTime = events[0].createdAt?.getTime?.() ?? 0;
+        for (const event of events) {
+          const elapsed = baseTime
+            ? ((event.createdAt?.getTime?.() ?? 0) - baseTime) / 1000
+            : 0;
+          const prefix = `  +${elapsed.toFixed(1)}s`;
+          let detail = event.eventType;
+          if ('eventData' in event) {
+            const data = (event as any).eventData;
+            if (data?.stepName) detail += ` (${data.stepName})`;
+            if (data?.error?.message) detail += ` — ${data.error.message}`;
+          }
+          if ('correlationId' in event && event.correlationId) {
+            detail += ` [${event.correlationId}]`;
+          }
+          lines.push(`${prefix}  ${detail}`);
+        }
+      }
+    } catch {
+      lines.push('Events:     (failed to fetch)');
+    }
+  } catch (e) {
+    lines.push(`Status:     (failed to fetch: ${(e as Error).message})`);
+  }
+
+  // Source reference
+  if (workflowFile) {
+    const source = workflowFn
+      ? `${workflowFile} → ${workflowFn}`
+      : workflowFile;
+    lines.push(`Source:     ${source}`);
+  }
+
+  // Dashboard link
+  const dashboardUrl = getObservabilityDashboardUrl(run.runId);
+  if (dashboardUrl) {
+    lines.push(`Dashboard:  ${dashboardUrl}`);
+  }
+
+  lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+  lines.push('');
+
+  return lines.join('\n');
+}
+
+/**
+ * Emit a GitHub Actions annotation for a failed test.
+ *
+ * We intentionally omit `file=` here because the workflow source files
+ * in workbench/ are symlinks that GitHub can't resolve to repo paths.
+ * The custom reporter (github-reporter.ts) emits file-linked annotations
+ * using the actual test file paths instead.
+ */
+function emitGitHubAnnotation(
+  testName: string,
+  tracked: TrackedRun,
+  message: string
+) {
+  if (!process.env.CI) return;
+
+  const { run } = tracked;
+  const dashboardUrl = getObservabilityDashboardUrl(run.runId);
+  const parts = [`Run ${run.runId}`];
+  if (dashboardUrl) parts.push(dashboardUrl);
+  parts.push(message.split('\n')[0].slice(0, 200));
+
+  const annotation = parts.join(' | ');
+
+  // Write directly to stdout bypassing vitest's console interceptor.
+  // Vitest prefixes console.log output with ANSI codes which prevents
+  // GitHub Actions from parsing the ::error workflow command.
+  process.stdout.write(`\n::error title=E2E: ${testName}::${annotation}\n`);
+}
+
+/**
+ * Call inside a beforeEach() or at the start of a test to enable automatic
+ * diagnostics on failure. Registers a vitest `onTestFailed` hook that dumps
+ * run info for all tracked runs created during the test.
+ *
+ * Usage:
+ *   beforeEach((ctx) => { setupRunTracking(ctx.task.name); });
+ */
+export function setupRunTracking(testName: string) {
+  currentTestName = testName;
+  trackedRuns = [];
+  onTestFailed(
+    async (result) => {
+      const errorMessage = result.errors?.[0]?.message || 'Test failed';
+
+      for (const tracked of trackedRuns) {
+        try {
+          const diagnostics = await getRunDiagnostics(tracked);
+          console.error(diagnostics);
+          emitGitHubAnnotation(testName, tracked, errorMessage);
+        } catch {
+          console.error(
+            `[diagnostics] Failed to fetch diagnostics for run ${tracked.run.runId}`
+          );
+        }
+      }
+    },
+    30_000 // Allow 30s for diagnostics fetching (default hookTimeout is 10s)
+  );
+}
+
+// Current test name for auto-tracking
+let currentTestName = 'unknown';
+
+/**
+ * Write diagnostics sidecar file with per-test run info for the aggregation script.
+ * Should be called in afterAll().
+ */
+export function writeDiagnosticsSidecar() {
+  if (globalCollectedRunIds.length === 0) return;
+
+  const appName = process.env.APP_NAME || 'unknown';
+  const isVercel = !!process.env.WORKFLOW_VERCEL_ENV;
+  const backend = isVercel ? 'vercel' : 'local';
+  const filePath = path.resolve(
+    process.cwd(),
+    `e2e-diagnostics-${appName}-${backend}.json`
+  );
+
+  const diagnostics = globalCollectedRunIds.map((entry) => ({
+    ...entry,
+    dashboardUrl: getObservabilityDashboardUrl(entry.runId),
+  }));
+
+  fs.writeFileSync(filePath, JSON.stringify(diagnostics, null, 2));
+}
+
 export const cliHealthJson = async (options?: {
   endpoint?: 'workflow' | 'step' | 'both';
   timeout?: number;
@@ -266,9 +747,17 @@ export const cliHealthJson = async (options?: {
     45_000,
     envOverrides
   );
+  if (!result.stdout.trim()) {
+    throw new Error(
+      [
+        'CLI health check produced no stdout output (expected JSON)',
+        result.stderr ? `\n--- stderr ---\n${result.stderr}` : '',
+      ].join('')
+    );
+  }
   try {
     console.log('Health check result:', result.stdout);
-    const json = JSON.parse(result.stdout || '{}');
+    const json = JSON.parse(result.stdout);
     return { json, stdout: result.stdout, stderr: result.stderr };
   } catch (err) {
     console.error('Stdout:', result.stdout);

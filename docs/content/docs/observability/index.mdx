@@ -7,6 +7,7 @@ prerequisites:
   - /docs/foundations
 related:
   - /docs/how-it-works/event-sourcing
+  - /docs/how-it-works/encryption
 ---
 
 Workflow DevKit provides powerful tools to inspect, monitor, and debug your workflows through the CLI and Web UI. These tools allow you to inspect workflow runs, steps, webhooks, [events](/docs/how-it-works/event-sourcing), and stream output.
@@ -60,3 +61,5 @@ To inspect workflows running on Vercel, ensure you're logged in to the Vercel CL
 # Inspect workflows running on Vercel
 npx workflow inspect runs --backend vercel
 ```
+
+When deployed to Vercel, workflow data is [encrypted end-to-end](/docs/how-it-works/encryption). Encrypted fields display as locked placeholders until you choose to decrypt them using the **Decrypt** button in the web UI or the `--decrypt` flag in the CLI.

@@ -1,5 +1,77 @@
 # @workflow/cli
 
+## 4.2.0-beta.71
+
+### Patch Changes
+
+- Updated dependencies [[`02ea057`](https://github.com/vercel/workflow/commit/02ea0574422b342e6a467de073e003b73e099830), [`97e4384`](https://github.com/vercel/workflow/commit/97e43846f000f8ef0ea2f237a5c4cc696423e0f0), [`d6e8727`](https://github.com/vercel/workflow/commit/d6e8727a948ce60d15af635763239d8321cd7cee), [`5d95abf`](https://github.com/vercel/workflow/commit/5d95abf9413462e82759bf68ab985e794ce05756), [`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597), [`3cc2943`](https://github.com/vercel/workflow/commit/3cc29431b266832dd3d9b735da455d2b11612ea7), [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a), [`7b9b3c1`](https://github.com/vercel/workflow/commit/7b9b3c1a484a4effff2190ac9899a2608704f375), [`a2c0c7e`](https://github.com/vercel/workflow/commit/a2c0c7e6d9d7349bd49aac6e6ea072c68efb7620), [`0f07403`](https://github.com/vercel/workflow/commit/0f074030a408078e7db0ae0e494f64125d7444e4), [`2cc42cb`](https://github.com/vercel/workflow/commit/2cc42cb8a934532d9ce5b05185322a2f9ce76024), [`e902980`](https://github.com/vercel/workflow/commit/e9029807733d6a7dba76626ae61bd751e9a18fbe), [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08), [`f52afe7`](https://github.com/vercel/workflow/commit/f52afe77fffb981dd8812b84b39c2ecab2288f43)]:
+  - @workflow/world-local@4.1.0-beta.44
+  - @workflow/core@4.2.0-beta.71
+  - @workflow/world-vercel@4.1.0-beta.44
+  - @workflow/swc-plugin@4.1.0-beta.20
+  - @workflow/builders@4.0.1-beta.62
+  - @workflow/world@4.1.0-beta.13
+  - @workflow/web@4.1.0-beta.43
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.2.0-beta.70
+
+### Patch Changes
+
+- [#1343](https://github.com/vercel/workflow/pull/1343) [`3c3f80a`](https://github.com/vercel/workflow/commit/3c3f80a1f0e00878bd6550a39af59e305c035706) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `-e` short flag collision between `--endpoint` and `--env` in health command
+
+- [#1350](https://github.com/vercel/workflow/pull/1350) [`9f3551c`](https://github.com/vercel/workflow/commit/9f3551caec933679bbb733495422dc6899bbe2bc) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Support `WORKFLOW_NO_UPDATE_CHECK=1` env var to skip the npm registry version check on startup
+
+- Updated dependencies [[`7df1385`](https://github.com/vercel/workflow/commit/7df13854f85529929ff1187fe831f4dbc51b9121), [`73c12f1`](https://github.com/vercel/workflow/commit/73c12f14dabb465e2074e2aebbcd231a4d91bc09), [`5c6ae60`](https://github.com/vercel/workflow/commit/5c6ae607a58d200fbad673821728a1a39684dfd9), [`9feebee`](https://github.com/vercel/workflow/commit/9feebee15c7c35843b99254b23a2f7743ea3f8c6), [`58e67ce`](https://github.com/vercel/workflow/commit/58e67ce11bd69b982214e2734363fa7fd252f5f6), [`d6da7ec`](https://github.com/vercel/workflow/commit/d6da7ecca0fbf94d3331ce3bd7d28644a4f5cc3f)]:
+  - @workflow/core@4.2.0-beta.70
+  - @workflow/web@4.1.0-beta.42
+  - @workflow/world-local@4.1.0-beta.43
+  - @workflow/builders@4.0.1-beta.61
+
+## 4.2.0-beta.69
+
+### Patch Changes
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`fb5a500`](https://github.com/vercel/workflow/commit/fb5a500eadba80efdef75e3ccf6e85e957820f38), [`3648109`](https://github.com/vercel/workflow/commit/3648109861f1fbfe24101936dc35c9a36650b7e2), [`d5bc418`](https://github.com/vercel/workflow/commit/d5bc418816748ab2b5109ca7b082f3be427c326b), [`d5ae817`](https://github.com/vercel/workflow/commit/d5ae81786303554bbee0e9fa939c92274a883d18), [`d72c822`](https://github.com/vercel/workflow/commit/d72c82220f0c56bb26edbc918e485b8bd14c959b), [`d5bc418`](https://github.com/vercel/workflow/commit/d5bc418816748ab2b5109ca7b082f3be427c326b)]:
+  - @workflow/core@4.2.0-beta.69
+  - @workflow/world-vercel@4.1.0-beta.43
+  - @workflow/world@4.1.0-beta.12
+  - @workflow/world-local@4.1.0-beta.42
+  - @workflow/web@4.1.0-beta.41
+  - @workflow/builders@4.0.1-beta.60
+  - @workflow/swc-plugin@4.1.0-beta.19
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.2.0-beta.68
+
+### Patch Changes
+
+- [#1261](https://github.com/vercel/workflow/pull/1261) [`887cc2b`](https://github.com/vercel/workflow/commit/887cc2bd55b904c696083d87ab32a9fc03d619a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Refactor trace viewer to build spans entirely from events instead of fetching Steps and Hooks as separate resources.
+
+- [#1304](https://github.com/vercel/workflow/pull/1304) [`83dbd46`](https://github.com/vercel/workflow/commit/83dbd46456a8dbfc89efd87895929cbb813feda3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Stop reading `WORKFLOW_VERCEL_*` env vars at runtime to prevent unintended proxy routing
+
+- [#1309](https://github.com/vercel/workflow/pull/1309) [`d842ce1`](https://github.com/vercel/workflow/commit/d842ce1c435049805233cf218aa9ce07d9cab130) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Surface HTTP errors (e.g. 429 rate limit) from encryption key fetch instead of silently falling back to encrypted placeholders. Add 429 to the status text map.
+
+- Updated dependencies [[`887cc2b`](https://github.com/vercel/workflow/commit/887cc2bd55b904c696083d87ab32a9fc03d619a8), [`83dbd46`](https://github.com/vercel/workflow/commit/83dbd46456a8dbfc89efd87895929cbb813feda3), [`9781afb`](https://github.com/vercel/workflow/commit/9781afb490b252f5656e5d48c61c038c3aef794f), [`4a6ddd8`](https://github.com/vercel/workflow/commit/4a6ddd82c0fc1b3768f3a10befad77f43e81036e), [`854a25f`](https://github.com/vercel/workflow/commit/854a25f9103f5f3a5769dec6e3e5c6b98ed119b0), [`aa2f581`](https://github.com/vercel/workflow/commit/aa2f581b488baf929a784f289a81e21c39ccb5a6), [`d842ce1`](https://github.com/vercel/workflow/commit/d842ce1c435049805233cf218aa9ce07d9cab130), [`33101a2`](https://github.com/vercel/workflow/commit/33101a229207bafe869fb73686c6bfcc59ab25b0)]:
+  - @workflow/web@4.1.0-beta.40
+  - @workflow/core@4.2.0-beta.68
+  - @workflow/world-vercel@4.1.0-beta.42
+  - @workflow/world-local@4.1.0-beta.41
+  - @workflow/builders@4.0.1-beta.59
+
+## 4.2.0-beta.67
+
+### Patch Changes
+
+- Updated dependencies [[`c71befe`](https://github.com/vercel/workflow/commit/c71befe8ec73765e67b7f2e0627251643ab245d4), [`36a901d`](https://github.com/vercel/workflow/commit/36a901d2d2f2ba37ec024073a7dd39a094b9e9c0), [`5e4ef65`](https://github.com/vercel/workflow/commit/5e4ef657cf34c04d6d12b9823fb7fca8885c2f90), [`d8daa2a`](https://github.com/vercel/workflow/commit/d8daa2a9a95e2d01a4e6fee4e8dde51d82db762d)]:
+  - @workflow/core@4.2.0-beta.67
+  - @workflow/web@4.1.0-beta.39
+  - @workflow/world@4.1.0-beta.11
+  - @workflow/world-local@4.1.0-beta.40
+  - @workflow/world-vercel@4.1.0-beta.41
+  - @workflow/builders@4.0.1-beta.58
+  - @workflow/errors@4.1.0-beta.18
+
 ## 4.2.0-beta.66
 
 ### Patch Changes

@@ -95,12 +95,19 @@ describe('streamer', () => {
         if (!ctx.task.result?.errors?.length) {
           await fs.rm(testDir, { recursive: true, force: true });
         } else {
-          const files = await fs.readdir(`${testDir}/streams/chunks`);
+          const chunksPath = `${testDir}/streams/chunks`;
+          let files: string[];
+          try {
+            files = await fs.readdir(chunksPath);
+          } catch {
+            // chunks directory may not exist if the test failed before any writes
+            files = [];
+          }
           const chunks = [] as unknown[];
           let lastTime = 0;
           for (const file of files) {
             const chunk = deserializeChunk(
-              await fs.readFile(`${testDir}/streams/chunks/${file}`)
+              await fs.readFile(`${chunksPath}/${file}`)
             );
             // Extract ULID from filename: "streamName-chnk_ULID.bin"
             const chunkIdPart = String(file.split('-').at(-1)).split('.')[0]; // "chnk_ULID"
@@ -500,8 +507,11 @@ describe('streamer', () => {
       });
 
       it('should not lose or duplicate chunks written during stream initialization (race condition test)', async () => {
-        // Run multiple iterations to increase probability of catching race conditions
-        for (let iteration = 0; iteration < 10; iteration++) {
+        // Run multiple iterations to increase probability of catching race conditions.
+        // Keep the count low — each iteration creates a fresh streamer with its own
+        // temp directory, and per-chunk I/O on Windows CI can be ~100-200ms which
+        // easily blows the timeout at higher counts.
+        for (let iteration = 0; iteration < 3; iteration++) {
           const { streamer } = await setupStreamer();
           const streamName = `race-${iteration}`;
 

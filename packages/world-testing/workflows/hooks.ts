@@ -1,4 +1,4 @@
-import { defineHook, getWritable } from 'workflow';
+import { defineHook, getWritable } from '@workflow/core';
 import * as z from 'zod';
 
 export const Hook = defineHook({

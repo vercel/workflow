@@ -1,11 +1,14 @@
-import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
+import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import type { HookConflictEvent, HookReceivedEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
 import { EventConsumerResult } from '../events-consumer.js';
 import { WorkflowSuspension } from '../global.js';
 import { webhookLogger } from '../logger.js';
-import type { WorkflowOrchestratorContext } from '../private.js';
+import {
+  scheduleWhenIdle,
+  type WorkflowOrchestratorContext,
+} from '../private.js';
 import { hydrateStepReturnValue } from '../serialization.js';
 
 export function createCreateHook(ctx: WorkflowOrchestratorContext) {
@@ -38,7 +41,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     // Track if we have a conflict so we can reject future awaits
     let hasConflict = false;
-    let conflictErrorRef: WorkflowRuntimeError | null = null;
+    let conflictErrorRef: HookConflictError | null = null;
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
@@ -48,8 +51,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       if (!event) {
         eventLogEmpty = true;
 
-        if (promises.length > 0) {
-          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        if (promises.length > 0 && payloadsQueue.length === 0) {
+          scheduleWhenIdle(ctx, () => {
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
@@ -80,9 +83,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Store the conflict event so we can reject any awaited promises.
         // Chain through promiseQueue to ensure deterministic ordering.
         const conflictEvent = event as HookConflictEvent;
-        const conflictError = new WorkflowRuntimeError(
-          `Hook token "${conflictEvent.eventData.token}" is already in use by another workflow`,
-          { slug: ERROR_SLUGS.HOOK_CONFLICT }
+        const conflictError = new HookConflictError(
+          conflictEvent.eventData.token
         );
 
         // Mark that we have a conflict so future awaits also reject
@@ -111,6 +113,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
             // Reconstruct the payload from the event data.
             // Chain through ctx.promiseQueue to ensure that async
             // deserialization (e.g., decryption) resolves in event log order.
+            ctx.pendingDeliveries++;
             ctx.promiseQueue = ctx.promiseQueue.then(async () => {
               try {
                 const payload = await hydrateStepReturnValue(
@@ -122,6 +125,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                 next.resolve(payload as T);
               } catch (error) {
                 next.reject(error);
+              } finally {
+                ctx.pendingDeliveries--;
               }
             });
           }
@@ -173,6 +178,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         if (nextPayload) {
           // Chain through ctx.promiseQueue to ensure that async
           // deserialization (e.g., decryption) resolves in event log order.
+          ctx.pendingDeliveries++;
           ctx.promiseQueue = ctx.promiseQueue.then(async () => {
             try {
               const payload = await hydrateStepReturnValue(
@@ -184,6 +190,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
               resolvers.resolve(payload as T);
             } catch (error) {
               resolvers.reject(error);
+            } finally {
+              ctx.pendingDeliveries--;
             }
           });
           return resolvers.promise;
@@ -191,9 +199,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       }
 
       if (eventLogEmpty) {
-        // If the event log is already empty then we know the hook will not be resolved.
-        // Treat this case as a "step not run" scenario and suspend the workflow.
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        scheduleWhenIdle(ctx, () => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );
@@ -229,7 +235,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
       // never deliver another hook_received after disposal.
       if (promises.length > 0) {
         promises.length = 0;
-        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        scheduleWhenIdle(ctx, () => {
           ctx.onWorkflowError(
             new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
           );

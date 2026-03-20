@@ -37,6 +37,10 @@ export default function MyRunDetailView({
 Server actions and data fetching are intentionally **not** part of `web-shared`. Implement those in your app
 and pass data + callbacks into these components. If you need world run helpers, use `@workflow/core/runtime`.
 
+> **Security notice:** If you implement server-side data fetching using `@workflow/world-vercel` or similar backends,
+> ensure that user-supplied IDs (runId, stepId, etc.) are validated before passing them to world functions.
+> The server actions in `@workflow/web` do not include authentication — see that package's README for details on securing self-hosted deployments.
+
 ## Styling
 
 In order for tailwind classes to be picked up correctly, you might need to configure your NextJS app

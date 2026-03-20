@@ -1,30 +1,25 @@
 'use client';
 
-import { useState } from 'react';
 import {
-  ExternalLink,
-  ChevronRight,
-  CheckIcon,
-  CopyIcon,
-  BadgeCheck,
-  HeartHandshake,
-  CheckCircle2,
   AlertCircle,
-  XCircle,
+  BadgeCheck,
+  CheckCircle2,
+  CheckIcon,
+  ChevronRight,
   Clock,
-  Timer,
-  Package,
-  Github,
   Code,
+  CopyIcon,
+  ExternalLink,
+  Github,
+  HeartHandshake,
+  Package,
+  ShieldCheck,
+  Timer,
+  XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
+import { useState } from 'react';
 import { toast } from 'sonner';
-
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -34,6 +29,11 @@ import {
   BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
 import { Button } from '@/components/ui/button';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 import type { World } from './types';
 
@@ -304,6 +304,30 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
               <Code className="h-4 w-4" />
               <span>Example</span>
             </a>
+          )}
+
+          {/* Encryption */}
+          {world.features.includes('encryption') && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Link
+                  href="/docs/how-it-works/encryption"
+                  className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
+                >
+                  <ShieldCheck className="h-4 w-4 text-green-500" />
+                  <span>E2E Encrypted</span>
+                </Link>
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                align="start"
+                className="max-w-[200px]"
+              >
+                <p className="text-xs">
+                  User data is encrypted end-to-end in the event log
+                </p>
+              </TooltipContent>
+            </Tooltip>
           )}
         </div>
       </div>

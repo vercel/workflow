@@ -1,5 +1,66 @@
 # @workflow/web-shared
 
+## 4.1.0-beta.66
+
+### Patch Changes
+
+- [#1404](https://github.com/vercel/workflow/pull/1404) [`0e2eb5c`](https://github.com/vercel/workflow/commit/0e2eb5c7758901af869e829ac24b399e08ae542e) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix trace viewer construction of traces for v1 runs
+
+- [#1406](https://github.com/vercel/workflow/pull/1406) [`29eb8bb`](https://github.com/vercel/workflow/commit/29eb8bbea8d8a92a246612483c2053c69e0c8676) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix trace construction for v1 runs
+
+- [#1381](https://github.com/vercel/workflow/pull/1381) [`7b9b3c1`](https://github.com/vercel/workflow/commit/7b9b3c1a484a4effff2190ac9899a2608704f375) Thanks [@karthikscale3](https://github.com/karthikscale3)! - web-shared: Timestamp tooltips, toast adapter, improved skeletons, and encrypted data detection for lazy-loaded events
+  web: Add toast for decryption
+
+- [#1427](https://github.com/vercel/workflow/pull/1427) [`11f45b2`](https://github.com/vercel/workflow/commit/11f45b2eb706a6a9e33fbc329bd21e8483a5b434) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix re-rendering of side panel inputs during live poll, sanitize error messages and add loading state for side panel.
+
+- Updated dependencies [[`97e4384`](https://github.com/vercel/workflow/commit/97e43846f000f8ef0ea2f237a5c4cc696423e0f0), [`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597), [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a), [`a2c0c7e`](https://github.com/vercel/workflow/commit/a2c0c7e6d9d7349bd49aac6e6ea072c68efb7620), [`2cc42cb`](https://github.com/vercel/workflow/commit/2cc42cb8a934532d9ce5b05185322a2f9ce76024), [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08), [`f52afe7`](https://github.com/vercel/workflow/commit/f52afe77fffb981dd8812b84b39c2ecab2288f43)]:
+  - @workflow/core@4.2.0-beta.71
+  - @workflow/world@4.1.0-beta.13
+
+## 4.1.0-beta.65
+
+### Patch Changes
+
+- [#1358](https://github.com/vercel/workflow/pull/1358) [`5c6ae60`](https://github.com/vercel/workflow/commit/5c6ae607a58d200fbad673821728a1a39684dfd9) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Improve workflow observability UX with decoupled pagination, stream virtualization, and decrypt actions
+
+- Updated dependencies [[`7df1385`](https://github.com/vercel/workflow/commit/7df13854f85529929ff1187fe831f4dbc51b9121), [`58e67ce`](https://github.com/vercel/workflow/commit/58e67ce11bd69b982214e2734363fa7fd252f5f6)]:
+  - @workflow/core@4.2.0-beta.70
+
+## 4.1.0-beta.64
+
+### Patch Changes
+
+- [#1337](https://github.com/vercel/workflow/pull/1337) [`c4d86fa`](https://github.com/vercel/workflow/commit/c4d86fac3dd3c31e1bc739b6b1a26f8ab305e5bc) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Polish workflow observability event list UX
+
+- [#1322](https://github.com/vercel/workflow/pull/1322) [`d5bc418`](https://github.com/vercel/workflow/commit/d5bc418816748ab2b5109ca7b082f3be427c326b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update readme to call out self-hosting limitations
+
+- [#1327](https://github.com/vercel/workflow/pull/1327) [`d5ae817`](https://github.com/vercel/workflow/commit/d5ae81786303554bbee0e9fa939c92274a883d18) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve loading indicators for trace viewer and events list
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`fb5a500`](https://github.com/vercel/workflow/commit/fb5a500eadba80efdef75e3ccf6e85e957820f38)]:
+  - @workflow/core@4.2.0-beta.69
+  - @workflow/world@4.1.0-beta.12
+
+## 4.1.0-beta.63
+
+### Patch Changes
+
+- [#1261](https://github.com/vercel/workflow/pull/1261) [`887cc2b`](https://github.com/vercel/workflow/commit/887cc2bd55b904c696083d87ab32a9fc03d619a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Refactor trace viewer to build spans entirely from events instead of fetching Steps and Hooks as separate resources.
+
+- [#1305](https://github.com/vercel/workflow/pull/1305) [`c59dd8c`](https://github.com/vercel/workflow/commit/c59dd8c5716f02e03d930150cfadc53446c69c57) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Enrich sidepanel with "resumedAt" for sleeps. Lower case the properties.
+
+- [#1308](https://github.com/vercel/workflow/pull/1308) [`33101a2`](https://github.com/vercel/workflow/commit/33101a229207bafe869fb73686c6bfcc59ab25b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Move decrypt operation to the entity panel inside web-shared and wire it up to web via component callback.
+
+- Updated dependencies [[`83dbd46`](https://github.com/vercel/workflow/commit/83dbd46456a8dbfc89efd87895929cbb813feda3), [`854a25f`](https://github.com/vercel/workflow/commit/854a25f9103f5f3a5769dec6e3e5c6b98ed119b0)]:
+  - @workflow/core@4.2.0-beta.68
+
+## 4.1.0-beta.62
+
+### Patch Changes
+
+- Updated dependencies [[`c71befe`](https://github.com/vercel/workflow/commit/c71befe8ec73765e67b7f2e0627251643ab245d4), [`36a901d`](https://github.com/vercel/workflow/commit/36a901d2d2f2ba37ec024073a7dd39a094b9e9c0), [`d8daa2a`](https://github.com/vercel/workflow/commit/d8daa2a9a95e2d01a4e6fee4e8dde51d82db762d)]:
+  - @workflow/core@4.2.0-beta.67
+  - @workflow/world@4.1.0-beta.11
+
 ## 4.1.0-beta.61
 
 ### Patch Changes

@@ -4,18 +4,13 @@ import {
   waitEventsToWaitEntity,
 } from '@workflow/web-shared';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   unwrapOrThrow,
   unwrapServerActionResult,
   WorkflowWebAPIError,
 } from '~/lib/client/workflow-errors';
-import {
-  fetchEventsByCorrelationId,
-  fetchHook,
-  fetchRun,
-  fetchStep,
-} from '~/lib/rpc-client';
+import { fetchEvents, fetchHook, fetchRun, fetchStep } from '~/lib/rpc-client';
 import type { EnvMap } from '~/lib/types';
 
 // Helper function to fetch resource and get correlation ID
@@ -95,68 +90,93 @@ export function useWorkflowResourceData(
     [encryptionKey]
   );
 
+  const prevSelectionRef = useRef('');
+
   const fetchData = useCallback(async () => {
     if (!enabled) {
       setLoading(false);
       return;
     }
-    setData(null);
+
+    // Only clear data when the selection actually changes (different
+    // resource/id). Re-fetches for the same selection (e.g. encryption
+    // key change) keep the previous data visible to avoid flicker.
+    const selectionKey = `${resource}:${resourceId}`;
+    if (selectionKey !== prevSelectionRef.current) {
+      setData(null);
+      prevSelectionRef.current = selectionKey;
+    }
     setError(null);
+    setLoading(true);
     if (resource === 'hook') {
-      const { error, result } = await unwrapServerActionResult(
-        fetchHook(env, resourceId, 'all')
-      );
-      if (error) {
-        setError(error);
-        return;
-      }
       try {
-        setData(await hydrate(result));
-      } catch (hydrateError) {
-        setError(
-          hydrateError instanceof Error
-            ? hydrateError
-            : new Error(String(hydrateError))
+        const { error, result } = await unwrapServerActionResult(
+          fetchHook(env, resourceId, 'all')
         );
+        if (error) {
+          setError(error);
+          return;
+        }
+        try {
+          setData(await hydrate(result));
+        } catch (hydrateError) {
+          setError(
+            hydrateError instanceof Error
+              ? hydrateError
+              : new Error(String(hydrateError))
+          );
+        }
+      } finally {
+        setLoading(false);
       }
       return;
     }
     if (resource === 'sleep') {
-      const { error, result } = await unwrapServerActionResult(
-        fetchEventsByCorrelationId(env, resourceId, {
-          sortOrder: 'asc',
-          limit: 100,
-          withData: true,
-        })
-      );
-      if (error) {
-        setError(error);
-        return;
-      }
       try {
-        const events = await Promise.all(
-          (result.data as unknown as Event[]).map(hydrate)
-        );
-        const data = waitEventsToWaitEntity(events);
-        if (data === null) {
-          setError(
-            new Error(
-              `Failed to load ${resource} details: missing required event data`
-            )
-          );
+        if (!runId) {
+          setError(new Error('runId is required for loading sleep details'));
           return;
         }
-        setData(data as unknown as Hook | Event);
-      } catch (hydrateError) {
-        setError(
-          hydrateError instanceof Error
-            ? hydrateError
-            : new Error(String(hydrateError))
+        const { error, result } = await unwrapServerActionResult(
+          fetchEvents(env, runId, {
+            sortOrder: 'asc',
+            limit: 1000,
+            withData: true,
+          })
         );
+        if (error) {
+          setError(error);
+          return;
+        }
+        try {
+          const allEvents = (result.data as unknown as Event[]).map(
+            hydrateResourceIO
+          );
+          const waitEvents = await Promise.all(
+            allEvents.filter((e) => e.correlationId === resourceId).map(hydrate)
+          );
+          const data = waitEventsToWaitEntity(waitEvents);
+          if (data === null) {
+            setError(
+              new Error(
+                `Failed to load ${resource} details: missing required event data`
+              )
+            );
+            return;
+          }
+          setData(data as unknown as Hook | Event);
+        } catch (hydrateError) {
+          setError(
+            hydrateError instanceof Error
+              ? hydrateError
+              : new Error(String(hydrateError))
+          );
+        }
+      } finally {
+        setLoading(false);
       }
       return;
     }
-    setLoading(true);
     // Fetch resource with full data
     try {
       const { data: resourceData } = await fetchResourceWithCorrelationId(

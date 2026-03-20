@@ -9,6 +9,19 @@ import {
 } from '~/components/ui/tooltip';
 import { cn, formatDuration } from '~/lib/utils';
 
+/** Extract the error code from an unknown error value (StructuredError shape). */
+function getErrorCode(error: unknown): string | undefined {
+  if (
+    error !== null &&
+    typeof error === 'object' &&
+    'code' in error &&
+    typeof (error as { code: unknown }).code === 'string'
+  ) {
+    return (error as { code: string }).code;
+  }
+  return undefined;
+}
+
 interface StatusBadgeProps {
   status: WorkflowRun['status'] | Step['status'];
   context?: { error?: unknown };
@@ -58,35 +71,34 @@ export function StatusBadge({
     </span>
   );
 
-  // Show error tooltip if status is failed and error exists
-  if (status === 'failed' && context?.error) {
-    return <ErrorStatusBadge content={content} error={context.error} />;
+  // Show error code tooltip if status is failed and error has a code
+  const errorCode =
+    status === 'failed' ? getErrorCode(context?.error) : undefined;
+  if (errorCode) {
+    return <ErrorCodeBadge content={content} errorCode={errorCode} />;
   }
 
   return content;
 }
 
-function ErrorStatusBadge({
+function ErrorCodeBadge({
   content,
-  error,
+  errorCode,
 }: {
   content: React.ReactNode;
-  error: unknown;
+  errorCode: string;
 }) {
   const [copied, setCopied] = useState(false);
 
-  const errorMessage =
-    typeof error === 'string'
-      ? error
-      : error instanceof Error
-        ? error.message
-        : JSON.stringify(error);
-
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    await navigator.clipboard.writeText(errorMessage);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    try {
+      await navigator.clipboard.writeText(errorCode);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API can fail on unfocused pages or non-HTTPS contexts
+    }
   };
 
   return (
@@ -94,13 +106,13 @@ function ErrorStatusBadge({
       <TooltipTrigger asChild>
         <span className="cursor-help">{content}</span>
       </TooltipTrigger>
-      <TooltipContent className="max-w-md p-0">
-        <div className="flex items-start justify-between gap-2 p-1 border-b">
-          <span className="text-xs font-medium pl-1 pt-1">Error Details</span>
+      <TooltipContent className="p-0">
+        <div className="flex items-center gap-2 p-1.5">
+          <span className="text-xs font-mono">{errorCode}</span>
           <Button
             variant="ghost"
             size="icon"
-            className="h-6 w-6 shrink-0"
+            className="h-5 w-5 shrink-0"
             onClick={handleCopy}
           >
             {copied ? (
@@ -109,11 +121,6 @@ function ErrorStatusBadge({
               <Copy className="h-2.5 w-2.5 text-muted-foreground" />
             )}
           </Button>
-        </div>
-        <div className="max-h-48 overflow-auto p-2">
-          <p className="text-xs whitespace-pre-wrap break-words font-mono">
-            {errorMessage}
-          </p>
         </div>
       </TooltipContent>
     </Tooltip>

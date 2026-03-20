@@ -300,7 +300,7 @@ Note: Shorthand methods are hoisted as regular function expressions (not arrow f
 
 ### Closure Variables
 
-When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`:
+When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`. Closure variable detection recursively walks the step function body — including nested function, arrow, method, getter/setter, and class bodies — and collects identifiers that are not parameters, local declarations, known globals, module-level imports, or module-level declarations. TypeScript expression wrappers (`as`, `satisfies`, `!`, type assertions, `const` assertions, instantiation expressions) are traversed to reach the inner expression. Module-level imports and declarations (functions, variables, classes) are excluded since they are available directly in the step bundle and should not be serialized as closure values:
 
 Input:
 ```javascript
@@ -321,10 +321,14 @@ var wrapper$_anonymousStep0 = async () => {
     return 10 * multiplier;
 };
 function wrapper(multiplier) {
-    return wrapper$_anonymousStep0;
+    return async () => {
+        return 10 * multiplier;
+    };
 }
 registerStepFunction("step//./input//wrapper/_anonymousStep0", wrapper$_anonymousStep0);
 ```
+
+Note: The hoisted copy (`wrapper$_anonymousStep0`) uses `__private_getClosureVars()` for workflow-driven execution, while the original function body is preserved in `wrapper()` with the directive stripped. This allows the enclosing function to work correctly when called directly (non-workflow), since JavaScript's normal closure semantics naturally capture `multiplier`.
 
 ### Instance Method Step
 
@@ -412,6 +416,8 @@ registerStepFunction("step//./input//subtract", subtract);
 
 In workflow mode, step function bodies are replaced with a `globalThis[Symbol.for("WORKFLOW_USE_STEP")]` call. Workflow functions keep their bodies and are registered with `globalThis.__private_workflows.set()`.
 
+After the workflow-mode rewrite, the transform also runs a dead code elimination (DCE) pass. This pruning only affects the emitted workflow/client outputs, not step-mode output. In workflow mode, because step bodies are replaced with step proxies, imports, helper functions, nested steps, and other pure statements that were only referenced from those original step bodies become eligible for removal. Exports and any identifiers still referenced by the transformed workflow code are preserved.
+
 ### Step Functions
 
 Input:
@@ -491,7 +497,9 @@ In client mode, step function bodies are preserved as-is (allowing local testing
 
 Unlike step mode, client mode does **not** import `registerStepFunction` from `workflow/internal/private` because that module contains server-side dependencies. Instead, the `stepId` property is set directly on the function, similar to how `workflowId` is set on workflow functions.
 
-Note: Step functions nested inside other functions (whether workflow functions or regular functions) do NOT get `stepId` assignments in client mode because they are not accessible at module level.
+Client mode also runs the same DCE pass after transform. The key difference from workflow mode is that module-level step bodies are still preserved and executable, so any imports, local helpers, or other declarations that are referenced only from those step bodies must also be preserved. By contrast, code that is reachable only from workflow bodies that were replaced with throwing stubs can still be removed.
+
+Note: Step functions nested inside other functions (whether workflow functions or regular functions) do NOT get `stepId` assignments in client mode because they are not accessible at module level. In practice, nested steps and helpers that are only reachable from a workflow body are often pruned by the client-mode DCE pass once that workflow body has been replaced.
 
 ### Step Functions
 
@@ -929,4 +937,6 @@ The plugin detects this pattern and correctly identifies the directive inside th
 - The `this` keyword and `arguments` object are not allowed in step functions
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection
+- Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available directly in the step bundle and should not be serialized as closure values
+- `new` expressions are analyzed for closure variables in the same way as regular function calls (both the callee and arguments are checked)
 - Workflow functions always throw when called directly; use `start(workflow)` from `workflow/api` instead

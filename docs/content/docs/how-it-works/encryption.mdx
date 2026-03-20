@@ -1,0 +1,93 @@
+---
+title: Encryption
+description: Learn how Workflow DevKit encrypts user data end-to-end in the event log.
+type: conceptual
+summary: Understand how workflow and step data is encrypted at rest.
+prerequisites:
+  - /docs/how-it-works/event-sourcing
+related:
+  - /docs/observability
+  - /docs/deploying/world/vercel-world
+---
+
+<Callout>
+This guide explains how Workflow DevKit encrypts user data in the event log. Understanding these details is not required to use workflows — encryption is automatic and requires no code changes. For getting started, see the [getting started](/docs/getting-started) guides for your framework.
+</Callout>
+
+Workflow DevKit supports automatic end-to-end encryption of all user data before it is written to the event log. When a `World` implementation provides encryption support, it is safe to pass sensitive data — such as API keys, tokens, or user credentials — as workflow inputs, step arguments, and return values. The storage backend only ever sees ciphertext.
+
+Encryption support varies by `World` implementation. See the [Worlds](/worlds) page to check which worlds support this feature. `World` implementations opt into encryption by providing a `getEncryptionKeyForRun()` method — the core runtime will use it automatically when present.
+
+## What Is Encrypted
+
+All user data flowing through the event log is encrypted:
+
+- **Workflow inputs** — arguments passed when starting a workflow
+- **Workflow return values** — the final output of a workflow
+- **Step inputs** — arguments passed to step functions
+- **Step return values** — the result returned by step functions
+- **Hook metadata** — data attached when creating a hook
+- **Hook payloads** — data received by hooks and webhooks
+- **Stream data** — each frame in a `ReadableStream` or `WritableStream`
+
+Metadata such as workflow names, step names, entity IDs, timestamps, and lifecycle states are **not** encrypted. This allows the observability tools to display run structure and timelines without requiring decryption.
+
+## How It Works
+
+### Key Management
+
+Each workflow run is encrypted with its own unique key, provided by the `World` implementation via `getEncryptionKeyForRun()`. How the key is generated and stored is up to the `World`.
+
+For example, the [Vercel World](/docs/deploying/world/vercel-world) provides unique keys per run and execution environment, ensuring that a given run can only decrypt data from that run itself.
+
+### Encryption Algorithm
+
+Data is encrypted using **AES-256-GCM** via the [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API):
+
+- A random 12-byte nonce is generated for each encryption operation
+- The GCM authentication tag provides integrity verification — any tampering with the ciphertext is detected
+- The same plaintext produces different ciphertext each time due to the random nonce
+
+## Decrypting Data
+
+When viewing workflow runs through the observability tools, encrypted fields display as locked placeholders until you explicitly choose to decrypt them.
+
+### Permissions
+
+Decryption access is controlled by the `World` implementation. On Vercel, decryption follows the same permissions model as project environment variables — if you don't have permission to view environment variable values for a project, you won't be able to decrypt workflow data either. Each decryption request is recorded in your [Vercel audit log](https://vercel.com/docs/audit-log), giving your team full visibility into when and by whom workflow data was accessed.
+
+### Web Dashboard
+
+Click the **Decrypt** button in the run detail panel to decrypt all data fields. Decryption happens entirely in the browser via the Web Crypto API — the observability server retrieves the encryption key but never sees your plaintext data.
+
+### CLI
+
+Add the `--decrypt` flag to any `inspect` command:
+
+```bash
+# Inspect a specific run
+npx workflow inspect run <run-id> --decrypt
+
+# Inspect a specific step
+npx workflow inspect step <step-id> --run <run-id> --decrypt
+
+# List events for a run
+npx workflow inspect events --run <run-id> --decrypt
+
+# Inspect a specific stream
+npx workflow inspect stream <stream-id> --run <run-id> --decrypt
+```
+
+Without `--decrypt`, encrypted fields display as `🔒 Encrypted` placeholders.
+
+## Custom World Implementations
+
+The core runtime encrypts data automatically when the `World` implementation provides a `getEncryptionKeyForRun()` method. This method receives the run ID and returns the raw encryption key bytes.
+
+To add encryption support to a custom `World`:
+
+1. Implement `getEncryptionKeyForRun(runId: string)` on your `World` class
+2. Return the raw 32-byte key as a `Uint8Array` — the core runtime uses it for AES-256-GCM operations
+3. Ensure the same key is returned for the same run ID across invocations (for decryption during replay)
+
+The [Vercel World](/docs/deploying/world/vercel-world) implementation uses HKDF derivation from a deployment-scoped key, but any consistent key management scheme will work.

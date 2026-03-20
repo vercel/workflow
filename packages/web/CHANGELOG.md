@@ -1,5 +1,48 @@
 # @workflow/web
 
+## 4.1.0-beta.43
+
+### Patch Changes
+
+- [#1381](https://github.com/vercel/workflow/pull/1381) [`7b9b3c1`](https://github.com/vercel/workflow/commit/7b9b3c1a484a4effff2190ac9899a2608704f375) Thanks [@karthikscale3](https://github.com/karthikscale3)! - web-shared: Timestamp tooltips, toast adapter, improved skeletons, and encrypted data detection for lazy-loaded events
+  web: Add toast for decryption
+
+- [#1364](https://github.com/vercel/workflow/pull/1364) [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Strip only ref/payload fields from eventData when resolveData is 'none', preserving all other metadata
+
+## 4.1.0-beta.42
+
+### Patch Changes
+
+- [#1346](https://github.com/vercel/workflow/pull/1346) [`73c12f1`](https://github.com/vercel/workflow/commit/73c12f14dabb465e2074e2aebbcd231a4d91bc09) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `ERR_UNSUPPORTED_ESM_URL_SCHEME` on Windows by converting absolute file paths to `file://` URLs before passing them to dynamic `import()`
+
+- [#1358](https://github.com/vercel/workflow/pull/1358) [`5c6ae60`](https://github.com/vercel/workflow/commit/5c6ae607a58d200fbad673821728a1a39684dfd9) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Improve workflow observability UX with decoupled pagination, stream virtualization, and decrypt actions
+
+- [#1366](https://github.com/vercel/workflow/pull/1366) [`d6da7ec`](https://github.com/vercel/workflow/commit/d6da7ecca0fbf94d3331ce3bd7d28644a4f5cc3f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix stale encryptionKey closure in events list data hook in web
+
+## 4.1.0-beta.41
+
+### Patch Changes
+
+- [#1322](https://github.com/vercel/workflow/pull/1322) [`d5bc418`](https://github.com/vercel/workflow/commit/d5bc418816748ab2b5109ca7b082f3be427c326b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update readme to call out self-hosting limitations
+
+- [#1327](https://github.com/vercel/workflow/pull/1327) [`d5ae817`](https://github.com/vercel/workflow/commit/d5ae81786303554bbee0e9fa939c92274a883d18) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve loading indicators for trace viewer and events list
+
+## 4.1.0-beta.40
+
+### Patch Changes
+
+- [#1261](https://github.com/vercel/workflow/pull/1261) [`887cc2b`](https://github.com/vercel/workflow/commit/887cc2bd55b904c696083d87ab32a9fc03d619a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Refactor trace viewer to build spans entirely from events instead of fetching Steps and Hooks as separate resources.
+
+- [#1265](https://github.com/vercel/workflow/pull/1265) [`aa2f581`](https://github.com/vercel/workflow/commit/aa2f581b488baf929a784f289a81e21c39ccb5a6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add custom `entry.server.tsx` and move `@react-router/node`, `isbot`, `react-router`, and `@react-router/express` to devDependencies since the build process bundles them entirely at build time
+
+- [#1308](https://github.com/vercel/workflow/pull/1308) [`33101a2`](https://github.com/vercel/workflow/commit/33101a229207bafe869fb73686c6bfcc59ab25b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Move decrypt operation to the entity panel inside web-shared and wire it up to web via component callback.
+
+## 4.1.0-beta.39
+
+### Patch Changes
+
+- [#1288](https://github.com/vercel/workflow/pull/1288) [`5e4ef65`](https://github.com/vercel/workflow/commit/5e4ef657cf34c04d6d12b9823fb7fca8885c2f90) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use `world.events.get(eventId)` instead of `listByCorrelationId` for loading individual event data in run detail view.
+
 ## 4.1.0-beta.38
 
 ### Patch Changes

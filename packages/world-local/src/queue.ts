@@ -40,6 +40,19 @@ export type LocalQueue = Queue & {
   ): void;
 };
 
+function getQueueRoute(queueName: ValidQueueName): {
+  pathname: 'flow' | 'step';
+  prefix: '__wkf_step_' | '__wkf_workflow_';
+} {
+  if (queueName.startsWith('__wkf_step_')) {
+    return { pathname: 'step', prefix: '__wkf_step_' };
+  }
+  if (queueName.startsWith('__wkf_workflow_')) {
+    return { pathname: 'flow', prefix: '__wkf_workflow_' };
+  }
+  throw new Error('Unknown queue name prefix');
+}
+
 export function createQueue(config: Partial<Config>): LocalQueue {
   // Create a custom agent optimized for high-concurrency local workflows:
   // - headersTimeout: 0 allows long-running steps
@@ -60,7 +73,6 @@ export function createQueue(config: Partial<Config>): LocalQueue {
    * that we don't queue the same message multiple times
    */
   const inflightMessages = new Map<string, MessageId>();
-
   /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
   const directHandlers = new Map<string, DirectHandler>();
 
@@ -75,17 +87,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     }
 
     const body = transport.serialize(message);
-    let pathname: string;
-    let prefix: '__wkf_step_' | '__wkf_workflow_';
-    if (queueName.startsWith('__wkf_step_')) {
-      pathname = `step`;
-      prefix = '__wkf_step_';
-    } else if (queueName.startsWith('__wkf_workflow_')) {
-      pathname = `flow`;
-      prefix = '__wkf_workflow_';
-    } else {
-      throw new Error('Unknown queue name prefix');
-    }
+    const { pathname, prefix } = getQueueRoute(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
 
     if (opts?.idempotencyKey) {
@@ -105,12 +107,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await semaphore.acquire();
       }
       try {
-        let defaultRetriesLeft = 3;
-        const directHandler = directHandlers.get(prefix);
+        const maxAttempts = 3;
+        let defaultRetriesLeft = maxAttempts;
         for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
           defaultRetriesLeft--;
 
-          let response: Response;
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
@@ -118,11 +119,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             'x-vqs-message-id': messageId,
             'x-vqs-message-attempt': String(attempt + 1),
           };
+          const directHandler = directHandlers.get(prefix);
+          let response: Response;
 
           if (directHandler) {
-            // Call handler directly in-process, bypassing HTTP
             const req = new Request(
-              'http://localhost/.well-known/workflow/v1/' + pathname,
+              `http://localhost/.well-known/workflow/v1/${pathname}`,
               {
                 method: 'POST',
                 headers,
@@ -145,40 +147,39 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             );
           }
 
+          const text = await response.text();
+
           if (response.ok) {
+            try {
+              const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
+              if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
+                // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
+                // When this fires early, the handler recalculates remaining time from
+                // persistent state and returns another timeoutSeconds if needed.
+                if (timeoutSeconds > 0) {
+                  const timeoutMs = Math.min(
+                    timeoutSeconds * 1000,
+                    MAX_SAFE_TIMEOUT_MS
+                  );
+                  await setTimeout(timeoutMs);
+                }
+                defaultRetriesLeft++;
+                continue;
+              }
+            } catch {}
             return;
           }
 
-          const text = await response.text();
-
-          if (response.status === 503) {
-            try {
-              const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
-              // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
-              // When this fires early, the handler recalculates remaining time from
-              // persistent state and returns another timeoutSeconds if needed.
-              const timeoutMs = Math.min(
-                timeoutSeconds * 1000,
-                MAX_SAFE_TIMEOUT_MS
-              );
-              await setTimeout(timeoutMs);
-              defaultRetriesLeft++;
-              continue;
-            } catch {}
-          }
-
-          console.error(`[local world] Failed to queue message`, {
-            queueName,
-            text,
-            status: response.status,
-            headers: Object.fromEntries(response.headers.entries()),
-            body: body.toString(),
-          });
+          console.error(
+            `[world-local] Queue message failed (attempt ${attempt + 1}/${maxAttempts}, status ${response.status}): ${text}`,
+            { queueName, messageId }
+          );
         }
 
-        console.error(
-          `[local world] Reached max retries of local world queue implementation`
-        );
+        console.error(`[world-local] Queue message exhausted all retries`, {
+          queueName,
+          messageId,
+        });
       } finally {
         semaphore.release();
       }
@@ -243,7 +244,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         }
 
         if (timeoutSeconds != null) {
-          return Response.json({ timeoutSeconds }, { status: 503 });
+          return Response.json({ timeoutSeconds });
         }
 
         return Response.json({ ok: true });

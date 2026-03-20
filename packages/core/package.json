@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.2.0-beta.66",
+  "version": "4.2.0-beta.71",
   "description": "Core runtime and engine for Workflow DevKit",
   "type": "module",
   "main": "dist/index.js",
@@ -51,10 +51,6 @@
     "./class-serialization": {
       "types": "./dist/class-serialization.d.ts",
       "default": "./dist/class-serialization.js"
-    },
-    "./builtins": {
-      "types": "./dist/builtins.d.ts",
-      "default": "./dist/builtins.js"
     },
     "./serialization": {
       "types": "./dist/serialization.d.ts",

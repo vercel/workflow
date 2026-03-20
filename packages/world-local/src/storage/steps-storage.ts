@@ -1,8 +1,8 @@
 import path from 'node:path';
-import type { Storage, StepWithoutData } from '@workflow/world';
+import type { StepWithoutData, Storage } from '@workflow/world';
 import { StepSchema } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
-import { paginatedFileSystemQuery, readJSON } from '../fs.js';
+import { paginatedFileSystemQuery, readJSONWithFallback } from '../fs.js';
 import { filterStepData } from './filters.js';
 import { getObjectCreatedAt } from './helpers.js';
 
@@ -10,12 +10,20 @@ import { getObjectCreatedAt } from './helpers.js';
  * Creates the steps storage implementation using the filesystem.
  * Implements the Storage['steps'] interface with get and list operations.
  */
-export function createStepsStorage(basedir: string): Storage['steps'] {
+export function createStepsStorage(
+  basedir: string,
+  tag?: string
+): Storage['steps'] {
   return {
     get: (async (runId: string, stepId: string, params?: any) => {
       const compositeKey = `${runId}-${stepId}`;
-      const stepPath = path.join(basedir, 'steps', `${compositeKey}.json`);
-      const step = await readJSON(stepPath, StepSchema);
+      const step = await readJSONWithFallback(
+        basedir,
+        'steps',
+        compositeKey,
+        StepSchema,
+        tag
+      );
       if (!step) {
         throw new Error(`Step ${stepId} in run ${runId} not found`);
       }
