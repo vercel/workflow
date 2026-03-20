@@ -92,10 +92,9 @@ export async function GET(
 }
 ```
 
-The `startIndex` parameter ensures the client can choose where to resume the stream from. For instance, if the function times out during streaming, the chat transport will use `startIndex` to resume the stream exactly from the last token it received. Negative values are also supported (e.g. `-5` starts 5 chunks before the end), which is useful for resuming a chat after a page refresh without replaying the full stream.
+The `startIndex` parameter ensures the client can choose where to resume the stream from. For instance, if the function times out during streaming, the chat transport will use `startIndex` to resume the stream exactly from the last token it received. Negative values are also supported (e.g. `-5` starts 5 chunks before the end), which is useful for custom stream consumers (such as a dashboard showing recent output) that want to show the most recent output without replaying the full stream.
 
-The `x-workflow-stream-tail-index` header is required when using negative `initialStartIndex` on `WorkflowChatTransport`. It tells the transport the stream's current length so it can compute absolute chunk positions for reconnection retries. Without this header, the transport will log a warning and retries after a disconnect may resume from the wrong position.
-
+When using a negative `startIndex`, your stream endpoint must return a `x-workflow-stream-tail-index` header in order for relative resumption to work. Missing the header will fall back to replaying the entire stream.
 </Step>
 
 <Step>
