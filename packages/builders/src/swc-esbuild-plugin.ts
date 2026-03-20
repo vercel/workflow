@@ -17,6 +17,7 @@ export interface SwcPluginOptions {
   mode: 'step' | 'workflow' | 'client';
   entriesToBundle?: string[];
   outdir?: string;
+  projectRoot?: string;
   workflowManifest?: WorkflowManifest;
 }
 
@@ -156,6 +157,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           // The filename parameter is used to generate workflowId/stepId, so it must be relative
           const workingDir =
             build.initialOptions.absWorkingDir || process.cwd();
+          const projectRoot = options.projectRoot || workingDir;
           // Normalize paths: convert backslashes to forward slashes and remove trailing slashes
           const normalizedWorkingDir = workingDir
             .replace(/\\/g, '/')
@@ -218,7 +220,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               relativeFilepath,
               normalizedSource,
               options.mode,
-              args.path // Pass absolute path for module specifier resolution
+              args.path, // Pass absolute path for module specifier resolution
+              projectRoot
             );
 
           if (!options.workflowManifest) {
