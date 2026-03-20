@@ -1,19 +1,24 @@
-import { Circle, Clock, Play, StepForward, Webhook } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
+import { Circle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
+import {
+  WorkflowIcon,
+  WebhookIcon,
+  SleepIcon,
+  StepForwardIcon,
+} from '../icons';
 
 interface EventStyle {
-  icon: LucideIcon;
+  icon: React.ComponentType<{ className?: string }>;
   className: string;
 }
 
 const eventStyles: Record<string, EventStyle> = {
-  run: { icon: Play, className: 'bg-blue-200 text-blue-900' },
-  step: { icon: StepForward, className: 'bg-green-200 text-green-900' },
-  hook: { icon: Webhook, className: 'bg-yellow-200 text-yellow-900' },
-  sleep: { icon: Clock, className: 'bg-gray-200 text-gray-900' },
+  run: { icon: WorkflowIcon, className: 'bg-blue-200 text-blue-900' },
+  step: { icon: StepForwardIcon, className: 'bg-green-200 text-green-900' },
+  hook: { icon: WebhookIcon, className: 'bg-yellow-200 text-yellow-900' },
+  sleep: { icon: SleepIcon, className: 'bg-gray-200 text-gray-900' },
 };
 
 const defaultStyle: EventStyle = {
