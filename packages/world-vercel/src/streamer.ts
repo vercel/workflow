@@ -1,6 +1,7 @@
 import type {
   GetChunksOptions,
   StreamChunksResponse,
+  StreamInfoResponse,
   Streamer,
 } from '@workflow/world';
 import { z } from 'zod';
@@ -65,6 +66,11 @@ export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
 
   return result;
 }
+
+const StreamInfoResponseSchema = z.object({
+  tailIndex: z.number(),
+  done: z.boolean(),
+});
 
 /**
  * Zod schema for the paginated stream chunks response from the server.
@@ -184,6 +190,18 @@ export function createStreamer(config?: APIConfig): Streamer {
         endpoint,
         config,
         schema: StreamChunksResponseSchema,
+      });
+    },
+
+    async getStreamInfo(
+      name: string,
+      runId: string
+    ): Promise<StreamInfoResponse> {
+      const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info`;
+      return makeRequest({
+        endpoint,
+        config,
+        schema: StreamInfoResponseSchema,
       });
     },
 

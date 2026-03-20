@@ -52,6 +52,7 @@ export {
 export {
   getRun,
   Run,
+  type WorkflowReadableStream,
   type WorkflowReadableStreamOptions,
 } from './runtime/run.js';
 export {

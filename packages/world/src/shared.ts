@@ -79,6 +79,19 @@ export interface GetChunksOptions {
 }
 
 /**
+ * Metadata about a stream, returned by {@link Streamer.getStreamInfo}.
+ */
+export interface StreamInfoResponse {
+  /**
+   * The index of the last known chunk (0-based).
+   * Returns `-1` when no chunks have been written yet.
+   */
+  tailIndex: number;
+  /** Whether the stream is fully complete (closed). */
+  done: boolean;
+}
+
+/**
  * Paginated response for stream chunks.
  *
  * Extends the standard `PaginatedResponse` shape with a `done` field that

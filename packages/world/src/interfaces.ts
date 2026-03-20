@@ -20,6 +20,7 @@ import type {
   GetChunksOptions,
   PaginatedResponse,
   StreamChunksResponse,
+  StreamInfoResponse,
 } from './shared.js';
 import type {
   GetStepParams,
@@ -82,6 +83,18 @@ export interface Streamer {
     runId: string,
     options?: GetChunksOptions
   ): Promise<StreamChunksResponse>;
+
+  /**
+   * Retrieve lightweight metadata about a stream.
+   *
+   * Returns the tail index (index of the last known chunk, 0-based) and
+   * whether the stream is complete. This is useful for resolving a negative
+   * `startIndex` into an absolute position before connecting to a stream.
+   *
+   * @param name - The stream name/ID
+   * @param runId - The workflow run ID that owns the stream
+   */
+  getStreamInfo(name: string, runId: string): Promise<StreamInfoResponse>;
 }
 
 /**

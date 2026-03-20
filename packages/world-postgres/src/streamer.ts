@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
+  StreamInfoResponse,
   Streamer,
 } from '@workflow/world';
 import { and, asc, eq, gt } from 'drizzle-orm';
@@ -298,6 +299,30 @@ export function createStreamer(
         cursor: nextCursor,
         hasMore,
         done: streamDone,
+      };
+    },
+
+    async getStreamInfo(
+      name: string,
+      _runId: string
+    ): Promise<StreamInfoResponse> {
+      // Count data rows (non-EOF)
+      const dataRows = await drizzle
+        .select({ chunkId: streams.chunkId })
+        .from(streams)
+        .where(and(eq(streams.streamId, name), eq(streams.eof, false)))
+        .orderBy(asc(streams.chunkId));
+
+      // Check for EOF
+      const [eofRow] = await drizzle
+        .select({ eof: streams.eof })
+        .from(streams)
+        .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
+        .limit(1);
+
+      return {
+        tailIndex: dataRows.length - 1,
+        done: !!eofRow,
       };
     },
 

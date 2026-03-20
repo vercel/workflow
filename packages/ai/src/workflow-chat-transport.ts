@@ -21,6 +21,12 @@ export interface SendMessagesOptions<UI_MESSAGE extends UIMessage> {
 export interface ReconnectToStreamOptions {
   chatId: string;
   abortSignal?: AbortSignal;
+  /**
+   * Override the `startIndex` for this reconnection.
+   * Negative values read from the end of the stream.
+   * When omitted, falls back to the constructor's `initialStartIndex`.
+   */
+  startIndex?: number;
 }
 
 type OnChatSendMessage<UI_MESSAGE extends UIMessage> = (
@@ -326,7 +332,6 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
       const startIndex = useExplicitStartIndex
         ? explicitStartIndex
         : chunkIndex;
-      useExplicitStartIndex = false;
 
       const url = `${baseUrl}?startIndex=${startIndex}`;
       const res = await this.fetch(url, {
@@ -340,6 +345,29 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
           `Failed to fetch chat: ${res.status} ${await res.text()}`
         );
       }
+
+      // When using a negative startIndex, the server resolves it to an
+      // absolute position. The reconnection endpoint should return the tail
+      // index so we can compute the resolved position for subsequent retries.
+      if (useExplicitStartIndex && explicitStartIndex < 0) {
+        const tailIndexHeader = res.headers.get('x-workflow-stream-tail-index');
+        if (tailIndexHeader !== null) {
+          const tailIndex = parseInt(tailIndexHeader, 10);
+          if (!Number.isNaN(tailIndex)) {
+            // Resolve: e.g. tailIndex=499, startIndex=-20 → 500 + (-20) = 480
+            chunkIndex = Math.max(0, tailIndex + 1 + explicitStartIndex);
+          }
+        } else {
+          console.warn(
+            '[WorkflowChatTransport] Negative initialStartIndex is configured ' +
+              `(${explicitStartIndex}) but the reconnection endpoint did not ` +
+              'return the "x-workflow-stream-tail-index" header. Retries after ' +
+              'a disconnect may resume from the wrong position. See: ' +
+              'https://workflow.dev/docs/ai/resumable-streams#resuming-from-the-end-of-the-stream'
+          );
+        }
+      }
+      useExplicitStartIndex = false;
 
       try {
         const chunkStream = parseJsonEventStream({

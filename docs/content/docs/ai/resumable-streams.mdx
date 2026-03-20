@@ -77,13 +77,24 @@ export async function GET(
 
   // Instead of starting a new run, we fetch an existing run.
   const run = getRun(id); // [!code highlight]
-  const stream = run.getReadable({ startIndex }); // [!code highlight]
+  const readable = run.getReadable({ startIndex }); // [!code highlight]
 
-  return createUIMessageStreamResponse({ stream }); // [!code highlight]
+  // Provide the stream's tail index so the transport can resolve
+  // negative startIndex values into absolute positions for retries.
+  const tailIndex = await readable.getTailIndex(); // [!code highlight]
+
+  return createUIMessageStreamResponse({
+    stream: readable, // [!code highlight]
+    headers: { // [!code highlight]
+      "x-workflow-stream-tail-index": String(tailIndex), // [!code highlight]
+    }, // [!code highlight]
+  });
 }
 ```
 
-The `startIndex` parameter ensures the client can choose where to resume the stream from. For instance, if the function times out during streaming, the chat transport will use `startIndex` to resume the stream exactly from the last token it received. Negative values are also supported (e.g. `-5` starts 5 chunks before the end), which is useful for custom stream consumers (such as a dashboard showing recent output) that want to show the most recent output without replaying the full stream. Note that `WorkflowChatTransport` itself does not use negative values — it always tracks the exact chunk index incrementally.
+The `startIndex` parameter ensures the client can choose where to resume the stream from. For instance, if the function times out during streaming, the chat transport will use `startIndex` to resume the stream exactly from the last token it received. Negative values are also supported (e.g. `-5` starts 5 chunks before the end), which is useful for resuming a chat after a page refresh without replaying the full stream.
+
+The `x-workflow-stream-tail-index` header is required when using negative `initialStartIndex` on `WorkflowChatTransport`. It tells the transport the stream's current length so it can compute absolute chunk positions for reconnection retries. Without this header, the transport will log a warning and retries after a disconnect may resume from the wrong position.
 
 </Step>
 
@@ -179,6 +190,10 @@ const { messages, sendMessage } = useChat({
 ```
 
 This avoids replaying potentially thousands of chunks and lets the UI render faster. The negative value is resolved server-side, so `-20` on a 500-chunk stream starts at chunk 480.
+
+<Callout>
+When using a negative `initialStartIndex`, the reconnection endpoint **must** return the `x-workflow-stream-tail-index` header (as shown in [Step 2](#add-a-stream-reconnection-endpoint) above). The transport uses this header to compute absolute chunk positions so that retries after a disconnect resume from the correct position. If the header is missing, the transport will log a warning.
+</Callout>
 
 ## Related Documentation
 

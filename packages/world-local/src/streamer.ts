@@ -3,6 +3,7 @@ import path from 'node:path';
 import type {
   GetChunksOptions,
   StreamChunksResponse,
+  StreamInfoResponse,
   Streamer,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
@@ -334,6 +335,53 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         hasMore,
         done: streamDone,
       };
+    },
+
+    async getStreamInfo(
+      name: string,
+      _runId: string
+    ): Promise<StreamInfoResponse> {
+      const chunksDir = path.join(basedir, 'streams', 'chunks');
+
+      const listPromises: Promise<string[]>[] = [
+        listFilesByExtension(chunksDir, '.bin'),
+        listFilesByExtension(chunksDir, '.json'),
+      ];
+      if (tag) {
+        listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
+      }
+      const [binFiles, jsonFiles, ...taggedResults] =
+        await Promise.all(listPromises);
+      const taggedBinFiles = taggedResults[0] ?? [];
+
+      const fileExtMap = new Map<string, string>();
+      for (const f of jsonFiles) fileExtMap.set(f, '.json');
+      const tagSfx = tag ? `.${tag}` : '';
+      for (const f of binFiles) {
+        if (tag && f.endsWith(tagSfx)) continue;
+        fileExtMap.set(f, '.bin');
+      }
+      for (const f of taggedBinFiles) fileExtMap.set(f, `.${tag}.bin`);
+
+      const chunkFiles = [...fileExtMap.keys()]
+        .filter((file) => file.startsWith(`${name}-`))
+        .sort();
+
+      let streamDone = false;
+      let dataCount = 0;
+      for (const file of chunkFiles) {
+        const ext = fileExtMap.get(file) ?? '.bin';
+        const chunk = deserializeChunk(
+          await readBuffer(path.join(chunksDir, `${file}${ext}`))
+        );
+        if (chunk.eof) {
+          streamDone = true;
+          break;
+        }
+        dataCount++;
+      }
+
+      return { tailIndex: dataCount - 1, done: streamDone };
     },
 
     async readFromStream(name: string, startIndex = 0) {
