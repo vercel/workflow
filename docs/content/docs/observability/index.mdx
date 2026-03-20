@@ -38,6 +38,14 @@ For automations, custom dashboards, and agentic tooling, prefer stable fields an
 - Use `stepName` together with `parseStepName()` when listing steps.
 - Use `error.code` and `workflow.error.code` for programmatic failure handling.
 - Use lifecycle event names such as `step_started`, `step_retrying`, `hook_created`, `hook_conflict`, and `hook_disposed` to reconstruct execution state.
+- When present, use `requestId` to correlate workflow events with platform request logs.
+
+<Callout type="info">
+On Vercel, `requestId` is the platform request ID when available. Use it together with `correlationId`:
+
+- `correlationId` groups lifecycle events for the same run, step, hook, or wait
+- `requestId` ties an event back to the inbound platform request that created it
+</Callout>
 
 See the dedicated docs for concrete implementations:
 
