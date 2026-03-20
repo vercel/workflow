@@ -1,6 +1,10 @@
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
-import type { Streamer } from '@workflow/world';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  Streamer,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
@@ -242,6 +246,94 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         tag
       );
       return data?.streams ?? [];
+    },
+
+    async getChunks(
+      name: string,
+      _runId: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const limit = options?.limit ?? 100;
+      const chunksDir = path.join(basedir, 'streams', 'chunks');
+
+      // List chunk files for this stream
+      const listPromises: Promise<string[]>[] = [
+        listFilesByExtension(chunksDir, '.bin'),
+        listFilesByExtension(chunksDir, '.json'),
+      ];
+      if (tag) {
+        listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
+      }
+      const [binFiles, jsonFiles, ...taggedResults] =
+        await Promise.all(listPromises);
+      const taggedBinFiles = taggedResults[0] ?? [];
+      const fileExtMap = new Map<string, string>();
+      for (const f of jsonFiles) fileExtMap.set(f, '.json');
+      const tagSfx = tag ? `.${tag}` : '';
+      for (const f of binFiles) {
+        if (tag && f.endsWith(tagSfx)) continue;
+        fileExtMap.set(f, '.bin');
+      }
+      for (const f of taggedBinFiles) fileExtMap.set(f, `.${tag}.bin`);
+      const chunkFiles = [...fileExtMap.keys()]
+        .filter((file) => file.startsWith(`${name}-`))
+        .sort(); // ULID lexicographic sort = chronological order
+
+      // Separate data chunks from EOF marker
+      let streamDone = false;
+      const dataFiles: string[] = [];
+      for (const file of chunkFiles) {
+        const ext = fileExtMap.get(file) ?? '.bin';
+        const chunk = deserializeChunk(
+          await readBuffer(path.join(chunksDir, `${file}${ext}`))
+        );
+        if (chunk.eof) {
+          streamDone = true;
+          break;
+        }
+        dataFiles.push(file);
+      }
+
+      // Decode cursor
+      let startIndex = 0;
+      if (options?.cursor) {
+        try {
+          const decoded = JSON.parse(
+            Buffer.from(options.cursor, 'base64').toString('utf-8')
+          );
+          startIndex = decoded.i;
+        } catch {
+          startIndex = 0;
+        }
+      }
+
+      const endIndex = Math.min(startIndex + limit, dataFiles.length);
+      const resultChunks: { index: number; data: Uint8Array }[] = [];
+
+      for (let i = startIndex; i < endIndex; i++) {
+        const file = dataFiles[i];
+        const ext = fileExtMap.get(file) ?? '.bin';
+        const chunk = deserializeChunk(
+          await readBuffer(path.join(chunksDir, `${file}${ext}`))
+        );
+        resultChunks.push({
+          index: i,
+          data: Uint8Array.from(chunk.chunk),
+        });
+      }
+
+      const nextIndex = endIndex;
+      const hasMore = nextIndex < dataFiles.length;
+      const nextCursor = hasMore
+        ? Buffer.from(JSON.stringify({ i: nextIndex })).toString('base64')
+        : null;
+
+      return {
+        data: resultChunks,
+        cursor: nextCursor,
+        hasMore,
+        done: streamDone,
+      };
     },
 
     async readFromStream(name: string, startIndex = 0) {

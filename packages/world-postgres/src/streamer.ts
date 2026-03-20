@@ -1,6 +1,10 @@
 import { EventEmitter } from 'node:events';
-import type { Streamer } from '@workflow/world';
-import { and, eq } from 'drizzle-orm';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  Streamer,
+} from '@workflow/world';
+import { and, asc, eq, gt } from 'drizzle-orm';
 import type { Sql } from 'postgres';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
@@ -187,6 +191,116 @@ export function createStreamer(
         )
       );
     },
+    async getChunks(
+      name: string,
+      _runId: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const limit = options?.limit ?? 100;
+
+      // Decode cursor to get the last seen chunkId
+      let cursorChunkId: string | null = null;
+      if (options?.cursor) {
+        try {
+          const decoded = JSON.parse(
+            Buffer.from(options.cursor, 'base64').toString('utf-8')
+          );
+          cursorChunkId = decoded.c;
+        } catch {
+          // Invalid cursor, start from beginning
+        }
+      }
+
+      // Fetch limit + 1 to detect hasMore, plus check for EOF
+      const rows = await drizzle
+        .select({
+          chunkId: streams.chunkId,
+          data: streams.chunkData,
+          eof: streams.eof,
+        })
+        .from(streams)
+        .where(
+          and(
+            eq(streams.streamId, name),
+            ...(cursorChunkId ? [gt(streams.chunkId, cursorChunkId)] : [])
+          )
+        )
+        .orderBy(asc(streams.chunkId))
+        .limit(limit + 1);
+
+      // Separate data rows from EOF and detect hasMore
+      const dataRows: typeof rows = [];
+      let streamDone = false;
+      for (const row of rows) {
+        if (row.eof) {
+          streamDone = true;
+          break;
+        }
+        dataRows.push(row);
+      }
+
+      const hasMore = !streamDone && dataRows.length > limit;
+      const pageRows = dataRows.slice(0, limit);
+
+      // If we didn't see an EOF in this batch and didn't exceed limit,
+      // check if the stream is complete by looking ahead for an EOF row
+      if (!streamDone && !hasMore && pageRows.length > 0) {
+        const lastChunkId = pageRows[pageRows.length - 1].chunkId;
+        const [eofRow] = await drizzle
+          .select({ eof: streams.eof })
+          .from(streams)
+          .where(
+            and(
+              eq(streams.streamId, name),
+              gt(streams.chunkId, lastChunkId),
+              eq(streams.eof, true)
+            )
+          )
+          .limit(1);
+        if (eofRow) {
+          streamDone = true;
+        }
+      }
+
+      // Build the cursor index: we need a running index across pages.
+      // Decode the current start index from the cursor.
+      let baseIndex = 0;
+      if (options?.cursor) {
+        try {
+          const decoded = JSON.parse(
+            Buffer.from(options.cursor, 'base64').toString('utf-8')
+          );
+          if (typeof decoded.i === 'number') {
+            baseIndex = decoded.i;
+          }
+        } catch {
+          // Invalid cursor
+        }
+      }
+
+      const chunks = pageRows.map((row, i) => ({
+        index: baseIndex + i,
+        data: new Uint8Array(row.data),
+      }));
+
+      const nextCursor =
+        hasMore && pageRows.length > 0
+          ? Buffer.from(
+              JSON.stringify({
+                c: pageRows[pageRows.length - 1].chunkId,
+                i: baseIndex + pageRows.length,
+              })
+            ).toString('base64')
+          : null;
+
+      return {
+        data: chunks,
+        cursor: nextCursor,
+        hasMore,
+        done: streamDone,
+      };
+    },
+
     async readFromStream(
       name: string,
       startIndex?: number

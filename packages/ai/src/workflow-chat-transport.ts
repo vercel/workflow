@@ -80,6 +80,19 @@ export interface WorkflowChatTransportOptions<UI_MESSAGE extends UIMessage> {
   maxConsecutiveErrors?: number;
 
   /**
+   * Default `startIndex` to use when reconnecting to a stream without a known
+   * chunk position (i.e. the initial reconnection, not a retry).
+   * Negative values read from the end of the stream (e.g. `-10` fetches the
+   * last 10 chunks), which is useful for resuming a chat UI after a page
+   * refresh without replaying the full conversation.
+   *
+   * Can be overridden per-call via `ReconnectToStreamOptions.startIndex`.
+   *
+   * Defaults to `0` (replay from the beginning).
+   */
+  initialStartIndex?: number;
+
+  /**
    * Function to prepare the request for sending messages.
    * Allows customizing the API endpoint, headers, credentials, and body.
    */
@@ -113,6 +126,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
   private readonly onChatSendMessage?: OnChatSendMessage<UI_MESSAGE>;
   private readonly onChatEnd?: OnChatEnd;
   private readonly maxConsecutiveErrors: number;
+  private readonly initialStartIndex: number;
   private readonly prepareSendMessagesRequest?: PrepareSendMessagesRequest<UI_MESSAGE>;
   private readonly prepareReconnectToStreamRequest?: PrepareReconnectToStreamRequest;
 
@@ -134,6 +148,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
     this.onChatSendMessage = options.onChatSendMessage;
     this.onChatEnd = options.onChatEnd;
     this.maxConsecutiveErrors = options.maxConsecutiveErrors ?? 3;
+    this.initialStartIndex = options.initialStartIndex ?? 0;
     this.prepareSendMessagesRequest = options.prepareSendMessagesRequest;
     this.prepareReconnectToStreamRequest =
       options.prepareReconnectToStreamRequest;
@@ -278,6 +293,16 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
   ): AsyncGenerator<UIMessageChunk> {
     let chunkIndex = initialChunkIndex;
 
+    // When called from the public reconnectToStream (initialChunkIndex === 0),
+    // honour the caller's startIndex (or the constructor default) for the
+    // first request. This enables negative values so the client can read only
+    // the tail of the stream (e.g. the last 10 chunks) instead of replaying
+    // everything. After the first request, fall back to the running chunkIndex
+    // so that retries resume from the correct position.
+    const explicitStartIndex = options.startIndex ?? this.initialStartIndex;
+    let useExplicitStartIndex =
+      initialChunkIndex === 0 && explicitStartIndex !== 0;
+
     const defaultApi = `${this.api}/${encodeURIComponent(workflowRunId ?? options.chatId)}/stream`;
 
     // Prepare the request using the configurator if provided
@@ -298,7 +323,12 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
     let consecutiveErrors = 0;
 
     while (!gotFinish) {
-      const url = `${baseUrl}?startIndex=${chunkIndex}`;
+      const startIndex = useExplicitStartIndex
+        ? explicitStartIndex
+        : chunkIndex;
+      useExplicitStartIndex = false;
+
+      const url = `${baseUrl}?startIndex=${startIndex}`;
       const res = await this.fetch(url, {
         headers: requestConfig?.headers,
         credentials: requestConfig?.credentials,

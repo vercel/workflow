@@ -36,6 +36,11 @@ export {
   PaginatedResponseSchema,
   StructuredErrorSchema,
 } from './shared.js';
+export type {
+  GetChunksOptions,
+  StreamChunk,
+  StreamChunksResponse,
+} from './shared.js';
 export type { SpecVersion } from './spec-version.js';
 export {
   isLegacySpecVersion,

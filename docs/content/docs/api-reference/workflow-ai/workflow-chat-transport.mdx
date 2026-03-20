@@ -71,6 +71,7 @@ export default WorkflowChatTransportOptions;`}
 - The `onChatSendMessage` callback receives the full response object, allowing you to extract and store the workflow run ID for session resumption
 - Stream interruptions are automatically detected when a "finish" chunk is not received in the initial response
 - The `maxConsecutiveErrors` option controls how many reconnection attempts are made before giving up (default: 3)
+- When reconnecting, you can pass a `startIndex` option to `reconnectToStream` to control where to resume from. Negative values (e.g. `-10`) read from the end of the stream, which is useful for showing only recent output without replaying the full conversation
 
 ## Examples
 

@@ -1,5 +1,15 @@
-import type { Streamer } from '@workflow/world';
-import { type APIConfig, getHttpConfig, type HttpConfig } from './utils.js';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  Streamer,
+} from '@workflow/world';
+import { z } from 'zod';
+import {
+  type APIConfig,
+  getHttpConfig,
+  type HttpConfig,
+  makeRequest,
+} from './utils.js';
 
 // Streaming calls use plain fetch() without the undici dispatcher.
 // The dispatcher's retry logic doesn't apply well to streaming operations
@@ -55,6 +65,23 @@ export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
 
   return result;
 }
+
+/**
+ * Zod schema for the paginated stream chunks response from the server.
+ * When using CBOR (the default for makeRequest), chunk data arrives as
+ * native Uint8Array byte strings — no base64 decoding required.
+ */
+const StreamChunksResponseSchema = z.object({
+  data: z.array(
+    z.object({
+      index: z.number(),
+      data: z.instanceof(Uint8Array),
+    })
+  ),
+  cursor: z.string().nullable(),
+  hasMore: z.boolean(),
+  done: z.boolean(),
+});
 
 export function createStreamer(config?: APIConfig): Streamer {
   return {
@@ -137,6 +164,27 @@ export function createStreamer(config?: APIConfig): Streamer {
         throw new Error('No response body for stream');
       }
       return response.body as ReadableStream<Uint8Array>;
+    },
+
+    async getChunks(
+      name: string,
+      runId: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const params = new URLSearchParams();
+      if (options?.limit != null) {
+        params.set('limit', String(options.limit));
+      }
+      if (options?.cursor) {
+        params.set('cursor', options.cursor);
+      }
+      const qs = params.toString();
+      const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
+      return makeRequest({
+        endpoint,
+        config,
+        schema: StreamChunksResponseSchema,
+      });
     },
 
     async listStreamsByRunId(runId: string) {
