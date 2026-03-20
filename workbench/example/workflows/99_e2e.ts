@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getRun, start } from 'workflow/api';
+import { getRun, resumeHook, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -1435,4 +1435,72 @@ export async function sleepWithSequentialStepsWorkflow() {
   const b = await addNumbers(a, 3);
   const c = await addNumbers(b, 4);
   return { a, b, c, shouldCancel };
+}
+
+//////////////////////////////////////////////////////////
+// Start from Workflow E2E Test
+//////////////////////////////////////////////////////////
+
+// Child workflow that processes a value and signals back to parent via hook
+export async function childWorkflowWithHookSignal(
+  hookToken: string,
+  value: number
+) {
+  'use workflow';
+  const result = await processAndSignalParent(hookToken, value);
+  return result;
+}
+
+async function processAndSignalParent(hookToken: string, value: number) {
+  'use step';
+  const processed = value * 3;
+  // Signal back to parent workflow via hook
+  await resumeHook(hookToken, { processed });
+  return { processed };
+}
+
+// Parent workflow that starts a child directly from workflow context
+export async function startFromWorkflow(inputValue: number) {
+  'use workflow';
+
+  // Create a hook to receive signal from child workflow
+  const hook = createHook<{ processed: number }>();
+
+  // Start child workflow directly from workflow context (new feature!)
+  // Pass the hook token so the child can signal back
+  const childRun = await start(childWorkflowWithHookSignal, [
+    hook.token,
+    inputValue,
+  ]);
+
+  // Wait for the child to signal back via hook
+  const signal = await hook;
+
+  return {
+    parentInput: inputValue,
+    childRun,
+    signalFromChild: signal,
+  };
+}
+
+//////////////////////////////////////////////////////////
+// Recursive Fibonacci via start() E2E Test
+//////////////////////////////////////////////////////////
+
+// Demonstrates recursive workflow composition: a workflow that starts
+// new instances of itself to compute Fibonacci numbers. Each run stays
+// small (few events) while the recursion fans out across independent runs.
+export async function fibonacciWorkflow(n: number): Promise<number> {
+  'use workflow';
+
+  if (n <= 1) return n;
+
+  const [runA, runB] = await Promise.all([
+    start(fibonacciWorkflow, [n - 1]),
+    start(fibonacciWorkflow, [n - 2]),
+  ]);
+
+  const [a, b] = await Promise.all([runA.returnValue, runB.returnValue]);
+
+  return a + b;
 }

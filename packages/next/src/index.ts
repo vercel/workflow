@@ -95,6 +95,7 @@ export function withWorkflow(
               'workflows',
               'src/workflows',
             ],
+            projectRoot: nextConfig.outputFileTracingRoot,
             workingDir: process.cwd(),
             distDir: nextConfig.distDir || '.next',
             buildTarget: 'next',

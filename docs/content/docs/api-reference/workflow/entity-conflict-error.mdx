@@ -16,6 +16,7 @@ It corresponds to HTTP 409 Conflict semantics.
 The Workflow runtime handles this error automatically during replay and event deduplication. You will only encounter it when interacting with world storage APIs directly.
 </Callout>
 
+{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
 import { EntityConflictError } from "workflow/internal/errors"
 
@@ -47,6 +48,7 @@ export default EntityConflictError;`}
 
 Type-safe check for `EntityConflictError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
+{/* @skip-typecheck: inline snippet */}
 ```typescript
 if (EntityConflictError.is(error)) {
   // error is typed as EntityConflictError

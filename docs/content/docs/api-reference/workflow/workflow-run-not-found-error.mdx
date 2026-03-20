@@ -12,6 +12,7 @@ related:
 
 Note that `getRun(id)` itself is synchronous and will not throw — the error is raised when subsequent operations on the run object discover the run is missing.
 
+{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
 import { WorkflowRunNotFoundError } from "workflow/internal/errors"
 
@@ -45,6 +46,7 @@ export default WorkflowRunNotFoundError;`}
 
 Type-safe check for `WorkflowRunNotFoundError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
+{/* @skip-typecheck: inline snippet */}
 ```typescript
 if (WorkflowRunNotFoundError.is(error)) {
   // error is typed as WorkflowRunNotFoundError

@@ -13,6 +13,7 @@ related:
 
 The `cause` property contains the underlying error with its message, stack trace, and optional error code.
 
+{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
 import { WorkflowRunFailedError } from "workflow/internal/errors"
 
@@ -51,6 +52,7 @@ export default WorkflowRunFailedError;`}
 
 Type-safe check for `WorkflowRunFailedError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
+{/* @skip-typecheck: inline snippet */}
 ```typescript
 if (WorkflowRunFailedError.is(error)) {
   // error is typed as WorkflowRunFailedError

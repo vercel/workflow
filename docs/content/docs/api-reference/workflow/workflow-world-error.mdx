@@ -18,6 +18,7 @@ You can use this class to catch any world-related error regardless of the specif
 Most world errors are handled automatically by the Workflow runtime. You will typically only encounter these errors when interacting with world storage APIs directly or when there are infrastructure-level issues.
 </Callout>
 
+{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
 import { WorkflowWorldError } from "workflow/internal/errors"
 
@@ -49,6 +50,7 @@ export default WorkflowWorldError;`}
 
 Type-safe check for `WorkflowWorldError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
+{/* @skip-typecheck: inline snippet */}
 ```typescript
 if (WorkflowWorldError.is(error)) {
   // error is typed as WorkflowWorldError

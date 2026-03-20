@@ -16,6 +16,7 @@ The `retryAfterDate` property contains a `Date` indicating when the operation ca
 The Workflow runtime handles this error automatically by retrying after the specified delay. You will only encounter it when interacting with world storage APIs directly.
 </Callout>
 
+{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
 import { TooEarlyError } from "workflow/internal/errors"
 
@@ -49,6 +50,7 @@ export default TooEarlyError;`}
 
 Type-safe check for `TooEarlyError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
+{/* @skip-typecheck: inline snippet */}
 ```typescript
 if (TooEarlyError.is(error)) {
   // error is typed as TooEarlyError

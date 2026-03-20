@@ -247,6 +247,16 @@ export function createStreamer(
             .where(and(eq(streams.streamId, name)))
             .orderBy(streams.chunkId);
 
+          // Resolve negative offset relative to the data chunk count
+          // (excluding the trailing EOF marker, if present)
+          if (typeof offset === 'number' && offset < 0) {
+            const dataCount =
+              chunks.length > 0 && chunks[chunks.length - 1].eof
+                ? chunks.length - 1
+                : chunks.length;
+            offset = Math.max(0, dataCount + offset);
+          }
+
           for (const chunk of [...chunks, ...(buffer ?? [])]) {
             enqueue(chunk);
           }

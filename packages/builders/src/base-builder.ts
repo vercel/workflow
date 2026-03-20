@@ -44,6 +44,10 @@ export abstract class BaseBuilder {
     this.config = config;
   }
 
+  protected get transformProjectRoot(): string {
+    return this.config.projectRoot || this.config.workingDir;
+  }
+
   /**
    * Whether informational BaseBuilder logs should be printed.
    * Subclasses can override this to silence progress logs while keeping warnings/errors.
@@ -171,7 +175,9 @@ export abstract class BaseBuilder {
       await esbuild.build({
         treeShaking: true,
         entryPoints: inputs,
-        plugins: [createDiscoverEntriesPlugin(state)],
+        plugins: [
+          createDiscoverEntriesPlugin(state, this.transformProjectRoot),
+        ],
         platform: 'node',
         write: false,
         outdir,
@@ -499,6 +505,7 @@ export abstract class BaseBuilder {
           mode: 'step',
           entriesToBundle: normalizedEntriesToBundle,
           outdir: outfile ? dirname(outfile) : undefined,
+          projectRoot: this.transformProjectRoot,
           workflowManifest,
         }),
       ],
@@ -529,7 +536,9 @@ export abstract class BaseBuilder {
           const { workflowManifest: fileManifest } = await applySwcTransform(
             relativeFilepath,
             source,
-            'workflow'
+            'workflow',
+            workflowFile,
+            this.transformProjectRoot
           );
           if (fileManifest.workflows) {
             workflowManifest.workflows = Object.assign(
@@ -700,6 +709,7 @@ export abstract class BaseBuilder {
         createPseudoPackagePlugin(),
         createSwcPlugin({
           mode: 'workflow',
+          projectRoot: this.transformProjectRoot,
           workflowManifest,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
@@ -951,7 +961,12 @@ export const POST = workflowEntrypoint(workflowCode);`;
         '.mjs',
         '.cjs',
       ],
-      plugins: [createSwcPlugin({ mode: 'client' })],
+      plugins: [
+        createSwcPlugin({
+          mode: 'client',
+          projectRoot: this.transformProjectRoot,
+        }),
+      ],
     });
 
     this.logEsbuildMessages(clientResult, 'client library bundle');

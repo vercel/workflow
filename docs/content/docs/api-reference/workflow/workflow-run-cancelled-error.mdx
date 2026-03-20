@@ -12,6 +12,7 @@ related:
 
 You can check for cancellation before awaiting by inspecting `run.status`.
 
+{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
 import { WorkflowRunCancelledError } from "workflow/internal/errors"
 
@@ -45,6 +46,7 @@ export default WorkflowRunCancelledError;`}
 
 Type-safe check for `WorkflowRunCancelledError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
+{/* @skip-typecheck: inline snippet */}
 ```typescript
 if (WorkflowRunCancelledError.is(error)) {
   // error is typed as WorkflowRunCancelledError

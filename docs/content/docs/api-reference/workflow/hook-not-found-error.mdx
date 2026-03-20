@@ -14,6 +14,7 @@ related:
 - The hook was already consumed and disposed
 - The workflow has not started yet, so the hook does not exist
 
+{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
 import { HookNotFoundError } from "workflow/internal/errors"
 
@@ -47,6 +48,7 @@ export default HookNotFoundError;`}
 
 Type-safe check for `HookNotFoundError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
+{/* @skip-typecheck: inline snippet */}
 ```typescript
 if (HookNotFoundError.is(error)) {
   // error is typed as HookNotFoundError
@@ -63,6 +65,7 @@ A common pattern for idempotent workflows is to try resuming a hook, and if it d
 This "resume or start" pattern is not atomic — there is a small window where a race condition is possible. A better native approach is being worked on, but this pattern works well for many use cases.
 </Callout>
 
+{/* @skip-typecheck: incomplete snippet with placeholder variables */}
 ```typescript lineNumbers
 import { HookNotFoundError } from "workflow/internal/errors"
 
