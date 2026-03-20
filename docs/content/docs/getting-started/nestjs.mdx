@@ -41,20 +41,46 @@ cd my-workflow-app
 npm i workflow @workflow/nest
 ```
 
-### Configure NestJS for ESM
+### Choose Your Module Format
 
-NestJS with SWC uses ES modules. Add `"type": "module"` to your `package.json`:
+NestJS projects using `@workflow/nest` can compile as either ESM or CommonJS. Choose the setup that matches your SWC output instead of assuming ESM is required.
+
+#### ESM (default)
+
+Use this when your NestJS project is configured as an ES module app.
 
 ```json title="package.json" lineNumbers
 {
   "name": "my-workflow-app",
-  "type": "module",
-  // ... rest of your config
+  "type": "module"
 }
 ```
 
 <Callout>
 When using ESM with NestJS, local imports must include the `.js` extension (e.g., `import { AppModule } from './app.module.js'`). This applies even though your source files are `.ts`.
+</Callout>
+
+#### CommonJS
+
+Use this when your NestJS project compiles CommonJS via SWC.
+
+```typescript title="src/app.module.ts" lineNumbers
+import { Module } from '@nestjs/common';
+import { WorkflowModule } from '@workflow/nest';
+
+@Module({
+  imports: [
+    WorkflowModule.forRoot({
+      moduleType: 'commonjs',
+      distDir: 'dist',
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+<Callout type="info">
+`distDir` should match the directory where NestJS writes compiled `.js` files. In the default SWC setup, that is `dist`.
 </Callout>
 
 ### Configure NestJS to use SWC
