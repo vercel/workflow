@@ -661,6 +661,7 @@ export async function getNextBuilderDeferred() {
       }
 
       await this.loadWorkflowsCache();
+      await this.loadDiscoveredEntriesFromInputGraph();
       this.cacheInitialized = true;
     }
 
@@ -941,6 +942,47 @@ export async function getNextBuilderDeferred() {
       }
       for (const filePath of serdeFiles) {
         this.discoveredSerdeFiles.add(filePath);
+      }
+    }
+
+    private async loadDiscoveredEntriesFromInputGraph(): Promise<void> {
+      const inputFiles = await this.getInputFiles();
+      if (inputFiles.length === 0) {
+        return;
+      }
+
+      const { discoveredWorkflows, discoveredSteps, discoveredSerdeFiles } =
+        await this.discoverEntries(inputFiles, this.config.workingDir);
+      const { workflowFiles, stepFiles, serdeFiles } =
+        await this.reconcileDiscoveredEntries({
+          workflowCandidates: discoveredWorkflows,
+          stepCandidates: discoveredSteps,
+          serdeCandidates: discoveredSerdeFiles,
+          validatePatterns: true,
+        });
+
+      let hasChanges = false;
+      for (const filePath of workflowFiles) {
+        if (!this.discoveredWorkflowFiles.has(filePath)) {
+          this.discoveredWorkflowFiles.add(filePath);
+          hasChanges = true;
+        }
+      }
+      for (const filePath of stepFiles) {
+        if (!this.discoveredStepFiles.has(filePath)) {
+          this.discoveredStepFiles.add(filePath);
+          hasChanges = true;
+        }
+      }
+      for (const filePath of serdeFiles) {
+        if (!this.discoveredSerdeFiles.has(filePath)) {
+          this.discoveredSerdeFiles.add(filePath);
+          hasChanges = true;
+        }
+      }
+
+      if (hasChanges) {
+        this.scheduleWorkflowsCacheWrite();
       }
     }
 
