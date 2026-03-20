@@ -436,9 +436,15 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           // Resolve negative startIndex relative to the number of data chunks
           // (excluding the trailing EOF marker chunk, if present).
           let dataChunkCount = chunkFiles.length;
-          if (startIndex < 0 && chunkFiles.length > 0) {
+          if (
+            typeof startIndex === 'number' &&
+            startIndex < 0 &&
+            chunkFiles.length > 0
+          ) {
             const lastFile = chunkFiles[chunkFiles.length - 1];
             const lastExt = fileExtMap.get(lastFile) ?? '.bin';
+            // Note: this incurs an extra disk read to check the EOF marker.
+            // Acceptable since negative startIndex is not a hot path.
             const lastChunk = deserializeChunk(
               await readBuffer(path.join(chunksDir, `${lastFile}${lastExt}`))
             );
@@ -447,7 +453,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             }
           }
           const resolvedStartIndex =
-            startIndex < 0
+            typeof startIndex === 'number' && startIndex < 0
               ? Math.max(0, dataChunkCount + startIndex)
               : startIndex;
 
