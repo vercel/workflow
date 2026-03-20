@@ -605,28 +605,40 @@ const readable = await world.streams.readFromStream(name);
 
 ### `resolveData` Parameter
 
-Controls whether input/output data is hydrated. Accepts `'all'` (default) or `'none'`.
+Controls whether input/output data is **included** in the response. Accepts `'all'` (default) or `'none'`.
+
+**IMPORTANT**: Even with `'all'`, data is still devalue-serialized. You MUST call `hydrateResourceIO()` to get usable JS values.
 
 - **Use `'none'`** for status polling, progress dashboards, run listings
-- **Use `'all'`** (or omit) when you need to inspect actual step I/O data
+- **Use `'all'`** (or omit) when you need to inspect actual step I/O data — then **always hydrate**
 
 ```typescript
 // Lightweight status check — no I/O loaded
 const run = await world.runs.get(runId, { resolveData: 'none' });
 console.log(run.status); // 'running' | 'completed' | 'failed' | 'cancelled'
 
-// Full inspection with hydrated I/O
+// Full inspection — resolveData includes data, hydrateResourceIO deserializes it
 const step = await world.steps.get(runId, stepId); // defaults to 'all'
 const hydrated = hydrateResourceIO(step, observabilityRevivers);
 ```
 
+> **Common mistake**: Checking `step.input !== undefined` after `resolveData: 'all'` and assuming
+> the data is ready to use. The data exists but is serialized — always hydrate first.
+
 ### Data Hydration (Devalue Format)
 
-Step I/O is serialized via [devalue](https://github.com/Rich-Harris/devalue). Without hydration, `input`/`output` are opaque arrays (e.g., `[["Object", ...]]`), NOT plain objects. Always hydrate:
+Step I/O is serialized via [devalue](https://github.com/Rich-Harris/devalue) with a 4-byte format prefix (`devl`). Without hydration, `input`/`output` are Uint8Array-like objects with numeric keys:
+`{"0":100,"1":101,"2":118,"3":108,...}` — these are NOT usable values.
+
+**Always hydrate before using I/O data:**
 
 ```typescript
-const hydrated = hydrateResourceIO(step, observabilityRevivers);
-// hydrated.input and hydrated.output are now usable plain objects
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability";
+
+const { data: steps } = await world.steps.list({ runId, resolveData: 'all' });
+const hydrated = steps.map(s => hydrateResourceIO(s, observabilityRevivers));
+// hydrated[0].input → [123, 2] (actual function arguments)
+// hydrated[0].output → 125 (actual return value)
 ```
 
 `hydrateResourceIO` works on both `Step` and `WorkflowRun` objects. For encrypted workflows, use `getEncryptionKeyForRun()` + `hydrateResourceIOWithKey()`.
