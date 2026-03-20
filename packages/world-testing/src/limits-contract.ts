@@ -1,6 +1,8 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   SPEC_VERSION_CURRENT,
+  type LimitDefinition,
+  type LimitLease,
   type Limits,
   type Storage,
 } from '@workflow/world';
@@ -15,6 +17,16 @@ export interface LimitsHarness {
     tokenHolderIds: string[];
   }>;
   close?: () => Promise<void>;
+}
+
+interface LockOwner {
+  lockId: string;
+  runId: string;
+  lockIndex: number;
+}
+
+function createTestLockId(runId: string, lockIndex: number) {
+  return `${runId}:${lockIndex}`;
 }
 
 async function createRun(
@@ -36,24 +48,49 @@ async function createRun(
   return result.run;
 }
 
-async function createStep(
-  storage: Pick<Storage, 'events'>,
-  runId: string,
-  stepId: string
-) {
-  const result = await storage.events.create(runId, {
-    eventType: 'step_created',
-    specVersion: SPEC_VERSION_CURRENT,
-    correlationId: stepId,
-    eventData: {
-      stepName: 'test-step',
-      input: [],
-    },
-  });
-  if (!result.step) {
-    throw new Error('expected step');
+function requireEventsStorage(
+  storage: LimitsHarness['storage']
+): Pick<Storage, 'events'> {
+  if (!storage) {
+    throw new Error('storage.events is required for limits tests');
   }
-  return result.step;
+  return storage;
+}
+
+async function createLockOwner(
+  storage: LimitsHarness['storage'],
+  workflowName: string,
+  lockIndex = 0
+): Promise<LockOwner> {
+  const run = await createRun(requireEventsStorage(storage), workflowName);
+  return {
+    lockId: createTestLockId(run.runId, lockIndex),
+    runId: run.runId,
+    lockIndex,
+  };
+}
+
+function acquireRequest(
+  owner: LockOwner,
+  key: string,
+  definition: LimitDefinition,
+  leaseTtlMs?: number
+) {
+  return {
+    key,
+    runId: owner.runId,
+    lockIndex: owner.lockIndex,
+    definition,
+    ...(leaseTtlMs !== undefined ? { leaseTtlMs } : {}),
+  };
+}
+
+function releaseRequest(lease: LimitLease) {
+  return {
+    leaseId: lease.leaseId,
+    key: lease.key,
+    lockId: lease.lockId,
+  };
 }
 
 export function createLimitsContractSuite(
@@ -80,39 +117,43 @@ export function createLimitsContractSuite(
     it('enforces per-key concurrency limits', async () => {
       const harness = await createHarness();
       try {
-        const first = await harness.limits.acquire({
-          key: 'step:db:cheap',
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const ownerB = await createLockOwner(harness.storage, 'holder-b');
+        const first = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'step:db:cheap',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
 
-        const second = await harness.limits.acquire({
-          key: 'step:db:cheap',
-          holderId: 'holder-b',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const second = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'step:db:cheap',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(second).toMatchObject({
           status: 'blocked',
           reason: 'concurrency',
         });
 
-        await harness.limits.release({
-          leaseId: first.lease.leaseId,
-          key: first.lease.key,
-          holderId: first.lease.holderId,
-        });
+        await harness.limits.release(releaseRequest(first.lease));
 
-        const third = await harness.limits.acquire({
-          key: 'step:db:cheap',
-          holderId: 'holder-b',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const third = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'step:db:cheap',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(third.status).toBe('acquired');
       } finally {
         await harness.close?.();
@@ -122,19 +163,25 @@ export function createLimitsContractSuite(
     it('isolates unrelated keys at the raw limits layer', async () => {
       const harness = await createHarness();
       try {
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const ownerB = await createLockOwner(harness.storage, 'holder-b');
         const [first, second] = await Promise.all([
-          harness.limits.acquire({
-            key: 'workflow:user:a',
-            holderId: 'holder-a',
-            definition: { concurrency: { max: 1 } },
-            leaseTtlMs: 1_000,
-          }),
-          harness.limits.acquire({
-            key: 'workflow:user:b',
-            holderId: 'holder-b',
-            definition: { concurrency: { max: 1 } },
-            leaseTtlMs: 1_000,
-          }),
+          harness.limits.acquire(
+            acquireRequest(
+              ownerA,
+              'workflow:user:a',
+              { concurrency: { max: 1 } },
+              1_000
+            )
+          ),
+          harness.limits.acquire(
+            acquireRequest(
+              ownerB,
+              'workflow:user:b',
+              { concurrency: { max: 1 } },
+              1_000
+            )
+          ),
         ]);
 
         expect(first.status).toBe('acquired');
@@ -147,14 +194,21 @@ export function createLimitsContractSuite(
     it('serializes concurrent acquires for the same key', async () => {
       const harness = await createHarness();
       try {
-        const results = await Promise.all(
+        const owners = await Promise.all(
           Array.from({ length: 12 }, (_, index) =>
-            harness.limits.acquire({
-              key: 'workflow:user:concurrent',
-              holderId: `holder-${index}`,
-              definition: { concurrency: { max: 1 } },
-              leaseTtlMs: 1_000,
-            })
+            createLockOwner(harness.storage, `holder-${index}`)
+          )
+        );
+        const results = await Promise.all(
+          owners.map((owner) =>
+            harness.limits.acquire(
+              acquireRequest(
+                owner,
+                'workflow:user:concurrent',
+                { concurrency: { max: 1 } },
+                1_000
+              )
+            )
           )
         );
 
@@ -174,48 +228,55 @@ export function createLimitsContractSuite(
       const harness = await createHarness();
       try {
         const periodMs = 200;
-        const first = await harness.limits.acquire({
-          key: 'step:provider:openai',
-          holderId: 'holder-a',
-          definition: { rate: { count: 1, periodMs } },
-          leaseTtlMs: 1_000,
-        });
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const ownerB = await createLockOwner(harness.storage, 'holder-b');
+        const ownerC = await createLockOwner(harness.storage, 'holder-c');
+        const first = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'step:provider:openai',
+            { rate: { count: 1, periodMs } },
+            1_000
+          )
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
 
-        await harness.limits.release({
-          leaseId: first.lease.leaseId,
-          key: first.lease.key,
-          holderId: first.lease.holderId,
-        });
+        await harness.limits.release(releaseRequest(first.lease));
 
-        const second = await harness.limits.acquire({
-          key: 'step:provider:openai',
-          holderId: 'holder-b',
-          definition: { rate: { count: 1, periodMs } },
-          leaseTtlMs: 1_000,
-        });
+        const second = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'step:provider:openai',
+            { rate: { count: 1, periodMs } },
+            1_000
+          )
+        );
         expect(second.status).toBe('blocked');
         if (second.status !== 'blocked') throw new Error('expected blocked');
         expect(second.reason).toBe('rate');
         expect(second.retryAfterMs).toBeGreaterThanOrEqual(0);
 
-        let third = await harness.limits.acquire({
-          key: 'step:provider:openai',
-          holderId: 'holder-c',
-          definition: { rate: { count: 1, periodMs } },
-          leaseTtlMs: 1_000,
-        });
+        let third = await harness.limits.acquire(
+          acquireRequest(
+            ownerC,
+            'step:provider:openai',
+            { rate: { count: 1, periodMs } },
+            1_000
+          )
+        );
         const deadline = Date.now() + periodMs + 1_000;
         while (third.status === 'blocked' && Date.now() < deadline) {
           await sleep(Math.max(25, third.retryAfterMs ?? 0) + 50);
-          third = await harness.limits.acquire({
-            key: 'step:provider:openai',
-            holderId: 'holder-c',
-            definition: { rate: { count: 1, periodMs } },
-            leaseTtlMs: 1_000,
-          });
+          third = await harness.limits.acquire(
+            acquireRequest(
+              ownerC,
+              'step:provider:openai',
+              { rate: { count: 1, periodMs } },
+              1_000
+            )
+          );
         }
         expect(third.status).toBe('acquired');
       } finally {
@@ -227,49 +288,53 @@ export function createLimitsContractSuite(
       const harness = await createHarness();
       try {
         const periodMs = 300;
-        const first = await harness.limits.acquire({
-          key: 'step:mixed',
-          holderId: 'holder-a',
-          definition: {
-            concurrency: { max: 1 },
-            rate: { count: 1, periodMs },
-          },
-          leaseTtlMs: 1_000,
-        });
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const ownerB = await createLockOwner(harness.storage, 'holder-b');
+        const first = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'step:mixed',
+            {
+              concurrency: { max: 1 },
+              rate: { count: 1, periodMs },
+            },
+            1_000
+          )
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
 
-        const second = await harness.limits.acquire({
-          key: 'step:mixed',
-          holderId: 'holder-b',
-          definition: {
-            concurrency: { max: 1 },
-            rate: { count: 1, periodMs },
-          },
-          leaseTtlMs: 1_000,
-        });
+        const second = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'step:mixed',
+            {
+              concurrency: { max: 1 },
+              rate: { count: 1, periodMs },
+            },
+            1_000
+          )
+        );
         expect(second).toMatchObject({
           status: 'blocked',
           reason: 'concurrency_and_rate',
         });
         if (second.status !== 'blocked') throw new Error('expected blocked');
 
-        await harness.limits.release({
-          leaseId: first.lease.leaseId,
-          key: first.lease.key,
-          holderId: first.lease.holderId,
-        });
+        await harness.limits.release(releaseRequest(first.lease));
 
-        const third = await harness.limits.acquire({
-          key: 'step:mixed',
-          holderId: 'holder-b',
-          definition: {
-            concurrency: { max: 1 },
-            rate: { count: 1, periodMs },
-          },
-          leaseTtlMs: 1_000,
-        });
+        const third = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'step:mixed',
+            {
+              concurrency: { max: 1 },
+              rate: { count: 1, periodMs },
+            },
+            1_000
+          )
+        );
         expect(third).toMatchObject({
           status: 'blocked',
           reason: 'rate',
@@ -279,15 +344,17 @@ export function createLimitsContractSuite(
         const deadline = Date.now() + periodMs + 1_000;
         while (fourth.status === 'blocked' && Date.now() < deadline) {
           await sleep(Math.max(25, fourth.retryAfterMs ?? 0) + 50);
-          fourth = await harness.limits.acquire({
-            key: 'step:mixed',
-            holderId: 'holder-b',
-            definition: {
-              concurrency: { max: 1 },
-              rate: { count: 1, periodMs },
-            },
-            leaseTtlMs: 1_000,
-          });
+          fourth = await harness.limits.acquire(
+            acquireRequest(
+              ownerB,
+              'step:mixed',
+              {
+                concurrency: { max: 1 },
+                rate: { count: 1, periodMs },
+              },
+              1_000
+            )
+          );
         }
 
         expect(fourth.status).toBe('acquired');
@@ -299,36 +366,40 @@ export function createLimitsContractSuite(
     it('restores capacity immediately when a lease is released', async () => {
       const harness = await createHarness();
       try {
-        const first = await harness.limits.acquire({
-          key: 'workflow:user:123',
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const ownerB = await createLockOwner(harness.storage, 'holder-b');
+        const first = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'workflow:user:123',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
 
-        const second = await harness.limits.acquire({
-          key: 'workflow:user:123',
-          holderId: 'holder-b',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const second = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'workflow:user:123',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(second.status).toBe('blocked');
 
-        await harness.limits.release({
-          leaseId: first.lease.leaseId,
-          key: first.lease.key,
-          holderId: first.lease.holderId,
-        });
+        await harness.limits.release(releaseRequest(first.lease));
 
-        const third = await harness.limits.acquire({
-          key: 'workflow:user:123',
-          holderId: 'holder-b',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const third = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'workflow:user:123',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(third.status).toBe('acquired');
       } finally {
         await harness.close?.();
@@ -338,12 +409,16 @@ export function createLimitsContractSuite(
     it('extends lease expiry when heartbeated', async () => {
       const harness = await createHarness();
       try {
-        const first = await harness.limits.acquire({
-          key: 'workflow:user:heartbeat',
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 200,
-        });
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const ownerB = await createLockOwner(harness.storage, 'holder-b');
+        const first = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'workflow:user:heartbeat',
+            { concurrency: { max: 1 } },
+            200
+          )
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
@@ -357,12 +432,14 @@ export function createLimitsContractSuite(
           first.lease.expiresAt?.getTime() ?? 0
         );
 
-        const second = await harness.limits.acquire({
-          key: 'workflow:user:heartbeat',
-          holderId: 'holder-b',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const second = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'workflow:user:heartbeat',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(second.status).toBe('blocked');
       } finally {
         await harness.close?.();
@@ -372,32 +449,40 @@ export function createLimitsContractSuite(
     it('reclaims expired leases without manual cleanup', async () => {
       const harness = await createHarness();
       try {
-        const first = await harness.limits.acquire({
-          key: 'workflow:user:expired',
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 250,
-        });
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const ownerB = await createLockOwner(harness.storage, 'holder-b');
+        const first = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'workflow:user:expired',
+            { concurrency: { max: 1 } },
+            250
+          )
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
 
-        const second = await harness.limits.acquire({
-          key: 'workflow:user:expired',
-          holderId: 'holder-b',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const second = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'workflow:user:expired',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(second.status).toBe('blocked');
 
         await sleep(400);
 
-        const third = await harness.limits.acquire({
-          key: 'workflow:user:expired',
-          holderId: 'holder-b',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const third = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'workflow:user:expired',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(third.status).toBe('acquired');
       } finally {
         await harness.close?.();
@@ -407,27 +492,32 @@ export function createLimitsContractSuite(
     it('reuses an existing lease for the same holder', async () => {
       const harness = await createHarness();
       try {
-        const first = await harness.limits.acquire({
-          key: 'workflow:user:reacquire',
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const first = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'workflow:user:reacquire',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
 
-        const second = await harness.limits.acquire({
-          key: 'workflow:user:reacquire',
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const second = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'workflow:user:reacquire',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(second).toMatchObject({
           status: 'acquired',
           lease: {
             leaseId: first.lease.leaseId,
-            holderId: first.lease.holderId,
+            lockId: first.lease.lockId,
           },
         });
 
@@ -440,10 +530,10 @@ export function createLimitsContractSuite(
           'workflow:user:reacquire'
         );
         expect(
-          keyState.leaseHolderIds.filter((holderId) => holderId === 'holder-a')
+          keyState.leaseHolderIds.filter((lockId) => lockId === ownerA.lockId)
         ).toHaveLength(1);
         expect(
-          keyState.waiterHolderIds.filter((holderId) => holderId === 'holder-a')
+          keyState.waiterHolderIds.filter((lockId) => lockId === ownerA.lockId)
         ).toHaveLength(0);
       } finally {
         await harness.close?.();
@@ -453,68 +543,75 @@ export function createLimitsContractSuite(
     it('promotes waiters in FIFO order per key', async () => {
       const harness = await createHarness();
       try {
-        const first = await harness.limits.acquire({
-          key: 'workflow:user:ordered',
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const ownerB = await createLockOwner(harness.storage, 'holder-b');
+        const ownerC = await createLockOwner(harness.storage, 'holder-c');
+        const first = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'workflow:user:ordered',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
 
-        const second = await harness.limits.acquire({
-          key: 'workflow:user:ordered',
-          holderId: 'holder-b',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
-        const third = await harness.limits.acquire({
-          key: 'workflow:user:ordered',
-          holderId: 'holder-c',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const second = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'workflow:user:ordered',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
+        const third = await harness.limits.acquire(
+          acquireRequest(
+            ownerC,
+            'workflow:user:ordered',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
 
         expect(second.status).toBe('blocked');
         expect(third.status).toBe('blocked');
 
-        await harness.limits.release({
-          leaseId: first.lease.leaseId,
-          holderId: first.lease.holderId,
-          key: first.lease.key,
-        });
+        await harness.limits.release(releaseRequest(first.lease));
 
-        const promoted = await harness.limits.acquire({
-          key: 'workflow:user:ordered',
-          holderId: 'holder-b',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
-        const stillWaiting = await harness.limits.acquire({
-          key: 'workflow:user:ordered',
-          holderId: 'holder-c',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const promoted = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'workflow:user:ordered',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
+        const stillWaiting = await harness.limits.acquire(
+          acquireRequest(
+            ownerC,
+            'workflow:user:ordered',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
 
         expect(promoted.status).toBe('acquired');
         expect(stillWaiting.status).toBe('blocked');
         if (promoted.status !== 'acquired')
           throw new Error('expected waiter-b promotion');
 
-        await harness.limits.release({
-          leaseId: promoted.lease.leaseId,
-          holderId: promoted.lease.holderId,
-          key: promoted.lease.key,
-        });
+        await harness.limits.release(releaseRequest(promoted.lease));
 
-        const thirdPromoted = await harness.limits.acquire({
-          key: 'workflow:user:ordered',
-          holderId: 'holder-c',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const thirdPromoted = await harness.limits.acquire(
+          acquireRequest(
+            ownerC,
+            'workflow:user:ordered',
+            { concurrency: { max: 1 } },
+            1_000
+          )
+        );
 
         expect(thirdPromoted.status).toBe('acquired');
       } finally {
@@ -544,126 +641,57 @@ export function createLimitsContractSuite(
           eventType: 'run_started',
           specVersion: SPEC_VERSION_CURRENT,
         });
+        const liveOwner = {
+          lockId: createTestLockId(liveRun.runId, 0),
+          runId: liveRun.runId,
+          lockIndex: 0,
+        };
+        const deadOwner = {
+          lockId: createTestLockId(deadRun.runId, 0),
+          runId: deadRun.runId,
+          lockIndex: 0,
+        };
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
 
-        const first = await harness.limits.acquire({
-          key: 'workflow:user:skip-dead-workflow',
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 5_000,
-        });
+        const first = await harness.limits.acquire(
+          acquireRequest(
+            ownerA,
+            'workflow:user:skip-dead-workflow',
+            { concurrency: { max: 1 } },
+            5_000
+          )
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
 
-        await harness.limits.acquire({
-          key: 'workflow:user:skip-dead-workflow',
-          holderId: `wflock_${deadRun.runId}:limitwait_dead`,
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 5_000,
-        });
-        await harness.limits.acquire({
-          key: 'workflow:user:skip-dead-workflow',
-          holderId: `wflock_${liveRun.runId}:limitwait_live`,
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 5_000,
-        });
-
-        await harness.limits.release({
-          leaseId: first.lease.leaseId,
-          holderId: first.lease.holderId,
-          key: first.lease.key,
-        });
-
-        const promoted = await harness.limits.acquire({
-          key: 'workflow:user:skip-dead-workflow',
-          holderId: `wflock_${liveRun.runId}:limitwait_live`,
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 5_000,
-        });
-
-        expect(promoted.status).toBe('acquired');
-      } finally {
-        await harness.close?.();
-      }
-    });
-
-    it('skips failed step waiters before promotion', async () => {
-      const harness = await createHarness();
-      try {
-        if (!harness.storage) {
-          throw new Error('storage is required for step waiter liveness');
-        }
-
-        const deadRun = await createRun(harness.storage, 'dead-step-workflow');
-        await harness.storage.events.create(deadRun.runId, {
-          eventType: 'run_started',
-          specVersion: SPEC_VERSION_CURRENT,
-        });
-        const deadStep = await createStep(
-          harness.storage,
-          deadRun.runId,
-          'step-dead'
+        await harness.limits.acquire(
+          acquireRequest(
+            deadOwner,
+            'workflow:user:skip-dead-workflow',
+            { concurrency: { max: 1 } },
+            5_000
+          )
         );
-        await harness.storage.events.create(deadRun.runId, {
-          eventType: 'step_started',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: deadStep.stepId,
-        });
-        await harness.storage.events.create(deadRun.runId, {
-          eventType: 'step_failed',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId: deadStep.stepId,
-          eventData: {
-            error: { name: 'Error', message: 'failed waiter' },
-          },
-        } as any);
-
-        const liveRun = await createRun(harness.storage, 'live-step-workflow');
-        await harness.storage.events.create(liveRun.runId, {
-          eventType: 'run_started',
-          specVersion: SPEC_VERSION_CURRENT,
-        });
-        const liveStep = await createStep(
-          harness.storage,
-          liveRun.runId,
-          'step-live'
+        await harness.limits.acquire(
+          acquireRequest(
+            liveOwner,
+            'workflow:user:skip-dead-workflow',
+            { concurrency: { max: 1 } },
+            5_000
+          )
         );
 
-        const first = await harness.limits.acquire({
-          key: 'step:skip-dead-step',
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 5_000,
-        });
-        expect(first.status).toBe('acquired');
-        if (first.status !== 'acquired')
-          throw new Error('expected acquisition');
+        await harness.limits.release(releaseRequest(first.lease));
 
-        await harness.limits.acquire({
-          key: 'step:skip-dead-step',
-          holderId: `stplock_${deadRun.runId}:${deadStep.stepId}:0`,
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 5_000,
-        });
-        await harness.limits.acquire({
-          key: 'step:skip-dead-step',
-          holderId: `stplock_${liveRun.runId}:${liveStep.stepId}:0`,
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 5_000,
-        });
-
-        await harness.limits.release({
-          leaseId: first.lease.leaseId,
-          holderId: first.lease.holderId,
-          key: first.lease.key,
-        });
-
-        const promoted = await harness.limits.acquire({
-          key: 'step:skip-dead-step',
-          holderId: `stplock_${liveRun.runId}:${liveStep.stepId}:0`,
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 5_000,
-        });
+        const promoted = await harness.limits.acquire(
+          acquireRequest(
+            liveOwner,
+            'workflow:user:skip-dead-workflow',
+            { concurrency: { max: 1 } },
+            5_000
+          )
+        );
 
         expect(promoted.status).toBe('acquired');
       } finally {
@@ -675,30 +703,26 @@ export function createLimitsContractSuite(
       const harness = await createHarness();
       try {
         const key = 'workflow:user:replay';
-        const blockedHolderId = 'wflock_wrun_replay:corr_replay:holder_replay';
+        const ownerA = await createLockOwner(harness.storage, 'holder-a');
+        const replayOwner = await createLockOwner(
+          harness.storage,
+          'holder-replay'
+        );
+        const blockedLockId = replayOwner.lockId;
 
-        const first = await harness.limits.acquire({
-          key,
-          holderId: 'holder-a',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const first = await harness.limits.acquire(
+          acquireRequest(ownerA, key, { concurrency: { max: 1 } }, 1_000)
+        );
         expect(first.status).toBe('acquired');
         if (first.status !== 'acquired')
           throw new Error('expected acquisition');
 
-        const blockedA = await harness.limits.acquire({
-          key,
-          holderId: blockedHolderId,
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
-        const blockedB = await harness.limits.acquire({
-          key,
-          holderId: blockedHolderId,
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const blockedA = await harness.limits.acquire(
+          acquireRequest(replayOwner, key, { concurrency: { max: 1 } }, 1_000)
+        );
+        const blockedB = await harness.limits.acquire(
+          acquireRequest(replayOwner, key, { concurrency: { max: 1 } }, 1_000)
+        );
 
         expect(blockedA.status).toBe('blocked');
         expect(blockedB.status).toBe('blocked');
@@ -706,27 +730,20 @@ export function createLimitsContractSuite(
         const blockedState = await harness.inspectKeyState(key);
         expect(
           blockedState.waiterHolderIds.filter(
-            (holderId) => holderId === blockedHolderId
+            (lockId) => lockId === blockedLockId
           )
         ).toHaveLength(1);
         expect(
           blockedState.leaseHolderIds.filter(
-            (holderId) => holderId === blockedHolderId
+            (lockId) => lockId === blockedLockId
           )
         ).toHaveLength(0);
 
-        await harness.limits.release({
-          leaseId: first.lease.leaseId,
-          holderId: first.lease.holderId,
-          key: first.lease.key,
-        });
+        await harness.limits.release(releaseRequest(first.lease));
 
-        const acquired = await harness.limits.acquire({
-          key,
-          holderId: blockedHolderId,
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
-        });
+        const acquired = await harness.limits.acquire(
+          acquireRequest(replayOwner, key, { concurrency: { max: 1 } }, 1_000)
+        );
         expect(acquired.status).toBe('acquired');
         if (acquired.status !== 'acquired')
           throw new Error('expected replayed holder acquisition');
@@ -734,12 +751,12 @@ export function createLimitsContractSuite(
         const acquiredState = await harness.inspectKeyState(key);
         expect(
           acquiredState.waiterHolderIds.filter(
-            (holderId) => holderId === blockedHolderId
+            (lockId) => lockId === blockedLockId
           )
         ).toHaveLength(0);
         expect(
           acquiredState.leaseHolderIds.filter(
-            (holderId) => holderId === blockedHolderId
+            (lockId) => lockId === blockedLockId
           )
         ).toHaveLength(1);
       } finally {

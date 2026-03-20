@@ -1,12 +1,9 @@
 import path from 'node:path';
 import { WorkflowWorldError } from '@workflow/errors';
-import type {
-  Queue,
-  Storage,
-  WorkflowRunWithoutData,
-  StepWithoutData,
-} from '@workflow/world';
+import type { Queue, Storage, WorkflowRunWithoutData } from '@workflow/world';
 import {
+  createLockId,
+  createLockWakeCorrelationId,
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
   LimitHeartbeatRequestSchema,
@@ -14,6 +11,7 @@ import {
   LimitLeaseSchema,
   LimitReleaseRequestSchema,
   type Limits,
+  parseLockId,
 } from '@workflow/world';
 import { z } from 'zod';
 import { readJSON, writeJSON } from './fs.js';
@@ -21,14 +19,16 @@ import { monotonicUlid } from './storage/helpers.js';
 
 const LimitTokenSchema = z.object({
   tokenId: z.string(),
-  holderId: z.string(),
+  lockId: z.string(),
   acquiredAt: z.coerce.date(),
   expiresAt: z.coerce.date(),
 });
 
 const LimitWaiterSchema = z.object({
   waiterId: z.string(),
-  holderId: z.string(),
+  lockId: z.string(),
+  runId: z.string(),
+  lockIndex: z.number().int().nonnegative(),
   createdAt: z.coerce.date(),
   leaseTtlMs: z.number().int().positive().optional(),
   concurrencyMax: z.number().int().positive().nullable(),
@@ -55,14 +55,9 @@ type LimitsState = z.infer<typeof LimitsStateSchema>;
 
 type HolderTarget =
   | {
-      kind: 'workflow';
+      kind: 'lock';
       runId: string;
       correlationId: string;
-    }
-  | {
-      kind: 'step';
-      runId: string;
-      stepId: string;
     }
   | {
       kind: 'opaque';
@@ -71,7 +66,7 @@ type HolderTarget =
 export interface LocalLimitsOptions {
   tag?: string;
   queue?: Pick<Queue, 'queue'>;
-  storage?: Pick<Storage, 'runs' | 'steps'>;
+  storage?: Pick<Storage, 'runs'>;
 }
 
 const EMPTY_STATE: LimitsState = {
@@ -164,7 +159,8 @@ function getRetryAfterMs(
 
 function createLease(
   key: string,
-  holderId: string,
+  runId: string,
+  lockIndex: number,
   definition: LimitLease['definition'],
   acquiredAt: Date,
   leaseTtlMs?: number
@@ -172,7 +168,9 @@ function createLease(
   return {
     leaseId: `lmt_${monotonicUlid()}`,
     key,
-    holderId,
+    lockId: createLockId(runId, lockIndex),
+    runId,
+    lockIndex,
     acquiredAt,
     expiresAt:
       leaseTtlMs !== undefined
@@ -184,31 +182,29 @@ function createLease(
 
 function insertToken(
   keyState: KeyState,
-  holderId: string,
+  lockId: string,
   acquiredAt: Date,
   periodMs: number
 ) {
   keyState.tokens.push({
     tokenId: `lmttok_${monotonicUlid()}`,
-    holderId,
+    lockId,
     acquiredAt,
     expiresAt: new Date(acquiredAt.getTime() + periodMs),
   });
 }
 
-function parseHolderId(holderId: string): HolderTarget {
-  if (holderId.startsWith('wflock_')) {
-    const [runId, correlationId] = holderId.slice('wflock_'.length).split(':');
-    if (runId && correlationId) {
-      return { kind: 'workflow', runId, correlationId };
-    }
-  }
-
-  if (holderId.startsWith('stplock_')) {
-    const [runId, stepId] = holderId.slice('stplock_'.length).split(':');
-    if (runId && stepId) {
-      return { kind: 'step', runId, stepId };
-    }
+function parseHolderId(lockId: string): HolderTarget {
+  const parsedLockId = parseLockId(lockId);
+  if (parsedLockId) {
+    return {
+      kind: 'lock',
+      runId: parsedLockId.runId,
+      correlationId: createLockWakeCorrelationId(
+        parsedLockId.runId,
+        parsedLockId.lockIndex
+      ),
+    };
   }
 
   return { kind: 'opaque' };
@@ -216,14 +212,6 @@ function parseHolderId(holderId: string): HolderTarget {
 
 function isTerminalRun(run: WorkflowRunWithoutData | undefined) {
   return !run || ['completed', 'failed', 'cancelled'].includes(run.status);
-}
-
-function isTerminalStep(step: StepWithoutData | undefined) {
-  return !step || ['completed', 'failed', 'cancelled'].includes(step.status);
-}
-
-function toMillis(value: Date | undefined): number | undefined {
-  return value ? value.getTime() : undefined;
 }
 
 function deleteEmptyKey(state: LimitsState, key: string) {
@@ -277,35 +265,14 @@ export function createLimits(
     }
   };
 
-  const getStep = async (
-    runId: string,
-    stepId: string
-  ): Promise<StepWithoutData | undefined> => {
-    try {
-      return await options?.storage?.steps.get(runId, stepId, {
-        resolveData: 'none',
-      });
-    } catch {
-      return undefined;
-    }
-  };
-
   const isHolderLive = async (holderId: string): Promise<boolean> => {
     const target = parseHolderId(holderId);
     if (target.kind === 'opaque' || !options?.storage) {
       return true;
     }
 
-    if (target.kind === 'workflow') {
-      const run = await getRun(target.runId);
-      return !isTerminalRun(run);
-    }
-
-    const [run, step] = await Promise.all([
-      getRun(target.runId),
-      getStep(target.runId, target.stepId),
-    ]);
-    return !isTerminalRun(run) && !isTerminalStep(step);
+    const run = await getRun(target.runId);
+    return !isTerminalRun(run);
   };
 
   const queueWakeForHolder = async (holderId: string): Promise<void> => {
@@ -315,40 +282,17 @@ export function createLimits(
     }
 
     try {
-      if (target.kind === 'workflow') {
-        const run = await getRun(target.runId);
-        if (isTerminalRun(run) || !run) return;
-
-        await options.queue.queue(
-          `__wkf_workflow_${run.workflowName}`,
-          {
-            runId: target.runId,
-            requestedAt: new Date(),
-          },
-          {
-            idempotencyKey: target.correlationId,
-          }
-        );
-        return;
-      }
-
-      const [run, step] = await Promise.all([
-        getRun(target.runId),
-        getStep(target.runId, target.stepId),
-      ]);
-      if (isTerminalRun(run) || isTerminalStep(step) || !run || !step) return;
+      const run = await getRun(target.runId);
+      if (isTerminalRun(run) || !run) return;
 
       await options.queue.queue(
-        `__wkf_step_${step.stepName}`,
+        `__wkf_workflow_${run.workflowName}`,
         {
-          workflowName: run.workflowName,
-          workflowRunId: target.runId,
-          workflowStartedAt: toMillis(run.startedAt) ?? Date.now(),
-          stepId: target.stepId,
+          runId: target.runId,
           requestedAt: new Date(),
         },
         {
-          idempotencyKey: target.stepId,
+          idempotencyKey: target.correlationId,
         }
       );
     } catch (error) {
@@ -369,7 +313,7 @@ export function createLimits(
     for (let index = 0; index < promotedKeyState.waiters.length; index++) {
       const waiter = promotedKeyState.waiters[index];
 
-      if (!(await isHolderLive(waiter.holderId))) {
+      if (!(await isHolderLive(waiter.lockId))) {
         continue;
       }
 
@@ -405,7 +349,8 @@ export function createLimits(
       promotedKeyState.leases.push(
         createLease(
           key,
-          waiter.holderId,
+          waiter.runId,
+          waiter.lockIndex,
           definition,
           acquiredAt,
           waiter.leaseTtlMs
@@ -416,14 +361,14 @@ export function createLimits(
       if (waiter.rateCount !== null && waiter.ratePeriodMs !== null) {
         insertToken(
           promotedKeyState,
-          waiter.holderId,
+          waiter.lockId,
           acquiredAt,
           waiter.ratePeriodMs
         );
         activeTokens += 1;
       }
 
-      wakeHolders.push(waiter.holderId);
+      wakeHolders.push(waiter.lockId);
     }
 
     promotedKeyState.waiters = remainingWaiters;
@@ -433,6 +378,7 @@ export function createLimits(
   return {
     async acquire(request) {
       const parsed = LimitAcquireRequestSchema.parse(request);
+      const lockId = createLockId(parsed.runId, parsed.lockIndex);
 
       return withStateLock(async (): Promise<LimitAcquireResult> => {
         const state = cloneState(await readState());
@@ -451,7 +397,7 @@ export function createLimits(
         state.keys[parsed.key] = keyState;
 
         const existingLease = keyState.leases.find(
-          (lease) => lease.holderId === parsed.holderId
+          (lease) => lease.lockId === lockId
         );
         if (existingLease) {
           await writeState(state);
@@ -469,7 +415,7 @@ export function createLimits(
           parsed.definition.rate !== undefined &&
           keyState.tokens.length >= parsed.definition.rate.count;
         const existingWaiter = keyState.waiters.find(
-          (waiter) => waiter.holderId === parsed.holderId
+          (waiter) => waiter.lockId === lockId
         );
 
         if (
@@ -481,7 +427,9 @@ export function createLimits(
           if (!existingWaiter) {
             keyState.waiters.push({
               waiterId: `lmtwait_${monotonicUlid()}`,
-              holderId: parsed.holderId,
+              lockId,
+              runId: parsed.runId,
+              lockIndex: parsed.lockIndex,
               createdAt: new Date(),
               leaseTtlMs: parsed.leaseTtlMs,
               concurrencyMax: parsed.definition.concurrency?.max ?? null,
@@ -508,7 +456,8 @@ export function createLimits(
         const acquiredAt = new Date();
         const lease = createLease(
           parsed.key,
-          parsed.holderId,
+          parsed.runId,
+          parsed.lockIndex,
           parsed.definition,
           acquiredAt,
           parsed.leaseTtlMs
@@ -519,7 +468,7 @@ export function createLimits(
         if (parsed.definition.rate) {
           insertToken(
             keyState,
-            parsed.holderId,
+            lockId,
             acquiredAt,
             parsed.definition.rate.periodMs
           );
@@ -549,7 +498,7 @@ export function createLimits(
           keyState.leases = keyState.leases.filter((lease) => {
             if (lease.leaseId !== parsed.leaseId) return true;
             if (parsed.key && lease.key !== parsed.key) return true;
-            if (parsed.holderId && lease.holderId !== parsed.holderId) {
+            if (parsed.lockId && lease.lockId !== parsed.lockId) {
               return true;
             }
             return false;

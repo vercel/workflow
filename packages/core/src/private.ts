@@ -93,6 +93,7 @@ export interface WorkflowOrchestratorContext {
   encryptionKey: CryptoKey | undefined;
   globalThis: typeof globalThis;
   eventsConsumer: EventsConsumer;
+  nextLockIndex: number;
   /**
    * Map of pending invocations keyed by correlationId.
    * Using Map instead of Array for O(1) lookup/delete operations.

@@ -3,11 +3,11 @@ import { describe, expect, it } from 'vitest';
 type WorkflowLockContentionResult = {
   workflowLockAcquiredAt: number;
   workflowLockReleasedAt: number;
-  stepLockAcquiredAt: number;
-  stepLockReleasedAt: number;
+  stepCallLockAcquiredAt: number;
+  stepCallLockReleasedAt: number;
 };
 
-type StepLockNoRetriesResult = {
+type LockedStepCallResult = {
   label: string;
   key?: string;
   attempt: number;
@@ -28,34 +28,24 @@ type WorkflowRateLimitResult = {
   periodMs: number;
 };
 
-type WorkflowLeakedLockResult = {
+type LeakedLockResult = {
   label: string;
   key: string;
   leaseTtlMs: number;
-  workflowLockAcquiredAt: number;
-  workflowCompletedAt: number;
-};
-
-type StepLeakedLockResult = {
-  label: string;
-  key: string;
-  leaseTtlMs: number;
-  stepLockAcquiredAt: number;
-  workflowCompletedAt: number;
-};
-
-type MidStepLockResult = {
-  label: string;
-  key: string;
-  attempt: number;
   lockAcquiredAt: number;
-  preLockEffects: number;
-  postLockEffects: number;
-  trace: string[];
+  workflowCompletedAt: number;
+};
+
+type WorkflowMultiStepScopeResult = {
+  key: string;
+  workflowLockAcquiredAt: number;
+  firstStepCompletedAt: number;
+  secondStepCompletedAt: number;
+  workflowLockReleasedAt: number;
 };
 
 export interface LimitsRuntimeHarness {
-  runWorkflowWithWorkflowAndStepLocks(userId: string): Promise<{
+  runWorkflowWithScopedLocks(userId: string): Promise<{
     workflowKey: string;
     dbKey: string;
     aiKey: string;
@@ -65,12 +55,12 @@ export interface LimitsRuntimeHarness {
     userId: string,
     holdMs: number
   ): Promise<[WorkflowLockContentionResult, WorkflowLockContentionResult]>;
-  runStepLockNoRetriesContention(
-    userId: string,
-    holdMs: number
-  ): Promise<
-    [StepLockNoRetriesResult, StepLockNoRetriesResult, StepLockNoRetriesResult]
-  >;
+  runLockedStepCallContention(
+    key: string,
+    holdMs: number,
+    labelA?: string,
+    labelB?: string
+  ): Promise<[LockedStepCallResult, LockedStepCallResult]>;
   runWorkflowLockAcrossSuspension(
     userId: string,
     holdMs: number
@@ -78,11 +68,11 @@ export interface LimitsRuntimeHarness {
   runWorkflowExpiredLeaseRecovery(
     userId: string,
     leaseTtlMs: number
-  ): Promise<[WorkflowLeakedLockResult, WorkflowOnlyLockResult]>;
-  runStepExpiredLeaseRecovery(
+  ): Promise<[LeakedLockResult, WorkflowOnlyLockResult]>;
+  runLeakedKeyExpiredLeaseRecovery(
     userId: string,
     leaseTtlMs: number
-  ): Promise<[StepLeakedLockResult, StepLockNoRetriesResult]>;
+  ): Promise<[LeakedLockResult, LockedStepCallResult]>;
   runWorkflowMixedLimitContention(
     userId: string,
     holdMs: number,
@@ -107,16 +97,15 @@ export interface LimitsRuntimeHarness {
   ): Promise<[WorkflowOnlyLockResult, WorkflowOnlyLockResult]>;
   runIndependentStepKeys(
     holdMs: number
-  ): Promise<[StepLockNoRetriesResult, StepLockNoRetriesResult]>;
+  ): Promise<[LockedStepCallResult, LockedStepCallResult]>;
   runBlockedWaiterWithUnrelatedWorkflow(holdMs: number): Promise<{
     holder: WorkflowOnlyLockResult;
     waiter: WorkflowOnlyLockResult;
     unrelated: WorkflowOnlyLockResult;
   }>;
-  runMidStepLockContract(holdMs: number): Promise<{
-    holder: StepLockNoRetriesResult;
-    waiter: MidStepLockResult;
-  }>;
+  runWorkflowSingleLockAcrossMultipleSteps(
+    holdMs: number
+  ): Promise<WorkflowMultiStepScopeResult>;
 }
 
 export function createLimitsRuntimeSuite(
@@ -124,10 +113,10 @@ export function createLimitsRuntimeSuite(
   createHarness: () => Promise<LimitsRuntimeHarness>
 ) {
   describe(name, () => {
-    it('runs workflow and step locks end-to-end', async () => {
+    it('runs locks around individual step calls end-to-end', async () => {
       const harness = await createHarness();
       const userId = 'shared-user';
-      const result = await harness.runWorkflowWithWorkflowAndStepLocks(userId);
+      const result = await harness.runWorkflowWithScopedLocks(userId);
 
       expect(result).toMatchObject({
         workflowKey: `workflow:user:${userId}`,
@@ -137,7 +126,7 @@ export function createLimitsRuntimeSuite(
       });
     });
 
-    it('serializes workflow and step admission under contention', async () => {
+    it('serializes workflow locks and locks around step calls under contention', async () => {
       const harness = await createHarness();
       const [resultA, resultB] = await harness.runWorkflowLockContention(
         'shared-user',
@@ -147,12 +136,12 @@ export function createLimitsRuntimeSuite(
       expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
         resultA.workflowLockReleasedAt
       );
-      expect(resultB.stepLockAcquiredAt).toBeGreaterThanOrEqual(
-        resultA.stepLockReleasedAt
+      expect(resultB.stepCallLockAcquiredAt).toBeGreaterThanOrEqual(
+        resultA.stepCallLockReleasedAt
       );
     });
 
-    it('wakes promoted workflow and step waiters promptly', async () => {
+    it('wakes promoted workflow and step-call lock waiters promptly', async () => {
       const harness = await createHarness();
       const [resultA, resultB] = await harness.runWorkflowLockContention(
         'shared-user',
@@ -163,28 +152,23 @@ export function createLimitsRuntimeSuite(
         resultB.workflowLockAcquiredAt - resultA.workflowLockReleasedAt
       ).toBeLessThan(4_000);
       expect(
-        resultB.stepLockAcquiredAt - resultA.stepLockReleasedAt
+        resultB.stepCallLockAcquiredAt - resultA.stepCallLockReleasedAt
       ).toBeLessThan(4_000);
     });
 
-    it('does not consume retries while blocked on a top-of-step lock', async () => {
+    it('can hold one workflow lock across multiple steps in the same scope', async () => {
       const harness = await createHarness();
-      const [resultA, resultB, resultC] =
-        await harness.runStepLockNoRetriesContention('shared-user', 750);
-      const [firstResult, secondResult, thirdResult] = [
-        resultA,
-        resultB,
-        resultC,
-      ].sort((left, right) => left.acquiredAt - right.acquiredAt);
+      const result =
+        await harness.runWorkflowSingleLockAcrossMultipleSteps(400);
 
-      expect(resultA.attempt).toBe(1);
-      expect(resultB.attempt).toBe(1);
-      expect(resultC.attempt).toBe(1);
-      expect(secondResult.acquiredAt).toBeGreaterThanOrEqual(
-        firstResult.releasedAt
+      expect(result.firstStepCompletedAt).toBeGreaterThanOrEqual(
+        result.workflowLockAcquiredAt
       );
-      expect(thirdResult.acquiredAt).toBeGreaterThanOrEqual(
-        secondResult.releasedAt
+      expect(result.secondStepCompletedAt).toBeGreaterThanOrEqual(
+        result.firstStepCompletedAt
+      );
+      expect(result.workflowLockReleasedAt).toBeGreaterThanOrEqual(
+        result.secondStepCompletedAt
       );
     });
 
@@ -203,7 +187,7 @@ export function createLimitsRuntimeSuite(
       ).toBeLessThan(4_000);
     });
 
-    it('reclaims expired leaked workflow leases without manual cleanup', async () => {
+    it('reclaims expired leaked workflow locks without manual cleanup', async () => {
       const harness = await createHarness();
       const leaseTtlMs = 1_250;
       const [resultA, resultB] = await harness.runWorkflowExpiredLeaseRecovery(
@@ -215,15 +199,15 @@ export function createLimitsRuntimeSuite(
         resultA.workflowCompletedAt
       );
       expect(
-        resultB.workflowLockAcquiredAt - resultA.workflowLockAcquiredAt
+        resultB.workflowLockAcquiredAt - resultA.lockAcquiredAt
       ).toBeGreaterThanOrEqual(leaseTtlMs - 100);
     });
 
-    it('reclaims expired leaked step leases without manual cleanup', async () => {
+    it('reclaims expired leaked locks on arbitrary keys without manual cleanup', async () => {
       const harness = await createHarness();
       const leaseTtlMs = 1_250;
-      const [resultA, resultB] = await harness.runStepExpiredLeaseRecovery(
-        'expired-step-user',
+      const [resultA, resultB] = await harness.runLeakedKeyExpiredLeaseRecovery(
+        'expired-key-user',
         leaseTtlMs
       );
 
@@ -231,7 +215,7 @@ export function createLimitsRuntimeSuite(
         resultA.workflowCompletedAt
       );
       expect(
-        resultB.acquiredAt - resultA.stepLockAcquiredAt
+        resultB.acquiredAt - resultA.lockAcquiredAt
       ).toBeGreaterThanOrEqual(leaseTtlMs - 100);
     });
 
@@ -294,7 +278,7 @@ export function createLimitsRuntimeSuite(
       );
     });
 
-    it('does not block unrelated step keys', async () => {
+    it('does not block unrelated step-like keys', async () => {
       const harness = await createHarness();
       const [resultA, resultB] = await harness.runIndependentStepKeys(1_000);
 
@@ -316,20 +300,5 @@ export function createLimitsRuntimeSuite(
         );
       }
     );
-
-    it('replays a mid-step lock at the acquire boundary without duplicating post-lock effects', async () => {
-      const harness = await createHarness();
-      const { holder, waiter } = await harness.runMidStepLockContract(1_500);
-
-      expect(waiter.lockAcquiredAt).toBeGreaterThanOrEqual(holder.releasedAt);
-      expect(waiter.preLockEffects).toBe(2);
-      expect(waiter.postLockEffects).toBe(1);
-      expect(waiter.trace.map((event) => event.split(':')[0])).toEqual([
-        'pre',
-        'pre',
-        'lock',
-        'post',
-      ]);
-    });
   });
 }

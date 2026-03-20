@@ -12,15 +12,16 @@ implementations.
 - Postgres implements the same limits semantics with PostgreSQL-backed leases,
   rate tokens, durable waiters, and durable queue wake-up.
 - Vercel still exposes `limits` as a stub.
-- The Next.js Turbopack workbench has shared E2E coverage for workflow and step
-  locks on implemented worlds.
+- The Next.js Turbopack workbench has shared E2E coverage for `lock()` used
+  with `await using`, including locks that wrap individual step calls or
+  groups of steps.
 
 ## Goals
 
 - Support keyed concurrency limits.
 - Support keyed rate limits.
 - Allow concurrency and rate to be colocated in one interface.
-- Support workflow-scoped limits and step-scoped limits.
+- Support locks whose lifetime follows normal `await using` lexical scope.
 - Make crash recovery possible through leases with TTL/expiry.
 - Keep worker throughput controls separate from business-level flow limits.
 
@@ -28,8 +29,10 @@ implementations.
 
 - `worker concurrency`: backend throughput setting for queue/job processing.
 - `workflow limit`: admission control for workflow runs that share a key.
-- `step limit`: execution control for a specific step/resource key.
-- `lease`: durable record that a workflow or step currently occupies capacity for a key.
+- `scoped resource key`: any user-defined key acquired from workflow scope to
+  protect one step call, multiple step calls, or a whole workflow section.
+- `lease`: durable record that a workflow currently occupies capacity for a
+  key.
 
 ## Shared Contract vs World-Specific Behavior
 
@@ -42,7 +45,7 @@ semantics across implemented worlds. That shared contract includes:
 - same-holder lease reuse
 - serialization of concurrent acquires for a single key
 - FIFO waiter promotion per key
-- pruning cancelled workflow waiters and failed/completed step waiters
+- pruning cancelled workflow waiters
 - blocked acquisitions not consuming execution concurrency
 - prompt wake-up with delayed fallback replay
 
@@ -87,6 +90,10 @@ Limits are modeled as leases with TTL/expiry so capacity can be recovered after:
 Normal completion should dispose/release the lease explicitly. Crash recovery
 comes from lease expiry plus future reclaim logic.
 
+The default workflow lock TTL should be high enough to cover normal suspended
+execution without making users tune it eagerly. The current runtime default is
+24 hours unless the caller overrides `leaseTtlMs`.
+
 ### 3. Keep worker concurrency separate from flow limits
 
 Current world-level concurrency settings are infrastructure controls, not
@@ -127,7 +134,7 @@ Important distinction:
 Releasing a lease should free concurrency capacity immediately, but it should
 not restore rate capacity until the associated rate usage entry expires.
 
-### 5. Use one `lock()` API in both workflows and steps
+### 5. Use one `lock()` API from workflow scope
 
 We want one user-facing primitive:
 
@@ -135,37 +142,14 @@ We want one user-facing primitive:
 await using lease = await lock({ ... });
 ```
 
-But the runtime meaning differs by context.
-
-#### In workflows
-
-`lock()` means workflow admission / workflow-scope ownership.
+`lock()` means workflow code acquires ownership of a keyed lease.
 
 If placed at the top of a workflow, it should hold the lease across the logical
 workflow scope, even though the workflow may suspend and resume many times.
 
-#### In steps
-
-`lock()` acts like a step gate.
-
-The current behavior is:
-
-- declare the limit at the top of the step when possible
-- the runtime treats a blocked acquisition as step-boundary admission failure
-- the step does not keep executing user code while waiting for capacity
-- the step is re-queued and retried after promotion or timeout
-- lease is disposed automatically when the step attempt completes
-
-If `lock()` is called in the middle of a step, the intended contract is:
-
-- the current attempt stops at the blocked `lock()` call
-- the step is deferred and re-queued rather than polling in-process
-- code before the blocked `lock()` may replay on the next attempt
-- code after the `lock()` runs only after the lock is actually acquired
-
-This means zero-attempt semantics are still strongest when `lock()` is used as
-a top-of-step admission gate, but mid-step `lock()` is now part of the shared
-runtime contract rather than unsupported behavior.
+Steps themselves do not acquire locks directly. To limit one step category or a
+group of steps, the workflow acquires the lock and then calls those steps while
+the lease is held.
 
 ### 6. `await using` is the preferred user-facing shape
 
@@ -175,8 +159,8 @@ The preferred API is explicit resource management:
 await using lease = await lock({ ... });
 ```
 
-This gives automatic cleanup on scope exit and reads well for both workflow
-scopes and step scopes.
+This gives automatic cleanup on scope exit and reads well for critical sections
+that may include one or many step calls.
 
 For manual early cleanup, the user-facing `LockHandle` should expose:
 
@@ -185,7 +169,7 @@ For manual early cleanup, the user-facing `LockHandle` should expose:
 
 The backend-facing world contract can continue to use `release(...)` internally.
 
-### 7. Workflow-scoped locks are logical-scope locks, not request-lifetime locks
+### 7. Locks follow logical scope, not request lifetime
 
 For workflows, `await using` must be tied to the logical workflow scope across:
 
@@ -197,21 +181,19 @@ For workflows, `await using` must be tied to the logical workflow scope across:
 
 The lease must not be disposed merely because one host process invocation ends.
 
-### 8. Prefer step-boundary admission for deadlock avoidance
+### 8. Keep admission decisions in workflow code
 
 Current preferred model:
 
-- workflow-level limits may be held by a run
-- blocked step-level limits return control to the runtime at the step boundary
-- step-level limits are short-lived
-- step execution should not wait on workflow-level locks
+- workflow code acquires and releases limits
+- steps execute inside whatever critical section the workflow establishes
+- step code never waits on a separate lock of its own
 
-This keeps the dependency direction one-way:
+This keeps the dependency direction simple:
 
-- workflow admission -> step admission -> step execution
+- workflow admission / critical section -> step execution
 
-That avoids the classic cycle where one workflow holds a workflow lock and
-another holds a step lock and each waits on the other.
+That avoids needing separate workflow-lock and step-lock runtime semantics.
 
 ### 9. Waiters are FIFO per key
 
@@ -237,8 +219,6 @@ Blocked flow limits and worker concurrency are intentionally separate.
 For implemented worlds:
 
 - blocked workflows are suspended and re-queued, not left running on a worker
-- blocked steps exit the current attempt and are re-queued instead of polling in
-  a live worker slot
 - worker slots are free to service unrelated work while the blocked execution is
   waiting to be retried or promoted
 
@@ -256,8 +236,7 @@ Current behavior:
 
 - leases, rate tokens, and waiters live in world-owned limit state
 - promotion decisions are made from that limit state
-- when a waiter is promoted, the runtime is woken by enqueuing the appropriate
-  workflow or step job
+- when a waiter is promoted, the runtime is woken by enqueuing the workflow job
 - workflows also keep a delayed replay fallback so progress is still possible if
   an immediate wake-up is missed
 
@@ -271,26 +250,24 @@ survival is not guaranteed after process loss.
 For v1, the intended semantics are:
 
 - workflow locks count admitted, in-flight workflows for a key
-- step locks count or rate-limit specific step execution categories
+- workflow-held keys may be used to serialize or rate-limit specific step categories
 - worker concurrency remains a separate infrastructure throttle
 
 More concretely:
 
-- if a workflow acquires a workflow-scoped lock and then sleeps for 10 minutes,
+- if a workflow acquires a lock and then sleeps for 10 minutes,
   it still counts as active for that workflow key during the sleep
-- if a workflow is parked waiting for a step-level limit, it still counts as
-  active for its workflow-level lock
-- a step-level lock should conceptually be an admission gate for the step
-  attempt, not a second workflow-level lock, even when the `lock()` call
-  appears in the middle of user code
-- step-level rate limits should consume rate capacity when the step starts, and
-  that rate usage should remain counted until the window expires even if the
-  step releases its lease quickly
+- if a workflow acquires a lock for a step-like key such as `step:db:cheap`,
+  that key remains occupied until the workflow releases it, even if the
+  protected work is just one step call or a small group of step calls
+- rate-limited step-like keys still consume rate capacity when the workflow
+  acquires that key, and that usage remains counted until the window expires
+  even if the workflow releases the lease quickly
 
 For the current local implementation specifically:
 
-- workflow and step locks now follow the same live-process waiter/fairness
-  semantics as Postgres
+- workflow locks now follow the same live-process waiter/fairness semantics as
+  Postgres
 - the queue remains in-memory, so queued wake-ups are not durable across process
   loss
 
@@ -318,31 +295,38 @@ With intended usage like:
 ```ts
 async function cheapDbStep(userId: string) {
   'use step';
-  await using _dbLimit = await lock({
-    key: 'step:db:cheap',
-    concurrency: { max: 20 },
-  });
   return { userId, prompt: `profile:${userId}` };
 }
 
 async function expensiveAIStep(prompt: string) {
   'use step';
-  await using _aiLimit = await lock({
-    key: 'step:provider:openai',
-    rate: { count: 10, periodMs: 60_000 },
-  });
   return `summary:${prompt}`;
 }
 
-export async function workflowWithWorkflowAndStepLocks(userId: string) {
+export async function workflowWithScopedLocks(userId: string) {
   'use workflow';
   await using userLimit = await lock({
     key: `workflow:user:${userId}`,
     concurrency: { max: 2 },
   });
 
-  const row = await cheapDbStep(userId);
-  const summary = await expensiveAIStep(row.prompt);
+  let row: Awaited<ReturnType<typeof cheapDbStep>>;
+  {
+    await using _dbLimit = await lock({
+      key: 'step:db:cheap',
+      concurrency: { max: 20 },
+    });
+    row = await cheapDbStep(userId);
+  }
+
+  let summary: Awaited<ReturnType<typeof expensiveAIStep>>;
+  {
+    await using _aiLimit = await lock({
+      key: 'step:provider:openai',
+      rate: { count: 10, periodMs: 60_000 },
+    });
+    summary = await expensiveAIStep(row.prompt);
+  }
   return { row, summary };
 }
 ```
@@ -372,8 +356,8 @@ Two more practical clarifications:
 ## Open Questions
 
 - Whether workflow-level locks should always be whole-run admission locks or
-  also support narrower workflow-scoped blocks.
+  also support narrower lexical scopes within workflow code.
 - Whether `heartbeat()` should remain user-visible or become mostly internal.
-- Whether step limits should only be expressed through `lock()` or also through
-  step metadata/config sugar.
+- Whether `lock()` should eventually grow optional metadata or
+  config sugar for common per-step resource keys.
 - Exact event-log representation for acquire/block/dispose transitions.

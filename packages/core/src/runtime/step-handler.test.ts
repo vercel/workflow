@@ -1,6 +1,5 @@
 import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { StepLockBlockedError } from '../step/lock.js';
 
 // Use vi.hoisted so these are available in mock factories
 const {
@@ -287,116 +286,16 @@ describe('step-handler 409 handling', () => {
     mockStepFn.mockResolvedValue('step-result');
   });
 
-  it('returns a timeout when a step lock is blocked before user code can proceed', async () => {
-    mockEventsCreate.mockResolvedValue({
-      step: {
-        stepId: 'step_abc',
-        status: 'running',
-        attempt: 1,
-        startedAt: new Date(),
-        input: [],
-      },
-    });
-    mockStepFn.mockRejectedValue(
-      new StepLockBlockedError(
-        {
-          key: 'step:db:no-retries',
-          holderId: 'stplock_wrun_test123:step_abc:0',
-          definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 5_000,
-        },
-        2_500
-      )
-    );
-
-    const result = await capturedHandler(
-      createMessage(),
-      createMetadata('myStep')
-    );
-
-    expect(result).toEqual({ timeoutSeconds: 3 });
-    expect(mockQueueMessage).not.toHaveBeenCalled();
-    expect(mockEventsCreate).toHaveBeenCalledTimes(2);
-    expect(mockEventsCreate).toHaveBeenNthCalledWith(
-      1,
-      'wrun_test123',
-      expect.objectContaining({
-        eventType: 'step_started',
-      }),
-      expect.anything()
-    );
-    expect(mockEventsCreate).toHaveBeenNthCalledWith(
-      2,
-      'wrun_test123',
-      expect.objectContaining({
-        eventType: 'step_deferred',
-        correlationId: 'step_abc',
-        eventData: {
-          retryAfter: expect.any(Date),
-          lockRequest: expect.objectContaining({
-            key: expect.any(String),
-            holderId: 'stplock_wrun_test123:step_abc:0',
-          }),
-        },
-      }),
-      expect.anything()
-    );
-  });
-
-  it('rechecks a deferred lock before step_started and re-defers without running user code', async () => {
-    mockEventsListByCorrelationId.mockResolvedValue({
-      data: [
-        {
-          eventId: 'evnt_1',
-          runId: 'wrun_test123',
-          eventType: 'step_deferred',
-          correlationId: 'step_abc',
-          eventData: {
-            retryAfter: new Date(Date.now() - 1_000),
-            lockRequest: {
-              key: 'step:db:no-retries',
-              holderId: 'stplock_wrun_test123:step_abc:0',
-              definition: { concurrency: { max: 1 } },
-              leaseTtlMs: 5_000,
-            },
-          },
-          createdAt: new Date(),
-        },
-      ],
-      cursor: null,
-      hasMore: false,
-    });
-    mockLimitsAcquire.mockResolvedValue({
-      status: 'blocked',
-      reason: 'concurrency',
-      retryAfterMs: 2_500,
-    });
-
-    const result = await capturedHandler(
-      createMessage(),
-      createMetadata('myStep')
-    );
-
-    expect(result).toEqual({ timeoutSeconds: 3 });
-    expect(mockStepFn).not.toHaveBeenCalled();
-    expect(mockLimitsAcquire).toHaveBeenCalledWith({
-      key: 'step:db:no-retries',
-      holderId: 'stplock_wrun_test123:step_abc:0',
-      definition: { concurrency: { max: 1 } },
-      leaseTtlMs: 5_000,
-    });
-    expect(mockEventsCreate).toHaveBeenCalledTimes(1);
-    expect(mockEventsCreate).toHaveBeenCalledWith(
-      'wrun_test123',
-      expect.objectContaining({
-        eventType: 'step_deferred',
-      }),
-      expect.anything()
-    );
-  });
-
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it('does not call limits for ordinary step execution without lock()', async () => {
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    expect(mockLimitsAcquire).not.toHaveBeenCalled();
+    expect(mockLimitsHeartbeat).not.toHaveBeenCalled();
+    expect(mockLimitsRelease).not.toHaveBeenCalled();
   });
 
   describe('step_completed 409', () => {

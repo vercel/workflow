@@ -2,6 +2,8 @@ import { JsonTransport } from '@vercel/queue';
 import { and, asc, eq, isNotNull, lte, sql } from 'drizzle-orm';
 import { WorkflowWorldError } from '@workflow/errors';
 import {
+  createLockId,
+  createLockWakeCorrelationId,
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
   LimitHeartbeatRequestSchema,
@@ -9,6 +11,7 @@ import {
   LimitReleaseRequestSchema,
   type Limits,
   MessageId,
+  parseLockId,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import type { PostgresWorldConfig } from './config.js';
@@ -23,20 +26,14 @@ type RunRow = Pick<
   typeof Schema.runs.$inferSelect,
   'workflowName' | 'startedAt' | 'status'
 >;
-type StepRow = Pick<typeof Schema.steps.$inferSelect, 'stepName' | 'status'>;
 type Tx = Parameters<Parameters<Drizzle['transaction']>[0]>[0];
 type Db = Drizzle | Tx;
 
 type HolderTarget =
   | {
-      kind: 'workflow';
+      kind: 'lock';
       runId: string;
       correlationId: string;
-    }
-  | {
-      kind: 'step';
-      runId: string;
-      stepId: string;
     }
   | {
       kind: 'opaque';
@@ -49,7 +46,6 @@ function getQueues(config: PostgresWorldConfig) {
   const prefix = config.jobPrefix || 'workflow_';
   return {
     workflow: `${prefix}flows`,
-    step: `${prefix}steps`,
   } as const;
 }
 
@@ -72,29 +68,30 @@ function toMillis(value: Date | string | null | undefined): number | undefined {
 Holder ids double as wake-up hints.
 When a waiter is promoted, we decode the holder id to decide which queue to poke.
 */
-function parseHolderId(holderId: string): HolderTarget {
-  if (holderId.startsWith('wflock_')) {
-    const [runId, correlationId] = holderId.slice('wflock_'.length).split(':');
-    if (runId && correlationId) {
-      return { kind: 'workflow', runId, correlationId };
-    }
-  }
-
-  if (holderId.startsWith('stplock_')) {
-    const [runId, stepId] = holderId.slice('stplock_'.length).split(':');
-    if (runId && stepId) {
-      return { kind: 'step', runId, stepId };
-    }
+function parseHolderId(lockId: string): HolderTarget {
+  const parsedLockId = parseLockId(lockId);
+  if (parsedLockId) {
+    return {
+      kind: 'lock',
+      runId: parsedLockId.runId,
+      correlationId: createLockWakeCorrelationId(
+        parsedLockId.runId,
+        parsedLockId.lockIndex
+      ),
+    };
   }
 
   return { kind: 'opaque' };
 }
 
 function toLease(row: LeaseRow): LimitLease {
+  const parsedLockId = parseLockId(row.holderId);
   return {
     leaseId: row.leaseId,
     key: row.limitKey,
-    holderId: row.holderId,
+    lockId: row.holderId,
+    runId: parsedLockId?.runId ?? row.holderId,
+    lockIndex: parsedLockId?.lockIndex ?? 0,
     acquiredAt: toDate(row.acquiredAt)!,
     expiresAt: toDate(row.expiresAt),
     definition: {
@@ -183,45 +180,6 @@ async function queueWorkflowWake(
   `);
 }
 
-async function queueStepWake(
-  tx: Db,
-  config: PostgresWorldConfig,
-  step: {
-    stepId: string;
-    stepName: string;
-    workflowName: string;
-    workflowStartedAt: number;
-    workflowRunId: string;
-  }
-) {
-  const messageId = MessageId.parse(`msg_${generateId()}`);
-  const payload = MessageData.encode({
-    id: step.stepName,
-    data: Buffer.from(
-      transport.serialize({
-        workflowName: step.workflowName,
-        workflowRunId: step.workflowRunId,
-        workflowStartedAt: step.workflowStartedAt,
-        stepId: step.stepId,
-        requestedAt: new Date(),
-      })
-    ),
-    attempt: 1,
-    idempotencyKey: step.stepId,
-    messageId,
-  });
-
-  await tx.execute(sql`
-    select graphile_worker.add_job(
-      ${getQueues(config).step}::text,
-      payload := ${JSON.stringify(payload)}::json,
-      max_attempts := 3,
-      job_key := ${step.stepId}::text,
-      job_key_mode := 'replace'
-    )
-  `);
-}
-
 async function queueWakeForHolder(
   tx: Db,
   config: PostgresWorldConfig,
@@ -229,47 +187,10 @@ async function queueWakeForHolder(
 ) {
   /*
   Limit state is durable in Postgres, but wake-ups still need a runtime target.
-  If the run or step is already terminal, there is nothing left to resume.
+  If the workflow is already terminal, there is nothing left to resume.
   */
   const target = parseHolderId(holderId);
   if (target.kind === 'opaque') {
-    return;
-  }
-
-  if (target.kind === 'workflow') {
-    const [run] = (await tx
-      .select({
-        workflowName: Schema.runs.workflowName,
-        startedAt: Schema.runs.startedAt,
-        status: Schema.runs.status,
-      })
-      .from(Schema.runs)
-      .where(eq(Schema.runs.runId, target.runId))
-      .limit(1)) as RunRow[];
-
-    if (!run || ['completed', 'failed', 'cancelled'].includes(run.status)) {
-      return;
-    }
-
-    await queueWorkflowWake(
-      tx,
-      config,
-      target.runId,
-      run.workflowName,
-      target.correlationId
-    );
-    return;
-  }
-
-  const [step] = (await tx
-    .select({
-      stepName: Schema.steps.stepName,
-      status: Schema.steps.status,
-    })
-    .from(Schema.steps)
-    .where(eq(Schema.steps.stepId, target.stepId))
-    .limit(1)) as StepRow[];
-  if (!step || ['completed', 'failed'].includes(step.status)) {
     return;
   }
 
@@ -286,13 +207,13 @@ async function queueWakeForHolder(
     return;
   }
 
-  await queueStepWake(tx, config, {
-    stepId: target.stepId,
-    stepName: step.stepName,
-    workflowName: run.workflowName,
-    workflowStartedAt: toMillis(run.startedAt) ?? Date.now(),
-    workflowRunId: target.runId,
-  });
+  await queueWorkflowWake(
+    tx,
+    config,
+    target.runId,
+    run.workflowName,
+    target.correlationId
+  );
 }
 
 async function pruneExpired(tx: Db, key: string): Promise<void> {
@@ -371,29 +292,6 @@ async function isHolderLive(tx: Db, holderId: string): Promise<boolean> {
   const target = parseHolderId(holderId);
   if (target.kind === 'opaque') {
     return true;
-  }
-
-  if (target.kind === 'workflow') {
-    const [run] = (await tx
-      .select({
-        status: Schema.runs.status,
-      })
-      .from(Schema.runs)
-      .where(eq(Schema.runs.runId, target.runId))
-      .limit(1)) as Pick<typeof Schema.runs.$inferSelect, 'status'>[];
-
-    return !!run && !['completed', 'failed', 'cancelled'].includes(run.status);
-  }
-
-  const [step] = (await tx
-    .select({
-      status: Schema.steps.status,
-    })
-    .from(Schema.steps)
-    .where(eq(Schema.steps.stepId, target.stepId))
-    .limit(1)) as Pick<typeof Schema.steps.$inferSelect, 'status'>[];
-  if (!step || ['completed', 'failed'].includes(step.status)) {
-    return false;
   }
 
   const [run] = (await tx
@@ -502,8 +400,9 @@ export function createLimits(
         await promoteWaiters(tx, config, parsed.key);
 
         const state = await getActiveState(tx, parsed.key);
+        const lockId = createLockId(parsed.runId, parsed.lockIndex);
         const existingLease = state.leases.find(
-          (lease) => lease.holderId === parsed.holderId
+          (lease) => lease.holderId === lockId
         );
         if (existingLease) {
           return {
@@ -513,7 +412,7 @@ export function createLimits(
         }
 
         const existingWaiter = state.waiters.find(
-          (waiter) => waiter.holderId === parsed.holderId
+          (waiter) => waiter.holderId === lockId
         );
         // If there are already waiters for this key and holder no need to queue a new waiter.
         if (existingWaiter) {
@@ -553,7 +452,7 @@ export function createLimits(
             .values({
               leaseId: `lmt_${generateId()}`,
               limitKey: parsed.key,
-              holderId: parsed.holderId,
+              holderId: lockId,
               acquiredAt: new Date(),
               expiresAt,
               concurrencyMax: parsed.definition.concurrency?.max ?? null,
@@ -566,7 +465,7 @@ export function createLimits(
             await tx.insert(Schema.limitTokens).values({
               tokenId: `lmttok_${generateId()}`,
               limitKey: parsed.key,
-              holderId: parsed.holderId,
+              holderId: lockId,
               acquiredAt: new Date(),
               expiresAt: new Date(Date.now() + parsed.definition.rate.periodMs),
             });
@@ -584,7 +483,7 @@ export function createLimits(
           .values({
             waiterId: `lmtwait_${generateId()}`,
             limitKey: parsed.key,
-            holderId: parsed.holderId,
+            holderId: lockId,
             createdAt: new Date(),
             leaseTtlMs: parsed.leaseTtlMs ?? null,
             concurrencyMax: parsed.definition.concurrency?.max ?? null,
@@ -630,8 +529,8 @@ export function createLimits(
         if (parsed.key) {
           where = and(where, eq(Schema.limitLeases.limitKey, parsed.key))!;
         }
-        if (parsed.holderId) {
-          where = and(where, eq(Schema.limitLeases.holderId, parsed.holderId))!;
+        if (parsed.lockId) {
+          where = and(where, eq(Schema.limitLeases.holderId, parsed.lockId))!;
         }
 
         const [deleted] = await tx

@@ -139,6 +139,7 @@ export async function runWorkflow(
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
+      nextLockIndex: 0,
       generateUlid: () => ulid(+startedAt),
       generateNanoid,
       invocationsQueue: new Map(),

@@ -129,7 +129,7 @@ Make sure your PostgreSQL database is accessible and the user has sufficient per
 - Backlog stays in PostgreSQL when all execution slots are busy
 - Retry and sleep-style delays use Graphile `runAt` scheduling
 - Flow-limit waiters are stored durably in PostgreSQL and promoted in FIFO order per key
-- Cancelled workflow and failed/completed step waiters are pruned before promotion
+- Cancelled workflow waiters are pruned before promotion
 - Blocked steps are re-queued instead of holding a worker slot while waiting for a lease
 - Workflow and step execution is sent through `/.well-known/workflow/v1/flow` and `/.well-known/workflow/v1/step`
 

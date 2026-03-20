@@ -249,11 +249,10 @@ describe('e2e', () => {
     createLimitsRuntimeSuite(
       `limits runtime (${isPostgresWorld ? 'postgres' : 'local'})`,
       async () => ({
-        async runWorkflowWithWorkflowAndStepLocks(userId) {
-          const run = await start(
-            await e2e('workflowWithWorkflowAndStepLocks'),
-            [userId]
-          );
+        async runWorkflowWithScopedLocks(userId) {
+          const run = await start(await e2e('workflowWithScopedLocks'), [
+            userId,
+          ]);
           return await run.returnValue;
         },
         async runWorkflowLockContention(userId, holdMs) {
@@ -263,18 +262,17 @@ describe('e2e', () => {
           const runB = await start(workflow, [userId, holdMs]);
           return await Promise.all([runA.returnValue, runB.returnValue]);
         },
-        async runStepLockNoRetriesContention(userId, holdMs) {
-          const workflow = await e2e('stepLockNoRetriesContentionWorkflow');
-          const runA = await start(workflow, [userId, holdMs, 'A']);
+        async runLockedStepCallContention(
+          key,
+          holdMs,
+          labelA = 'A',
+          labelB = 'B'
+        ) {
+          const workflow = await e2e('lockedStepCallContentionWorkflow');
+          const runA = await start(workflow, [key, holdMs, labelA]);
           await sleep(100);
-          const runB = await start(workflow, [userId, holdMs, 'B']);
-          await sleep(100);
-          const runC = await start(workflow, [userId, holdMs, 'C']);
-          return await Promise.all([
-            runA.returnValue,
-            runB.returnValue,
-            runC.returnValue,
-          ]);
+          const runB = await start(workflow, [key, holdMs, labelB]);
+          return await Promise.all([runA.returnValue, runB.returnValue]);
         },
         async runWorkflowLockAcrossSuspension(userId, holdMs) {
           const workflow = await e2e('workflowOnlyLockContentionWorkflow');
@@ -298,9 +296,9 @@ describe('e2e', () => {
           const waiterResult = await waiterRun.returnValue;
           return [leakedResult, waiterResult];
         },
-        async runStepExpiredLeaseRecovery(userId, leaseTtlMs) {
-          const leakedWorkflow = await e2e('stepLeakedLockWorkflow');
-          const waiterWorkflow = await e2e('stepKeyLockContentionWorkflow');
+        async runLeakedKeyExpiredLeaseRecovery(userId, leaseTtlMs) {
+          const leakedWorkflow = await e2e('leakedKeyLockWorkflow');
+          const waiterWorkflow = await e2e('lockedStepCallContentionWorkflow');
           const leakedRun = await start(leakedWorkflow, [
             userId,
             leaseTtlMs,
@@ -358,7 +356,7 @@ describe('e2e', () => {
           return await Promise.all([runA.returnValue, runB.returnValue]);
         },
         async runIndependentStepKeys(holdMs) {
-          const workflow = await e2e('stepKeyLockContentionWorkflow');
+          const workflow = await e2e('lockedStepCallContentionWorkflow');
           const runA = await start(workflow, [
             'step:db:isolation:a',
             holdMs,
@@ -399,31 +397,10 @@ describe('e2e', () => {
           ]);
           return { holder, waiter, unrelated };
         },
-        async runMidStepLockContract(holdMs) {
-          const holderWorkflow = await e2e('stepKeyLockContentionWorkflow');
-          const waiterWorkflow = await e2e('midStepLockContentionWorkflow');
-          const traceToken = `mid-step-${Date.now()}-${Math.random()
-            .toString(36)
-            .slice(2)}`;
-          const key = `step:db:mid-step:${traceToken}`;
-
-          const holderRun = await start(holderWorkflow, [
-            key,
-            holdMs,
-            'holder',
-          ]);
-          await sleep(100);
-          const waiterRun = await start(waiterWorkflow, [
-            key,
-            traceToken,
-            'waiter',
-          ]);
-
-          const [holder, waiter] = await Promise.all([
-            holderRun.returnValue,
-            waiterRun.returnValue,
-          ]);
-          return { holder, waiter };
+        async runWorkflowSingleLockAcrossMultipleSteps(holdMs) {
+          const workflow = await e2e('singleLockAcrossMultipleStepsWorkflow');
+          const run = await start(workflow, ['step:db:batch', holdMs]);
+          return await run.returnValue;
         },
       })
     );

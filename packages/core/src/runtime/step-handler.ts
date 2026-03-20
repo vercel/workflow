@@ -11,12 +11,7 @@ import {
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
-import {
-  LimitAcquireRequestSchema,
-  SPEC_VERSION_CURRENT,
-  StepInvokePayloadSchema,
-  type LimitLease,
-} from '@workflow/world';
+import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
 import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -25,8 +20,6 @@ import {
   hydrateStepArguments,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
-import { createStepLock, StepLockBlockedError } from '../step/lock.js';
-import { STEP_LOCK } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import {
   getSpanKind,
@@ -51,68 +44,6 @@ import {
 import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
-
-async function getDeferredStepLock(
-  world: ReturnType<typeof getWorld>,
-  workflowRunId: string,
-  stepId: string
-) {
-  let step: Awaited<ReturnType<typeof world.steps.get>>;
-  try {
-    step = await world.steps.get(workflowRunId, stepId);
-  } catch (error) {
-    if (
-      WorkflowWorldError.is(error) &&
-      (error.status === 404 || error.message === `Step not found: ${stepId}`)
-    ) {
-      return null;
-    }
-    throw error;
-  }
-  if (step.status !== 'pending') {
-    return null;
-  }
-
-  const result = await world.events.listByCorrelationId({
-    correlationId: stepId,
-    pagination: {
-      limit: 1,
-      sortOrder: 'desc',
-    },
-  });
-  const latestEvent = result.data[0];
-
-  if (
-    !latestEvent ||
-    latestEvent.runId !== workflowRunId ||
-    latestEvent.eventType !== 'step_deferred' ||
-    !latestEvent.eventData.lockRequest
-  ) {
-    return null;
-  }
-
-  return {
-    step,
-    lockRequest: LimitAcquireRequestSchema.parse(
-      latestEvent.eventData.lockRequest
-    ),
-  };
-}
-
-async function releaseUnusedPreAcquiredLocks(
-  world: ReturnType<typeof getWorld>,
-  preAcquiredLocks: Record<string, LimitLease>
-) {
-  await Promise.all(
-    Object.values(preAcquiredLocks).map((lease) =>
-      world.limits.release({
-        leaseId: lease.leaseId,
-        key: lease.key,
-        holderId: lease.holderId,
-      })
-    )
-  );
-}
 
 const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',
@@ -185,56 +116,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...Attribute.StepTracePropagated(!!traceContext),
           });
 
-          const preAcquiredLocks: Record<string, LimitLease> = {};
-          const deferredStepLock = await getDeferredStepLock(
-            world,
-            workflowRunId,
-            stepId
-          );
-          if (deferredStepLock) {
-            const retryAfter = deferredStepLock.step.retryAfter;
-            if (retryAfter && retryAfter.getTime() > Date.now()) {
-              const timeoutSeconds = Math.max(
-                1,
-                Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
-              );
-              span?.setAttributes({
-                ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
-              });
-              return { timeoutSeconds };
-            }
-
-            const lockResult = await world.limits.acquire(
-              deferredStepLock.lockRequest
-            );
-            if (lockResult.status === 'blocked') {
-              const retryAfterMs = Math.max(1, lockResult.retryAfterMs ?? 1000);
-              const timeoutSeconds = Math.max(
-                1,
-                Math.ceil(retryAfterMs / 1000)
-              );
-              await world.events.create(
-                workflowRunId,
-                {
-                  eventType: 'step_deferred',
-                  specVersion: SPEC_VERSION_CURRENT,
-                  correlationId: stepId,
-                  eventData: {
-                    retryAfter: new Date(Date.now() + retryAfterMs),
-                    lockRequest: deferredStepLock.lockRequest,
-                  },
-                },
-                { requestId }
-              );
-              span?.setAttributes({
-                ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
-              });
-              return { timeoutSeconds };
-            }
-
-            preAcquiredLocks[lockResult.lease.holderId] = lockResult.lease;
-          }
-
           // step_started validates state and returns the step entity, so no separate
           // world.steps.get() call is needed. The server checks:
           // - Step not in terminal state (returns 409)
@@ -260,7 +141,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             step = startResult.step;
           } catch (err) {
             if (ThrottleError.is(err)) {
-              await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
               const retryRetryAfter = Math.max(
                 1,
                 typeof err.retryAfter === 'number' ? err.retryAfter : 1
@@ -274,14 +154,12 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               return { timeoutSeconds: retryRetryAfter };
             }
             if (RunExpiredError.is(err)) {
-              await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
               runtimeLogger.info(
                 `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
               );
               return;
             }
             if (EntityConflictError.is(err)) {
-              await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
               runtimeLogger.debug(
                 'Step in terminal state, re-enqueuing workflow',
                 {
@@ -311,7 +189,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // Too early: retryAfter timestamp not reached yet
             // Return timeout to queue so it retries later
             if (TooEarlyError.is(err)) {
-              await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
               const retryAfter = err.retryAfter ?? new Date(Date.now() + 1000);
               const timeoutSeconds = Math.max(
                 1,
@@ -334,7 +211,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               });
               return { timeoutSeconds };
             }
-            await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
             // Re-throw other errors
             throw err;
           }
@@ -497,50 +373,35 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
           const executionStartTime = Date.now();
           try {
-            const previousStepLock = (globalThis as any)[STEP_LOCK];
-            (globalThis as any)[STEP_LOCK] = createStepLock(world);
-
             result = await trace('step.execute', {}, async () => {
-              try {
-                return await contextStorage.run(
-                  {
-                    stepMetadata: {
-                      stepName,
-                      stepId,
-                      stepStartedAt: new Date(+stepStartedAt),
-                      attempt,
-                    },
-                    workflowMetadata: {
-                      workflowName,
-                      workflowRunId,
-                      workflowStartedAt: new Date(+workflowStartedAt),
-                      // TODO: there should be a getUrl method on the world interface itself. This
-                      // solution only works for vercel + local worlds.
-                      url: isVercel
-                        ? `https://${process.env.VERCEL_URL}`
-                        : `http://localhost:${port ?? 3000}`,
-                    },
-                    ops,
-                    closureVars: hydratedInput.closureVars,
-                    encryptionKey,
-                    lockCounter: 0,
-                    preAcquiredLocks,
+              return await contextStorage.run(
+                {
+                  stepMetadata: {
+                    stepName,
+                    stepId,
+                    stepStartedAt: new Date(+stepStartedAt),
+                    attempt,
                   },
-                  () => stepFn.apply(thisVal, args)
-                );
-              } finally {
-                if (previousStepLock === undefined) {
-                  delete (globalThis as any)[STEP_LOCK];
-                } else {
-                  (globalThis as any)[STEP_LOCK] = previousStepLock;
-                }
-              }
+                  workflowMetadata: {
+                    workflowName,
+                    workflowRunId,
+                    workflowStartedAt: new Date(+workflowStartedAt),
+                    // TODO: there should be a getUrl method on the world interface itself. This
+                    // solution only works for vercel + local worlds.
+                    url: isVercel
+                      ? `https://${process.env.VERCEL_URL}`
+                      : `http://localhost:${port ?? 3000}`,
+                  },
+                  ops,
+                  closureVars: hydratedInput.closureVars,
+                  encryptionKey,
+                },
+                () => stepFn.apply(thisVal, args)
+              );
             });
           } catch (err) {
             userCodeError = err;
             userCodeFailed = true;
-          } finally {
-            await releaseUnusedPreAcquiredLocks(world, preAcquiredLocks);
           }
           const executionTimeMs = Date.now() - executionStartTime;
 
@@ -551,53 +412,6 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           // --- Handle user code errors ---
           if (userCodeFailed) {
             const err = userCodeError;
-
-            if (StepLockBlockedError.is(err)) {
-              const retryAfterMs = Math.max(1, err.retryAfterMs ?? 1000);
-              const timeoutSeconds = Math.max(
-                1,
-                Math.ceil(retryAfterMs / 1000)
-              );
-              const retryAfter = new Date(Date.now() + retryAfterMs);
-              span?.setAttributes({
-                ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
-              });
-              span?.addEvent?.('step.lock_blocked', {
-                'retry.timeout_seconds': timeoutSeconds,
-                'step.id': stepId,
-                'step.name': stepName,
-              });
-              try {
-                await world.events.create(
-                  workflowRunId,
-                  {
-                    eventType: 'step_deferred',
-                    specVersion: SPEC_VERSION_CURRENT,
-                    correlationId: stepId,
-                    eventData: {
-                      retryAfter,
-                      lockRequest: err.request,
-                    },
-                  },
-                  { requestId }
-                );
-              } catch (stepDeferredErr) {
-                if (EntityConflictError.is(stepDeferredErr)) {
-                  runtimeLogger.info(
-                    'Tried deferring step, but step has already finished.',
-                    {
-                      workflowRunId,
-                      stepId,
-                      stepName,
-                      message: stepDeferredErr.message,
-                    }
-                  );
-                  return;
-                }
-                throw stepDeferredErr;
-              }
-              return { timeoutSeconds };
-            }
 
             // Infrastructure errors that somehow surfaced through user code
             // should propagate to the queue handler for retry, not consume

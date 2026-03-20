@@ -4,9 +4,13 @@ import {
   type LimitKey,
   type LimitLease,
 } from '@workflow/world';
-import { STEP_LOCK, WORKFLOW_LOCK } from './symbols.js';
+import { contextStorage } from './step/context-storage.js';
+import { WORKFLOW_LOCK } from './symbols.js';
 
 export { LIMITS_NOT_IMPLEMENTED_MESSAGE } from '@workflow/world';
+
+export const LOCK_WORKFLOW_ONLY_MESSAGE =
+  '`lock()` is only supported in workflow functions. Wrap the step call with `await using` in workflow code.';
 
 /**
  * Reserved first-pass user-facing API for future flow concurrency and rate
@@ -21,7 +25,10 @@ export interface LockOptions extends LimitDefinition {
  * Reserved handle shape for future lock acquisition.
  */
 export interface LockHandle
-  extends Pick<LimitLease, 'leaseId' | 'key' | 'holderId' | 'expiresAt'> {
+  extends Pick<
+    LimitLease,
+    'leaseId' | 'key' | 'lockId' | 'runId' | 'lockIndex' | 'expiresAt'
+  > {
   dispose(): Promise<void>;
   heartbeat(ttlMs?: number): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
@@ -39,12 +46,8 @@ export async function lock(options: LockOptions): Promise<LockHandle> {
     return workflowLock(options);
   }
 
-  const stepLock = (globalThis as any)[STEP_LOCK] as
-    | ((options: LockOptions) => Promise<LockHandle>)
-    | undefined;
-
-  if (stepLock) {
-    return stepLock(options);
+  if (contextStorage.getStore()) {
+    throw new Error(LOCK_WORKFLOW_ONLY_MESSAGE);
   }
 
   throw createLimitsNotImplementedError();

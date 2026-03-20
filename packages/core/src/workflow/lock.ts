@@ -1,18 +1,19 @@
 import { WorkflowSuspension } from '../global.js';
 import type { LockHandle, LockOptions } from '../lock.js';
+import { createLockWakeCorrelationId, type LimitLease } from '@workflow/world';
 import {
   scheduleWhenIdle,
   type WorkflowOrchestratorContext,
 } from '../private.js';
 import { getWorld } from '../runtime/world.js';
 
+const DEFAULT_LOCK_LEASE_TTL_MS = 24 * 60 * 60 * 1000;
+
 function createLockHandle(
-  lease: {
-    leaseId: string;
-    key: string;
-    holderId: string;
-    expiresAt?: Date;
-  },
+  lease: Pick<
+    LimitLease,
+    'leaseId' | 'key' | 'lockId' | 'runId' | 'lockIndex' | 'expiresAt'
+  >,
   ctx: WorkflowOrchestratorContext
 ): LockHandle {
   let currentLease = lease;
@@ -24,7 +25,7 @@ function createLockHandle(
     await getWorld().limits.release({
       leaseId: currentLease.leaseId,
       key: currentLease.key,
-      holderId: currentLease.holderId,
+      lockId: currentLease.lockId,
     });
   };
 
@@ -42,8 +43,14 @@ function createLockHandle(
     get key() {
       return currentLease.key;
     },
-    get holderId() {
-      return currentLease.holderId;
+    get lockId() {
+      return currentLease.lockId;
+    },
+    get runId() {
+      return currentLease.runId;
+    },
+    get lockIndex() {
+      return currentLease.lockIndex;
     },
     get expiresAt() {
       return currentLease.expiresAt;
@@ -68,8 +75,8 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
     wait event. Postgres can wake this correlation id early when the waiter is
     promoted, and the delayed replay is just a fallback.
     */
-    const correlationId = `wflock_wait_${ctx.generateUlid()}`;
-    const holderId = `wflock_${ctx.runId}:${correlationId}:${ctx.generateUlid()}`;
+    const lockIndex = ctx.nextLockIndex++;
+    const correlationId = createLockWakeCorrelationId(ctx.runId, lockIndex);
     const definition = {
       concurrency: options.concurrency,
       rate: options.rate,
@@ -78,9 +85,10 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
     while (true) {
       const result = await getWorld().limits.acquire({
         key: options.key,
-        holderId,
+        runId: ctx.runId,
+        lockIndex,
         definition,
-        leaseTtlMs: options.leaseTtlMs,
+        leaseTtlMs: options.leaseTtlMs ?? DEFAULT_LOCK_LEASE_TTL_MS,
       });
 
       if (result.status === 'acquired') {

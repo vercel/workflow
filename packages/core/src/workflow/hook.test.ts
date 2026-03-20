@@ -28,6 +28,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
+    nextLockIndex: 0,
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>

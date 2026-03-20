@@ -112,11 +112,6 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.Consumed;
         }
 
-        if (event.eventType === 'step_deferred') {
-          // Admission was blocked before user work could proceed, so keep waiting.
-          return EventConsumerResult.Consumed;
-        }
-
         if (event.eventType === 'step_failed') {
           // Terminal state - we can remove the invocationQueue item
           ctx.invocationsQueue.delete(event.correlationId);

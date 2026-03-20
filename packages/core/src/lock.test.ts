@@ -1,10 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { lock, LIMITS_NOT_IMPLEMENTED_MESSAGE } from './lock.js';
-import { STEP_LOCK, WORKFLOW_LOCK } from './symbols.js';
+import {
+  lock,
+  LIMITS_NOT_IMPLEMENTED_MESSAGE,
+  LOCK_WORKFLOW_ONLY_MESSAGE,
+} from './lock.js';
+import { contextStorage } from './step/context-storage.js';
+import { WORKFLOW_LOCK } from './symbols.js';
 
 afterEach(() => {
   delete (globalThis as any)[WORKFLOW_LOCK];
-  delete (globalThis as any)[STEP_LOCK];
 });
 
 describe('lock', () => {
@@ -20,9 +24,7 @@ describe('lock', () => {
   it('prefers the workflow runtime lock when both runtimes are present', async () => {
     const workflowHandle = { leaseId: 'lease_workflow' };
     const workflowLock = vi.fn().mockResolvedValue(workflowHandle);
-    const stepLock = vi.fn().mockResolvedValue({ leaseId: 'lease_step' });
     (globalThis as any)[WORKFLOW_LOCK] = workflowLock;
-    (globalThis as any)[STEP_LOCK] = stepLock;
     const options = {
       key: 'workflow:user:test',
       concurrency: { max: 1 },
@@ -30,19 +32,33 @@ describe('lock', () => {
 
     await expect(lock(options)).resolves.toBe(workflowHandle);
     expect(workflowLock).toHaveBeenCalledWith(options);
-    expect(stepLock).not.toHaveBeenCalled();
   });
 
-  it('falls back to the step runtime lock when no workflow runtime is present', async () => {
-    const handle = { leaseId: 'lease_step' };
-    const stepLock = vi.fn().mockResolvedValue(handle);
-    (globalThis as any)[STEP_LOCK] = stepLock;
+  it('throws a workflow-only error when called inside a step context', async () => {
     const options = {
       key: 'step:db:cheap',
       concurrency: { max: 2 },
     };
 
-    await expect(lock(options)).resolves.toBe(handle);
-    expect(stepLock).toHaveBeenCalledWith(options);
+    await expect(
+      contextStorage.run(
+        {
+          stepMetadata: {
+            stepId: 'step_test',
+            stepName: 'testStep',
+            stepStartedAt: new Date(),
+            attempt: 1,
+          },
+          workflowMetadata: {
+            workflowName: 'testWorkflow',
+            workflowRunId: 'wrun_test',
+            workflowStartedAt: new Date(),
+            url: 'http://localhost:3000',
+          },
+          ops: [],
+        },
+        () => lock(options)
+      )
+    ).rejects.toThrow(LOCK_WORKFLOW_ONLY_MESSAGE);
   });
 });

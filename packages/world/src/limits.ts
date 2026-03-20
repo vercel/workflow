@@ -34,10 +34,44 @@ export const LimitDefinitionSchema = z
   );
 export type LimitDefinition = z.infer<typeof LimitDefinitionSchema>;
 
+export const LimitLockIdSchema = z.string().min(1);
+export type LimitLockId = z.infer<typeof LimitLockIdSchema>;
+
+export function createLockId(runId: string, lockIndex: number): LimitLockId {
+  return `${runId}:${lockIndex}`;
+}
+
+export function parseLockId(
+  lockId: string
+): { runId: string; lockIndex: number } | null {
+  const separatorIndex = lockId.lastIndexOf(':');
+  if (separatorIndex <= 0 || separatorIndex === lockId.length - 1) {
+    return null;
+  }
+
+  const runId = lockId.slice(0, separatorIndex);
+  const rawLockIndex = lockId.slice(separatorIndex + 1);
+  const lockIndex = Number.parseInt(rawLockIndex, 10);
+  if (!Number.isInteger(lockIndex) || lockIndex < 0) {
+    return null;
+  }
+
+  return { runId, lockIndex };
+}
+
+export function createLockWakeCorrelationId(
+  runId: string,
+  lockIndex: number
+): string {
+  return `wflock_wait_${runId}:${lockIndex}`;
+}
+
 export const LimitLeaseSchema = z.object({
   leaseId: z.string().min(1),
   key: LimitKeySchema,
-  holderId: z.string().min(1),
+  lockId: LimitLockIdSchema,
+  runId: z.string().min(1),
+  lockIndex: z.number().int().nonnegative(),
   acquiredAt: z.coerce.date(),
   expiresAt: z.coerce.date().optional(),
   definition: LimitDefinitionSchema,
@@ -46,7 +80,8 @@ export type LimitLease = z.infer<typeof LimitLeaseSchema>;
 
 export const LimitAcquireRequestSchema = z.object({
   key: LimitKeySchema,
-  holderId: z.string().min(1),
+  runId: z.string().min(1),
+  lockIndex: z.number().int().nonnegative(),
   definition: LimitDefinitionSchema,
   leaseTtlMs: z.number().int().positive().optional(),
 });
@@ -88,7 +123,7 @@ export type LimitAcquireResult = z.infer<typeof LimitAcquireResultSchema>;
 export const LimitReleaseRequestSchema = z.object({
   leaseId: z.string().min(1),
   key: LimitKeySchema.optional(),
-  holderId: z.string().min(1).optional(),
+  lockId: LimitLockIdSchema.optional(),
 });
 export type LimitReleaseRequest = z.infer<typeof LimitReleaseRequestSchema>;
 

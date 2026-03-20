@@ -26,6 +26,7 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => Promise.resolve(),
     }),
+    nextLockIndex: 0,
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt), // All generated ulids use the workflow's started at time
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
@@ -401,42 +402,6 @@ describe('createUseStep', () => {
     const add = useStep('add');
 
     // Call the step - will suspend after processing step_retrying
-    let error: Error | undefined;
-    try {
-      await Promise.race([add(1, 2), workflowErrorPromise]);
-    } catch (err_) {
-      error = err_ as Error;
-    }
-
-    expect(error).toBeInstanceOf(WorkflowSuspension);
-    expect(ctx.invocationsQueue.size).toBe(1);
-  });
-
-  it('should consume step_deferred event and continue waiting', async () => {
-    const ctx = setupWorkflowContext([
-      {
-        eventId: 'evnt_0',
-        runId: 'wrun_123',
-        eventType: 'step_deferred',
-        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {
-          retryAfter: new Date(),
-        },
-        createdAt: new Date(),
-      },
-    ]);
-
-    let workflowErrorReject: (err: Error) => void;
-    const workflowErrorPromise = new Promise<Error>((_, reject) => {
-      workflowErrorReject = reject;
-    });
-    ctx.onWorkflowError = (err) => {
-      workflowErrorReject(err);
-    };
-
-    const useStep = createUseStep(ctx);
-    const add = useStep('add');
-
     let error: Error | undefined;
     try {
       await Promise.race([add(1, 2), workflowErrorPromise]);

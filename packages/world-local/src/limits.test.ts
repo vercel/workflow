@@ -21,9 +21,9 @@ createLimitsContractSuite('local world limits', async () => {
         keys?: Record<
           string,
           {
-            leases?: { holderId: string }[];
-            waiters?: { holderId: string }[];
-            tokens?: { holderId: string }[];
+            leases?: { lockId: string }[];
+            waiters?: { lockId: string }[];
+            tokens?: { lockId: string }[];
           }
         >;
       };
@@ -43,10 +43,10 @@ createLimitsContractSuite('local world limits', async () => {
 
       const keyState = raw.keys?.[key];
       return {
-        leaseHolderIds: keyState?.leases?.map((lease) => lease.holderId) ?? [],
+        leaseHolderIds: keyState?.leases?.map((lease) => lease.lockId) ?? [],
         waiterHolderIds:
-          keyState?.waiters?.map((waiter) => waiter.holderId) ?? [],
-        tokenHolderIds: keyState?.tokens?.map((token) => token.holderId) ?? [],
+          keyState?.waiters?.map((waiter) => waiter.lockId) ?? [],
+        tokenHolderIds: keyState?.tokens?.map((token) => token.lockId) ?? [],
       };
     },
     close: async () => {

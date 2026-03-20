@@ -12,6 +12,8 @@ export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
 export type * from './limits.js';
 export {
+  createLockId,
+  createLockWakeCorrelationId,
   createLimitsNotImplementedError,
   LimitAcquireAcquiredResultSchema,
   LimitAcquireBlockedResultSchema,
@@ -24,9 +26,11 @@ export {
   LimitHeartbeatRequestSchema,
   LimitKeySchema,
   LimitLeaseSchema,
+  LimitLockIdSchema,
   LimitRateSchema,
   LimitReleaseRequestSchema,
   LIMITS_NOT_IMPLEMENTED_MESSAGE,
+  parseLockId,
 } from './limits.js';
 export type * from './queue.js';
 export {

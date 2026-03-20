@@ -216,13 +216,6 @@ export async function parallelSleepWorkflow() {
 
 async function cheapDbStep(userId: string) {
   'use step';
-
-  await using _dbLimit = await lock({
-    key: 'step:db:cheap',
-    concurrency: { max: 20 },
-    leaseTtlMs: 30_000,
-  });
-
   return {
     userId,
     prompt: `profile:${userId}`,
@@ -231,17 +224,10 @@ async function cheapDbStep(userId: string) {
 
 async function expensiveAIStep(prompt: string) {
   'use step';
-
-  await using _aiLimit = await lock({
-    key: 'step:provider:openai',
-    rate: { count: 10, periodMs: 60_000 },
-    leaseTtlMs: 30_000,
-  });
-
   return `summary:${prompt}`;
 }
 
-export async function workflowWithWorkflowAndStepLocks(userId = 'user-123') {
+export async function workflowWithScopedLocks(userId = 'user-123') {
   'use workflow';
 
   await using userLimit = await lock({
@@ -250,8 +236,25 @@ export async function workflowWithWorkflowAndStepLocks(userId = 'user-123') {
     leaseTtlMs: 30_000,
   });
 
-  const row = await cheapDbStep(userId);
-  const summary = await expensiveAIStep(row.prompt);
+  let row: Awaited<ReturnType<typeof cheapDbStep>>;
+  {
+    await using _dbLimit = await lock({
+      key: 'step:db:cheap',
+      concurrency: { max: 20 },
+      leaseTtlMs: 30_000,
+    });
+    row = await cheapDbStep(userId);
+  }
+
+  let summary: Awaited<ReturnType<typeof expensiveAIStep>>;
+  {
+    await using _aiLimit = await lock({
+      key: 'step:provider:openai',
+      rate: { count: 10, periodMs: 60_000 },
+      leaseTtlMs: 30_000,
+    });
+    summary = await expensiveAIStep(row.prompt);
+  }
 
   return {
     workflowKey: userLimit.key,
@@ -261,61 +264,6 @@ export async function workflowWithWorkflowAndStepLocks(userId = 'user-123') {
   };
 }
 
-type LimitTraceState = {
-  events: string[];
-};
-
-function sanitizeLimitTraceToken(traceToken: string) {
-  return traceToken.replace(/[^a-zA-Z0-9_-]/g, '_');
-}
-
-async function getLimitTracePath(traceToken: string) {
-  const path = await import('node:path');
-  return path.join(
-    process.cwd(),
-    '.workflow-e2e',
-    `limits-${sanitizeLimitTraceToken(traceToken)}.json`
-  );
-}
-
-async function readLimitTraceState(
-  traceToken: string
-): Promise<LimitTraceState> {
-  const { mkdir, readFile } = await import('node:fs/promises');
-  const path = await import('node:path');
-  const tracePath = await getLimitTracePath(traceToken);
-  await mkdir(path.dirname(tracePath), { recursive: true });
-
-  try {
-    return JSON.parse(await readFile(tracePath, 'utf8')) as LimitTraceState;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      return { events: [] };
-    }
-    throw error;
-  }
-}
-
-async function writeLimitTraceState(
-  traceToken: string,
-  state: LimitTraceState
-) {
-  const { mkdir, writeFile } = await import('node:fs/promises');
-  const path = await import('node:path');
-  const tracePath = await getLimitTracePath(traceToken);
-  await mkdir(path.dirname(tracePath), { recursive: true });
-  await writeFile(tracePath, JSON.stringify(state), 'utf8');
-}
-
-async function appendLimitTraceEvent(traceToken: string, event: string) {
-  const state = await readLimitTraceState(traceToken);
-  const nextState = {
-    events: [...state.events, event],
-  };
-  await writeLimitTraceState(traceToken, nextState);
-  return nextState.events;
-}
-
 async function serializedLimitStep(
   label: string,
   holdMs: number,
@@ -323,16 +271,9 @@ async function serializedLimitStep(
 ) {
   'use step';
 
-  const stepLock = await lock({
-    key,
-    concurrency: { max: 1 },
-    leaseTtlMs: holdMs + 5_000,
-  });
-
   const metadata = getStepMetadata();
   const acquiredAt = Date.now();
   await new Promise((resolve) => setTimeout(resolve, holdMs));
-  await stepLock.dispose();
   const releasedAt = Date.now();
 
   return {
@@ -357,7 +298,15 @@ export async function workflowLockContentionWorkflow(
   });
 
   const workflowLockAcquiredAt = Date.now();
-  const step = await serializedLimitStep(userId, holdMs);
+  let step: Awaited<ReturnType<typeof serializedLimitStep>>;
+  {
+    await using _nestedLock = await lock({
+      key: 'step:db:serialized',
+      concurrency: { max: 1 },
+      leaseTtlMs: holdMs + 5_000,
+    });
+    step = await serializedLimitStep(userId, holdMs);
+  }
   await workflowLock.dispose();
   const workflowLockReleasedAt = Date.now();
 
@@ -365,57 +314,27 @@ export async function workflowLockContentionWorkflow(
     userId,
     workflowLockAcquiredAt,
     workflowLockReleasedAt,
-    stepLockAcquiredAt: step.acquiredAt,
-    stepLockReleasedAt: step.releasedAt,
+    stepCallLockAcquiredAt: step.acquiredAt,
+    stepCallLockReleasedAt: step.releasedAt,
   };
 }
 
-async function stepLockNoRetriesStep(
-  label: string,
-  holdMs: number,
-  key = 'step:db:no-retries'
-) {
-  'use step';
-
-  await using _stepLock = await lock({
-    key,
-    concurrency: { max: 1 },
-    leaseTtlMs: holdMs + 5_000,
-  });
-
-  const metadata = getStepMetadata();
-  const acquiredAt = Date.now();
-  await new Promise((resolve) => setTimeout(resolve, holdMs));
-  const releasedAt = Date.now();
-
-  return {
-    label,
-    key,
-    attempt: metadata.attempt,
-    acquiredAt,
-    releasedAt,
-  };
-}
-stepLockNoRetriesStep.maxRetries = 0;
-
-export async function stepLockNoRetriesContentionWorkflow(
-  userId = 'user-123',
-  holdMs = 750,
-  label = userId
-) {
-  'use workflow';
-
-  return await stepLockNoRetriesStep(label, holdMs);
-}
-
-export async function stepKeyLockContentionWorkflow(
+export async function lockedStepCallContentionWorkflow(
   key = 'step:db:key-contention',
   holdMs = 750,
   label = key
 ) {
   'use workflow';
 
-  return await stepLockNoRetriesStep(label, holdMs, key);
+  {
+    await using _lock = await lock({
+      key,
+      concurrency: { max: 1 },
+      leaseTtlMs: holdMs + 5_000,
+    });
+
+    return await serializedLimitStep(label, holdMs, key);
+  }
 }
 
 //////////////////////////////////////////////////////////
@@ -466,46 +385,32 @@ export async function workflowLeakedLockWorkflow(
     key: leakedWorkflowLock.key,
     leaseTtlMs,
     leakedLeaseId: leakedWorkflowLock.leaseId,
-    workflowLockAcquiredAt,
+    lockAcquiredAt: workflowLockAcquiredAt,
     workflowCompletedAt: Date.now(),
   };
 }
 
-async function leakedStepLockStep(
-  key: string,
-  leaseTtlMs: number,
-  label: string
-) {
-  'use step';
-
-  const leakedStepLock = await lock({
-    key,
-    concurrency: { max: 1 },
-    leaseTtlMs,
-  });
-
-  return {
-    label,
-    key,
-    leaseTtlMs,
-    leakedLeaseId: leakedStepLock.leaseId,
-    stepLockAcquiredAt: Date.now(),
-    workflowCompletedAt: Date.now(),
-  };
-}
-
-export async function stepLeakedLockWorkflow(
+export async function leakedKeyLockWorkflow(
   userId = 'user-123',
   leaseTtlMs = 1_250,
   label = userId
 ) {
   'use workflow';
 
-  return await leakedStepLockStep(
-    `step:db:expired:${userId}`,
+  const leakedLock = await lock({
+    key: `workflow:key:expired:${userId}`,
+    concurrency: { max: 1 },
     leaseTtlMs,
-    label
-  );
+  });
+
+  return {
+    label,
+    key: leakedLock.key,
+    leaseTtlMs,
+    leakedLeaseId: leakedLock.leaseId,
+    lockAcquiredAt: Date.now(),
+    workflowCompletedAt: Date.now(),
+  };
 }
 
 export async function workflowRateLimitContentionWorkflow(
@@ -563,42 +468,48 @@ export async function workflowMixedLimitContentionWorkflow(
   };
 }
 
-async function midStepLockStep(key: string, traceToken: string, label: string) {
+async function scopedMultiStepStep(label: string, holdMs: number) {
   'use step';
 
-  const { attempt } = getStepMetadata();
-  await appendLimitTraceEvent(traceToken, `pre:${attempt}`);
-
-  await using _midStepLock = await lock({
-    key,
-    concurrency: { max: 1 },
-    leaseTtlMs: 5_000,
-  });
-
-  const lockAcquiredAt = Date.now();
-  await appendLimitTraceEvent(traceToken, `lock:${attempt}`);
-  const trace = await appendLimitTraceEvent(traceToken, `post:${attempt}`);
-
+  const metadata = getStepMetadata();
+  await new Promise((resolve) => setTimeout(resolve, holdMs));
   return {
     label,
-    key,
-    attempt,
-    lockAcquiredAt,
-    preLockEffects: trace.filter((event) => event.startsWith('pre:')).length,
-    postLockEffects: trace.filter((event) => event.startsWith('post:')).length,
-    trace,
+    attempt: metadata.attempt,
+    completedAt: Date.now(),
   };
 }
-midStepLockStep.maxRetries = 0;
 
-export async function midStepLockContentionWorkflow(
-  key = 'step:db:mid-step',
-  traceToken = 'mid-step',
-  label = key
+export async function singleLockAcrossMultipleStepsWorkflow(
+  key = 'step:db:batch',
+  holdMs = 400
 ) {
   'use workflow';
 
-  return await midStepLockStep(key, traceToken, label);
+  let workflowLockAcquiredAt: number;
+  let first: Awaited<ReturnType<typeof scopedMultiStepStep>>;
+  let second: Awaited<ReturnType<typeof scopedMultiStepStep>>;
+  let workflowLockReleasedAt: number;
+  {
+    await using _lock = await lock({
+      key,
+      concurrency: { max: 1 },
+      leaseTtlMs: holdMs * 2 + 5_000,
+    });
+
+    workflowLockAcquiredAt = Date.now();
+    first = await scopedMultiStepStep('first', holdMs);
+    second = await scopedMultiStepStep('second', holdMs);
+    workflowLockReleasedAt = Date.now();
+  }
+
+  return {
+    key,
+    workflowLockAcquiredAt,
+    firstStepCompletedAt: first.completedAt,
+    secondStepCompletedAt: second.completedAt,
+    workflowLockReleasedAt,
+  };
 }
 
 //////////////////////////////////////////////////////////
