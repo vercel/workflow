@@ -563,6 +563,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     try {
       const runs = await world.runs.list({
         workflowName: opts.workflowName,
+        status: opts.status as any,
         pagination: {
           sortOrder: opts.sort || 'desc',
           cursor: opts.cursor,
@@ -590,6 +591,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       try {
         const runs = await world.runs.list({
           workflowName: opts.workflowName,
+          status: opts.status as any,
           pagination: {
             sortOrder: opts.sort || 'desc',
             cursor,
@@ -721,7 +723,10 @@ export const listSteps = async (
         },
         resolveData,
       });
-      showJson(stepChunks.data);
+      const stepsWithHydratedIO = await Promise.all(
+        stepChunks.data.map((s) => hydrateResourceIO(s, resolveKey))
+      );
+      showJson(stepsWithHydratedIO);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
