@@ -33,6 +33,7 @@ export interface WorkflowReadableStreamOptions {
   namespace?: string;
   /**
    * The index number of the starting chunk to begin reading the stream from.
+   * Negative values start from the end (e.g. -3 reads the last 3 chunks).
    */
   startIndex?: number;
   /**
@@ -53,6 +54,14 @@ export interface WorkflowReadableStreamOptions {
  * A handler class for a workflow run.
  */
 export class Run<TResult> {
+  /**
+   * Marker used by the serialization system to identify Run instances.
+   * This is not WORKFLOW_SERIALIZE to avoid the SWC plugin injecting
+   * `registerSerializationClass` imports into this file.
+   * @internal
+   */
+  static readonly __serializable = 'Run' as const;
+
   /**
    * The ID of the workflow run.
    */

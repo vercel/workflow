@@ -341,9 +341,33 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             .filter((file) => file.startsWith(`${name}-`))
             .sort(); // ULID lexicographic sort = chronological order
 
+          // Resolve negative startIndex relative to the number of data chunks
+          // (excluding the trailing EOF marker chunk, if present).
+          let dataChunkCount = chunkFiles.length;
+          if (
+            typeof startIndex === 'number' &&
+            startIndex < 0 &&
+            chunkFiles.length > 0
+          ) {
+            const lastFile = chunkFiles[chunkFiles.length - 1];
+            const lastExt = fileExtMap.get(lastFile) ?? '.bin';
+            // Note: this incurs an extra disk read to check the EOF marker.
+            // Acceptable since negative startIndex is not a hot path.
+            const lastChunk = deserializeChunk(
+              await readBuffer(path.join(chunksDir, `${lastFile}${lastExt}`))
+            );
+            if (lastChunk?.eof === true) {
+              dataChunkCount--;
+            }
+          }
+          const resolvedStartIndex =
+            typeof startIndex === 'number' && startIndex < 0
+              ? Math.max(0, dataChunkCount + startIndex)
+              : startIndex;
+
           // Process existing chunks, skipping any already delivered via events
           let isComplete = false;
-          for (let i = startIndex; i < chunkFiles.length; i++) {
+          for (let i = resolvedStartIndex; i < chunkFiles.length; i++) {
             const file = chunkFiles[i];
             // Extract chunk ID from filename: "streamName-chunkId" or "streamName-chunkId.tag"
             const rawChunkId = file.substring(name.length + 1);

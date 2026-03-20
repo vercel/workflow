@@ -501,12 +501,27 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       buffer = [];
     };
 
+    /** Resolvers/rejectors waiting for the current scheduled flush */
+    let flushWaiters: Array<{
+      resolve: () => void;
+      reject: (err: unknown) => void;
+    }> = [];
+
     const scheduleFlush = (): void => {
       if (flushTimer) return; // Already scheduled
 
       flushTimer = setTimeout(() => {
         flushTimer = null;
-        flushPromise = flush();
+        const currentWaiters = flushWaiters;
+        flushWaiters = [];
+        flushPromise = flush().then(
+          () => {
+            for (const w of currentWaiters) w.resolve();
+          },
+          (err) => {
+            for (const w of currentWaiters) w.reject(err);
+          }
+        );
       }, STREAM_FLUSH_INTERVAL_MS);
     };
 
@@ -520,6 +535,15 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
         buffer.push(chunk);
         scheduleFlush();
+
+        // Wait for the scheduled flush to complete so that callers
+        // (like flushablePipe) know data has reached the server
+        // before decrementing pendingOps. Without this, pendingOps
+        // reaches 0 when the buffered write returns (instant), but
+        // the 10ms flush timer hasn't fired yet.
+        await new Promise<void>((resolve, reject) => {
+          flushWaiters.push({ resolve, reject });
+        });
       },
       async close() {
         // Wait for any in-progress flush to complete
@@ -533,7 +557,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
         await world.closeStream(name, runId);
       },
-      abort() {
+      abort(reason) {
         // Clean up timer to prevent leaks
         if (flushTimer) {
           clearTimeout(flushTimer);
@@ -541,6 +565,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         }
         // Discard buffered chunks - they won't be written
         buffer = [];
+        // Reject any pending flushWaiters so the write() promises settle
+        // and don't leak. Without this, write() hangs forever on an
+        // unsettled promise because the cleared timer will never fire.
+        const waiters = flushWaiters;
+        flushWaiters = [];
+        const abortError =
+          reason ?? new Error("Stream aborted");
+        for (const w of waiters) w.reject(abortError);
       },
     });
   }
@@ -584,6 +616,14 @@ export interface SerializableSpecial {
     headers: Headers;
     body: Response['body'];
     redirected: boolean;
+  };
+  /**
+   * Serialized Run/WorkflowRun instance.
+   * Handled separately from Instance to avoid SWC plugin injecting
+   * class-serialization imports into the Run module.
+   */
+  Run: {
+    runId: string;
   };
   Class: {
     classId: string;
@@ -651,6 +691,16 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       value instanceof global.BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof global.BigUint64Array && viewToBase64(value),
+    // Run instances are serialized to { runId } so they can be deserialized
+    // as WorkflowRun in the workflow VM. Uses __serializable marker instead
+    // of WORKFLOW_SERIALIZE to avoid the SWC plugin injecting class-serialization
+    // imports into run.ts (which breaks the step bundle).
+    Run: (value) => {
+      if (value === null || typeof value !== 'object') return false;
+      const cls = value.constructor;
+      if (!cls || (cls as any).__serializable !== 'Run') return false;
+      return { runId: (value as any).runId };
+    },
     // Class and Instance are intentionally placed before Error so that
     // custom Error subclasses with WORKFLOW_SERIALIZE take precedence
     // over the generic Error serialization (devalue uses first-match-wins).
@@ -1031,6 +1081,17 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     },
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
+    Run: (value) => {
+      // In the VM, look up WorkflowRun from the class registry (registered under 'Run').
+      // In the step context, look up the real Run class.
+      const RunClass = getSerializationClass('Run', global);
+      if (!RunClass) {
+        throw new Error(
+          'Run class not found in the serialization registry. Make sure the Run class is registered.'
+        );
+      }
+      return new (RunClass as any)(value.runId);
+    },
     Class: (value) => {
       const classId = value.classId;
       // Pass the global object to support VM contexts where classes are registered
