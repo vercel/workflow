@@ -167,7 +167,7 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
 
 ## Import the WorkflowModule
 
-In your `app.module.ts`, import the `WorkflowModule`:
+In your `app.module.ts`, import the `WorkflowModule` and keep the module format you chose above.
 
 ```typescript title="src/app.module.ts" lineNumbers
 import { Module } from '@nestjs/common';
@@ -182,6 +182,19 @@ import { AppService } from './app.service.js';
 })
 export class AppModule {}
 ```
+
+<Callout type="info">
+If you chose CommonJS above, keep the CommonJS options here as well:
+
+```typescript
+WorkflowModule.forRoot({
+  moduleType: 'commonjs',
+  distDir: 'dist',
+})
+```
+
+The `.js` local import specifiers in this example are the ESM form.
+</Callout>
 
 The `WorkflowModule` handles workflow bundle building and provides HTTP routing for workflow execution at `.well-known/workflow/v1/`.
 
@@ -295,6 +308,10 @@ export class AppController {
 }
 ```
 
+<Callout type="info">
+If you chose CommonJS above, use the same local import style as the rest of your NestJS app here too. The `.js` extension shown in this example is the ESM form.
+</Callout>
+
 This creates a `POST` endpoint at `/signup` that will trigger your workflow.
 
 </Step>
@@ -350,6 +367,15 @@ WorkflowModule.forRoot({
 
   // Skip building in production when bundles are pre-built
   skipBuild: false,
+
+  // SWC module type: 'es6' (default) or 'commonjs'
+  // Set to 'commonjs' if your NestJS project compiles to CJS via SWC
+  moduleType: 'es6',
+
+  // Directory where NestJS compiles .ts to .js (default: 'dist')
+  // Only used when moduleType is 'commonjs'
+  // Should match the outDir in your tsconfig.json
+  distDir: 'dist',
 });
 ```
 
