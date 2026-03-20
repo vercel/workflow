@@ -122,7 +122,7 @@ export function useStreamReader(
             if (buffer.length >= FRAME_HEADER_SIZE) {
               encoding = detectEncoding(buffer);
             }
-            if (encoding !== 'framed') {
+            if (encoding === 'legacy') {
               textRemainder = decoder.decode(buffer, { stream: true });
               buffer = new Uint8Array(0);
             }
