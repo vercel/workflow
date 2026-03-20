@@ -249,7 +249,7 @@ export function createStreamer(
 
           // Resolve negative offset relative to the data chunk count
           // (excluding the trailing EOF marker, if present)
-          if (offset < 0) {
+          if (typeof offset === 'number' && offset < 0) {
             const dataCount =
               chunks.length > 0 && chunks[chunks.length - 1].eof
                 ? chunks.length - 1
