@@ -47,6 +47,37 @@ export default withWorkflow(nextConfig);
 Use the smallest directory that contains every workspace package imported by your workflows. If your app already lives at the repository root, you do not need to set `outputFileTracingRoot`.
 </Callout>
 
+## Options
+
+`withWorkflow` accepts an optional second argument to control local development behavior.
+
+```typescript title="next.config.ts" lineNumbers
+import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
+
+const nextConfig: NextConfig = {};
+
+export default withWorkflow(nextConfig, {
+  workflows: {
+    lazyDiscovery: true,
+    local: {
+      port: 4000,
+    },
+  },
+});
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `workflows.lazyDiscovery` | `boolean` | `false` | When `true`, defers workflow discovery until files are requested instead of scanning eagerly at startup. Useful for large projects where startup time matters. |
+| `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
+
+<Callout type="info">
+These options only affect local development. When deployed to Vercel, the runtime ignores `local` settings and uses the Vercel world automatically.
+</Callout>
+
+## Exporting a Function
+
 If you are exporting a function in your `next.config` you will need to ensure you call the function returned from `withWorkflow`.
 
 ```typescript title="next.config.ts" lineNumbers
