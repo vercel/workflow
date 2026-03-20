@@ -23,6 +23,14 @@ const NewTraceViewer = ({
   }, [run, events]);
   const trace = traceWithMeta;
 
+  if (!trace) {
+    return (
+      <div className="relative w-full h-full flex items-center justify-center">
+        <div className="text-gray-500 text-sm">Loading trace…</div>
+      </div>
+    );
+  }
+
   return (
     <div className="relative w-full h-full flex">
       <NewTraceViewerComponent trace={trace as Trace} />
