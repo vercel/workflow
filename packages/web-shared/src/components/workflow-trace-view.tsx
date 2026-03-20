@@ -37,7 +37,6 @@ import {
   getCustomSpanEventClassName,
 } from './workflow-traces/trace-colors';
 import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
-import { NewTraceViewer } from './new-trace-viewer/trace-viewer';
 
 /**
  * While a run is live, continuously grow root.duration and rescale so the
