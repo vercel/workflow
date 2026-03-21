@@ -594,6 +594,7 @@ export abstract class BaseBuilder {
     format = 'cjs',
     outfile,
     bundleFinalOutput = true,
+    keepInterimBundleContext = this.config.watch,
     tsconfigPath,
     discoveredEntries,
   }: {
@@ -602,6 +603,7 @@ export abstract class BaseBuilder {
     outfile: string;
     format?: 'cjs' | 'esm';
     bundleFinalOutput?: boolean;
+    keepInterimBundleContext?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     manifest: WorkflowManifest;
@@ -739,55 +741,60 @@ export abstract class BaseBuilder {
       // - createPseudoPackagePlugin() to handle server-only/client-only with empty modules
       // - createNodeModuleErrorPlugin() to catch Node.js builtin imports at build time
     });
-    const interimBundle = await interimBundleCtx.rebuild();
+    let shouldDisposeInterimBundleCtx = !keepInterimBundleContext;
+    try {
+      const interimBundle = await interimBundleCtx.rebuild();
 
-    this.logEsbuildMessages(
-      interimBundle,
-      'intermediate workflow bundle',
-      true,
-      {
-        suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
-      }
-    );
-    this.logCreateWorkflowsBundleInfo(
-      'Created intermediate workflow bundle',
-      `${Date.now() - bundleStartTime}ms`
-    );
-
-    if (this.config.workflowManifestPath) {
-      const resolvedPath = resolve(
-        process.cwd(),
-        this.config.workflowManifestPath
+      this.logEsbuildMessages(
+        interimBundle,
+        'intermediate workflow bundle',
+        true,
+        {
+          suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
+        }
       );
-      let prefix = '';
+      this.logCreateWorkflowsBundleInfo(
+        'Created intermediate workflow bundle',
+        `${Date.now() - bundleStartTime}ms`
+      );
 
-      if (resolvedPath.endsWith('.cjs')) {
-        prefix = 'module.exports = ';
-      } else if (
-        resolvedPath.endsWith('.js') ||
-        resolvedPath.endsWith('.mjs')
+      if (this.config.workflowManifestPath) {
+        const resolvedPath = resolve(
+          process.cwd(),
+          this.config.workflowManifestPath
+        );
+        let prefix = '';
+
+        if (resolvedPath.endsWith('.cjs')) {
+          prefix = 'module.exports = ';
+        } else if (
+          resolvedPath.endsWith('.js') ||
+          resolvedPath.endsWith('.mjs')
+        ) {
+          prefix = 'export default ';
+        }
+
+        await mkdir(dirname(resolvedPath), { recursive: true });
+        await writeFile(
+          resolvedPath,
+          prefix + JSON.stringify(workflowManifest, null, 2)
+        );
+      }
+
+      // Create .gitignore in .swc directory
+      await this.createSwcGitignore();
+
+      if (
+        !interimBundle.outputFiles ||
+        interimBundle.outputFiles.length === 0
       ) {
-        prefix = 'export default ';
+        throw new Error('No output files generated from esbuild');
       }
 
-      await mkdir(dirname(resolvedPath), { recursive: true });
-      await writeFile(
-        resolvedPath,
-        prefix + JSON.stringify(workflowManifest, null, 2)
-      );
-    }
+      const bundleFinal = async (interimBundle: string) => {
+        const workflowBundleCode = interimBundle;
 
-    // Create .gitignore in .swc directory
-    await this.createSwcGitignore();
-
-    if (!interimBundle.outputFiles || interimBundle.outputFiles.length === 0) {
-      throw new Error('No output files generated from esbuild');
-    }
-
-    const bundleFinal = async (interimBundle: string) => {
-      const workflowBundleCode = interimBundle;
-
-      const workflowFunctionCode = `// biome-ignore-all lint: generated file
+        const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
 
@@ -795,76 +802,91 @@ const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
 export const POST = workflowEntrypoint(workflowCode);`;
 
-      // we skip the final bundling step for Next.js so it can bundle itself
-      if (!bundleFinalOutput) {
-        if (!outfile) {
-          throw new Error(`Invariant: missing outfile for workflow bundle`);
+        // we skip the final bundling step for Next.js so it can bundle itself
+        if (!bundleFinalOutput) {
+          if (!outfile) {
+            throw new Error(`Invariant: missing outfile for workflow bundle`);
+          }
+          // Ensure the output directory exists
+          const outputDir = dirname(outfile);
+          await mkdir(outputDir, { recursive: true });
+
+          // Atomic write: write to temp file then rename to prevent
+          // file watchers from reading partial file during write
+          const tempPath = `${outfile}.${randomUUID()}.tmp`;
+          await writeFile(tempPath, workflowFunctionCode);
+          await rename(tempPath, outfile);
+          return;
         }
-        // Ensure the output directory exists
-        const outputDir = dirname(outfile);
-        await mkdir(outputDir, { recursive: true });
 
-        // Atomic write: write to temp file then rename to prevent
-        // file watchers from reading partial file during write
-        const tempPath = `${outfile}.${randomUUID()}.tmp`;
-        await writeFile(tempPath, workflowFunctionCode);
-        await rename(tempPath, outfile);
-        return;
-      }
+        const bundleStartTime = Date.now();
 
-      const bundleStartTime = Date.now();
+        // Now bundle this so we can resolve the @workflow/core dependency
+        // we could remove this if we do nft tracing or similar instead
+        const finalWorkflowResult = await esbuild.build({
+          banner: {
+            js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+          },
+          stdin: {
+            contents: workflowFunctionCode,
+            resolveDir: this.config.workingDir,
+            sourcefile: 'virtual-entry.js',
+            loader: 'js',
+          },
+          outfile,
+          // Source maps for the final workflow bundle wrapper (not important since this code
+          // doesn't run in the VM - only the intermediate bundle sourcemap is relevant)
+          sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+          absWorkingDir: this.config.workingDir,
+          bundle: true,
+          format,
+          platform: 'node',
+          target: 'es2022',
+          write: true,
+          keepNames: true,
+          minify: false,
+          external: ['@aws-sdk/credential-provider-web-identity'],
+        });
 
-      // Now bundle this so we can resolve the @workflow/core dependency
-      // we could remove this if we do nft tracing or similar instead
-      const finalWorkflowResult = await esbuild.build({
-        banner: {
-          js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
-        },
-        stdin: {
-          contents: workflowFunctionCode,
-          resolveDir: this.config.workingDir,
-          sourcefile: 'virtual-entry.js',
-          loader: 'js',
-        },
-        outfile,
-        // Source maps for the final workflow bundle wrapper (not important since this code
-        // doesn't run in the VM - only the intermediate bundle sourcemap is relevant)
-        sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
-        absWorkingDir: this.config.workingDir,
-        bundle: true,
-        format,
-        platform: 'node',
-        target: 'es2022',
-        write: true,
-        keepNames: true,
-        minify: false,
-        external: ['@aws-sdk/credential-provider-web-identity'],
-      });
-
-      this.logEsbuildMessages(
-        finalWorkflowResult,
-        'final workflow bundle',
-        true,
-        {
-          suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
-        }
-      );
-      this.logCreateWorkflowsBundleInfo(
-        'Created final workflow bundle',
-        `${Date.now() - bundleStartTime}ms`
-      );
-    };
-    await bundleFinal(interimBundle.outputFiles[0].text);
-
-    if (this.config.watch) {
-      return {
-        manifest: workflowManifest,
-        interimBundleCtx,
-        bundleFinal,
+        this.logEsbuildMessages(
+          finalWorkflowResult,
+          'final workflow bundle',
+          true,
+          {
+            suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
+          }
+        );
+        this.logCreateWorkflowsBundleInfo(
+          'Created final workflow bundle',
+          `${Date.now() - bundleStartTime}ms`
+        );
       };
+      await bundleFinal(interimBundle.outputFiles[0].text);
+
+      if (keepInterimBundleContext) {
+        shouldDisposeInterimBundleCtx = false;
+        return {
+          manifest: workflowManifest,
+          interimBundleCtx,
+          bundleFinal,
+        };
+      }
+      return { manifest: workflowManifest };
+    } catch (error) {
+      shouldDisposeInterimBundleCtx = true;
+      throw error;
+    } finally {
+      if (shouldDisposeInterimBundleCtx) {
+        try {
+          await interimBundleCtx.dispose();
+        } catch (disposeError) {
+          console.warn(
+            'Warning: Failed to dispose workflow bundle context',
+            disposeError
+          );
+        }
+      }
     }
-    await interimBundleCtx.dispose();
-    return { manifest: workflowManifest };
   }
 
   /**

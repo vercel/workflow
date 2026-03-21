@@ -132,28 +132,31 @@ export async function getNextBuilderDeferred() {
           return;
         }
 
-        let didBuildSucceed = false;
         try {
           await this.buildDiscoveredFiles(inputFiles, implicitStepFiles);
-          didBuildSucceed = true;
         } catch (error) {
           if (this.config.watch) {
+            await this.validateDiscoveredEntryFiles();
+            const recoveredInputFiles =
+              this.getCurrentInputFiles(implicitStepFiles);
+            const recoveredSignature =
+              await this.createDeferredBuildSignature(recoveredInputFiles);
+            if (recoveredSignature !== buildSignature) {
+              // A file was added/removed while this build was running; retry
+              // immediately with the refreshed discovered-entry state.
+              continue;
+            }
             console.warn(
               '[workflow] Deferred entries build failed. Will retry only after inputs change.',
               error
             );
+            this.lastDeferredBuildSignature = buildSignature;
+            return;
           } else {
             throw error;
           }
-        } finally {
-          // Record attempted signature even on failure so we don't loop on the
-          // same broken input graph.
-          this.lastDeferredBuildSignature = buildSignature;
         }
-
-        if (!didBuildSucceed) {
-          return;
-        }
+        this.lastDeferredBuildSignature = buildSignature;
 
         const postBuildInputFiles =
           this.getCurrentInputFiles(implicitStepFiles);
@@ -189,20 +192,6 @@ export async function getNextBuilderDeferred() {
         join(workflowDistDir, 'stdlib.js')
       );
       return existsSync(workflowStdlibPath) ? workflowStdlibPath : null;
-    }
-
-    private areFileSetsEqual(a: Set<string>, b: Set<string>): boolean {
-      if (a.size !== b.size) {
-        return false;
-      }
-
-      for (const filePath of a) {
-        if (!b.has(filePath)) {
-          return false;
-        }
-      }
-
-      return true;
     }
 
     private async reconcileDiscoveredEntries({
@@ -331,38 +320,59 @@ export async function getNextBuilderDeferred() {
     }
 
     private async validateDiscoveredEntryFiles(): Promise<void> {
+      const workflowCandidates = new Set(this.discoveredWorkflowFiles);
+      const stepCandidates = new Set(this.discoveredStepFiles);
+      const serdeCandidates = new Set(this.discoveredSerdeFiles);
       const { workflowFiles, stepFiles, serdeFiles } =
         await this.reconcileDiscoveredEntries({
-          workflowCandidates: this.discoveredWorkflowFiles,
-          stepCandidates: this.discoveredStepFiles,
-          serdeCandidates: this.discoveredSerdeFiles,
+          workflowCandidates,
+          stepCandidates,
+          serdeCandidates,
           validatePatterns: true,
         });
-      const workflowsChanged = !this.areFileSetsEqual(
-        this.discoveredWorkflowFiles,
-        workflowFiles
-      );
-      const stepsChanged = !this.areFileSetsEqual(
-        this.discoveredStepFiles,
-        stepFiles
-      );
-      const serdeChanged = !this.areFileSetsEqual(
-        this.discoveredSerdeFiles,
-        serdeFiles
-      );
 
-      if (workflowsChanged || stepsChanged || serdeChanged) {
-        this.discoveredWorkflowFiles.clear();
-        this.discoveredStepFiles.clear();
-        this.discoveredSerdeFiles.clear();
-        for (const filePath of workflowFiles) {
+      // Reconcile validated entries against the snapshot we started with so
+      // file discoveries that arrive during validation are preserved.
+      let workflowsChanged = false;
+      let stepsChanged = false;
+      let serdeChanged = false;
+
+      for (const filePath of workflowCandidates) {
+        if (!workflowFiles.has(filePath)) {
+          workflowsChanged =
+            this.discoveredWorkflowFiles.delete(filePath) || workflowsChanged;
+        }
+      }
+      for (const filePath of workflowFiles) {
+        if (!this.discoveredWorkflowFiles.has(filePath)) {
           this.discoveredWorkflowFiles.add(filePath);
+          workflowsChanged = true;
         }
-        for (const filePath of stepFiles) {
+      }
+
+      for (const filePath of stepCandidates) {
+        if (!stepFiles.has(filePath)) {
+          stepsChanged =
+            this.discoveredStepFiles.delete(filePath) || stepsChanged;
+        }
+      }
+      for (const filePath of stepFiles) {
+        if (!this.discoveredStepFiles.has(filePath)) {
           this.discoveredStepFiles.add(filePath);
+          stepsChanged = true;
         }
-        for (const filePath of serdeFiles) {
+      }
+
+      for (const filePath of serdeCandidates) {
+        if (!serdeFiles.has(filePath)) {
+          serdeChanged =
+            this.discoveredSerdeFiles.delete(filePath) || serdeChanged;
+        }
+      }
+      for (const filePath of serdeFiles) {
+        if (!this.discoveredSerdeFiles.has(filePath)) {
           this.discoveredSerdeFiles.add(filePath);
+          serdeChanged = true;
         }
       }
 
@@ -383,14 +393,14 @@ export async function getNextBuilderDeferred() {
       const tempRouteFileName = 'route.js.temp';
       const trackedDiscoveredEntries =
         await this.collectTrackedDiscoveredEntries();
-      const discoveredStepFiles = Array.from(
+      const discoveredStepFileCandidates = Array.from(
         new Set([
           ...this.discoveredStepFiles,
           ...trackedDiscoveredEntries.discoveredSteps,
           ...implicitStepFiles,
         ])
       ).sort();
-      const discoveredWorkflowFiles = Array.from(
+      const discoveredWorkflowFileCandidates = Array.from(
         new Set([
           ...this.discoveredWorkflowFiles,
           ...trackedDiscoveredEntries.discoveredWorkflows,
@@ -402,18 +412,28 @@ export async function getNextBuilderDeferred() {
           ...trackedDiscoveredEntries.discoveredSerdeFiles,
         ])
       ).sort();
+      const discoveredStepFiles = await this.filterExistingFiles(
+        discoveredStepFileCandidates
+      );
+      const discoveredWorkflowFiles = await this.filterExistingFiles(
+        discoveredWorkflowFileCandidates
+      );
+      const existingSerdeFileCandidates = await this.filterExistingFiles(
+        discoveredSerdeFileCandidates
+      );
       const discoveredSerdeFiles = await this.collectTransitiveSerdeFiles({
         entryFiles: [...discoveredStepFiles, ...discoveredWorkflowFiles],
-        serdeFiles: discoveredSerdeFileCandidates,
+        serdeFiles: existingSerdeFileCandidates,
       });
       const discoveredEntries = {
         discoveredSteps: discoveredStepFiles,
         discoveredWorkflows: discoveredWorkflowFiles,
         discoveredSerdeFiles,
       };
+      const existingInputFiles = await this.filterExistingFiles(inputFiles);
       const buildInputFiles = Array.from(
         new Set([
-          ...inputFiles,
+          ...existingInputFiles,
           ...discoveredStepFiles,
           ...discoveredWorkflowFiles,
           ...discoveredSerdeFiles,
@@ -681,6 +701,31 @@ export async function getNextBuilderDeferred() {
       return isAbsolute(filePath)
         ? filePath
         : resolve(this.config.workingDir, filePath);
+    }
+
+    private async filterExistingFiles(filePaths: string[]): Promise<string[]> {
+      const normalizedFilePaths = Array.from(
+        new Set(
+          filePaths.map((filePath) =>
+            this.normalizeDiscoveredFilePath(filePath)
+          )
+        )
+      ).sort();
+
+      const existingFiles = await Promise.all(
+        normalizedFilePaths.map(async (filePath) => {
+          try {
+            const fileStats = await stat(filePath);
+            return fileStats.isFile() ? filePath : null;
+          } catch {
+            return null;
+          }
+        })
+      );
+
+      return existingFiles.filter((filePath): filePath is string =>
+        Boolean(filePath)
+      );
     }
 
     private async createDeferredBuildSignature(
@@ -1963,6 +2008,9 @@ export async function getNextBuilderDeferred() {
         format: 'esm',
         outfile: join(workflowsRouteDir, routeFileName),
         bundleFinalOutput: false,
+        // Deferred builds do not reuse the interim esbuild context. Dispose it
+        // after each pass to avoid leaking contexts during watch-mode rebuilds.
+        keepInterimBundleContext: false,
         inputFiles,
         tsconfigPath,
         discoveredEntries,
