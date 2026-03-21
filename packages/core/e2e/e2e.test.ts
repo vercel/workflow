@@ -706,7 +706,7 @@ describe('e2e', () => {
   });
 
   describe.skipIf(isLocalDeployment())(
-    'outputStreamWorkflow - getTailIndex and getChunks',
+    'outputStreamWorkflow - getTailIndex and getStreamChunks',
     () => {
       test(
         'getTailIndex returns correct index after stream completes',
@@ -726,7 +726,7 @@ describe('e2e', () => {
       );
 
       test(
-        'getChunks returns same content as reading the stream',
+        'getStreamChunks returns same content as reading the stream',
         {
           timeout: 60_000,
         },
@@ -743,13 +743,13 @@ describe('e2e', () => {
             streamChunks.push(value);
           }
 
-          // Read all chunks via getChunks pagination
+          // Read all chunks via getStreamChunks pagination
           const world = getWorld();
           const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
           const paginatedChunks: Uint8Array[] = [];
           let cursor: string | null = null;
           do {
-            const page = await world.getChunks(streamName, run.runId, {
+            const page = await world.getStreamChunks(streamName, run.runId, {
               limit: 1, // small page size to exercise pagination
               ...(cursor ? { cursor } : {}),
             });
