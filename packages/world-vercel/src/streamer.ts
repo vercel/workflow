@@ -89,6 +89,7 @@ const StreamChunksResponseSchema = z.object({
   done: z.boolean(),
 });
 
+/** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     async writeToStream(
