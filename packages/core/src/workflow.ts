@@ -23,7 +23,6 @@ import {
   WORKFLOW_CREATE_HOOK,
   WORKFLOW_GET_STREAM_ID,
   WORKFLOW_SLEEP,
-  WORKFLOW_START,
   WORKFLOW_USE_STEP,
 } from './symbols.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
@@ -34,9 +33,6 @@ import type { WorkflowMetadata } from './workflow/get-workflow-metadata.js';
 import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
-import { builtinStepId } from './workflow/builtin-step-id.js';
-import { createWorkflowRun } from './workflow/run.js';
-import { createStart } from './workflow/start.js';
 
 /**
  * Logs a warning when a workflow run completes or fails with uncommitted
@@ -189,12 +185,6 @@ export async function runWorkflow(
     const useStep = createUseStep(workflowContext);
     const createHook = createCreateHook(workflowContext);
     const sleep = createSleep(workflowContext);
-    const startFn = createStart(workflowContext);
-
-    // Create the WorkflowRun class for this VM context.
-    // This registers it in the VM's class registry so that Run objects
-    // serialized from step context deserialize as WorkflowRun in the VM.
-    createWorkflowRun(workflowContext);
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_USE_STEP] = useStep;
@@ -202,8 +192,6 @@ export async function runWorkflow(
     vmGlobalThis[WORKFLOW_CREATE_HOOK] = createHook;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_SLEEP] = sleep;
-    // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
-    vmGlobalThis[WORKFLOW_START] = startFn;
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
@@ -478,23 +466,22 @@ export async function runWorkflow(
 
     Object.defineProperties(Request.prototype, {
       arrayBuffer: {
-        value: useStep<[], ArrayBuffer>(
-          builtinStepId('__builtin_response_array_buffer')
-        ),
+        value: useStep<[], ArrayBuffer>('__builtin_response_array_buffer'),
         writable: true,
         configurable: true,
       },
       json: {
-        value: useStep<[], any>(builtinStepId('__builtin_response_json')),
+        value: useStep<[], any>('__builtin_response_json'),
         writable: true,
         configurable: true,
       },
       text: {
-        value: useStep<[], string>(builtinStepId('__builtin_response_text')),
+        value: useStep<[], string>('__builtin_response_text'),
         writable: true,
         configurable: true,
       },
     });
+
     class Response implements globalThis.Response {
       type!: globalThis.Response['type'];
       url!: string;
@@ -601,19 +588,17 @@ export async function runWorkflow(
 
     Object.defineProperties(Response.prototype, {
       arrayBuffer: {
-        value: useStep<[], ArrayBuffer>(
-          builtinStepId('__builtin_response_array_buffer')
-        ),
+        value: useStep<[], ArrayBuffer>('__builtin_response_array_buffer'),
         writable: true,
         configurable: true,
       },
       json: {
-        value: useStep<[], any>(builtinStepId('__builtin_response_json')),
+        value: useStep<[], any>('__builtin_response_json'),
         writable: true,
         configurable: true,
       },
       text: {
-        value: useStep<[], string>(builtinStepId('__builtin_response_text')),
+        value: useStep<[], string>('__builtin_response_text'),
         writable: true,
         configurable: true,
       },
