@@ -170,35 +170,25 @@ export async function getNextBuilderDeferred() {
     }
 
     private async resolveImplicitStepFiles(): Promise<string[]> {
+      const workflowStdlibPath = this.resolveWorkflowStdlibStepFilePath();
+      return workflowStdlibPath ? [workflowStdlibPath] : [];
+    }
+
+    private resolveWorkflowStdlibStepFilePath(): string | null {
       let workflowCjsEntry: string;
       try {
         workflowCjsEntry = require.resolve('workflow', {
           paths: [this.config.workingDir],
         });
       } catch {
-        return [];
+        return null;
       }
 
       const workflowDistDir = dirname(workflowCjsEntry);
       const workflowStdlibPath = this.normalizeDiscoveredFilePath(
         join(workflowDistDir, 'stdlib.js')
       );
-
-      const candidatePaths = [workflowStdlibPath];
-      const existingFiles = await Promise.all(
-        candidatePaths.map(async (filePath) => {
-          try {
-            const fileStats = await stat(filePath);
-            return fileStats.isFile() ? filePath : null;
-          } catch {
-            return null;
-          }
-        })
-      );
-
-      return existingFiles.filter((filePath): filePath is string =>
-        Boolean(filePath)
-      );
+      return existsSync(workflowStdlibPath) ? workflowStdlibPath : null;
     }
 
     private areFileSetsEqual(a: Set<string>, b: Set<string>): boolean {
@@ -1642,16 +1632,60 @@ export async function getNextBuilderDeferred() {
       return Array.from(discoveredSerdeFiles).sort();
     }
 
-    private resolveBuiltInStepFilePath(): string | null {
-      try {
-        return this.normalizeDiscoveredFilePath(
-          require.resolve('workflow/internal/builtins', {
-            paths: [this.config.workingDir],
-          })
-        );
-      } catch {
-        return null;
+    private shouldCopyDeferredSdkStepFile({
+      stepFile,
+      workflowStdlibStepFilePath,
+    }: {
+      stepFile: string;
+      workflowStdlibStepFilePath: string | null;
+    }): boolean {
+      if (!workflowStdlibStepFilePath) {
+        return false;
       }
+      return (
+        this.normalizeDiscoveredFilePath(stepFile) ===
+        workflowStdlibStepFilePath
+      );
+    }
+
+    private async createResponseBuiltinsStepFile({
+      stepsRouteDir,
+    }: {
+      stepsRouteDir: string;
+    }): Promise<string> {
+      const copiedStepsDir = join(stepsRouteDir, DEFERRED_STEP_COPY_DIR_NAME);
+      await mkdir(copiedStepsDir, { recursive: true });
+
+      const responseBuiltinsFilePath = join(
+        copiedStepsDir,
+        'workflow-response-builtins.ts'
+      );
+      const source = [
+        'export async function __builtin_response_array_buffer(this: Request | Response) {',
+        "  'use step';",
+        '  return this.arrayBuffer();',
+        '}',
+        '',
+        'export async function __builtin_response_json(this: Request | Response) {',
+        "  'use step';",
+        '  return this.json();',
+        '}',
+        '',
+        'export async function __builtin_response_text(this: Request | Response) {',
+        "  'use step';",
+        '  return this.text();',
+        '}',
+      ].join('\n');
+      const sourceMapComment = createDeferredStepCopyInlineSourceMapComment({
+        sourcePath: responseBuiltinsFilePath,
+        sourceContent: source,
+      });
+      await this.writeFileIfChanged(
+        responseBuiltinsFilePath,
+        `${source}\n${sourceMapComment}\n`
+      );
+
+      return responseBuiltinsFilePath;
     }
 
     private async copyDiscoveredStepFiles({
@@ -1826,23 +1860,34 @@ export async function getNextBuilderDeferred() {
       const serdeOnlyFiles = serdeFiles.filter(
         (file) => !stepFileSet.has(file)
       );
-      const builtInStepFilePath = this.resolveBuiltInStepFilePath();
-      // Keep SDK step sources (including workflow/internal/builtins) imported
-      // from package context so transitive SDK imports resolve correctly in
-      // staged/tarball workbenches.
+      const workflowStdlibStepFilePath =
+        this.resolveWorkflowStdlibStepFilePath();
+      // Keep most SDK step sources imported from package context so transitive
+      // SDK imports resolve correctly in staged/tarball workbenches. The
+      // stdlib fetch step is copied so it can still be transformed in step mode.
       const copiedStepSourceFiles = stepFiles.filter(
-        (stepFile) => !isWorkflowSdkFile(stepFile)
+        (stepFile) =>
+          !isWorkflowSdkFile(stepFile) ||
+          this.shouldCopyDeferredSdkStepFile({
+            stepFile,
+            workflowStdlibStepFilePath,
+          })
       );
-      const manifestStepFiles = builtInStepFilePath
-        ? [
-            builtInStepFilePath,
-            ...stepFiles.filter((stepFile) => stepFile !== builtInStepFilePath),
-          ]
-        : stepFiles;
-      const copiedStepFiles = await this.copyDiscoveredStepFiles({
+      const copiedDiscoveredStepFiles = await this.copyDiscoveredStepFiles({
         stepFiles: copiedStepSourceFiles,
         stepsRouteDir,
       });
+      const responseBuiltinsStepFilePath =
+        await this.createResponseBuiltinsStepFile({
+          stepsRouteDir,
+        });
+      const copiedStepFiles = [
+        responseBuiltinsStepFilePath,
+        ...copiedDiscoveredStepFiles,
+      ];
+      const manifestStepFiles = Array.from(
+        new Set([...copiedStepSourceFiles, responseBuiltinsStepFilePath])
+      ).sort();
 
       const stepRouteFile = join(stepsRouteDir, routeFileName);
       const copiedStepImports = copiedStepFiles
@@ -1876,7 +1921,6 @@ export async function getNextBuilderDeferred() {
       const routeContents = [
         '// biome-ignore-all lint: generated file',
         '/* eslint-disable */',
-        "import 'workflow/internal/builtins';",
         copiedStepImports,
         serdeImports
           ? `// Serde files for cross-context class registration\n${serdeImports}`
