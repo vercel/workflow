@@ -6,7 +6,6 @@ import { monotonicFactory } from 'ulid';
 import { importKey } from '../encryption.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
-import { WORKFLOW_START } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
@@ -58,10 +57,6 @@ export type WorkflowMetadata = { workflowId: string };
 /**
  * Starts a workflow run.
  *
- * Can be called from runtime/non-workflow contexts (API routes, Server Actions, step functions)
- * or directly inside workflow functions. When called inside a workflow function, the call is
- * automatically routed through an internal step, so the workflow remains deterministic.
- *
  * @param workflow - The imported workflow function to start.
  * @param args - The arguments to pass to the workflow (optional).
  * @param options - The options for the workflow run (optional).
@@ -83,13 +78,6 @@ export async function start<TArgs extends unknown[], TResult>(
   argsOrOptions?: TArgs | StartOptions,
   options?: StartOptions
 ) {
-  // When called inside a workflow function, delegate to the injected start implementation
-  // which routes through an internal step for deterministic replay.
-  const workflowStartFn = (globalThis as any)[WORKFLOW_START];
-  if (typeof workflowStartFn === 'function') {
-    return workflowStartFn(workflow, argsOrOptions, options);
-  }
-
   return await waitedUntil(() => {
     // @ts-expect-error this field is added by our client transform
     const workflowName = workflow?.workflowId;

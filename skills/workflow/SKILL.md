@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow DevKit. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow devkit", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.7'
+  version: '1.4'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -57,7 +57,7 @@ import { sleep, fetch, createHook, createWebhook, getWritable } from "workflow";
 import { FatalError, RetryableError } from "workflow";
 import { getWorkflowMetadata, getStepMetadata } from "workflow";
 
-// API operations (start() also works inside workflow functions)
+// API operations
 import { start, getRun, resumeHook, resumeWebhook } from "workflow/api";
 
 // Framework integrations
@@ -101,47 +101,6 @@ export async function dataProcessingWorkflow(userId: string) {
 ```
 
 **Benefits:** Steps have automatic retry, results are persisted for replay, and no sandbox restrictions.
-
-## Starting Child Workflows
-
-`start()` from `workflow/api` works in both runtime contexts and directly inside workflow functions:
-
-```typescript
-import { start } from "workflow/api";
-
-export async function parentWorkflow(value: number) {
-  "use workflow";
-  const childRun = await start(childWorkflow, [value]);
-  // childRun is a full Run object — use .runId, .status, .returnValue, .cancel(), etc.
-  const result = await childRun.returnValue;
-}
-```
-
-Inside workflow functions, `start()` returns a full `Run` object. Each property access (`.status`, `.returnValue`) or method call (`.cancel()`) executes as a separate workflow step.
-
-### Recursive & Repeating Workflows
-
-A workflow can `start()` a new instance of itself. This avoids long-running workflows with large event logs (which get slower to replay and more expensive to store). Common patterns:
-
-- **Batch processing**: Process a page of items, then start a new run for the next page
-- **Cron-like repeating**: Complete work, `sleep()`, then start a new instance to create indefinite chains
-
-```typescript
-export async function repeatingSync() {
-  "use workflow";
-  await refreshData();
-  await sleep("1h");
-  await start(repeatingSync); // daisy-chain to next run
-}
-```
-
-Use `deploymentId: "latest"` to run the next instance on the latest deployment (picks up new code):
-
-```typescript
-await start(repeatingSync, [], { deploymentId: "latest" });
-```
-
-**Warning**: With `deploymentId: "latest"`, type safety is not guaranteed across deployments. If workflow input/output types change, the chain may receive unexpected data. Ensure workflows remain backwards-compatible when using this pattern.
 
 ## Workflow Sandbox Limitations
 
@@ -219,7 +178,7 @@ export async function myAgentWorkflow(userMessage: string) {
 
 ## Starting Workflows & Child Workflows
 
-Use `start()` to launch workflows from API routes or directly inside workflow functions.
+Use `start()` to launch workflows from API routes. **`start()` cannot be called directly in workflow context** — wrap it in a step function.
 
 ```typescript
 import { start } from "workflow/api";
@@ -234,20 +193,24 @@ export async function POST() {
 const run = await start(noArgWorkflow);
 ```
 
-**Starting child workflows from inside a workflow:**
+**Starting child workflows from inside a workflow — must use a step:**
 
 ```typescript
 import { start } from "workflow/api";
 
+// Wrap start() in a step function
+async function triggerChild(data: string) {
+  "use step";
+  const run = await start(childWorkflow, [data]);
+  return run.runId;
+}
+
 export async function parentWorkflow() {
   "use workflow";
-  const childRun = await start(childWorkflow, ["some data"]);
-  // childRun is a full Run object — .runId, .status, .returnValue, .cancel()
-  const result = await childRun.returnValue;
+  const childRunId = await triggerChild("some data");  // Fire-and-forget via step
+  await sleep("1h");
 }
 ```
-
-Inside workflow functions, `start()` automatically executes through an internal step. The returned `Run` object works like normal — each property access or method call executes as a separate step.
 
 `start()` returns immediately — it doesn't wait for the workflow to complete. Use `run.returnValue` to await completion.
 

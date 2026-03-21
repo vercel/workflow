@@ -267,15 +267,6 @@ export function RunDetailView({
     [updateSearchParams]
   );
 
-  const handleRunRefClick = useCallback(
-    (targetRunId: string) => {
-      // Navigate to the target run with a clean URL (no search params)
-      // so the sidebar panel resets
-      navigate(`/run/${encodeURIComponent(targetRunId)}`);
-    },
-    [navigate]
-  );
-
   const handleWakeUpSleep = useCallback(
     async (runId: string, correlationId: string) => {
       return wakeUpRun(env, runId, { correlationIds: [correlationId] });
@@ -757,7 +748,6 @@ export function RunDetailView({
                     spanDetailError={spanDetailError}
                     onSpanSelect={handleSpanSelect}
                     onStreamClick={handleStreamClick}
-                    onRunClick={handleRunRefClick}
                     onWakeUpSleep={handleWakeUpSleep}
                     onResolveHook={handleResolveHook}
                     onLoadEventData={handleLoadSidebarEventData}

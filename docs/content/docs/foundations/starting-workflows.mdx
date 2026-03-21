@@ -76,35 +76,6 @@ Most `Run` properties are async getters that return promises. You need to `await
 
 ## Common Patterns
 
-### Starting Workflows from Workflow Functions
-
-You can also call `start()` directly inside workflow functions to spawn child workflows:
-
-```typescript lineNumbers
-import { start } from "workflow/api";
-import { childWorkflow } from "./workflows/child";
-
-export async function parentWorkflow(inputValue: number) {
-  "use workflow";
-
-  const childRun = await start(childWorkflow, [inputValue]); // [!code highlight]
-
-  // childRun is a full Run object — use it like normal
-  const childResult = await childRun.returnValue;
-  return { childRunId: childRun.runId, childResult };
-}
-```
-
-When `start()` is called inside a workflow function, it automatically executes through an internal step to maintain deterministic replay. The returned `Run` object works just like it does outside workflows — properties like `.runId`, `.status`, `.returnValue`, and methods like `.cancel()` are all available. Each property access or method call executes as a separate step under the hood.
-
-<Callout type="info">
-Inside workflow functions, each `Run` property access (e.g., `run.status`, `run.returnValue`) triggers a workflow step. This means each access is recorded in the event log and replayed deterministically.
-</Callout>
-
-<Callout type="warn">
-`returnValue` currently polls the child workflow every 1 second and holds a serverless worker alive for the entire duration of the child workflow. This is a temporary implementation — a future release will use internal hooks so the parent workflow can suspend and be resumed by the child, avoiding the polling overhead. For now, if the child workflow is long-running, prefer a fire-and-forget pattern combined with [hooks](/docs/foundations/hooks) to receive a notification when the child completes.
-</Callout>
-
 ### Fire and Forget
 
 The most common pattern is to start a workflow and immediately return, letting it execute in the background:
@@ -237,69 +208,6 @@ export async function GET(request: Request) {
   return Response.json({ status });
 }
 ```
-
-### Recursive and Repeating Workflows
-
-A workflow can start a new instance of itself. This is useful when a single long-running workflow would accumulate too many events — large event logs become slower to replay, more expensive to store, and harder to inspect in the UI. By breaking work into smaller runs that chain together, each run stays lean.
-
-```typescript lineNumbers
-import { sleep } from "workflow";
-import { start } from "workflow/api";
-declare function fetchBatch(cursor?: string): Promise<{ items: string[]; nextCursor?: string }>; // @setup
-declare function processBatch(items: string[]): Promise<void>; // @setup
-
-export async function processQueue(cursor?: string) {
-  "use workflow";
-
-  const { items, nextCursor } = await fetchBatch(cursor);
-  await processBatch(items);
-
-  if (nextCursor) {
-    // Continue processing in a new workflow run
-    await start(processQueue, [nextCursor]); // [!code highlight]
-  }
-}
-```
-
-This pattern also enables **repeating cron-like workflows**. A workflow can complete its work, sleep, and then schedule a new instance of itself — creating an indefinite chain without any single run growing too large:
-
-```typescript lineNumbers
-import { sleep } from "workflow";
-import { start } from "workflow/api";
-declare function refreshMetrics(): Promise<void>; // @setup
-
-export async function syncDashboard() {
-  "use workflow";
-
-  await refreshMetrics();
-  await sleep("1h");
-
-  // Schedule the next run
-  await start(syncDashboard); // [!code highlight]
-}
-```
-
-#### Starting against the latest deployment
-
-For self-chaining workflows that run over long periods, you may want the next run to use the **latest deployment** so it picks up new code. Pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) to `start()`:
-
-```typescript lineNumbers
-import { sleep } from "workflow";
-import { start } from "workflow/api";
-declare function doWork(): Promise<void>; // @setup
-
-export async function repeatingJob() {
-  "use workflow";
-
-  await doWork();
-  await sleep("6h");
-
-  // Next run uses the latest deployment's code
-  await start(repeatingJob, [], { deploymentId: "latest" }); // [!code highlight]
-}
-```
-
-See the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for details on `deploymentId: "latest"` behavior, including compatibility considerations across deployments.
 
 ## Next Steps
 
