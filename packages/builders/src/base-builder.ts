@@ -19,6 +19,7 @@ import { getImportPath } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
+import { detectWorkflowPatterns } from './transform-utils.js';
 import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
 
@@ -101,6 +102,12 @@ export interface DiscoveredEntries {
  */
 export abstract class BaseBuilder {
   protected config: WorkflowConfig;
+
+  /**
+   * Tracks which external packages have already been warned about
+   * to avoid duplicate warnings across multiple discoverEntries() calls.
+   */
+  private warnedExternalPackages = new Set<string>();
 
   constructor(config: WorkflowConfig) {
     this.config = config;
@@ -243,6 +250,85 @@ export abstract class BaseBuilder {
   private discoveredEntries: WeakMap<string[], DiscoveredEntries> =
     new WeakMap();
 
+  /**
+   * Pseudo-packages that should not be checked for workflow patterns.
+   */
+  private static readonly PSEUDO_PACKAGES = new Set([
+    'server-only',
+    'client-only',
+  ]);
+
+  /**
+   * Checks each package in externalPackages for workflow patterns and emits
+   * warnings if any contain "use step", "use workflow" directives, or
+   * serialization classes. These patterns will not be transformed by the
+   * workflow compiler when the package is externalized.
+   */
+  private async warnAboutExternalWorkflowPackages(): Promise<void> {
+    const externalPackages = this.config.externalPackages;
+    if (!externalPackages?.length) return;
+
+    for (const pkg of externalPackages) {
+      if (BaseBuilder.PSEUDO_PACKAGES.has(pkg)) continue;
+      if (this.warnedExternalPackages.has(pkg)) continue;
+      this.warnedExternalPackages.add(pkg);
+
+      try {
+        // Check package.json dependencies for @workflow/serde (fast path)
+        let hasWorkflowSerdeDep = false;
+        try {
+          const pkgJsonPath = require.resolve(`${pkg}/package.json`, {
+            paths: [this.config.workingDir],
+          });
+          const pkgJsonSource = await readFile(pkgJsonPath, 'utf-8');
+          const pkgJson = JSON.parse(pkgJsonSource);
+          const deps = {
+            ...pkgJson.dependencies,
+            ...pkgJson.peerDependencies,
+          };
+          hasWorkflowSerdeDep = '@workflow/serde' in deps;
+        } catch {
+          // package.json not resolvable - continue to source check
+        }
+
+        // Check source patterns (thorough path)
+        let hasUseStep = false;
+        let hasUseWorkflow = false;
+        let hasSerde = hasWorkflowSerdeDep;
+        try {
+          const entryPath = require.resolve(pkg, {
+            paths: [this.config.workingDir],
+          });
+          const source = await readFile(entryPath, 'utf-8');
+          const patterns = detectWorkflowPatterns(source);
+          hasUseStep = patterns.hasUseStep;
+          hasUseWorkflow = patterns.hasUseWorkflow;
+          if (!hasSerde) {
+            hasSerde = patterns.hasSerde;
+          }
+        } catch {
+          // Entry file not resolvable or not readable - use what we have
+        }
+
+        if (!hasUseStep && !hasUseWorkflow && !hasSerde) continue;
+
+        // Build a specific description of what was found
+        const issues: string[] = [];
+        if (hasUseWorkflow) issues.push('"use workflow" functions');
+        if (hasUseStep) issues.push('"use step" functions');
+        if (hasSerde) issues.push('serialization classes');
+
+        console.warn(
+          `\n${chalk.yellow('⚠')} Warning: ${chalk.bold(`"${pkg}"`)} is listed in ${chalk.bold('serverExternalPackages')} but contains workflow code (${issues.join(', ')}).` +
+            `\n  This code will ${chalk.bold('not')} be transformed by the workflow compiler, which will cause runtime failures.` +
+            `\n  Remove ${chalk.bold(`"${pkg}"`)} from ${chalk.bold('serverExternalPackages')} to fix this.\n`
+        );
+      } catch {
+        // Best-effort: if anything goes wrong, skip this package silently
+      }
+    }
+  }
+
   protected async discoverEntries(
     inputs: string[],
     outdir: string,
@@ -306,6 +392,9 @@ export abstract class BaseBuilder {
       `Discovering workflow directives`,
       `${Date.now() - discoverStart}ms`
     );
+
+    // Warn about external packages that contain workflow code
+    await this.warnAboutExternalWorkflowPackages();
 
     this.discoveredEntries.set(inputs, state);
     return state;
