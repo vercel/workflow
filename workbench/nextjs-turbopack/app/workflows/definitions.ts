@@ -31,8 +31,6 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   ],
   hookCleanupTestWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
   closureVariableWorkflow: [7],
-  startFromWorkflow: [42],
-  fibonacciWorkflow: [3],
   // 100_durable_agent_e2e.ts
   agentBasicE2e: ['hello world'],
   agentToolCallE2e: [3, 7],

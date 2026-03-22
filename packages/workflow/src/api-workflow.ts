@@ -23,11 +23,4 @@ export const getHookByToken = () => workflowStub('getHookByToken');
 export const resumeHook = () => workflowStub('resumeHook');
 export const resumeWebhook = () => workflowStub('resumeWebhook');
 export const runStep = () => workflowStub('runStep');
-export const start = (...args: unknown[]) => {
-  const WORKFLOW_START = Symbol.for('WORKFLOW_START');
-  const workflowStartFn = (globalThis as any)[WORKFLOW_START];
-  if (typeof workflowStartFn === 'function') {
-    return workflowStartFn(...args);
-  }
-  workflowStub('start');
-};
+export const start = () => workflowStub('start');

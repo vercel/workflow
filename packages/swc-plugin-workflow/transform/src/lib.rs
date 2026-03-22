@@ -1574,6 +1574,13 @@ impl StepTransform {
         is_workflow: bool,
     ) -> String {
         match fn_name {
+            Some(name) if name.starts_with("__builtin") => {
+                // Special case for __builtin functions: use only the function name.
+                // These are internal SDK functions that are referenced by name in the
+                // workflow VM runtime (packages/core/src/workflow.ts), so they need
+                // stable, version-independent IDs.
+                name.to_string()
+            }
             Some(name) => {
                 let prefix = if is_workflow { "workflow" } else { "step" };
                 naming::format_name(prefix, &self.get_module_path(), name)
