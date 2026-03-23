@@ -139,9 +139,12 @@ vi.mock('@workflow/utils/get-port', () => ({
   getPort: vi.fn().mockResolvedValue(3000),
 }));
 
-// Import the module AFTER all mocks are set up - this triggers createQueueHandler
-// which populates capturedHandlerRef
-import './step-handler.js';
+// Import the module AFTER all mocks are set up.
+// stepEntrypoint lazily initializes the handler on first call, which populates capturedHandlerRef.
+import { stepEntrypoint } from './step-handler.js';
+
+// Trigger lazy initialization so capturedHandlerRef is populated for tests
+stepEntrypoint(new Request('http://localhost'));
 import { getStepFunction } from '../private.js';
 import {
   getErrorName,
