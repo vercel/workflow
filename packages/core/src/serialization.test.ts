@@ -1996,6 +1996,17 @@ describe('step function serialization', () => {
     expect(retrieved).toBeUndefined();
   });
 
+  it('should lookup builtin response step by bare ID alias', () => {
+    const registeredStepId =
+      'step//workflow/internal/builtins@4.2.0-beta.71//__builtin_response_text';
+    const stepFn = async () => 'ok';
+
+    registerStepFunction(registeredStepId, stepFn);
+
+    const retrieved = getStepFunction('__builtin_response_text');
+    expect(retrieved).toBe(stepFn);
+  });
+
   it('should deserialize step function name through reviver', async () => {
     const stepName = 'step//test//testStep';
     const stepFn = async () => 42;

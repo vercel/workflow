@@ -116,6 +116,13 @@ export default class Inspect extends BaseCommand {
       helpGroup: 'Filtering',
       helpLabel: '-n, --workflowName',
     }),
+    status: Flags.string({
+      description: 'filter runs by status (only for runs)',
+      required: false,
+      options: ['running', 'completed', 'failed', 'cancelled', 'pending'],
+      helpGroup: 'Filtering',
+      helpLabel: '--status',
+    }),
     withData: Flags.boolean({
       description: 'include full input/output data in list views',
       required: false,
@@ -259,6 +266,7 @@ function toInspectOptions(flags: any): InspectCLIOptions {
     sort: flags.sort as 'asc' | 'desc' | undefined,
     limit: flags.limit,
     workflowName: flags.workflowName,
+    status: flags.status,
     withData: flags.withData,
     decrypt: flags.decrypt,
     backend: flags.backend,

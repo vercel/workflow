@@ -2,6 +2,7 @@
 
 import type { Event } from '@workflow/world';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isExpiredMarker } from '../../lib/hydration';
 import { ErrorCard } from '../ui/error-card';
 import {
   ErrorStackBlock,
@@ -198,6 +199,24 @@ function EventItem({
 }
 
 /**
+ * Check if an eventData object has only expired marker values in its serialized
+ * sub-fields (result, input, output, metadata, payload). Non-serialized fields
+ * like `resumeAt` or `reason` are ignored.
+ */
+function hasOnlyExpiredFields(data: unknown): boolean {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return false;
+  }
+  const record = data as Record<string, unknown>;
+  const serializedKeys = ['result', 'input', 'output', 'metadata', 'payload'];
+  const presentKeys = serializedKeys.filter((k) => k in record);
+  return (
+    presentKeys.length > 0 &&
+    presentKeys.every((k) => isExpiredMarker(record[k]))
+  );
+}
+
+/**
  * Renders event data, using ErrorStackBlock for error events that contain
  * a structured error with a stack trace, and CopyableDataBlock otherwise.
  */
@@ -208,6 +227,24 @@ function EventDataBlock({
   eventType: string;
   data: unknown;
 }) {
+  // Expired data — show a simple message instead of the raw stub.
+  // Check both the top-level eventData and nested sub-fields (result, input, etc.)
+  // since the server stubs each ref field independently.
+  if (isExpiredMarker(data) || hasOnlyExpiredFields(data)) {
+    return (
+      <div
+        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'var(--ds-gray-100)',
+          color: 'var(--ds-gray-700)',
+        }}
+      >
+        <span className="font-medium">Data expired</span>
+      </div>
+    );
+  }
+
   // For error events (step_failed, step_retrying), the eventData has the shape
   // { error: StructuredError, stack?: string, ... }. Check both the top-level
   // value and the nested `error` field for a stack trace.
