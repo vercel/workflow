@@ -347,17 +347,6 @@ export async function initDataDir(dataDir: string): Promise<void> {
     return;
   }
 
-  // Don't trigger upgrade for prerelease versions with a different base version
-  // (e.g. running 5.x.x-beta.x against a 4.x.x data dir should not upgrade)
-  if (
-    currentVersion.prerelease &&
-    (currentVersion.major !== oldVersion.major ||
-      currentVersion.minor !== oldVersion.minor ||
-      currentVersion.patch !== oldVersion.patch)
-  ) {
-    return;
-  }
-
   // Attempt upgrade
   try {
     upgradeVersion(oldVersion, currentVersion);

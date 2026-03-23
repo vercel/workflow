@@ -400,17 +400,9 @@ describe('initDataDir', () => {
     const dataDir = path.join(testBaseDir, 'old-data');
     mkdirSync(dataDir, { recursive: true });
 
-    const packageInfo = await getPackageInfo();
-    const current = parseVersion(packageInfo.version);
-    // Use a version that will trigger upgrade:
-    // - same base + different prerelease when current is prerelease (bypasses guard)
-    // - different older version when current is stable (no guard for stable)
-    const storedVersion = current.prerelease
-      ? `${current.major}.${current.minor}.${current.patch}-old.0`
-      : '3.0.0';
-
+    // Write an older version
     const versionPath = path.join(dataDir, 'version.txt');
-    writeFileSync(versionPath, `@workflow/world-local@${storedVersion}`);
+    writeFileSync(versionPath, '@workflow/world-local@3.0.0');
 
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -418,11 +410,12 @@ describe('initDataDir', () => {
 
     // Should log upgrade message
     expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining(`Upgrading from version ${storedVersion}`)
+      expect.stringContaining('Upgrading from version 3.0.0')
     );
 
     // File should be updated to current package version
     const content = readFileSync(versionPath, 'utf-8');
+    const packageInfo = await getPackageInfo();
     expect(content).toBe(`${packageInfo.name}@${packageInfo.version}`);
   });
 
@@ -430,17 +423,9 @@ describe('initDataDir', () => {
     const dataDir = path.join(testBaseDir, 'newer-data');
     mkdirSync(dataDir, { recursive: true });
 
-    const packageInfo = await getPackageInfo();
-    const current = parseVersion(packageInfo.version);
-    // Use a "newer" version that will still trigger upgrade:
-    // - same base + later prerelease when current is prerelease (bypasses guard)
-    // - far-future version when current is stable (no guard for stable)
-    const storedVersion = current.prerelease
-      ? `${current.major}.${current.minor}.${current.patch}-zzz.99`
-      : '99.0.0';
-
+    // Write a newer version (simulating downgrade scenario)
     const versionPath = path.join(dataDir, 'version.txt');
-    writeFileSync(versionPath, `@workflow/world-local@${storedVersion}`);
+    writeFileSync(versionPath, '@workflow/world-local@5.0.0');
 
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
@@ -449,35 +434,8 @@ describe('initDataDir', () => {
 
     // Should log the upgrade message (even for "downgrades")
     expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining(`Upgrading from version ${storedVersion}`)
+      expect.stringContaining('Upgrading from version 5.0.0')
     );
-  });
-
-  it('should skip upgrade when current version is prerelease with different base', async () => {
-    const packageInfo = await getPackageInfo();
-    const current = parseVersion(packageInfo.version);
-
-    // This test only applies when the current package version is a prerelease
-    if (!current.prerelease) return;
-
-    const dataDir = path.join(testBaseDir, 'prerelease-guard-data');
-    mkdirSync(dataDir, { recursive: true });
-
-    // Store a version with a different base version
-    const storedVersion = `${current.major + 1}.0.0`;
-    const versionPath = path.join(dataDir, 'version.txt');
-    writeFileSync(versionPath, `@workflow/world-local@${storedVersion}`);
-
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-    await initDataDir(dataDir);
-
-    // Should NOT log upgrade message — prerelease guard skips it
-    expect(consoleSpy).not.toHaveBeenCalled();
-
-    // Version file should remain unchanged
-    const content = readFileSync(versionPath, 'utf-8');
-    expect(content).toBe(`@workflow/world-local@${storedVersion}`);
   });
 });
 

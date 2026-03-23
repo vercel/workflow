@@ -172,10 +172,12 @@ export async function checkForUpdate(
     };
   }
 
-  // Don't suggest updating to prerelease versions (e.g. 5.x.x-beta.x)
-  const isPrerelease = latestVersion.includes('-');
+  // Don't suggest prerelease updates to users on stable versions
+  const currentIsStable = !currentVersion.includes('-');
+  const latestIsPrerelease = latestVersion.includes('-');
   const needsUpdate =
-    !isPrerelease && compareVersions(latestVersion, currentVersion);
+    !(currentIsStable && latestIsPrerelease) &&
+    compareVersions(latestVersion, currentVersion);
 
   return {
     currentVersion,
@@ -267,13 +269,14 @@ export async function checkForUpdateCached(
     logger.debug('Using cached version check result');
     const cached = await readCache(cacheFile);
     if (cached) {
-      // Don't suggest updating to prerelease versions (e.g. 5.x.x-beta.x)
-      const isPrerelease = cached.latestVersion.includes('-');
+      // Don't suggest prerelease updates to users on stable versions
+      const currentIsStable = !cached.currentVersion.includes('-');
+      const latestIsPrerelease = cached.latestVersion.includes('-');
       return {
         currentVersion: cached.currentVersion,
         latestVersion: cached.latestVersion,
         needsUpdate:
-          !isPrerelease &&
+          !(currentIsStable && latestIsPrerelease) &&
           compareVersions(cached.latestVersion, cached.currentVersion),
       };
     }
