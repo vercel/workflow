@@ -370,6 +370,15 @@ export interface DurableAgentOptions<TTools extends ToolSet = ToolSet>
   experimental_telemetry?: TelemetrySettings;
 
   /**
+   * Default context that is passed into tool execution for every stream call on this agent.
+   *
+   * Per-stream `experimental_context` values passed to `stream()` override this default.
+   * Experimental (can break in patch releases).
+   * @default undefined
+   */
+  experimental_context?: unknown;
+
+  /**
    * Default callback function called before each step in the agent loop.
    * Use this to modify settings, manage context, or inject messages dynamically
    * for every stream call on this agent instance.
@@ -775,6 +784,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private generationSettings: GenerationSettings;
   private toolChoice?: ToolChoice<TBaseTools>;
   private telemetry?: TelemetrySettings;
+  private experimentalContext: unknown;
   private prepareStep?: PrepareStepCallback<TBaseTools>;
   private constructorOnStepFinish?: StreamTextOnStepFinishCallback<ToolSet>;
   private constructorOnFinish?: StreamTextOnFinishCallback<ToolSet>;
@@ -786,6 +796,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     this.instructions = options.instructions ?? options.system;
     this.toolChoice = options.toolChoice;
     this.telemetry = options.experimental_telemetry;
+    this.experimentalContext = options.experimental_context;
     this.prepareStep = options.prepareStep;
     this.constructorOnStepFinish = options.onStepFinish;
     this.constructorOnFinish = options.onFinish;
@@ -945,7 +956,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         : this.tools;
 
     // Initialize context
-    let experimentalContext = options.experimental_context;
+    let experimentalContext =
+      options.experimental_context ?? this.experimentalContext;
 
     const steps: StepResult<TTools>[] = [];
 
