@@ -91,6 +91,7 @@ export async function getDecoratorOptionsForDirectoryWithConfigPath(
  */
 export function createBaseBuilderConfig(options: {
   workingDir: string;
+  projectRoot?: string;
   dirs?: string[];
   watch?: boolean;
   externalPackages?: string[];
@@ -98,6 +99,7 @@ export function createBaseBuilderConfig(options: {
 }): Omit<WorkflowConfig, 'buildTarget'> {
   return {
     dirs: options.dirs ?? ['workflows'],
+    projectRoot: options.projectRoot,
     workingDir: options.workingDir,
     watch: options.watch,
     stepsBundlePath: '', // Not used by base builder methods

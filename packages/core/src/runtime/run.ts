@@ -33,6 +33,7 @@ export interface WorkflowReadableStreamOptions {
   namespace?: string;
   /**
    * The index number of the starting chunk to begin reading the stream from.
+   * Negative values start from the end (e.g. -3 reads the last 3 chunks).
    */
   startIndex?: number;
   /**

@@ -501,12 +501,27 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       buffer = [];
     };
 
+    /** Resolvers/rejectors waiting for the current scheduled flush */
+    let flushWaiters: Array<{
+      resolve: () => void;
+      reject: (err: unknown) => void;
+    }> = [];
+
     const scheduleFlush = (): void => {
       if (flushTimer) return; // Already scheduled
 
       flushTimer = setTimeout(() => {
         flushTimer = null;
-        flushPromise = flush();
+        const currentWaiters = flushWaiters;
+        flushWaiters = [];
+        flushPromise = flush().then(
+          () => {
+            for (const w of currentWaiters) w.resolve();
+          },
+          (err) => {
+            for (const w of currentWaiters) w.reject(err);
+          }
+        );
       }, STREAM_FLUSH_INTERVAL_MS);
     };
 
@@ -520,6 +535,15 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
         buffer.push(chunk);
         scheduleFlush();
+
+        // Wait for the scheduled flush to complete so that callers
+        // (like flushablePipe) know data has reached the server
+        // before decrementing pendingOps. Without this, pendingOps
+        // reaches 0 when the buffered write returns (instant), but
+        // the 10ms flush timer hasn't fired yet.
+        await new Promise<void>((resolve, reject) => {
+          flushWaiters.push({ resolve, reject });
+        });
       },
       async close() {
         // Wait for any in-progress flush to complete
@@ -533,7 +557,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
 
         await world.closeStream(name, runId);
       },
-      abort() {
+      abort(reason) {
         // Clean up timer to prevent leaks
         if (flushTimer) {
           clearTimeout(flushTimer);
@@ -541,6 +565,14 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         }
         // Discard buffered chunks - they won't be written
         buffer = [];
+        // Reject any pending flushWaiters so the write() promises settle
+        // and don't leak. Without this, write() hangs forever on an
+        // unsettled promise because the cleared timer will never fire.
+        const waiters = flushWaiters;
+        flushWaiters = [];
+        const abortError =
+          reason ?? new Error("Stream aborted");
+        for (const w of waiters) w.reject(abortError);
       },
     });
   }
