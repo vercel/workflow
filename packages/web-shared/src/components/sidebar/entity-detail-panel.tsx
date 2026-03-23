@@ -56,6 +56,7 @@ export interface SelectedSpanInfo {
 export function EntityDetailPanel({
   run,
   onStreamClick,
+  onRunClick,
   spanDetailData,
   spanDetailError,
   spanDetailLoading,
@@ -71,6 +72,8 @@ export function EntityDetailPanel({
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Callback when a run reference is clicked */
+  onRunClick?: (runId: string) => void;
   /** Pre-fetched span detail data for the selected span. */
   spanDetailData: WorkflowRun | Step | Hook | Event | null;
   /** Error from external span detail fetch. */
@@ -481,6 +484,7 @@ export function EntityDetailPanel({
               isLoading={loading}
               error={error ?? undefined}
               onStreamClick={onStreamClick}
+              onRunClick={onRunClick}
               resource={resource}
             />
           </section>
