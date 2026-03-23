@@ -12,7 +12,7 @@ related:
 
 `WorkflowWorldError` is the base error class for failures originating from a workflow world (storage backend). World implementations (local, Postgres, Vercel) throw subclasses of this error when storage operations fail.
 
-You can use this class to catch any world-related error regardless of the specific backend or error type.
+You can use `instanceof WorkflowWorldError` to catch any world-related error regardless of the specific type. Note that the static `.is()` method only matches errors constructed directly as `WorkflowWorldError` — use the subclass-specific `.is()` methods (e.g. `EntityConflictError.is()`) to match specific error types.
 
 <Callout>
 Most world errors are handled automatically by the Workflow runtime. You will typically only encounter these errors when interacting with world storage APIs directly or when there are infrastructure-level issues.
@@ -27,7 +27,7 @@ declare const event: any; // @setup
 try {
   await world.events.create(runId, event);
 } catch (error) {
-  if (WorkflowWorldError.is(error)) { // [!code highlight]
+  if (error instanceof WorkflowWorldError) { // [!code highlight]
     console.error("Storage backend error:", error.message);
   }
 }
@@ -40,6 +40,14 @@ try {
 <TSDoc
 definition={`
 interface WorkflowWorldError {
+  /** HTTP status code from the world backend, if available. */
+  status?: number;
+  /** Machine-readable error code, if available. */
+  code?: string;
+  /** The URL that was requested, if available. */
+  url?: string;
+  /** Retry-After value in seconds, present on 429 and 425 responses. */
+  retryAfter?: number;
   /** The error message. */
   message: string;
 }
@@ -50,14 +58,14 @@ export default WorkflowWorldError;`}
 
 #### `WorkflowWorldError.is(value)`
 
-Type-safe check for `WorkflowWorldError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+Type-safe check that matches only errors constructed directly as `WorkflowWorldError`. Does not match subclasses like `EntityConflictError` — use `instanceof` to catch all world errors, or the subclass-specific `.is()` methods.
 
 ```typescript
 import { WorkflowWorldError } from "workflow/errors"
 declare const error: unknown; // @setup
 
 if (WorkflowWorldError.is(error)) {
-  // error is typed as WorkflowWorldError
+  // error is typed as WorkflowWorldError (not subclasses)
 }
 ```
 

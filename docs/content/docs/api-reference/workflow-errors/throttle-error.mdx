@@ -38,8 +38,8 @@ try {
 <TSDoc
 definition={`
 interface ThrottleError {
-  /** The number of seconds to wait before retrying. */
-  retryAfter: number;
+  /** The number of seconds to wait before retrying. Present when the server sends a Retry-After header. */
+  retryAfter?: number;
   /** The error message. */
   message: string;
 }
