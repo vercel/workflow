@@ -170,9 +170,9 @@ export default class Cancel extends BaseCommand {
 }
 
 async function promptConfirm(message: string): Promise<boolean> {
-  // Non-TTY: skip confirmation
+  // Non-TTY: abort since user cannot confirm interactively (use -y/--confirm to skip prompt)
   if (!process.stdin.isTTY) {
-    return true;
+    return false;
   }
 
   const rl = readline.createInterface({
