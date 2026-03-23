@@ -30,8 +30,11 @@ import { version } from './version.js';
 
 /**
  * Lightweight debug logger for HTTP requests. Activated when the DEBUG
- * env var includes "workflow:" (matching the standard `debug` module
- * convention used by @workflow/core).
+ * env var contains "workflow:" or is "*".
+ *
+ * Note: this does not implement full `debug` module semantics (e.g.
+ * comma-separated globs, negation with `-`). It is a simple check
+ * sufficient for enabling HTTP-level debug output.
  */
 const HTTP_DEBUG_ENABLED =
   typeof process !== 'undefined' &&
