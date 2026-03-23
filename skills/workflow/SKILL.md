@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow DevKit. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow devkit", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.3'
+  version: '1.4'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -333,6 +333,106 @@ async function streamData(chunk: string) {
 }
 ```
 
+### Namespaced Streams
+
+Use `getWritable({ namespace: 'name' })` to create multiple independent streams for different types of data. This is useful for separating logs from primary output, different log levels, agent outputs, metrics, or any distinct data channels. Long-running workflows benefit from namespaced streams because you can replay only the important events (e.g., final results) while keeping verbose logs in a separate stream.
+
+**Example: Log levels and agent output separation:**
+```typescript
+import { getWritable } from "workflow";
+
+type LogEntry = { level: "debug" | "info" | "warn" | "error"; message: string; timestamp: number };
+type AgentOutput = { type: "thought" | "action" | "result"; content: string };
+
+async function logDebug(message: string) {
+  "use step";
+  const writer = getWritable<LogEntry>({ namespace: "logs:debug" }).getWriter();
+  try {
+    await writer.write({ level: "debug", message, timestamp: Date.now() });
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function logInfo(message: string) {
+  "use step";
+  const writer = getWritable<LogEntry>({ namespace: "logs:info" }).getWriter();
+  try {
+    await writer.write({ level: "info", message, timestamp: Date.now() });
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function emitAgentThought(thought: string) {
+  "use step";
+  const writer = getWritable<AgentOutput>({ namespace: "agent:thoughts" }).getWriter();
+  try {
+    await writer.write({ type: "thought", content: thought });
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function emitAgentResult(result: string) {
+  "use step";
+  // Important results go to the default stream for easy replay
+  const writer = getWritable<AgentOutput>().getWriter();
+  try {
+    await writer.write({ type: "result", content: result });
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+export async function agentWorkflow(task: string) {
+  "use workflow";
+  
+  await logInfo(`Starting task: ${task}`);
+  await logDebug("Initializing agent context");
+  await emitAgentThought("Analyzing the task requirements...");
+  
+  // ... agent processing ...
+  
+  await emitAgentResult("Task completed successfully");
+  await logInfo("Workflow finished");
+}
+```
+
+**Consuming namespaced streams:**
+```typescript
+import { start, getRun } from "workflow/api";
+import { agentWorkflow } from "./workflows/agent";
+
+export async function POST(request: Request) {
+  const run = await start(agentWorkflow, ["process data"]);
+
+  // Access specific streams by namespace
+  const results = run.getReadable({ namespace: undefined }); // Default stream (important results)
+  const infoLogs = run.getReadable({ namespace: "logs:info" });
+  const debugLogs = run.getReadable({ namespace: "logs:debug" });
+  const thoughts = run.getReadable({ namespace: "agent:thoughts" });
+
+  // Return only important results for most clients
+  return new Response(results, { headers: { "Content-Type": "application/json" } });
+}
+
+// Resume from a specific point (useful for long sessions)
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const runId = searchParams.get("runId")!;
+  const startIndex = parseInt(searchParams.get("startIndex") || "0", 10);
+  
+  const run = getRun(runId);
+  // Resume only the important stream, skip verbose debug logs
+  const stream = run.getReadable({ startIndex });
+  
+  return new Response(stream);
+}
+```
+
+**Pro tip:** For very long-running sessions (50+ minutes), namespaced streams help manage replay performance. Put verbose/debug output in separate namespaces so you can replay just the important events quickly.
+
 ## Debugging
 
 ```bash
@@ -367,3 +467,89 @@ npx workflow cancel <run_id> --backend vercel --project <project-name> --team <t
 - Use `--web` to open the Vercel Observability dashboard in your browser
 - Use `--help` on any command for full usage details
 - Only import workflow APIs you actually use. Unused imports can cause 500 errors.
+
+## Testing Workflows
+
+Workflow DevKit provides a Vitest plugin for testing workflows in-process — no running server required.
+
+**Unit testing steps:** Steps are just functions; without the compiler, `"use step"` is a no-op. Test them directly:
+
+```typescript
+import { describe, it, expect } from "vitest";
+import { createUser } from "./user-signup";
+
+describe("createUser step", () => {
+  it("should create a user", async () => {
+    const user = await createUser("test@example.com");
+    expect(user.email).toBe("test@example.com");
+  });
+});
+```
+
+**Integration testing:** Use `@workflow/vitest` for workflows using `sleep()`, hooks, webhooks, or retries:
+
+```typescript
+// vitest.integration.config.ts
+import { defineConfig } from "vitest/config";
+import { workflow } from "@workflow/vitest";
+
+export default defineConfig({
+  plugins: [workflow()],
+  test: {
+    include: ["**/*.integration.test.ts"],
+    testTimeout: 60_000,
+  },
+});
+```
+
+```typescript
+// approval.integration.test.ts
+import { describe, it, expect } from "vitest";
+import { start, getRun, resumeHook } from "workflow/api";
+import { waitForHook, waitForSleep } from "@workflow/vitest";
+import { approvalWorkflow } from "./approval";
+
+describe("approvalWorkflow", () => {
+  it("should publish when approved", async () => {
+    const run = await start(approvalWorkflow, ["doc-123"]);
+
+    // Wait for the hook, then resume it
+    await waitForHook(run, { token: "approval:doc-123" });
+    await resumeHook("approval:doc-123", { approved: true, reviewer: "alice" });
+
+    // Wait for sleep, then wake it up
+    const sleepId = await waitForSleep(run);
+    await getRun(run.runId).wakeUp({ correlationIds: [sleepId] });
+
+    const result = await run.returnValue;
+    expect(result).toEqual({ status: "published", reviewer: "alice" });
+  });
+});
+```
+
+**Testing webhooks:** Use `resumeWebhook()` with a `Request` object — no HTTP server needed:
+
+```typescript
+import { start, resumeWebhook } from "workflow/api";
+import { waitForHook } from "@workflow/vitest";
+
+const run = await start(ingestWorkflow, ["ep-1"]);
+const hook = await waitForHook(run);  // Discovers the random webhook token
+await resumeWebhook(hook.token, new Request("https://example.com/webhook", {
+  method: "POST",
+  body: JSON.stringify({ event: "order.created" }),
+}));
+```
+
+**Key APIs:**
+- `start()` — trigger a workflow
+- `run.returnValue` — await workflow completion
+- `waitForHook(run, { token? })` / `waitForSleep(run)` — wait for workflow to reach a pause point
+- `resumeHook(token, data)` / `resumeWebhook(token, request)` — resume paused workflows
+- `getRun(runId).wakeUp({ correlationIds })` — skip `sleep()` calls
+
+**Best practices:**
+- Keep unit tests (no plugin) and integration tests (`workflow()` plugin) in separate configs
+- Use deterministic hook tokens based on test data for easier resumption
+- Set generous `testTimeout` — workflows may run longer than typical unit tests
+- `vi.mock()` does **not** work in integration tests — step dependencies are bundled by esbuild

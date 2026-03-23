@@ -87,6 +87,22 @@ export async function GET(
 
 This allows clients to reconnect and continue receiving data from where they left off, rather than restarting from the beginning.
 
+`startIndex` also supports **negative values** to read relative to the end of the stream. For example, `startIndex: -5` starts 5 chunks before the current end. This is useful when you want to show the most recent output without reading the entire stream history.
+
+On an active (not-yet-closed) stream, the negative index resolves relative to the chunk count at connection time; any chunks written afterward are still delivered normally.
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript
+// Read only the last 10 chunks
+const stream = run.getReadable({ startIndex: -10 });
+```
+
+If the absolute value exceeds the total number of chunks, reading starts from the beginning (the value is clamped to 0).
+
+<Callout type="warn">
+Because streams are live and continue receiving chunks, negative `startIndex` values resolve to different absolute positions on each call. Accurate pagination over a live stream requires cursor-based access, which is not yet supported. Keep this in mind when building clients that paginate over stream data.
+</Callout>
+
 ## Streams as Data Types
 
 [`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow DevKit makes serializable. These are not custom types - they follow the web standard - but Workflow DevKit adds the ability to pass them between functions while maintaining their streaming capabilities.

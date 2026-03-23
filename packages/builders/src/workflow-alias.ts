@@ -1,10 +1,34 @@
 import { access, realpath } from 'node:fs/promises';
-import { basename, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 const workflowAliasResolutionCache = new Map<
   string,
   Promise<string | undefined>
 >();
+
+const WORKFLOW_ALIAS_ROOTS = [
+  'src/workflows',
+  'workflows',
+  'src/app',
+  'app',
+  'src/pages',
+  'pages',
+] as const;
+
+function getAliasRelativePathCandidates(
+  normalizedAbsolutePath: string
+): string[] {
+  const candidates = new Set<string>();
+  for (const aliasRoot of WORKFLOW_ALIAS_ROOTS) {
+    const marker = `/${aliasRoot}/`;
+    const markerIndex = normalizedAbsolutePath.lastIndexOf(marker);
+    if (markerIndex === -1) {
+      continue;
+    }
+    candidates.add(normalizedAbsolutePath.slice(markerIndex + 1));
+  }
+  return Array.from(candidates);
+}
 
 export function clearWorkflowAliasResolutionCache(): void {
   workflowAliasResolutionCache.clear();
@@ -15,10 +39,6 @@ export async function resolveWorkflowAliasRelativePath(
   workingDir: string
 ): Promise<string | undefined> {
   const normalizedAbsolutePath = absoluteFilePath.replace(/\\/g, '/');
-  // Only workflow source files can map to app-level `workflows/*` aliases.
-  if (!normalizedAbsolutePath.includes('/workflows/')) {
-    return undefined;
-  }
 
   const cacheKey = `${workingDir}::${normalizedAbsolutePath}`;
   const cached = workflowAliasResolutionCache.get(cacheKey);
@@ -27,36 +47,40 @@ export async function resolveWorkflowAliasRelativePath(
   }
 
   const resolutionPromise = (async () => {
-    const fileName = basename(absoluteFilePath);
-    const aliasDirs = ['workflows', 'src/workflows'];
     const resolvedFilePath = await realpath(absoluteFilePath).catch(
       () => undefined
     );
     if (!resolvedFilePath) {
       return undefined;
     }
-
-    const aliases = await Promise.all(
-      aliasDirs.map(async (aliasDir) => {
-        const candidatePath = resolve(workingDir, aliasDir, fileName);
-        try {
-          await access(candidatePath);
-        } catch {
-          return undefined;
-        }
-        const resolvedCandidatePath = await realpath(candidatePath).catch(
-          () => undefined
-        );
-        if (!resolvedCandidatePath) {
-          return undefined;
-        }
-        return resolvedCandidatePath === resolvedFilePath
-          ? `${aliasDir}/${fileName}`
-          : undefined;
-      })
+    const normalizedResolvedFilePath = resolvedFilePath.replace(/\\/g, '/');
+    const aliasCandidates = getAliasRelativePathCandidates(
+      normalizedAbsolutePath
     );
+    if (aliasCandidates.length === 0) {
+      return undefined;
+    }
 
-    return aliases.find((aliasPath): aliasPath is string => Boolean(aliasPath));
+    for (const aliasRelativePath of aliasCandidates) {
+      const candidatePath = resolve(workingDir, aliasRelativePath);
+      try {
+        await access(candidatePath);
+      } catch {
+        continue;
+      }
+      const resolvedCandidatePath = await realpath(candidatePath).catch(
+        () => undefined
+      );
+      if (!resolvedCandidatePath) {
+        continue;
+      }
+      if (
+        resolvedCandidatePath.replace(/\\/g, '/') === normalizedResolvedFilePath
+      ) {
+        return aliasRelativePath;
+      }
+    }
+    return undefined;
   })();
 
   workflowAliasResolutionCache.set(cacheKey, resolutionPromise);
