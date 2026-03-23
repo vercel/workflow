@@ -94,7 +94,7 @@ export class WorkflowWorldError extends WorkflowError {
   status?: number;
   code?: string;
   url?: string;
-  /** Retry-After value in seconds, present on 429 responses */
+  /** Retry-After value in seconds, present on 429 and 425 responses */
   retryAfter?: number;
 
   constructor(
@@ -265,10 +265,9 @@ export class HookConflictError extends WorkflowError {
   token: string;
 
   constructor(token: string) {
-    super(
-      `Hook token "${token}" is already in use by another workflow`,
-      { slug: ERROR_SLUGS.HOOK_CONFLICT }
-    );
+    super(`Hook token "${token}" is already in use by another workflow`, {
+      slug: ERROR_SLUGS.HOOK_CONFLICT,
+    });
     this.name = 'HookConflictError';
     this.token = token;
   }
@@ -365,15 +364,12 @@ export class RunExpiredError extends WorkflowWorldError {
  * The workflow runtime handles this error automatically. Users interacting
  * with world storage backends directly may encounter it.
  *
- * @property retryAfterDate - The `Date` after which the operation can be retried.
+ * @property retryAfter - Delay in seconds before the operation can be retried.
  */
 export class TooEarlyError extends WorkflowWorldError {
-  retryAfterDate?: Date;
-
-  constructor(message: string, options?: { retryAfter?: Date }) {
-    super(message);
+  constructor(message: string, options?: { retryAfter?: number }) {
+    super(message, { retryAfter: options?.retryAfter });
     this.name = 'TooEarlyError';
-    this.retryAfterDate = options?.retryAfter;
   }
 
   static is(value: unknown): value is TooEarlyError {

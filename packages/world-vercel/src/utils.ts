@@ -378,12 +378,7 @@ export async function makeRequest<T>({
           throwWithTrace(new RunExpiredError(defaultMessage));
         }
         if (response.status === 425) {
-          const retryAfterDate = retryAfter
-            ? new Date(Date.now() + retryAfter * 1000)
-            : undefined;
-          throwWithTrace(
-            new TooEarlyError(defaultMessage, { retryAfter: retryAfterDate })
-          );
+          throwWithTrace(new TooEarlyError(defaultMessage, { retryAfter }));
         }
         if (response.status === 429) {
           throwWithTrace(new ThrottleError(defaultMessage, { retryAfter }));
