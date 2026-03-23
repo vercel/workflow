@@ -1,5 +1,4 @@
 ---
-"@workflow/world-local": patch
 "@workflow/cli": patch
 ---
 
