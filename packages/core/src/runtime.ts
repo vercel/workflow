@@ -112,6 +112,10 @@ export function workflowEntrypoint(
       // --- Max delivery check ---
       // Enforce max delivery limit before any infrastructure calls.
       // This prevents runaway workflows from consuming infinite queue deliveries.
+      // At this point, we want to do the minimal amount of work (no fetching
+      // of the workflow events, etc. We simply attempt to mark the run as failed
+      // and if that fails, the message is still consumed but with adequate logging
+      // that an error occurred preventing us from failing the run.
       if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
         runtimeLogger.error(
           `Workflow handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
@@ -134,15 +138,16 @@ export function workflowEntrypoint(
             { requestId }
           );
         } catch (err) {
-          if (
-            EntityConflictError.is(err) ||
-            RunExpiredError.is(err)
-          ) {
-            // Run already finished, consume the message
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+            // Run already finished, consume the message silently
             return;
           }
           runtimeLogger.error(
-            'Failed to post run_failed for max deliveries exceeded, consuming message anyway',
+            `Failed to mark run as failed after ${metadata.attempt} delivery attempts. ` +
+              `A persistent error is preventing the run from being terminated. ` +
+              `The run will remain in its current state until manually resolved. ` +
+              `This is most likely due to a persistent outage of the workflow backend ` +
+              `or a bug in the workflow runtime and should be reported to the Workflow team.`,
             {
               workflowRunId: runId,
               error: err instanceof Error ? err.message : String(err),

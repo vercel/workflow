@@ -116,7 +116,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       }
       // Safety limit to prevent infinite loops in the local queue.
       // The actual max delivery enforcement happens in the workflow/step handlers.
-      const MAX_LOCAL_SAFETY_LIMIT = 1000;
+      const MAX_LOCAL_SAFETY_LIMIT = 256;
       try {
         for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
           const headers: Record<string, string> = {

@@ -72,6 +72,10 @@ const stepHandler = getWorldHandlers().createQueueHandler(
     // --- Max delivery check ---
     // Enforce max delivery limit before any infrastructure calls.
     // This prevents runaway steps from consuming infinite queue deliveries.
+    // At this point, we want to do the minimal amount of work (no fetching
+    // of the step details, etc. We simply attempt to mark the step as failed
+    // and enqueue the workflow once, and if either of those fails, the message
+    // is still consumed but with adequate logging that an error occurred.
     if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
       runtimeLogger.error(
         `Step handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
