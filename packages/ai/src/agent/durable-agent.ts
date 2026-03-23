@@ -767,7 +767,10 @@ export interface DurableAgentStreamResult<
  */
 export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private model: string | (() => Promise<CompatibleLanguageModel>);
-  private tools: TBaseTools;
+  /**
+   * The tool set configured for this agent.
+   */
+  public readonly tools: TBaseTools;
   private instructions?:
     | string
     | SystemModelMessage
