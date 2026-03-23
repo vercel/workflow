@@ -1610,6 +1610,74 @@ impl StepTransform {
     }
 
     // Collect all declared identifiers in the module to avoid naming collisions
+    /// Inspect a single `VarDeclarator` for serialization-related bindings:
+    /// - `Symbol.for('workflow-serialize')` / `Symbol.for('workflow-deserialize')` assignments
+    /// - CommonJS namespace require: `const serde_1 = require("...")`
+    /// - CommonJS destructured require: `const { WORKFLOW_SERIALIZE } = require("...")`
+    fn track_serialization_bindings(&mut self, declarator: &VarDeclarator) {
+        let Some(init) = &declarator.init else {
+            return;
+        };
+
+        // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+        if let Pat::Ident(ident) = &declarator.name {
+            if let Some(symbol_name) = self.extract_symbol_for_name(init) {
+                if symbol_name == "workflow-serialize" || symbol_name == "workflow-deserialize" {
+                    self.serialization_symbol_identifiers
+                        .insert(ident.id.sym.to_string(), symbol_name);
+                }
+            }
+            // Track CommonJS namespace require: const serde_1 = require("...")
+            if self.is_require_call(init) {
+                self.require_namespace_identifiers
+                    .insert(ident.id.sym.to_string());
+            }
+        }
+
+        // Track CommonJS destructured require:
+        // const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("...")
+        if let Pat::Object(obj_pat) = &declarator.name {
+            if self.is_require_call(init) {
+                for prop in &obj_pat.props {
+                    match prop {
+                        ObjectPatProp::Assign(assign) => {
+                            // const { WORKFLOW_SERIALIZE } = require("...")
+                            let name = assign.key.sym.to_string();
+                            if name == "WORKFLOW_SERIALIZE" {
+                                self.serialization_symbol_identifiers
+                                    .insert(name, "workflow-serialize".to_string());
+                            } else if name == "WORKFLOW_DESERIALIZE" {
+                                self.serialization_symbol_identifiers
+                                    .insert(name, "workflow-deserialize".to_string());
+                            }
+                        }
+                        ObjectPatProp::KeyValue(kv) => {
+                            // const { WORKFLOW_SERIALIZE: ws } = require("...")
+                            let key_name = match &kv.key {
+                                PropName::Ident(id) => Some(id.sym.to_string()),
+                                PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                                _ => None,
+                            };
+                            if let Some(key) = key_name {
+                                if let Pat::Ident(local) = &*kv.value {
+                                    let local_name = local.id.sym.to_string();
+                                    if key == "WORKFLOW_SERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-serialize".to_string());
+                                    } else if key == "WORKFLOW_DESERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-deserialize".to_string());
+                                    }
+                                }
+                            }
+                        }
+                        ObjectPatProp::Rest(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn collect_declared_identifiers(&mut self, items: &[ModuleItem]) {
         for item in items {
             match item {
@@ -1621,82 +1689,7 @@ impl StepTransform {
                     Decl::Var(var_decl) => {
                         for declarator in &var_decl.decls {
                             self.collect_idents_from_pat(&declarator.name);
-                            if let Some(init) = &declarator.init {
-                                // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-                                if let Pat::Ident(ident) = &declarator.name {
-                                    if let Some(symbol_name) =
-                                        self.extract_symbol_for_name(init)
-                                    {
-                                        if symbol_name == "workflow-serialize"
-                                            || symbol_name == "workflow-deserialize"
-                                        {
-                                            self.serialization_symbol_identifiers
-                                                .insert(ident.id.sym.to_string(), symbol_name);
-                                        }
-                                    }
-                                    // Track CommonJS namespace require: const serde_1 = require("...")
-                                    if self.is_require_call(init) {
-                                        self.require_namespace_identifiers
-                                            .insert(ident.id.sym.to_string());
-                                    }
-                                }
-                                // Track CommonJS destructured require:
-                                // const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("...")
-                                if let Pat::Object(obj_pat) = &declarator.name {
-                                    if self.is_require_call(init) {
-                                        for prop in &obj_pat.props {
-                                            match prop {
-                                                ObjectPatProp::Assign(assign) => {
-                                                    // const { WORKFLOW_SERIALIZE } = require("...")
-                                                    let name = assign.key.sym.to_string();
-                                                    if name == "WORKFLOW_SERIALIZE" {
-                                                        self.serialization_symbol_identifiers.insert(
-                                                            name,
-                                                            "workflow-serialize".to_string(),
-                                                        );
-                                                    } else if name == "WORKFLOW_DESERIALIZE" {
-                                                        self.serialization_symbol_identifiers.insert(
-                                                            name,
-                                                            "workflow-deserialize".to_string(),
-                                                        );
-                                                    }
-                                                }
-                                                ObjectPatProp::KeyValue(kv) => {
-                                                    // const { WORKFLOW_SERIALIZE: ws } = require("...")
-                                                    let key_name = match &kv.key {
-                                                        PropName::Ident(id) => {
-                                                            Some(id.sym.to_string())
-                                                        }
-                                                        PropName::Str(s) => Some(
-                                                            s.value.to_string_lossy().to_string(),
-                                                        ),
-                                                        _ => None,
-                                                    };
-                                                    if let Some(key) = key_name {
-                                                        if let Pat::Ident(local) = &*kv.value {
-                                                            let local_name =
-                                                                local.id.sym.to_string();
-                                                            if key == "WORKFLOW_SERIALIZE" {
-                                                                self.serialization_symbol_identifiers.insert(
-                                                                    local_name,
-                                                                    "workflow-serialize".to_string(),
-                                                                );
-                                                            } else if key == "WORKFLOW_DESERIALIZE"
-                                                            {
-                                                                self.serialization_symbol_identifiers.insert(
-                                                                    local_name,
-                                                                    "workflow-deserialize".to_string(),
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                ObjectPatProp::Rest(_) => {}
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            self.track_serialization_bindings(declarator);
                         }
                     }
                     Decl::Class(class_decl) => {
@@ -1714,90 +1707,7 @@ impl StepTransform {
                         Decl::Var(var_decl) => {
                             for declarator in &var_decl.decls {
                                 self.collect_idents_from_pat(&declarator.name);
-                                if let Some(init) = &declarator.init {
-                                    // Track exported const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-                                    if let Pat::Ident(ident) = &declarator.name {
-                                        if let Some(symbol_name) =
-                                            self.extract_symbol_for_name(init)
-                                        {
-                                            if symbol_name == "workflow-serialize"
-                                                || symbol_name == "workflow-deserialize"
-                                            {
-                                                self.serialization_symbol_identifiers.insert(
-                                                    ident.id.sym.to_string(),
-                                                    symbol_name,
-                                                );
-                                            }
-                                        }
-                                        // Track CommonJS namespace require: const serde_1 = require("...")
-                                        if self.is_require_call(init) {
-                                            self.require_namespace_identifiers
-                                                .insert(ident.id.sym.to_string());
-                                        }
-                                    }
-                                    // Track CommonJS destructured require:
-                                    // const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("...")
-                                    if let Pat::Object(obj_pat) = &declarator.name {
-                                        if self.is_require_call(init) {
-                                            for prop in &obj_pat.props {
-                                                match prop {
-                                                    ObjectPatProp::Assign(assign) => {
-                                                        let name = assign.key.sym.to_string();
-                                                        if name == "WORKFLOW_SERIALIZE" {
-                                                            self.serialization_symbol_identifiers
-                                                                .insert(
-                                                                    name,
-                                                                    "workflow-serialize".to_string(),
-                                                                );
-                                                        } else if name == "WORKFLOW_DESERIALIZE" {
-                                                            self.serialization_symbol_identifiers
-                                                                .insert(
-                                                                    name,
-                                                                    "workflow-deserialize"
-                                                                        .to_string(),
-                                                                );
-                                                        }
-                                                    }
-                                                    ObjectPatProp::KeyValue(kv) => {
-                                                        let key_name = match &kv.key {
-                                                            PropName::Ident(id) => {
-                                                                Some(id.sym.to_string())
-                                                            }
-                                                            PropName::Str(s) => Some(
-                                                                s.value
-                                                                    .to_string_lossy()
-                                                                    .to_string(),
-                                                            ),
-                                                            _ => None,
-                                                        };
-                                                        if let Some(key) = key_name {
-                                                            if let Pat::Ident(local) = &*kv.value {
-                                                                let local_name =
-                                                                    local.id.sym.to_string();
-                                                                if key == "WORKFLOW_SERIALIZE" {
-                                                                    self.serialization_symbol_identifiers.insert(
-                                                                        local_name,
-                                                                        "workflow-serialize"
-                                                                            .to_string(),
-                                                                    );
-                                                                } else if key
-                                                                    == "WORKFLOW_DESERIALIZE"
-                                                                {
-                                                                    self.serialization_symbol_identifiers.insert(
-                                                                        local_name,
-                                                                        "workflow-deserialize"
-                                                                            .to_string(),
-                                                                    );
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                    ObjectPatProp::Rest(_) => {}
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
+                                self.track_serialization_bindings(declarator);
                             }
                         }
                         Decl::Class(class_decl) => {
@@ -2763,13 +2673,18 @@ impl StepTransform {
         None
     }
 
-    /// Check if an expression is a `require(...)` call.
-    /// Returns true for any `require('...')` or `require("...")` call expression.
+    /// Check if an expression is a `require('...')` or `require("...")` call.
+    /// Returns true only when the callee is `require` with exactly one string literal argument.
     fn is_require_call(&self, expr: &Expr) -> bool {
         if let Expr::Call(call) = expr {
             if let Callee::Expr(callee) = &call.callee {
                 if let Expr::Ident(ident) = &**callee {
-                    return ident.sym.as_str() == "require" && !call.args.is_empty();
+                    if ident.sym.as_str() == "require" && call.args.len() == 1 {
+                        // Ensure the single argument is a string literal
+                        if let Expr::Lit(Lit::Str(_)) = &*call.args[0].expr {
+                            return true;
+                        }
+                    }
                 }
             }
         }
