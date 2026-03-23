@@ -3032,7 +3032,7 @@ impl StepTransform {
             ],
         };
 
-        // The IIFE: (function(__wf_cls, __wf_id) { ... })(ClassName, "classId");
+        // The IIFE: (function(__wf_cls, __wf_id) { ... })(ClassName, /* generated class ID string */);
         Stmt::Expr(ExprStmt {
             span: DUMMY_SP,
             expr: Box::new(Expr::Call(CallExpr {
