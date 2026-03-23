@@ -115,7 +115,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         await semaphore.acquire();
       }
       // Safety limit to prevent infinite loops in the local queue.
-      // The actual max delivery enforcement happens in the workflow/step handlers.
+      // The actual max delivery enforcement happens in the workflow/step handlers
+      // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
       const MAX_LOCAL_SAFETY_LIMIT = 256;
       try {
         for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
@@ -187,8 +188,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             }
           );
 
-          // Small backoff to avoid tight retry loops on persistent failures
-          await setTimeout(Math.min(1000, 100 * (attempt + 1)));
+          // 5s linear backoff to approximate VQS retry timing in local dev.
+          // VQS uses 5s linear for attempts 1–32, then exponential, but for
+          // local dev linear 5s is sufficient — the handler enforces the real
+          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
+          await setTimeout(5000);
         }
 
         console.error(
