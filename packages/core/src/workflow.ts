@@ -1,5 +1,9 @@
 import { runInContext } from 'node:vm';
-import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  ERROR_SLUGS,
+  WorkflowNotRegisteredError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
@@ -704,15 +708,7 @@ export async function runWorkflow(
     );
 
     if (typeof workflowFn !== 'function') {
-      // Use WorkflowRuntimeError so this is caught and properly fails the run
-      // rather than bubbling up to the queue for infinite retries.
-      // A missing workflow function indicates a code deployment mismatch that
-      // retries won't fix.
-      throw new WorkflowRuntimeError(
-        `Workflow ${JSON.stringify(
-          workflowRun.workflowName
-        )} not found. This usually means the workflow was removed or renamed in a newer deployment while the run was in progress.`
-      );
+      throw new WorkflowNotRegisteredError(workflowRun.workflowName);
     }
 
     // Chain workflow argument hydration onto the promiseQueue so that the

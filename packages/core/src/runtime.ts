@@ -2,6 +2,7 @@ import {
   EntityConflictError,
   RUN_ERROR_CODES,
   RunExpiredError,
+  WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { classifyRunError } from './classify-error.js';
@@ -235,6 +236,10 @@ export function workflowEntrypoint(
                     return;
                   }
                   if (err instanceof WorkflowRuntimeError) {
+                    const errorCode =
+                      err instanceof WorkflowNotRegisteredError
+                        ? RUN_ERROR_CODES.FUNCTION_NOT_REGISTERED
+                        : RUN_ERROR_CODES.RUNTIME_ERROR;
                     runtimeLogger.error(
                       'Fatal runtime error during workflow setup',
                       { workflowRunId: runId, error: err.message }
@@ -250,7 +255,7 @@ export function workflowEntrypoint(
                               message: err.message,
                               stack: err.stack,
                             },
-                            errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+                            errorCode,
                           },
                         },
                         { requestId }

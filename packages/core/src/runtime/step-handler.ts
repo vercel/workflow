@@ -4,6 +4,7 @@ import {
   FatalError,
   RetryableError,
   RunExpiredError,
+  StepNotRegisteredError,
   ThrottleError,
   TooEarlyError,
   WorkflowRuntimeError,
@@ -159,7 +160,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           });
 
           // Note: Step function validation happens after step_started so we can
-          // properly fail the step (not the run) if the function is missing.
+          // properly fail the step (not the run) if the function is not registered.
           // This allows the workflow to handle the step failure gracefully.
           const stepFn = getStepFunction(stepName);
 
@@ -280,17 +281,15 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           // This allows the workflow to handle the step failure gracefully,
           // similar to how FatalError is handled.
           if (!stepFn || typeof stepFn !== 'function') {
-            const errorMessage = !stepFn
-              ? `Step "${stepName}" not found. This usually means the step was removed or renamed in a newer deployment while the run was in progress.`
-              : `Step "${stepName}" is not a function (got ${typeof stepFn})`;
+            const err = new StepNotRegisteredError(stepName);
 
             runtimeLogger.error(
-              'Step function not found, failing step (not run)',
+              'Step function not registered, failing step (not run)',
               {
                 workflowRunId,
                 stepName,
                 stepId,
-                error: errorMessage,
+                error: err.message,
               }
             );
 
@@ -304,8 +303,8 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
-                    error: errorMessage,
-                    stack: new Error(errorMessage).stack,
+                    error: err.message,
+                    stack: err.stack,
                   },
                 },
                 { requestId }
