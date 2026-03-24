@@ -1,7 +1,17 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, SPEC_VERSION_LEGACY } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+  vi,
+} from 'vitest';
+import type { Run } from './run.js';
 import { start } from './start.js';
+import type { WorkflowFunction } from './start.js';
 import { getWorld } from './world.js';
 
 // Mock @vercel/functions
@@ -378,6 +388,49 @@ describe('start', () => {
         }),
         expect.anything()
       );
+    });
+  });
+
+  describe('overload type inference', () => {
+    // Type-only assertions that don't execute start() at runtime.
+    // We use expectTypeOf on the function signature's return type directly.
+
+    type TypedWf = WorkflowFunction<[string, number], boolean>;
+    type ZeroArgWf = WorkflowFunction<[], string>;
+    type Meta = { workflowId: string };
+
+    it('should preserve types without deploymentId', () => {
+      // With args
+      expectTypeOf<
+        (wf: TypedWf, args: [string, number]) => Promise<Run<boolean>>
+      >().toMatchTypeOf<typeof start>();
+
+      // Zero-arg workflow without args
+      expectTypeOf(start<string>)
+        .parameter(0)
+        .toMatchTypeOf<ZeroArgWf | Meta>();
+    });
+
+    it('should return Run<unknown> when deploymentId is provided', () => {
+      // Typed workflow with deploymentId - return type becomes Run<unknown>
+      type StartWithDeploymentId = (
+        wf: TypedWf | Meta,
+        args: unknown[],
+        opts: { deploymentId: string }
+      ) => Promise<Run<unknown>>;
+      expectTypeOf<StartWithDeploymentId>().toMatchTypeOf<typeof start>();
+    });
+
+    it('should accept typed workflows with deploymentId (no contravariance issue)', () => {
+      // This is the key test: a typed workflow should be assignable to the
+      // deploymentId overload. We verify by checking the first parameter
+      // accepts TypedWf.
+      type DeploymentIdOverload = <TArgs extends unknown[], TResult>(
+        wf: WorkflowFunction<TArgs, TResult> | Meta,
+        args: unknown[],
+        opts: { deploymentId: string }
+      ) => Promise<Run<unknown>>;
+      expectTypeOf<DeploymentIdOverload>().toMatchTypeOf<typeof start>();
     });
   });
 });

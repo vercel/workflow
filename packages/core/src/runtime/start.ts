@@ -80,14 +80,16 @@ export type WorkflowMetadata = { workflowId: string };
  * @returns The unique run ID for the newly started workflow invocation.
  */
 // Overloads with deploymentId - args and return type become unknown
-export function start(
-  workflow: WorkflowFunction<unknown[], unknown> | WorkflowMetadata,
+// Uses generics so typed workflows are assignable (avoids contravariance issues),
+// but the return type and args are still unknown since the deployed version may differ.
+export function start<TArgs extends unknown[], TResult>(
+  workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata,
   args: unknown[],
   options: StartOptionsWithDeploymentId
 ): Promise<Run<unknown>>;
 
-export function start(
-  workflow: WorkflowFunction<unknown[], unknown> | WorkflowMetadata,
+export function start<TResult>(
+  workflow: WorkflowFunction<[], TResult> | WorkflowMetadata,
   options: StartOptionsWithDeploymentId
 ): Promise<Run<unknown>>;
 
