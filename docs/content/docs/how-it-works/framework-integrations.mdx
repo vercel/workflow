@@ -290,10 +290,6 @@ class MyFrameworkBuilder extends BaseBuilder {
 }
 ```
 
-<Callout type="info">
-This is the same mechanism that [`withWorkflow()`](/docs/api-reference/workflow-next/with-workflow#monorepos-and-workspace-imports) uses in Next.js — it reads `outputFileTracingRoot` from the Next.js config and passes it as `projectRoot` to the builder. Without this, workflow transforms may fail to resolve workspace module specifiers.
-</Callout>
-
 Hook into your framework's build:
 
 {/* @skip-typecheck: incomplete code sample */}

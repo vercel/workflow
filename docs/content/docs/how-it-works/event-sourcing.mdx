@@ -248,7 +248,7 @@ Some `World` implementations also attach a `requestId` to events for platform-lo
 - `correlationId` links together events for the same entity lifecycle
 - `requestId` tells you which inbound platform request created or updated the event
 
-On Vercel, `requestId` comes from the platform request ID when available.
+On Vercel, `requestId` is the platform request ID when available. Other worlds are not expected to provide a `requestId`.
 
 ```json
 {

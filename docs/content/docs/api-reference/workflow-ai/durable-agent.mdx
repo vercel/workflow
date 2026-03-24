@@ -17,8 +17,6 @@ The `DurableAgent` class enables you to create AI-powered agents that can mainta
 
 Tool calls can be implemented as workflow steps for automatic retries, or as regular workflow-level logic utilizing core library features such as [`sleep()`](/docs/api-reference/workflow/sleep) and [Hooks](/docs/foundations/hooks).
 
-{/* @skip-typecheck - uses DurableAgentOptions properties not yet in published dist types */}
-
 ```typescript lineNumbers
 import { DurableAgent } from "@workflow/ai/agent";
 import { getWritable } from "workflow";
@@ -215,7 +213,7 @@ export default OutputSpecification;`}
 - Tools can use core library features like `sleep()` and Hooks within their `execute` functions
 - The agent processes tool calls iteratively until completion or `maxSteps` is reached
 - **Default `maxSteps` is unlimited** - set a value to limit the number of LLM calls
-- The `stream()` method returns `{ messages, steps, toolCalls, toolResults, experimental_output, uiMessages }` containing the full conversation history, per-step details, machine-readable tool activity, optional structured output, and optionally accumulated UI messages
+- The `stream()` method returns `{ messages, steps, toolCalls, toolResults, experimental_output, uiMessages }` containing the full conversation history, step details, tool call details, optional structured output, and optionally accumulated UI messages
 - Use `collectUIMessages: true` to accumulate `UIMessage[]` during streaming, useful for persisting conversation state without re-reading the stream
 - The `prepareStep` callback runs before each step and can modify model, messages, generation settings, tool choice, and context
 - Generation settings (temperature, maxOutputTokens, etc.) can be set on the constructor and overridden per-stream call
@@ -225,8 +223,6 @@ export default OutputSpecification;`}
 ## Examples
 
 ### Basic Agent with Tools
-
-{/* @skip-typecheck - uses DurableAgentOptions.instructions not yet in published dist types */}
 
 ```typescript
 import { DurableAgent } from "@workflow/ai/agent";
@@ -442,8 +438,6 @@ async function agentWithLibraryFeaturesWorkflow(userRequest: string) {
 
 Use `prepareStep` to modify settings before each step in the agent loop:
 
-{/* @skip-typecheck - uses DurableAgentStreamOptions.prepareStep not yet in published dist types */}
-
 ```typescript
 import { DurableAgent } from "@workflow/ai/agent";
 import { getWritable } from "workflow";
@@ -487,8 +481,6 @@ async function agentWithPrepareStep(userMessage: string) {
 ### Message Injection with prepareStep
 
 Inject messages from external sources (like hooks) before each LLM call:
-
-{/* @skip-typecheck - uses DurableAgentStreamOptions.prepareStep not yet in published dist types */}
 
 ```typescript
 import { DurableAgent } from "@workflow/ai/agent";
@@ -670,8 +662,6 @@ async function agentWithCallbacks() {
 
 Parse structured data from the LLM response using `Output.object`:
 
-{/* @skip-typecheck - uses OutputSpecification not yet in published dist types */}
-
 ```typescript
 import { DurableAgent, Output } from "@workflow/ai/agent";
 import { getWritable } from "workflow";
@@ -814,8 +804,6 @@ async function agentWithContext(userId: string) {
 
 Use `collectUIMessages` to accumulate `UIMessage[]` during streaming. This is useful when you need to persist the conversation without re-reading the run's output stream:
 
-{/* @skip-typecheck - uses collectUIMessages/uiMessages not yet in published dist types */}
-
 ```typescript lineNumbers
 import { DurableAgent } from "@workflow/ai/agent";
 import { getWritable } from "workflow";
@@ -857,8 +845,6 @@ The `uiMessages` property is only available when `collectUIMessages` is set to `
 ### Machine-Readable Tool Results
 
 `stream()` returns structured tool activity you can inspect programmatically. Compare `toolCalls` with `toolResults` to find unresolved tool calls that need client-side handling:
-
-{/* @skip-typecheck - uses toolCalls/toolResults not yet in published dist types */}
 
 ```typescript lineNumbers
 import { DurableAgent } from "@workflow/ai/agent";
@@ -915,9 +901,11 @@ async function agentWithToolInspection(userMessage: string) {
 
 ### Aborting Long-Running Streams
 
-Use `timeout` to abort a stream automatically after a fixed duration. If both `timeout` and `abortSignal` are provided, whichever triggers first will abort the operation:
+Use `timeout` to abort a stream automatically after a fixed duration:
 
-{/* @skip-typecheck - uses DurableAgentStreamOptions.timeout not yet in published dist types */}
+<Callout type="warn">
+`abortSignal` is not yet supported and will be available in a future release. Use `timeout` for now.
+</Callout>
 
 ```typescript lineNumbers
 import { DurableAgent } from "@workflow/ai/agent";

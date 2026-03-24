@@ -29,7 +29,7 @@ export default withWorkflow(nextConfig, workflowConfig); // [!code highlight]
 
 ### Monorepos and Workspace Imports
 
-If your Next.js app lives in a subdirectory such as `apps/web` and your workflows import code from sibling workspace packages, set `outputFileTracingRoot` to the workspace root. `withWorkflow()` uses this value as the builder project root so workflow transforms can resolve workspace module specifiers correctly.
+By default, Next.js detects the correct workspace root automatically. If your Next.js app lives in a subdirectory such as `apps/web` and workspace resolution is not working correctly, you can set `outputFileTracingRoot` as a workaround:
 
 ```typescript title="apps/web/next.config.ts" lineNumbers
 import { resolve } from "node:path";
@@ -49,7 +49,7 @@ Use the smallest directory that contains every workspace package imported by you
 
 ## Options
 
-`withWorkflow` accepts an optional second argument to control local development behavior.
+`withWorkflow` accepts an optional second argument to configure the Next.js integration.
 
 ```typescript title="next.config.ts" lineNumbers
 import type { NextConfig } from "next";
@@ -73,7 +73,7 @@ export default withWorkflow(nextConfig, {
 | `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
 
 <Callout type="info">
-These options only affect local development. When deployed to Vercel, the runtime ignores `local` settings and uses the Vercel world automatically.
+The `workflows.local` options only affect local development. When deployed to Vercel, the runtime ignores `local` settings and uses the Vercel world automatically.
 </Callout>
 
 ## Exporting a Function

@@ -98,6 +98,7 @@ import { start } from "workflow/api";
 import { sendReminder } from "./workflows/send-reminder";
 
 export async function POST() {
+  // Does NOT work
   await start(async () => sendReminder("hello@example.com"));
   return new Response("ok");
 }

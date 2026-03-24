@@ -30,30 +30,6 @@ npx workflow inspect --help
 npx workflow inspect runs
 ```
 
-## Machine-Readable Surfaces
-
-For automations, custom dashboards, and agentic tooling, prefer stable fields and lifecycle events over parsing human-readable UI labels.
-
-- Use `workflowName` together with `parseWorkflowName()` when listing runs.
-- Use `stepName` together with `parseStepName()` when listing steps.
-- Use `error.code` and `workflow.error.code` for programmatic failure handling.
-- Use lifecycle event names such as `step_started`, `step_retrying`, `hook_created`, `hook_conflict`, and `hook_disposed` to reconstruct execution state.
-- When present, use `requestId` to correlate workflow events with platform request logs.
-
-<Callout type="info">
-On Vercel, `requestId` is the platform request ID when available. Use it together with `correlationId`:
-
-- `correlationId` groups lifecycle events for the same run, step, hook, or wait
-- `requestId` ties an event back to the inbound platform request that created it
-</Callout>
-
-See the dedicated docs for concrete implementations:
-
-- [`getWorld()`](/docs/api-reference/workflow-api/get-world) for `resolveData: "none"` and name parsing.
-- [Errors and Retries](/docs/foundations/errors-and-retries) for structured error codes.
-- [Event Sourcing](/docs/how-it-works/event-sourcing) for lifecycle event names.
-- [Encryption](/docs/how-it-works/encryption) for decrypting serialized input/output during inspection.
-
 ## Web UI
 
 Workflow SDK ships with a local web UI for inspecting your workflows. The CLI

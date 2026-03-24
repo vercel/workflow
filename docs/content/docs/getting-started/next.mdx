@@ -52,10 +52,6 @@ export default withWorkflow(nextConfig); // [!code highlight]
 If your Next.js app lives inside a monorepo and your workflows import code from sibling workspace packages, set `outputFileTracingRoot` to the workspace root. See [`withWorkflow()`](/docs/api-reference/workflow-next/with-workflow#monorepos-and-workspace-imports) for the full example.
 </Callout>
 
-<Callout type="info">
-You can pass a second argument to `withWorkflow()` to control local development behavior, such as enabling lazy workflow discovery or overriding the local port. See [`withWorkflow()` Options](/docs/api-reference/workflow-next/with-workflow#options) for details.
-</Callout>
-
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
     <AccordionTrigger className="text-sm">
