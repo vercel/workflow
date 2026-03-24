@@ -10,7 +10,7 @@ related:
 
 `WorkflowNotRegisteredError` is thrown when the runtime tries to execute a workflow function that is not registered in the current deployment. This is an infrastructure error — not a user code error. It typically means a run was started against a deployment that does not have this workflow (e.g., the workflow was renamed or moved), or there was a build/bundling issue.
 
-When this error occurs, the run fails with a `FUNCTION_NOT_REGISTERED` error code.
+When this error occurs, the run fails with a `RUNTIME_ERROR` error code.
 
 ```typescript lineNumbers
 import { WorkflowNotRegisteredError } from "workflow/errors"
@@ -51,23 +51,3 @@ if (WorkflowNotRegisteredError.is(error)) {
 }
 ```
 
-## Examples
-
-### Check for workflow not registered when polling run status
-
-```typescript lineNumbers
-import { WorkflowRunFailedError } from "workflow/errors"
-declare function getRun(id: string): { returnValue: Promise<unknown> }; // @setup
-declare const runId: string; // @setup
-
-try {
-  const result = await getRun(runId).returnValue;
-} catch (error) {
-  if (WorkflowRunFailedError.is(error)) {
-    if (error.cause.code === "FUNCTION_NOT_REGISTERED") { // [!code highlight]
-      console.error("Workflow not found in deployment");
-      // Consider redeploying with the workflow included
-    }
-  }
-}
-```

@@ -10,8 +10,6 @@ export const RUN_ERROR_CODES = {
   RUNTIME_ERROR: 'RUNTIME_ERROR',
   /** Run exceeded the maximum number of queue deliveries */
   MAX_DELIVERIES_EXCEEDED: 'MAX_DELIVERIES_EXCEEDED',
-  /** Workflow or step function not registered in the current deployment */
-  FUNCTION_NOT_REGISTERED: 'FUNCTION_NOT_REGISTERED',
 } as const;
 
 export type RunErrorCode =
