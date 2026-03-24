@@ -137,7 +137,6 @@ async function fetchLatestVersion(
       'dist-tags': { [tag: string]: string };
     };
 
-    // Always use 'latest' tag - even beta versions are published as latest
     const latestVersion = data['dist-tags']['latest'];
     if (!latestVersion) {
       logger.debug('No latest version found in registry');
