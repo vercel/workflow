@@ -1,6 +1,7 @@
 import {
   HookConflictError,
   RUN_ERROR_CODES,
+  WorkflowNotRegisteredError,
   WorkflowWorldError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
@@ -12,6 +13,12 @@ describe('classifyRunError', () => {
     expect(
       classifyRunError(new WorkflowRuntimeError('corrupted event log'))
     ).toBe(RUN_ERROR_CODES.RUNTIME_ERROR);
+  });
+
+  it('classifies WorkflowNotRegisteredError as RUNTIME_ERROR', () => {
+    expect(classifyRunError(new WorkflowNotRegisteredError('myWorkflow'))).toBe(
+      RUN_ERROR_CODES.RUNTIME_ERROR
+    );
   });
 
   it('classifies plain Error as USER_ERROR', () => {
@@ -47,8 +54,8 @@ describe('classifyRunError', () => {
   });
 
   it('classifies HookConflictError as USER_ERROR (duplicate token is user mistake)', () => {
-    expect(
-      classifyRunError(new HookConflictError('my-token'))
-    ).toBe(RUN_ERROR_CODES.USER_ERROR);
+    expect(classifyRunError(new HookConflictError('my-token'))).toBe(
+      RUN_ERROR_CODES.USER_ERROR
+    );
   });
 });
