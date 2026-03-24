@@ -467,9 +467,20 @@ export abstract class BaseBuilder {
       : undefined;
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
+    // When outputting CJS, esbuild replaces `import.meta` with an empty object,
+    // making `import.meta.url` undefined. Provide a CJS-compatible polyfill via
+    // banner + define so user step code (e.g. Prisma) that relies on
+    // `import.meta.url` works correctly on Vercel.
+    const importMetaBanner =
+      format === 'cjs'
+        ? 'var __import_meta_url = typeof __filename !== "undefined" ? require("url").pathToFileURL(__filename).href : undefined;\n'
+        : '';
+    const importMetaDefine: Record<string, string> =
+      format === 'cjs' ? { 'import.meta.url': '__import_meta_url' } : {};
+
     const esbuildCtx = await esbuild.context({
       banner: {
-        js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}`,
       },
       stdin: {
         contents: entryContent,
@@ -490,6 +501,7 @@ export abstract class BaseBuilder {
       minify: false,
       jsx: 'preserve',
       logLevel: 'error',
+      define: importMetaDefine,
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
