@@ -43,11 +43,7 @@ export const setupCliWorld = async (
     : 'https://useworkflow.dev/';
 
   // Prepare showBox lines
-  const boxLines = [
-    `Workflow CLI v${version}`,
-    `Docs at ${docsUrl}`,
-    chalk.yellow('This is a beta release'),
-  ];
+  const boxLines = [`Workflow CLI v${version}`, `Docs at ${docsUrl}`];
 
   // Add update message if available
   if (updateCheck.needsUpdate && updateCheck.latestVersion) {
@@ -56,9 +52,6 @@ export const setupCliWorld = async (
       chalk.cyan(
         `Update available: ${updateCheck.currentVersion} → ${updateCheck.latestVersion}`
       ),
-      // Note that we're suggesting install "latest" instead of the release tag that the user is
-      // on, because we currently tag beta releases as "latest". After GA, we need to adjust
-      // this to install the release tag that the user is on.
       chalk.gray(
         `Run: \`[npm|bun|pnpm] i workflow@${updateCheck.latestVersion}\``
       ),
