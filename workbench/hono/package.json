@@ -17,7 +17,7 @@
     "workflow": "workspace:*",
     "@workflow/ai": "workspace:*",
     "ai": "catalog:",
-    "hono": "^4.9.10",
+    "hono": "^4.12.8",
     "lodash.chunk": "^4.2.0",
     "nitro": "catalog:",
     "openai": "^6.6.0",
