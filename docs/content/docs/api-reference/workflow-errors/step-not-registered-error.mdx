@@ -58,7 +58,7 @@ if (StepNotRegisteredError.is(error)) {
 Since `StepNotRegisteredError` causes the step to fail like a `FatalError`, you can catch it in your workflow code:
 
 ```typescript lineNumbers
-import { start } from "workflow";
+declare function processPayment(orderId: string): Promise<any>; // @setup
 
 export async function myWorkflow() {
   "use workflow";

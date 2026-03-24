@@ -49,7 +49,7 @@ The step function was deleted or its `"use step"` directive was removed, but the
 3. **Handle it in your workflow:** Since the step fails like a `FatalError`, you can catch it in your workflow code:
 
 ```typescript lineNumbers
-import { start } from "workflow";
+declare function processPayment(orderId: string): Promise<any>; // @setup
 
 export async function myWorkflow() {
   "use workflow";
