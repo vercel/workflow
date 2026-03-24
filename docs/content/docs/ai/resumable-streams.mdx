@@ -30,7 +30,8 @@ Let's add stream resumption to our Flight Booking Agent that we build in the [Bu
 
 Modify your chat endpoint to include the workflow run ID in a response header. The Run ID uniquely identifies the run's stream, so it allows the client to know which stream to reconnect to.
 
-{/* @skip-typecheck: incomplete code sample */}
+{/*@skip-typecheck: incomplete code sample*/}
+
 ```typescript title="app/api/chat/route.ts" lineNumbers
 // ... imports ...
 
@@ -76,14 +77,24 @@ export async function GET(
 
   // Instead of starting a new run, we fetch an existing run.
   const run = getRun(id); // [!code highlight]
-  const stream = run.getReadable({ startIndex }); // [!code highlight]
+  const readable = run.getReadable({ startIndex }); // [!code highlight]
 
-  return createUIMessageStreamResponse({ stream }); // [!code highlight]
+  // Provide the stream's tail index so the transport can resolve
+  // negative startIndex values into absolute positions for retries.
+  const tailIndex = await readable.getTailIndex(); // [!code highlight]
+
+  return createUIMessageStreamResponse({
+    stream: readable, // [!code highlight]
+    headers: { // [!code highlight]
+      "x-workflow-stream-tail-index": String(tailIndex), // [!code highlight]
+    }, // [!code highlight]
+  });
 }
 ```
 
 The `startIndex` parameter ensures the client can choose where to resume the stream from. For instance, if the function times out during streaming, the chat transport will use `startIndex` to resume the stream exactly from the last token it received. Negative values are also supported (e.g. `-5` starts 5 chunks before the end), which is useful for custom stream consumers (such as a dashboard showing recent output) that want to show the most recent output without replaying the full stream.
 
+When using a negative `startIndex`, your stream endpoint must return a `x-workflow-stream-tail-index` header in order for relative resumption to work. Missing the header will fall back to replaying the entire stream.
 </Step>
 
 <Step>
@@ -160,6 +171,28 @@ Now try the flight booking example again. Open it up in a separate tab, or spam 
 7. When the stream completes, `onChatEnd` clears the stored run ID
 
 This approach also handles page refreshes, as the client will automatically reconnect to the stream from the last known position when the UI loads with a stored run ID, following the behavior of [AI SDK's stream resumption](https://ai-sdk.dev/docs/ai-sdk-ui/chatbot-resume-streams#chatbot-resume-streams).
+
+### Resuming from the end of the stream
+
+By default, reconnecting replays the entire stream from the beginning (`startIndex: 0`). If you only need to show recent output — for example, when resuming a long conversation after a page refresh — you can set `initialStartIndex` to a negative value to read from the end of the stream instead:
+
+{/*@skip-typecheck: incomplete code sample*/}
+
+```typescript
+const { messages, sendMessage } = useChat({
+  resume: !!activeWorkflowRunId,
+  transport: new WorkflowChatTransport({
+    initialStartIndex: -20, // Only fetch the last 20 chunks // [!code highlight]
+    // ... callbacks as above
+  }),
+});
+```
+
+This avoids replaying potentially thousands of chunks and lets the UI render faster. The negative value is resolved server-side, so `-20` on a 500-chunk stream starts at chunk 480.
+
+<Callout>
+When using a negative `initialStartIndex`, the reconnection endpoint **must** return the `x-workflow-stream-tail-index` header (as shown in [Step 2](#add-a-stream-reconnection-endpoint) above). The transport uses this header to compute absolute chunk positions so that retries after a disconnect resume from the correct position. If the header is missing, the transport falls back to `startIndex: 0` (replaying the entire stream) and logs a warning.
+</Callout>
 
 ## Related Documentation
 

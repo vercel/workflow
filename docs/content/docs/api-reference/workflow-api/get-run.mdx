@@ -39,6 +39,18 @@ export default Run;`}
 showSections={["returns"]}
 />
 
+#### WorkflowReadableStream
+
+`run.getReadable()` returns a `WorkflowReadableStream` — a standard `ReadableStream` extended with a `getTailIndex()` helper:
+
+<TSDoc
+definition={`
+import type { WorkflowReadableStream } from "workflow/api";
+export default WorkflowReadableStream;`}
+/>
+
+`getTailIndex()` returns the index of the last known chunk (0-based), or `-1` when no chunks have been written. This is useful when building [reconnection endpoints](/docs/ai/resumable-streams) that need to inform clients where the stream starts.
+
 #### WorkflowReadableStreamOptions
 
 <TSDoc
