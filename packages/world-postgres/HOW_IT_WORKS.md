@@ -2,7 +2,7 @@
 
 This document explains the architecture and components of the PostgreSQL world implementation for workflow management.
 
-This implementation is using [Drizzle Schema](./src/drizzle/schema.ts) that can be pushed or migrated into your PostgreSQL schema and backed by Postgres.js.
+This implementation is using [Drizzle Schema](./src/drizzle/schema.ts) that can be pushed or migrated into your PostgreSQL schema and backed by [node-postgres](https://node-postgres.com/) (`pg`). `createWorld` uses a single `pg.Pool` for Drizzle and graphile-worker (via `pgPool`), and a dedicated `pg.Client` for LISTEN/NOTIFY derived from the same connection options. You may pass your own pool to share query connections with application code.
 
 If you want to use any other ORM, query builder or underlying database client, you should be able to fork this implementation and replace the Drizzle parts with your own.
 
@@ -29,7 +29,7 @@ Real-time data streaming via **PostgreSQL LISTEN/NOTIFY**:
 - `pg_notify` triggers sent on writes to `workflow_event_chunk` topic
 - Subscribers receive notifications and fetch chunk data
 - ULID-based ordering ensures correct sequence
-- Single connection for listening to notifications, with an in-process EventEmitter for distributing events to multiple subscribers
+- One long-lived dedicated `LISTEN` client, with an in-process EventEmitter for distributing events to multiple subscribers
 
 ## Setup
 

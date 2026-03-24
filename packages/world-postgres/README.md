@@ -50,15 +50,21 @@ const world = createWorld({
   jobPrefix: "myapp", // optional
   queueConcurrency: 10, // optional
 });
+
+// Or pass an existing pg.Pool (shared with your app Drizzle, etc.); `world.close()` will not end it.
+import { Pool } from "pg";
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const worldFromPool = createWorld({ pool });
 ```
 
 ## Configuration Options
 
-| Option             | Type     | Default                                                                                | Description                         |
-| ------------------ | -------- | -------------------------------------------------------------------------------------- | ----------------------------------- |
-| `connectionString` | `string` | `process.env.WORKFLOW_POSTGRES_URL` or `'postgres://world:world@localhost:5432/world'` | PostgreSQL connection string        |
-| `jobPrefix`        | `string` | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names |
-| `queueConcurrency` | `number` | `10`                                                                                   | Number of concurrent active step executions per process |
+| Option             | Type      | Default                                                                                | Description                                                                                          |
+| ------------------ | --------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL` or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
+| `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
+| `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
+| `queueConcurrency` | `number`  | `10`                                                                                   | Number of concurrent active step executions per process                                              |
 
 ## Environment Variables
 
@@ -75,7 +81,7 @@ This package uses PostgreSQL with the following components:
 
 - **graphile-worker**: For queue processing and job management
 - **Drizzle ORM**: For database operations and schema management
-- **postgres**: For PostgreSQL client connections
+- **pg** (node-postgres): For PostgreSQL client connections. Drizzle and Graphile Worker share a `pg.Pool`, while LISTEN uses a dedicated `pg.Client` created from the same connection options.
 
 ### Quick Setup with CLI
 

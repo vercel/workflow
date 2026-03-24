@@ -6,7 +6,7 @@ import type {
   StreamInfoResponse,
 } from '@workflow/world';
 import { and, asc, eq, gt } from 'drizzle-orm';
-import type { Sql } from 'postgres';
+import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
@@ -43,15 +43,49 @@ class Rc<T extends { drop(): void }> {
   }
 }
 
+/**
+ * Subscribe to a PostgreSQL NOTIFY channel using a dedicated client created
+ * from the pool's connection options. `channel` must be a trusted identifier.
+ */
+export const listenChannel = async (
+  pool: Pool,
+  channel: string,
+  onPayload: (payload: string) => Promise<void>
+): Promise<{ close: () => Promise<void> }> => {
+  const client = new Client(pool.options);
+
+  try {
+    await client.connect();
+    await client.query(`LISTEN ${channel}`);
+  } catch (err) {
+    await client.end().catch(() => {});
+    throw err;
+  }
+
+  const onNotification = (msg: { payload?: string | undefined }) => {
+    onPayload(msg.payload ?? '').catch(() => {});
+  };
+
+  client.on('notification', onNotification);
+
+  return {
+    close: async () => {
+      client.removeListener('notification', onNotification);
+      try {
+        await client.query(`UNLISTEN ${channel}`);
+      } finally {
+        await client.end();
+      }
+    },
+  };
+};
+
 export type PostgresStreamer = Streamer & {
   /** Unlisten from the LISTEN subscription and release resources. */
   close(): Promise<void>;
 };
 
-export function createStreamer(
-  postgres: Sql,
-  drizzle: Drizzle
-): PostgresStreamer {
+export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const ulid = monotonicFactory();
   const events = new EventEmitter<{
     [key: `strm:${string}`]: [StreamChunkEvent];
@@ -72,7 +106,8 @@ export function createStreamer(
   };
 
   const STREAM_TOPIC = 'workflow_event_chunk';
-  const listenSubscription = postgres.listen(STREAM_TOPIC, async (msg) => {
+
+  const listenSubscription = listenChannel(pool, STREAM_TOPIC, async (msg) => {
     const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
     const key = `strm:${parsed.streamId}` as const;
@@ -98,6 +133,10 @@ export function createStreamer(
     });
   });
 
+  const notifyStream = async (payload: string) => {
+    await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
+  };
+
   // Helper to convert chunk to Buffer
   const toBuffer = (chunk: string | Uint8Array): Buffer =>
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
@@ -119,8 +158,7 @@ export function createStreamer(
         chunkData: toBuffer(chunk),
         eof: false,
       });
-      await postgres.notify(
-        STREAM_TOPIC,
+      await notifyStream(
         JSON.stringify(
           StreamPublishMessage.encode({
             chunkId,
@@ -156,8 +194,7 @@ export function createStreamer(
 
       // Notify for each chunk (could be batched in future if needed)
       for (const chunkId of chunkIds) {
-        await postgres.notify(
-          STREAM_TOPIC,
+        await notifyStream(
           JSON.stringify(
             StreamPublishMessage.encode({
               chunkId,
@@ -182,8 +219,7 @@ export function createStreamer(
         chunkData: Buffer.from([]),
         eof: true,
       });
-      await postgres.notify(
-        'workflow_event_chunk',
+      await notifyStream(
         JSON.stringify(
           StreamPublishMessage.encode({
             streamId: name,
@@ -420,8 +456,8 @@ export function createStreamer(
     },
 
     async close() {
-      const sub = await listenSubscription;
-      await sub.unlisten();
+      const sub = await listenSubscription.catch(() => undefined);
+      if (sub) await sub.close();
     },
   };
 }

@@ -17,7 +17,7 @@ import {
   run,
   type WorkerUtils,
 } from 'graphile-worker';
-import type Postgres from 'postgres';
+import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import z from 'zod';
 import type { PostgresWorldConfig } from './config.js';
@@ -76,7 +76,7 @@ export type PostgresQueue = Queue & {
 
 export function createQueue(
   config: PostgresWorldConfig,
-  postgres: Postgres.Sql
+  pool: Pool
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createLocalWorld({ dataDir: undefined, port });
@@ -252,48 +252,48 @@ export function createQueue(
 
   async function migratePgBossJobs(utils: WorkerUtils): Promise<void> {
     // Scenario A: Drizzle migration already ran — staging table exists
-    const hasStaging = await postgres`
-      SELECT EXISTS (
+    const hasStaging = await pool.query(
+      `SELECT EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'workflow'
         AND table_name = '_pgboss_pending_jobs'
-      ) AS exists
-    `;
-    if (hasStaging[0].exists) {
-      const jobs = await postgres`
-        SELECT name, data, singleton_key, retry_limit
-        FROM "workflow"."_pgboss_pending_jobs"
-      `;
-      for (const job of jobs) {
+      ) AS exists`
+    );
+    if (hasStaging.rows[0]?.exists) {
+      const jobs = await pool.query(
+        `SELECT name, data, singleton_key, retry_limit
+        FROM "workflow"."_pgboss_pending_jobs"`
+      );
+      for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
           maxAttempts: job.retry_limit ?? 3,
         });
       }
-      await postgres`DROP TABLE "workflow"."_pgboss_pending_jobs"`;
+      await pool.query(`DROP TABLE "workflow"."_pgboss_pending_jobs"`);
       return;
     }
 
     // Scenario B: Drizzle migration didn't run — pgboss schema still exists
-    const hasPgBoss = await postgres`
-      SELECT EXISTS (
+    const hasPgBoss = await pool.query(
+      `SELECT EXISTS (
         SELECT 1 FROM information_schema.schemata
         WHERE schema_name = 'pgboss'
-      ) AS exists
-    `;
-    if (hasPgBoss[0].exists) {
-      const jobs = await postgres`
-        SELECT name, data, singleton_key, retry_limit
+      ) AS exists`
+    );
+    if (hasPgBoss.rows[0]?.exists) {
+      const jobs = await pool.query(
+        `SELECT name, data, singleton_key, retry_limit
         FROM pgboss.job
-        WHERE state IN ('created', 'retry')
-      `;
-      for (const job of jobs) {
+        WHERE state IN ('created', 'retry')`
+      );
+      for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
           maxAttempts: job.retry_limit ?? 3,
         });
       }
-      await postgres`DROP SCHEMA pgboss CASCADE`;
+      await pool.query(`DROP SCHEMA pgboss CASCADE`);
     }
   }
 
@@ -302,7 +302,7 @@ export function createQueue(
       startPromise = (async () => {
         try {
           workerUtils = await makeWorkerUtils({
-            connectionString: config.connectionString,
+            pgPool: pool,
             logger: graphileLogger,
           });
           await workerUtils.migrate();
@@ -462,7 +462,7 @@ export function createQueue(
     }
 
     runner = await run({
-      connectionString: config.connectionString,
+      pgPool: pool,
       concurrency: config.queueConcurrency || 10,
       logger: graphileLogger,
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)

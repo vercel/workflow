@@ -1,4 +1,10 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -19,7 +25,7 @@ describe('resolveWorkflowAliasRelativePath', () => {
   beforeEach(() => {
     clearWorkflowAliasResolutionCache();
     testRoot = mkdtempSync(join(tmpdir(), 'workflow-alias-'));
-    workingDir = join(testRoot, 'app');
+    workingDir = join(testRoot, 'project');
     mkdirSync(workingDir, { recursive: true });
   });
 
@@ -64,5 +70,27 @@ describe('resolveWorkflowAliasRelativePath', () => {
     await expect(
       resolveWorkflowAliasRelativePath(externalFilePath, workingDir)
     ).resolves.toBeUndefined();
+  });
+
+  it('maps symlinked app files to app/* aliases', async () => {
+    const externalAppDir = join(testRoot, 'external', 'app');
+    const externalFilePath = join(
+      externalAppDir,
+      '.well-known',
+      'agent',
+      'v1',
+      'steps.ts'
+    );
+    writeFile(externalFilePath);
+
+    symlinkSync(
+      externalAppDir,
+      join(workingDir, 'app'),
+      process.platform === 'win32' ? 'junction' : 'dir'
+    );
+
+    await expect(
+      resolveWorkflowAliasRelativePath(externalFilePath, workingDir)
+    ).resolves.toBe('app/.well-known/agent/v1/steps.ts');
   });
 });

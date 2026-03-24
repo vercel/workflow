@@ -96,6 +96,44 @@ export function decodeFormatPrefix(data: Uint8Array | unknown): {
  */
 export const ENCRYPTED_PLACEHOLDER = '\u{1F512} Encrypted';
 
+// ---------------------------------------------------------------------------
+// Expired data detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a plain object is `{ expiredAt: "<ISO date>" }` — a single-key
+ * object with a string `expiredAt` value.
+ */
+function isExpiredObject(data: unknown): data is { expiredAt: string } {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return false;
+  }
+  const keys = Object.keys(data);
+  return (
+    keys.length === 1 &&
+    keys[0] === 'expiredAt' &&
+    typeof (data as Record<string, unknown>).expiredAt === 'string'
+  );
+}
+
+/**
+ * Check if a hydrated value is an expired data stub from the server.
+ *
+ * The server replaces expired ref fields with a devalue-encoded stub
+ * (`makeExpiredStub`) that deserializes to `[{ expiredAt: "<ISO date>" }]`
+ * after `unflatten` (array-wrapped due to backwards-compatible encoding).
+ * Also matches the unwrapped `{ expiredAt: "..." }` form for robustness.
+ */
+export function isExpiredStub(data: unknown): boolean {
+  // Direct object form: { expiredAt: "..." }
+  if (isExpiredObject(data)) return true;
+  // Array-wrapped form from devalue unflatten: [{ expiredAt: "..." }]
+  if (Array.isArray(data) && data.length === 1 && isExpiredObject(data[0])) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Check if a binary value has the 'encr' format prefix indicating encryption.
  * Browser-safe — does not depend on the full serialization module.
