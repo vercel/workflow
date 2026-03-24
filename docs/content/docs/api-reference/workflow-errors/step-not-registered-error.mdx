@@ -42,33 +42,15 @@ export default StepNotRegisteredError;`}
 
 Type-safe check for `StepNotRegisteredError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
+<Callout>
+The `.is()` method works in server-side Node.js code (API routes, middleware, hooks). Inside `"use workflow"` functions, step errors arrive deserialized from the event log and won't be actual `StepNotRegisteredError` instances — use `error.message` matching instead. See the [troubleshooting page](/docs/errors/step-not-registered) for workflow-side error handling examples.
+</Callout>
+
 ```typescript
 import { StepNotRegisteredError } from "workflow/errors"
 declare const error: unknown; // @setup
 
 if (StepNotRegisteredError.is(error)) {
   // error is typed as StepNotRegisteredError
-}
-```
-
-## Examples
-
-### Handle missing step in workflow
-
-Since `StepNotRegisteredError` causes the step to fail like a `FatalError`, you can catch it in your workflow code:
-
-```typescript lineNumbers
-declare function processPayment(orderId: string): Promise<any>; // @setup
-
-export async function myWorkflow() {
-  "use workflow";
-
-  try {
-    const result = await processPayment("order-123");
-    return { success: true, result };
-  } catch (error) {
-    // Step failure (including not registered) is caught here
-    return { success: false, error: String(error) };
-  }
 }
 ```

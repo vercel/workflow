@@ -2,8 +2,8 @@ import {
   HookConflictError,
   RUN_ERROR_CODES,
   WorkflowNotRegisteredError,
-  WorkflowWorldError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import { classifyRunError } from './classify-error.js';

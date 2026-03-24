@@ -42,6 +42,10 @@ export default WorkflowNotRegisteredError;`}
 
 Type-safe check for `WorkflowNotRegisteredError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
 
+<Callout>
+The `.is()` method works in server-side Node.js code (API routes, middleware). When checking the error from `run.returnValue`, use `WorkflowRunFailedError.is()` and inspect `error.cause` — the underlying error is deserialized from the event log.
+</Callout>
+
 ```typescript
 import { WorkflowNotRegisteredError } from "workflow/errors"
 declare const error: unknown; // @setup
