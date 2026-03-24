@@ -893,6 +893,47 @@ export async function errorFatalCatchable() {
   }
 }
 
+// ------------------------------------------------------------
+// SECTION 4: NOT REGISTERED ERRORS
+// Tests for step/workflow not registered in the current deployment
+// ------------------------------------------------------------
+
+/**
+ * Test: step not registered causes the step to fail (like FatalError),
+ * and the workflow can catch the error gracefully.
+ *
+ * This manually invokes useStep with a step ID that doesn't exist in the
+ * deployment bundle, simulating what would happen if a build/bundling issue
+ * caused a step to be missing.
+ */
+export async function stepNotRegisteredCatchable() {
+  'use workflow';
+  // Manually invoke a step that doesn't exist in the deployment.
+  // The SWC transform generates exactly this pattern for real step calls,
+  // so this is equivalent to calling a step that wasn't bundled.
+  const ghost = (globalThis as any)[Symbol.for('WORKFLOW_USE_STEP')](
+    'step//./workflows/99_e2e//nonExistentStep'
+  );
+  try {
+    await ghost();
+    return { caught: false, error: null };
+  } catch (e: any) {
+    return { caught: true, error: e.message };
+  }
+}
+
+/**
+ * Test: step not registered causes the run to fail when not caught.
+ */
+export async function stepNotRegisteredUncaught() {
+  'use workflow';
+  const ghost = (globalThis as any)[Symbol.for('WORKFLOW_USE_STEP')](
+    'step//./workflows/99_e2e//anotherNonExistentStep'
+  );
+  // Don't catch — the step failure should propagate and fail the run
+  return await ghost();
+}
+
 // ============================================================
 // STATIC METHOD STEP/WORKFLOW TESTS
 // ============================================================

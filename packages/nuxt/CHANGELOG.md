@@ -1,5 +1,14 @@
 # @workflow/nuxt
 
+## 4.0.1-beta.56
+
+### Patch Changes
+
+- [#1501](https://github.com/vercel/workflow/pull/1501) [`1b4a3ab`](https://github.com/vercel/workflow/commit/1b4a3abbf15cfee1db9da28a7ab7dd177c3e91ee) Thanks [@pranaygp](https://github.com/pranaygp)! - Update nest, nitro, nuxt and sveltekit integration dependencies
+
+- Updated dependencies [[`1b4a3ab`](https://github.com/vercel/workflow/commit/1b4a3abbf15cfee1db9da28a7ab7dd177c3e91ee)]:
+  - @workflow/nitro@4.0.1-beta.67
+
 ## 4.0.1-beta.55
 
 ### Patch Changes

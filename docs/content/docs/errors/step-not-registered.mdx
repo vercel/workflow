@@ -1,0 +1,66 @@
+---
+title: step-not-registered
+description: A step function is not registered in the current deployment.
+type: troubleshooting
+summary: Resolve step not registered errors caused by build issues.
+prerequisites:
+  - /docs/foundations/steps
+related:
+  - /docs/errors/workflow-not-registered
+  - /docs/api-reference/workflow-errors/step-not-registered-error
+---
+
+This error occurs when the Workflow runtime tries to execute a step function that is not registered in the current deployment. When this happens, the step fails (like a `FatalError`) and control is passed back to the workflow function, which can optionally handle the failure.
+
+## Error Message
+
+```
+Step "<stepName>" is not registered in the current deployment.
+This usually indicates a build or bundling issue that caused the step
+to not be included in the deployment.
+```
+
+## Why This Happens
+
+Workflow runs are pegged to a specific deployment, so this error is not caused by newer deployments overriding the running code. Instead, it means the step function was not included in the deployment's workflow bundle at build time.
+
+This is an **infrastructure error**, not a user code error.
+
+## Common Causes
+
+### Build tooling issue
+
+Something went wrong during the build process that caused the step function to not be included in the workflow bundle. Check your build logs for errors related to workflow bundling. Common issues include:
+
+- The step file is missing a valid `"use step"` directive
+- The step function is not exported from the workflow file
+- An esbuild or SWC plugin error silently excluded the step
+
+### Step removed from the codebase
+
+The step function was deleted or its `"use step"` directive was removed, but the workflow still references it. Ensure all steps referenced by your workflow are present in the codebase.
+
+## How to Resolve
+
+1. **Check your build logs:** Look for errors or warnings related to workflow bundling. Ensure the step file contains a valid `"use step"` directive and is properly exported.
+
+2. **Verify the step exists:** Confirm the step function is present in the workflow file and has the `"use step"` directive.
+
+3. **Handle it in your workflow:** Since the step fails like a `FatalError`, you can catch it in your workflow code:
+
+```typescript lineNumbers
+declare function processPayment(orderId: string): Promise<any>; // @setup
+
+export async function myWorkflow() {
+  "use workflow";
+
+  try {
+    const result = await processPayment("order-123");
+    return { success: true, result };
+  } catch (error) {
+    // Step failure (including not registered) is caught here
+    console.error("Step failed:", error);
+    return { success: false, error: String(error) };
+  }
+}
+```

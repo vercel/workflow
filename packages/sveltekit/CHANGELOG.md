@@ -1,5 +1,19 @@
 # @workflow/sveltekit
 
+## 4.0.0-beta.61
+
+### Patch Changes
+
+- [#1501](https://github.com/vercel/workflow/pull/1501) [`1b4a3ab`](https://github.com/vercel/workflow/commit/1b4a3abbf15cfee1db9da28a7ab7dd177c3e91ee) Thanks [@pranaygp](https://github.com/pranaygp)! - Update nest, nitro, nuxt and sveltekit integration dependencies
+
+- [#1344](https://github.com/vercel/workflow/pull/1344) [`beccbc4`](https://github.com/vercel/workflow/commit/beccbc4298f434a4ffb9563c4f832f2230016f40) Thanks [@pranaygp](https://github.com/pranaygp)! - Remove VQS maxDeliveries cap and enforce max delivery limit in workflow/step handlers with graceful failure
+
+- Updated dependencies [[`beccbc4`](https://github.com/vercel/workflow/commit/beccbc4298f434a4ffb9563c4f832f2230016f40), [`77fd9ad`](https://github.com/vercel/workflow/commit/77fd9ad3556544a0efd7d6c4d00eedfc03dc10e5), [`5010ebe`](https://github.com/vercel/workflow/commit/5010ebe7c5f8e2f4921e99cc22c7360ae0d49097), [`992d768`](https://github.com/vercel/workflow/commit/992d768f8026846bc2587892fc06e998d8c1fd8e), [`6cce021`](https://github.com/vercel/workflow/commit/6cce021503b80db49fea1d0085ecb304678cfc8a), [`977b7e9`](https://github.com/vercel/workflow/commit/977b7e97edabd9b4fb800a5f6e1037dc78ca3c61)]:
+  - @workflow/builders@4.0.1-beta.63
+  - @workflow/swc-plugin@4.1.0-beta.21
+  - @workflow/rollup@4.0.0-beta.29
+  - @workflow/vite@4.0.0-beta.22
+
 ## 4.0.0-beta.60
 
 ### Patch Changes

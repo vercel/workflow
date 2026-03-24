@@ -1677,22 +1677,6 @@ export async function getNextBuilderDeferred() {
       return Array.from(discoveredSerdeFiles).sort();
     }
 
-    private shouldCopyDeferredSdkStepFile({
-      stepFile,
-      workflowStdlibStepFilePath,
-    }: {
-      stepFile: string;
-      workflowStdlibStepFilePath: string | null;
-    }): boolean {
-      if (!workflowStdlibStepFilePath) {
-        return false;
-      }
-      return (
-        this.normalizeDiscoveredFilePath(stepFile) ===
-        workflowStdlibStepFilePath
-      );
-    }
-
     private async createResponseBuiltinsStepFile({
       stepsRouteDir,
     }: {
@@ -1905,19 +1889,10 @@ export async function getNextBuilderDeferred() {
       const serdeOnlyFiles = serdeFiles.filter(
         (file) => !stepFileSet.has(file)
       );
-      const workflowStdlibStepFilePath =
-        this.resolveWorkflowStdlibStepFilePath();
-      // Keep most SDK step sources imported from package context so transitive
-      // SDK imports resolve correctly in staged/tarball workbenches. The
-      // stdlib fetch step is copied so it can still be transformed in step mode.
-      const copiedStepSourceFiles = stepFiles.filter(
-        (stepFile) =>
-          !isWorkflowSdkFile(stepFile) ||
-          this.shouldCopyDeferredSdkStepFile({
-            stepFile,
-            workflowStdlibStepFilePath,
-          })
-      );
+      // Copy all discovered step sources so they are transformed in step mode.
+      // Importing raw node_modules files directly can bypass loader transforms,
+      // which prevents step registrars from being emitted.
+      const copiedStepSourceFiles = stepFiles;
       const copiedDiscoveredStepFiles = await this.copyDiscoveredStepFiles({
         stepFiles: copiedStepSourceFiles,
         stepsRouteDir,
@@ -1931,7 +1906,7 @@ export async function getNextBuilderDeferred() {
         ...copiedDiscoveredStepFiles,
       ];
       const manifestStepFiles = Array.from(
-        new Set([...copiedStepSourceFiles, responseBuiltinsStepFilePath])
+        new Set([...stepFiles, responseBuiltinsStepFilePath])
       ).sort();
 
       const stepRouteFile = join(stepsRouteDir, routeFileName);

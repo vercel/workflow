@@ -1104,6 +1104,71 @@ describe('e2e', () => {
         }
       );
     });
+
+    describe('not registered', () => {
+      test(
+        'WorkflowNotRegisteredError fails the run when workflow does not exist',
+        { timeout: 60_000 },
+        async () => {
+          // Start a run with a workflowId that doesn't exist in the deployment bundle.
+          // This simulates starting a run against a deployment that doesn't have the workflow.
+          const run = await start(
+            {
+              workflowId: 'workflow//./workflows/99_e2e//nonExistentWorkflow',
+            } as any,
+            []
+          );
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.message).toContain('is not registered');
+          expect(error.cause.code).toBe('RUNTIME_ERROR');
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('failed');
+        }
+      );
+
+      test(
+        'StepNotRegisteredError fails the step but workflow can catch it',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(await e2e('stepNotRegisteredCatchable'), []);
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.error).toContain('is not registered');
+
+          // Verify workflow completed successfully (error was caught)
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+
+          // Verify the step itself failed
+          const { json: steps } = await cliInspectJson(
+            `steps --runId ${run.runId}`
+          );
+          const ghostStep = steps.find((s: any) =>
+            s.stepName.includes('nonExistentStep')
+          );
+          expect(ghostStep).toBeDefined();
+          expect(ghostStep.status).toBe('failed');
+        }
+      );
+
+      test(
+        'StepNotRegisteredError fails the run when not caught in workflow',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(await e2e('stepNotRegisteredUncaught'), []);
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.message).toContain('is not registered');
+        }
+      );
+    });
   });
   // ==================== END ERROR HANDLING TESTS ====================
 

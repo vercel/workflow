@@ -4,10 +4,11 @@ import {
   FatalError,
   RetryableError,
   RunExpiredError,
+  StepNotRegisteredError,
   ThrottleError,
   TooEarlyError,
-  WorkflowWorldError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
@@ -158,23 +159,15 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...getQueueOverhead({ requestedAt }),
           });
 
+          // Note: Step function validation happens after step_started so we can
+          // properly fail the step (not the run) if the function is not registered.
+          // This allows the workflow to handle the step failure gracefully.
           const stepFn = getStepFunction(stepName);
-          if (!stepFn) {
-            throw new Error(`Step "${stepName}" not found`);
-          }
-          if (typeof stepFn !== 'function') {
-            throw new Error(
-              `Step "${stepName}" is not a function (got ${typeof stepFn})`
-            );
-          }
-
-          const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
 
           span?.setAttributes({
             ...Attribute.WorkflowName(workflowName),
             ...Attribute.WorkflowRunId(workflowRunId),
             ...Attribute.StepId(stepId),
-            ...Attribute.StepMaxRetries(maxRetries),
             ...Attribute.StepTracePropagated(!!traceContext),
           });
 
@@ -281,6 +274,75 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
           span?.setAttributes({
             ...Attribute.StepStatus(step.status),
+          });
+
+          // Validate step function exists AFTER step_started so we can
+          // properly fail the step (not the run) if the function is missing.
+          // This allows the workflow to handle the step failure gracefully,
+          // similar to how FatalError is handled.
+          if (!stepFn || typeof stepFn !== 'function') {
+            const err = new StepNotRegisteredError(stepName);
+
+            runtimeLogger.error(
+              'Step function not registered, failing step (not run)',
+              {
+                workflowRunId,
+                stepName,
+                stepId,
+                error: err.message,
+              }
+            );
+
+            // Fail the step via event (event-sourced architecture)
+            // This matches the FatalError pattern - fail the step and re-queue workflow
+            try {
+              await world.events.create(
+                workflowRunId,
+                {
+                  eventType: 'step_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                  eventData: {
+                    error: err.message,
+                    stack: err.stack,
+                  },
+                },
+                { requestId }
+              );
+            } catch (stepFailErr) {
+              if (EntityConflictError.is(stepFailErr)) {
+                runtimeLogger.info(
+                  'Tried failing step for missing function, but step has already finished.',
+                  {
+                    workflowRunId,
+                    stepId,
+                    stepName,
+                    message: stepFailErr.message,
+                  }
+                );
+                return;
+              }
+              throw stepFailErr;
+            }
+
+            span?.setAttributes({
+              ...Attribute.StepStatus('failed'),
+              ...Attribute.StepFatalError(true),
+            });
+
+            // Re-invoke the workflow to handle the failed step
+            await queueMessage(world, getWorkflowQueueName(workflowName), {
+              runId: workflowRunId,
+              traceCarrier: await serializeTraceCarrier(),
+              requestedAt: new Date(),
+            });
+            return;
+          }
+
+          const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+
+          span?.setAttributes({
+            ...Attribute.StepMaxRetries(maxRetries),
           });
 
           let result: unknown;
