@@ -17,9 +17,9 @@
     "node": ">=20.0.0"
   },
   "dependencies": {
-    "@nestjs/common": "^11.0.17",
-    "@nestjs/core": "^11.0.1",
-    "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/common": "^11.1.17",
+    "@nestjs/core": "^11.1.17",
+    "@nestjs/platform-express": "^11.1.17",
     "@workflow/nest": "workspace:*",
     "@workflow/world-postgres": "workspace:*",
     "ai": "catalog:",
