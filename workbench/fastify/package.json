@@ -16,7 +16,7 @@
     "start": "node .output/server/index.mjs"
   },
   "dependencies": {
-    "fastify": "^5.6.2",
+    "fastify": "^5.8.2",
     "nitro": "catalog:"
   },
   "devDependencies": {
