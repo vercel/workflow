@@ -1,4 +1,3 @@
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"classes":{"input.js":{"Circle":{"classId":"class//./input//Circle"},"Rectangle":{"classId":"class//./input//Rectangle"},"Triangle":{"classId":"class//./input//Triangle"}}}}*/;
 // Test custom serialization with locally defined symbols using Symbol.for()
 const WORKFLOW_SERIALIZE = Symbol.for('workflow-serialize');
@@ -55,6 +54,33 @@ export class Triangle {
         return new Triangle(data.a, data.b, data.c);
     }
 }
-registerSerializationClass("class//./input//Circle", Circle);
-registerSerializationClass("class//./input//Rectangle", Rectangle);
-registerSerializationClass("class//./input//Triangle", Triangle);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", {
+        value: __wf_id,
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+})(Circle, "class//./input//Circle");
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", {
+        value: __wf_id,
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+})(Rectangle, "class//./input//Rectangle");
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", {
+        value: __wf_id,
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+})(Triangle, "class//./input//Triangle");

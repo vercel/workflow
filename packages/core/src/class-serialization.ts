@@ -30,7 +30,11 @@ function getRegistry(global: Record<string, any> = globalThis): ClassRegistry {
 /**
  * Register a class constructor for serialization.
  * This allows class constructors to be deserialized by looking up the classId.
- * Called by the SWC plugin in both step mode and workflow mode.
+ *
+ * Note: The SWC plugin now inlines equivalent registration logic as a
+ * self-contained IIFE (using the same globalThis Symbol-keyed registry),
+ * so this function is no longer imported by generated code. It is retained
+ * for programmatic use and testing.
  *
  * Also sets the `classId` property on the class so the serializer can find it
  * when serializing instances (e.g., step return values).
