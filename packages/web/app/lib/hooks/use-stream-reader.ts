@@ -18,6 +18,85 @@ export interface StreamChunk {
 const FRAME_HEADER_SIZE = 4;
 
 /**
+ * Maximum number of entries (array elements / object keys) to keep when
+ * sanitizing data for the tree inspector. Beyond this, items are replaced
+ * with a "…N more" summary so react-inspector doesn't create thousands
+ * of DOM nodes and kill the browser tab.
+ */
+const MAX_DISPLAY_ENTRIES = 200;
+const MAX_DISPLAY_DEPTH = 6;
+
+/**
+ * Prepare a hydrated value for display in the stream viewer.
+ *
+ * Typed arrays become compact summaries, large arrays/objects are trimmed,
+ * and everything else passes through unchanged. This keeps the data
+ * inspectable via react-inspector while preventing tab crashes on large
+ * payloads (e.g., a 87KB Uint8Array serializes to 87K object keys).
+ */
+function sanitizeForDisplay(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined) return value;
+
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    const ta = value as unknown as {
+      length: number;
+      constructor: { name: string };
+    } & ArrayLike<number>;
+    const name = ta.constructor.name;
+    const preview = Array.from(
+      { length: Math.min(ta.length, 8) },
+      (_, i) => ta[i]
+    );
+    const suffix = ta.length > 8 ? ', …' : '';
+    return `${name}(${ta.length}) [${preview.join(', ')}${suffix}]`;
+  }
+
+  if (value instanceof ArrayBuffer) {
+    return `ArrayBuffer(${value.byteLength})`;
+  }
+
+  if (depth >= MAX_DISPLAY_DEPTH) {
+    if (Array.isArray(value)) return `Array(${value.length})`;
+    if (typeof value === 'object') return '{…}';
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length <= MAX_DISPLAY_ENTRIES) {
+      return value.map((v) => sanitizeForDisplay(v, depth + 1));
+    }
+    const trimmed = value
+      .slice(0, MAX_DISPLAY_ENTRIES)
+      .map((v) => sanitizeForDisplay(v, depth + 1));
+    trimmed.push(`… ${value.length - MAX_DISPLAY_ENTRIES} more items`);
+    return trimmed;
+  }
+
+  if (typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>);
+    const out: Record<string, unknown> = {};
+    const limit = Math.min(keys.length, MAX_DISPLAY_ENTRIES);
+    for (let i = 0; i < limit; i++) {
+      out[keys[i]] = sanitizeForDisplay(
+        (value as Record<string, unknown>)[keys[i]],
+        depth + 1
+      );
+    }
+    if (keys.length > MAX_DISPLAY_ENTRIES) {
+      out[`… ${keys.length - MAX_DISPLAY_ENTRIES} more keys`] = '…';
+    }
+    return out;
+  }
+
+  return value;
+}
+
+const yieldToMain = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, 0));
+
+const YIELD_EVERY_N_FRAMES = 64;
+
+/**
  * Detect stream encoding from the first bytes.
  *
  * - **framed**: Current format (≥ 4.1.0-beta.56) — 4-byte big-endian length +
@@ -142,12 +221,17 @@ export function useStreamReader(
             continue;
           }
 
-          // Framed mode: process length-prefixed frames
-          while (buffer.length >= FRAME_HEADER_SIZE) {
+          // Framed mode: parse length-prefixed frames using an offset to
+          // avoid O(n²) copies from slicing the entire remaining buffer on
+          // every iteration.
+          let offset = 0;
+          let framesInBatch = 0;
+
+          while (offset + FRAME_HEADER_SIZE <= buffer.length) {
             const view = new DataView(
               buffer.buffer,
-              buffer.byteOffset,
-              buffer.byteLength
+              buffer.byteOffset + offset,
+              buffer.byteLength - offset
             );
             const frameLength = view.getUint32(0, false);
 
@@ -155,15 +239,15 @@ export function useStreamReader(
               break;
             }
 
-            if (buffer.length < FRAME_HEADER_SIZE + frameLength) {
+            if (offset + FRAME_HEADER_SIZE + frameLength > buffer.length) {
               break;
             }
 
             const frameData = buffer.slice(
-              FRAME_HEADER_SIZE,
-              FRAME_HEADER_SIZE + frameLength
+              offset + FRAME_HEADER_SIZE,
+              offset + FRAME_HEADER_SIZE + frameLength
             );
-            buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
+            offset += FRAME_HEADER_SIZE + frameLength;
 
             try {
               const { format, payload } = decodeFormatPrefix(frameData);
@@ -188,16 +272,31 @@ export function useStreamReader(
               const hydrated = hydrateData(dataToHydrate, revivers);
               if (mounted && hydrated !== undefined && hydrated !== null) {
                 const chunkId = chunkIdRef.current++;
-                const text =
-                  typeof hydrated === 'string'
-                    ? hydrated
-                    : JSON.stringify(hydrated, null, 2);
+                let text: string;
+                try {
+                  if (typeof hydrated === 'string') {
+                    text = hydrated;
+                  } else {
+                    const safe = sanitizeForDisplay(hydrated);
+                    text = JSON.stringify(safe, null, 2);
+                  }
+                } catch {
+                  text = '[Serialization Error]';
+                }
                 setChunks((prev) => [...prev, { id: chunkId, text }]);
               }
             } catch (err) {
               console.error('Failed to process stream frame:', err);
             }
+
+            framesInBatch++;
+            if (framesInBatch % YIELD_EVERY_N_FRAMES === 0) {
+              await yieldToMain();
+              if (abortController.signal.aborted || !mounted) break;
+            }
           }
+
+          buffer = buffer.slice(offset);
         }
       } catch (err) {
         if (abortController.signal.aborted) return;
