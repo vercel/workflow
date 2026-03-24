@@ -1340,19 +1340,35 @@ export async function getNextBuilderDeferred() {
       return targetPath;
     }
 
+    /**
+     * Bare-specifier rewrites for copied step files.
+     * Some internal packages use imports that aren't directly resolvable from
+     * the generated step file location (e.g., @workflow/core is not a direct
+     * dependency of user apps). Map these to equivalent resolvable specifiers.
+     */
+    private readonly bareSpecifierRewrites: Record<string, string> = {
+      '@workflow/core/runtime': 'workflow/runtime',
+    };
+
     private rewriteRelativeImportsForCopiedStep(
       source: string,
       sourceFilePath: string,
       copiedFilePath: string,
       copiedStepFileBySourcePath: Map<string, string>
     ): string {
-      const rewriteSpecifier = (specifier: string) =>
-        this.rewriteCopiedStepImportSpecifier(
+      const rewriteSpecifier = (specifier: string) => {
+        // Check bare specifier rewrites first
+        const bareRewrite = this.bareSpecifierRewrites[specifier];
+        if (bareRewrite) {
+          return bareRewrite;
+        }
+        return this.rewriteCopiedStepImportSpecifier(
           specifier,
           sourceFilePath,
           copiedFilePath,
           copiedStepFileBySourcePath
         );
+      };
       const rewritePattern = (currentSource: string, pattern: RegExp): string =>
         currentSource.replace(
           pattern,
@@ -1889,6 +1905,22 @@ export async function getNextBuilderDeferred() {
       const serdeOnlyFiles = serdeFiles.filter(
         (file) => !stepFileSet.has(file)
       );
+      // Resolve the workflow/internal/builtins module — it contains built-in
+      // step functions (start, Run.*) that the workflow VM expects. The base
+      // builder includes it automatically via esbuild, but the deferred builder
+      // needs to explicitly add it to the step files list so its step
+      // registrations are emitted with the correct module-specifier-based IDs.
+      try {
+        const builtinsPath = require.resolve('workflow/internal/builtins', {
+          paths: [this.config.workingDir],
+        });
+        if (existsSync(builtinsPath) && !stepFiles.includes(builtinsPath)) {
+          stepFiles.push(builtinsPath);
+        }
+      } catch {
+        // workflow/internal/builtins may not be available (e.g., older workflow version)
+      }
+
       // Copy all discovered step sources so they are transformed in step mode.
       // Importing raw node_modules files directly can bypass loader transforms,
       // which prevents step registrars from being emitted.

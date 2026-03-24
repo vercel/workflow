@@ -1,5 +1,6 @@
 export {
   createWorld,
+  getRun,
   getWorld,
   getWorldHandlers,
   healthCheck,
@@ -7,6 +8,7 @@ export {
   type HealthCheckOptions,
   type HealthCheckResult,
   setWorld,
+  start,
   stepEntrypoint,
   workflowEntrypoint,
 } from '@workflow/core/runtime';
