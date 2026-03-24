@@ -911,7 +911,7 @@ export async function stepNotRegisteredCatchable() {
   // Manually invoke a step that doesn't exist in the deployment.
   // The SWC transform generates exactly this pattern for real step calls,
   // so this is equivalent to calling a step that wasn't bundled.
-  const ghost = globalThis[Symbol.for('WORKFLOW_USE_STEP')](
+  const ghost = (globalThis as any)[Symbol.for('WORKFLOW_USE_STEP')](
     'step//./workflows/99_e2e//nonExistentStep'
   );
   try {
@@ -927,7 +927,7 @@ export async function stepNotRegisteredCatchable() {
  */
 export async function stepNotRegisteredUncaught() {
   'use workflow';
-  const ghost = globalThis[Symbol.for('WORKFLOW_USE_STEP')](
+  const ghost = (globalThis as any)[Symbol.for('WORKFLOW_USE_STEP')](
     'step//./workflows/99_e2e//anotherNonExistentStep'
   );
   // Don't catch — the step failure should propagate and fail the run
