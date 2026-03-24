@@ -1,11 +1,11 @@
 {
   "title": "Getting Started",
   "pages": [
+    "next",
     "astro",
     "express",
     "fastify",
     "hono",
-    "next",
     "nitro",
     "nuxt",
     "sveltekit",
