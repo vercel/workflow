@@ -25,19 +25,19 @@ for (let i = 0; i < args.length; i++) {
   }
 }
 
-// Find all e2e result JSON files
-function findResultFiles(dir) {
+// Find JSON files by prefix pattern
+function findJsonFiles(dir, prefix, excludePrefixes = []) {
   const files = [];
   try {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
-        files.push(...findResultFiles(fullPath));
+        files.push(...findJsonFiles(fullPath, prefix, excludePrefixes));
       } else if (
-        entry.name.startsWith('e2e-') &&
-        !entry.name.startsWith('e2e-metadata-') &&
-        entry.name.endsWith('.json')
+        entry.name.startsWith(prefix) &&
+        entry.name.endsWith('.json') &&
+        !excludePrefixes.some((ep) => entry.name.startsWith(ep))
       ) {
         files.push(fullPath);
       }
@@ -46,6 +46,15 @@ function findResultFiles(dir) {
     // Directory doesn't exist or can't be read
   }
   return files;
+}
+
+// Find all e2e result JSON files
+function findResultFiles(dir) {
+  return findJsonFiles(dir, 'e2e-', [
+    'e2e-metadata-',
+    'e2e-failures-',
+    'e2e-diagnostics-',
+  ]);
 }
 
 // Find all e2e metadata JSON files
@@ -91,6 +100,50 @@ function loadMetadata(dir) {
   }
 
   return metadata;
+}
+
+// Load diagnostics sidecar files (per-test run ID + dashboard URL mapping)
+function loadDiagnostics(dir) {
+  // Map of testName -> { runId, dashboardUrl, timestamp }
+  const diagnostics = new Map();
+  const files = findJsonFiles(dir, 'e2e-diagnostics-');
+
+  for (const file of files) {
+    try {
+      const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      for (const entry of entries) {
+        if (entry.testName && entry.runId) {
+          diagnostics.set(entry.testName, entry);
+        }
+      }
+    } catch (e) {
+      // Skip invalid files
+    }
+  }
+
+  return diagnostics;
+}
+
+// Load failure sidecar files (enriched per-test failure info from github-reporter)
+function loadFailures(dir) {
+  // Map of testName -> { runId, dashboardUrl, status, errorMessage }
+  const failures = new Map();
+  const files = findJsonFiles(dir, 'e2e-failures-');
+
+  for (const file of files) {
+    try {
+      const entries = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      for (const entry of entries) {
+        if (entry.testName) {
+          failures.set(entry.testName, entry);
+        }
+      }
+    } catch (e) {
+      // Skip invalid files
+    }
+  }
+
+  return failures;
 }
 
 // Generate observability URL for a test
@@ -353,7 +406,13 @@ const categoryOrder = [
 ];
 
 // Render aggregated PR comment summary
-function renderAggregatedSummary(categories, overallSummary, metadata) {
+function renderAggregatedSummary(
+  categories,
+  overallSummary,
+  metadata,
+  diagnostics,
+  failures
+) {
   const total =
     overallSummary.totalPassed +
     overallSummary.totalFailed +
@@ -433,14 +492,33 @@ function renderAggregatedSummary(categories, overallSummary, metadata) {
         for (const test of tests) {
           // Extract just the test name without "e2e " prefix if present
           const testName = test.name.replace(/^e2e\s+/, '');
-          // Add observability link for vercel-prod tests
-          if (catName === 'vercel-prod') {
-            const obsUrl = getObservabilityUrl(metadata, appName, test.name);
-            if (obsUrl) {
-              console.log(`- \`${testName}\` ([🔍 observability](${obsUrl}))`);
-            } else {
-              console.log(`- \`${testName}\``);
-            }
+
+          // Look up enriched diagnostics for this test.
+          // Only show observability links for vercel-prod tests — other
+          // categories (local, community) don't run on Vercel's world
+          // backend so there's no dashboard to link to.
+          const isVercelProd = catName === 'vercel-prod';
+          const diag = diagnostics.get(test.name) || diagnostics.get(testName);
+          const failureInfo = failures.get(testName) || failures.get(test.name);
+          const obsUrl = isVercelProd
+            ? getObservabilityUrl(metadata, appName, test.name)
+            : null;
+          const dashboardUrl = isVercelProd
+            ? diag?.dashboardUrl || failureInfo?.dashboardUrl || obsUrl
+            : null;
+          const runId = diag?.runId || failureInfo?.runId;
+          const runStatus = failureInfo?.status;
+
+          // Build the line with available info
+          const links = [];
+          if (dashboardUrl) links.push(`[🔍 observability](${dashboardUrl})`);
+
+          if (links.length > 0 || runId) {
+            const parts = [`\`${testName}\``];
+            if (runId) parts.push(`\`${runId}\``);
+            if (runStatus) parts.push(`status: \`${runStatus}\``);
+            if (links.length > 0) parts.push(links.join(' '));
+            console.log(`- ${parts.join(' | ')}`);
           } else {
             console.log(`- \`${testName}\``);
           }
@@ -498,7 +576,15 @@ if (resultFiles.length === 0) {
 if (mode === 'aggregate') {
   const { categories, overallSummary } = aggregateByCategory(resultFiles);
   const metadata = loadMetadata(resultsDir);
-  renderAggregatedSummary(categories, overallSummary, metadata);
+  const diagnostics = loadDiagnostics(resultsDir);
+  const failures = loadFailures(resultsDir);
+  renderAggregatedSummary(
+    categories,
+    overallSummary,
+    metadata,
+    diagnostics,
+    failures
+  );
 
   // Exit with non-zero if any tests failed
   if (overallSummary.totalFailed > 0) {

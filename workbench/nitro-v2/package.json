@@ -19,7 +19,7 @@
     "ai": "catalog:",
     "h3": "^1.15.4",
     "lodash.chunk": "^4.2.0",
-    "nitropack": "^2.12.7",
+    "nitropack": "^2.13.1",
     "openai": "^6.6.0",
     "zod": "catalog:"
   }

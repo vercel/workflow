@@ -16,4 +16,5 @@ serde_json  = { workspace = true }
 swc_core    = { workspace = true, features = ["ecma_plugin_transform"] }
 
 [dev-dependencies]
-testing     = { workspace = true }
+swc_ecma_parser = { workspace = true }
+testing         = { workspace = true }

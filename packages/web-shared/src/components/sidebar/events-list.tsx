@@ -2,6 +2,8 @@
 
 import type { Event } from '@workflow/world';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isExpiredMarker } from '../../lib/hydration';
+import { ErrorCard } from '../ui/error-card';
 import {
   ErrorStackBlock,
   isStructuredErrorWithStack,
@@ -23,10 +25,14 @@ const DATA_EVENT_TYPES = new Set([
   'step_created',
   'step_completed',
   'step_failed',
+  'step_retrying',
   'hook_created',
   'hook_received',
   'run_created',
   'run_completed',
+  'run_failed',
+  'wait_created',
+  'wait_completed',
 ]);
 
 /**
@@ -175,15 +181,11 @@ function EventItem({
 
       {/* Error state */}
       {loadError && (
-        <div
-          className="mt-2 rounded-md border p-2 text-sm"
-          style={{
-            borderColor: 'var(--ds-red-300)',
-            color: 'var(--ds-red-700)',
-          }}
-        >
-          {loadError}
-        </div>
+        <ErrorCard
+          title="Failed to load event data"
+          details={loadError}
+          className="mt-2"
+        />
       )}
 
       {/* Event data */}
@@ -193,6 +195,24 @@ function EventItem({
         </div>
       )}
     </DetailCard>
+  );
+}
+
+/**
+ * Check if an eventData object has only expired marker values in its serialized
+ * sub-fields (result, input, output, metadata, payload). Non-serialized fields
+ * like `resumeAt` or `reason` are ignored.
+ */
+function hasOnlyExpiredFields(data: unknown): boolean {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return false;
+  }
+  const record = data as Record<string, unknown>;
+  const serializedKeys = ['result', 'input', 'output', 'metadata', 'payload'];
+  const presentKeys = serializedKeys.filter((k) => k in record);
+  return (
+    presentKeys.length > 0 &&
+    presentKeys.every((k) => isExpiredMarker(record[k]))
   );
 }
 
@@ -207,6 +227,24 @@ function EventDataBlock({
   eventType: string;
   data: unknown;
 }) {
+  // Expired data — show a simple message instead of the raw stub.
+  // Check both the top-level eventData and nested sub-fields (result, input, etc.)
+  // since the server stubs each ref field independently.
+  if (isExpiredMarker(data) || hasOnlyExpiredFields(data)) {
+    return (
+      <div
+        className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+        style={{
+          borderColor: 'var(--ds-gray-300)',
+          backgroundColor: 'var(--ds-gray-100)',
+          color: 'var(--ds-gray-700)',
+        }}
+      >
+        <span className="font-medium">Data expired</span>
+      </div>
+    );
+  }
+
   // For error events (step_failed, step_retrying), the eventData has the shape
   // { error: StructuredError, stack?: string, ... }. Check both the top-level
   // value and the nested `error` field for a stack trace.
@@ -269,10 +307,10 @@ export function EventsList({
         Events {!isLoading && `(${sortedEvents.length})`}
       </h3>
       {isLoading ? (
-        <div className="flex flex-col gap-3">
-          <Skeleton className="h-[48px] w-full rounded-lg border" />
-          <Skeleton className="h-[48px] w-full rounded-lg border" />
-          <Skeleton className="h-[48px] w-full rounded-lg border" />
+        <div className="flex flex-col gap-4">
+          <Skeleton className="h-9 w-full rounded-md" />
+          <Skeleton className="h-9 w-full rounded-md" />
+          <Skeleton className="h-9 w-full rounded-md" />
         </div>
       ) : null}
       {!isLoading && !error && sortedEvents.length === 0 && (

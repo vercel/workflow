@@ -6,8 +6,8 @@ import type { ModelMessage } from 'ai';
 import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
-import { toast } from 'sonner';
-import { isEncryptedMarker } from '../../lib/hydration';
+import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
+import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
 import { StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
@@ -16,6 +16,7 @@ import {
   isStructuredErrorWithStack,
 } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -194,6 +195,24 @@ function EncryptedFieldBlock() {
   );
 }
 
+/**
+ * Inline display for an expired field — flat label indicating data is no longer available.
+ */
+function ExpiredFieldBlock() {
+  return (
+    <div
+      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'var(--ds-gray-100)',
+        color: 'var(--ds-gray-700)',
+      }}
+    >
+      <span className="font-medium">Data expired</span>
+    </div>
+  );
+}
+
 function JsonBlock(value: unknown) {
   return <CopyableDataBlock data={value} />;
 }
@@ -336,6 +355,16 @@ const localMillisecondTimeOrNull = (value: unknown): string | null => {
   return formatLocalMillisecondTime(date);
 };
 
+const timestampWithTooltipOrNull = (value: unknown): ReactNode | null => {
+  const date = parseDateValue(value);
+  if (!date) return null;
+  return (
+    <TimestampTooltip date={date}>
+      <span>{formatLocalMillisecondTime(date)}</span>
+    </TimestampTooltip>
+  );
+};
+
 interface DisplayContext {
   stepName?: string;
 }
@@ -375,23 +404,24 @@ const attributeToDisplayFn: Record<
   projectId: (_value: unknown) => null,
   environment: (_value: unknown) => null,
   executionContext: (_value: unknown) => null,
-  // Dates
-  // TODO: relative time with tooltips for ISO times
-  createdAt: localMillisecondTimeOrNull,
-  startedAt: localMillisecondTimeOrNull,
-  updatedAt: localMillisecondTimeOrNull,
-  completedAt: localMillisecondTimeOrNull,
-  expiredAt: localMillisecondTimeOrNull,
-  retryAfter: localMillisecondTimeOrNull,
-  resumeAt: localMillisecondTimeOrNull,
+  // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
+  createdAt: timestampWithTooltipOrNull,
+  startedAt: timestampWithTooltipOrNull,
+  updatedAt: timestampWithTooltipOrNull,
+  completedAt: timestampWithTooltipOrNull,
+  expiredAt: timestampWithTooltipOrNull,
+  retryAfter: timestampWithTooltipOrNull,
+  resumeAt: timestampWithTooltipOrNull,
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     return JsonBlock(value);
   },
   input: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     // Check if input has args + closure vars structure
     if (value && typeof value === 'object' && 'args' in value) {
       const { args, closureVars, thisVal } = value as {
@@ -496,6 +526,7 @@ const attributeToDisplayFn: Record<
   output: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     return (
       <DetailCard
         summary="Output"
@@ -508,6 +539,7 @@ const attributeToDisplayFn: Record<
   },
   error: (value: unknown) => {
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
 
     // If the error object has a `stack` field, render it as readable
@@ -536,6 +568,7 @@ const attributeToDisplayFn: Record<
   },
   eventData: (value: unknown) => {
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
     return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
   },
@@ -579,13 +612,7 @@ export const AttributeBlock = ({
     attribute === 'input' ||
     attribute === 'output' ||
     attribute === 'eventData';
-  if (isLoading && isExpandableLoadingTarget) {
-    const label =
-      attribute === 'eventData'
-        ? 'Event Data'
-        : attribute === 'output'
-          ? 'Output'
-          : 'Input';
+  if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
     return (
       <div
         className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
@@ -596,19 +623,7 @@ export const AttributeBlock = ({
         >
           {attribute}
         </span>
-        <DetailCard
-          summary={label}
-          summaryClassName="text-base py-2"
-          disabled
-        />
-        <div
-          className="overflow-x-auto rounded-md border p-3"
-          style={{ borderColor: 'var(--ds-gray-300)' }}
-        >
-          <Skeleton className="h-4 w-[38%]" />
-          <Skeleton className="mt-2 h-4 w-[88%]" />
-          <Skeleton className="mt-2 h-4 w-[72%]" />
-        </div>
+        <Skeleton className="h-9 w-full rounded-md" />
       </div>
     );
   }
@@ -674,6 +689,7 @@ export const AttributePanel = ({
   error,
   expiredAt,
   onStreamClick,
+  resource,
 }: {
   data: Record<string, unknown>;
   moduleSpecifier?: string;
@@ -682,7 +698,10 @@ export const AttributePanel = ({
   expiredAt?: string | Date;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Resource type of the selected span — used to show targeted loading skeletons. */
+  resource?: string;
 }) => {
+  const toast = useToast();
   // Extract workflowCoreVersion from executionContext for display
   const displayData = useMemo(() => {
     const result = { ...data };
@@ -705,9 +724,23 @@ export const AttributePanel = ({
   const basicAttributes = Object.keys(displayData)
     .filter((key) => !resolvableAttributes.includes(key))
     .sort(sortByAttributeOrder);
-  const resolvedAttributes = Object.keys(displayData)
-    .filter((key) => resolvableAttributes.includes(key))
-    .sort(sortByAttributeOrder);
+  const resolvedAttributes = useMemo(() => {
+    const present = Object.keys(displayData)
+      .filter((key) => resolvableAttributes.includes(key))
+      .sort(sortByAttributeOrder);
+
+    if (!isLoading) return present;
+
+    // During loading, ensure input/output appear so their skeletons render
+    // in the correct position (above the events section).
+    const loadingDefaults = ['input', 'output'];
+    for (const key of loadingDefaults) {
+      if (!present.includes(key)) {
+        present.push(key);
+      }
+    }
+    return present.sort(sortByAttributeOrder);
+  }, [displayData, isLoading]);
 
   // Filter out attributes that return null
   const visibleBasicAttributes = basicAttributes.filter((attribute) => {
@@ -784,7 +817,11 @@ export const AttributePanel = ({
                   ? displayValue
                   : String(displayValue ?? displayData.moduleSpecifier ?? '');
               const shouldCapitalizeLabel = attribute !== 'workflowCoreVersion';
-              const showDivider = index < orderedBasicAttributes.length - 1;
+              const showResumeAtSkeleton =
+                isLoading && resource === 'sleep' && !displayData.resumeAt;
+              const showDivider =
+                index < orderedBasicAttributes.length - 1 ||
+                showResumeAtSkeleton;
 
               return (
                 <div key={attribute} className="py-1">
@@ -834,6 +871,19 @@ export const AttributePanel = ({
                 </div>
               );
             })}
+            {isLoading && resource === 'sleep' && !displayData.resumeAt && (
+              <div className="py-1">
+                <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                  <span
+                    className="text-[14px] first-letter:uppercase"
+                    style={{ color: 'var(--ds-gray-700)' }}
+                  >
+                    resumeAt
+                  </span>
+                  <Skeleton className="h-4 w-[55%]" />
+                </div>
+              </div>
+            )}
           </div>
         )}
         {error ? (

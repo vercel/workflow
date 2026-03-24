@@ -1,4 +1,4 @@
-import { FatalError, WorkflowAPIError } from '@workflow/errors';
+import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Use vi.hoisted so these are available in mock factories
@@ -142,6 +142,7 @@ vi.mock('@workflow/utils/get-port', () => ({
 // Import the module AFTER all mocks are set up - this triggers createQueueHandler
 // which populates capturedHandlerRef
 import './step-handler.js';
+import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getStepFunction } from '../private.js';
 import {
   getErrorName,
@@ -162,11 +163,15 @@ function capturedHandler(
   return capturedHandlerRef.current(message, metadata);
 }
 
-function createMetadata(stepName: string) {
+function createMetadata(
+  stepName: string,
+  overrides: Record<string, unknown> = {}
+) {
   return {
     queueName: `__wkf_step_${stepName}`,
     messageId: 'msg_test123',
     attempt: 1,
+    ...overrides,
   };
 }
 
@@ -244,9 +249,8 @@ describe('step-handler 409 handling', () => {
           if (event.eventType === 'step_completed') {
             callCount++;
             return Promise.reject(
-              new WorkflowAPIError(
-                'Cannot complete step because it is already completed',
-                { status: 409 }
+              new EntityConflictError(
+                'Cannot complete step because it is already completed'
               )
             );
           }
@@ -262,7 +266,7 @@ describe('step-handler 409 handling', () => {
       // Should not throw, should return undefined (early return)
       expect(result).toBeUndefined();
       // Should have logged a warning, not an error
-      expect(mockRuntimeLogger.warn).toHaveBeenCalledWith(
+      expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried completing step, but step has already finished.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
@@ -296,9 +300,8 @@ describe('step-handler 409 handling', () => {
           }
           if (event.eventType === 'step_failed') {
             return Promise.reject(
-              new WorkflowAPIError(
-                'Cannot fail step because it is already completed',
-                { status: 409 }
+              new EntityConflictError(
+                'Cannot fail step because it is already completed'
               )
             );
           }
@@ -312,7 +315,7 @@ describe('step-handler 409 handling', () => {
       );
 
       expect(result).toBeUndefined();
-      expect(mockRuntimeLogger.warn).toHaveBeenCalledWith(
+      expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
@@ -343,9 +346,8 @@ describe('step-handler 409 handling', () => {
           }
           if (event.eventType === 'step_failed') {
             return Promise.reject(
-              new WorkflowAPIError(
-                'Cannot fail step because it is already completed',
-                { status: 409 }
+              new EntityConflictError(
+                'Cannot fail step because it is already completed'
               )
             );
           }
@@ -359,7 +361,7 @@ describe('step-handler 409 handling', () => {
       );
 
       expect(result).toBeUndefined();
-      expect(mockRuntimeLogger.warn).toHaveBeenCalledWith(
+      expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
@@ -393,9 +395,8 @@ describe('step-handler 409 handling', () => {
           }
           if (event.eventType === 'step_retrying') {
             return Promise.reject(
-              new WorkflowAPIError(
-                'Cannot retry step because it is already completed',
-                { status: 409 }
+              new EntityConflictError(
+                'Cannot retry step because it is already completed'
               )
             );
           }
@@ -409,7 +410,7 @@ describe('step-handler 409 handling', () => {
       );
 
       expect(result).toBeUndefined();
-      expect(mockRuntimeLogger.warn).toHaveBeenCalledWith(
+      expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried retrying step, but step has already finished.',
         expect.objectContaining({
           workflowRunId: 'wrun_test123',
@@ -437,7 +438,7 @@ describe('step-handler 409 handling', () => {
           }
           if (event.eventType === 'step_retrying') {
             return Promise.reject(
-              new WorkflowAPIError('Internal Server Error', { status: 500 })
+              new WorkflowWorldError('Internal Server Error', { status: 500 })
             );
           }
           return Promise.resolve({ event: {} });
@@ -448,5 +449,127 @@ describe('step-handler 409 handling', () => {
         capturedHandler(createMessage(), createMetadata('myStep'))
       ).rejects.toThrow('Internal Server Error');
     });
+  });
+
+  describe('requestId propagation', () => {
+    it('should pass requestId to events.create for step_started', async () => {
+      await capturedHandler(
+        createMessage(),
+        createMetadata('myStep', { requestId: 'iad1::req-abc' })
+      );
+
+      const startedCall = mockEventsCreate.mock.calls.find(
+        ([, event]: [string, { eventType: string }]) =>
+          event.eventType === 'step_started'
+      );
+      expect(startedCall).toBeDefined();
+      expect(startedCall![2]).toEqual(
+        expect.objectContaining({ requestId: 'iad1::req-abc' })
+      );
+    });
+
+    it('should pass requestId to events.create for step_completed', async () => {
+      await capturedHandler(
+        createMessage(),
+        createMetadata('myStep', { requestId: 'iad1::req-abc' })
+      );
+
+      const completedCall = mockEventsCreate.mock.calls.find(
+        ([, event]: [string, { eventType: string }]) =>
+          event.eventType === 'step_completed'
+      );
+      expect(completedCall).toBeDefined();
+      expect(completedCall![2]).toEqual(
+        expect.objectContaining({ requestId: 'iad1::req-abc' })
+      );
+    });
+
+    it('should pass undefined requestId when not provided in metadata', async () => {
+      await capturedHandler(createMessage(), createMetadata('myStep'));
+
+      const startedCall = mockEventsCreate.mock.calls.find(
+        ([, event]: [string, { eventType: string }]) =>
+          event.eventType === 'step_started'
+      );
+      expect(startedCall).toBeDefined();
+      expect(startedCall![2]).toEqual(
+        expect.objectContaining({ requestId: undefined })
+      );
+    });
+  });
+});
+
+describe('step-handler max deliveries', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+    mockQueueMessage.mockResolvedValue(undefined);
+    vi.mocked(getWorld).mockReturnValue({
+      events: { create: mockEventsCreate },
+      queue: mockQueue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    mockEventsCreate.mockReset().mockResolvedValue({
+      step: {
+        stepId: 'step_abc',
+        status: 'running',
+        attempt: 1,
+        startedAt: new Date(),
+        input: [],
+      },
+      event: {},
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('should post step_failed and re-queue workflow when delivery count exceeds max', async () => {
+    const result = await capturedHandler(createMessage(), {
+      ...createMetadata('myStep'),
+      attempt: MAX_QUEUE_DELIVERIES + 1,
+    });
+
+    expect(result).toBeUndefined();
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_failed',
+        correlationId: 'step_abc',
+      }),
+      expect.anything()
+    );
+    expect(mockQueueMessage).toHaveBeenCalled();
+    expect(mockRuntimeLogger.error).toHaveBeenCalledWith(
+      expect.stringContaining('exceeded max deliveries'),
+      expect.objectContaining({ workflowRunId: 'wrun_test123' })
+    );
+  });
+
+  it('should consume message silently when step_failed fails with EntityConflictError', async () => {
+    mockEventsCreate.mockRejectedValue(
+      new EntityConflictError('Step already completed')
+    );
+
+    const result = await capturedHandler(createMessage(), {
+      ...createMetadata('myStep'),
+      attempt: MAX_QUEUE_DELIVERIES + 1,
+    });
+
+    expect(result).toBeUndefined();
+    expect(mockStepFn).not.toHaveBeenCalled();
+  });
+
+  it('should not trigger max deliveries check when under limit', async () => {
+    const result = await capturedHandler(createMessage(), {
+      ...createMetadata('myStep'),
+      attempt: MAX_QUEUE_DELIVERIES,
+    });
+
+    // Should proceed normally (step function executes)
+    expect(mockStepFn).toHaveBeenCalled();
   });
 });

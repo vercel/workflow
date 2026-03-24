@@ -17,6 +17,24 @@ export interface StreamChunk {
 
 const FRAME_HEADER_SIZE = 4;
 
+/**
+ * Detect stream encoding from the first bytes.
+ *
+ * - **framed**: Current format (≥ 4.1.0-beta.56) — 4-byte big-endian length +
+ *   format-prefixed payload (`devl`/`encr`).
+ * - **legacy**: Older SDK versions (≤ 4.1.0-beta.55) used newline-delimited
+ *   devalue strings with no binary framing.
+ */
+type StreamEncoding = 'framed' | 'legacy';
+
+function detectEncoding(data: Uint8Array): StreamEncoding {
+  if (data.length < FRAME_HEADER_SIZE) return 'framed';
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const len = view.getUint32(0, false);
+  if (len > 0 && len <= 10 * 1024 * 1024) return 'framed';
+  return 'legacy';
+}
+
 export function useStreamReader(
   env: EnvMap,
   streamId: string | null,
@@ -48,7 +66,6 @@ export function useStreamReader(
 
     const readStreamData = async () => {
       try {
-        // Get raw binary stream from server (no deserialization on server)
         const rawStream = await readStream(
           env,
           streamId,
@@ -56,15 +73,15 @@ export function useStreamReader(
           abortController.signal
         );
 
-        // Import the CryptoKey if the user has clicked Decrypt
         const cryptoKey = encryptionKey
           ? await importKey(encryptionKey)
           : undefined;
 
-        // Process length-prefixed frames from the raw stream, deserializing
-        // and decrypting entirely client-side.
         const reader = (rawStream as ReadableStream<Uint8Array>).getReader();
+        const decoder = new TextDecoder();
         let buffer = new Uint8Array(0);
+        let encoding: StreamEncoding | null = null;
+        let textRemainder = '';
 
         const appendToBuffer = (data: Uint8Array) => {
           const newBuffer = new Uint8Array(buffer.length + data.length);
@@ -73,18 +90,59 @@ export function useStreamReader(
           buffer = newBuffer;
         };
 
+        const addLegacyLine = (line: string) => {
+          if (!mounted || !line) return;
+          const chunkId = chunkIdRef.current++;
+          let text: string;
+          try {
+            const parsed = JSON.parse(line);
+            text = JSON.stringify(parsed, null, 2);
+          } catch {
+            text = line;
+          }
+          setChunks((prev) => [...prev, { id: chunkId, text }]);
+        };
+
         for (;;) {
           if (abortController.signal.aborted) break;
 
           const { value, done } = await reader.read();
           if (done) {
+            if (encoding === 'legacy' && textRemainder.trim()) {
+              addLegacyLine(textRemainder.trim());
+              textRemainder = '';
+            }
             if (mounted) setIsLive(false);
             break;
           }
 
-          appendToBuffer(value);
+          // Detect encoding on first read with enough data
+          if (encoding === null) {
+            appendToBuffer(value);
+            if (buffer.length >= FRAME_HEADER_SIZE) {
+              encoding = detectEncoding(buffer);
+            }
+            if (encoding === 'legacy') {
+              textRemainder = decoder.decode(buffer, { stream: true });
+              buffer = new Uint8Array(0);
+            }
+          } else if (encoding === 'legacy') {
+            textRemainder += decoder.decode(value, { stream: true });
+          } else {
+            appendToBuffer(value);
+          }
 
-          // Process complete frames
+          if (encoding === 'legacy') {
+            const lines = textRemainder.split('\n');
+            textRemainder = lines.pop() ?? '';
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (trimmed) addLegacyLine(trimmed);
+            }
+            continue;
+          }
+
+          // Framed mode: process length-prefixed frames
           while (buffer.length >= FRAME_HEADER_SIZE) {
             const view = new DataView(
               buffer.buffer,
@@ -93,8 +151,12 @@ export function useStreamReader(
             );
             const frameLength = view.getUint32(0, false);
 
+            if (frameLength === 0 || frameLength > 10 * 1024 * 1024) {
+              break;
+            }
+
             if (buffer.length < FRAME_HEADER_SIZE + frameLength) {
-              break; // Incomplete frame
+              break;
             }
 
             const frameData = buffer.slice(
@@ -104,7 +166,6 @@ export function useStreamReader(
             buffer = buffer.slice(FRAME_HEADER_SIZE + frameLength);
 
             try {
-              // Check if the frame is encrypted
               const { format, payload } = decodeFormatPrefix(frameData);
               let dataToHydrate: Uint8Array;
 
@@ -119,14 +180,11 @@ export function useStreamReader(
                   reader.cancel().catch(() => {});
                   return;
                 }
-                // Decrypt to get the inner format-prefixed bytes (e.g., devl+data)
                 dataToHydrate = await aesGcmDecrypt(cryptoKey, payload);
               } else {
-                // Not encrypted — pass the original frame data (with format prefix)
                 dataToHydrate = frameData;
               }
 
-              // hydrateData handles format prefix decoding + devalue parsing
               const hydrated = hydrateData(dataToHydrate, revivers);
               if (mounted && hydrated !== undefined && hydrated !== null) {
                 const chunkId = chunkIdRef.current++;

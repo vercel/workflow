@@ -1,4 +1,11 @@
-import { WorkflowAPIError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  RUN_ERROR_CODES,
+  RunExpiredError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
+import { classifyRunError } from './classify-error.js';
+import { MAX_QUEUE_DELIVERIES } from './runtime/constants.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -46,6 +53,7 @@ export {
 export {
   getRun,
   Run,
+  type WorkflowReadableStream,
   type WorkflowReadableStreamOptions,
 } from './runtime/run.js';
 export {
@@ -104,8 +112,59 @@ export function workflowEntrypoint(
         traceCarrier: traceContext,
         requestedAt,
       } = WorkflowInvokePayloadSchema.parse(message_);
+      const { requestId } = metadata;
       // Extract the workflow name from the topic name
       const workflowName = metadata.queueName.slice('__wkf_workflow_'.length);
+
+      // --- Max delivery check ---
+      // Enforce max delivery limit before any infrastructure calls.
+      // This prevents runaway workflows from consuming infinite queue deliveries.
+      // At this point, we want to do the minimal amount of work (no fetching
+      // of the workflow events, etc. We simply attempt to mark the run as failed
+      // and if that fails, the message is still consumed but with adequate logging
+      // that an error occurred preventing us from failing the run.
+      if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+        runtimeLogger.error(
+          `Workflow handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+          { workflowRunId: runId, workflowName, attempt: metadata.attempt }
+        );
+        try {
+          const world = getWorld();
+          await world.events.create(
+            runId,
+            {
+              eventType: 'run_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              eventData: {
+                error: {
+                  message: `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+                },
+                errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+              },
+            },
+            { requestId }
+          );
+        } catch (err) {
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+            // Run already finished, consume the message silently
+            return;
+          }
+          runtimeLogger.error(
+            `Failed to mark run as failed after ${metadata.attempt} delivery attempts. ` +
+              `A persistent error is preventing the run from being terminated. ` +
+              `The run will remain in its current state until manually resolved. ` +
+              `This is most likely due to a persistent outage of the workflow backend ` +
+              `or a bug in the workflow runtime and should be reported to the Workflow team.`,
+            {
+              workflowRunId: runId,
+              error: err instanceof Error ? err.message : String(err),
+              attempt: metadata.attempt,
+            }
+          );
+        }
+        return;
+      }
+
       const spanLinks = await linkToCurrentContext();
 
       // Invoke user workflow within the propagated trace context and baggage
@@ -147,10 +206,14 @@ export function workflowEntrypoint(
                 try {
                   if (workflowRun.status === 'pending') {
                     // Transition run to 'running' via event (event-sourced architecture)
-                    const result = await world.events.create(runId, {
-                      eventType: 'run_started',
-                      specVersion: SPEC_VERSION_CURRENT,
-                    });
+                    const result = await world.events.create(
+                      runId,
+                      {
+                        eventType: 'run_started',
+                        specVersion: SPEC_VERSION_CURRENT,
+                      },
+                      { requestId }
+                    );
                     // Use the run entity from the event response (no extra get call needed)
                     if (!result.run) {
                       throw new WorkflowRuntimeError(
@@ -168,26 +231,40 @@ export function workflowEntrypoint(
                     );
                   }
                 } catch (err) {
+                  // Run was concurrently completed/failed/cancelled
+                  // between the GET and the run_started event creation
+                  if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+                    runtimeLogger.info(
+                      'Run already finished during setup, skipping',
+                      { workflowRunId: runId, message: err.message }
+                    );
+                    return;
+                  }
                   if (err instanceof WorkflowRuntimeError) {
                     runtimeLogger.error(
                       'Fatal runtime error during workflow setup',
                       { workflowRunId: runId, error: err.message }
                     );
                     try {
-                      await world.events.create(runId, {
-                        eventType: 'run_failed',
-                        specVersion: SPEC_VERSION_CURRENT,
-                        eventData: {
-                          error: {
-                            message: err.message,
-                            stack: err.stack,
+                      await world.events.create(
+                        runId,
+                        {
+                          eventType: 'run_failed',
+                          specVersion: SPEC_VERSION_CURRENT,
+                          eventData: {
+                            error: {
+                              message: err.message,
+                              stack: err.stack,
+                            },
+                            errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
                           },
                         },
-                      });
+                        { requestId }
+                      );
                     } catch (failErr) {
                       if (
-                        WorkflowAPIError.is(failErr) &&
-                        (failErr.status === 409 || failErr.status === 410)
+                        EntityConflictError.is(failErr) ||
+                        RunExpiredError.is(failErr)
                       ) {
                         return;
                       }
@@ -254,11 +331,13 @@ export function workflowEntrypoint(
                 // Create all wait_completed events
                 for (const waitEvent of waitsToComplete) {
                   try {
-                    const result = await world.events.create(runId, waitEvent);
+                    const result = await world.events.create(runId, waitEvent, {
+                      requestId,
+                    });
                     // Add the event to the events array so the workflow can see it
                     events.push(result.event!);
                   } catch (err) {
-                    if (WorkflowAPIError.is(err) && err.status === 409) {
+                    if (EntityConflictError.is(err)) {
                       runtimeLogger.info('Wait already completed, skipping', {
                         workflowRunId: runId,
                         correlationId: waitEvent.correlationId,
@@ -315,6 +394,7 @@ export function workflowEntrypoint(
                       world,
                       run: workflowRun,
                       span,
+                      requestId,
                     });
 
                     if (result.timeoutSeconds !== undefined) {
@@ -350,31 +430,41 @@ export function workflowEntrypoint(
                     );
                   }
 
+                  // Classify the error: WorkflowRuntimeError indicates an
+                  // internal issue (corrupted event log, missing data);
+                  // everything else is a user code error.
+                  const errorCode = classifyRunError(err);
+
                   runtimeLogger.error('Error while running workflow', {
                     workflowRunId: runId,
+                    errorCode,
                     errorName,
                     errorStack,
                   });
 
                   // Fail the workflow run via event (event-sourced architecture)
                   try {
-                    await world.events.create(runId, {
-                      eventType: 'run_failed',
-                      specVersion: SPEC_VERSION_CURRENT,
-                      eventData: {
-                        error: {
-                          message: errorMessage,
-                          stack: errorStack,
+                    await world.events.create(
+                      runId,
+                      {
+                        eventType: 'run_failed',
+                        specVersion: SPEC_VERSION_CURRENT,
+                        eventData: {
+                          error: {
+                            message: errorMessage,
+                            stack: errorStack,
+                          },
+                          errorCode,
                         },
-                        // TODO: include error codes when we define them
                       },
-                    });
+                      { requestId }
+                    );
                   } catch (failErr) {
                     if (
-                      WorkflowAPIError.is(failErr) &&
-                      (failErr.status === 409 || failErr.status === 410)
+                      EntityConflictError.is(failErr) ||
+                      RunExpiredError.is(failErr)
                     ) {
-                      runtimeLogger.warn(
+                      runtimeLogger.info(
                         'Tried failing workflow run, but run has already finished.',
                         {
                           workflowRunId: runId,
@@ -382,6 +472,7 @@ export function workflowEntrypoint(
                         }
                       );
                       span?.setAttributes({
+                        ...Attribute.WorkflowErrorCode(errorCode),
                         ...Attribute.WorkflowErrorName(errorName),
                         ...Attribute.WorkflowErrorMessage(errorMessage),
                         ...Attribute.ErrorType(errorName),
@@ -394,6 +485,7 @@ export function workflowEntrypoint(
 
                   span?.setAttributes({
                     ...Attribute.WorkflowRunStatus('failed'),
+                    ...Attribute.WorkflowErrorCode(errorCode),
                     ...Attribute.WorkflowErrorName(errorName),
                     ...Attribute.WorkflowErrorMessage(errorMessage),
                     ...Attribute.ErrorType(errorName),
@@ -405,19 +497,20 @@ export function workflowEntrypoint(
                 // This is outside the user-code try/catch so that failures
                 // here (e.g., network errors) propagate to the queue handler.
                 try {
-                  await world.events.create(runId, {
-                    eventType: 'run_completed',
-                    specVersion: SPEC_VERSION_CURRENT,
-                    eventData: {
-                      output: workflowResult,
+                  await world.events.create(
+                    runId,
+                    {
+                      eventType: 'run_completed',
+                      specVersion: SPEC_VERSION_CURRENT,
+                      eventData: {
+                        output: workflowResult,
+                      },
                     },
-                  });
+                    { requestId }
+                  );
                 } catch (err) {
-                  if (
-                    WorkflowAPIError.is(err) &&
-                    (err.status === 409 || err.status === 410)
-                  ) {
-                    runtimeLogger.warn(
+                  if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+                    runtimeLogger.info(
                       'Tried completing workflow run, but run has already finished.',
                       {
                         workflowRunId: runId,

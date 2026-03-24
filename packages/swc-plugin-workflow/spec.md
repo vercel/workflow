@@ -300,7 +300,7 @@ Note: Shorthand methods are hoisted as regular function expressions (not arrow f
 
 ### Closure Variables
 
-When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`:
+When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`. Closure variable detection recursively walks the step function body — including nested function, arrow, method, getter/setter, and class bodies — and collects identifiers that are not parameters, local declarations, known globals, module-level imports, or module-level declarations. TypeScript expression wrappers (`as`, `satisfies`, `!`, type assertions, `const` assertions, instantiation expressions) are traversed to reach the inner expression. Module-level imports and declarations (functions, variables, classes) are excluded since they are available directly in the step bundle and should not be serialized as closure values:
 
 Input:
 ```javascript
@@ -321,10 +321,14 @@ var wrapper$_anonymousStep0 = async () => {
     return 10 * multiplier;
 };
 function wrapper(multiplier) {
-    return wrapper$_anonymousStep0;
+    return async () => {
+        return 10 * multiplier;
+    };
 }
 registerStepFunction("step//./input//wrapper/_anonymousStep0", wrapper$_anonymousStep0);
 ```
+
+Note: The hoisted copy (`wrapper$_anonymousStep0`) uses `__private_getClosureVars()` for workflow-driven execution, while the original function body is preserved in `wrapper()` with the directive stripped. This allows the enclosing function to work correctly when called directly (non-workflow), since JavaScript's normal closure semantics naturally capture `multiplier`.
 
 ### Instance Method Step
 
@@ -696,6 +700,52 @@ export class Vector {
 }
 ```
 
+### CommonJS `require()` Patterns
+
+The plugin also detects serialization symbols obtained via CommonJS `require()` calls. This handles code that has been pre-compiled from ESM to CommonJS by tools like TypeScript (`tsc`), esbuild, or tsup.
+
+**Namespace require** — when the entire module is assigned to a variable and symbols are accessed as properties:
+
+```javascript
+const serde_1 = require("@workflow/serde");
+
+class Sandbox {
+  static [serde_1.WORKFLOW_SERIALIZE](instance) {
+    return { sandbox: instance.sandbox };
+  }
+  static [serde_1.WORKFLOW_DESERIALIZE](data) {
+    const instance = Object.create(Sandbox.prototype);
+    instance.sandbox = data.sandbox;
+    return instance;
+  }
+}
+```
+
+**Destructured require** — when symbols are destructured directly from the `require()` call:
+
+```javascript
+const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("@workflow/serde");
+
+class Sandbox {
+  static [WORKFLOW_SERIALIZE](instance) {
+    return { sandbox: instance.sandbox };
+  }
+  static [WORKFLOW_DESERIALIZE](data) {
+    const instance = Object.create(Sandbox.prototype);
+    instance.sandbox = data.sandbox;
+    return instance;
+  }
+}
+```
+
+Both patterns produce the same output as the ESM import version — a `registerSerializationClass()` call is appended and the class is included in the manifest.
+
+Destructured require also supports renaming (analogous to `import { WORKFLOW_SERIALIZE as WS }`):
+
+```javascript
+const { WORKFLOW_SERIALIZE: WS, WORKFLOW_DESERIALIZE: WD } = require("@workflow/serde");
+```
+
 ### Class Expressions with Binding Names
 
 When a class expression is assigned to a variable, the plugin uses the variable name (binding name) for registration, not the internal class name. This is important because the internal class name is only accessible inside the class body.
@@ -796,6 +846,7 @@ Files containing classes with custom serialization are automatically discovered 
 
 1. **Imports from `@workflow/serde`**: Files that import `WORKFLOW_SERIALIZE` or `WORKFLOW_DESERIALIZE` from `@workflow/serde`
 2. **Direct Symbol.for usage**: Files containing `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
+3. **CommonJS `require()` calls**: Files that use `require("@workflow/serde")` (or any module) and access `WORKFLOW_SERIALIZE` or `WORKFLOW_DESERIALIZE` via destructuring or namespace property access
 
 This allows serialization classes to be defined in separate files (such as Next.js API routes or utility modules) and still be registered in the serialization system when the application is built.
 
@@ -933,4 +984,6 @@ The plugin detects this pattern and correctly identifies the directive inside th
 - The `this` keyword and `arguments` object are not allowed in step functions
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection
+- Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available directly in the step bundle and should not be serialized as closure values
+- `new` expressions are analyzed for closure variables in the same way as regular function calls (both the callee and arguments are checked)
 - Workflow functions always throw when called directly; use `start(workflow)` from `workflow/api` instead

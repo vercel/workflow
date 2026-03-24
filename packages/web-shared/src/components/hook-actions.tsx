@@ -3,7 +3,7 @@
 import type { Hook, WorkflowRunStatus } from '@workflow/world';
 import { Send } from 'lucide-react';
 import { useCallback, useState } from 'react';
-import { toast } from 'sonner';
+import { useToast } from '../lib/toast';
 import { ResolveHookModal } from './sidebar/resolve-hook-modal';
 
 // ============================================================================
@@ -45,6 +45,7 @@ export function useHookActions({
   onResolve,
   callbacks,
 }: UseHookActionsOptions): UseHookActionsReturn {
+  const toast = useToast();
   const [isResolving, setIsResolving] = useState(false);
   const [selectedHook, setSelectedHook] = useState<Hook | null>(null);
 

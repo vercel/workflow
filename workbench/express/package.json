@@ -14,7 +14,7 @@
     "start": "node .output/server/index.mjs"
   },
   "dependencies": {
-    "express": "^5.1.0",
+    "express": "^5.2.1",
     "nitro": "catalog:"
   },
   "devDependencies": {
@@ -24,6 +24,7 @@
     "lodash.chunk": "^4.2.0",
     "openai": "^6.1.0",
     "workflow": "workspace:*",
+    "@workflow/ai": "workspace:*",
     "zod": "catalog:"
   }
 }

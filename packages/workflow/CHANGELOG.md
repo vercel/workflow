@@ -1,5 +1,40 @@
 # workflow
 
+## 4.2.0-beta.71
+
+### Patch Changes
+
+- [#1413](https://github.com/vercel/workflow/pull/1413) [`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Refactor builtin step functions to use `this` value serialization instead of explicit parameter passing. Remove unused duplicate builtins file from `@workflow/core`.
+
+- Updated dependencies [[`97e4384`](https://github.com/vercel/workflow/commit/97e43846f000f8ef0ea2f237a5c4cc696423e0f0), [`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597), [`3cc2943`](https://github.com/vercel/workflow/commit/3cc29431b266832dd3d9b735da455d2b11612ea7), [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a), [`a2c0c7e`](https://github.com/vercel/workflow/commit/a2c0c7e6d9d7349bd49aac6e6ea072c68efb7620), [`2cc42cb`](https://github.com/vercel/workflow/commit/2cc42cb8a934532d9ce5b05185322a2f9ce76024), [`f52afe7`](https://github.com/vercel/workflow/commit/f52afe77fffb981dd8812b84b39c2ecab2288f43)]:
+  - @workflow/core@4.2.0-beta.71
+  - @workflow/next@4.0.1-beta.67
+  - @workflow/sveltekit@4.0.0-beta.60
+  - @workflow/cli@4.2.0-beta.71
+  - @workflow/nitro@4.0.1-beta.66
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/astro@4.0.0-beta.45
+  - @workflow/nest@0.0.0-beta.20
+  - @workflow/rollup@4.0.0-beta.28
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/nuxt@4.0.1-beta.55
+
+## 4.2.0-beta.70
+
+### Patch Changes
+
+- Updated dependencies [[`3c3f80a`](https://github.com/vercel/workflow/commit/3c3f80a1f0e00878bd6550a39af59e305c035706), [`7df1385`](https://github.com/vercel/workflow/commit/7df13854f85529929ff1187fe831f4dbc51b9121), [`73c12f1`](https://github.com/vercel/workflow/commit/73c12f14dabb465e2074e2aebbcd231a4d91bc09), [`58e67ce`](https://github.com/vercel/workflow/commit/58e67ce11bd69b982214e2734363fa7fd252f5f6), [`9f3551c`](https://github.com/vercel/workflow/commit/9f3551caec933679bbb733495422dc6899bbe2bc)]:
+  - @workflow/cli@4.2.0-beta.70
+  - @workflow/core@4.2.0-beta.70
+  - @workflow/nest@0.0.0-beta.19
+  - @workflow/next@4.0.1-beta.66
+  - @workflow/nitro@4.0.1-beta.65
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/astro@4.0.0-beta.44
+  - @workflow/rollup@4.0.0-beta.27
+  - @workflow/sveltekit@4.0.0-beta.59
+  - @workflow/nuxt@4.0.1-beta.54
+
 ## 4.2.0-beta.69
 
 ### Patch Changes

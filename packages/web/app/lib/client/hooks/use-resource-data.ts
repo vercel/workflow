@@ -4,7 +4,7 @@ import {
   waitEventsToWaitEntity,
 } from '@workflow/web-shared';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   unwrapOrThrow,
   unwrapServerActionResult,
@@ -90,12 +90,22 @@ export function useWorkflowResourceData(
     [encryptionKey]
   );
 
+  const prevSelectionRef = useRef('');
+
   const fetchData = useCallback(async () => {
     if (!enabled) {
       setLoading(false);
       return;
     }
-    setData(null);
+
+    // Only clear data when the selection actually changes (different
+    // resource/id). Re-fetches for the same selection (e.g. encryption
+    // key change) keep the previous data visible to avoid flicker.
+    const selectionKey = `${resource}:${resourceId}`;
+    if (selectionKey !== prevSelectionRef.current) {
+      setData(null);
+      prevSelectionRef.current = selectionKey;
+    }
     setError(null);
     setLoading(true);
     if (resource === 'hook') {

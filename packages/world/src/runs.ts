@@ -27,6 +27,26 @@ export const WorkflowRunBaseSchema = z.object({
   runId: z.string(),
   status: WorkflowRunStatusSchema,
   deploymentId: z.string(),
+  /**
+   * The machine-readable name of the workflow function.
+   *
+   * This field contains a structured identifier like `workflow//./src/workflows/order//processOrder`
+   * that encodes the workflow's module specifier and function name.
+   *
+   * Use `parseWorkflowName()` from `@workflow/utils/parse-name` to extract:
+   * - `shortName`: User-friendly display name (e.g., `"processOrder"`)
+   * - `moduleSpecifier`: The module path or package (e.g., `"./src/workflows/order"`)
+   * - `functionName`: The full function path (e.g., `"processOrder"`)
+   *
+   * @example
+   * ```ts
+   * import { parseWorkflowName } from "@workflow/utils/parse-name";
+   *
+   * const parsed = parseWorkflowName(run.workflowName);
+   * // parsed.shortName → "processOrder"
+   * // parsed.moduleSpecifier → "./src/workflows/order"
+   * ```
+   */
   workflowName: z.string(),
   // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),

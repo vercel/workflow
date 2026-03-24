@@ -137,7 +137,6 @@ async function fetchLatestVersion(
       'dist-tags': { [tag: string]: string };
     };
 
-    // Always use 'latest' tag - even beta versions are published as latest
     const latestVersion = data['dist-tags']['latest'];
     if (!latestVersion) {
       logger.debug('No latest version found in registry');
@@ -172,7 +171,12 @@ export async function checkForUpdate(
     };
   }
 
-  const needsUpdate = compareVersions(latestVersion, currentVersion);
+  // Don't suggest prerelease updates to users on stable versions
+  const currentIsStable = !currentVersion.includes('-');
+  const latestIsPrerelease = latestVersion.includes('-');
+  const needsUpdate =
+    !(currentIsStable && latestIsPrerelease) &&
+    compareVersions(latestVersion, currentVersion);
 
   return {
     currentVersion,
@@ -264,13 +268,15 @@ export async function checkForUpdateCached(
     logger.debug('Using cached version check result');
     const cached = await readCache(cacheFile);
     if (cached) {
+      // Don't suggest prerelease updates to users on stable versions
+      const currentIsStable = !cached.currentVersion.includes('-');
+      const latestIsPrerelease = cached.latestVersion.includes('-');
       return {
         currentVersion: cached.currentVersion,
         latestVersion: cached.latestVersion,
-        needsUpdate: compareVersions(
-          cached.latestVersion,
-          cached.currentVersion
-        ),
+        needsUpdate:
+          !(currentIsStable && latestIsPrerelease) &&
+          compareVersions(cached.latestVersion, cached.currentVersion),
       };
     }
   }
