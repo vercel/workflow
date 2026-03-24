@@ -12,11 +12,29 @@ import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
+import {
+  ErrorType,
+  getSpanKind,
+  HttpRequestMethod,
+  HttpResponseStatusCode,
+  PeerService,
+  RpcService,
+  RpcSystem,
+  ServerAddress,
+  ServerPort,
+  trace,
+  UrlFull,
+  WorldParseFormat,
+} from './telemetry.js';
+import { version } from './version.js';
 
 /**
  * Lightweight debug logger for HTTP requests. Activated when the DEBUG
- * env var includes "workflow:" (matching the standard `debug` module
- * convention used by @workflow/core).
+ * env var contains "workflow:" or is "*".
+ *
+ * Note: this does not implement full `debug` module semantics (e.g.
+ * comma-separated globs, negation with `-`). It is a simple check
+ * sufficient for enabling HTTP-level debug output.
  */
 const HTTP_DEBUG_ENABLED =
   typeof process !== 'undefined' &&
@@ -35,22 +53,6 @@ function httpLog(
     );
   }
 }
-
-import {
-  ErrorType,
-  getSpanKind,
-  HttpRequestMethod,
-  HttpResponseStatusCode,
-  PeerService,
-  RpcService,
-  RpcSystem,
-  ServerAddress,
-  ServerPort,
-  trace,
-  UrlFull,
-  WorldParseFormat,
-} from './telemetry.js';
-import { version } from './version.js';
 
 /**
  * Hard-coded workflow-server URL override for testing.
@@ -376,12 +378,7 @@ export async function makeRequest<T>({
           throwWithTrace(new RunExpiredError(defaultMessage));
         }
         if (response.status === 425) {
-          const retryAfterDate = retryAfter
-            ? new Date(Date.now() + retryAfter * 1000)
-            : undefined;
-          throwWithTrace(
-            new TooEarlyError(defaultMessage, { retryAfter: retryAfterDate })
-          );
+          throwWithTrace(new TooEarlyError(defaultMessage, { retryAfter }));
         }
         if (response.status === 429) {
           throwWithTrace(new ThrottleError(defaultMessage, { retryAfter }));

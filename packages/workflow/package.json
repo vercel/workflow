@@ -37,6 +37,7 @@
       "workflow": "./dist/api-workflow.js",
       "default": "./dist/api.js"
     },
+    "./errors": "./dist/internal/errors.js",
     "./internal/errors": "./dist/internal/errors.js",
     "./internal/builtins": "./dist/internal/builtins.js",
     "./internal/private": "./dist/internal/private.js",

@@ -94,7 +94,7 @@ export class WorkflowWorldError extends WorkflowError {
   status?: number;
   code?: string;
   url?: string;
-  /** Retry-After value in seconds, present on 429 responses */
+  /** Retry-After value in seconds, present on 429 and 425 responses */
   retryAfter?: number;
 
   constructor(
@@ -125,15 +125,24 @@ export class WorkflowWorldError extends WorkflowError {
 /**
  * Thrown when a workflow run fails during execution.
  *
- * This error indicates that the workflow encountered a fatal error
- * and cannot continue. The `cause` property contains the underlying
- * error with its message, stack trace, and optional error code.
+ * This error indicates that the workflow encountered a fatal error and cannot
+ * continue. It is thrown when awaiting `run.returnValue` on a run whose status
+ * is `'failed'`. The `cause` property contains the underlying error with its
+ * message, stack trace, and optional error code.
+ *
+ * Use the static `WorkflowRunFailedError.is()` method for type-safe checking
+ * in catch blocks.
  *
  * @example
- * ```
- * const run = await getRun(runId);
- * if (run.status === 'failed') {
- *   // WorkflowRunFailedError will be thrown
+ * ```ts
+ * import { WorkflowRunFailedError } from "workflow/internal/errors";
+ *
+ * try {
+ *   const result = await run.returnValue;
+ * } catch (error) {
+ *   if (WorkflowRunFailedError.is(error)) {
+ *     console.error(`Run ${error.runId} failed:`, error.cause.message);
+ *   }
  * }
  * ```
  */
@@ -206,6 +215,31 @@ export class WorkflowRuntimeError extends WorkflowError {
   }
 }
 
+/**
+ * Thrown when performing operations on a workflow run that does not exist.
+ *
+ * This error occurs when you call methods on a run object (e.g. `run.status`,
+ * `run.cancel()`, `run.returnValue`) but the underlying run ID does not match
+ * any known workflow run. Note that `getRun(id)` itself is synchronous and will
+ * not throw — this error is raised when subsequent operations discover the run
+ * is missing.
+ *
+ * Use the static `WorkflowRunNotFoundError.is()` method for type-safe checking
+ * in catch blocks.
+ *
+ * @example
+ * ```ts
+ * import { WorkflowRunNotFoundError } from "workflow/internal/errors";
+ *
+ * try {
+ *   const status = await run.status;
+ * } catch (error) {
+ *   if (WorkflowRunNotFoundError.is(error)) {
+ *     console.error(`Run ${error.runId} does not exist`);
+ *   }
+ * }
+ * ```
+ */
 export class WorkflowRunNotFoundError extends WorkflowError {
   runId: string;
 
@@ -231,10 +265,9 @@ export class HookConflictError extends WorkflowError {
   token: string;
 
   constructor(token: string) {
-    super(
-      `Hook token "${token}" is already in use by another workflow`,
-      { slug: ERROR_SLUGS.HOOK_CONFLICT }
-    );
+    super(`Hook token "${token}" is already in use by another workflow`, {
+      slug: ERROR_SLUGS.HOOK_CONFLICT,
+    });
     this.name = 'HookConflictError';
     this.token = token;
   }
@@ -244,6 +277,35 @@ export class HookConflictError extends WorkflowError {
   }
 }
 
+/**
+ * Thrown when calling `resumeHook()` or `resumeWebhook()` with a token that
+ * does not match any active hook.
+ *
+ * Common causes:
+ * - The hook has expired (past its TTL)
+ * - The hook was already disposed after being consumed
+ * - The workflow has not started yet, so the hook does not exist
+ *
+ * A common pattern is to catch this error and start a new workflow run when
+ * the hook does not exist yet (the "resume or start" pattern).
+ *
+ * Use the static `HookNotFoundError.is()` method for type-safe checking in
+ * catch blocks.
+ *
+ * @example
+ * ```ts
+ * import { HookNotFoundError } from "workflow/internal/errors";
+ *
+ * try {
+ *   await resumeHook(token, payload);
+ * } catch (error) {
+ *   if (HookNotFoundError.is(error)) {
+ *     // Hook doesn't exist — start a new workflow run instead
+ *     await startWorkflow("myWorkflow", payload);
+ *   }
+ * }
+ * ```
+ */
 export class HookNotFoundError extends WorkflowError {
   token: string;
 
@@ -262,8 +324,11 @@ export class HookNotFoundError extends WorkflowError {
  * Thrown when an operation conflicts with the current state of an entity.
  * This includes attempts to modify an entity already in a terminal state,
  * create an entity that already exists, or any other 409-style conflict.
+ *
+ * The workflow runtime handles this error automatically. Users interacting
+ * with world storage backends directly may encounter it.
  */
-export class EntityConflictError extends WorkflowError {
+export class EntityConflictError extends WorkflowWorldError {
   constructor(message: string) {
     super(message);
     this.name = 'EntityConflictError';
@@ -277,8 +342,11 @@ export class EntityConflictError extends WorkflowError {
 /**
  * Thrown when a run is no longer available — either because it has been
  * cleaned up, expired, or already reached a terminal state (completed/failed).
+ *
+ * The workflow runtime handles this error automatically. Users interacting
+ * with world storage backends directly may encounter it.
  */
-export class RunExpiredError extends WorkflowError {
+export class RunExpiredError extends WorkflowWorldError {
   constructor(message: string) {
     super(message);
     this.name = 'RunExpiredError';
@@ -292,14 +360,16 @@ export class RunExpiredError extends WorkflowError {
 /**
  * Thrown when an operation cannot proceed because a required timestamp
  * (e.g. retryAfter) has not been reached yet.
+ *
+ * The workflow runtime handles this error automatically. Users interacting
+ * with world storage backends directly may encounter it.
+ *
+ * @property retryAfter - Delay in seconds before the operation can be retried.
  */
-export class TooEarlyError extends WorkflowError {
-  retryAfter?: Date;
-
-  constructor(message: string, options?: { retryAfter?: Date }) {
-    super(message);
+export class TooEarlyError extends WorkflowWorldError {
+  constructor(message: string, options?: { retryAfter?: number }) {
+    super(message, { retryAfter: options?.retryAfter });
     this.name = 'TooEarlyError';
-    this.retryAfter = options?.retryAfter;
   }
 
   static is(value: unknown): value is TooEarlyError {
@@ -308,9 +378,15 @@ export class TooEarlyError extends WorkflowError {
 }
 
 /**
- * Thrown when a request is rate limited.
+ * Thrown when a request is rate limited by the workflow backend.
+ *
+ * The workflow runtime handles this error automatically with retry logic.
+ * Users interacting with world storage backends directly may encounter it
+ * if retries are exhausted.
+ *
+ * @property retryAfter - Delay in seconds before the request can be retried.
  */
-export class ThrottleError extends WorkflowError {
+export class ThrottleError extends WorkflowWorldError {
   retryAfter?: number;
 
   constructor(message: string, options?: { retryAfter?: number }) {
@@ -324,6 +400,29 @@ export class ThrottleError extends WorkflowError {
   }
 }
 
+/**
+ * Thrown when awaiting `run.returnValue` on a workflow run that was cancelled.
+ *
+ * This error indicates that the workflow was explicitly cancelled (via
+ * `run.cancel()`) and will not produce a return value. You can check for
+ * cancellation before awaiting the return value by inspecting `run.status`.
+ *
+ * Use the static `WorkflowRunCancelledError.is()` method for type-safe
+ * checking in catch blocks.
+ *
+ * @example
+ * ```ts
+ * import { WorkflowRunCancelledError } from "workflow/internal/errors";
+ *
+ * try {
+ *   const result = await run.returnValue;
+ * } catch (error) {
+ *   if (WorkflowRunCancelledError.is(error)) {
+ *     console.log(`Run ${error.runId} was cancelled`);
+ *   }
+ * }
+ * ```
+ */
 export class WorkflowRunCancelledError extends WorkflowError {
   runId: string;
 
@@ -342,7 +441,27 @@ export class WorkflowRunCancelledError extends WorkflowError {
  * Thrown when attempting to operate on a workflow run that requires a newer World version.
  *
  * This error occurs when a run was created with a newer spec version than the
- * current World implementation supports. Users should upgrade their @workflow packages.
+ * current World implementation supports. To resolve this, upgrade your
+ * `workflow` packages to a version that supports the required spec version.
+ *
+ * Use the static `RunNotSupportedError.is()` method for type-safe checking in
+ * catch blocks.
+ *
+ * @example
+ * ```ts
+ * import { RunNotSupportedError } from "workflow/internal/errors";
+ *
+ * try {
+ *   const status = await run.status;
+ * } catch (error) {
+ *   if (RunNotSupportedError.is(error)) {
+ *     console.error(
+ *       `Run requires spec v${error.runSpecVersion}, ` +
+ *       `but world supports v${error.worldSpecVersion}`
+ *     );
+ *   }
+ * }
+ * ```
  */
 export class RunNotSupportedError extends WorkflowError {
   readonly runSpecVersion: number;

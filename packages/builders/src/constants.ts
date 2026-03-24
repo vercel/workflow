@@ -6,7 +6,6 @@ export const STEP_QUEUE_TRIGGER = {
   type: 'queue/v2beta' as const,
   topic: '__wkf_step_*',
   consumer: 'default',
-  maxDeliveries: 64, // Maximum number of delivery attempts (default: 3)
   retryAfterSeconds: 5, // Delay between retries (default: 60)
   initialDelaySeconds: 0, // Initial delay before first delivery (default: 0)
 };
@@ -19,7 +18,6 @@ export const WORKFLOW_QUEUE_TRIGGER = {
   type: 'queue/v2beta' as const,
   topic: '__wkf_workflow_*',
   consumer: 'default',
-  maxDeliveries: 64, // Maximum number of delivery attempts (default: 3)
   retryAfterSeconds: 5, // Delay between retries (default: 60)
   initialDelaySeconds: 0, // Initial delay before first delivery (default: 0)
 };

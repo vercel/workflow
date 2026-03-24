@@ -41,6 +41,7 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
+import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -67,6 +68,67 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       requestedAt,
     } = StepInvokePayloadSchema.parse(message_);
     const { requestId } = metadata;
+
+    // --- Max delivery check ---
+    // Enforce max delivery limit before any infrastructure calls.
+    // This prevents runaway steps from consuming infinite queue deliveries.
+    // At this point, we want to do the minimal amount of work (no fetching
+    // of the step details, etc. We simply attempt to mark the step as failed
+    // and enqueue the workflow once, and if either of those fails, the message
+    // is still consumed but with adequate logging that an error occurred.
+    if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+      runtimeLogger.error(
+        `Step handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+        {
+          workflowRunId,
+          stepId,
+          stepName: metadata.queueName.slice('__wkf_step_'.length),
+          attempt: metadata.attempt,
+        }
+      );
+      try {
+        const world = getWorld();
+        await world.events.create(
+          workflowRunId,
+          {
+            eventType: 'step_failed',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: {
+              error: `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+            },
+          },
+          { requestId }
+        );
+        // Re-queue the workflow to handle the failed step
+        await queueMessage(world, getWorkflowQueueName(workflowName), {
+          runId: workflowRunId,
+          traceCarrier: await serializeTraceCarrier(),
+          requestedAt: new Date(),
+        });
+      } catch (err) {
+        if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+          return;
+        }
+        // Can't even mark the step as failed. Consume the message to stop
+        // further retries. The run will remain in its current state.
+        runtimeLogger.error(
+          `Failed to mark step as failed after ${metadata.attempt} delivery attempts. ` +
+            `A persistent error is preventing the step from being terminated. ` +
+            `The run will remain in its current state until manually resolved. ` +
+            `This is most likely due to a persistent outage of the workflow backend ` +
+            `or a bug in the workflow runtime and should be reported to the Workflow team.`,
+          {
+            workflowRunId,
+            stepId,
+            attempt: metadata.attempt,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        );
+      }
+      return;
+    }
+
     const spanLinks = await linkToCurrentContext();
     // Execute step within the propagated trace context
     return await withTraceContext(traceContext, async () => {
@@ -189,11 +251,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // Too early: retryAfter timestamp not reached yet
             // Return timeout to queue so it retries later
             if (TooEarlyError.is(err)) {
-              const retryAfter = err.retryAfter ?? new Date(Date.now() + 1000);
-              const timeoutSeconds = Math.max(
-                1,
-                Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
-              );
+              const timeoutSeconds = Math.max(1, err.retryAfter ?? 1);
               span?.setAttributes({
                 ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
               });
@@ -201,12 +259,11 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               span?.addEvent?.('step.delayed', {
                 'delay.reason': 'retry_after_not_reached',
                 'delay.timeout_seconds': timeoutSeconds,
-                'delay.retry_after': retryAfter.toISOString(),
               });
               runtimeLogger.debug('Step retryAfter timestamp not yet reached', {
                 stepName,
                 stepId,
-                retryAfter,
+                retryAfterSeconds: err.retryAfter,
                 timeoutSeconds,
               });
               return { timeoutSeconds };
