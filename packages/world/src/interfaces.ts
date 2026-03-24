@@ -16,7 +16,12 @@ import type {
   WorkflowRun,
   WorkflowRunWithoutData,
 } from './runs.js';
-import type { PaginatedResponse } from './shared.js';
+import type {
+  GetChunksOptions,
+  PaginatedResponse,
+  StreamChunksResponse,
+  StreamInfoResponse,
+} from './shared.js';
 import type {
   GetStepParams,
   ListWorkflowRunStepsParams,
@@ -60,6 +65,36 @@ export interface Streamer {
     startIndex?: number
   ): Promise<ReadableStream<Uint8Array>>;
   listStreamsByRunId(runId: string): Promise<string[]>;
+
+  /**
+   * Fetch stream chunks with cursor-based pagination.
+   *
+   * Unlike `readFromStream` (which returns a live `ReadableStream` that waits
+   * for new chunks in real-time), `getStreamChunks` returns a snapshot of currently
+   * available chunks in a standard paginated response.
+   *
+   * @param name - The stream name/ID
+   * @param runId - The workflow run ID that owns the stream
+   * @param options - Pagination options (limit defaults to 100, max 1000)
+   * @returns Paginated chunks with a `done` flag indicating stream completion
+   */
+  getStreamChunks(
+    name: string,
+    runId: string,
+    options?: GetChunksOptions
+  ): Promise<StreamChunksResponse>;
+
+  /**
+   * Retrieve lightweight metadata about a stream.
+   *
+   * Returns the tail index (index of the last known chunk, 0-based) and
+   * whether the stream is complete. This is useful for resolving a negative
+   * `startIndex` into an absolute position before connecting to a stream.
+   *
+   * @param name - The stream name/ID
+   * @param runId - The workflow run ID that owns the stream
+   */
+  getStreamInfo(name: string, runId: string): Promise<StreamInfoResponse>;
 }
 
 /**
