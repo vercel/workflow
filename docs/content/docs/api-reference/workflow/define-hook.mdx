@@ -193,6 +193,8 @@ export const approvalHook = defineHook({
 Tokens are used to identify a specific hook and for resuming a hook. You can customize the token to be more specific to a use case.
 
 ```typescript lineNumbers
+import { defineHook } from "workflow";
+
 const slackHook = defineHook<{ text: string; userId: string }>();
 
 export async function slackBotWorkflow(channelId: string) {

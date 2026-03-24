@@ -125,11 +125,13 @@ async function writeSocketMessage(
   });
 }
 
-function getSocketInfoFilePath(): string {
-  return (
-    process.env.WORKFLOW_SOCKET_INFO_PATH ??
-    join(process.cwd(), '.next', 'cache', 'workflow-socket.json')
-  );
+function getSocketInfoFilePath(): string | null {
+  const configuredPath = process.env.WORKFLOW_SOCKET_INFO_PATH;
+  if (!configuredPath) {
+    return null;
+  }
+
+  return configuredPath;
 }
 
 function getSocketCredentialsFromEnv(): SocketCredentials | null {
@@ -149,6 +151,9 @@ function getSocketCredentialsFromEnv(): SocketCredentials | null {
 
 async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null> {
   const socketInfoFilePath = getSocketInfoFilePath();
+  if (!socketInfoFilePath) {
+    return null;
+  }
   if (!existsSync(socketInfoFilePath)) {
     return null;
   }

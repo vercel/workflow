@@ -180,10 +180,30 @@ interface Streamer {
   ): Promise<ReadableStream<Uint8Array>>;
 
   listStreamsByRunId(runId: string): Promise<string[]>;
+
+  /** Paginated snapshot of stream chunks. */
+  getStreamChunks(
+    name: string,
+    runId: string,
+    options?: { limit?: number; cursor?: string }
+  ): Promise<{
+    data: { index: number; data: Uint8Array }[];
+    cursor: string | null;
+    hasMore: boolean;
+    done: boolean;
+  }>;
+
+  /** Lightweight metadata: tail index and completion flag. */
+  getStreamInfo(
+    name: string,
+    runId: string
+  ): Promise<{ tailIndex: number; done: boolean }>;
 }
 ```
 
 Streams are identified by a combination of `runId` and `name`. Each workflow run can have multiple named streams.
+
+`getStreamChunks` returns a paginated snapshot of currently available chunks (unlike `readFromStream` which returns a live `ReadableStream` that waits for new chunks). `getStreamInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete — useful for resolving negative `startIndex` values into absolute positions.
 
 ## Reference Implementations
 

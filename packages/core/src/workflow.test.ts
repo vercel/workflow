@@ -1,5 +1,5 @@
 import { types } from 'node:util';
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { assert, describe, expect, it, vi } from 'vitest';
 import type { WorkflowSuspension } from './global.js';
@@ -2093,7 +2093,7 @@ describe('runWorkflow', () => {
       });
     });
 
-    it('should reject with WorkflowRuntimeError when hook_conflict event is received', async () => {
+    it('should reject with HookConflictError when hook_conflict event is received', async () => {
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {
         runId: 'test-run-123',
@@ -2141,7 +2141,7 @@ describe('runWorkflow', () => {
         error = err as Error;
       }
 
-      expect(error).toBeInstanceOf(WorkflowRuntimeError);
+      expect(error).toBeInstanceOf(HookConflictError);
       expect(error?.message).toContain('already in use by another workflow');
       expect(error?.message).toContain('my-duplicate-token');
     });
@@ -2198,7 +2198,7 @@ describe('runWorkflow', () => {
         error = err as Error;
       }
 
-      expect(error).toBeInstanceOf(WorkflowRuntimeError);
+      expect(error).toBeInstanceOf(HookConflictError);
       expect(error?.message).toContain('already in use by another workflow');
     });
   });

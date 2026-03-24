@@ -15,6 +15,11 @@ interface BaseWorkflowConfig {
   watch?: boolean;
   dirs: string[];
   workingDir: string;
+  /**
+   * Project root used for package and workspace module-specifier resolution
+   * during SWC transforms. Defaults to `workingDir`.
+   */
+  projectRoot?: string;
 
   // Optionally generate a client library for workflow execution. The preferred
   // method of using workflow is to use a loader within a framework (like

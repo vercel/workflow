@@ -1,10 +1,11 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   clearModuleSpecifierCache,
   getImportPath,
+  resolveModuleSpecifier,
 } from './module-specifier.js';
 
 function writeJson(path: string, value: unknown): void {
@@ -258,6 +259,50 @@ describe('getImportPath', () => {
     expect(getImportPath(filePath, projectRoot)).toEqual({
       importPath: './node_modules/@workflow/core/dist/serialization.js',
       isPackage: false,
+    });
+  });
+
+  it('treats a workspace package file as local when projectRoot is the package itself', () => {
+    const projectRoot = join(testRoot, 'packages/vade');
+    const filePath = join(
+      projectRoot,
+      'src/internal/message/workflow/handle-message.ts'
+    );
+
+    writeJson(join(projectRoot, 'package.json'), {
+      name: 'vade',
+      version: '0.0.0',
+    });
+
+    writeFile(filePath, `'use workflow';\n`);
+
+    expect(resolveModuleSpecifier(filePath, projectRoot)).toEqual({
+      moduleSpecifier: undefined,
+    });
+  });
+
+  it('uses the consuming app root to resolve workspace package workflow ids', () => {
+    const projectRoot = join(testRoot, 'apps/chat');
+    const packageDir = join(testRoot, 'packages/vade');
+    const filePath = join(
+      packageDir,
+      'src/internal/message/workflow/handle-message.ts'
+    );
+
+    writeJson(join(projectRoot, 'package.json'), {
+      name: 'chat',
+      dependencies: { vade: 'workspace:*' },
+    });
+
+    writeJson(join(packageDir, 'package.json'), {
+      name: 'vade',
+      version: '0.0.0',
+    });
+
+    writeFile(filePath, `'use workflow';\n`);
+
+    expect(resolveModuleSpecifier(filePath, projectRoot)).toEqual({
+      moduleSpecifier: 'vade@0.0.0',
     });
   });
 });

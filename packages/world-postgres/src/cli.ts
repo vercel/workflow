@@ -1,9 +1,9 @@
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
-import { drizzle } from 'drizzle-orm/postgres-js';
-import { migrate } from 'drizzle-orm/postgres-js/migrator';
-import postgres from 'postgres';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { Pool } from 'pg';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -21,10 +21,10 @@ async function setupDatabase() {
     `📍 Connection: ${connectionString.replace(/^(\w+:\/\/)([^@]+)@/, '$1[redacted]@')}`
   );
 
-  try {
-    const pgClient = postgres(connectionString, { max: 1 });
-    const db = drizzle(pgClient);
+  const pool = new Pool({ connectionString, max: 1 });
+  const db = drizzle(pool);
 
+  try {
     // Read the migration SQL file
     // The migrations are in src/drizzle/migrations, and this CLI is in dist/
     // So we need to go up one level from dist/ to reach src/
@@ -46,9 +46,10 @@ async function setupDatabase() {
 
     console.log('✅ Database schema created successfully!');
 
-    await pgClient.end();
+    await pool.end();
     process.exit(0);
   } catch (error) {
+    await pool.end().catch(() => {});
     console.error('❌ Failed to setup database:', error);
     process.exit(1);
   }

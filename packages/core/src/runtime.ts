@@ -5,6 +5,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { classifyRunError } from './classify-error.js';
+import { MAX_QUEUE_DELIVERIES } from './runtime/constants.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -52,6 +53,7 @@ export {
 export {
   getRun,
   Run,
+  type WorkflowReadableStream,
   type WorkflowReadableStreamOptions,
 } from './runtime/run.js';
 export {
@@ -107,6 +109,56 @@ export function workflowEntrypoint(
       const { requestId } = metadata;
       // Extract the workflow name from the topic name
       const workflowName = metadata.queueName.slice('__wkf_workflow_'.length);
+
+      // --- Max delivery check ---
+      // Enforce max delivery limit before any infrastructure calls.
+      // This prevents runaway workflows from consuming infinite queue deliveries.
+      // At this point, we want to do the minimal amount of work (no fetching
+      // of the workflow events, etc. We simply attempt to mark the run as failed
+      // and if that fails, the message is still consumed but with adequate logging
+      // that an error occurred preventing us from failing the run.
+      if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+        runtimeLogger.error(
+          `Workflow handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+          { workflowRunId: runId, workflowName, attempt: metadata.attempt }
+        );
+        try {
+          const world = getWorld();
+          await world.events.create(
+            runId,
+            {
+              eventType: 'run_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              eventData: {
+                error: {
+                  message: `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+                },
+                errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
+              },
+            },
+            { requestId }
+          );
+        } catch (err) {
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+            // Run already finished, consume the message silently
+            return;
+          }
+          runtimeLogger.error(
+            `Failed to mark run as failed after ${metadata.attempt} delivery attempts. ` +
+              `A persistent error is preventing the run from being terminated. ` +
+              `The run will remain in its current state until manually resolved. ` +
+              `This is most likely due to a persistent outage of the workflow backend ` +
+              `or a bug in the workflow runtime and should be reported to the Workflow team.`,
+            {
+              workflowRunId: runId,
+              error: err instanceof Error ? err.message : String(err),
+              attempt: metadata.attempt,
+            }
+          );
+        }
+        return;
+      }
+
       const spanLinks = await linkToCurrentContext();
 
       // Invoke user workflow within the propagated trace context and baggage

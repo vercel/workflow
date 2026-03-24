@@ -50,9 +50,9 @@
     "@tailwindcss/postcss": "^4",
     "@types/lodash.chunk": "^4.2.9",
     "@types/node": "catalog:",
-    "@vercel/blob": "2.0.0",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vercel/blob": "2.0.0",
     "@workflow/world-postgres": "workspace:*",
     "tailwindcss": "^4",
     "typescript": "catalog:"

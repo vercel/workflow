@@ -1,4 +1,4 @@
-import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
+import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 import type { HookConflictEvent, HookReceivedEvent } from '@workflow/world';
 import type { Hook, HookOptions } from '../create-hook.js';
@@ -41,7 +41,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
 
     // Track if we have a conflict so we can reject future awaits
     let hasConflict = false;
-    let conflictErrorRef: WorkflowRuntimeError | null = null;
+    let conflictErrorRef: HookConflictError | null = null;
 
     webhookLogger.debug('Hook consumer setup', { correlationId, token });
     ctx.eventsConsumer.subscribe((event) => {
@@ -83,9 +83,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Store the conflict event so we can reject any awaited promises.
         // Chain through promiseQueue to ensure deterministic ordering.
         const conflictEvent = event as HookConflictEvent;
-        const conflictError = new WorkflowRuntimeError(
-          `Hook token "${conflictEvent.eventData.token}" is already in use by another workflow`,
-          { slug: ERROR_SLUGS.HOOK_CONFLICT }
+        const conflictError = new HookConflictError(
+          conflictEvent.eventData.token
         );
 
         // Mark that we have a conflict so future awaits also reject

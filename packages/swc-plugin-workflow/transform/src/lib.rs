@@ -385,6 +385,9 @@ pub struct StepTransform {
     // Track identifiers that are known to be WORKFLOW_SERIALIZE symbols
     // (local name -> "workflow-serialize" or "workflow-deserialize")
     serialization_symbol_identifiers: HashMap<String, String>,
+    // Track identifiers that are bound to require() calls (CommonJS namespace pattern)
+    // e.g., `const serde_1 = require("@workflow/serde")` -> {"serde_1"}
+    require_namespace_identifiers: HashSet<String>,
     // Track class names for the manifest (preserved copy before drain)
     classes_for_manifest: HashSet<String>,
 }
@@ -1555,6 +1558,7 @@ impl StepTransform {
             instance_step_methods_to_strip: Vec::new(),
             classes_needing_serialization: HashSet::new(),
             serialization_symbol_identifiers: HashMap::new(),
+            require_namespace_identifiers: HashSet::new(),
             classes_for_manifest: HashSet::new(),
         }
     }
@@ -1606,6 +1610,74 @@ impl StepTransform {
     }
 
     // Collect all declared identifiers in the module to avoid naming collisions
+    /// Inspect a single `VarDeclarator` for serialization-related bindings:
+    /// - `Symbol.for('workflow-serialize')` / `Symbol.for('workflow-deserialize')` assignments
+    /// - CommonJS namespace require: `const serde_1 = require("...")`
+    /// - CommonJS destructured require: `const { WORKFLOW_SERIALIZE } = require("...")`
+    fn track_serialization_bindings(&mut self, declarator: &VarDeclarator) {
+        let Some(init) = &declarator.init else {
+            return;
+        };
+
+        // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+        if let Pat::Ident(ident) = &declarator.name {
+            if let Some(symbol_name) = self.extract_symbol_for_name(init) {
+                if symbol_name == "workflow-serialize" || symbol_name == "workflow-deserialize" {
+                    self.serialization_symbol_identifiers
+                        .insert(ident.id.sym.to_string(), symbol_name);
+                }
+            }
+            // Track CommonJS namespace require: const serde_1 = require("...")
+            if self.is_require_call(init) {
+                self.require_namespace_identifiers
+                    .insert(ident.id.sym.to_string());
+            }
+        }
+
+        // Track CommonJS destructured require:
+        // const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("...")
+        if let Pat::Object(obj_pat) = &declarator.name {
+            if self.is_require_call(init) {
+                for prop in &obj_pat.props {
+                    match prop {
+                        ObjectPatProp::Assign(assign) => {
+                            // const { WORKFLOW_SERIALIZE } = require("...")
+                            let name = assign.key.sym.to_string();
+                            if name == "WORKFLOW_SERIALIZE" {
+                                self.serialization_symbol_identifiers
+                                    .insert(name, "workflow-serialize".to_string());
+                            } else if name == "WORKFLOW_DESERIALIZE" {
+                                self.serialization_symbol_identifiers
+                                    .insert(name, "workflow-deserialize".to_string());
+                            }
+                        }
+                        ObjectPatProp::KeyValue(kv) => {
+                            // const { WORKFLOW_SERIALIZE: ws } = require("...")
+                            let key_name = match &kv.key {
+                                PropName::Ident(id) => Some(id.sym.to_string()),
+                                PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                                _ => None,
+                            };
+                            if let Some(key) = key_name {
+                                if let Pat::Ident(local) = &*kv.value {
+                                    let local_name = local.id.sym.to_string();
+                                    if key == "WORKFLOW_SERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-serialize".to_string());
+                                    } else if key == "WORKFLOW_DESERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-deserialize".to_string());
+                                    }
+                                }
+                            }
+                        }
+                        ObjectPatProp::Rest(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn collect_declared_identifiers(&mut self, items: &[ModuleItem]) {
         for item in items {
             match item {
@@ -1617,19 +1689,7 @@ impl StepTransform {
                     Decl::Var(var_decl) => {
                         for declarator in &var_decl.decls {
                             self.collect_idents_from_pat(&declarator.name);
-                            // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-                            if let Pat::Ident(ident) = &declarator.name {
-                                if let Some(init) = &declarator.init {
-                                    if let Some(symbol_name) = self.extract_symbol_for_name(init) {
-                                        if symbol_name == "workflow-serialize"
-                                            || symbol_name == "workflow-deserialize"
-                                        {
-                                            self.serialization_symbol_identifiers
-                                                .insert(ident.id.sym.to_string(), symbol_name);
-                                        }
-                                    }
-                                }
-                            }
+                            self.track_serialization_bindings(declarator);
                         }
                     }
                     Decl::Class(class_decl) => {
@@ -1647,21 +1707,7 @@ impl StepTransform {
                         Decl::Var(var_decl) => {
                             for declarator in &var_decl.decls {
                                 self.collect_idents_from_pat(&declarator.name);
-                                // Track exported const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-                                if let Pat::Ident(ident) = &declarator.name {
-                                    if let Some(init) = &declarator.init {
-                                        if let Some(symbol_name) =
-                                            self.extract_symbol_for_name(init)
-                                        {
-                                            if symbol_name == "workflow-serialize"
-                                                || symbol_name == "workflow-deserialize"
-                                            {
-                                                self.serialization_symbol_identifiers
-                                                    .insert(ident.id.sym.to_string(), symbol_name);
-                                            }
-                                        }
-                                    }
-                                }
+                                self.track_serialization_bindings(declarator);
                             }
                         }
                         Decl::Class(class_decl) => {
@@ -2627,11 +2673,30 @@ impl StepTransform {
         None
     }
 
+    /// Check if an expression is a `require('...')` or `require("...")` call.
+    /// Returns true only when the callee is `require` with exactly one string literal argument.
+    fn is_require_call(&self, expr: &Expr) -> bool {
+        if let Expr::Call(call) = expr {
+            if let Callee::Expr(callee) = &call.callee {
+                if let Expr::Ident(ident) = &**callee {
+                    if ident.sym.as_str() == "require" && call.args.len() == 1 {
+                        // Ensure the single argument is a string literal
+                        if let Expr::Lit(Lit::Str(_)) = &*call.args[0].expr {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Check if an expression represents a workflow serialization symbol.
     /// Supports multiple patterns:
     /// 1. Direct: `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
     /// 2. Identifier reference to an imported symbol: `WORKFLOW_SERIALIZE` (imported from '@workflow/serde')
     /// 3. Identifier reference to a local const: `const MY_SYM = Symbol.for('workflow-serialize')`
+    /// 4. Member expression on a require() namespace: `serde_1.WORKFLOW_SERIALIZE`
     fn is_workflow_serialization_symbol(&self, expr: &Expr, symbol_name: &str) -> bool {
         // Pattern 1: Direct Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
         if let Some(extracted_name) = self.extract_symbol_for_name(expr) {
@@ -2645,6 +2710,26 @@ impl StepTransform {
                 .get(&ident.sym.to_string())
             {
                 return known_symbol == symbol_name;
+            }
+        }
+
+        // Pattern 4: Member expression on a require() namespace binding
+        // e.g., serde_1.WORKFLOW_SERIALIZE where serde_1 = require("@workflow/serde")
+        if let Expr::Member(member) = expr {
+            if let Expr::Ident(obj) = &*member.obj {
+                if self
+                    .require_namespace_identifiers
+                    .contains(&obj.sym.to_string())
+                {
+                    if let MemberProp::Ident(prop) = &member.prop {
+                        let prop_name = prop.sym.as_str();
+                        if prop_name == "WORKFLOW_SERIALIZE" {
+                            return symbol_name == "workflow-serialize";
+                        } else if prop_name == "WORKFLOW_DESERIALIZE" {
+                            return symbol_name == "workflow-deserialize";
+                        }
+                    }
+                }
             }
         }
 

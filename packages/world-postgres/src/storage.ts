@@ -768,7 +768,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         ) {
           throw new TooEarlyError(
             `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
-            { retryAfter: validatedStep.retryAfter }
+            {
+              retryAfter: Math.ceil(
+                (validatedStep.retryAfter.getTime() - Date.now()) / 1000
+              ),
+            }
           );
         }
 

@@ -317,6 +317,8 @@ async function multiToolAgentWorkflow(userQuery: string) {
 
 ```typescript
 import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import type { UIMessageChunk } from "ai";
 import { z } from "zod";
 
 async function searchProducts({ query }: { query: string }) {

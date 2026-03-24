@@ -15,6 +15,7 @@ import { initDataDir } from './init.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { createStorage } from './storage.js';
 import { hashToken } from './storage/helpers.js';
+import { instrumentObject } from './instrumentObject.js';
 import { createStreamer } from './streamer.js';
 
 // Re-export init types and utilities for consumers
@@ -63,7 +64,10 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   return {
     ...queue,
     ...createStorage(mergedConfig.dataDir, tag),
-    ...createStreamer(mergedConfig.dataDir, tag),
+    ...instrumentObject(
+      'world.streams',
+      createStreamer(mergedConfig.dataDir, tag)
+    ),
     async start() {
       await initDataDir(mergedConfig.dataDir);
     },
