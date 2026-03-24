@@ -372,7 +372,6 @@ const hookEventsRequiringExistence = new Set([
   'hook_received',
 ]);
 
-
 export async function createWorkflowRunEvent(
   id: string | null,
   data: AnyEventRequest,
