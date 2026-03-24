@@ -1,5 +1,19 @@
 # @workflow/web-shared
 
+## 4.1.0-beta.67
+
+### Patch Changes
+
+- [#1482](https://github.com/vercel/workflow/pull/1482) [`a89f35a`](https://github.com/vercel/workflow/commit/a89f35adbb5ab07a9a821b6c0f536a4d2d91d7e4) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix traceviewer timeline precision
+
+- [#1437](https://github.com/vercel/workflow/pull/1437) [`58830ca`](https://github.com/vercel/workflow/commit/58830caa85b6dd948bd2d497be17e676a0577944) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Prevent re-renders to detail panel inputs and outputs when they are decrypted and while the run is in "running" state
+
+- [#1438](https://github.com/vercel/workflow/pull/1438) [`da6adf7`](https://github.com/vercel/workflow/commit/da6adf7798efa38cfbe7d30209102c11cc7643c4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve display when run data has expired
+
+- Updated dependencies [[`73a851a`](https://github.com/vercel/workflow/commit/73a851ada6a4d46ae8f022ef243ebf4ee3de2ad8), [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7), [`672d919`](https://github.com/vercel/workflow/commit/672d9195a475a110a64dbaa7c5c87a24f244c11a), [`beccbc4`](https://github.com/vercel/workflow/commit/beccbc4298f434a4ffb9563c4f832f2230016f40), [`78f1b0e`](https://github.com/vercel/workflow/commit/78f1b0e19f2ac1a621020bc9fa5dec778f3b0fd9), [`da6adf7`](https://github.com/vercel/workflow/commit/da6adf7798efa38cfbe7d30209102c11cc7643c4), [`aee035f`](https://github.com/vercel/workflow/commit/aee035f94483ef3b842bb557e8c5b167dd0536c4), [`01bbe66`](https://github.com/vercel/workflow/commit/01bbe66d5a60d50d71f5b1c82b002ca7fc6f8e0b), [`2b07294`](https://github.com/vercel/workflow/commit/2b072943134e8655afe8b3c2dfe535307b7a1a8b)]:
+  - @workflow/core@4.2.0-beta.72
+  - @workflow/world@4.1.0-beta.14
+
 ## 4.1.0-beta.66
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @workflow/web
 
+## 4.1.0-beta.44
+
+### Patch Changes
+
+- [#1340](https://github.com/vercel/workflow/pull/1340) [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Add error code classification (`USER_ERROR`, `RUNTIME_ERROR`) to `run_failed` events, improve queue and schema validation error logging
+
+- [#1473](https://github.com/vercel/workflow/pull/1473) [`2b80e2d`](https://github.com/vercel/workflow/commit/2b80e2de35aac170e5dc7d83a1b3f26495a0bbc9) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix stream display for streams created before version `4.1.0-beta.56`
+
 ## 4.1.0-beta.43
 
 ### Patch Changes

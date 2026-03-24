@@ -1,5 +1,21 @@
 # @workflow/errors
 
+## 4.1.0-beta.19
+
+### Patch Changes
+
+- [#1448](https://github.com/vercel/workflow/pull/1448) [`73a851a`](https://github.com/vercel/workflow/commit/73a851ada6a4d46ae8f022ef243ebf4ee3de2ad8) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `HookConflictError` to `@workflow/errors` and use it for hook token conflicts instead of `WorkflowRuntimeError`
+
+- [#1340](https://github.com/vercel/workflow/pull/1340) [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Add error code classification (`USER_ERROR`, `RUNTIME_ERROR`) to `run_failed` events, improve queue and schema validation error logging
+
+- [#1447](https://github.com/vercel/workflow/pull/1447) [`2ef33d2`](https://github.com/vercel/workflow/commit/2ef33d2828ac06debf04ad9cc239d70fea6a8093) Thanks [@pranaygp](https://github.com/pranaygp)! - Export semantic error types from `workflow/internal/errors` and add API reference documentation
+
+- [#1452](https://github.com/vercel/workflow/pull/1452) [`672d919`](https://github.com/vercel/workflow/commit/672d9195a475a110a64dbaa7c5c87a24f244c11a) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix workflow/step not found errors to fail gracefully instead of causing infinite queue retries
+
+- [#1344](https://github.com/vercel/workflow/pull/1344) [`beccbc4`](https://github.com/vercel/workflow/commit/beccbc4298f434a4ffb9563c4f832f2230016f40) Thanks [@pranaygp](https://github.com/pranaygp)! - Remove VQS maxDeliveries cap and enforce max delivery limit in workflow/step handlers with graceful failure
+
+- [#1342](https://github.com/vercel/workflow/pull/1342) [`aee035f`](https://github.com/vercel/workflow/commit/aee035f94483ef3b842bb557e8c5b167dd0536c4) Thanks [@pranaygp](https://github.com/pranaygp)! - Replace HTTP status code checks with semantic error types (EntityConflictError, RunExpiredError, ThrottleError, TooEarlyError). **BREAKING CHANGE**: `WorkflowAPIError` renamed to `WorkflowWorldError`.
+
 ## 4.1.0-beta.18
 
 ### Patch Changes
