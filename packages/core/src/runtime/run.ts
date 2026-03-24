@@ -23,6 +23,21 @@ import {
 import { getWorld } from './world.js';
 
 /**
+ * A `ReadableStream` extended with workflow-specific helpers.
+ */
+export type WorkflowReadableStream<R = any> = ReadableStream<R> & {
+  /**
+   * Returns the tail index (index of the last known chunk, 0-based) of the
+   * underlying workflow stream. Useful for resolving a negative `startIndex`
+   * into an absolute position — for example, when building reconnection
+   * endpoints that need to inform the client where the stream starts.
+   *
+   * Returns `-1` when no chunks have been written yet.
+   */
+  getTailIndex(): Promise<number>;
+};
+
+/**
  * Options for configuring a workflow's readable stream.
  */
 export interface WorkflowReadableStreamOptions {
@@ -178,7 +193,7 @@ export class Run<TResult> {
   /**
    * The readable stream of the workflow run.
    */
-  get readable(): ReadableStream {
+  get readable(): WorkflowReadableStream {
     return this.getReadable();
   }
 
@@ -186,18 +201,23 @@ export class Run<TResult> {
    * Retrieves the workflow run's default readable stream, which reads chunks
    * written to the corresponding writable stream {@link getWritable}.
    *
+   * The returned stream has an additional {@link WorkflowReadableStream.getTailIndex | getTailIndex()}
+   * helper that returns the index of the last known chunk. This is useful when
+   * building reconnection endpoints that need to inform clients where the
+   * stream starts.
+   *
    * @param options - The options for the readable stream.
-   * @returns The `ReadableStream` for the workflow run.
+   * @returns A `WorkflowReadableStream` for the workflow run.
    */
   getReadable<R = any>(
     options: WorkflowReadableStreamOptions = {}
-  ): ReadableStream<R> {
+  ): WorkflowReadableStream<R> {
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
     // Pass the key as a promise — it will be resolved lazily inside
     // the first async transform() call of the deserialize stream.
     const encryptionKey = this.getEncryptionKey();
-    return getExternalRevivers(
+    const stream = getExternalRevivers(
       global,
       ops,
       this.runId,
@@ -206,6 +226,15 @@ export class Run<TResult> {
       name,
       startIndex,
     }) as ReadableStream<R>;
+
+    const world = this.world;
+    const runId = this.runId;
+    return Object.assign(stream, {
+      getTailIndex: async (): Promise<number> => {
+        const info = await world.getStreamInfo(name, runId);
+        return info.tailIndex;
+      },
+    });
   }
 
   /**

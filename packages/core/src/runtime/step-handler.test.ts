@@ -528,10 +528,10 @@ describe('step-handler max deliveries', () => {
   });
 
   it('should post step_failed and re-queue workflow when delivery count exceeds max', async () => {
-    const result = await capturedHandler(
-      createMessage(),
-      { ...createMetadata('myStep'), attempt: MAX_QUEUE_DELIVERIES + 1 }
-    );
+    const result = await capturedHandler(createMessage(), {
+      ...createMetadata('myStep'),
+      attempt: MAX_QUEUE_DELIVERIES + 1,
+    });
 
     expect(result).toBeUndefined();
     expect(mockEventsCreate).toHaveBeenCalledWith(
@@ -554,20 +554,20 @@ describe('step-handler max deliveries', () => {
       new EntityConflictError('Step already completed')
     );
 
-    const result = await capturedHandler(
-      createMessage(),
-      { ...createMetadata('myStep'), attempt: MAX_QUEUE_DELIVERIES + 1 }
-    );
+    const result = await capturedHandler(createMessage(), {
+      ...createMetadata('myStep'),
+      attempt: MAX_QUEUE_DELIVERIES + 1,
+    });
 
     expect(result).toBeUndefined();
     expect(mockStepFn).not.toHaveBeenCalled();
   });
 
   it('should not trigger max deliveries check when under limit', async () => {
-    const result = await capturedHandler(
-      createMessage(),
-      { ...createMetadata('myStep'), attempt: MAX_QUEUE_DELIVERIES }
-    );
+    const result = await capturedHandler(createMessage(), {
+      ...createMetadata('myStep'),
+      attempt: MAX_QUEUE_DELIVERIES,
+    });
 
     // Should proceed normally (step function executes)
     expect(mockStepFn).toHaveBeenCalled();
