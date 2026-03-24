@@ -1563,8 +1563,8 @@ importers:
   workbench/express:
     dependencies:
       express:
-        specifier: ^5.1.0
-        version: 5.1.0
+        specifier: ^5.2.1
+        version: 5.2.1
       nitro:
         specifier: 'catalog:'
         version: 3.0.1-alpha.1(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.4.3(@aws-sdk/credential-provider-web-identity@3.972.13))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.45.1(@opentelemetry/api@1.9.0)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(ioredis@5.8.2)(lru-cache@11.2.2)(rollup@4.53.2)(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
@@ -1597,8 +1597,8 @@ importers:
   workbench/fastify:
     dependencies:
       fastify:
-        specifier: ^5.6.2
-        version: 5.6.2
+        specifier: ^5.8.2
+        version: 5.8.4
       nitro:
         specifier: 'catalog:'
         version: 3.0.1-alpha.1(@netlify/blobs@9.1.2)(@vercel/blob@2.0.0)(@vercel/functions@3.4.3(@aws-sdk/credential-provider-web-identity@3.972.13))(better-sqlite3@11.10.0)(chokidar@4.0.3)(drizzle-orm@0.45.1(@opentelemetry/api@1.9.0)(@types/pg@8.20.0)(better-sqlite3@11.10.0)(pg@8.20.0)(postgres@3.4.8))(ioredis@5.8.2)(lru-cache@11.2.2)(rollup@4.53.2)(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
@@ -1685,8 +1685,8 @@ importers:
         specifier: 'catalog:'
         version: 6.0.116(zod@4.3.6)
       express:
-        specifier: ^5.1.0
-        version: 5.1.0
+        specifier: ^5.2.1
+        version: 5.2.1
       lodash.chunk:
         specifier: ^4.2.0
         version: 4.2.0
@@ -8974,10 +8974,6 @@ packages:
     resolution: {integrity: sha512-ZTgYYLMOXY9qKU/57FAo8F+HA2dGX7bqGc71txDRC1rS4frdFI5R7NhluHxH6M0YItAP0sHB4uqAOcYKxO6uGA==}
     engines: {node: '>= 0.8', npm: 1.2.8000 || >= 1.4.16}
 
-  body-parser@2.2.0:
-    resolution: {integrity: sha512-02qvAaxv8tp7fBa/mw1ga98OGm+eCbqzJOKoRt70sLmfEEi+jyBYVTDGfCL/k06/4EMk/z01gCe7HoCH/f2LTg==}
-    engines: {node: '>=18'}
-
   body-parser@2.2.2:
     resolution: {integrity: sha512-oP5VkATKlNwcgvxi0vM0p/D3n2C3EReYVX+DNYs5TjZFn/oQt2j+4sVJtSMr18pdRr8wjTcBl6LoV+FUwzPmNA==}
     engines: {node: '>=18'}
@@ -10461,10 +10457,6 @@ packages:
     resolution: {integrity: sha512-F2X8g9P1X7uCPZMA3MVf9wcTqlyNp7IhH5qPCI0izhaOIYXaW9L535tGA3qmjRzpH+bZczqq7hVKxTR4NWnu+g==}
     engines: {node: '>= 0.10.0'}
 
-  express@5.1.0:
-    resolution: {integrity: sha512-DT9ck5YIRU+8GYzzU5kT3eHGA5iL+1Zd0EutOmTE9Dtk+Tvuzd23VBU+ec7HPNSTxXYO55gPV/hq4pSBJDjFpA==}
-    engines: {node: '>= 18'}
-
   express@5.2.1:
     resolution: {integrity: sha512-hIS4idWWai69NezIdRt2xFVofaF4j+6INOpJlVOLDO8zXGpUVEVzIYk12UUi2JzjEzWL3IOAxcTubgz9Po0yXw==}
     engines: {node: '>= 18'}
@@ -10540,8 +10532,8 @@ packages:
     resolution: {integrity: sha512-QNI3sAvSvaOiaMl8FYU4trnEzCwiRr8XMWgAHzlrWpTSj+QaCSvOf1h82OEP1s4hiAXhnbXSyFWCf4ldZzZRVA==}
     hasBin: true
 
-  fastify@5.6.2:
-    resolution: {integrity: sha512-dPugdGnsvYkBlENLhCgX8yhyGCsCPrpA8lFWbTNU428l+YOnLgYHR69hzV8HWPC79n536EqzqQtvhtdaCE0dKg==}
+  fastify@5.8.4:
+    resolution: {integrity: sha512-sa42J1xylbBAYUWALSBoyXKPDUvM3OoNOibIefA+Oha57FryXKKCZarA1iDntOCWp3O35voZLuDg2mdODXtPzQ==}
 
   fastq@1.19.1:
     resolution: {integrity: sha512-GwLTyxkCXjXbxqIhTsMI2Nui8huMPtnxg7krajPJAjnEG/iiOS7i+zCtWGZR9G0NBKbXKh6X9m9UIsYX/N6vvQ==}
@@ -13549,10 +13541,6 @@ packages:
   punycode@2.3.1:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
     engines: {node: '>=6'}
-
-  qs@6.14.0:
-    resolution: {integrity: sha512-YWWTjgABSKcvs/nWBi9PycY/JiPJqOD4JA6o9Sej2AtvSGarXxKC3OQSk4pAarbdQlKAh5D4FCQkJNkW+GAn3w==}
-    engines: {node: '>=0.6'}
 
   qs@6.14.1:
     resolution: {integrity: sha512-4EK3+xJl8Ts67nLYNwqw/dsFVnCf+qR7RgXSK9jEEm9unao3njwMDdmsdvoKBKHzxd7tCYz5e5M+SnMjdtXGQQ==}
@@ -23462,14 +23450,6 @@ snapshots:
     optionalDependencies:
       vite: 7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)
 
-  '@vitest/mocker@4.0.18(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))':
-    dependencies:
-      '@vitest/spy': 4.0.18
-      estree-walker: 3.0.3
-      magic-string: 0.30.21
-    optionalDependencies:
-      vite: 7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1)
-
   '@vitest/mocker@4.0.18(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))':
     dependencies:
       '@vitest/spy': 4.0.18
@@ -24472,26 +24452,12 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  body-parser@2.2.0:
-    dependencies:
-      bytes: 3.1.2
-      content-type: 1.0.5
-      debug: 4.4.3(supports-color@8.1.1)
-      http-errors: 2.0.0
-      iconv-lite: 0.6.3
-      on-finished: 2.4.1
-      qs: 6.14.0
-      raw-body: 3.0.1
-      type-is: 2.0.1
-    transitivePeerDependencies:
-      - supports-color
-
   body-parser@2.2.2:
     dependencies:
       bytes: 3.1.2
       content-type: 1.0.5
       debug: 4.4.3(supports-color@8.1.1)
-      http-errors: 2.0.0
+      http-errors: 2.0.1
       iconv-lite: 0.7.0
       on-finished: 2.4.1
       qs: 6.14.1
@@ -26102,38 +26068,6 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  express@5.1.0:
-    dependencies:
-      accepts: 2.0.0
-      body-parser: 2.2.0
-      content-disposition: 1.0.1
-      content-type: 1.0.5
-      cookie: 0.7.2
-      cookie-signature: 1.2.2
-      debug: 4.4.3(supports-color@8.1.1)
-      encodeurl: 2.0.0
-      escape-html: 1.0.3
-      etag: 1.8.1
-      finalhandler: 2.1.0
-      fresh: 2.0.0
-      http-errors: 2.0.0
-      merge-descriptors: 2.0.0
-      mime-types: 3.0.1
-      on-finished: 2.4.1
-      once: 1.4.0
-      parseurl: 1.3.3
-      proxy-addr: 2.0.7
-      qs: 6.14.0
-      range-parser: 1.2.1
-      router: 2.2.0
-      send: 1.2.0
-      serve-static: 2.2.0
-      statuses: 2.0.2
-      type-is: 2.0.1
-      vary: 1.1.2
-    transitivePeerDependencies:
-      - supports-color
-
   express@5.2.1:
     dependencies:
       accepts: 2.0.0
@@ -26149,14 +26083,14 @@ snapshots:
       etag: 1.8.1
       finalhandler: 2.1.0
       fresh: 2.0.0
-      http-errors: 2.0.0
+      http-errors: 2.0.1
       merge-descriptors: 2.0.0
       mime-types: 3.0.1
       on-finished: 2.4.1
       once: 1.4.0
       parseurl: 1.3.3
       proxy-addr: 2.0.7
-      qs: 6.14.0
+      qs: 6.14.1
       range-parser: 1.2.1
       router: 2.2.0
       send: 1.2.0
@@ -26242,7 +26176,7 @@ snapshots:
     dependencies:
       strnum: 2.1.2
 
-  fastify@5.6.2:
+  fastify@5.8.4:
     dependencies:
       '@fastify/ajv-compiler': 4.0.5
       '@fastify/error': 4.2.0
@@ -27561,7 +27495,7 @@ snapshots:
 
   light-my-request@6.6.0:
     dependencies:
-      cookie: 1.0.2
+      cookie: 1.1.1
       process-warning: 4.0.1
       set-cookie-parser: 2.7.2
 
@@ -28631,7 +28565,7 @@ snapshots:
       micro-api-client: 3.3.0
       node-fetch: 3.3.2
       p-wait-for: 5.0.2
-      qs: 6.14.0
+      qs: 6.14.1
 
   next-themes@0.4.6(react-dom@19.1.0(react@19.1.0))(react@19.1.0):
     dependencies:
@@ -30289,10 +30223,6 @@ snapshots:
 
   punycode@2.3.1: {}
 
-  qs@6.14.0:
-    dependencies:
-      side-channel: 1.1.0
-
   qs@6.14.1:
     dependencies:
       side-channel: 1.1.0
@@ -31209,7 +31139,7 @@ snapshots:
       escape-html: 1.0.3
       etag: 1.8.1
       fresh: 2.0.0
-      http-errors: 2.0.0
+      http-errors: 2.0.1
       mime-types: 3.0.1
       ms: 2.1.3
       on-finished: 2.4.1
@@ -32862,7 +32792,7 @@ snapshots:
   vitest@4.0.18(@opentelemetry/api@1.9.0)(@types/node@22.19.0)(jiti@2.6.1)(jsdom@26.1.0)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1):
     dependencies:
       '@vitest/expect': 4.0.18
-      '@vitest/mocker': 4.0.18(vite@7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
+      '@vitest/mocker': 4.0.18(vite@7.1.12(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.1))
       '@vitest/pretty-format': 4.0.18
       '@vitest/runner': 4.0.18
       '@vitest/snapshot': 4.0.18
@@ -33223,7 +33153,7 @@ snapshots:
       '@poppinss/colors': 4.1.5
       '@poppinss/dumper': 0.6.4
       '@speed-highlight/core': 1.2.7
-      cookie: 1.0.2
+      cookie: 1.1.1
       youch-core: 0.3.3
 
   youch@4.1.0-beta.8:
@@ -33231,7 +33161,7 @@ snapshots:
       '@poppinss/colors': 4.1.5
       '@poppinss/dumper': 0.6.4
       '@speed-highlight/core': 1.2.7
-      cookie: 1.0.2
+      cookie: 1.1.1
       youch-core: 0.3.3
 
   youtube-video-element@1.8.0: {}
