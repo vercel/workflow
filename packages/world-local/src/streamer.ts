@@ -43,6 +43,11 @@ export function serializeChunk(chunk: Chunk) {
   return Buffer.concat([eofByte, chunk.chunk]);
 }
 
+/** Check only the EOF flag byte without copying chunk payload. */
+export function isEofChunk(serialized: Buffer): boolean {
+  return serialized[0] === 1;
+}
+
 export function deserializeChunk(serialized: Buffer) {
   const eof = serialized[0] === 1;
   // Create a copy instead of a view to prevent ArrayBuffer detachment
@@ -280,21 +285,6 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         .filter((file) => file.startsWith(`${name}-`))
         .sort(); // ULID lexicographic sort = chronological order
 
-      // Separate data chunks from EOF marker
-      let streamDone = false;
-      const dataFiles: string[] = [];
-      for (const file of chunkFiles) {
-        const ext = fileExtMap.get(file) ?? '.bin';
-        const chunk = deserializeChunk(
-          await readBuffer(path.join(chunksDir, `${file}${ext}`))
-        );
-        if (chunk.eof) {
-          streamDone = true;
-          break;
-        }
-        dataFiles.push(file);
-      }
-
       // Decode cursor
       let startIndex = 0;
       if (options?.cursor) {
@@ -308,23 +298,54 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         }
       }
 
-      const endIndex = Math.min(startIndex + limit, dataFiles.length);
+      // Walk from startIndex, reading only the files we need.
+      // Files before the cursor are skipped entirely.
+      let streamDone = false;
       const resultChunks: { index: number; data: Uint8Array }[] = [];
+      let dataIndex = 0; // running count of data (non-EOF) files seen
 
-      for (let i = startIndex; i < endIndex; i++) {
-        const file = dataFiles[i];
+      for (const file of chunkFiles) {
         const ext = fileExtMap.get(file) ?? '.bin';
-        const chunk = deserializeChunk(
-          await readBuffer(path.join(chunksDir, `${file}${ext}`))
-        );
+        const filePath = path.join(chunksDir, `${file}${ext}`);
+
+        // Before the cursor: only need to check EOF (1 byte), skip content
+        if (dataIndex < startIndex) {
+          if (isEofChunk(await readBuffer(filePath))) {
+            streamDone = true;
+            break;
+          }
+          dataIndex++;
+          continue;
+        }
+
+        // Collected enough data chunks — peek at the next file for EOF/hasMore
+        if (resultChunks.length >= limit) {
+          if (isEofChunk(await readBuffer(filePath))) {
+            streamDone = true;
+          } else {
+            // More data files exist beyond this page
+            dataIndex++;
+          }
+          break;
+        }
+
+        // In the page window: deserialize fully
+        const chunk = deserializeChunk(await readBuffer(filePath));
+        if (chunk.eof) {
+          streamDone = true;
+          break;
+        }
         resultChunks.push({
-          index: i,
+          index: dataIndex,
           data: Uint8Array.from(chunk.chunk),
         });
+        dataIndex++;
       }
 
-      const nextIndex = endIndex;
-      const hasMore = nextIndex < dataFiles.length;
+      // hasMore = we know there are data files beyond this page
+      const hasMore =
+        !streamDone && dataIndex > startIndex + resultChunks.length;
+      const nextIndex = startIndex + resultChunks.length;
       const nextCursor = hasMore
         ? Buffer.from(JSON.stringify({ i: nextIndex })).toString('base64')
         : null;
@@ -367,14 +388,15 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         .filter((file) => file.startsWith(`${name}-`))
         .sort();
 
+      // Only read the first byte of each file to check EOF — no full
+      // deserialization needed since we just need a count.
       let streamDone = false;
       let dataCount = 0;
       for (const file of chunkFiles) {
         const ext = fileExtMap.get(file) ?? '.bin';
-        const chunk = deserializeChunk(
-          await readBuffer(path.join(chunksDir, `${file}${ext}`))
-        );
-        if (chunk.eof) {
+        if (
+          isEofChunk(await readBuffer(path.join(chunksDir, `${file}${ext}`)))
+        ) {
           streamDone = true;
           break;
         }

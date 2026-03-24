@@ -357,18 +357,20 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
       // index so we can compute the resolved position for subsequent retries.
       if (useExplicitStartIndex && explicitStartIndex < 0) {
         const tailIndexHeader = res.headers.get('x-workflow-stream-tail-index');
-        if (tailIndexHeader !== null) {
-          const tailIndex = parseInt(tailIndexHeader, 10);
-          if (!Number.isNaN(tailIndex)) {
-            // Resolve: e.g. tailIndex=499, startIndex=-20 → 500 + (-20) = 480
-            chunkIndex = Math.max(0, tailIndex + 1 + explicitStartIndex);
-          }
+        const tailIndex =
+          tailIndexHeader !== null ? parseInt(tailIndexHeader, 10) : NaN;
+
+        if (!Number.isNaN(tailIndex)) {
+          // Resolve: e.g. tailIndex=499, startIndex=-20 → 500 + (-20) = 480
+          chunkIndex = Math.max(0, tailIndex + 1 + explicitStartIndex);
         } else {
+          // Header missing or unparseable — fall back to replaying from the
+          // beginning so retries don't resume from a wrong position.
           console.warn(
             '[WorkflowChatTransport] Negative initialStartIndex is configured ' +
               `(${explicitStartIndex}) but the reconnection endpoint did not ` +
-              'return the "x-workflow-stream-tail-index" header. Retries will ' +
-              'replay the stream from the beginning. See: ' +
+              'return a valid "x-workflow-stream-tail-index" header. Retries ' +
+              'will replay the stream from the beginning. See: ' +
               'https://workflow.dev/docs/ai/resumable-streams#resuming-from-the-end-of-the-stream'
           );
           replayFromStart = true;

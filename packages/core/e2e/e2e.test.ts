@@ -726,6 +726,23 @@ describe('e2e', () => {
       );
 
       test(
+        'getTailIndex returns -1 before any chunks are written',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+
+          // Don't await returnValue — check immediately while stream is
+          // still being written (or hasn't started yet). The world should
+          // report tailIndex = -1 for streams with no data.
+          const readable = run.getReadable({ namespace: 'nonexistent' });
+          const tailIndex = await readable.getTailIndex();
+          expect(tailIndex).toBe(-1);
+        }
+      );
+
+      test(
         'getStreamChunks returns same content as reading the stream',
         {
           timeout: 60_000,

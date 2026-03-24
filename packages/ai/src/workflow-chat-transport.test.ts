@@ -424,6 +424,49 @@ describe('WorkflowChatTransport', () => {
 
       warnSpy.mockRestore();
     });
+
+    it('should fall back to startIndex=0 when header value is not a number', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -5,
+      });
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers({
+            'x-workflow-stream-tail-index': 'not-a-number',
+          }),
+          body: makeSSEStream(),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          body: makeSSEStream('{"type":"finish"}'),
+        });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      while (!(await reader.read()).done) {}
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('valid "x-workflow-stream-tail-index"')
+      );
+
+      // Retry falls back to 0
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/chat/test-chat/stream?startIndex=0',
+        expect.any(Object)
+      );
+
+      warnSpy.mockRestore();
+    });
   });
 
   describe('callbacks', () => {

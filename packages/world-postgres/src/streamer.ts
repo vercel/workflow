@@ -5,7 +5,7 @@ import type {
   Streamer,
   StreamInfoResponse,
 } from '@workflow/world';
-import { and, asc, eq, gt } from 'drizzle-orm';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
 import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
@@ -248,17 +248,19 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         }
       }
 
-      // Fetch limit + 1 to detect hasMore, plus check for EOF
+      // Fetch only data rows (exclude EOF) with limit + 1 to detect hasMore.
+      // Filtering EOF here avoids the edge case where an EOF row sorting
+      // mid-batch (e.g. due to clock skew) silently drops data rows.
       const rows = await drizzle
         .select({
           chunkId: streams.chunkId,
           data: streams.chunkData,
-          eof: streams.eof,
         })
         .from(streams)
         .where(
           and(
             eq(streams.streamId, name),
+            eq(streams.eof, false),
             ...(cursorChunkId
               ? [gt(streams.chunkId, cursorChunkId as `chnk_${string}`)]
               : [])
@@ -267,38 +269,18 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         .orderBy(asc(streams.chunkId))
         .limit(limit + 1);
 
-      // Separate data rows from EOF and detect hasMore
-      const dataRows: typeof rows = [];
+      const hasMore = rows.length > limit;
+      const pageRows = rows.slice(0, limit);
+
+      // Check if stream is complete via a separate EOF query
       let streamDone = false;
-      for (const row of rows) {
-        if (row.eof) {
-          streamDone = true;
-          break;
-        }
-        dataRows.push(row);
-      }
-
-      const hasMore = !streamDone && dataRows.length > limit;
-      const pageRows = dataRows.slice(0, limit);
-
-      // If we didn't see an EOF in this batch and didn't exceed limit,
-      // check if the stream is complete by looking ahead for an EOF row
-      if (!streamDone && !hasMore && pageRows.length > 0) {
-        const lastChunkId = pageRows[pageRows.length - 1].chunkId;
-        const [eofRow] = await drizzle
-          .select({ eof: streams.eof })
-          .from(streams)
-          .where(
-            and(
-              eq(streams.streamId, name),
-              gt(streams.chunkId, lastChunkId),
-              eq(streams.eof, true)
-            )
-          )
-          .limit(1);
-        if (eofRow) {
-          streamDone = true;
-        }
+      const [eofRow] = await drizzle
+        .select({ eof: streams.eof })
+        .from(streams)
+        .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
+        .limit(1);
+      if (eofRow) {
+        streamDone = true;
       }
 
       // Build the cursor index: we need a running index across pages.
@@ -344,12 +326,13 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
       name: string,
       _runId: string
     ): Promise<StreamInfoResponse> {
-      // Count data rows (non-EOF)
-      const dataRows = await drizzle
-        .select({ chunkId: streams.chunkId })
+      // Use COUNT(*) instead of fetching all rows into memory
+      const [countResult] = await drizzle
+        .select({ count: sql<number>`count(*)` })
         .from(streams)
-        .where(and(eq(streams.streamId, name), eq(streams.eof, false)))
-        .orderBy(asc(streams.chunkId));
+        .where(and(eq(streams.streamId, name), eq(streams.eof, false)));
+
+      const dataCount = Number(countResult?.count ?? 0);
 
       // Check for EOF
       const [eofRow] = await drizzle
@@ -359,7 +342,7 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
         .limit(1);
 
       return {
-        tailIndex: dataRows.length - 1,
+        tailIndex: dataCount - 1,
         done: !!eofRow,
       };
     },
