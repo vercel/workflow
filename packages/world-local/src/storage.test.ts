@@ -1952,6 +1952,27 @@ describe('Storage', () => {
         name: 'EntityConflictError',
       });
     });
+
+    it('should reject concurrent hook_disposed for the same hook', async () => {
+      await createHook(storage, testRunId, {
+        hookId: 'hook_race_1',
+        token: 'hook-race-token-1',
+      });
+
+      const results = await Promise.allSettled([
+        disposeHook(storage, testRunId, 'hook_race_1'),
+        disposeHook(storage, testRunId, 'hook_race_1'),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+    });
   });
 
   describe('run terminal state validation', () => {
