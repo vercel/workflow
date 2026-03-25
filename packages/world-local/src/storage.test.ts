@@ -1969,9 +1969,14 @@ describe('Storage', () => {
 
       expect(fulfilled).toHaveLength(1);
       expect(rejected).toHaveLength(1);
-      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
-        name: 'EntityConflictError',
-      });
+      // Depending on timing, the loser may hit the lock file (EntityConflictError)
+      // or find the hook entity already deleted (HookNotFoundError).
+      const reason = (rejected[0] as PromiseRejectedResult).reason as {
+        name?: string;
+      };
+      expect(['EntityConflictError', 'HookNotFoundError']).toContain(
+        reason.name
+      );
     });
   });
 
