@@ -1,3 +1,7 @@
+/**
+ * Test whether vi.mock() works for third-party npm packages
+ * in the vitest integration test environment.
+ */
 import { describe, expect, it, vi } from 'vitest';
 import ms from 'ms';
 import { start } from 'workflow/api';
