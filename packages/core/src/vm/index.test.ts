@@ -222,4 +222,66 @@ describe('createContext', () => {
     updateTimestamp(1234567890009);
     expect(vm.runInContext('Date.now()', context)).toEqual(1234567890009);
   });
+
+  it('should have functional `btoa()` for base64 encoding', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = vm.runInContext('btoa("hello world")', context);
+    expect(result).toEqual('aGVsbG8gd29ybGQ=');
+  });
+
+  it('should have functional `atob()` for base64 decoding', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = vm.runInContext('atob("aGVsbG8gd29ybGQ=")', context);
+    expect(result).toEqual('hello world');
+  });
+
+  it('should have functional `Buffer` for base64 encoding/decoding', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    // Test encoding
+    const encoded = vm.runInContext(
+      'Buffer.from("hello world").toString("base64")',
+      context
+    );
+    expect(encoded).toEqual('aGVsbG8gd29ybGQ=');
+
+    // Test decoding
+    const decoded = vm.runInContext(
+      'Buffer.from("aGVsbG8gd29ybGQ=", "base64").toString("utf-8")',
+      context
+    );
+    expect(decoded).toEqual('hello world');
+  });
+
+  it('should allow creating basic auth headers using btoa', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    // Simulate creating a basic auth header (common use case)
+    const result = vm.runInContext('btoa("api_key:api_secret")', context);
+    expect(result).toEqual('YXBpX2tleTphcGlfc2VjcmV0');
+
+    // Verify it can be decoded back
+    const decoded = vm.runInContext(`atob("${result}")`, context);
+    expect(decoded).toEqual('api_key:api_secret');
+  });
+
+  it('should allow creating basic auth headers using Buffer', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    // Simulate creating a basic auth header using Buffer (common use case)
+    const result = vm.runInContext(
+      'Buffer.from("api_key:api_secret").toString("base64")',
+      context
+    );
+    expect(result).toEqual('YXBpX2tleTphcGlfc2VjcmV0');
+
+    // Verify it can be decoded back
+    const decoded = vm.runInContext(
+      `Buffer.from("${result}", "base64").toString("utf-8")`,
+      context
+    );
+    expect(decoded).toEqual('api_key:api_secret');
+  });
 });
