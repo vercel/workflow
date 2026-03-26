@@ -1977,6 +1977,16 @@ describe('Storage', () => {
       expect(['EntityConflictError', 'HookNotFoundError']).toContain(
         reason.name
       );
+
+      // Verify only one hook_disposed event was written to the log
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const hookDisposedEvents = events.data.filter(
+        (e) => e.eventType === 'hook_disposed'
+      );
+      expect(hookDisposedEvents).toHaveLength(1);
     });
   });
 
