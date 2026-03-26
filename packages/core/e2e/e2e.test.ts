@@ -2142,4 +2142,18 @@ describe('e2e', () => {
       expect(runData.status).toBe('completed');
     }
   );
+
+  test(
+    'importMetaUrlWorkflow - import.meta.url is available in step bundles',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('importMetaUrlWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        isDefined: true,
+        type: 'string',
+        isFileUrl: true,
+      });
+    }
+  );
 });
