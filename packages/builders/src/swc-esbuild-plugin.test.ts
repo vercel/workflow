@@ -45,14 +45,21 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     rmSync(testRoot, { recursive: true, force: true });
   });
 
-  it('rewrites externalized .ts imports to .js', async () => {
+  it.each([
+    { inputExt: '.ts', outputExt: '.js' },
+    { inputExt: '.tsx', outputExt: '.js' },
+    { inputExt: '.mts', outputExt: '.mjs' },
+    { inputExt: '.cts', outputExt: '.cjs' },
+  ])('rewrites externalized $inputExt imports to $outputExt', async ({
+    inputExt,
+    outputExt,
+  }) => {
     const outdir = join(testRoot, 'out');
     const srcDir = join(testRoot, 'src');
     const stepFile = join(srcDir, 'step.ts');
-    const depFile = join(srcDir, 'db', 'client.ts');
 
-    writeFile(depFile, 'export const db = {};');
-    writeFile(stepFile, `import { db } from './db/client';\nconsole.log(db);`);
+    writeFile(join(srcDir, `dep${inputExt}`), 'export const dep = {};');
+    writeFile(stepFile, `import { dep } from './dep';\nconsole.log(dep);`);
 
     const result = await esbuild.build({
       entryPoints: [stepFile],
@@ -73,43 +80,8 @@ describe('createSwcPlugin externalizeNonSteps', () => {
 
     expect(result.errors).toHaveLength(0);
     const output = result.outputFiles[0].text;
-    expect(output).toContain('/db/client.js');
-    expect(output).not.toMatch(/\/db\/client\.ts[^x]/);
-  });
-
-  it('rewrites externalized .tsx imports to .js', async () => {
-    const outdir = join(testRoot, 'out');
-    const srcDir = join(testRoot, 'src');
-    const stepFile = join(srcDir, 'step.ts');
-    const depFile = join(srcDir, 'ui', 'handlers.tsx');
-
-    writeFile(depFile, 'export function handle() {}');
-    writeFile(
-      stepFile,
-      `import { handle } from './ui/handlers';\nconsole.log(handle);`
-    );
-
-    const result = await esbuild.build({
-      entryPoints: [stepFile],
-      absWorkingDir: testRoot,
-      outdir,
-      bundle: true,
-      format: 'esm',
-      platform: 'node',
-      write: false,
-      plugins: [
-        createSwcPlugin({
-          mode: 'step',
-          entriesToBundle: [stepFile],
-          outdir,
-        }),
-      ],
-    });
-
-    expect(result.errors).toHaveLength(0);
-    const output = result.outputFiles[0].text;
-    expect(output).toContain('/ui/handlers.js');
-    expect(output).not.toContain('/ui/handlers.tsx');
+    expect(output).toContain(`/dep${outputExt}`);
+    expect(output).not.toContain(`/dep${inputExt}`);
   });
 });
 
