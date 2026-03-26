@@ -2,10 +2,14 @@
  * Test whether vi.mock() works for third-party npm packages
  * in the vitest integration test environment.
  */
-import { describe, expect, it, vi } from 'vitest';
+
 import ms from 'ms';
+import { describe, expect, it, vi } from 'vitest';
 import { start } from 'workflow/api';
-import { durationWorkflow } from '../workflows/third-party.js';
+import {
+  durationWorkflow,
+  durationWorkflowInline,
+} from '../workflows/third-party.js';
 
 vi.mock('ms', () => ({
   default: () => 42,
@@ -20,6 +24,16 @@ describe('third-party mocking', () => {
     const result = await run.returnValue;
 
     // Mock works inside the workflow bundle
+    expect(result).toEqual({ ms: 42 });
+  });
+
+  it.fails('vi.mock intercepts externalized workflow dependencies', async () => {
+    expect(ms('1h')).toBe(42);
+
+    const run = await start(durationWorkflowInline, ['1h']);
+    const result = await run.returnValue;
+
+    // Mock doesn't yet work inside the workflow bundle
     expect(result).toEqual({ ms: 42 });
   });
 });

@@ -14,3 +14,8 @@ export async function durationWorkflow(duration: string) {
   const result = await formatDuration(duration);
   return { ms: result };
 }
+
+export async function durationWorkflowInline(duration: string) {
+  'use workflow';
+  return { ms: ms(duration) };
+}
