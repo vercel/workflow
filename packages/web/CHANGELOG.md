@@ -1,5 +1,13 @@
 # @workflow/web
 
+## 4.1.0-beta.45
+
+### Patch Changes
+
+- [#1492](https://github.com/vercel/workflow/pull/1492) [`dab106a`](https://github.com/vercel/workflow/commit/dab106acd3556f49db295108a3cdccc8058a7b92) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Hide the workflow graph viewer tab
+
+- [#1515](https://github.com/vercel/workflow/pull/1515) [`bb86b69`](https://github.com/vercel/workflow/commit/bb86b695c247980f3ac0fd916aad108d0c05d9be) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix Streams tab crash when decrypting large stream chunks
+
 ## 4.1.0-beta.44
 
 ### Patch Changes
