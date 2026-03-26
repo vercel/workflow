@@ -150,9 +150,9 @@ export async function setupWorkflowTests(
   const outDir = getOutDir(cwd);
 
   // Lazy-load bundles on first dispatch instead of eagerly at setup time.
-  // Eager native import() during setupFiles loads step dependencies (e.g.
-  // chat, postgres) into the module cache before vi.mock() can intercept
-  // them, breaking mocks in unit tests that never execute workflows.
+  // Eager native import() during setupFiles loads step dependencies into
+  // the module cache before vi.mock() can intercept them, breaking mocks
+  // in unit tests that never execute workflows.
   function createLazyHandler(
     bundlePath: string
   ): (req: Request) => Promise<Response> {
