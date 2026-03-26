@@ -1,8 +1,8 @@
 import type { Pool } from 'pg';
 
 type PgConnectionConfig =
-  | { connectionString: string; pool?: undefined }
-  | { pool: Pool; connectionString?: undefined };
+  | { connectionString: string; maxPoolSize?: number; pool?: undefined }
+  | { pool: Pool; connectionString?: undefined; maxPoolSize?: undefined };
 
 export type PostgresWorldConfig = PgConnectionConfig & {
   jobPrefix?: string;

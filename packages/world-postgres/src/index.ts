@@ -20,6 +20,15 @@ function createStorage(drizzle: Drizzle): Storage {
   };
 }
 
+function getDefaultMaxPoolSize(): number | undefined {
+  const parsed = parseInt(
+    process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE || '',
+    10
+  );
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export function createWorld(
   config: PostgresWorldConfig = {
     connectionString:
@@ -31,12 +40,14 @@ export function createWorld(
       10,
   }
 ): World & { start(): Promise<void> } {
+  const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();
   const pool =
     config.pool ||
     new Pool({
       connectionString:
         config.connectionString ||
         'postgres://world:world@localhost:5432/world',
+      ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
     });
 
   const drizzle = createClient(pool);
