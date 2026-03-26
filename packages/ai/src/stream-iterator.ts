@@ -1,4 +1,13 @@
 /**
+ * Yields to the browser's macrotask queue so the main thread can run
+ * rendering/paint work between stream chunks. Without this, a tight
+ * pull→enqueue loop (common when replaying buffered data on reconnect)
+ * starves the event loop and blocks paint until the stream ends.
+ */
+const yieldToMacrotask = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, 0));
+
+/**
  * Converts an async iterator to a ReadableStream
  * @param fn - Function that returns an async generator
  * @param signal - Optional AbortSignal to cancel the stream
@@ -40,6 +49,10 @@ export function iteratorToStream<T>(
           controller.close();
         } else {
           controller.enqueue(value);
+          // Yield to the macrotask queue so the browser can paint between
+          // chunks. This prevents the pull-enqueue loop from starving the
+          // main thread when replaying buffered data (e.g. on reconnect).
+          await yieldToMacrotask();
         }
       } catch (error) {
         controller.error(error);
