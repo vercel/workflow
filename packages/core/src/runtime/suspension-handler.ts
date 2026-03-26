@@ -169,7 +169,17 @@ export async function handleSuspension({
         try {
           await world.events.create(runId, hookDisposedEvent, { requestId });
         } catch (err) {
-          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+          if (EntityConflictError.is(err)) {
+            // Hook was already disposed by a concurrent invocation — safe to skip
+            runtimeLogger.info(
+              'Hook already disposed, skipping duplicate disposal',
+              {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              }
+            );
+          } else if (RunExpiredError.is(err)) {
             runtimeLogger.info(
               'Workflow run already completed, skipping hook disposal',
               {
