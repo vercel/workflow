@@ -16,11 +16,11 @@ import type { Plugin } from 'vite';
 class VitestBuilder extends BaseBuilder {
   #outDir: string;
 
-  constructor(workingDir: string, outDir: string, dirs?: string[]) {
+  constructor(workingDir: string, outDir: string) {
     super({
       ...createBaseBuilderConfig({
         workingDir,
-        dirs: dirs ?? ['.'],
+        dirs: ['.'],
       }),
       // 'next' target produces ESM bundles with Node.js-compatible output,
       // which is what we need for in-process vitest execution.
@@ -62,12 +62,6 @@ export interface WorkflowTestOptions {
    * Defaults to process.cwd().
    */
   cwd?: string;
-  /**
-   * Directories to scan for workflow and step files, relative to cwd.
-   * Should match the dirs configured in your framework plugin (e.g. withWorkflow).
-   * Defaults to ['.'] (entire project).
-   */
-  dirs?: string[];
 }
 
 function getOutDir(cwd: string): string {
@@ -89,14 +83,12 @@ function getOutDir(cwd: string): string {
  * });
  * ```
  */
-export function workflow(options?: WorkflowTestOptions): Plugin[] {
+export function workflow(): Plugin[] {
   const dir = fileURLToPath(new URL('.', import.meta.url));
-  const cwd = options?.cwd ?? process.cwd();
-  if (options?.dirs) {
-    process.env.__WORKFLOW_VITEST_DIRS = JSON.stringify(options.dirs);
-  }
   return [
-    workflowTransformPlugin({ exclude: [join(cwd, '.workflow-vitest')] }),
+    workflowTransformPlugin({
+      exclude: [join(process.cwd(), '.workflow-vitest')],
+    }),
     {
       name: 'workflow:vitest',
       config() {
@@ -121,7 +113,7 @@ export async function buildWorkflowTests(
 ): Promise<void> {
   const cwd = options?.cwd ?? process.cwd();
   const outDir = getOutDir(cwd);
-  const builder = new VitestBuilder(cwd, outDir, options?.dirs);
+  const builder = new VitestBuilder(cwd, outDir);
   await builder.build();
   // Pre-create the shared data directory so workers don't race on mkdir
   await initDataDir(join(cwd, '.workflow-data'));
