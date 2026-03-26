@@ -27,6 +27,92 @@ function writeFile(path: string, contents = ''): void {
   writeFileSync(path, contents, 'utf-8');
 }
 
+describe('createSwcPlugin externalizeNonSteps', () => {
+  let testRoot: string;
+
+  beforeEach(() => {
+    testRoot = mkdtempSync(join(realTmpdir, 'workflow-swc-plugin-'));
+    applySwcTransformMock.mockReset();
+    applySwcTransformMock.mockImplementation(
+      async (_filename: string, source: string) => ({
+        code: source,
+        workflowManifest: {},
+      })
+    );
+  });
+
+  afterEach(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  it('rewrites externalized .ts imports to .js', async () => {
+    const outdir = join(testRoot, 'out');
+    const srcDir = join(testRoot, 'src');
+    const stepFile = join(srcDir, 'step.ts');
+    const depFile = join(srcDir, 'db', 'client.ts');
+
+    writeFile(depFile, 'export const db = {};');
+    writeFile(stepFile, `import { db } from './db/client';\nconsole.log(db);`);
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).toContain('/db/client.js');
+    expect(output).not.toMatch(/\/db\/client\.ts[^x]/);
+  });
+
+  it('rewrites externalized .tsx imports to .js', async () => {
+    const outdir = join(testRoot, 'out');
+    const srcDir = join(testRoot, 'src');
+    const stepFile = join(srcDir, 'step.ts');
+    const depFile = join(srcDir, 'ui', 'handlers.tsx');
+
+    writeFile(depFile, 'export function handle() {}');
+    writeFile(
+      stepFile,
+      `import { handle } from './ui/handlers';\nconsole.log(handle);`
+    );
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).toContain('/ui/handlers.js');
+    expect(output).not.toContain('/ui/handlers.tsx');
+  });
+});
+
 describe('createSwcPlugin projectRoot', () => {
   let testRoot: string;
 

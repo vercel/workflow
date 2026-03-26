@@ -50,6 +50,14 @@ export function workflowTransformPlugin(
         return null;
       }
 
+      // Skip node_modules packages that only match serde patterns.
+      // These are pre-built and their serde registration is handled by the
+      // step bundle's SWC transform during esbuild. Transforming them again
+      // in Vite causes double classId registration (configurable: false).
+      if (normalizedId.includes('/node_modules/') && !patterns.hasDirective) {
+        return null;
+      }
+
       if (!shouldTransformFile(id, patterns)) {
         return null;
       }

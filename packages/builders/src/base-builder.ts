@@ -110,6 +110,7 @@ export abstract class BaseBuilder {
       '**/.output/**',
       '**/.vercel/**',
       '**/.workflow-data/**',
+      '**/.workflow-vitest/**',
       '**/.well-known/workflow/**',
       '**/.svelte-kit/**',
       '**/.turbo/**',

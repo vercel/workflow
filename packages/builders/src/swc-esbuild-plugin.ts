@@ -124,15 +124,24 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           const isFilePath =
             args.path.startsWith('.') || args.path.startsWith('/');
 
-          return {
-            external: true,
-            path: isFilePath
-              ? relative(options.outdir || process.cwd(), resolvedPath).replace(
-                  /\\/g,
-                  '/'
-                )
-              : args.path,
-          };
+          let externalPath: string;
+          if (isFilePath) {
+            externalPath = relative(
+              options.outdir || process.cwd(),
+              resolvedPath
+            ).replace(/\\/g, '/');
+
+            // Rewrite TypeScript extensions to their JS equivalents so the
+            // externalized import is loadable by Node's native ESM loader.
+            externalPath = externalPath
+              .replace(/\.tsx?$/, '.js')
+              .replace(/\.mts$/, '.mjs')
+              .replace(/\.cts$/, '.cjs');
+          } else {
+            externalPath = args.path;
+          }
+
+          return { external: true, path: externalPath };
         } catch (_) {}
         return null;
       });

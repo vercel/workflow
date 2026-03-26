@@ -16,11 +16,11 @@ import type { Plugin } from 'vite';
 class VitestBuilder extends BaseBuilder {
   #outDir: string;
 
-  constructor(workingDir: string, outDir: string) {
+  constructor(workingDir: string, outDir: string, dirs?: string[]) {
     super({
       ...createBaseBuilderConfig({
         workingDir,
-        dirs: ['.'],
+        dirs: dirs ?? ['.'],
       }),
       // 'next' target produces ESM bundles with Node.js-compatible output,
       // which is what we need for in-process vitest execution.
@@ -62,6 +62,12 @@ export interface WorkflowTestOptions {
    * Defaults to process.cwd().
    */
   cwd?: string;
+  /**
+   * Directories to scan for workflow and step files, relative to cwd.
+   * Should match the dirs configured in your framework plugin (e.g. withWorkflow).
+   * Defaults to ['.'] (entire project).
+   */
+  dirs?: string[];
 }
 
 function getOutDir(cwd: string): string {
@@ -83,10 +89,14 @@ function getOutDir(cwd: string): string {
  * });
  * ```
  */
-export function workflow(): Plugin[] {
+export function workflow(options?: WorkflowTestOptions): Plugin[] {
   const dir = fileURLToPath(new URL('.', import.meta.url));
+  const cwd = options?.cwd ?? process.cwd();
+  if (options?.dirs) {
+    process.env.__WORKFLOW_VITEST_DIRS = JSON.stringify(options.dirs);
+  }
   return [
-    workflowTransformPlugin(),
+    workflowTransformPlugin({ exclude: [join(cwd, '.workflow-vitest')] }),
     {
       name: 'workflow:vitest',
       config() {
@@ -111,7 +121,7 @@ export async function buildWorkflowTests(
 ): Promise<void> {
   const cwd = options?.cwd ?? process.cwd();
   const outDir = getOutDir(cwd);
-  const builder = new VitestBuilder(cwd, outDir);
+  const builder = new VitestBuilder(cwd, outDir, options?.dirs);
   await builder.build();
   // Pre-create the shared data directory so workers don't race on mkdir
   await initDataDir(join(cwd, '.workflow-data'));
@@ -139,17 +149,26 @@ export async function setupWorkflowTests(
   const cwd = options?.cwd ?? process.cwd();
   const outDir = getOutDir(cwd);
 
-  const workflowsModule = await import(
-    /* @vite-ignore */ pathToFileURL(join(outDir, 'workflows.mjs')).href
-  );
-  const stepsModule = await import(
-    /* @vite-ignore */ pathToFileURL(join(outDir, 'steps.mjs')).href
-  );
+  // Lazy-load bundles on first dispatch instead of eagerly at setup time.
+  // Eager native import() during setupFiles loads step dependencies (e.g.
+  // chat, postgres) into the module cache before vi.mock() can intercept
+  // them, breaking mocks in unit tests that never execute workflows.
+  function createLazyHandler(
+    bundlePath: string
+  ): (req: Request) => Promise<Response> {
+    let handler: ((req: Request) => Promise<Response>) | undefined;
+    let loading: Promise<(req: Request) => Promise<Response>> | undefined;
 
-  const workflowHandler = workflowsModule.POST as (
-    req: Request
-  ) => Promise<Response>;
-  const stepHandler = stepsModule.POST as (req: Request) => Promise<Response>;
+    return async (req: Request) => {
+      if (!handler) {
+        loading ??= import(
+          /* @vite-ignore */ pathToFileURL(bundlePath).href
+        ).then((mod) => mod.POST as (req: Request) => Promise<Response>);
+        handler = await loading;
+      }
+      return handler(req);
+    };
+  }
 
   // Each vitest worker uses a unique tag to isolate its test data.
   // All workers write to the shared .workflow-data directory so runs
@@ -163,8 +182,14 @@ export async function setupWorkflowTests(
   await world.start?.();
   await world.clear();
 
-  world.registerHandler('__wkf_workflow_', workflowHandler);
-  world.registerHandler('__wkf_step_', stepHandler);
+  world.registerHandler(
+    '__wkf_workflow_',
+    createLazyHandler(join(outDir, 'workflows.mjs'))
+  );
+  world.registerHandler(
+    '__wkf_step_',
+    createLazyHandler(join(outDir, 'steps.mjs'))
+  );
 
   setWorld(world);
 }
