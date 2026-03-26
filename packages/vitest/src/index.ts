@@ -87,7 +87,7 @@ export function workflow(): Plugin[] {
   const dir = fileURLToPath(new URL('.', import.meta.url));
   return [
     workflowTransformPlugin({
-      exclude: [join(process.cwd(), '.workflow-vitest')],
+      exclude: [join(process.cwd(), '.workflow-vitest') + '/'],
     }),
     {
       name: 'workflow:vitest',
@@ -153,6 +153,8 @@ export async function setupWorkflowTests(
 
     return async (req: Request) => {
       if (!handler) {
+        // If the import rejects (e.g. missing bundle), the rejected promise is
+        // cached so all subsequent calls fail fast with the same error.
         loading ??= import(
           /* @vite-ignore */ pathToFileURL(bundlePath).href
         ).then((mod) => mod.POST as (req: Request) => Promise<Response>);

@@ -3,4 +3,4 @@
 "@workflow/builders": patch
 ---
 
-Support projects with Node.js step dependencies in vitest plugin
+Fix extension rewriting in `externalizeNonSteps` for all framework builders (Next.js, Astro, SvelteKit, Nitro, NestJS, Vitest)
