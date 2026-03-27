@@ -134,6 +134,10 @@ function addVirtualHandler(nitro: Nitro, route: string, buildPath: string) {
     route,
     handler: `#${buildPath}`,
   });
+  // Keep a bare import alongside `POST`: in Nuxt + Nitro production builds
+  // using `@workflow/nuxt`, importing only `POST` could drop the generated
+  // step bundle's top-level registrations, so the handler loaded but steps
+  // were missing at runtime.
   const handlerImportPath = JSON.stringify(
     join(nitro.options.buildDir, buildPath)
   );
