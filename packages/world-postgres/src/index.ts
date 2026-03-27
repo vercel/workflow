@@ -1,7 +1,8 @@
-import type { Storage, World } from '@workflow/world';
+import type { Storage, ValidQueueName, World } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
+import type { PostgresQueue } from './queue.js';
 import { createQueue } from './queue.js';
 import {
   createEventsStorage,
@@ -27,6 +28,43 @@ function getDefaultMaxPoolSize(): number | undefined {
   );
 
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+/**
+ * Re-enqueue all active (pending/running) workflow runs so they resume
+ * processing after a world restart. Graphile-worker handles pending jobs
+ * automatically, but runs whose jobs exhausted all retry attempts or were
+ * lost during shutdown need to be re-enqueued. The workflow handler is
+ * idempotent (event-log replay), so duplicate enqueues are safe.
+ */
+async function reenqueueActiveRuns(
+  runs: Storage['runs'],
+  queue: PostgresQueue
+): Promise<void> {
+  let reenqueued = 0;
+  for (const status of ['pending', 'running'] as const) {
+    let cursor: string | undefined;
+    let hasMore = true;
+    while (hasMore) {
+      const page = await runs.list({
+        status,
+        resolveData: 'none',
+        pagination: { cursor },
+      });
+      for (const run of page.data) {
+        const queueName: ValidQueueName = `__wkf_workflow_${run.workflowName}`;
+        await queue.queue(queueName, { runId: run.runId });
+        reenqueued++;
+      }
+      hasMore = page.hasMore;
+      cursor = page.cursor ?? undefined;
+    }
+  }
+  if (reenqueued > 0) {
+    console.log(
+      `[world-postgres] Re-enqueued ${reenqueued} active run(s) on startup`
+    );
+  }
 }
 
 export function createWorld(
@@ -61,6 +99,7 @@ export function createWorld(
     ...queue,
     async start() {
       await queue.start();
+      await reenqueueActiveRuns(storage.runs, queue);
     },
     async close() {
       await streamer.close();
