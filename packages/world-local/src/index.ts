@@ -64,10 +64,12 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   return {
     ...queue,
     ...createStorage(mergedConfig.dataDir, tag),
-    ...instrumentObject(
-      'world.streams',
-      createStreamer(mergedConfig.dataDir, tag)
-    ),
+    ...instrumentObject('world.streams', {
+      ...createStreamer(mergedConfig.dataDir, tag),
+      ...(mergedConfig.streamFlushIntervalMs !== undefined && {
+        streamFlushIntervalMs: mergedConfig.streamFlushIntervalMs,
+      }),
+    }),
     async start() {
       await initDataDir(mergedConfig.dataDir);
     },

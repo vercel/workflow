@@ -522,7 +522,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
             for (const w of currentWaiters) w.reject(err);
           }
         );
-      }, STREAM_FLUSH_INTERVAL_MS);
+      }, world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
     };
 
     super({
@@ -570,8 +570,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // unsettled promise because the cleared timer will never fire.
         const waiters = flushWaiters;
         flushWaiters = [];
-        const abortError =
-          reason ?? new Error("Stream aborted");
+        const abortError = reason ?? new Error('Stream aborted');
         for (const w of waiters) w.reject(abortError);
       },
     });
