@@ -1,7 +1,8 @@
 import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
-import type { Storage, ValidQueueName, World } from '@workflow/world';
+import type { World } from '@workflow/world';
+import { reenqueueActiveRuns } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
 import {
@@ -13,7 +14,6 @@ import {
 } from './fs.js';
 import { initDataDir } from './init.js';
 import { instrumentObject } from './instrumentObject.js';
-import type { LocalQueue } from './queue.js';
 import { createQueue, type DirectHandler } from './queue.js';
 import { hashToken } from './storage/helpers.js';
 import { createStorage } from './storage.js';
@@ -40,41 +40,6 @@ export type LocalWorld = World & {
   /** Clear all workflow data (runs, steps, events, hooks, streams). */
   clear(): Promise<void>;
 };
-
-/**
- * Re-enqueue all active (pending/running) workflow runs so they resume
- * processing after a world restart. The workflow handler is idempotent
- * (event-log replay), so duplicate enqueues are safe.
- */
-async function reenqueueActiveRuns(
-  runs: Storage['runs'],
-  queue: LocalQueue
-): Promise<void> {
-  let reenqueued = 0;
-  for (const status of ['pending', 'running'] as const) {
-    let cursor: string | undefined;
-    let hasMore = true;
-    while (hasMore) {
-      const page = await runs.list({
-        status,
-        resolveData: 'none',
-        pagination: { cursor },
-      });
-      for (const run of page.data) {
-        const queueName: ValidQueueName = `__wkf_workflow_${run.workflowName}`;
-        await queue.queue(queueName, { runId: run.runId });
-        reenqueued++;
-      }
-      hasMore = page.hasMore;
-      cursor = page.cursor ?? undefined;
-    }
-  }
-  if (reenqueued > 0) {
-    console.log(
-      `[world-local] Re-enqueued ${reenqueued} active run(s) on startup`
-    );
-  }
-}
 
 /**
  * Creates a local world instance that combines queue, storage, and streamer functionalities.
@@ -107,7 +72,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
     ),
     async start() {
       await initDataDir(mergedConfig.dataDir);
-      await reenqueueActiveRuns(storage.runs, queue);
+      await reenqueueActiveRuns(storage.runs, queue.queue, 'world-local');
     },
     async close() {
       await queue.close();
