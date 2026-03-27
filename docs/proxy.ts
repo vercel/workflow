@@ -7,6 +7,7 @@ import {
 } from 'next/server';
 import { i18n } from '@/lib/geistdocs/i18n';
 import { trackMdRequest } from '@/lib/md-tracking';
+import { isAIAgent } from '@/lib/ai-agent-detection';
 
 const { rewrite: rewriteLLM } = rewritePath(
   '/docs/*path',
