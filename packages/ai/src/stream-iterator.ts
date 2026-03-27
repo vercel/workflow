@@ -1,11 +1,16 @@
+const isBrowser = typeof window !== 'undefined';
+
 /**
  * Yields to the browser's macrotask queue so the main thread can run
  * rendering/paint work between stream chunks. Without this, a tight
  * pull→enqueue loop (common when replaying buffered data on reconnect)
  * starves the event loop and blocks paint until the stream ends.
+ *
+ * Only applies in browser environments — server-side consumers skip
+ * the yield since there is no paint to unblock.
  */
-const yieldToMacrotask = (): Promise<void> =>
-  new Promise((resolve) => setTimeout(resolve, 0));
+const yieldToMacrotask = (): Promise<void> | void =>
+  isBrowser ? new Promise((resolve) => setTimeout(resolve, 0)) : undefined;
 
 /**
  * Converts an async iterator to a ReadableStream
