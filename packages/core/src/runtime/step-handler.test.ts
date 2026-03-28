@@ -573,3 +573,142 @@ describe('step-handler max deliveries', () => {
     expect(mockStepFn).toHaveBeenCalled();
   });
 });
+
+describe('step-handler step not found', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStepFn.mockReset().mockResolvedValue('step-result');
+    mockStepFn.maxRetries = 3;
+    mockQueueMessage.mockResolvedValue(undefined);
+    vi.mocked(getWorld).mockReturnValue({
+      events: { create: mockEventsCreate },
+      queue: mockQueue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    mockEventsCreate.mockReset().mockResolvedValue({
+      step: {
+        stepId: 'step_abc',
+        status: 'running',
+        attempt: 1,
+        startedAt: new Date(),
+        input: [],
+      },
+      event: {},
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('should fail the step (not the run) when step function is not found', async () => {
+    vi.mocked(getStepFunction).mockReturnValue(undefined);
+
+    const result = await capturedHandler(
+      createMessage(),
+      createMetadata('missingStep')
+    );
+
+    // Should not throw - returns normally so the queue message is consumed
+    expect(result).toBeUndefined();
+
+    // Should have created step_started then step_failed events
+    expect(mockEventsCreate).toHaveBeenCalledTimes(2);
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_started',
+      }),
+      expect.anything()
+    );
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_failed',
+        correlationId: 'step_abc',
+        eventData: expect.objectContaining({
+          error: expect.stringContaining(
+            'Step "missingStep" is not registered'
+          ),
+        }),
+      }),
+      expect.anything()
+    );
+
+    // Should re-queue the workflow so it can handle the failed step
+    expect(mockQueueMessage).toHaveBeenCalled();
+
+    // Step function should NOT have been called
+    expect(mockStepFn).not.toHaveBeenCalled();
+  });
+
+  it('should fail the step when step function is not a function', async () => {
+    vi.mocked(getStepFunction).mockReturnValue(
+      'not-a-function' as unknown as ReturnType<typeof getStepFunction>
+    );
+
+    const result = await capturedHandler(
+      createMessage(),
+      createMetadata('badStep')
+    );
+
+    expect(result).toBeUndefined();
+    expect(mockEventsCreate).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.objectContaining({
+        eventType: 'step_failed',
+        eventData: expect.objectContaining({
+          error: expect.stringContaining('Step "badStep" is not registered'),
+        }),
+      }),
+      expect.anything()
+    );
+    expect(mockQueueMessage).toHaveBeenCalled();
+  });
+
+  it('should handle EntityConflictError when failing step for missing function', async () => {
+    vi.mocked(getStepFunction).mockReturnValue(undefined);
+    let callCount = 0;
+    mockEventsCreate.mockImplementation(
+      (_runId: string, event: { eventType: string }) => {
+        if (event.eventType === 'step_started') {
+          return Promise.resolve({
+            step: {
+              stepId: 'step_abc',
+              status: 'running',
+              attempt: 1,
+              startedAt: new Date(),
+              input: [],
+            },
+            event: {},
+          });
+        }
+        if (event.eventType === 'step_failed') {
+          callCount++;
+          return Promise.reject(
+            new EntityConflictError('Step already completed')
+          );
+        }
+        return Promise.resolve({ event: {} });
+      }
+    );
+
+    const result = await capturedHandler(
+      createMessage(),
+      createMetadata('missingStep')
+    );
+
+    // Should return without throwing - step was already finished
+    expect(result).toBeUndefined();
+    expect(callCount).toBe(1);
+    expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
+      'Tried failing step for missing function, but step has already finished.',
+      expect.objectContaining({
+        workflowRunId: 'wrun_test123',
+        stepId: 'step_abc',
+      })
+    );
+    // Should NOT re-queue the workflow since step was already resolved
+    expect(mockQueueMessage).not.toHaveBeenCalled();
+  });
+});

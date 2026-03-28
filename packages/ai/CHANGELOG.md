@@ -1,5 +1,18 @@
 # @workflow/ai
 
+## 4.1.0-beta.58
+
+### Patch Changes
+
+- [#1489](https://github.com/vercel/workflow/pull/1489) [`90ea870`](https://github.com/vercel/workflow/commit/90ea870adda801c3649add7a5816712e51a129b2) Thanks [@openharness](https://github.com/apps/openharness)! - Allow `experimental_context` to be configured on `DurableAgentOptions` and used as the default context for `stream()` calls.
+
+- [#1488](https://github.com/vercel/workflow/pull/1488) [`e4e0140`](https://github.com/vercel/workflow/commit/e4e0140482c8cdb12fcb24bbed8be8fa907def4f) Thanks [@openharness](https://github.com/apps/openharness)! - Expose configured tools on `DurableAgent` instances via `agent.tools`
+
+- [#1470](https://github.com/vercel/workflow/pull/1470) [`01bbe66`](https://github.com/vercel/workflow/commit/01bbe66d5a60d50d71f5b1c82b002ca7fc6f8e0b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `getStreamChunks()` and `getStreamInfo()` to the Streamer interface, and `getTailIndex()` to the readable stream returned by `run.getReadable()`. `WorkflowChatTransport` now reads the `x-workflow-stream-tail-index` response header to resolve negative `initialStartIndex` values into absolute positions, fixing reconnection retries after a disconnect.
+
+- Updated dependencies [[`2ef33d2`](https://github.com/vercel/workflow/commit/2ef33d2828ac06debf04ad9cc239d70fea6a8093), [`aee035f`](https://github.com/vercel/workflow/commit/aee035f94483ef3b842bb557e8c5b167dd0536c4)]:
+  - workflow@4.2.0-beta.72
+
 ## 4.1.0-beta.57
 
 ### Minor Changes

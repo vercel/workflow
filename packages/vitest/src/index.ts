@@ -86,7 +86,9 @@ function getOutDir(cwd: string): string {
 export function workflow(): Plugin[] {
   const dir = fileURLToPath(new URL('.', import.meta.url));
   return [
-    workflowTransformPlugin(),
+    workflowTransformPlugin({
+      exclude: [join(process.cwd(), '.workflow-vitest') + '/'],
+    }),
     {
       name: 'workflow:vitest',
       config() {
@@ -139,17 +141,28 @@ export async function setupWorkflowTests(
   const cwd = options?.cwd ?? process.cwd();
   const outDir = getOutDir(cwd);
 
-  const workflowsModule = await import(
-    /* @vite-ignore */ pathToFileURL(join(outDir, 'workflows.mjs')).href
-  );
-  const stepsModule = await import(
-    /* @vite-ignore */ pathToFileURL(join(outDir, 'steps.mjs')).href
-  );
+  // Lazy-load bundles on first dispatch instead of eagerly at setup time.
+  // Eager native import() during setupFiles loads step dependencies into
+  // the module cache before vi.mock() can intercept them, breaking mocks
+  // in unit tests that never execute workflows.
+  function createLazyHandler(
+    bundlePath: string
+  ): (req: Request) => Promise<Response> {
+    let handler: ((req: Request) => Promise<Response>) | undefined;
+    let loading: Promise<(req: Request) => Promise<Response>> | undefined;
 
-  const workflowHandler = workflowsModule.POST as (
-    req: Request
-  ) => Promise<Response>;
-  const stepHandler = stepsModule.POST as (req: Request) => Promise<Response>;
+    return async (req: Request) => {
+      if (!handler) {
+        // If the import rejects (e.g. missing bundle), the rejected promise is
+        // cached so all subsequent calls fail fast with the same error.
+        loading ??= import(
+          /* @vite-ignore */ pathToFileURL(bundlePath).href
+        ).then((mod) => mod.POST as (req: Request) => Promise<Response>);
+        handler = await loading;
+      }
+      return handler(req);
+    };
+  }
 
   // Each vitest worker uses a unique tag to isolate its test data.
   // All workers write to the shared .workflow-data directory so runs
@@ -163,8 +176,14 @@ export async function setupWorkflowTests(
   await world.start?.();
   await world.clear();
 
-  world.registerHandler('__wkf_workflow_', workflowHandler);
-  world.registerHandler('__wkf_step_', stepHandler);
+  world.registerHandler(
+    '__wkf_workflow_',
+    createLazyHandler(join(outDir, 'workflows.mjs'))
+  );
+  world.registerHandler(
+    '__wkf_step_',
+    createLazyHandler(join(outDir, 'steps.mjs'))
+  );
 
   setWorld(world);
 }

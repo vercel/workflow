@@ -2,6 +2,8 @@
   "title": "workflow/errors",
   "pages": [
     "hook-not-found-error",
+    "step-not-registered-error",
+    "workflow-not-registered-error",
     "workflow-run-not-found-error",
     "workflow-run-failed-error",
     "workflow-run-cancelled-error",

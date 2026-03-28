@@ -358,7 +358,6 @@ export class Counter {
 Output:
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
 /**__internal_workflows{"steps":{"input.js":{"Counter#add":{"stepId":"step//./input//Counter#add"}}},"classes":{"input.js":{"Counter":{"classId":"class//./input//Counter"}}}}*/;
 export class Counter {
@@ -376,7 +375,11 @@ export class Counter {
     }
 }
 registerStepFunction("step//./input//Counter#add", Counter.prototype["add"]);
-registerSerializationClass("class//./input//Counter", Counter);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Counter, "class//./input//Counter");
 ```
 
 Note: Instance methods use `#` in the step ID (e.g., `Counter#add`) and are registered via `ClassName.prototype["methodName"]`.
@@ -563,7 +566,6 @@ export class Point {
 
 Output (Client Mode):
 ```javascript
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//./input//Point"}}}}*/;
 export class Point {
     constructor(x, y) {
@@ -577,7 +579,11 @@ export class Point {
         return new Point(data.x, data.y);
     }
 }
-registerSerializationClass("class//./input//Point", Point);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Point, "class//./input//Point");
 ```
 
 ---
@@ -601,7 +607,6 @@ export class MyService {
 Output (Step Mode):
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//./input//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//./input//MyService"}}}}*/;
 export class MyService {
     static async process(data) {
@@ -609,17 +614,24 @@ export class MyService {
     }
 }
 registerStepFunction("step//./input//MyService.process", MyService.process);
-registerSerializationClass("class//./input//MyService", MyService);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(MyService, "class//./input//MyService");
 ```
 
 Output (Workflow Mode):
 ```javascript
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//./input//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//./input//MyService"}}}}*/;
 export class MyService {
 }
 MyService.process = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//MyService.process");
-registerSerializationClass("class//./input//MyService", MyService);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(MyService, "class//./input//MyService");
 ```
 
 ### Static Workflow Method
@@ -672,7 +684,6 @@ export class Point {
 
 Output:
 ```javascript
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//./input//Point"}}}}*/;
 export class Point {
     constructor(x, y) {
@@ -686,8 +697,14 @@ export class Point {
         return new Point(data.x, data.y);
     }
 }
-registerSerializationClass("class//./input//Point", Point);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Point, "class//./input//Point");
 ```
+
+The registration is **inlined as a self-contained IIFE** that uses `Symbol.for("workflow-class-registry")` on `globalThis`. This ensures it works for 3rd-party packages that don't depend on the `workflow` package directly — no module imports are needed.
 
 You can also use imported symbols from `@workflow/serde`:
 
@@ -771,7 +788,6 @@ var Bash = class _Bash {
 
 Output:
 ```javascript
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
 /**__internal_workflows{"classes":{"input.js":{"Bash":{"classId":"class//./input//Bash"}}}}*/;
 var Bash = class _Bash {
@@ -785,7 +801,11 @@ var Bash = class _Bash {
         return new Bash(data.command);
     }
 };
-registerSerializationClass("class//./input//Bash", Bash);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Bash, "class//./input//Bash");
 ```
 
 Note that:
@@ -818,7 +838,6 @@ var Shell = class {
 
 Output:
 ```javascript
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"classes":{"input.js":{"Shell":{"classId":"class//./input//Shell"}}}}*/;
 var Shell = class Shell {
     constructor(cmd) {
@@ -831,7 +850,11 @@ var Shell = class Shell {
         return new Shell(data.cmd);
     }
 };
-registerSerializationClass("class//./input//Shell", Shell);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Shell, "class//./input//Shell");
 ```
 
 Note that:

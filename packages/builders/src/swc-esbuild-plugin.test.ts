@@ -27,6 +27,64 @@ function writeFile(path: string, contents = ''): void {
   writeFileSync(path, contents, 'utf-8');
 }
 
+describe('createSwcPlugin externalizeNonSteps', () => {
+  let testRoot: string;
+
+  beforeEach(() => {
+    testRoot = mkdtempSync(join(realTmpdir, 'workflow-swc-plugin-'));
+    applySwcTransformMock.mockReset();
+    applySwcTransformMock.mockImplementation(
+      async (_filename: string, source: string) => ({
+        code: source,
+        workflowManifest: {},
+      })
+    );
+  });
+
+  afterEach(() => {
+    rmSync(testRoot, { recursive: true, force: true });
+  });
+
+  it.each([
+    { inputExt: '.ts', outputExt: '.js' },
+    { inputExt: '.tsx', outputExt: '.js' },
+    { inputExt: '.mts', outputExt: '.mjs' },
+    { inputExt: '.cts', outputExt: '.cjs' },
+  ])('rewrites externalized $inputExt imports to $outputExt', async ({
+    inputExt,
+    outputExt,
+  }) => {
+    const outdir = join(testRoot, 'out');
+    const srcDir = join(testRoot, 'src');
+    const stepFile = join(srcDir, 'step.ts');
+
+    writeFile(join(srcDir, `dep${inputExt}`), 'export const dep = {};');
+    writeFile(stepFile, `import { dep } from './dep';\nconsole.log(dep);`);
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).toContain(`/dep${outputExt}`);
+    expect(output).not.toContain(`/dep${inputExt}`);
+  });
+});
+
 describe('createSwcPlugin projectRoot', () => {
   let testRoot: string;
 

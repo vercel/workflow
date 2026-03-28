@@ -85,7 +85,7 @@ Unit testing works well for individual steps. A simple workflow that only calls 
 For workflows that rely on runtime features like [hooks](/docs/foundations/hooks), [webhooks](/docs/foundations/hooks#understanding-webhooks), [`sleep()`](/docs/api-reference/workflow/sleep), or error retries, you need to test against a real workflow setup. The `@workflow/vitest` plugin handles everything automatically — it compiles your workflow directives, builds the runtime bundles, and executes workflows entirely in-process. No server required.
 
 <Callout type="warn">
-Inside integration tests, which run the full workflow runtime, `vi.mock()` and related calls do not work — neither for your own modules nor for third-party npm packages. All step dependencies are inlined into the compiled bundle by esbuild, bypassing Vitest's module system entirely. To test steps with mocked dependencies, use [unit tests](#unit-testing-steps) instead. Consider dependency injection or environment variable-based conditional logic for controlling behavior in integration tests.
+`vi.mock()` and related calls do _not_ work inside workflow functions, only step functions. Your workflow functions cannot import third party code that needs to be mocked. Mocking works for npm packages imported in step functions. If something needs to be mocked, it likely belongs inside a step function either way.
 </Callout>
 
 ### Vitest Configuration

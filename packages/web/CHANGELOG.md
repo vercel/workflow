@@ -1,5 +1,21 @@
 # @workflow/web
 
+## 4.1.0-beta.45
+
+### Patch Changes
+
+- [#1492](https://github.com/vercel/workflow/pull/1492) [`dab106a`](https://github.com/vercel/workflow/commit/dab106acd3556f49db295108a3cdccc8058a7b92) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Hide the workflow graph viewer tab
+
+- [#1515](https://github.com/vercel/workflow/pull/1515) [`bb86b69`](https://github.com/vercel/workflow/commit/bb86b695c247980f3ac0fd916aad108d0c05d9be) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix Streams tab crash when decrypting large stream chunks
+
+## 4.1.0-beta.44
+
+### Patch Changes
+
+- [#1340](https://github.com/vercel/workflow/pull/1340) [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Add error code classification (`USER_ERROR`, `RUNTIME_ERROR`) to `run_failed` events, improve queue and schema validation error logging
+
+- [#1473](https://github.com/vercel/workflow/pull/1473) [`2b80e2d`](https://github.com/vercel/workflow/commit/2b80e2de35aac170e5dc7d83a1b3f26495a0bbc9) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix stream display for streams created before version `4.1.0-beta.56`
+
 ## 4.1.0-beta.43
 
 ### Patch Changes

@@ -33,6 +33,8 @@ export const ERROR_SLUGS = {
   TIMEOUT_FUNCTIONS_IN_WORKFLOW: 'timeout-in-workflow',
   HOOK_CONFLICT: 'hook-conflict',
   CORRUPTED_EVENT_LOG: 'corrupted-event-log',
+  STEP_NOT_REGISTERED: 'step-not-registered',
+  WORKFLOW_NOT_REGISTERED: 'workflow-not-registered',
 } as const;
 
 type ErrorSlug = (typeof ERROR_SLUGS)[keyof typeof ERROR_SLUGS];
@@ -212,6 +214,61 @@ export class WorkflowRuntimeError extends WorkflowError {
 
   static is(value: unknown): value is WorkflowRuntimeError {
     return isError(value) && value.name === 'WorkflowRuntimeError';
+  }
+}
+
+/**
+ * Thrown when a step function is not registered in the current deployment.
+ *
+ * This is an infrastructure error — not a user code error. It typically means
+ * something went wrong with the bundling/build tooling that caused the step
+ * to not get built correctly.
+ *
+ * When this happens, the step fails (like a FatalError) and control is passed back
+ * to the workflow function, which can optionally handle the failure gracefully.
+ */
+export class StepNotRegisteredError extends WorkflowRuntimeError {
+  stepName: string;
+
+  constructor(stepName: string) {
+    super(
+      `Step "${stepName}" is not registered in the current deployment. This usually indicates a build or bundling issue that caused the step to not be included in the deployment.`,
+      { slug: ERROR_SLUGS.STEP_NOT_REGISTERED }
+    );
+    this.name = 'StepNotRegisteredError';
+    this.stepName = stepName;
+  }
+
+  static is(value: unknown): value is StepNotRegisteredError {
+    return isError(value) && value.name === 'StepNotRegisteredError';
+  }
+}
+
+/**
+ * Thrown when a workflow function is not registered in the current deployment.
+ *
+ * This is an infrastructure error — not a user code error. It typically means:
+ * - A run was started against a deployment that does not have the workflow
+ *   (e.g., the workflow was renamed or moved and a new run targeted the latest deployment)
+ * - Something went wrong with the bundling/build tooling that caused the workflow
+ *   to not get built correctly
+ *
+ * When this happens, the run fails with a `RUNTIME_ERROR` error code.
+ */
+export class WorkflowNotRegisteredError extends WorkflowRuntimeError {
+  workflowName: string;
+
+  constructor(workflowName: string) {
+    super(
+      `Workflow "${workflowName}" is not registered in the current deployment. This usually means a run was started against a deployment that does not have this workflow, or there was a build/bundling issue.`,
+      { slug: ERROR_SLUGS.WORKFLOW_NOT_REGISTERED }
+    );
+    this.name = 'WorkflowNotRegisteredError';
+    this.workflowName = workflowName;
+  }
+
+  static is(value: unknown): value is WorkflowNotRegisteredError {
+    return isError(value) && value.name === 'WorkflowNotRegisteredError';
   }
 }
 
