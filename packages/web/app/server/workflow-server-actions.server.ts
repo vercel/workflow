@@ -951,6 +951,63 @@ export async function readStreamServerAction(
   }
 }
 
+const CHUNKS_PAGE_SIZE = 500;
+
+/**
+ * Fetch all stream chunks using paginated batch API.
+ * Returns concatenated binary data (each chunk includes its frame header).
+ * Much faster than readFromStream for completed streams since it avoids
+ * the 2-minute streaming timeout when going through the Vercel API proxy.
+ */
+export async function readStreamChunksServerAction(
+  env: EnvMap,
+  streamId: string,
+  runId: string
+): Promise<Uint8Array | ServerActionError> {
+  try {
+    const world = await getWorldFromEnv(env);
+    const allChunks: Uint8Array[] = [];
+    let cursor: string | undefined;
+
+    do {
+      const result = await world.getStreamChunks(streamId, runId, {
+        limit: CHUNKS_PAGE_SIZE,
+        cursor,
+      });
+
+      for (const chunk of result.data) {
+        allChunks.push(chunk.data);
+      }
+
+      cursor = result.cursor ?? undefined;
+    } while (cursor);
+
+    let totalSize = 0;
+    for (const chunk of allChunks) {
+      totalSize += chunk.length;
+    }
+
+    const body = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const chunk of allChunks) {
+      body.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return body;
+  } catch (error) {
+    const actionError = createServerActionError(
+      error,
+      'world.getStreamChunks',
+      { streamId, runId }
+    );
+    if (!actionError.success) {
+      return actionError.error;
+    }
+    throw new Error();
+  }
+}
+
 /**
  * List all stream IDs for a run
  */

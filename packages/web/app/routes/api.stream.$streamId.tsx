@@ -1,18 +1,19 @@
 /**
  * Resource route for streaming data.
- * GET /api/stream/:streamId?startIndex=0
+ * GET /api/stream/:streamId?runId=...
  *
- * Returns the raw binary stream from the world backend. The server is a
- * transparent pipe — all deserialization and decryption happen client-side.
+ * Uses getStreamChunks (paginated batch API) to fetch all chunks at once.
+ * Returns concatenated binary data — deserialization and decryption happen
+ * client-side. This avoids the 2-minute streaming timeout when going
+ * through the Vercel API proxy.
  */
 
-import { readStreamServerAction } from '~/server/workflow-server-actions.server';
+import { readStreamChunksServerAction } from '~/server/workflow-server-actions.server';
 import type { Route } from './+types/api.stream.$streamId';
 
 export async function loader({ params, request }: Route.LoaderArgs) {
   const { streamId } = params;
 
-  // Validate streamId format (alphanumeric with underscores/hyphens)
   if (!streamId || !/^[\w-]+$/.test(streamId)) {
     return Response.json(
       { message: 'Invalid stream ID', layer: 'server' },
@@ -21,26 +22,23 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   }
 
   const url = new URL(request.url);
-  const startIndexParam = url.searchParams.get('startIndex');
-  const startIndex =
-    startIndexParam != null ? Number.parseInt(startIndexParam, 10) : undefined;
+  const runId = url.searchParams.get('runId');
 
-  if (startIndex !== undefined && Number.isNaN(startIndex)) {
+  if (!runId) {
     return Response.json(
-      { message: 'Invalid startIndex parameter', layer: 'server' },
+      { message: 'Missing runId parameter', layer: 'server' },
       { status: 400 }
     );
   }
 
   try {
-    const stream = await readStreamServerAction({}, streamId, startIndex);
+    const result = await readStreamChunksServerAction({}, streamId, runId);
 
-    if (!stream || !(stream instanceof ReadableStream)) {
-      // It's a ServerActionError
-      return Response.json(stream, { status: 500 });
+    if (!(result instanceof Uint8Array)) {
+      return Response.json(result, { status: 500 });
     }
 
-    return new Response(stream, {
+    return new Response(result.buffer as ArrayBuffer, {
       headers: {
         'Content-Type': 'application/octet-stream',
       },

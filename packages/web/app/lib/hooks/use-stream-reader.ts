@@ -1,8 +1,7 @@
 import { decrypt as aesGcmDecrypt, importKey } from '@workflow/core/encryption';
 import {
-  decodeFormatPrefix,
   hydrateData,
-  SerializationFormat,
+  isEncryptedData,
 } from '@workflow/core/serialization-format';
 import { getWebRevivers } from '@workflow/web-shared';
 import { useEffect, useRef, useState } from 'react';
@@ -16,6 +15,7 @@ export interface StreamChunk {
 }
 
 const FRAME_HEADER_SIZE = 4;
+const ENCRYPTED_PLACEHOLDER = '[Encrypted]';
 
 /**
  * Maximum number of entries (array elements / object keys) to keep when
@@ -99,10 +99,10 @@ const YIELD_EVERY_N_FRAMES = 64;
 /**
  * Detect stream encoding from the first bytes.
  *
- * - **framed**: Current format (≥ 4.1.0-beta.56) — 4-byte big-endian length +
- *   format-prefixed payload (`devl`/`encr`).
- * - **legacy**: Older SDK versions (≤ 4.1.0-beta.55) used newline-delimited
- *   devalue strings with no binary framing.
+ * - **framed**: Current format — 4-byte big-endian length + format-prefixed
+ *   payload (`devl`/`encr`). The first uint32 is a plausible frame size.
+ * - **legacy**: Older SDK versions used newline-delimited devalue strings
+ *   with no binary framing.
  */
 type StreamEncoding = 'framed' | 'legacy';
 
@@ -131,7 +131,7 @@ export function useStreamReader(
     setError(null);
     chunkIdRef.current = 0;
 
-    if (!streamId) {
+    if (!streamId || !runId) {
       setIsLive(false);
       return;
     }
@@ -148,7 +148,7 @@ export function useStreamReader(
         const rawStream = await readStream(
           env,
           streamId,
-          undefined,
+          runId,
           abortController.signal
         );
 
@@ -156,7 +156,7 @@ export function useStreamReader(
           ? await importKey(encryptionKey)
           : undefined;
 
-        const reader = (rawStream as ReadableStream<Uint8Array>).getReader();
+        const reader = rawStream.getReader();
         const decoder = new TextDecoder();
         let buffer = new Uint8Array(0);
         let encoding: StreamEncoding | null = null;
@@ -182,6 +182,68 @@ export function useStreamReader(
           setChunks((prev) => [...prev, { id: chunkId, text }]);
         };
 
+        const addFramedChunk = async (rawFrame: Uint8Array) => {
+          if (!mounted) return;
+
+          // The getStreamChunks API returns chunks that include a
+          // length-prefixed frame wrapper. Detect and unwrap it so we
+          // get to the actual payload (devl/encr prefixed data).
+          let frameData = rawFrame;
+          if (
+            frameData.length >= FRAME_HEADER_SIZE + 4 &&
+            !isEncryptedData(frameData)
+          ) {
+            const innerView = new DataView(
+              frameData.buffer,
+              frameData.byteOffset,
+              frameData.byteLength
+            );
+            const innerLen = innerView.getUint32(0, false);
+            if (
+              innerLen > 0 &&
+              innerLen <= 10 * 1024 * 1024 &&
+              innerLen === frameData.length - FRAME_HEADER_SIZE
+            ) {
+              frameData = frameData.slice(FRAME_HEADER_SIZE);
+            }
+          }
+
+          let hydrated: unknown;
+          try {
+            if (isEncryptedData(frameData)) {
+              if (!cryptoKey) {
+                hydrated = ENCRYPTED_PLACEHOLDER;
+              } else {
+                const payload = frameData.slice(4);
+                hydrated = hydrateData(
+                  await aesGcmDecrypt(cryptoKey, payload),
+                  revivers
+                );
+              }
+            } else {
+              hydrated = hydrateData(frameData, revivers);
+            }
+          } catch {
+            hydrated = ENCRYPTED_PLACEHOLDER;
+          }
+
+          if (mounted && hydrated !== undefined && hydrated !== null) {
+            const chunkId = chunkIdRef.current++;
+            let text: string;
+            try {
+              if (typeof hydrated === 'string') {
+                text = hydrated;
+              } else {
+                const safe = sanitizeForDisplay(hydrated);
+                text = JSON.stringify(safe, null, 2);
+              }
+            } catch {
+              text = '[Serialization Error]';
+            }
+            setChunks((prev) => [...prev, { id: chunkId, text }]);
+          }
+        };
+
         for (;;) {
           if (abortController.signal.aborted) break;
 
@@ -195,7 +257,6 @@ export function useStreamReader(
             break;
           }
 
-          // Detect encoding on first read with enough data
           if (encoding === null) {
             appendToBuffer(value);
             if (buffer.length >= FRAME_HEADER_SIZE) {
@@ -221,9 +282,6 @@ export function useStreamReader(
             continue;
           }
 
-          // Framed mode: parse length-prefixed frames using an offset to
-          // avoid O(n²) copies from slicing the entire remaining buffer on
-          // every iteration.
           let offset = 0;
           let framesInBatch = 0;
 
@@ -249,45 +307,7 @@ export function useStreamReader(
             );
             offset += FRAME_HEADER_SIZE + frameLength;
 
-            try {
-              const { format, payload } = decodeFormatPrefix(frameData);
-              let dataToHydrate: Uint8Array;
-
-              if (format === SerializationFormat.ENCRYPTED) {
-                if (!cryptoKey) {
-                  if (mounted) {
-                    setError(
-                      'This stream is encrypted. Click Decrypt to view.'
-                    );
-                    setIsLive(false);
-                  }
-                  reader.cancel().catch(() => {});
-                  return;
-                }
-                dataToHydrate = await aesGcmDecrypt(cryptoKey, payload);
-              } else {
-                dataToHydrate = frameData;
-              }
-
-              const hydrated = hydrateData(dataToHydrate, revivers);
-              if (mounted && hydrated !== undefined && hydrated !== null) {
-                const chunkId = chunkIdRef.current++;
-                let text: string;
-                try {
-                  if (typeof hydrated === 'string') {
-                    text = hydrated;
-                  } else {
-                    const safe = sanitizeForDisplay(hydrated);
-                    text = JSON.stringify(safe, null, 2);
-                  }
-                } catch {
-                  text = '[Serialization Error]';
-                }
-                setChunks((prev) => [...prev, { id: chunkId, text }]);
-              }
-            } catch (err) {
-              console.error('Failed to process stream frame:', err);
-            }
+            await addFramedChunk(frameData);
 
             framesInBatch++;
             if (framesInBatch % YIELD_EVERY_N_FRAMES === 0) {
@@ -315,7 +335,6 @@ export function useStreamReader(
         abortControllerRef.current.abort();
       }
     };
-    // Re-run when encryptionKey changes (user clicked Decrypt)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [env, streamId, runId, encryptionKey]);
 

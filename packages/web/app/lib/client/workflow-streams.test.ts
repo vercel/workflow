@@ -58,24 +58,10 @@ describe('readStream', () => {
       body: mockBody,
     });
 
-    const result = await readStream(env, 'stream-1');
+    const result = await readStream(env, 'stream-1', 'run-1');
     expect(result).toBe(mockBody);
     expect(globalThis.fetch).toHaveBeenCalledWith(
-      '/api/stream/stream-1',
-      expect.any(Object)
-    );
-  });
-
-  it('includes startIndex query param when provided', async () => {
-    const mockBody = new ReadableStream();
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      body: mockBody,
-    });
-
-    await readStream(env, 'stream-1', 5);
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      '/api/stream/stream-1?startIndex=5',
+      '/api/stream/stream-1?runId=run-1',
       expect.any(Object)
     );
   });
@@ -87,7 +73,7 @@ describe('readStream', () => {
       json: () => Promise.resolve(null),
     });
 
-    await expect(readStream(env, 'stream-1')).rejects.toThrow(
+    await expect(readStream(env, 'stream-1', 'run-1')).rejects.toThrow(
       'Failed to read stream: 500'
     );
   });
@@ -105,7 +91,9 @@ describe('readStream', () => {
         }),
     });
 
-    await expect(readStream(env, 'stream-1')).rejects.toThrow('invalid stream');
+    await expect(readStream(env, 'stream-1', 'run-1')).rejects.toThrow(
+      'invalid stream'
+    );
   });
 
   it('throws WorkflowWebAPIError when body is null', async () => {
@@ -114,7 +102,7 @@ describe('readStream', () => {
       body: null,
     });
 
-    await expect(readStream(env, 'stream-1')).rejects.toThrow(
+    await expect(readStream(env, 'stream-1', 'run-1')).rejects.toThrow(
       'Failed to read stream: no body'
     );
   });
@@ -122,7 +110,7 @@ describe('readStream', () => {
   it('wraps non-WorkflowWebAPIError in WorkflowWebAPIError', async () => {
     globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('network fail'));
 
-    const err = await readStream(env, 'stream-1').catch((e) => e);
+    const err = await readStream(env, 'stream-1', 'run-1').catch((e) => e);
     expect(err).toBeInstanceOf(WorkflowWebAPIError);
     expect(err.message).toBe('Failed to read stream');
     expect(err.cause).toBeInstanceOf(TypeError);
