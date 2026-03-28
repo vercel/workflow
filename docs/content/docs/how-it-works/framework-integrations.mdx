@@ -350,7 +350,7 @@ The workflow and step handler endpoints are invoked by the world's queuing infra
 
 ### Vercel (`@workflow/world-vercel`)
 
-On Vercel, workflow handler functions are completely air-gapped from the internet using [consumer function security](https://vercel.com/docs/queues/concepts#consumer-function-security), the same mechanism that secures [Vercel Queues](https://vercel.com/docs/queues) consumers.
+On Vercel, workflow handler functions are not accessible through public endpoints. Handlers use the same [consumer function security](https://vercel.com/docs/queues/concepts#consumer-function-security) mechanism that secures [Vercel Queues](https://vercel.com/docs/queues) consumers.
 
 During the build step, the Workflow DevKit automatically configures each handler as a queue consumer by writing `experimentalTriggers` to the function's `.vc-config.json`:
 
