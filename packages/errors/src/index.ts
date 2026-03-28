@@ -49,8 +49,8 @@ interface WorkflowErrorOptions extends ErrorOptions {
 /**
  * The base class for all Workflow-related errors.
  *
- * This error is thrown by the Workflow DevKit when internal operations fail.
- * You can use this class with `instanceof` to catch any Workflow DevKit error.
+ * This error is thrown by the Workflow SDK when internal operations fail.
+ * You can use this class with `instanceof` to catch any Workflow SDK error.
  *
  * @example
  * ```ts
@@ -58,7 +58,7 @@ interface WorkflowErrorOptions extends ErrorOptions {
  *   await getRun(runId);
  * } catch (error) {
  *   if (error instanceof WorkflowError) {
- *     console.error('Workflow DevKit error:', error.message);
+ *     console.error('Workflow SDK error:', error.message);
  *   }
  * }
  * ```

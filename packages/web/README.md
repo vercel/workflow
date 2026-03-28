@@ -1,6 +1,6 @@
 # @workflow/web
 
-Observability Web UI Package bundled in the [Workflow DevKit](https://useworkflow.dev/docs/observability).
+Observability Web UI Package bundled in the [Workflow SDK](https://useworkflow.dev/docs/observability).
 
 ## Self-hosting
 

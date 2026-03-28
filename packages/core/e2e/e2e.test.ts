@@ -1545,7 +1545,7 @@ describe('e2e', () => {
       expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
       const flowBody = await flowRes.text();
       expect(flowBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/flow" endpoint is healthy'
+        'Workflow SDK "/.well-known/workflow/v1/flow" endpoint is healthy'
       );
 
       // Test the step endpoint health check
@@ -1561,7 +1561,7 @@ describe('e2e', () => {
       expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
       const stepBody = await stepRes.text();
       expect(stepBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/step" endpoint is healthy'
+        'Workflow SDK "/.well-known/workflow/v1/step" endpoint is healthy'
       );
     }
   );

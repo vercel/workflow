@@ -1,6 +1,6 @@
 # @workflow/serde
 
-Serialization symbols for custom class serialization in Workflow DevKit.
+Serialization symbols for custom class serialization in Workflow SDK.
 
 ## Usage
 

@@ -1,6 +1,6 @@
 # @workflow/nest
 
-NestJS integration for Workflow DevKit.
+NestJS integration for Workflow SDK.
 
 ## Installation
 

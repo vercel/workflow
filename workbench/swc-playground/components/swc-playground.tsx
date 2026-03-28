@@ -169,7 +169,7 @@ export function SwcPlayground({
       <header className="flex items-center justify-between px-6 py-3 border-b bg-card">
         <div className="flex items-center gap-2">
           <h1 className="text-xl font-bold">
-            Workflow DevKit Compiler Playground
+            Workflow SDK Compiler Playground
           </h1>
           <span className="text-xs px-2 py-1 bg-muted rounded text-muted-foreground">
             @workflow/swc-plugin{pluginVersion ? `@${pluginVersion}` : ''}
