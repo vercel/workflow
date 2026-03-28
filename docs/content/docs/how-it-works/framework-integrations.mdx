@@ -368,12 +368,6 @@ During the build step, the Workflow DevKit automatically configures each handler
 }
 ```
 
-This means:
-
-- The handler functions have **no public URL** and cannot be reached from the internet
-- Only Vercel's internal queue infrastructure can invoke them
-- Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
-- You don't need to add any authentication or authorization logic to your handlers
 
 Two queue topics are created per deployment:
 
