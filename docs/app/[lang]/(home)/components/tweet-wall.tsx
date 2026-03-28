@@ -19,10 +19,9 @@ const TWEETS: Tweet[] = [
     image: `${BLOB_URL}/michaelcaaarter.jpg`,
     tweet: (
       <span>
-        We just migrated to{' '}
-        <InlineCode>use workflow</InlineCode> and it&apos;s beautiful.
-        Production app here, VC backed and many real fortune 100 customers using
-        our app daily… not sure why you wouldn&apos;t{' '}
+        We just migrated to <InlineCode>use workflow</InlineCode> and it&apos;s
+        beautiful. Production app here, VC backed and many real fortune 100
+        customers using our app daily… not sure why you wouldn&apos;t{' '}
         <InlineCode>use workflow</InlineCode> to move fast and focus on building
         a great experience.
       </span>
@@ -52,7 +51,7 @@ const TWEETS: Tweet[] = [
     ),
   },
   {
-    url: 'https://x.com/ryancarson/status/1996318671749120315',
+    url: 'https://x.com/ryancarson/status/1999857760335192159',
     name: 'Ryan Carson',
     username: 'ryancarson',
     image: `${BLOB_URL}/ryancarson.jpg`,
@@ -88,8 +87,7 @@ const TWEETS: Tweet[] = [
         </span>
         <span>
           Hard to believe that almost all the complexity I remember from back
-          then is now solved with just a{' '}
-          <InlineCode>use workflow</InlineCode>
+          then is now solved with just a <InlineCode>use workflow</InlineCode>
         </span>
       </>
     ),
