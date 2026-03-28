@@ -1,8 +1,8 @@
 ---
 title: Framework Integrations
-description: Guide for framework authors to integrate Workflow DevKit with custom frameworks or runtimes.
+description: Guide for framework authors to integrate Workflow SDK with custom frameworks or runtimes.
 type: guide
-summary: Build a custom framework integration using the Workflow DevKit compiler and runtime.
+summary: Build a custom framework integration using the Workflow SDK compiler and runtime.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -10,13 +10,13 @@ related:
 ---
 
 <Callout>
-  **For users:** If you just want to use Workflow DevKit with an existing framework, check out the [Getting Started](/docs/getting-started) guide instead. This page is for framework authors who want to integrate Workflow DevKit with their framework or runtime.
+  **For users:** If you just want to use Workflow SDK with an existing framework, check out the [Getting Started](/docs/getting-started) guide instead. This page is for framework authors who want to integrate Workflow SDK with their framework or runtime.
 </Callout>
 
-This guide walks you through building a framework integration for Workflow DevKit using Bun as a concrete example. The same principles apply to any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
+This guide walks you through building a framework integration for Workflow SDK using Bun as a concrete example. The same principles apply to any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
 
 <Callout type="info">
-  **Prerequisites:** Before building a framework integration, we recommend reading [How the Directives Work](/docs/how-it-works/code-transform) to understand the transformation system that powers Workflow DevKit.
+  **Prerequisites:** Before building a framework integration, we recommend reading [How the Directives Work](/docs/how-it-works/code-transform) to understand the transformation system that powers Workflow SDK.
 </Callout>
 
 ## What You'll Build
@@ -46,7 +46,7 @@ flowchart TD
     style J fill:#a78bfa,stroke:#8b5cf6,color:#000
 ```
 
-The purple boxes are what you implement—everything else is provided by Workflow DevKit.
+The purple boxes are what you implement—everything else is provided by Workflow SDK.
 
 ## Example: Bun Integration
 
@@ -259,7 +259,7 @@ class MyFrameworkBuilder extends BaseBuilder {
 }
 ```
 
-If your framework supports virtual server routes and dev mode watching, make sure to adapt accordingly. Please open a PR to the Workflow DevKit if the base builder class is missing necessary functionality.
+If your framework supports virtual server routes and dev mode watching, make sure to adapt accordingly. Please open a PR to the Workflow SDK if the base builder class is missing necessary functionality.
 
 Hook into your framework's build:
 
@@ -341,8 +341,8 @@ const server = Bun.serve({
 ```
 
 Production framework integrations should handle this routing in the plugin instead of leaving it to the user, and this depends on each framework's unique implementaiton.
-Check the Workflow DevKit source code for examples of production framework implementations.
-In the future, the Workflow DevKit will emit more routes under the `.well-known/workflow` namespace.
+Check the Workflow SDK source code for examples of production framework implementations.
+In the future, the Workflow SDK will emit more routes under the `.well-known/workflow` namespace.
 
 ## Security
 

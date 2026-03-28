@@ -252,7 +252,7 @@ describe('getWorkflowPort', () => {
     const workflowServer = http.createServer((req, res) => {
       if (req.url?.includes('__health')) {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Workflow DevKit endpoint is healthy');
+        res.end('Workflow SDK endpoint is healthy');
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing required headers' }));
@@ -304,7 +304,7 @@ describe('getWorkflowPort', () => {
     const fastServer = http.createServer((req, res) => {
       if (req.url?.includes('__health')) {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Workflow DevKit endpoint is healthy');
+        res.end('Workflow SDK endpoint is healthy');
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);
         res.end();
@@ -332,7 +332,7 @@ describe('getWorkflowPort', () => {
     const server = http.createServer((req, res) => {
       if (req.url?.includes('__health')) {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end('Workflow DevKit endpoint is healthy');
+        res.end('Workflow SDK endpoint is healthy');
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);
         res.end();

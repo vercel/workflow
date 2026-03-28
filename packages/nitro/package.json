@@ -1,7 +1,7 @@
 {
   "name": "@workflow/nitro",
   "version": "4.0.1-beta.68",
-  "description": "Nitro integration for Workflow DevKit",
+  "description": "Nitro integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
   "files": [
