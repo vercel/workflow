@@ -126,7 +126,7 @@ This ensures long-running workflows complete reliably without being affected by 
 
 ### Consumer function security
 
-Workflow handler functions on Vercel are not accessible from through public endpoints. During the build step, the Workflow DevKit registers each handler as only reachable by [Vercel Queue](https://vercel.com/docs/queues), by using the `experimentalTriggers` configuration in `.vc-config.json`:
+Workflow handler functions on Vercel are not accessible through public endpoints. During the build step, the Workflow DevKit registers each handler as only reachable by [Vercel Queue](https://vercel.com/docs/queues), by using the `experimentalTriggers` configuration in `.vc-config.json`:
 
 ```json title=".vc-config.json (step handler)"
 {
@@ -147,18 +147,8 @@ Practically, this means:
 - Only messages delivered through Vercel Queues can trigger execution
 - Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
 
-The trigger configuration also controls retry behavior. Both handlers use `retryAfterSeconds: 5` (compared to the default 60 seconds for regular queues) to keep workflow execution responsive.
-
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `type` | `string` | — | Trigger type. Workflows use `queue/v2beta` |
-| `topic` | `string` | — | Topic name to consume. Supports wildcards (e.g., `__wkf_step_*`) |
-| `consumer` | `string` | — | Consumer group name |
-| `retryAfterSeconds` | `number` | 60s | Time before a failed message is retried |
-| `initialDelaySeconds` | `number` | 0s | Delay before the consumer starts processing after deploy |
-
 <Callout>
-  This configuration is managed entirely by the Workflow DevKit build step. You should not need to write this yourself. If you are writing a custom integration, see [Framework Integrations — Security](/docs/how-it-works/framework-integrations#security) for more details..
+  This configuration is managed entirely by the Workflow DevKit build step. You should not need to write this yourself. If you are writing a custom integration, see [Framework Integrations — Security](/docs/how-it-works/framework-integrations#security) for more details.
 </Callout>
 
 ## How It Works
