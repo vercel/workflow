@@ -140,14 +140,7 @@ Workflow handler functions on Vercel are not accessible from through public endp
 }
 ```
 
-Two internal queue topics are created per deployment:
-
-| Handler | Topic pattern | Purpose |
-| --- | --- | --- |
-| Step function | `__wkf_step_*` | Executes individual step functions with `maxDuration: max` |
-| Workflow function | `__wkf_workflow_*` | Runs workflow orchestration logic with `maxDuration: 60` |
-
-With this configuration, both functions are completely air-gapped from the internet. They have no public URL and can only be invoked by Vercel's internal queue infrastructure. This means:
+Practically, this means:
 
 - You don't need to add authentication or authorization logic to workflow handlers
 - Unauthorized requests can never reach the step or workflow functions
