@@ -51,7 +51,7 @@ const TWEETS: Tweet[] = [
     ),
   },
   {
-    url: 'https://x.com/ryancarson/status/1999857760335192159',
+    url: 'https://x.com/ryancarson/status/1996318671749120315',
     name: 'Ryan Carson',
     username: 'ryancarson',
     image: `${BLOB_URL}/ryancarson.jpg`,
