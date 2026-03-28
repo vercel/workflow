@@ -212,14 +212,17 @@ export function useStreamReader(
           try {
             if (isEncryptedData(frameData)) {
               if (!cryptoKey) {
-                hydrated = ENCRYPTED_PLACEHOLDER;
-              } else {
-                const payload = frameData.slice(4);
-                hydrated = hydrateData(
-                  await aesGcmDecrypt(cryptoKey, payload),
-                  revivers
-                );
+                if (mounted) {
+                  setError('This stream is encrypted. Click Decrypt to view.');
+                  setIsLive(false);
+                }
+                return 'encrypted' as const;
               }
+              const payload = frameData.slice(4);
+              hydrated = hydrateData(
+                await aesGcmDecrypt(cryptoKey, payload),
+                revivers
+              );
             } else {
               hydrated = hydrateData(frameData, revivers);
             }
@@ -307,7 +310,11 @@ export function useStreamReader(
             );
             offset += FRAME_HEADER_SIZE + frameLength;
 
-            await addFramedChunk(frameData);
+            const chunkResult = await addFramedChunk(frameData);
+            if (chunkResult === 'encrypted') {
+              reader.cancel().catch(() => {});
+              return;
+            }
 
             framesInBatch++;
             if (framesInBatch % YIELD_EVERY_N_FRAMES === 0) {
