@@ -126,7 +126,7 @@ This ensures long-running workflows complete reliably without being affected by 
 
 ### Consumer function security
 
-Workflow handler functions on Vercel are not accessible from the outside world. During the build step, the Workflow DevKit automatically configures each handler as a [Vercel Queue](https://vercel.com/docs/queues) consumer using `experimentalTriggers` in the function's `.vc-config.json`:
+Workflow handler functions on Vercel are not accessible from through public endpoints. During the build step, the Workflow DevKit registers each handler as only reachable by [Vercel Queue](https://vercel.com/docs/queues), by using the `experimentalTriggers` configuration in `.vc-config.json`:
 
 ```json title=".vc-config.json (step handler)"
 {
