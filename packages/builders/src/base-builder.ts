@@ -823,6 +823,31 @@ export abstract class BaseBuilder {
         throw new Error('No output files generated from esbuild');
       }
 
+      // Serde compliance warnings: check if workflow bundle has Node.js imports
+      // alongside serde-registered classes (these will fail at runtime in the sandbox)
+      if (
+        workflowManifest.classes &&
+        Object.keys(workflowManifest.classes).length > 0
+      ) {
+        const { analyzeSerdeCompliance } = await import('./serde-checker.js');
+        const bundleText = interimBundle.outputFiles[0].text;
+        const serdeResult = analyzeSerdeCompliance({
+          sourceCode: '',
+          workflowCode: bundleText,
+          manifest: workflowManifest,
+        });
+        for (const cls of serdeResult.classes) {
+          if (!cls.compliant) {
+            for (const issue of cls.issues) {
+              console.warn(
+                chalk.yellow(`⚠ Serde warning for class "${cls.className}": `) +
+                  issue
+              );
+            }
+          }
+        }
+      }
+
       const bundleFinal = async (interimBundle: string) => {
         const workflowBundleCode = interimBundle;
 
