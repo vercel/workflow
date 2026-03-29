@@ -248,4 +248,11 @@ describe('createContext', () => {
     const decoded = vm.runInContext(`atob("${result}")`, context);
     expect(decoded).toEqual('api_key:api_secret');
   });
+
+  it('should not expose Buffer in the VM context', () => {
+    const { context } = createContext({ seed, fixedTimestamp });
+
+    const result = vm.runInContext('typeof Buffer', context);
+    expect(result).toBe('undefined');
+  });
 });
