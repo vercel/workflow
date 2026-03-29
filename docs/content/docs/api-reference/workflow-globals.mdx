@@ -1,0 +1,67 @@
+---
+title: Workflow Globals
+description: Global APIs available inside workflow functions.
+type: reference
+summary: Reference of all global APIs available inside workflow functions.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/errors/node-js-module-in-workflow
+  - /docs/errors/fetch-in-workflow
+  - /docs/errors/timeout-in-workflow
+  - /docs/how-it-works/code-transform
+---
+
+Workflow functions run in a restricted environment that prevents access to non-deterministic or side-effecting APIs. This page lists all global APIs available inside `"use workflow"` functions.
+
+For full Node.js runtime access, use [step functions](/docs/foundations/workflows-and-steps#step-functions).
+
+## Deterministic APIs
+
+These APIs are available but are **seeded or fixed** to ensure deterministic behavior across replays.
+
+| API | Behavior |
+|-----|----------|
+| [`Math.random()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Math/random) | Seeded random number generator — same seed produces the same sequence every replay |
+| [`Date`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Date) / `Date.now()` / `new Date()` | Returns a fixed timestamp that advances with the workflow's logical clock |
+| [`crypto.getRandomValues()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/getRandomValues) | Seeded — produces deterministic output for a given workflow run |
+| [`crypto.randomUUID()`](https://developer.mozilla.org/en-US/docs/Web/API/Crypto/randomUUID) | Seeded — produces deterministic UUIDs for a given workflow run |
+| [`crypto.subtle.digest()`](https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto/digest) | Passes through to the real implementation (SHA-256, etc. are deterministic by nature) |
+
+<Callout type="info">
+You can safely use `Math.random()`, `Date.now()`, and `crypto.randomUUID()` in workflow functions. The framework ensures these return the same values across replays.
+</Callout>
+
+## Web Platform APIs
+
+These standard Web APIs are available in workflow functions:
+
+- [`Headers`](https://developer.mozilla.org/en-US/docs/Web/API/Headers)
+- [`TextEncoder`](https://developer.mozilla.org/en-US/docs/Web/API/TextEncoder) / [`TextDecoder`](https://developer.mozilla.org/en-US/docs/Web/API/TextDecoder)
+- [`URL`](https://developer.mozilla.org/en-US/docs/Web/API/URL) / [`URLSearchParams`](https://developer.mozilla.org/en-US/docs/Web/API/URLSearchParams)
+- [`Request`](https://developer.mozilla.org/en-US/docs/Web/API/Request) / [`Response`](https://developer.mozilla.org/en-US/docs/Web/API/Response) — custom implementations with [special behavior in the workflow context](/docs/foundations/serialization#request--response). Body methods like `.json()` and `.text()` are automatically treated as step invocations.
+- [`console`](https://developer.mozilla.org/en-US/docs/Web/API/console)
+- [`structuredClone`](https://developer.mozilla.org/en-US/docs/Web/API/Window/structuredClone)
+- [`atob`](https://developer.mozilla.org/en-US/docs/Web/API/Window/atob) / [`btoa`](https://developer.mozilla.org/en-US/docs/Web/API/Window/btoa)
+
+## Environment Variables
+
+`process.env` is available as a **read-only, frozen** snapshot of the environment variables at the time the workflow was started. You cannot modify it.
+
+```typescript
+export async function myWorkflow() {
+  "use workflow";
+
+  const apiKey = process.env.API_KEY; // works
+  process.env.FOO = "bar"; // throws — process.env is frozen
+}
+```
+
+## Not Available
+
+The following are **not available** in workflow functions. Move this logic to [step functions](/docs/foundations/workflows-and-steps#step-functions) instead.
+
+- **Node.js core modules**: `fs`, `path`, `http`, `https`, `net`, `dns`, `child_process`, `cluster`, `os`, `stream`, `crypto` (Node.js version), etc. See [node-js-module-in-workflow](/docs/errors/node-js-module-in-workflow).
+- **Global `fetch`**: Use [`import { fetch } from "workflow"`](/docs/api-reference/workflow/fetch) instead. See [fetch-in-workflow](/docs/errors/fetch-in-workflow).
+- **Timers**: `setTimeout`, `setInterval`, `setImmediate`, and their `clear*` counterparts. Use [`sleep()`](/docs/api-reference/workflow/sleep) instead. See [timeout-in-workflow](/docs/errors/timeout-in-workflow).
+- **`Buffer`**: Node.js-specific API. Use `atob()` / `btoa()` for base64 encoding/decoding of strings.

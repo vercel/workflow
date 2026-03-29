@@ -43,7 +43,7 @@ export async function processOrderWorkflow(orderId: string) {
 
 **Key Characteristics:**
 
-- Runs in a sandboxed environment without full Node.js access
+- Runs in a sandboxed environment without full Node.js access (see [Workflow Globals](/docs/api-reference/workflow-globals) for what's available)
 - All step results are persisted to the [event log](/docs/how-it-works/event-sourcing)
 - Must be **deterministic** to allow resuming after failures
 
