@@ -12,23 +12,25 @@
  * @see https://tc39.es/proposal-arraybuffer-base64/spec/
  */
 
-declare global {
-  interface Uint8Array {
-    toBase64(options?: { alphabet?: string; omitPadding?: boolean }): string;
-    toHex(): string;
-    setFromBase64(
-      str: string,
-      options?: { alphabet?: string; lastChunkHandling?: string }
-    ): { read: number; written: number };
-    setFromHex(str: string): { read: number; written: number };
-  }
-  interface Uint8ArrayConstructor {
-    fromBase64(
-      str: string,
-      options?: { alphabet?: string; lastChunkHandling?: string }
-    ): Uint8Array;
-    fromHex(str: string): Uint8Array;
-  }
+// Local type definitions for the polyfilled methods. These are intentionally
+// NOT `declare global` to avoid leaking types to host-side code — the polyfill
+// is only installed inside the workflow VM context.
+interface Uint8ArrayWithBase64 extends Uint8Array {
+  toBase64(options?: { alphabet?: string; omitPadding?: boolean }): string;
+  toHex(): string;
+  setFromBase64(
+    str: string,
+    options?: { alphabet?: string; lastChunkHandling?: string }
+  ): { read: number; written: number };
+  setFromHex(str: string): { read: number; written: number };
+}
+
+interface Uint8ArrayConstructorWithBase64 extends Uint8ArrayConstructor {
+  fromBase64(
+    str: string,
+    options?: { alphabet?: string; lastChunkHandling?: string }
+  ): Uint8Array;
+  fromHex(str: string): Uint8Array;
 }
 
 type Base64Alphabet = 'base64' | 'base64url';
@@ -377,7 +379,8 @@ function toHex(uint8: Uint8Array): string {
 export function installUint8ArrayBase64(
   Uint8ArrayCtor: typeof Uint8Array
 ): void {
-  const proto = Uint8ArrayCtor.prototype;
+  const proto = Uint8ArrayCtor.prototype as Uint8ArrayWithBase64;
+  const ctor = Uint8ArrayCtor as Uint8ArrayConstructorWithBase64;
 
   // Uint8Array.prototype.toBase64([options])
   if (!proto.toBase64) {
@@ -504,7 +507,7 @@ export function installUint8ArrayBase64(
   }
 
   // Uint8Array.fromBase64(string[, options])
-  if (!Uint8ArrayCtor.fromBase64) {
+  if (!ctor.fromBase64) {
     Object.defineProperty(Uint8ArrayCtor, 'fromBase64', {
       value: function fromBase64Static(
         str: string,
@@ -545,7 +548,7 @@ export function installUint8ArrayBase64(
   }
 
   // Uint8Array.fromHex(string)
-  if (!Uint8ArrayCtor.fromHex) {
+  if (!ctor.fromHex) {
     Object.defineProperty(Uint8ArrayCtor, 'fromHex', {
       value: function fromHexStatic(str: string): Uint8Array {
         if (typeof str !== 'string') {
