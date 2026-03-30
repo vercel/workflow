@@ -136,6 +136,7 @@ export function useStreamReader(
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runStatusRef = useRef(runStatus);
   runStatusRef.current = runStatus;
+  const serverCursorRef = useRef<string | null>(null);
 
   const processFrame = useCallback(
     async (
@@ -146,10 +147,10 @@ export function useStreamReader(
       { encrypted: true } | { encrypted: false; chunk: StreamChunk }
     > => {
       let frameData = rawFrame;
-      // getStreamChunks returns already-framed chunks (each chunk has its own
-      // 4-byte length header). The outer frame is stripped by fetchAndParse,
-      // but the payload itself may still contain an inner length prefix when
-      // the chunk was stored with double-framing. Detect and unwrap it here.
+      // Safety net: if a chunk was stored with an extra inner length prefix
+      // (double-framing), strip it. In practice the format prefix bytes
+      // ("devl"=0x6465766c, "encr"=0x656e6372) decode to uint32 values >1B
+      // which fail the <= 10MB check, so this branch is rarely taken.
       if (
         frameData.length >= FRAME_HEADER_SIZE + 4 &&
         !isEncryptedData(frameData)
@@ -210,6 +211,7 @@ export function useStreamReader(
     setError(null);
     chunkIdRef.current = 0;
     frameCountRef.current = 0;
+    serverCursorRef.current = null;
 
     if (pollTimerRef.current) {
       clearTimeout(pollTimerRef.current);
@@ -240,21 +242,36 @@ export function useStreamReader(
       return { id: chunkId, text };
     };
 
+    /**
+     * Fetch stream data and parse frames.
+     *
+     * When `cursor` is provided, the server only returns chunks after that
+     * position (incremental fetch). `skipFrames` skips N frames from the
+     * response to handle the overlap from cursor-based pagination.
+     */
     const fetchAndParse = async (
       targetBuffer: StreamChunk[],
       cryptoKey: CryptoKey | undefined,
-      skipFrames = 0
+      options?: { skipFrames?: number; cursor?: string | null }
     ): Promise<
-      { encrypted: true } | { encrypted: false; frameCount: number }
+      | { encrypted: true }
+      | {
+          encrypted: false;
+          frameCount: number;
+          cursor: string | null;
+          done: boolean;
+        }
     > => {
-      const rawStream = await readStream(
+      const streamResponse = await readStream(
         env,
         streamId,
         runId,
-        abortController.signal
+        abortController.signal,
+        options?.cursor
       );
 
-      const reader = rawStream.getReader();
+      const skipFrames = options?.skipFrames ?? 0;
+      const reader = streamResponse.body.getReader();
       const decoder = new TextDecoder();
       let buffer = new Uint8Array(0);
       let encoding: StreamEncoding | null = null;
@@ -360,7 +377,12 @@ export function useStreamReader(
         buffer = buffer.slice(offset);
       }
 
-      return { encrypted: false, frameCount: frameIndex };
+      return {
+        encrypted: false,
+        frameCount: frameIndex,
+        cursor: streamResponse.cursor,
+        done: streamResponse.done,
+      };
     };
 
     const readStreamData = async () => {
@@ -381,29 +403,42 @@ export function useStreamReader(
         }
 
         frameCountRef.current = result.frameCount;
+        serverCursorRef.current = result.cursor;
 
         if (!mounted || abortController.signal.aborted) return;
 
         setChunks(initialChunks);
+
+        // If the stream itself is done, no need to poll regardless of run status
+        if (result.done) {
+          setIsLive(false);
+          return;
+        }
 
         if (isRunActive(runStatusRef.current)) {
           const poll = async () => {
             if (!mounted || abortController.signal.aborted) return;
             try {
               const newChunks: StreamChunk[] = [];
-              const pollResult = await fetchAndParse(
-                newChunks,
-                cryptoKey,
-                frameCountRef.current
-              );
+              const pollResult = await fetchAndParse(newChunks, cryptoKey, {
+                cursor: serverCursorRef.current,
+                skipFrames: frameCountRef.current,
+              });
               if (!pollResult.encrypted) {
                 frameCountRef.current = pollResult.frameCount;
+                if (pollResult.cursor) {
+                  serverCursorRef.current = pollResult.cursor;
+                }
                 if (newChunks.length > 0 && mounted) {
                   setChunks((prev) => [...prev, ...newChunks]);
                 }
+                if (pollResult.done) {
+                  setIsLive(false);
+                  return;
+                }
               }
-            } catch {
-              // Silently ignore poll errors
+            } catch (err) {
+              console.warn('Stream poll error:', err);
             }
             if (mounted && !abortController.signal.aborted) {
               pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MS);

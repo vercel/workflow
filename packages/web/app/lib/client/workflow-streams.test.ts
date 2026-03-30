@@ -51,27 +51,65 @@ describe('readStream', () => {
     globalThis.fetch = originalFetch;
   });
 
-  it('returns response body on success', async () => {
-    const mockBody = new ReadableStream();
+  function mockFetchResponse(overrides: {
+    ok?: boolean;
+    status?: number;
+    body?: ReadableStream | null;
+    headers?: Record<string, string>;
+    json?: () => Promise<unknown>;
+  }) {
+    const headers = new Headers(overrides.headers ?? {});
     globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: overrides.ok ?? true,
+      status: overrides.status ?? 200,
+      body: overrides.body ?? null,
+      headers,
+      json: overrides.json ?? (() => Promise.resolve(null)),
+    });
+  }
+
+  it('returns body, cursor and done on success', async () => {
+    const mockBody = new ReadableStream();
+    mockFetchResponse({
       ok: true,
       body: mockBody,
+      headers: { 'X-Stream-Cursor': 'abc123', 'X-Stream-Done': 'false' },
     });
 
     const result = await readStream(env, 'stream-1', 'run-1');
-    expect(result).toBe(mockBody);
+    expect(result.body).toBe(mockBody);
+    expect(result.cursor).toBe('abc123');
+    expect(result.done).toBe(false);
     expect(globalThis.fetch).toHaveBeenCalledWith(
       '/api/stream/stream-1?runId=run-1',
       expect.any(Object)
     );
   });
 
-  it('throws WorkflowWebAPIError when response is not ok', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: () => Promise.resolve(null),
+  it('passes cursor as query parameter when provided', async () => {
+    mockFetchResponse({
+      ok: true,
+      body: new ReadableStream(),
+      headers: { 'X-Stream-Done': 'true' },
     });
+
+    const result = await readStream(
+      env,
+      'stream-1',
+      'run-1',
+      undefined,
+      'cur_xyz'
+    );
+    expect(result.done).toBe(true);
+    expect(result.cursor).toBeNull();
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      '/api/stream/stream-1?runId=run-1&cursor=cur_xyz',
+      expect.any(Object)
+    );
+  });
+
+  it('throws WorkflowWebAPIError when response is not ok', async () => {
+    mockFetchResponse({ ok: false, status: 500 });
 
     await expect(readStream(env, 'stream-1', 'run-1')).rejects.toThrow(
       'Failed to read stream: 500'
@@ -79,7 +117,7 @@ describe('readStream', () => {
   });
 
   it('throws with structured error from response body when available', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
+    mockFetchResponse({
       ok: false,
       status: 400,
       json: () =>
@@ -97,10 +135,7 @@ describe('readStream', () => {
   });
 
   it('throws WorkflowWebAPIError when body is null', async () => {
-    globalThis.fetch = vi.fn().mockResolvedValue({
-      ok: true,
-      body: null,
-    });
+    mockFetchResponse({ ok: true, body: null });
 
     await expect(readStream(env, 'stream-1', 'run-1')).rejects.toThrow(
       'Failed to read stream: no body'

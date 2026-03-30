@@ -1,11 +1,15 @@
 /**
  * Resource route for streaming data.
- * GET /api/stream/:streamId?runId=...
+ * GET /api/stream/:streamId?runId=...&cursor=...
  *
- * Uses getStreamChunks (paginated batch API) to fetch all chunks at once.
+ * Uses getStreamChunks (paginated batch API) to fetch chunks.
  * Returns concatenated binary data — deserialization and decryption happen
- * client-side. This avoids the 2-minute streaming timeout when going
- * through the Vercel API proxy.
+ * client-side. When `cursor` is provided, only chunks after that position
+ * are returned (used for incremental polling).
+ *
+ * Response headers:
+ *   X-Stream-Cursor  – cursor to send back on the next request
+ *   X-Stream-Done    – "true" when the stream is fully closed
  */
 
 import { readStreamChunksServerAction } from '~/server/workflow-server-actions.server';
@@ -31,18 +35,29 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     );
   }
 
-  try {
-    const result = await readStreamChunksServerAction({}, streamId, runId);
+  const cursor = url.searchParams.get('cursor') ?? undefined;
 
-    if (!(result instanceof Uint8Array)) {
+  try {
+    const result = await readStreamChunksServerAction(
+      {},
+      streamId,
+      runId,
+      cursor
+    );
+
+    if (!('buffer' in result)) {
       return Response.json(result, { status: 500 });
     }
 
-    return new Response(result.buffer as ArrayBuffer, {
-      headers: {
-        'Content-Type': 'application/octet-stream',
-      },
-    });
+    const headers: HeadersInit = {
+      'Content-Type': 'application/octet-stream',
+      'X-Stream-Done': String(result.done),
+    };
+    if (result.cursor) {
+      headers['X-Stream-Cursor'] = result.cursor;
+    }
+
+    return new Response(result.buffer, { headers });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return Response.json({ message, layer: 'server' }, { status: 500 });
