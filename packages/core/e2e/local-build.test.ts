@@ -76,12 +76,11 @@ async function readFileIfExists(filePath: string): Promise<string | null> {
 }
 
 /**
- * Projects that use the VercelBuildOutputAPIBuilder and produce CJS step bundles.
- * Their step bundles should contain the import.meta.url CJS polyfill.
+ * Projects that use the VercelBuildOutputAPIBuilder and produce ESM step bundles.
  */
-const CJS_STEP_BUNDLE_PROJECTS: Record<string, string> = {
+const ESM_STEP_BUNDLE_PROJECTS: Record<string, string> = {
   example:
-    '.vercel/output/functions/.well-known/workflow/v1/step.func/index.js',
+    '.vercel/output/functions/.well-known/workflow/v1/step.func/index.mjs',
 };
 
 describe.each([
@@ -120,18 +119,16 @@ describe.each([
       await fs.access(diagnosticsManifestPath);
     }
 
-    // Verify CJS import.meta polyfill is present in CJS step bundles
-    const cjsBundlePath = CJS_STEP_BUNDLE_PROJECTS[project];
-    if (cjsBundlePath) {
+    // Verify ESM step bundles use native import.meta (no CJS polyfill needed)
+    const esmBundlePath = ESM_STEP_BUNDLE_PROJECTS[project];
+    if (esmBundlePath) {
       const bundleContent = await readFileIfExists(
-        path.join(getWorkbenchAppPath(project), cjsBundlePath)
+        path.join(getWorkbenchAppPath(project), esmBundlePath)
       );
       expect(bundleContent).not.toBeNull();
-      expect(bundleContent).toContain('var __import_meta_url');
-      expect(bundleContent).toContain('pathToFileURL(__filename)');
-      expect(bundleContent).toContain('var __import_meta_resolve');
-      // Raw import.meta.url should be replaced by the define
-      expect(bundleContent).not.toMatch(/\bimport\.meta\.url\b/);
+      // ESM output should NOT contain CJS polyfill
+      expect(bundleContent).not.toContain('var __import_meta_url');
+      expect(bundleContent).not.toContain('pathToFileURL(__filename)');
     }
   });
 });
