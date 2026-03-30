@@ -162,38 +162,40 @@ function findIdentifierUsage(
   let inBlockComment = false;
 
   for (let i = startIndex; i < lines.length; i += 1) {
-    let line = lines[i];
+    // Strip string literals first so that comment delimiters inside strings
+    // (e.g. `const s = "/*";`) don't confuse the comment scanner.
+    const stringsStripped = lines[i]
+      .replace(/'(?:[^'\\]|\\.)*'/g, (s) => ' '.repeat(s.length))
+      .replace(/"(?:[^"\\]|\\.)*"/g, (s) => ' '.repeat(s.length))
+      .replace(/`(?:[^`\\]|\\.)*`/g, (s) => ' '.repeat(s.length));
+
+    let line = stringsStripped;
 
     // Handle multi-line block comments (including JSDoc)
     if (inBlockComment) {
       const endIdx = line.indexOf('*/');
       if (endIdx === -1) {
-        // Entire line is inside a block comment
         continue;
       }
-      // Replace everything up to and including */ with spaces
       line = ' '.repeat(endIdx + 2) + line.slice(endIdx + 2);
       inBlockComment = false;
     }
 
-    // Remove single-line block comments and detect block comment starts
+    // Scan for comments, replacing them with spaces
     let processed = '';
     let j = 0;
     while (j < line.length) {
       if (line[j] === '/' && line[j + 1] === '/') {
-        // Rest of line is a comment
         processed += ' '.repeat(line.length - j);
         break;
       }
       if (line[j] === '/' && line[j + 1] === '*') {
         const endIdx = line.indexOf('*/', j + 2);
         if (endIdx !== -1) {
-          // Inline block comment - replace with spaces
           const len = endIdx + 2 - j;
           processed += ' '.repeat(len);
           j = endIdx + 2;
         } else {
-          // Block comment starts here, continues on next lines
           processed += ' '.repeat(line.length - j);
           inBlockComment = true;
           break;
@@ -204,14 +206,7 @@ function findIdentifierUsage(
       }
     }
 
-    // Remove (replace with spaces) string literals to avoid matching inside paths
-    // Use escaped quote handling to properly match strings with escaped quotes
-    const withoutStrings = processed
-      .replace(/'(?:[^'\\]|\\.)*'/g, (segment) => ' '.repeat(segment.length))
-      .replace(/"(?:[^"\\]|\\.)*"/g, (segment) => ' '.repeat(segment.length))
-      .replace(/`(?:[^`\\]|\\.)*`/g, (segment) => ' '.repeat(segment.length));
-
-    const match = withoutStrings.match(usageRegex);
+    const match = processed.match(usageRegex);
     if (match && match.index !== undefined) {
       return {
         line: i,

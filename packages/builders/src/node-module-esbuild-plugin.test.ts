@@ -416,6 +416,24 @@ describe('workflow-node-module-error plugin', () => {
     expect(violation.location?.lineText).toContain('new Writable()');
   });
 
+  it('should not treat comment delimiters inside strings as comments', async () => {
+    const testCode = `
+      import { Writable } from "stream";
+      const pattern = "/* Writable */";
+      export function workflow() {
+        return new Writable();
+      }
+    `;
+
+    const { failure } = await buildWorkflowWithViolation(testCode);
+
+    expect(failure.errors).toHaveLength(1);
+    const violation = failure.errors[0];
+    expect(violation.text).toContain('"stream" which is a Node.js module');
+    // Should point to actual code, not the string containing "Writable"
+    expect(violation.location?.lineText).toContain('new Writable()');
+  });
+
   it('should error on Bun module imports', async () => {
     const testCode = `
       import { serve } from "bun";
