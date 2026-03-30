@@ -1,13 +1,15 @@
 'use client';
 
+import type { Monaco } from '@monaco-editor/react';
 import { AlertCircle, ChevronDownIcon, Loader2, RotateCcw } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Switch } from '@/components/ui/switch';
+import { typeDefinitions } from '@/lib/generated-types';
 import { initWasm, transformCode } from '@/lib/transform';
 import { CodeEditor } from './editor';
 
@@ -77,6 +79,40 @@ export function SwcPlayground({
   const [expandedPanels, setExpandedPanels] = useState<Set<ViewMode>>(
     new Set(['workflow', 'step', 'client'])
   );
+  const monacoConfigured = useRef(false);
+
+  // Configure Monaco TypeScript language service with workflow type definitions
+  const configureMonaco = useCallback((monaco: Monaco) => {
+    if (monacoConfigured.current) return;
+    monacoConfigured.current = true;
+
+    const ts = monaco.languages.typescript;
+
+    // Configure TypeScript compiler options for the editor
+    ts.typescriptDefaults.setCompilerOptions({
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      allowNonTsExtensions: true,
+      strict: true,
+      jsx: ts.JsxEmit.ReactJSX,
+      esModuleInterop: true,
+      allowImportingTsExtensions: true,
+    });
+
+    // Suppress diagnostics for unresolved modules not in our type map
+    ts.typescriptDefaults.setDiagnosticsOptions({
+      diagnosticCodesToIgnore: [
+        // "Cannot find module 'X'" — suppress for packages we don't have types for
+        2307,
+      ],
+    });
+
+    // Register all type definitions from workspace packages
+    for (const [path, content] of Object.entries(typeDefinitions)) {
+      ts.typescriptDefaults.addExtraLib(content, path);
+    }
+  }, []);
 
   // Initialize WASM module on mount
   useEffect(() => {
@@ -268,6 +304,7 @@ export function SwcPlayground({
                   value={code}
                   onChange={(val) => setCode(val || '')}
                   vimMode={vimMode}
+                  onMount={(_editor, monaco) => configureMonaco(monaco)}
                 />
               </div>
             </div>

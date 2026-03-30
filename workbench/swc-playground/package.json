@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "copy-wasm": "node scripts/copy-wasm.js",
-    "build": "node scripts/copy-wasm.js && next build",
-    "dev": "node scripts/copy-wasm.js && next dev",
+    "generate-types": "node scripts/generate-monaco-types.js",
+    "prebuild": "node scripts/copy-wasm.js && node scripts/generate-monaco-types.js",
+    "build": "next build",
+    "dev": "node scripts/copy-wasm.js && node scripts/generate-monaco-types.js && next dev",
     "lint": "eslint .",
     "start": "next start"
   },
