@@ -466,36 +466,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           streamEmitter.on(`close:${name}` as const, closeListener);
 
           // Now load existing chunks from disk.
-          // List both .bin (current) and .json (legacy) chunk files for
-          // backwards compatibility with streams written before this change.
-          // Also list tagged .bin files (e.g., `.vitest-0.bin`).
-          const listPromises: Promise<string[]>[] = [
-            listFilesByExtension(chunksDir, '.bin'),
-            listFilesByExtension(chunksDir, '.json'),
-          ];
-          if (tag) {
-            listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
-          }
-          const [binFiles, jsonFiles, ...taggedResults] =
-            await Promise.all(listPromises);
-          const taggedBinFiles = taggedResults[0] ?? [];
-          const fileExtMap = new Map<string, string>();
-          for (const f of jsonFiles) fileExtMap.set(f, '.json');
-          // When a tag is set, skip .bin entries that end with the tag suffix
-          // because those same files will be properly handled by taggedBinFiles.
-          // Without this filter, a file like "stream-chnk_ABC.vitest-0.bin" would
-          // appear twice: once as "stream-chnk_ABC.vitest-0" (from .bin listing)
-          // and once as "stream-chnk_ABC" (from .vitest-0.bin listing), causing
-          // duplicate data in the stream.
-          const tagSuffix = tag ? `.${tag}` : '';
-          for (const f of binFiles) {
-            if (tag && f.endsWith(tagSuffix)) continue;
-            fileExtMap.set(f, '.bin'); // .bin takes precedence
-          }
-          for (const f of taggedBinFiles) fileExtMap.set(f, `.${tag}.bin`); // tagged .bin takes precedence
-          const chunkFiles = [...fileExtMap.keys()]
-            .filter((file) => file.startsWith(`${name}-`))
-            .sort(); // ULID lexicographic sort = chronological order
+          const { files: chunkFiles, extMap: fileExtMap } =
+            await listChunkFilesForStream(chunksDir, name, tag);
 
           // Resolve negative startIndex relative to the number of data chunks
           // (excluding the trailing EOF marker chunk, if present).
