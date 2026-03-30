@@ -1,6 +1,6 @@
 ---
 title: Encryption
-description: Learn how Workflow DevKit encrypts user data end-to-end in the event log.
+description: Learn how Workflow SDK encrypts user data end-to-end in the event log.
 type: conceptual
 summary: Understand how workflow and step data is encrypted at rest.
 prerequisites:
@@ -11,10 +11,10 @@ related:
 ---
 
 <Callout>
-This guide explains how Workflow DevKit encrypts user data in the event log. Understanding these details is not required to use workflows — encryption is automatic and requires no code changes. For getting started, see the [getting started](/docs/getting-started) guides for your framework.
+This guide explains how Workflow SDK encrypts user data in the event log. Understanding these details is not required to use workflows — encryption is automatic and requires no code changes. For getting started, see the [getting started](/docs/getting-started) guides for your framework.
 </Callout>
 
-Workflow DevKit supports automatic end-to-end encryption of all user data before it is written to the event log. When a `World` implementation provides encryption support, it is safe to pass sensitive data — such as API keys, tokens, or user credentials — as workflow inputs, step arguments, and return values. The storage backend only ever sees ciphertext.
+Workflow SDK supports automatic end-to-end encryption of all user data before it is written to the event log. When a `World` implementation provides encryption support, it is safe to pass sensitive data — such as API keys, tokens, or user credentials — as workflow inputs, step arguments, and return values. The storage backend only ever sees ciphertext.
 
 Encryption support varies by `World` implementation. See the [Worlds](/worlds) page to check which worlds support this feature. `World` implementations opt into encryption by providing a `getEncryptionKeyForRun()` method — the core runtime will use it automatically when present.
 

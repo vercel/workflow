@@ -50,6 +50,7 @@ class VitestBuilder extends BaseBuilder {
     await this.createStepsBundle({
       outfile: join(this.#outDir, 'steps.mjs'),
       externalizeNonSteps: true,
+      rewriteTsExtensions: true,
       format: 'esm',
       inputFiles,
     });

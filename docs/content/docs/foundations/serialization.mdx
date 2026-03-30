@@ -9,7 +9,7 @@ related:
   - /docs/errors/serialization-failed
 ---
 
-All function arguments and return values passed between workflow and step functions must be serializable. Workflow DevKit uses a custom serialization system built on top of [devalue](https://github.com/sveltejs/devalue). This system supports standard JSON types, as well as a few additional popular Web API types.
+All function arguments and return values passed between workflow and step functions must be serializable. Workflow SDK uses a custom serialization system built on top of [devalue](https://github.com/sveltejs/devalue). This system supports standard JSON types, as well as a few additional popular Web API types.
 
 <Callout type="info">
 The serialization system ensures that all data persists correctly across workflow suspensions and resumptions, enabling durable execution.
@@ -98,7 +98,7 @@ export async function handleWebhookWorkflow() {
 
 ### Using `fetch` in Workflows
 
-Because `Request` and `Response` are serializable, Workflow DevKit provides a `fetch` function that can be used directly in workflow functions:
+Because `Request` and `Response` are serializable, Workflow SDK provides a `fetch` function that can be used directly in workflow functions:
 
 ```typescript title="workflows/api-call.ts" lineNumbers
 import { fetch } from "workflow"; // [!code highlight]

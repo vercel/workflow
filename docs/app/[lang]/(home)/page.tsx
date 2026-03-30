@@ -9,6 +9,7 @@ import { Observability } from './components/observability';
 import { PreviewBadge } from './components/preview-badge';
 import { RunAnywhere } from './components/run-anywhere';
 import { Templates } from './components/templates';
+import { TweetWall } from './components/tweet-wall';
 import { UseCases } from './components/use-cases-server';
 
 const title = 'Make any TypeScript Function Durable';
@@ -16,7 +17,7 @@ const description =
   '"use workflow" brings durability, reliability, and observability to async JavaScript. Build apps and AI Agents that can suspend, resume, and maintain state with ease.';
 
 export const metadata: Metadata = {
-  title: 'Workflow DevKit - Make any TypeScript Function Durable',
+  title: 'Workflow SDK - Make any TypeScript Function Durable',
   description,
   alternates: {
     canonical: '/',
@@ -51,6 +52,7 @@ const Home = () => (
         <RunAnywhere />
         <UseCases />
         <Templates />
+        <TweetWall />
         <CTA />
       </div>
     </div>

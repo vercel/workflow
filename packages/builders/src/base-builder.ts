@@ -337,6 +337,7 @@ export abstract class BaseBuilder {
     format = 'cjs',
     outfile,
     externalizeNonSteps,
+    rewriteTsExtensions,
     tsconfigPath,
     discoveredEntries,
   }: {
@@ -345,6 +346,7 @@ export abstract class BaseBuilder {
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
+    rewriteTsExtensions?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     context: esbuild.BuildContext | undefined;
@@ -519,6 +521,7 @@ export abstract class BaseBuilder {
           outdir: outfile ? dirname(outfile) : undefined,
           projectRoot: this.transformProjectRoot,
           workflowManifest,
+          rewriteTsExtensions,
         }),
       ],
       // Plugin should catch most things, but this lets users hard override

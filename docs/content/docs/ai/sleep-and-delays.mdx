@@ -14,7 +14,7 @@ related:
 
 AI agents sometimes need to pause execution in order to schedule recurring or future actions, wait before retrying an operation (e.g. for rate limiting), or wait for external state to be available.
 
-Workflow DevKit's `sleep` function enables Agents to pause execution without consuming resources, and resume at a specified time, after a specified duration, or in response to an external event. Workflow operation that suspend will survive restarts, new deploys, and infrastructure changes, independent of whether the suspense takes seconds or months.
+Workflow SDK's `sleep` function enables Agents to pause execution without consuming resources, and resume at a specified time, after a specified duration, or in response to an external event. Workflow operation that suspend will survive restarts, new deploys, and infrastructure changes, independent of whether the suspense takes seconds or months.
 
 <Callout type="info">
 See the [`sleep()` API Reference](/docs/api-reference/workflow/sleep) for the full list of supported duration formats and detailed API documentation, and see the [hooks](/docs/foundations/hooks) documentation for more information on how to resume in response to external events.
@@ -22,7 +22,7 @@ See the [`sleep()` API Reference](/docs/api-reference/workflow/sleep) for the fu
 
 ## Adding a Sleep Tool
 
-Sleep is a built-in function in Workflow DevKit, so exposing it as a tool is as simple as wrapping it in a tool definition. Learn more about how to define tools in [Patterns for Defining Tools](/docs/ai/defining-tools).
+Sleep is a built-in function in Workflow SDK, so exposing it as a tool is as simple as wrapping it in a tool definition. Learn more about how to define tools in [Patterns for Defining Tools](/docs/ai/defining-tools).
 
 <Steps>
 
