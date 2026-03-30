@@ -114,6 +114,12 @@ for (const dirName of PACKAGES) {
     if (mainDtsFile) {
       typeDefsMap[`node_modules/${name}/index.d.ts`] = mainDtsFile.content;
     }
+  } else {
+    // No explicit types field — check if dist/index.d.ts exists
+    const fallback = dtsFiles.find((f) => f.relativePath === 'index.d.ts');
+    if (fallback) {
+      typeDefsMap[`node_modules/${name}/index.d.ts`] = fallback.content;
+    }
   }
 
   console.log(`  Registered ${dtsFiles.length} .d.ts files for ${name}`);

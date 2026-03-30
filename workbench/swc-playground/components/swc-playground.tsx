@@ -88,7 +88,9 @@ export function SwcPlayground({
 
     const ts = monaco.languages.typescript;
 
-    // Configure TypeScript compiler options for the editor
+    // Configure TypeScript compiler options for the editor.
+    // The model path is set to file:///src/input.ts so that NodeJs
+    // module resolution can traverse up to find node_modules/.
     ts.typescriptDefaults.setCompilerOptions({
       target: ts.ScriptTarget.ES2022,
       module: ts.ModuleKind.ESNext,
@@ -100,9 +102,11 @@ export function SwcPlayground({
       allowImportingTsExtensions: true,
     });
 
-    // Register all type definitions from workspace packages
-    for (const [path, content] of Object.entries(typeDefinitions)) {
-      ts.typescriptDefaults.addExtraLib(content, path);
+    // Register all type definitions from workspace packages.
+    // Paths use file:///node_modules/... to match the virtual file:///
+    // filesystem that the editor model lives in.
+    for (const [relativePath, content] of Object.entries(typeDefinitions)) {
+      ts.typescriptDefaults.addExtraLib(content, `file:///${relativePath}`);
     }
   }, []);
 
@@ -293,6 +297,7 @@ export function SwcPlayground({
               <div className="flex-1 min-h-0">
                 <CodeEditor
                   language="typescript"
+                  path="file:///src/input.tsx"
                   value={code}
                   onChange={(val) => setCode(val || '')}
                   vimMode={vimMode}
