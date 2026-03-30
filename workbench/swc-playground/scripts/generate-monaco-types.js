@@ -1,230 +1,261 @@
 /**
- * Generates a TypeScript file containing all type declarations from
+ * Generates a TypeScript file containing ambient module declarations from
  * workspace packages, for use with Monaco editor's `addExtraLib()` API.
  *
- * This reads the built `.d.ts` files from workspace packages and outputs
- * a map of virtual file paths to declaration content that Monaco's TypeScript
- * language service can resolve.
- *
- * Uses `declare module` ambient declarations for reliable module resolution
- * regardless of Monaco's internal URI scheme.
+ * Reads the built `.d.ts` files from workspace packages and generates
+ * `declare module` blocks with inlined type content. This is the most
+ * reliable approach for Monaco as it works regardless of module resolution
+ * configuration.
  */
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from 'node:fs';
-import { relative } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const packagesDir = new URL('../../../packages/', import.meta.url);
 
-// Packages whose types should be available in the Monaco editor.
-// Each entry maps a directory name under packages/ to configuration.
-// `subExports` lists additional sub-path exports that should get
-// their own `declare module` entry (e.g. "workflow/errors").
+// Each entry defines a module name and the .d.ts file that provides its types.
+// `dir` is the directory name under packages/.
+// `modules` maps module specifiers to .d.ts paths relative to the package root.
 const PACKAGES = [
-  { dir: 'world' },
-  { dir: 'utils' },
-  { dir: 'serde' },
-  { dir: 'errors' },
-  { dir: 'core' },
+  {
+    dir: 'world',
+    modules: { '@workflow/world': './dist/index.d.ts' },
+  },
+  {
+    dir: 'utils',
+    modules: { '@workflow/utils': './dist/index.d.ts' },
+  },
+  {
+    dir: 'serde',
+    modules: { '@workflow/serde': './dist/index.d.ts' },
+  },
+  {
+    dir: 'errors',
+    modules: { '@workflow/errors': './dist/index.d.ts' },
+  },
+  {
+    dir: 'core',
+    modules: { '@workflow/core': './dist/index.d.ts' },
+  },
   {
     dir: 'workflow',
-    subExports: {
-      './api': './dist/api.d.ts',
-      './errors': './dist/internal/errors.d.ts',
-      './observability': './dist/observability.d.ts',
+    modules: {
+      workflow: './dist/index.d.ts',
+      'workflow/api': './dist/api.d.ts',
+      'workflow/errors': './dist/internal/errors.d.ts',
+      'workflow/observability': './dist/observability.d.ts',
     },
   },
 ];
 
 /**
- * Read the package.json for a given package directory name and return
- * the npm package name and path to the dist directory.
+ * Read a .d.ts file and transform it for use inside a `declare module` block.
+ *
+ * - Strips `export {};` lines
+ * - Strips `//# sourceMappingURL=` lines
+ * - Converts `export { X, Y } from './foo.js'` re-exports by reading
+ *   the referenced file and inlining the exported declarations
+ * - Converts `export * from '@workflow/core'` into `export * from "@workflow/core"`
+ *   (these work because the referenced module also has a declare module block)
+ * - Converts `import type { X } from './foo.js'` to inline the referenced types
+ * - Strips `import type` statements for external packages (they'll resolve
+ *   via other declare module blocks)
  */
-function getPackageInfo(dirName) {
-  const pkgJsonUrl = new URL(`${dirName}/package.json`, packagesDir);
-  if (!existsSync(pkgJsonUrl)) {
-    console.warn(`Skipping ${dirName}: no package.json found`);
-    return null;
+function readDtsForModule(pkgDir, dtsRelPath, visited = new Set()) {
+  const dtsUrl = new URL(dtsRelPath.replace(/^\.\//, ''), pkgDir);
+  const key = dtsUrl.href;
+  if (visited.has(key)) return ''; // prevent cycles
+  visited.add(key);
+
+  if (!existsSync(dtsUrl)) {
+    console.warn(`  Warning: ${dtsUrl} not found`);
+    return '';
   }
-  const pkgJson = JSON.parse(readFileSync(pkgJsonUrl, 'utf-8'));
-  const distUrl = new URL(`${dirName}/dist/`, packagesDir);
-  if (!existsSync(distUrl)) {
-    console.warn(
-      `Skipping ${dirName}: no dist/ directory found (run build first)`
-    );
-    return null;
-  }
-  return { name: pkgJson.name, pkgJson, distUrl };
+
+  let content = readFileSync(dtsUrl, 'utf-8');
+
+  // Strip source map references
+  content = content.replace(/\/\/# sourceMappingURL=.*$/gm, '');
+
+  // Strip bare `export {};`
+  content = content.replace(/^export \{\s*\};\s*$/gm, '');
+
+  // Process `export * from './relative.js'` — inline from local files
+  content = content.replace(
+    /^export \* from ['"](\.[^'"]+)['"]\s*;?\s*$/gm,
+    (_match, relPath) => {
+      const resolvedPath = resolveRelativeDts(dtsRelPath, relPath);
+      return readDtsForModule(pkgDir, resolvedPath, visited);
+    }
+  );
+
+  // Process `export { X, Y, ... } from './relative.js'` — inline from local files
+  content = content.replace(
+    /^export \{([^}]+)\} from ['"](\.[^'"]+)['"]\s*;?\s*$/gm,
+    (_match, exports, relPath) => {
+      const resolvedPath = resolveRelativeDts(dtsRelPath, relPath);
+      const sourceContent = readDtsForModule(pkgDir, resolvedPath, visited);
+      // Return the full source — TypeScript will use what it needs.
+      // This is simpler than trying to cherry-pick individual declarations.
+      return sourceContent;
+    }
+  );
+
+  // Convert `import type { X } from './relative.js'` to inline
+  // We need these types available, so read and inline the source
+  content = content.replace(
+    /^import type \{([^}]+)\} from ['"](\.[^'"]+)['"]\s*;?\s*$/gm,
+    (_match, _imports, relPath) => {
+      const resolvedPath = resolveRelativeDts(dtsRelPath, relPath);
+      return readDtsForModule(pkgDir, resolvedPath, visited);
+    }
+  );
+
+  // Convert `import { type X } from './relative.js'` (mixed imports)
+  content = content.replace(
+    /^import \{([^}]+)\} from ['"](\.[^'"]+)['"]\s*;?\s*$/gm,
+    (_match, _imports, relPath) => {
+      const resolvedPath = resolveRelativeDts(dtsRelPath, relPath);
+      return readDtsForModule(pkgDir, resolvedPath, visited);
+    }
+  );
+
+  // Strip remaining import statements for external packages
+  // (they resolve via other declare module blocks)
+  content = content.replace(
+    /^import\s+(?:type\s+)?\{[^}]*\}\s+from\s+['"][^.][^'"]*['"]\s*;?\s*$/gm,
+    ''
+  );
+
+  // Strip `export type { X } from '...'` for external packages
+  // (the types are available from the other declare module blocks)
+  // But keep `export * from '@...'` as those re-export from declared modules
+
+  // Remove `declare` keyword — it's redundant inside `declare module`
+  content = content.replace(/^export declare /gm, 'export ');
+
+  // Clean up multiple blank lines
+  content = content.replace(/\n{3,}/g, '\n\n');
+
+  return content.trim();
 }
 
 /**
- * Recursively collect all .d.ts files in a directory, returning
- * an array of { relativePath, content } objects.
+ * Resolve a relative .d.ts import path against the importing file's path.
+ * Handles .js -> .d.ts extension mapping.
  */
-function collectDtsFiles(dirUrl, baseUrl = dirUrl) {
-  const results = [];
-  const entries = readdirSync(dirUrl, { withFileTypes: true });
+function resolveRelativeDts(fromPath, relativePath) {
+  // Convert .js extension to .d.ts
+  let resolved = relativePath.replace(/\.js$/, '.d.ts');
 
-  for (const entry of entries) {
-    const entryUrl = new URL(
-      `${entry.name}${entry.isDirectory() ? '/' : ''}`,
-      dirUrl
-    );
-    if (entry.isDirectory()) {
-      results.push(...collectDtsFiles(entryUrl, baseUrl));
-    } else if (entry.name.endsWith('.d.ts')) {
-      const fullPath = entryUrl.pathname;
-      const relPath = relative(baseUrl.pathname, fullPath);
-      const content = readFileSync(entryUrl, 'utf-8');
-      results.push({ relativePath: relPath, content });
+  // Resolve relative to the importing file's directory
+  const fromDir = fromPath.replace(/\/[^/]+$/, '/');
+  if (resolved.startsWith('./')) {
+    resolved = fromDir + resolved.slice(2);
+  } else if (resolved.startsWith('../')) {
+    // Handle ../ by going up from fromDir
+    const parts = fromDir.split('/').filter(Boolean);
+    const relParts = resolved.split('/');
+    for (const part of relParts) {
+      if (part === '..') {
+        parts.pop();
+      } else if (part !== '.') {
+        parts.push(part);
+      }
     }
+    resolved = './' + parts.join('/');
   }
 
-  return results;
+  return resolved;
 }
 
-/**
- * Resolve the main types entry point for a package.
- * Checks exports["."].types first, then top-level types field,
- * then falls back to dist/index.d.ts.
- */
-function resolveMainTypes(pkgJson) {
-  const mainExport = pkgJson.exports?.['.'];
-  if (mainExport) {
-    if (typeof mainExport === 'object' && mainExport.types) {
-      return mainExport.types;
-    }
-  }
-  if (pkgJson.types) return pkgJson.types;
-  return './dist/index.d.ts'; // fallback
-}
-
-// Build the type definitions map
-const typeDefsMap = {};
-
-// Track packages for ambient module declarations
-const ambientModules = [];
+// Build the output
+const declareModules = [];
+let totalFiles = 0;
 
 for (const pkgConfig of PACKAGES) {
-  const { dir, subExports } = pkgConfig;
-  const info = getPackageInfo(dir);
-  if (!info) continue;
+  const { dir, modules } = pkgConfig;
+  const pkgDir = new URL(`${dir}/`, packagesDir);
 
-  const { name, pkgJson, distUrl } = info;
-  console.log(`Processing ${name} (${dir})...`);
-
-  const mainTypes = resolveMainTypes(pkgJson);
-
-  // Collect and register all .d.ts files from dist/
-  const dtsFiles = collectDtsFiles(distUrl);
-  for (const { relativePath, content } of dtsFiles) {
-    const virtualPath = `file:///node_modules/${name}/dist/${relativePath}`;
-    typeDefsMap[virtualPath] = content;
+  if (!existsSync(pkgDir)) {
+    console.warn(`Skipping ${dir}: directory not found`);
+    continue;
   }
 
-  console.log(`  Registered ${dtsFiles.length} .d.ts files for ${name}`);
+  console.log(`Processing ${dir}...`);
 
-  // Track the main module for ambient declarations
-  // Convert "./dist/index.d.ts" -> "file:///node_modules/<name>/dist/index.d.ts"
-  const mainDtsPath = mainTypes.replace(
-    /^\.\//,
-    `file:///node_modules/${name}/`
-  );
-  ambientModules.push({ moduleName: name, dtsPath: mainDtsPath });
-
-  // Handle sub-exports (e.g. "workflow/api", "workflow/errors")
-  if (subExports) {
-    for (const [subPath, subTypes] of Object.entries(subExports)) {
-      const subModuleName = `${name}/${subPath.replace(/^\.\//, '')}`;
-      const subDtsPath = subTypes.replace(
-        /^\.\//,
-        `file:///node_modules/${name}/`
-      );
-      ambientModules.push({ moduleName: subModuleName, dtsPath: subDtsPath });
+  for (const [moduleName, dtsPath] of Object.entries(modules)) {
+    const content = readDtsForModule(pkgDir, dtsPath);
+    if (content) {
+      declareModules.push({ moduleName, content });
+      totalFiles++;
+      console.log(`  "${moduleName}" -> ${dtsPath}`);
     }
   }
 }
 
-// Generate the ambient module declarations file.
-// This tells TypeScript's language service where to find types for
-// bare module imports like `import { sleep } from "workflow"`.
-// Using `declare module` is the most reliable approach for Monaco
-// as it works regardless of module resolution configuration.
-const ambientLines = [
-  '// Ambient module declarations for Monaco editor.',
-  '// Maps bare import specifiers to their type declaration files.',
-  '',
-];
-for (const { moduleName, dtsPath } of ambientModules) {
-  ambientLines.push(`declare module "${moduleName}" {`);
-  ambientLines.push(`  export * from "${dtsPath}";`);
-  ambientLines.push(`}`);
-  ambientLines.push('');
+// Build the final declarations string
+let declarations = '// Auto-generated by scripts/generate-monaco-types.js\n\n';
+
+// Add third-party type stubs
+declarations += `
+declare module "ms" {
+  export type StringValue =
+    | \`\${number}ms\`
+    | \`\${number}s\`
+    | \`\${number}m\`
+    | \`\${number}h\`
+    | \`\${number}d\`
+    | \`\${number}w\`
+    | \`\${number}y\`
+    | (string & {});
 }
 
-typeDefsMap['file:///node_modules/@types/workflow-ambient/index.d.ts'] =
-  ambientLines.join('\n');
+declare module "@standard-schema/spec" {
+  export interface StandardSchemaV1<Input = unknown, Output = Input> {
+    readonly "~standard": StandardSchemaV1.Props<Input, Output>;
+  }
+  export namespace StandardSchemaV1 {
+    interface Props<Input = unknown, Output = Input> {
+      readonly version: 1;
+      readonly vendor: string;
+      readonly validate: (value: unknown) => Result<Output> | Promise<Result<Output>>;
+      readonly types?: Types<Input, Output>;
+    }
+    interface Types<Input = unknown, Output = Input> {
+      readonly input: Input;
+      readonly output: Output;
+    }
+    type Result<Output> = SuccessResult<Output> | FailureResult;
+    interface SuccessResult<Output> { readonly value: Output; readonly issues?: undefined; }
+    interface FailureResult { readonly issues: readonly Issue[]; }
+    interface Issue { readonly message: string; readonly path?: readonly (string | number | symbol)[]; }
+  }
+}
 
-// Register stub types for third-party packages referenced by the .d.ts files.
-typeDefsMap['file:///node_modules/ms/index.d.ts'] = `
-export type StringValue =
-  | \`\${number}ms\`
-  | \`\${number}s\`
-  | \`\${number}m\`
-  | \`\${number}h\`
-  | \`\${number}d\`
-  | \`\${number}w\`
-  | \`\${number}y\`
-  | (string & {});
 `;
 
-typeDefsMap['file:///node_modules/@standard-schema/spec/index.d.ts'] = `
-export interface StandardSchemaV1<Input = unknown, Output = Input> {
-  readonly "~standard": StandardSchemaV1.Props<Input, Output>;
+// Add workspace package declarations
+for (const { moduleName, content } of declareModules) {
+  declarations += `declare module "${moduleName}" {\n`;
+  // Indent the content
+  const indented = content
+    .split('\n')
+    .map((line) => (line.trim() ? `  ${line}` : ''))
+    .join('\n');
+  declarations += indented;
+  declarations += `\n}\n\n`;
 }
-export declare namespace StandardSchemaV1 {
-  interface Props<Input = unknown, Output = Input> {
-    readonly version: 1;
-    readonly vendor: string;
-    readonly validate: (value: unknown) => Result<Output> | Promise<Result<Output>>;
-    readonly types?: Types<Input, Output>;
-  }
-  interface Types<Input = unknown, Output = Input> {
-    readonly input: Input;
-    readonly output: Output;
-  }
-  type Result<Output> = SuccessResult<Output> | FailureResult;
-  interface SuccessResult<Output> { readonly value: Output; readonly issues?: undefined; }
-  interface FailureResult { readonly issues: readonly Issue[]; }
-  interface Issue { readonly message: string; readonly path?: readonly (string | number | symbol)[]; }
-}
-`;
 
-// Write the output file
+// Write output as a simple string export
 const outputUrl = new URL('../lib/generated-types.ts', import.meta.url);
 mkdirSync(new URL('.', outputUrl), { recursive: true });
 
 const output = `// Auto-generated by scripts/generate-monaco-types.js — DO NOT EDIT
-export const typeDefinitions: Record<string, string> = ${JSON.stringify(typeDefsMap, null, 2)};
+export const typeDeclarations: string = ${JSON.stringify(declarations)};
 `;
 
 writeFileSync(outputUrl, output);
 
-const totalFiles = Object.keys(typeDefsMap).length;
-const totalSize = Object.values(typeDefsMap).reduce(
-  (acc, v) => acc + v.length,
-  0
-);
+const totalSize = declarations.length;
 console.log(
-  `\nGenerated lib/generated-types.ts (${totalFiles} files, ${(totalSize / 1024).toFixed(1)}KB of type content)`
+  `\nGenerated lib/generated-types.ts (${totalFiles} modules, ${(totalSize / 1024).toFixed(1)}KB)`
 );
-
-// Show ambient modules registered
-console.log(`Ambient module declarations:`);
-for (const { moduleName } of ambientModules) {
-  console.log(`  "${moduleName}"`);
-}

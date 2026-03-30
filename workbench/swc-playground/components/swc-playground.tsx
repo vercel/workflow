@@ -9,7 +9,7 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Switch } from '@/components/ui/switch';
-import { typeDefinitions } from '@/lib/generated-types';
+import { typeDeclarations } from '@/lib/generated-types';
 import { initWasm, transformCode } from '@/lib/transform';
 import { CodeEditor } from './editor';
 
@@ -100,15 +100,10 @@ export function SwcPlayground({
       allowImportingTsExtensions: true,
     });
 
-    // Register all type definitions from workspace packages.
-    // The generated map includes:
-    // - Individual .d.ts files at file:///node_modules/<pkg>/dist/...
-    // - An ambient declarations file that maps bare import specifiers
-    //   (e.g. "workflow", "@workflow/core") to their .d.ts entry points
-    //   via `declare module` blocks
-    for (const [path, content] of Object.entries(typeDefinitions)) {
-      ts.typescriptDefaults.addExtraLib(content, path);
-    }
+    // Register ambient module declarations for workflow packages.
+    // This is a single string containing `declare module "..."` blocks
+    // with inlined type content for each package.
+    ts.typescriptDefaults.addExtraLib(typeDeclarations);
   }, []);
 
   // Initialize WASM module on mount
