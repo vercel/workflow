@@ -9,7 +9,7 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Switch } from '@/components/ui/switch';
-import { typeDeclarations } from '@/lib/generated-types';
+import { nodeTypeDeclarations, typeDeclarations } from '@/lib/generated-types';
 import { initWasm, transformCode } from '@/lib/transform';
 import { CodeEditor } from './editor';
 
@@ -104,6 +104,11 @@ export function SwcPlayground({
     // This is a single string containing `declare module "..."` blocks
     // with inlined type content for each package.
     ts.typescriptDefaults.addExtraLib(typeDeclarations);
+
+    // Register @types/node declarations for Node.js built-in modules
+    for (const [path, content] of Object.entries(nodeTypeDeclarations)) {
+      ts.typescriptDefaults.addExtraLib(content, path);
+    }
   }, []);
 
   // Initialize WASM module on mount
