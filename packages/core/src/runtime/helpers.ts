@@ -361,7 +361,7 @@ export function withHealthCheck(
         });
       }
       return new Response(
-        `Workflow DevKit "${url.pathname}" endpoint is healthy`,
+        `Workflow SDK "${url.pathname}" endpoint is healthy`,
         {
           status: 200,
           headers: {

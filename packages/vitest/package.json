@@ -1,7 +1,7 @@
 {
   "name": "@workflow/vitest",
   "version": "4.0.1-beta.10",
-  "description": "Vitest plugin for testing Workflow DevKit workflows",
+  "description": "Vitest plugin for testing Workflow SDK workflows",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

@@ -1,3 +1,3 @@
 # @workflow/vite
 
-Vite plugin for [Workflow DevKit](https://useworkflow.dev).
+Vite plugin for [Workflow SDK](https://useworkflow.dev).

@@ -1,16 +1,16 @@
 ---
 name: workflow
-description: Creates durable, resumable workflows using Vercel's Workflow DevKit. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow devkit", "queue", "event", "push", "subscribe", or step-based orchestration.
+description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.4'
+  version: '1.5'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
 
 Your knowledge of `workflow` is outdated.
 
-The `workflow` documentation outlined below matches the installed version of the Workflow DevKit.
+The `workflow` documentation outlined below matches the installed version of the Workflow SDK.
 Follow these instructions before starting on any `workflow`-related tasks:
 
 Search the bundled documentation in `node_modules/workflow/docs/`:
@@ -33,7 +33,7 @@ Related packages also include bundled docs:
 - `@workflow/core`: `node_modules/@workflow/core/docs/` - Core runtime (foundations, how-it-works)
 - `@workflow/next`: `node_modules/@workflow/next/docs/` - Next.js integration
 
-**When in doubt, update to the latest version of the Workflow DevKit.**
+**When in doubt, update to the latest version of the Workflow SDK.**
 
 ### Official Resources
 
@@ -470,7 +470,7 @@ npx workflow cancel <run_id> --backend vercel --project <project-name> --team <t
 
 ## Testing Workflows
 
-Workflow DevKit provides a Vitest plugin for testing workflows in-process — no running server required.
+Workflow SDK provides a Vitest plugin for testing workflows in-process — no running server required.
 
 **Unit testing steps:** Steps are just functions; without the compiler, `"use step"` is a no-op. Test them directly:
 
