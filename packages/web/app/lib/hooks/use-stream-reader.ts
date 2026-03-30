@@ -146,6 +146,10 @@ export function useStreamReader(
       { encrypted: true } | { encrypted: false; chunk: StreamChunk }
     > => {
       let frameData = rawFrame;
+      // getStreamChunks returns already-framed chunks (each chunk has its own
+      // 4-byte length header). The outer frame is stripped by fetchAndParse,
+      // but the payload itself may still contain an inner length prefix when
+      // the chunk was stored with double-framing. Detect and unwrap it here.
       if (
         frameData.length >= FRAME_HEADER_SIZE + 4 &&
         !isEncryptedData(frameData)
