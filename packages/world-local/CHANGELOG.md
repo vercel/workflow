@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.1.0-beta.46
+
+### Patch Changes
+
+- [#1523](https://github.com/vercel/workflow/pull/1523) [`d1391e1`](https://github.com/vercel/workflow/commit/d1391e1fd9a553d87ae467ba2babdc96545d5d36) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix race condition allowing duplicate `hook_disposed` events for the same hook
+
 ## 4.1.0-beta.45
 
 ### Patch Changes

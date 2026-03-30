@@ -1,5 +1,16 @@
 # @workflow/world-postgres
 
+## 4.1.0-beta.48
+
+### Patch Changes
+
+- [#1523](https://github.com/vercel/workflow/pull/1523) [`d1391e1`](https://github.com/vercel/workflow/commit/d1391e1fd9a553d87ae467ba2babdc96545d5d36) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix race condition allowing duplicate `hook_disposed` events for the same hook
+
+- [#1527](https://github.com/vercel/workflow/pull/1527) [`e045b59`](https://github.com/vercel/workflow/commit/e045b59dc4d1881a64a547f01461d6f91c37b998) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Add maxPoolSize configuration
+
+- Updated dependencies [[`d1391e1`](https://github.com/vercel/workflow/commit/d1391e1fd9a553d87ae467ba2babdc96545d5d36)]:
+  - @workflow/world-local@4.1.0-beta.46
+
 ## 4.1.0-beta.47
 
 ### Patch Changes

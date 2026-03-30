@@ -1,5 +1,18 @@
 # @workflow/core
 
+## 4.2.0-beta.73
+
+### Patch Changes
+
+- [#1520](https://github.com/vercel/workflow/pull/1520) [`8e7083b`](https://github.com/vercel/workflow/commit/8e7083b327cc727c9a4363030be8c375f9863016) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `btoa`, `atob`, and `Buffer` globals to workflow VM context for base64 encoding/decoding
+
+- [#1523](https://github.com/vercel/workflow/pull/1523) [`d1391e1`](https://github.com/vercel/workflow/commit/d1391e1fd9a553d87ae467ba2babdc96545d5d36) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix race condition allowing duplicate `hook_disposed` events for the same hook
+
+- [#1518](https://github.com/vercel/workflow/pull/1518) [`c739b99`](https://github.com/vercel/workflow/commit/c739b995814cbc3c67092faa481e6d3d0cabfe50) Thanks [@ceolinwill](https://github.com/ceolinwill)! - Fix `getWritable()` in step functions to resolve on lock release instead of requiring stream close, preventing Vercel function timeouts
+
+- Updated dependencies [[`d1391e1`](https://github.com/vercel/workflow/commit/d1391e1fd9a553d87ae467ba2babdc96545d5d36)]:
+  - @workflow/world-local@4.1.0-beta.46
+
 ## 4.2.0-beta.72
 
 ### Patch Changes

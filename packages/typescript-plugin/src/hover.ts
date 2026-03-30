@@ -93,7 +93,7 @@ export function getHoverInfo(
     },
     displayParts: [
       {
-        text: `Workflow DevKit - ${directiveType} Function`,
+        text: `Workflow SDK - ${directiveType} Function`,
         kind: 'text',
       },
     ],
