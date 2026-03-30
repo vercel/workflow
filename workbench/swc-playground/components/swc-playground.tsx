@@ -282,7 +282,7 @@ export function SwcPlayground({
                 <button
                   type="button"
                   onClick={() => setCode(DEFAULT_CODE)}
-                  disabled={code === DEFAULT_CODE}
+                  disabled={isHydrated && code === DEFAULT_CODE}
                   className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
                   title="Reset to default code"
                 >

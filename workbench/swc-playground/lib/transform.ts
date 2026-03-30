@@ -28,7 +28,9 @@ export async function initWasm(): Promise<void> {
       /* webpackIgnore: true */
       '/wasm/swc_playground_wasm.js'
     );
-    await glue.default('/wasm/swc_playground_wasm_bg.wasm');
+    await glue.default({
+      module_or_path: '/wasm/swc_playground_wasm_bg.wasm',
+    });
     wasmExports = {
       transform: glue.transform,
       transformAll: glue.transformAll,

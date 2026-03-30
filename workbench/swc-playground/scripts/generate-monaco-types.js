@@ -97,32 +97,22 @@ for (const dirName of PACKAGES) {
     }
   }
 
-  // Register a virtual package.json for the package
-  if (mainTypes) {
-    typeDefsMap[`file:///node_modules/${name}/package.json`] = JSON.stringify({
-      name,
-      types: mainTypes,
-    });
-  }
-
   // Collect and register all .d.ts files from dist/
   const dtsFiles = collectDtsFiles(distUrl);
   for (const { relativePath, content } of dtsFiles) {
-    const virtualPath = `file:///node_modules/${name}/dist/${relativePath}`;
+    const virtualPath = `node_modules/${name}/dist/${relativePath}`;
     typeDefsMap[virtualPath] = content;
   }
 
-  // Also register the main entry at the root index.d.ts path.
+  // Register the main entry at the root index.d.ts path.
   // Monaco's NodeJs module resolution looks for node_modules/<pkg>/index.d.ts
-  // when it can't resolve via package.json exports. This ensures bare
-  // imports like `import { sleep } from 'workflow'` resolve correctly.
+  // to resolve bare imports like `import { sleep } from 'workflow'`.
   if (mainTypes) {
     const mainDtsFile = dtsFiles.find(
       (f) => `./dist/${f.relativePath}` === mainTypes
     );
     if (mainDtsFile) {
-      typeDefsMap[`file:///node_modules/${name}/index.d.ts`] =
-        mainDtsFile.content;
+      typeDefsMap[`node_modules/${name}/index.d.ts`] = mainDtsFile.content;
     }
   }
 
@@ -133,7 +123,7 @@ for (const dirName of PACKAGES) {
 // These are minimal stubs sufficient to suppress unresolved import errors.
 // and it would show as an unresolved import in the .d.ts files.
 // The `ms` package exports a `StringValue` type that represents duration strings.
-typeDefsMap['file:///node_modules/ms/index.d.ts'] = `
+typeDefsMap['node_modules/ms/index.d.ts'] = `
 declare module "ms" {
   export type StringValue =
     | \`\${number}ms\`
@@ -149,7 +139,7 @@ export = ms;
 export as namespace ms;
 `;
 
-typeDefsMap['file:///node_modules/@standard-schema/spec/index.d.ts'] = `
+typeDefsMap['node_modules/@standard-schema/spec/index.d.ts'] = `
 export interface StandardSchemaV1<Input = unknown, Output = Input> {
   readonly "~standard": StandardSchemaV1.Props<Input, Output>;
 }
