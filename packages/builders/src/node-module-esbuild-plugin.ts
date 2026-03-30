@@ -159,18 +159,54 @@ function findIdentifierUsage(
   identifier: string
 ) {
   const usageRegex = new RegExp(`\\b${escapeRegExp(identifier)}\\b`);
+  let inBlockComment = false;
 
   for (let i = startIndex; i < lines.length; i += 1) {
-    const line = lines[i];
+    let line = lines[i];
 
-    // Skip comments (both // and /* */ style)
-    const withoutComments = line
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/, '');
+    // Handle multi-line block comments (including JSDoc)
+    if (inBlockComment) {
+      const endIdx = line.indexOf('*/');
+      if (endIdx === -1) {
+        // Entire line is inside a block comment
+        continue;
+      }
+      // Replace everything up to and including */ with spaces
+      line = ' '.repeat(endIdx + 2) + line.slice(endIdx + 2);
+      inBlockComment = false;
+    }
+
+    // Remove single-line block comments and detect block comment starts
+    let processed = '';
+    let j = 0;
+    while (j < line.length) {
+      if (line[j] === '/' && line[j + 1] === '/') {
+        // Rest of line is a comment
+        processed += ' '.repeat(line.length - j);
+        break;
+      }
+      if (line[j] === '/' && line[j + 1] === '*') {
+        const endIdx = line.indexOf('*/', j + 2);
+        if (endIdx !== -1) {
+          // Inline block comment - replace with spaces
+          const len = endIdx + 2 - j;
+          processed += ' '.repeat(len);
+          j = endIdx + 2;
+        } else {
+          // Block comment starts here, continues on next lines
+          processed += ' '.repeat(line.length - j);
+          inBlockComment = true;
+          break;
+        }
+      } else {
+        processed += line[j];
+        j += 1;
+      }
+    }
 
     // Remove (replace with spaces) string literals to avoid matching inside paths
     // Use escaped quote handling to properly match strings with escaped quotes
-    const withoutStrings = withoutComments
+    const withoutStrings = processed
       .replace(/'(?:[^'\\]|\\.)*'/g, (segment) => ' '.repeat(segment.length))
       .replace(/"(?:[^"\\]|\\.)*"/g, (segment) => ' '.repeat(segment.length))
       .replace(/`(?:[^`\\]|\\.)*`/g, (segment) => ' '.repeat(segment.length));
@@ -180,7 +216,7 @@ function findIdentifierUsage(
       return {
         line: i,
         column: match.index,
-        lineText: line,
+        lineText: lines[i],
       };
     }
   }
