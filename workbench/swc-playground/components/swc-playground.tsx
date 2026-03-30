@@ -100,14 +100,6 @@ export function SwcPlayground({
       allowImportingTsExtensions: true,
     });
 
-    // Suppress diagnostics for unresolved modules not in our type map
-    ts.typescriptDefaults.setDiagnosticsOptions({
-      diagnosticCodesToIgnore: [
-        // "Cannot find module 'X'" — suppress for packages we don't have types for
-        2307,
-      ],
-    });
-
     // Register all type definitions from workspace packages
     for (const [path, content] of Object.entries(typeDefinitions)) {
       ts.typescriptDefaults.addExtraLib(content, path);

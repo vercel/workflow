@@ -97,6 +97,7 @@ for (const dirName of PACKAGES) {
     }
   }
 
+  // Register a virtual package.json for the package
   if (mainTypes) {
     typeDefsMap[`file:///node_modules/${name}/package.json`] = JSON.stringify({
       name,
@@ -109,6 +110,20 @@ for (const dirName of PACKAGES) {
   for (const { relativePath, content } of dtsFiles) {
     const virtualPath = `file:///node_modules/${name}/dist/${relativePath}`;
     typeDefsMap[virtualPath] = content;
+  }
+
+  // Also register the main entry at the root index.d.ts path.
+  // Monaco's NodeJs module resolution looks for node_modules/<pkg>/index.d.ts
+  // when it can't resolve via package.json exports. This ensures bare
+  // imports like `import { sleep } from 'workflow'` resolve correctly.
+  if (mainTypes) {
+    const mainDtsFile = dtsFiles.find(
+      (f) => `./dist/${f.relativePath}` === mainTypes
+    );
+    if (mainDtsFile) {
+      typeDefsMap[`file:///node_modules/${name}/index.d.ts`] =
+        mainDtsFile.content;
+    }
   }
 
   console.log(`  Registered ${dtsFiles.length} .d.ts files for ${name}`);
