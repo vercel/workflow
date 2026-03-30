@@ -199,24 +199,26 @@ declare global {
       list: (...args: any[]) => Promise<any>;
       listByCorrelationId: (...args: any[]) => Promise<any>;
     };
-    streams: {
-      writeToStream: (
-        name: string,
-        runId: string,
-        chunk: string | Uint8Array
-      ) => Promise<void>;
-      readFromStream: (
-        name: string,
-        startIndex?: number
-      ) => Promise<ReadableStream<Uint8Array>>;
-      closeStream: (name: string, runId: string) => Promise<void>;
-      listStreamsByRunId: (runId: string) => Promise<string[]>;
-    };
+    // Stream methods live directly on world (Streamer interface)
+    writeToStream: (
+      name: string,
+      runId: string,
+      chunk: string | Uint8Array
+    ) => Promise<void>;
+    readFromStream: (
+      name: string,
+      startIndex?: number
+    ) => Promise<ReadableStream<Uint8Array>>;
+    closeStream: (name: string, runId: string) => Promise<void>;
+    listStreamsByRunId: (runId: string) => Promise<string[]>;
+    // Queue methods live directly on world (Queue interface)
+    getDeploymentId: (...args: any[]) => Promise<any>;
     queue: {
       getDeploymentId: (...args: any[]) => Promise<any>;
       queue: (...args: any[]) => Promise<any>;
       createQueueHandler: (...args: any[]) => any;
     };
+    createQueueHandler: (...args: any[]) => any;
   };
   const streamId: string;
   const streamName: string;

@@ -1,15 +1,14 @@
 ---
-title: world.streams
+title: Streams
 description: Read, write, and manage real-time data streams for workflow runs.
 type: reference
-summary: "Methods: writeToStream(), readFromStream(), closeStream(), listStreamsByRunId(). Real-time streaming via the Streamer interface."
+summary: "Methods: writeToStream(), readFromStream(), closeStream(), listStreamsByRunId(). Stream methods live directly on the world object."
 prerequisites:
   - /docs/api-reference/workflow-api/get-world
 related:
   - /docs/foundations/streaming
   - /docs/api-reference/workflow/get-writable
 keywords:
-  - world.streams
   - writeToStream
   - readFromStream
   - closeStream
@@ -19,10 +18,10 @@ keywords:
   - stream lifecycle
 ---
 
-The `world.streams` interface (via the `Streamer` interface) provides low-level access to workflow data streams. Use it to write chunks, read streams, and manage stream lifecycle outside of the standard `getWritable()` pattern.
+Stream methods live directly on the `world` object returned by `getWorld()`. Use them to write chunks, read streams, and manage stream lifecycle outside of the standard `getWritable()` pattern.
 
 <Callout type="info">
-  For most streaming use cases, use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside steps. The `world.streams` interface is for advanced scenarios like building custom stream consumers or managing streams from outside a workflow.
+  For most streaming use cases, use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside steps. Direct stream methods are for advanced scenarios like building custom stream consumers or managing streams from outside a workflow.
 </Callout>
 
 ## Import
@@ -30,18 +29,18 @@ The `world.streams` interface (via the `Streamer` interface) provides low-level 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld();
-const streams = world.streams; // [!code highlight]
+const world = getWorld(); // [!code highlight]
+// Stream methods are called directly on world — e.g. world.writeToStream()
 ```
 
 ## Methods
 
 ### writeToStream()
 
-Write data chunks to a named stream for a workflow run.
+Write a data chunk to a named stream for a workflow run.
 
 ```typescript lineNumbers
-await world.streams.writeToStream("default", runId, chunk); // [!code highlight]
+await world.writeToStream("default", runId, chunk); // [!code highlight]
 ```
 
 **Parameters:**
@@ -54,10 +53,10 @@ await world.streams.writeToStream("default", runId, chunk); // [!code highlight]
 
 ### readFromStream()
 
-Read data from a named stream as a `ReadableStream`.
+Read data from a named stream as a `ReadableStream`. Returns a live stream that waits for new chunks in real time.
 
 ```typescript lineNumbers
-const readable = await world.streams.readFromStream("default"); // [!code highlight]
+const readable = await world.readFromStream("default"); // [!code highlight]
 ```
 
 **Parameters:**
@@ -65,7 +64,7 @@ const readable = await world.streams.readFromStream("default"); // [!code highli
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `string` | The stream name |
-| `startIndex` | `number` | Optional starting index for partial reads |
+| `startIndex` | `number` | Optional starting index for partial reads. Negative values read from the tail (e.g. `-3` starts 3 chunks from the end). |
 
 **Returns:** `ReadableStream<Uint8Array>`
 
@@ -74,7 +73,7 @@ const readable = await world.streams.readFromStream("default"); // [!code highli
 Close a stream when done writing.
 
 ```typescript lineNumbers
-await world.streams.closeStream("default", runId); // [!code highlight]
+await world.closeStream("default", runId); // [!code highlight]
 ```
 
 **Parameters:**
@@ -89,7 +88,7 @@ await world.streams.closeStream("default", runId); // [!code highlight]
 List all stream names associated with a workflow run.
 
 ```typescript lineNumbers
-const streamNames = await world.streams.listStreamsByRunId(runId); // [!code highlight]
+const streamNames = await world.listStreamsByRunId(runId); // [!code highlight]
 ```
 
 **Parameters:**
@@ -117,7 +116,7 @@ export async function GET(req: Request) {
   }
 
   const world = getWorld();
-  const streamNames = await world.streams.listStreamsByRunId(runId); // [!code highlight]
+  const streamNames = await world.listStreamsByRunId(runId); // [!code highlight]
 
   return Response.json({ streams: streamNames });
 }
@@ -138,7 +137,7 @@ export async function GET(req: Request) {
   }
 
   const world = getWorld();
-  const readable = await world.streams.readFromStream(streamName); // [!code highlight]
+  const readable = await world.readFromStream(streamName); // [!code highlight]
 
   return new Response(readable, {
     headers: { "Content-Type": "application/octet-stream" },
