@@ -12,7 +12,7 @@ import {
   type WorkflowRun,
   type World,
 } from '@workflow/world';
-import { importKey } from '../encryption.js';
+import { importEncryptionKeys } from '../encryption.js';
 import type {
   HookInvocationQueueItem,
   StepInvocationQueueItem,
@@ -94,7 +94,7 @@ export async function handleSuspension({
 
   // Resolve encryption key for this run
   const rawKey = await world.getEncryptionKeyForRun?.(run);
-  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+  const encryptionKey = rawKey ? await importEncryptionKeys(rawKey) : undefined;
 
   // Build hook_created events (World will atomically create hook entities)
   const hookEvents: CreateEventRequest[] = await Promise.all(
@@ -106,7 +106,9 @@ export async function handleSuspension({
               queueItem.metadata,
               runId,
               encryptionKey,
-              suspension.globalThis
+              suspension.globalThis,
+              false,
+              queueItem.correlationId
             )) as SerializedData);
       return {
         eventType: 'hook_created' as const,
@@ -229,7 +231,9 @@ export async function handleSuspension({
             },
             runId,
             encryptionKey,
-            suspension.globalThis
+            suspension.globalThis,
+            false,
+            queueItem.correlationId
           );
           const stepEvent: CreateEventRequest = {
             eventType: 'step_created' as const,

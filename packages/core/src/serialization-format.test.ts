@@ -1,6 +1,14 @@
 import { stringify } from 'devalue';
 import { describe, expect, it } from 'vitest';
 import {
+  deriveActivityKey,
+  encodeEncryptedV2Body,
+  encodeEncryptedV2Header,
+  encrypt,
+  importEncryptionKeys,
+  importLegacyKey,
+} from './encryption.js';
+import {
   ClassInstanceRef,
   decodeFormatPrefix,
   encodeWithFormatPrefix,
@@ -488,9 +496,24 @@ describe('encrypted data handling', () => {
     return result;
   }
 
+  function makeEncryptedV2Payload(): Uint8Array {
+    const headerBytes = encodeEncryptedV2Header({
+      purpose: 'workflow-arguments',
+      runId: 'wrun_test',
+    });
+    return encodeWithFormatPrefix(
+      SerializationFormat.ENCRYPTED_V2,
+      encodeEncryptedV2Body(headerBytes, new Uint8Array([1, 2, 3, 4]))
+    ) as Uint8Array;
+  }
+
   describe('isEncryptedData', () => {
     it('should detect encr-prefixed Uint8Array', () => {
       expect(isEncryptedData(makeEncryptedPayload())).toBe(true);
+    });
+
+    it('should detect enc2-prefixed Uint8Array', () => {
+      expect(isEncryptedData(makeEncryptedV2Payload())).toBe(true);
     });
 
     it('should not detect devl-prefixed Uint8Array', () => {
@@ -514,6 +537,14 @@ describe('encrypted data handling', () => {
   describe('hydrateData with encrypted values', () => {
     it('should pass through encr-prefixed data as Uint8Array', () => {
       const encrypted = makeEncryptedPayload();
+      const result = hydrateData(encrypted, {});
+      expect(result).toBeInstanceOf(Uint8Array);
+      expect(result).toBe(encrypted);
+      expect(isEncryptedData(result)).toBe(true);
+    });
+
+    it('should pass through enc2-prefixed data as Uint8Array', () => {
+      const encrypted = makeEncryptedV2Payload();
       const result = hydrateData(encrypted, {});
       expect(result).toBeInstanceOf(Uint8Array);
       expect(result).toBe(encrypted);
@@ -571,18 +602,38 @@ describe('encrypted data handling', () => {
     ]);
 
     async function getTestKey() {
-      const { importKey } = await import('./encryption.js');
-      return importKey(testKeyRaw);
+      return importLegacyKey(testKeyRaw);
+    }
+
+    async function getTestKeys() {
+      return importEncryptionKeys(testKeyRaw);
     }
 
     async function encryptPayload(value: unknown) {
-      const { encrypt, importKey } = await import('./encryption.js');
-      const key = await importKey(testKeyRaw);
+      const key = await importLegacyKey(testKeyRaw);
       const inner = makeDevlPayload(value);
       const encrypted = await encrypt(key, inner);
       return encodeWithFormatPrefix(
         SerializationFormat.ENCRYPTED,
         encrypted
+      ) as Uint8Array;
+    }
+
+    async function encryptPayloadV2(value: unknown) {
+      const keys = await importEncryptionKeys(testKeyRaw);
+      const inner = makeDevlPayload(value);
+      const headerBytes = encodeEncryptedV2Header({
+        purpose: 'workflow-arguments',
+        runId: 'wrun_test',
+      });
+      const activityKey = await deriveActivityKey(
+        keys.derivationKey,
+        headerBytes
+      );
+      const encrypted = await encrypt(activityKey, inner, headerBytes);
+      return encodeWithFormatPrefix(
+        SerializationFormat.ENCRYPTED_V2,
+        encodeEncryptedV2Body(headerBytes, encrypted)
       ) as Uint8Array;
     }
 
@@ -611,6 +662,29 @@ describe('encrypted data handling', () => {
       // Without a key, encrypted data is returned as-is
       expect(result).toBeInstanceOf(Uint8Array);
       expect(isEncryptedData(result)).toBe(true);
+    });
+
+    it('should decrypt and hydrate enc2 payload with key bundle', async () => {
+      const original = { message: 'derived', count: 7 };
+      const encrypted = await encryptPayloadV2(original);
+      const keys = await getTestKeys();
+
+      const result = await hydrateDataWithKey(
+        encrypted,
+        observabilityRevivers,
+        keys
+      );
+      expect(result).toEqual(original);
+    });
+
+    it('should fail to decrypt enc2 payload with only legacy AES key', async () => {
+      const original = { message: 'derived' };
+      const encrypted = await encryptPayloadV2(original);
+      const legacyKey = await getTestKey();
+
+      await expect(
+        hydrateDataWithKey(encrypted, observabilityRevivers, legacyKey)
+      ).rejects.toThrow('Encrypted V2 data encountered');
     });
 
     it('should hydrate non-encrypted payloads normally', async () => {

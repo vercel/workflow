@@ -13,7 +13,7 @@ import {
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
-import { importKey } from '../encryption.js';
+import { importEncryptionKeys } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
@@ -459,7 +459,9 @@ const stepHandler = getWorldHandlers().createQueueHandler(
           // via Promise.all(ops) - their timing is not included in this measurement.
           const ops: Promise<void>[] = [];
           const rawKey = await world.getEncryptionKeyForRun?.(workflowRunId);
-          const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+          const encryptionKey = rawKey
+            ? await importEncryptionKeys(rawKey)
+            : undefined;
           const hydratedInput = await trace(
             'step.hydrate',
             {},
@@ -782,7 +784,10 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               result,
               workflowRunId,
               encryptionKey,
-              ops
+              ops,
+              globalThis,
+              false,
+              stepId
             );
             const durationMs = Date.now() - startTime;
             dehydrateSpan?.setAttributes({

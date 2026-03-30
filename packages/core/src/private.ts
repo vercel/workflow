@@ -2,7 +2,7 @@
  * Utils used by the bundler when transforming code
  */
 
-import type { CryptoKey } from './encryption.js';
+import type { EncryptionKeyLike } from './encryption.js';
 import type { EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import type { Serializable } from './schemas.js';
@@ -114,7 +114,7 @@ export { __private_getClosureVars } from './step/get-closure-vars.js';
 
 export interface WorkflowOrchestratorContext {
   runId: string;
-  encryptionKey: CryptoKey | undefined;
+  encryptionKey: EncryptionKeyLike | undefined;
   globalThis: typeof globalThis;
   eventsConsumer: EventsConsumer;
   /**

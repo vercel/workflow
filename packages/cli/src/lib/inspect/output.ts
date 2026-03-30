@@ -1,4 +1,4 @@
-import { importKey } from '@workflow/core/encryption';
+import { importEncryptionKeys } from '@workflow/core/encryption';
 import {
   type EncryptionKeyParam,
   getDeserializeStream,
@@ -859,7 +859,7 @@ export const showStream = async (
     encryptionKey = (async () => {
       const run = await world.runs.get(opts.runId!);
       const rawKey = await world.getEncryptionKeyForRun?.(run);
-      return rawKey ? await importKey(rawKey) : undefined;
+      return rawKey ? await importEncryptionKeys(rawKey) : undefined;
     })();
   } else if (opts.decrypt && !opts.runId) {
     logger.warn(

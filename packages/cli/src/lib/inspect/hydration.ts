@@ -237,8 +237,8 @@ async function maybeDecryptFields<
 
   try {
     const rawKey = await resolver(runId);
-    const { importKey } = await import('@workflow/core/encryption');
-    const k = rawKey ? await importKey(rawKey) : undefined;
+    const { importEncryptionKeys } = await import('@workflow/core/encryption');
+    const k = rawKey ? await importEncryptionKeys(rawKey) : undefined;
 
     // Decrypt input/output/error fields (WorkflowRun, Step)
     result.input = await maybeDecrypt(result.input, k);

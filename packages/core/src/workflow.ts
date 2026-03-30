@@ -10,7 +10,7 @@ import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import type { CryptoKey } from './encryption.js';
+import type { EncryptionKeyLike } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
@@ -80,7 +80,7 @@ export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined
+  encryptionKey: EncryptionKeyLike | undefined
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({

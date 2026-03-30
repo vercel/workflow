@@ -1,7 +1,8 @@
-import { decrypt as aesGcmDecrypt, importKey } from '@workflow/core/encryption';
+import { importEncryptionKeys } from '@workflow/core/encryption';
 import {
   decodeFormatPrefix,
   hydrateData,
+  hydrateDataWithKey,
   SerializationFormat,
 } from '@workflow/core/serialization-format';
 import { getWebRevivers } from '@workflow/web-shared';
@@ -153,7 +154,7 @@ export function useStreamReader(
         );
 
         const cryptoKey = encryptionKey
-          ? await importKey(encryptionKey)
+          ? await importEncryptionKeys(encryptionKey)
           : undefined;
 
         const reader = (rawStream as ReadableStream<Uint8Array>).getReader();
@@ -250,10 +251,12 @@ export function useStreamReader(
             offset += FRAME_HEADER_SIZE + frameLength;
 
             try {
-              const { format, payload } = decodeFormatPrefix(frameData);
-              let dataToHydrate: Uint8Array;
+              const { format } = decodeFormatPrefix(frameData);
 
-              if (format === SerializationFormat.ENCRYPTED) {
+              if (
+                format === SerializationFormat.ENCRYPTED ||
+                format === SerializationFormat.ENCRYPTED_V2
+              ) {
                 if (!cryptoKey) {
                   if (mounted) {
                     setError(
@@ -264,12 +267,11 @@ export function useStreamReader(
                   reader.cancel().catch(() => {});
                   return;
                 }
-                dataToHydrate = await aesGcmDecrypt(cryptoKey, payload);
-              } else {
-                dataToHydrate = frameData;
               }
 
-              const hydrated = hydrateData(dataToHydrate, revivers);
+              const hydrated = cryptoKey
+                ? await hydrateDataWithKey(frameData, revivers, cryptoKey)
+                : hydrateData(frameData, revivers);
               if (mounted && hydrated !== undefined && hydrated !== null) {
                 const chunkId = chunkIdRef.current++;
                 let text: string;

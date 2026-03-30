@@ -9,7 +9,7 @@ import {
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
-import { type CryptoKey, importKey } from '../encryption.js';
+import { type EncryptionKeyLike, importEncryptionKeys } from '../encryption.js';
 import {
   getExternalRevivers,
   hydrateWorkflowReturnValue,
@@ -85,7 +85,8 @@ export class Run<TResult> {
    * reused for returnValue, getReadable(), etc.
    * @internal
    */
-  private encryptionKeyPromise: Promise<CryptoKey | undefined> | null = null;
+  private encryptionKeyPromise: Promise<EncryptionKeyLike | undefined> | null =
+    null;
 
   constructor(runId: string) {
     this.runId = runId;
@@ -98,12 +99,12 @@ export class Run<TResult> {
    * to be resolved once.
    * @internal
    */
-  private getEncryptionKey(): Promise<CryptoKey | undefined> {
+  private getEncryptionKey(): Promise<EncryptionKeyLike | undefined> {
     if (!this.encryptionKeyPromise) {
       this.encryptionKeyPromise = (async () => {
         const run = await this.world.runs.get(this.runId);
         const rawKey = await this.world.getEncryptionKeyForRun?.(run);
-        return rawKey ? await importKey(rawKey) : undefined;
+        return rawKey ? await importEncryptionKeys(rawKey) : undefined;
       })();
     }
     return this.encryptionKeyPromise;

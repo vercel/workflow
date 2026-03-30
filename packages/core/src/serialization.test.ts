@@ -3,7 +3,16 @@ import type { WorkflowRuntimeError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
-import { decrypt, encrypt, importKey } from './encryption.js';
+import {
+  decodeEncryptedV2Body,
+  decodeEncryptedV2Header,
+  decrypt,
+  deriveActivityKey,
+  encodeEncryptedV2Header,
+  encrypt,
+  importEncryptionKeys,
+  importLegacyKey,
+} from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import {
   decodeFormatPrefix,
@@ -3576,7 +3585,7 @@ describe('stream encryption round-trip', () => {
   ]);
   let cryptoKey: CryptoKey;
   beforeAll(async () => {
-    cryptoKey = await importKey(testKeyRaw);
+    cryptoKey = await importLegacyKey(testKeyRaw);
   });
 
   const reducers = {} as any;
@@ -3769,8 +3778,208 @@ describe('stream encryption round-trip', () => {
   });
 });
 
+describe('stream derived-key encryption round-trip', () => {
+  const testKeyRaw = new Uint8Array([
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+    0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+  ]);
+  const runId = 'wrun_stream_enc2';
+  const activityId = 'step_stream_enc2';
+  let encryptionKeys: Awaited<ReturnType<typeof importEncryptionKeys>>;
+
+  beforeAll(async () => {
+    encryptionKeys = await importEncryptionKeys(testKeyRaw);
+  });
+
+  const reducers = {} as any;
+  const revivers = getCommonRevivers(globalThis) as any;
+
+  async function serializeValues(values: unknown[]): Promise<Uint8Array[]> {
+    const serialize = getSerializeStream(reducers, encryptionKeys, {
+      runId,
+      activityId,
+    });
+    const results: Uint8Array[] = [];
+
+    const readPromise = (async () => {
+      const reader = serialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+
+    const writer = serialize.writable.getWriter();
+    for (const value of values) {
+      await writer.write(value);
+    }
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  async function deserializeValues(chunks: Uint8Array[]): Promise<unknown[]> {
+    const deserialize = getDeserializeStream(revivers, encryptionKeys);
+    const results: unknown[] = [];
+
+    const readPromise = (async () => {
+      const reader = deserialize.readable.getReader();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        results.push(value);
+      }
+    })();
+
+    const writer = deserialize.writable.getWriter();
+    for (const chunk of chunks) {
+      await writer.write(chunk);
+    }
+    await writer.close();
+    await readPromise;
+    return results;
+  }
+
+  it('should produce enc2-prefixed frames with authenticated header metadata', async () => {
+    const chunks = await serializeValues([{ hello: 'world' }, { again: true }]);
+    expect(chunks).toHaveLength(2);
+
+    for (const [index, chunk] of chunks.entries()) {
+      const frame = chunk.subarray(4);
+      const { format, payload } = decodeFormatPrefix(frame);
+      expect(format).toBe(SerializationFormat.ENCRYPTED_V2);
+
+      const { headerBytes } = decodeEncryptedV2Body(payload);
+      expect(decodeEncryptedV2Header(headerBytes)).toEqual({
+        purpose: 'serialize-stream',
+        runId,
+        activityId,
+        counter: index,
+      });
+    }
+  });
+
+  it('should round-trip enc2 stream frames with the key bundle', async () => {
+    const original = [{ secret: 1 }, 'hello', [1, 2, 3]];
+    const encrypted = await serializeValues(original);
+    const results = await deserializeValues(encrypted);
+    expect(results).toEqual(original);
+  });
+});
+
+describe('derived-key encryption integration', () => {
+  const testKeyRaw = new Uint8Array([
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
+    0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+    0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+  ]);
+  let encryptionKeys: Awaited<ReturnType<typeof importEncryptionKeys>>;
+
+  beforeAll(async () => {
+    encryptionKeys = await importEncryptionKeys(testKeyRaw);
+  });
+
+  it('should encrypt workflow arguments with enc2 when a key bundle is provided', async () => {
+    const runId = 'wrun_enc2_args';
+    const value = { secret: 'data', count: 42 };
+
+    const encrypted = await dehydrateWorkflowArguments(
+      value,
+      runId,
+      encryptionKeys,
+      [],
+      globalThis,
+      false
+    );
+
+    expect(encrypted).toBeInstanceOf(Uint8Array);
+    const { format, payload } = decodeFormatPrefix(encrypted);
+    expect(format).toBe(SerializationFormat.ENCRYPTED_V2);
+    const { headerBytes } = decodeEncryptedV2Body(payload);
+    expect(decodeEncryptedV2Header(headerBytes)).toEqual({
+      purpose: 'workflow-arguments',
+      runId,
+    });
+
+    const decrypted = await hydrateWorkflowArguments(
+      encrypted,
+      runId,
+      encryptionKeys,
+      globalThis,
+      {}
+    );
+    expect(decrypted).toEqual(value);
+  });
+
+  it('should encrypt step payloads with activity-specific enc2 headers', async () => {
+    const runId = 'wrun_enc2_step';
+    const stepId = 'step_enc2_123';
+    const value = { ok: true, nested: ['a', 'b'] };
+
+    const encrypted = await dehydrateStepReturnValue(
+      value,
+      runId,
+      encryptionKeys,
+      [],
+      globalThis,
+      false,
+      stepId
+    );
+
+    const { format, payload } = decodeFormatPrefix(encrypted);
+    expect(format).toBe(SerializationFormat.ENCRYPTED_V2);
+    const { headerBytes } = decodeEncryptedV2Body(payload);
+    expect(decodeEncryptedV2Header(headerBytes)).toEqual({
+      purpose: 'return-value',
+      runId,
+      activityId: stepId,
+    });
+
+    const decrypted = await hydrateStepReturnValue(
+      encrypted,
+      runId,
+      encryptionKeys,
+      globalThis
+    );
+    expect(decrypted).toEqual(value);
+  });
+
+  it('should derive deterministic keys for the same header and different keys for different headers', async () => {
+    const sharedHeader = encodeEncryptedV2Header({
+      purpose: 'return-value',
+      runId: 'wrun_deterministic',
+      activityId: 'step_a',
+    });
+    const differentHeader = encodeEncryptedV2Header({
+      purpose: 'return-value',
+      runId: 'wrun_deterministic',
+      activityId: 'step_b',
+    });
+    const plaintext = new TextEncoder().encode('deterministic secret');
+
+    const keyA1 = await deriveActivityKey(
+      encryptionKeys.derivationKey,
+      sharedHeader
+    );
+    const keyA2 = await deriveActivityKey(
+      encryptionKeys.derivationKey,
+      sharedHeader
+    );
+    const keyB = await deriveActivityKey(
+      encryptionKeys.derivationKey,
+      differentHeader
+    );
+
+    const encrypted = await encrypt(keyA1, plaintext, sharedHeader);
+    expect(await decrypt(keyA2, encrypted, sharedHeader)).toEqual(plaintext);
+    await expect(decrypt(keyB, encrypted, sharedHeader)).rejects.toThrow();
+  });
+});
+
 describe('encryption integration', () => {
-  // Real 32-byte AES-256 test key (raw bytes for importKey)
+  // Real 32-byte AES-256 test key (raw bytes for importLegacyKey)
   const testKeyRaw = new Uint8Array([
     0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b,
     0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
@@ -3783,8 +3992,8 @@ describe('encryption integration', () => {
   let testKey: CryptoKey;
   let wrongKey: CryptoKey;
   beforeAll(async () => {
-    testKey = await importKey(testKeyRaw);
-    wrongKey = await importKey(wrongKeyRaw);
+    testKey = await importLegacyKey(testKeyRaw);
+    wrongKey = await importLegacyKey(wrongKeyRaw);
   });
 
   it('should encrypt workflow arguments when key is provided', async () => {
@@ -4144,7 +4353,7 @@ describe('encrypt/decrypt primitives', () => {
   ]);
   let testKey: CryptoKey;
   beforeAll(async () => {
-    testKey = await importKey(testKeyRaw);
+    testKey = await importLegacyKey(testKeyRaw);
   });
 
   it('should round-trip arbitrary data', async () => {
@@ -4179,9 +4388,9 @@ describe('encrypt/decrypt primitives', () => {
     expect(await decrypt(testKey, enc2)).toEqual(data);
   });
 
-  it('should reject keys that are not 32 bytes via importKey', async () => {
+  it('should reject keys that are not 32 bytes via importLegacyKey', async () => {
     const shortKey = new Uint8Array(16);
-    await expect(importKey(shortKey)).rejects.toThrow(
+    await expect(importLegacyKey(shortKey)).rejects.toThrow(
       'Encryption key must be exactly 32 bytes'
     );
   });
@@ -4196,7 +4405,7 @@ describe('encrypt/decrypt primitives', () => {
   it('should fail with wrong key (auth tag mismatch)', async () => {
     const data = new TextEncoder().encode('secret');
     const encrypted = await encrypt(testKey, data);
-    const wrongKey = await importKey(new Uint8Array(32).fill(0xff));
+    const wrongKey = await importLegacyKey(new Uint8Array(32).fill(0xff));
     await expect(decrypt(wrongKey, encrypted)).rejects.toThrow();
   });
 
@@ -4217,7 +4426,7 @@ describe('maybeEncrypt / maybeDecrypt', () => {
   ]);
   let testKey: CryptoKey;
   beforeAll(async () => {
-    testKey = await importKey(testKeyRaw);
+    testKey = await importLegacyKey(testKeyRaw);
   });
 
   it('should pass through data unchanged when key is undefined', async () => {

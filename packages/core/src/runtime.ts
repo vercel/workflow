@@ -13,7 +13,7 @@ import {
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
 } from '@workflow/world';
-import { importKey } from './encryption.js';
+import { importEncryptionKeys } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
@@ -346,7 +346,7 @@ export function workflowEntrypoint(
                 const rawKey =
                   await world.getEncryptionKeyForRun?.(workflowRun);
                 const encryptionKey = rawKey
-                  ? await importKey(rawKey)
+                  ? await importEncryptionKeys(rawKey)
                   : undefined;
 
                 // --- User code execution ---

@@ -7,6 +7,15 @@
  */
 
 import { parse, unflatten } from 'devalue';
+import {
+  decodeEncryptedV2Body,
+  decodeEncryptedV2Header,
+  decrypt as aesGcmDecrypt,
+  deriveActivityKey,
+  getDerivationKey,
+  getLegacyKey,
+  type EncryptionKeyLike,
+} from './encryption.js';
 
 // ---------------------------------------------------------------------------
 // Format prefix constants and encoding/decoding
@@ -17,6 +26,8 @@ export const SerializationFormat = {
   DEVALUE_V1: 'devl',
   /** Encrypted payload (inner payload has its own format prefix after decryption) */
   ENCRYPTED: 'encr',
+  /** Derived-key encrypted payload with authenticated cleartext header */
+  ENCRYPTED_V2: 'enc2',
 } as const;
 
 export type SerializationFormatType =
@@ -143,7 +154,10 @@ export function isEncryptedData(data: unknown): boolean {
     return false;
   }
   const prefix = formatDecoder.decode(data.subarray(0, FORMAT_PREFIX_LENGTH));
-  return prefix === SerializationFormat.ENCRYPTED;
+  return (
+    prefix === SerializationFormat.ENCRYPTED ||
+    prefix === SerializationFormat.ENCRYPTED_V2
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -214,13 +228,35 @@ export function hydrateData(value: unknown, revivers: Revivers): unknown {
 export async function hydrateDataWithKey(
   value: unknown,
   revivers: Revivers,
-  key: import('./encryption.js').CryptoKey | undefined
+  key: EncryptionKeyLike | undefined
 ): Promise<unknown> {
   if (value instanceof Uint8Array && isEncryptedData(value) && key) {
-    // Decrypt: strip 'encr' prefix, AES-GCM decrypt, then hydrate the result
-    const { decrypt } = await import('./encryption.js');
-    const { payload } = decodeFormatPrefix(value);
-    const decrypted = await decrypt(key, payload);
+    const { format, payload } = decodeFormatPrefix(value);
+    let decrypted: Uint8Array;
+
+    if (format === SerializationFormat.ENCRYPTED) {
+      const legacyKey = getLegacyKey(key);
+      if (!legacyKey) {
+        throw new Error(
+          'Encrypted legacy data encountered but no AES-GCM key is available'
+        );
+      }
+      decrypted = await aesGcmDecrypt(legacyKey, payload);
+    } else if (format === SerializationFormat.ENCRYPTED_V2) {
+      const derivationKey = getDerivationKey(key);
+      if (!derivationKey) {
+        throw new Error(
+          'Encrypted V2 data encountered but no derivation key is available'
+        );
+      }
+      const { headerBytes, ciphertext } = decodeEncryptedV2Body(payload);
+      decodeEncryptedV2Header(headerBytes);
+      const activityKey = await deriveActivityKey(derivationKey, headerBytes);
+      decrypted = await aesGcmDecrypt(activityKey, ciphertext, headerBytes);
+    } else {
+      throw new Error(`Unsupported encrypted format: ${format}`);
+    }
+
     // The decrypted bytes have their own format prefix (e.g., 'devl')
     return hydrateData(decrypted, revivers);
   }

@@ -278,15 +278,15 @@ export async function hydrateResourceIOWithKey<T>(
   const { hydrateDataWithKey } = await import(
     '@workflow/core/serialization-format'
   );
-  const { importKey } = await import('@workflow/core/encryption');
-  const cryptoKey = await importKey(key);
+  const { importEncryptionKeys } = await import('@workflow/core/encryption');
+  const cryptoKey = await importEncryptionKeys(key);
   const revivers = getRevivers();
 
   /** Extract original encrypted bytes from a marker or raw Uint8Array, then decrypt + hydrate */
   async function decryptField(
     value: unknown,
     rev: Revivers,
-    k: Awaited<ReturnType<typeof importKey>>
+    k: Awaited<ReturnType<typeof importEncryptionKeys>>
   ): Promise<unknown> {
     // Already-hydrated: encrypted marker with stored bytes
     if (isEncryptedMarker(value)) {

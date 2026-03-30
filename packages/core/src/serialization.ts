@@ -5,9 +5,17 @@ import { DevalueError, parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import { getSerializationClass } from './class-serialization.js';
 import {
+  decodeEncryptedV2Body,
+  decodeEncryptedV2Header,
   decrypt as aesGcmDecrypt,
+  deriveActivityKey,
+  encodeEncryptedV2Body,
+  encodeEncryptedV2Header,
   encrypt as aesGcmEncrypt,
-  type CryptoKey,
+  getDerivationKey,
+  getLegacyKey,
+  type EncryptedV2Header,
+  type EncryptionKeyLike,
 } from './encryption.js';
 
 /**
@@ -17,9 +25,9 @@ import {
  * is resolved lazily inside the first async transform() call.
  */
 export type EncryptionKeyParam =
-  | CryptoKey
+  | EncryptionKeyLike
   | undefined
-  | Promise<CryptoKey | undefined>;
+  | Promise<EncryptionKeyLike | undefined>;
 
 import {
   createFlushableState,
@@ -58,6 +66,7 @@ import {
 // Current formats:
 // - "devl" - devalue stringify/parse with TextEncoder/TextDecoder (current default)
 // - "encr" - Encrypted payload (inner payload has its own format prefix)
+// - "enc2" - Derived-key encrypted payload with authenticated cleartext header
 //
 // Future formats (reserved):
 // - "cbor" - CBOR binary serialization
@@ -72,6 +81,8 @@ export const SerializationFormat = {
   DEVALUE_V1: 'devl',
   /** Encrypted payload (inner payload has its own format prefix) */
   ENCRYPTED: 'encr',
+  /** Derived-key encrypted payload with authenticated cleartext header */
+  ENCRYPTED_V2: 'enc2',
 } as const;
 
 export type SerializationFormatType =
@@ -143,7 +154,11 @@ export function peekFormatPrefix(
  * @returns true if data has the encrypted format prefix
  */
 export function isEncrypted(data: Uint8Array | unknown): boolean {
-  return peekFormatPrefix(data) === SerializationFormat.ENCRYPTED;
+  const format = peekFormatPrefix(data);
+  return (
+    format === SerializationFormat.ENCRYPTED ||
+    format === SerializationFormat.ENCRYPTED_V2
+  );
 }
 
 /**
@@ -235,6 +250,10 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
   } catch {}
 }
 
+function getCurrentStreamActivityId(fallbackName: string): string {
+  return contextStorage.getStore()?.stepMetadata.stepId ?? fallbackName;
+}
+
 /**
  * Frame format for stream chunks:
  *   [4-byte big-endian length][format-prefixed payload]
@@ -245,16 +264,78 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
  */
 const FRAME_HEADER_SIZE = 4;
 
+interface DerivedEncryptionContext {
+  purpose: EncryptedV2Header['purpose'];
+  runId: string;
+  activityId?: string;
+  counter?: number;
+}
+
+interface StreamEncryptionContext {
+  runId: string;
+  activityId?: string;
+}
+
+function buildEncryptedV2Header(context: DerivedEncryptionContext): Uint8Array {
+  return encodeEncryptedV2Header({
+    purpose: context.purpose,
+    runId: context.runId,
+    ...(context.activityId !== undefined
+      ? { activityId: context.activityId }
+      : {}),
+    ...(context.counter !== undefined ? { counter: context.counter } : {}),
+  });
+}
+
+async function decryptEncryptedPayload(
+  format: SerializationFormatType,
+  payload: Uint8Array,
+  key: EncryptionKeyLike | undefined
+): Promise<Uint8Array> {
+  if (format === SerializationFormat.ENCRYPTED) {
+    const legacyKey = getLegacyKey(key);
+    if (!legacyKey) {
+      throw new WorkflowRuntimeError(
+        'Encrypted data encountered but no encryption key is available. ' +
+          'Encryption is not configured or no key was provided for this run.'
+      );
+    }
+    return aesGcmDecrypt(legacyKey, payload);
+  }
+
+  if (format === SerializationFormat.ENCRYPTED_V2) {
+    const derivationKey = getDerivationKey(key);
+    if (!derivationKey) {
+      throw new WorkflowRuntimeError(
+        'Encrypted V2 data encountered but no derivation key is available. ' +
+          'Use importEncryptionKeys() or pass a run key bundle for this run.'
+      );
+    }
+
+    const { headerBytes, ciphertext } = decodeEncryptedV2Body(payload);
+    decodeEncryptedV2Header(headerBytes);
+    const activityKey = await deriveActivityKey(derivationKey, headerBytes);
+    return aesGcmDecrypt(activityKey, ciphertext, headerBytes);
+  }
+
+  throw new WorkflowRuntimeError(`Unsupported encrypted format: ${format}`);
+}
+
 export function getSerializeStream(
   reducers: Reducers,
-  cryptoKey: EncryptionKeyParam
+  cryptoKey: EncryptionKeyParam,
+  encryptionContext?: StreamEncryptionContext
 ): TransformStream<any, Uint8Array> {
   const encoder = new TextEncoder();
   // Resolve the key promise once on first use and cache the result.
   // Note: if the cryptoKey promise rejects (e.g., network error fetching
   // the derived key), the rejection won't surface until the first chunk
   // is processed — not at stream construction time.
-  const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
+  const keyState = {
+    resolved: false,
+    key: undefined as EncryptionKeyLike | undefined,
+  };
+  let frameCounter = 0;
   const stream = new TransformStream<any, Uint8Array>({
     async transform(chunk, controller) {
       try {
@@ -273,11 +354,21 @@ export function getSerializeStream(
         // The length header remains in the clear so the deserializer can
         // find frame boundaries regardless of transport chunking.
         if (keyState.key) {
-          const encrypted = await aesGcmEncrypt(keyState.key, prefixed);
-          prefixed = encodeWithFormatPrefix(
-            SerializationFormat.ENCRYPTED,
-            encrypted
-          ) as Uint8Array;
+          const streamContext =
+            encryptionContext &&
+            getDerivationKey(keyState.key) &&
+            encryptionContext.runId
+              ? {
+                  purpose: 'serialize-stream' as const,
+                  runId: encryptionContext.runId,
+                  ...(encryptionContext.activityId !== undefined
+                    ? { activityId: encryptionContext.activityId }
+                    : {}),
+                  counter: frameCounter++,
+                }
+              : undefined;
+
+          prefixed = await maybeEncrypt(prefixed, keyState.key, streamContext);
         }
 
         // Write length-prefixed frame: [4-byte length][prefixed data]
@@ -305,7 +396,10 @@ export function getDeserializeStream(
   const decoder = new TextDecoder();
   let buffer = new Uint8Array(0);
   // Resolve the key promise once on first use and cache the result.
-  const keyState = { resolved: false, key: undefined as CryptoKey | undefined };
+  const keyState = {
+    resolved: false,
+    key: undefined as EncryptionKeyLike | undefined,
+  };
 
   function appendToBuffer(data: Uint8Array) {
     const newBuffer = new Uint8Array(buffer.length + data.length);
@@ -346,7 +440,10 @@ export function getDeserializeStream(
       // If the frame payload is encrypted, decrypt it first to reveal
       // the inner format-prefixed data (e.g., 'devl' + serialized text),
       // then fall through to the normal deserialization path.
-      if (format === SerializationFormat.ENCRYPTED) {
+      if (
+        format === SerializationFormat.ENCRYPTED ||
+        format === SerializationFormat.ENCRYPTED_V2
+      ) {
         if (!keyState.key) {
           controller.error(
             new WorkflowRuntimeError(
@@ -356,7 +453,11 @@ export function getDeserializeStream(
           );
           return;
         }
-        const decrypted = await aesGcmDecrypt(keyState.key, payload);
+        const decrypted = await decryptEncryptedPayload(
+          format,
+          payload,
+          keyState.key
+        );
         ({ format, payload } = decodeFormatPrefix(decrypted));
       }
 
@@ -570,8 +671,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // unsettled promise because the cleared timer will never fire.
         const waiters = flushWaiters;
         flushWaiters = [];
-        const abortError =
-          reason ?? new Error("Stream aborted");
+        const abortError = reason ?? new Error('Stream aborted');
         for (const w of waiters) w.reject(abortError);
       },
     });
@@ -857,7 +957,8 @@ export function getExternalReducers(
             .pipeThrough(
               getSerializeStream(
                 getExternalReducers(global, ops, runId, cryptoKey),
-                cryptoKey
+                cryptoKey,
+                { runId, activityId: name }
               )
             )
             .pipeTo(writable)
@@ -965,6 +1066,7 @@ function getStepReducers(
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
         type = getStreamType(value);
+        const activityId = getCurrentStreamActivityId(name);
 
         const writable = new WorkflowServerWritableStream(name, runId);
         if (type === 'bytes') {
@@ -975,7 +1077,8 @@ function getStepReducers(
               .pipeThrough(
                 getSerializeStream(
                   getStepReducers(global, ops, runId, cryptoKey),
-                  cryptoKey
+                  cryptoKey,
+                  { runId, activityId }
                 )
               )
               .pipeTo(writable)
@@ -1219,7 +1322,8 @@ export function getExternalRevivers(
     WritableStream: (value) => {
       const serialize = getSerializeStream(
         getExternalReducers(global, ops, runId, cryptoKey),
-        cryptoKey
+        cryptoKey,
+        { runId, activityId: value.name }
       );
       const serverWritable = new WorkflowServerWritableStream(
         value.name,
@@ -1489,7 +1593,8 @@ function getStepRevivers(
     WritableStream: (value) => {
       const serialize = getSerializeStream(
         getStepReducers(global, ops, runId, cryptoKey),
-        cryptoKey
+        cryptoKey,
+        { runId, activityId: getCurrentStreamActivityId(value.name) }
       );
       const serverWritable = new WorkflowServerWritableStream(
         value.name,
@@ -1528,10 +1633,26 @@ function getStepRevivers(
  */
 export async function maybeEncrypt(
   data: Uint8Array,
-  key: CryptoKey | undefined
+  key: EncryptionKeyLike | undefined,
+  context?: DerivedEncryptionContext
 ): Promise<Uint8Array> {
   if (!key) return data;
-  const encrypted = await aesGcmEncrypt(key, data);
+
+  const derivationKey = getDerivationKey(key);
+  if (derivationKey && context) {
+    const headerBytes = buildEncryptedV2Header(context);
+    const activityKey = await deriveActivityKey(derivationKey, headerBytes);
+    const encrypted = await aesGcmEncrypt(activityKey, data, headerBytes);
+    return encodeWithFormatPrefix(
+      SerializationFormat.ENCRYPTED_V2,
+      encodeEncryptedV2Body(headerBytes, encrypted)
+    ) as Uint8Array;
+  }
+
+  const legacyKey = getLegacyKey(key);
+  if (!legacyKey) return data;
+
+  const encrypted = await aesGcmEncrypt(legacyKey, data);
   return encodeWithFormatPrefix(
     SerializationFormat.ENCRYPTED,
     encrypted
@@ -1551,7 +1672,7 @@ export async function maybeEncrypt(
  */
 export async function maybeDecrypt(
   data: Uint8Array | unknown,
-  key: CryptoKey | undefined
+  key: EncryptionKeyLike | undefined
 ): Promise<Uint8Array | unknown> {
   // Legacy specVersion 1 runs stored event data as plain JSON arrays
   // (not binary Uint8Array). Pass through as-is for backwards compat.
@@ -1560,15 +1681,8 @@ export async function maybeDecrypt(
   }
 
   if (isEncrypted(data)) {
-    if (!key) {
-      throw new WorkflowRuntimeError(
-        'Encrypted data encountered but no encryption key is available. ' +
-          'Encryption is not configured or no key was provided for this run.'
-      );
-    }
-    // Strip the 'encr' format prefix — the prefix is a core framing concern
-    const { payload } = decodeFormatPrefix(data);
-    return aesGcmDecrypt(key, payload);
+    const { format, payload } = decodeFormatPrefix(data);
+    return decryptEncryptedPayload(format, payload, key);
   }
 
   return data;
@@ -1594,7 +1708,7 @@ export async function maybeDecrypt(
 export async function dehydrateWorkflowArguments(
   value: unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: EncryptionKeyLike | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   v1Compat = false
@@ -1611,7 +1725,10 @@ export async function dehydrateWorkflowArguments(
     ) as Uint8Array;
 
     // Encrypt if world supports encryption
-    return maybeEncrypt(serialized, key);
+    return maybeEncrypt(serialized, key, {
+      purpose: 'workflow-arguments',
+      runId,
+    });
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('workflow arguments', error),
@@ -1634,7 +1751,7 @@ export async function dehydrateWorkflowArguments(
 export async function hydrateWorkflowArguments(
   value: Uint8Array | unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: EncryptionKeyLike | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {
@@ -1676,8 +1793,8 @@ export async function hydrateWorkflowArguments(
  */
 export async function dehydrateWorkflowReturnValue(
   value: unknown,
-  _runId: string,
-  key: CryptoKey | undefined,
+  runId: string,
+  key: EncryptionKeyLike | undefined,
   global: Record<string, any> = globalThis,
   v1Compat = false
 ): Promise<Uint8Array | unknown> {
@@ -1693,7 +1810,10 @@ export async function dehydrateWorkflowReturnValue(
     ) as Uint8Array;
 
     // Encrypt if world supports encryption
-    return maybeEncrypt(serialized, key);
+    return maybeEncrypt(serialized, key, {
+      purpose: 'workflow-return-value',
+      runId,
+    });
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('workflow return value', error),
@@ -1718,7 +1838,7 @@ export async function dehydrateWorkflowReturnValue(
 export async function hydrateWorkflowReturnValue(
   value: Uint8Array | unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: EncryptionKeyLike | undefined,
   ops: Promise<void>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
@@ -1764,10 +1884,11 @@ export async function hydrateWorkflowReturnValue(
  */
 export async function dehydrateStepArguments(
   value: unknown,
-  _runId: string,
-  key: CryptoKey | undefined,
+  runId: string,
+  key: EncryptionKeyLike | undefined,
   global: Record<string, any> = globalThis,
-  v1Compat = false
+  v1Compat = false,
+  activityId?: string
 ): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getWorkflowReducers(global));
@@ -1781,7 +1902,11 @@ export async function dehydrateStepArguments(
     ) as Uint8Array;
 
     // Encrypt if world supports encryption
-    return maybeEncrypt(serialized, key);
+    return maybeEncrypt(serialized, key, {
+      purpose: 'step-arguments',
+      runId,
+      ...(activityId !== undefined ? { activityId } : {}),
+    });
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('step arguments', error),
@@ -1805,7 +1930,7 @@ export async function dehydrateStepArguments(
 export async function hydrateStepArguments(
   value: Uint8Array | unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: EncryptionKeyLike | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
@@ -1853,10 +1978,11 @@ export async function hydrateStepArguments(
 export async function dehydrateStepReturnValue(
   value: unknown,
   runId: string,
-  key: CryptoKey | undefined,
+  key: EncryptionKeyLike | undefined,
   ops: Promise<any>[] = [],
   global: Record<string, any> = globalThis,
-  v1Compat = false
+  v1Compat = false,
+  activityId?: string
 ): Promise<Uint8Array | unknown> {
   try {
     const str = stringify(value, getStepReducers(global, ops, runId, key));
@@ -1870,7 +1996,11 @@ export async function dehydrateStepReturnValue(
     ) as Uint8Array;
 
     // Encrypt if world supports encryption
-    return maybeEncrypt(serialized, key);
+    return maybeEncrypt(serialized, key, {
+      purpose: 'return-value',
+      runId,
+      ...(activityId !== undefined ? { activityId } : {}),
+    });
   } catch (error) {
     throw new WorkflowRuntimeError(
       formatSerializationError('step return value', error),
@@ -1893,7 +2023,7 @@ export async function dehydrateStepReturnValue(
 export async function hydrateStepReturnValue(
   value: Uint8Array | unknown,
   _runId: string,
-  key: CryptoKey | undefined,
+  key: EncryptionKeyLike | undefined,
   global: Record<string, any> = globalThis,
   extraRevivers: Record<string, (value: any) => any> = {}
 ) {

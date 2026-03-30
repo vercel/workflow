@@ -49,7 +49,8 @@ export function getWritable<W = any>(
   // Create a transform stream that serializes chunks and pipes to the workflow server
   const serialize = getSerializeStream(
     getExternalReducers(globalThis, ctx.ops, runId, ctx.encryptionKey),
-    ctx.encryptionKey
+    ctx.encryptionKey,
+    { runId, activityId: ctx.stepMetadata.stepId ?? name }
   );
 
   // Use flushable pipe so the ops promise resolves when the user releases

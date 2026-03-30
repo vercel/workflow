@@ -3,7 +3,7 @@ import { WorkflowRuntimeError } from '@workflow/errors';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import { isLegacySpecVersion, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
-import { importKey } from '../encryption.js';
+import { importEncryptionKeys } from '../encryption.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -145,7 +145,9 @@ export async function start<TArgs extends unknown[], TResult>(
         ...opts,
         deploymentId,
       });
-      const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+      const encryptionKey = rawKey
+        ? await importEncryptionKeys(rawKey)
+        : undefined;
 
       // Create run via run_created event (event-sourced architecture)
       // Pass client-generated runId - server will accept and use it

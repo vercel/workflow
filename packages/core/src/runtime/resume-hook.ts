@@ -11,7 +11,7 @@ import {
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
-import { type CryptoKey, importKey } from '../encryption.js';
+import { type EncryptionKeyLike, importEncryptionKeys } from '../encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
@@ -30,13 +30,13 @@ import { getWorld } from './world.js';
 async function getHookByTokenWithKey(token: string): Promise<{
   hook: Hook;
   run: WorkflowRun;
-  encryptionKey: CryptoKey | undefined;
+  encryptionKey: EncryptionKeyLike | undefined;
 }> {
   const world = getWorld();
   const hook = await world.hooks.getByToken(token);
   const run = await world.runs.get(hook.runId);
   const rawKey = await world.getEncryptionKeyForRun?.(run);
-  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+  const encryptionKey = rawKey ? await importEncryptionKeys(rawKey) : undefined;
   if (typeof hook.metadata !== 'undefined') {
     hook.metadata = await hydrateStepArguments(
       hook.metadata as any,
@@ -91,7 +91,7 @@ export async function getHookByToken(token: string): Promise<Hook> {
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
   payload: T,
-  encryptionKeyOverride?: CryptoKey
+  encryptionKeyOverride?: EncryptionKeyLike
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
@@ -100,7 +100,7 @@ export async function resumeHook<T = any>(
       try {
         let hook: Hook;
         let workflowRun: WorkflowRun;
-        let encryptionKey: CryptoKey | undefined;
+        let encryptionKey: EncryptionKeyLike | undefined;
         if (typeof tokenOrHook === 'string') {
           const result = await getHookByTokenWithKey(tokenOrHook);
           hook = result.hook;
@@ -113,7 +113,9 @@ export async function resumeHook<T = any>(
             encryptionKey = encryptionKeyOverride;
           } else {
             const rawKey = await world.getEncryptionKeyForRun?.(workflowRun);
-            encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+            encryptionKey = rawKey
+              ? await importEncryptionKeys(rawKey)
+              : undefined;
           }
         }
 
@@ -132,7 +134,8 @@ export async function resumeHook<T = any>(
           encryptionKey,
           ops,
           globalThis,
-          v1Compat
+          v1Compat,
+          hook.hookId
         );
         // NOTE: Workaround instead of injecting catching undefined unhandled rejections in webhook bundle
         waitUntil(
