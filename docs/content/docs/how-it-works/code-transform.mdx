@@ -1,6 +1,6 @@
 ---
 title: How the Directives Work
-description: Deep dive into the internals of how Workflow DevKit directives transform your code.
+description: Deep dive into the internals of how Workflow SDK directives transform your code.
 type: conceptual
 summary: Learn how the compiler transforms directive-annotated code into three execution modes.
 prerequisites:
@@ -10,10 +10,10 @@ related:
 ---
 
 <Callout>
-This is an advanced guide that dives into internals of the Workflow DevKit directive and is not required reading to use workflows. To simply use the Workflow DevKit, check out the [getting started](/docs/getting-started) guides for your framework.
+This is an advanced guide that dives into internals of the Workflow SDK directive and is not required reading to use workflows. To simply use the Workflow SDK, check out the [getting started](/docs/getting-started) guides for your framework.
 </Callout>
 
-Workflows use special directives to mark code for transformation by the Workflow DevKit compiler. This page explains how `"use workflow"` and `"use step"` directives work, what transformations are applied, and why they're necessary for durable execution.
+Workflows use special directives to mark code for transformation by the Workflow SDK compiler. This page explains how `"use workflow"` and `"use step"` directives work, what transformations are applied, and why they're necessary for durable execution.
 
 ## Directives Overview
 
@@ -210,7 +210,7 @@ The IDs are generated exactly like in workflow mode to ensure they can be direct
 
 ## Generated Files
 
-When you build your application, the Workflow DevKit generates three handler files in `.well-known/workflow/v1/`:
+When you build your application, the Workflow SDK generates three handler files in `.well-known/workflow/v1/`:
 
 ### `flow.js`
 
@@ -268,7 +268,7 @@ Contains webhook handling logic for delivering external data to running workflow
 
 ## Why Three Modes?
 
-The multi-mode transformation enables the Workflow DevKit's durable execution model:
+The multi-mode transformation enables the Workflow SDK's durable execution model:
 
 1. **Step Mode** (required) - Bundles executable step functions that can access the full runtime
 2. **Workflow Mode** (required) - Creates orchestration logic that can replay from event logs
@@ -320,7 +320,7 @@ The compiler generates stable IDs for workflows and steps based on file paths an
 - **Portable**: Works across different runtimes and deployments
 
 <Callout type="info">
-  Although IDs can change when files are moved or functions are renamed, Workflow DevKit function assume atomic versioning in the World. This means changing IDs won't break old workflows from running, but will prevent run from being upgraded and will cause your workflow/step names to change in the observability across deployments.
+  Although IDs can change when files are moved or functions are renamed, Workflow SDK function assume atomic versioning in the World. This means changing IDs won't break old workflows from running, but will prevent run from being upgraded and will cause your workflow/step names to change in the observability across deployments.
 </Callout>
 
 ## Framework Integration
