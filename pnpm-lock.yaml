@@ -2154,9 +2154,24 @@ importers:
       '@vercel/analytics':
         specifier: latest
         version: 2.0.1(baf0aac73cdb99e7b4aee2bd440a0745)
+      '@workflow/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@workflow/errors':
+        specifier: workspace:*
+        version: link:../../packages/errors
+      '@workflow/serde':
+        specifier: workspace:*
+        version: link:../../packages/serde
       '@workflow/swc-playground-wasm':
         specifier: workspace:*
         version: link:../../packages/swc-playground-wasm
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../../packages/utils
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../../packages/world
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -2193,6 +2208,9 @@ importers:
       tailwind-merge:
         specifier: ^2.5.5
         version: 2.5.5
+      workflow:
+        specifier: workspace:*
+        version: link:../../packages/workflow
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4.1.9
