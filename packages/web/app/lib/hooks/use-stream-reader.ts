@@ -134,6 +134,8 @@ export function useStreamReader(
   const chunkIdRef = useRef(0);
   const frameCountRef = useRef(0);
   const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const runStatusRef = useRef(runStatus);
+  runStatusRef.current = runStatus;
 
   const processFrame = useCallback(
     async (
@@ -380,7 +382,7 @@ export function useStreamReader(
 
         setChunks(initialChunks);
 
-        if (isRunActive(runStatus)) {
+        if (isRunActive(runStatusRef.current)) {
           const poll = async () => {
             if (!mounted || abortController.signal.aborted) return;
             try {
