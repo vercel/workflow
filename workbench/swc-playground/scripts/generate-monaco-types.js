@@ -2,10 +2,12 @@
  * Generates a TypeScript file containing all type declarations from
  * workspace packages, for use with Monaco editor's `addExtraLib()` API.
  *
- * This reads the built `.d.ts` files from packages/workflow, packages/core,
- * and packages/errors (and their transitive type dependencies), and outputs
+ * This reads the built `.d.ts` files from workspace packages and outputs
  * a map of virtual file paths to declaration content that Monaco's TypeScript
  * language service can resolve.
+ *
+ * Uses `declare module` ambient declarations for reliable module resolution
+ * regardless of Monaco's internal URI scheme.
  */
 import {
   existsSync,
@@ -14,19 +16,28 @@ import {
   readFileSync,
   writeFileSync,
 } from 'node:fs';
-import { join, relative } from 'node:path';
+import { relative } from 'node:path';
 
 const packagesDir = new URL('../../../packages/', import.meta.url);
 
 // Packages whose types should be available in the Monaco editor.
-// Includes transitive type dependencies so Monaco can resolve
-// cross-package type imports.
+// Each entry maps a directory name under packages/ to configuration.
+// `subExports` lists additional sub-path exports that should get
+// their own `declare module` entry (e.g. "workflow/errors").
 const PACKAGES = [
-  'world', // @workflow/world (types used by @workflow/core and @workflow/errors)
-  'utils', // @workflow/utils (types used by @workflow/core)
-  'errors', // @workflow/errors
-  'core', // @workflow/core
-  'workflow', // workflow
+  { dir: 'world' },
+  { dir: 'utils' },
+  { dir: 'serde' },
+  { dir: 'errors' },
+  { dir: 'core' },
+  {
+    dir: 'workflow',
+    subExports: {
+      './api': './dist/api.d.ts',
+      './errors': './dist/internal/errors.d.ts',
+      './observability': './dist/observability.d.ts',
+    },
+  },
 ];
 
 /**
@@ -76,76 +87,102 @@ function collectDtsFiles(dirUrl, baseUrl = dirUrl) {
   return results;
 }
 
-// Build the type definitions map
-const typeDefsMap = {};
-
-for (const dirName of PACKAGES) {
-  const info = getPackageInfo(dirName);
-  if (!info) continue;
-
-  const { name, pkgJson, distUrl } = info;
-  console.log(`Processing ${name} (${dirName})...`);
-
-  // Register a virtual package.json so Monaco's resolver can find the types
-  // Use the "types" field from exports["."] if available, otherwise fall back
-  // to the top-level "types" field.
-  let mainTypes = pkgJson.types;
+/**
+ * Resolve the main types entry point for a package.
+ * Checks exports["."].types first, then top-level types field,
+ * then falls back to dist/index.d.ts.
+ */
+function resolveMainTypes(pkgJson) {
   const mainExport = pkgJson.exports?.['.'];
   if (mainExport) {
     if (typeof mainExport === 'object' && mainExport.types) {
-      mainTypes = mainExport.types;
+      return mainExport.types;
     }
   }
+  if (pkgJson.types) return pkgJson.types;
+  return './dist/index.d.ts'; // fallback
+}
+
+// Build the type definitions map
+const typeDefsMap = {};
+
+// Track packages for ambient module declarations
+const ambientModules = [];
+
+for (const pkgConfig of PACKAGES) {
+  const { dir, subExports } = pkgConfig;
+  const info = getPackageInfo(dir);
+  if (!info) continue;
+
+  const { name, pkgJson, distUrl } = info;
+  console.log(`Processing ${name} (${dir})...`);
+
+  const mainTypes = resolveMainTypes(pkgJson);
 
   // Collect and register all .d.ts files from dist/
   const dtsFiles = collectDtsFiles(distUrl);
   for (const { relativePath, content } of dtsFiles) {
-    const virtualPath = `node_modules/${name}/dist/${relativePath}`;
+    const virtualPath = `file:///node_modules/${name}/dist/${relativePath}`;
     typeDefsMap[virtualPath] = content;
   }
 
-  // Register the main entry at the root index.d.ts path.
-  // Monaco's NodeJs module resolution looks for node_modules/<pkg>/index.d.ts
-  // to resolve bare imports like `import { sleep } from 'workflow'`.
-  if (mainTypes) {
-    const mainDtsFile = dtsFiles.find(
-      (f) => `./dist/${f.relativePath}` === mainTypes
-    );
-    if (mainDtsFile) {
-      typeDefsMap[`node_modules/${name}/index.d.ts`] = mainDtsFile.content;
-    }
-  } else {
-    // No explicit types field — check if dist/index.d.ts exists
-    const fallback = dtsFiles.find((f) => f.relativePath === 'index.d.ts');
-    if (fallback) {
-      typeDefsMap[`node_modules/${name}/index.d.ts`] = fallback.content;
+  console.log(`  Registered ${dtsFiles.length} .d.ts files for ${name}`);
+
+  // Track the main module for ambient declarations
+  // Convert "./dist/index.d.ts" -> "file:///node_modules/<name>/dist/index.d.ts"
+  const mainDtsPath = mainTypes.replace(
+    /^\.\//,
+    `file:///node_modules/${name}/`
+  );
+  ambientModules.push({ moduleName: name, dtsPath: mainDtsPath });
+
+  // Handle sub-exports (e.g. "workflow/api", "workflow/errors")
+  if (subExports) {
+    for (const [subPath, subTypes] of Object.entries(subExports)) {
+      const subModuleName = `${name}/${subPath.replace(/^\.\//, '')}`;
+      const subDtsPath = subTypes.replace(
+        /^\.\//,
+        `file:///node_modules/${name}/`
+      );
+      ambientModules.push({ moduleName: subModuleName, dtsPath: subDtsPath });
     }
   }
-
-  console.log(`  Registered ${dtsFiles.length} .d.ts files for ${name}`);
 }
+
+// Generate the ambient module declarations file.
+// This tells TypeScript's language service where to find types for
+// bare module imports like `import { sleep } from "workflow"`.
+// Using `declare module` is the most reliable approach for Monaco
+// as it works regardless of module resolution configuration.
+const ambientLines = [
+  '// Ambient module declarations for Monaco editor.',
+  '// Maps bare import specifiers to their type declaration files.',
+  '',
+];
+for (const { moduleName, dtsPath } of ambientModules) {
+  ambientLines.push(`declare module "${moduleName}" {`);
+  ambientLines.push(`  export * from "${dtsPath}";`);
+  ambientLines.push(`}`);
+  ambientLines.push('');
+}
+
+typeDefsMap['file:///node_modules/@types/workflow-ambient/index.d.ts'] =
+  ambientLines.join('\n');
 
 // Register stub types for third-party packages referenced by the .d.ts files.
-// These are minimal stubs sufficient to suppress unresolved import errors.
-// and it would show as an unresolved import in the .d.ts files.
-// The `ms` package exports a `StringValue` type that represents duration strings.
-typeDefsMap['node_modules/ms/index.d.ts'] = `
-declare module "ms" {
-  export type StringValue =
-    | \`\${number}ms\`
-    | \`\${number}s\`
-    | \`\${number}m\`
-    | \`\${number}h\`
-    | \`\${number}d\`
-    | \`\${number}w\`
-    | \`\${number}y\`
-    | (string & {});
-}
-export = ms;
-export as namespace ms;
+typeDefsMap['file:///node_modules/ms/index.d.ts'] = `
+export type StringValue =
+  | \`\${number}ms\`
+  | \`\${number}s\`
+  | \`\${number}m\`
+  | \`\${number}h\`
+  | \`\${number}d\`
+  | \`\${number}w\`
+  | \`\${number}y\`
+  | (string & {});
 `;
 
-typeDefsMap['node_modules/@standard-schema/spec/index.d.ts'] = `
+typeDefsMap['file:///node_modules/@standard-schema/spec/index.d.ts'] = `
 export interface StandardSchemaV1<Input = unknown, Output = Input> {
   readonly "~standard": StandardSchemaV1.Props<Input, Output>;
 }
@@ -185,3 +222,9 @@ const totalSize = Object.values(typeDefsMap).reduce(
 console.log(
   `\nGenerated lib/generated-types.ts (${totalFiles} files, ${(totalSize / 1024).toFixed(1)}KB of type content)`
 );
+
+// Show ambient modules registered
+console.log(`Ambient module declarations:`);
+for (const { moduleName } of ambientModules) {
+  console.log(`  "${moduleName}"`);
+}
