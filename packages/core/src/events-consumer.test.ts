@@ -407,6 +407,10 @@ describe('EventsConsumer', () => {
         expect(consumer.eventIndex).toBe(1);
       });
 
+      // Wait past the internal 100ms unconsumed-event setTimeout window to
+      // ensure the cancelled check truly does not fire.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+
       // The new callback consumed the event, so onUnconsumedEvent should NOT be called
       expect(onUnconsumedEvent).not.toHaveBeenCalled();
     });
