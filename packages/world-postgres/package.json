@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-postgres",
-  "version": "4.1.0-beta.46",
+  "version": "4.1.0-beta.48",
   "description": "A reference World implementation based on PostgreSQL",
   "type": "module",
   "main": "dist/index.js",
@@ -54,13 +54,14 @@
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.1",
     "graphile-worker": "0.16.6",
-    "postgres": "3.4.8",
+    "pg": "8.20.0",
     "ulid": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "11.12.0",
     "@types/node": "catalog:",
+    "@types/pg": "8.20.0",
     "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "@workflow/world-testing": "workspace:*",

@@ -220,8 +220,9 @@ export function RunDetailView({
   // Empty env object - server actions read from process.env
   const env: EnvMap = useMemo(() => ({}), []);
 
-  // Read tab and streamId from URL search params
-  const activeTab = (searchParams.get('tab') as Tab) || 'trace';
+  // Read tab and streamId from URL search params (graph tab is hidden for now)
+  const rawTab = (searchParams.get('tab') as Tab) || 'trace';
+  const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
   const selectedStreamId = searchParams.get('streamId');
 
   // Helper to update URL search params
@@ -265,15 +266,6 @@ export function RunDetailView({
       updateSearchParams({ tab: 'streams', streamId });
     },
     [updateSearchParams]
-  );
-
-  const handleRunRefClick = useCallback(
-    (targetRunId: string) => {
-      // Navigate to the target run with a clean URL (no search params)
-      // so the sidebar panel resets
-      navigate(`/run/${encodeURIComponent(targetRunId)}`);
-    },
-    [navigate]
   );
 
   const handleWakeUpSleep = useCallback(
@@ -728,7 +720,8 @@ export function RunDetailView({
                 <List className="h-4 w-4" />
                 Trace
               </TabsTrigger>
-              {isLocalBackend && (
+              {/* Graph tab hidden for now */}
+              {false && isLocalBackend && (
                 <TabsTrigger value="graph" className="gap-2">
                   <GitBranch className="h-4 w-4" />
                   Graph
@@ -757,7 +750,6 @@ export function RunDetailView({
                     spanDetailError={spanDetailError}
                     onSpanSelect={handleSpanSelect}
                     onStreamClick={handleStreamClick}
-                    onRunClick={handleRunRefClick}
                     onWakeUpSleep={handleWakeUpSleep}
                     onResolveHook={handleResolveHook}
                     onLoadEventData={handleLoadSidebarEventData}
@@ -913,7 +905,8 @@ export function RunDetailView({
               </ErrorBoundary>
             </TabsContent>
 
-            {isLocalBackend && (
+            {/* Graph tab hidden for now */}
+            {false && isLocalBackend && (
               <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
                 <ErrorBoundary title="Failed to load execution graph">
                   <div className="h-full min-h-[500px]">

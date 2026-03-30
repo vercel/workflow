@@ -705,6 +705,87 @@ describe('e2e', () => {
     }
   });
 
+  describe.skipIf(isLocalDeployment())(
+    'outputStreamWorkflow - getTailIndex and getStreamChunks',
+    () => {
+      test(
+        'getTailIndex returns correct index after stream completes',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+          await run.returnValue;
+
+          const readable = run.getReadable();
+          const tailIndex = await readable.getTailIndex();
+
+          // outputStreamWorkflow writes 2 chunks to the default stream
+          expect(tailIndex).toBe(1);
+        }
+      );
+
+      test(
+        'getTailIndex returns -1 before any chunks are written',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+
+          // Don't await returnValue — check immediately while stream is
+          // still being written (or hasn't started yet). The world should
+          // report tailIndex = -1 for streams with no data.
+          const readable = run.getReadable({ namespace: 'nonexistent' });
+          const tailIndex = await readable.getTailIndex();
+          expect(tailIndex).toBe(-1);
+        }
+      );
+
+      test(
+        'getStreamChunks returns same content as reading the stream',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+          await run.returnValue;
+
+          // Read all chunks via the stream
+          const reader = run.getReadable().getReader();
+          const streamChunks: unknown[] = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            streamChunks.push(value);
+          }
+
+          // Read all chunks via getStreamChunks pagination
+          const world = getWorld();
+          const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
+          const paginatedChunks: Uint8Array[] = [];
+          let cursor: string | null = null;
+          do {
+            const page = await world.getStreamChunks(streamName, run.runId, {
+              limit: 1, // small page size to exercise pagination
+              ...(cursor ? { cursor } : {}),
+            });
+            for (const chunk of page.data) {
+              paginatedChunks.push(chunk.data);
+            }
+            cursor = page.cursor;
+            if (!page.hasMore) {
+              expect(page.done).toBe(true);
+            }
+          } while (cursor);
+
+          // Both methods should return the same number of chunks
+          expect(paginatedChunks).toHaveLength(streamChunks.length);
+        }
+      );
+    }
+  );
+
   test.skipIf(isLocalDeployment())(
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
     { timeout: 60_000 },
@@ -1020,6 +1101,71 @@ describe('e2e', () => {
           // Verify workflow completed successfully (error was caught)
           const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
           expect(runData.status).toBe('completed');
+        }
+      );
+    });
+
+    describe('not registered', () => {
+      test(
+        'WorkflowNotRegisteredError fails the run when workflow does not exist',
+        { timeout: 60_000 },
+        async () => {
+          // Start a run with a workflowId that doesn't exist in the deployment bundle.
+          // This simulates starting a run against a deployment that doesn't have the workflow.
+          const run = await start(
+            {
+              workflowId: 'workflow//./workflows/99_e2e//nonExistentWorkflow',
+            } as any,
+            []
+          );
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.message).toContain('is not registered');
+          expect(error.cause.code).toBe('RUNTIME_ERROR');
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('failed');
+        }
+      );
+
+      test(
+        'StepNotRegisteredError fails the step but workflow can catch it',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(await e2e('stepNotRegisteredCatchable'), []);
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.error).toContain('is not registered');
+
+          // Verify workflow completed successfully (error was caught)
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+
+          // Verify the step itself failed
+          const { json: steps } = await cliInspectJson(
+            `steps --runId ${run.runId}`
+          );
+          const ghostStep = steps.find((s: any) =>
+            s.stepName.includes('nonExistentStep')
+          );
+          expect(ghostStep).toBeDefined();
+          expect(ghostStep.status).toBe('failed');
+        }
+      );
+
+      test(
+        'StepNotRegisteredError fails the run when not caught in workflow',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(await e2e('stepNotRegisteredUncaught'), []);
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.message).toContain('is not registered');
         }
       );
     });
@@ -1371,45 +1517,6 @@ describe('e2e', () => {
         childResult: inputValue * 2,
         originalValue: inputValue,
       });
-    }
-  );
-
-  test(
-    'startFromWorkflow - calling start() directly inside a workflow function with hook communication',
-    { timeout: 120_000 },
-    async () => {
-      const inputValue = 42;
-      const run = await start(await e2e('startFromWorkflow'), [inputValue]);
-      const returnValue = await run.returnValue;
-
-      // Verify parent workflow completed with expected data
-      expect(returnValue.parentInput).toBe(inputValue);
-
-      // Verify child Run object was returned (serialized from workflow context)
-      expect(returnValue.childRun).toBeDefined();
-      expect(typeof returnValue.childRun.runId).toBe('string');
-      expect(returnValue.childRun.runId.startsWith('wrun_')).toBe(true);
-
-      // Verify hook signal was received from child
-      expect(returnValue.signalFromChild.processed).toBe(inputValue * 3);
-
-      // Verify the child workflow also completed independently
-      const childRun = getRun(returnValue.childRun.runId);
-      trackRun(childRun);
-      const childResult = await childRun.returnValue;
-      expect(childResult.processed).toBe(inputValue * 3);
-    }
-  );
-
-  test(
-    'fibonacciWorkflow - recursive workflow composition via start()',
-    { timeout: 180_000 },
-    async () => {
-      // fib(6) = 8, spawns a tree of child workflow runs
-      const run = await start(await e2e('fibonacciWorkflow'), [6]);
-      const returnValue = await run.returnValue;
-
-      expect(returnValue).toBe(8);
     }
   );
 

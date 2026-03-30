@@ -320,6 +320,155 @@ describe('WorkflowChatTransport', () => {
     });
   });
 
+  describe('negative initialStartIndex', () => {
+    function makeSSEStream(...events: string[]) {
+      return new ReadableStream({
+        start(controller) {
+          for (const event of events) {
+            controller.enqueue(new TextEncoder().encode(`data: ${event}\n\n`));
+          }
+          controller.close();
+        },
+      });
+    }
+
+    it('should resolve absolute chunkIndex from x-workflow-stream-tail-index header', async () => {
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -20,
+      });
+
+      // First call: stream with tail-index header, closes immediately (simulating
+      // a timeout with no data) → triggers retry at the resolved absolute position
+      // Second call: retry completes with finish
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers({
+            'x-workflow-stream-tail-index': '499',
+          }),
+          body: makeSSEStream(), // empty — simulates immediate disconnect
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          body: makeSSEStream('{"type":"finish"}'),
+        });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      while (!(await reader.read()).done) {}
+
+      // First call: negative startIndex
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        '/api/chat/test-chat/stream?startIndex=-20',
+        expect.any(Object)
+      );
+      // Second call: resolved absolute position = max(0, 499 + 1 + (-20)) = 480
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/chat/test-chat/stream?startIndex=480',
+        expect.any(Object)
+      );
+    });
+
+    it('should fall back to startIndex=0 when header is missing', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -10,
+      });
+
+      // First call: no tail-index header, closes immediately → triggers retry
+      // Second call: retry should use startIndex=0
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          body: makeSSEStream(), // empty — simulates immediate disconnect
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          body: makeSSEStream('{"type":"finish"}'),
+        });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      while (!(await reader.read()).done) {}
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Negative initialStartIndex is configured')
+      );
+
+      // First call: negative startIndex
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        '/api/chat/test-chat/stream?startIndex=-10',
+        expect.any(Object)
+      );
+      // Second call: falls back to 0
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/chat/test-chat/stream?startIndex=0',
+        expect.any(Object)
+      );
+
+      warnSpy.mockRestore();
+    });
+
+    it('should fall back to startIndex=0 when header value is not a number', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -5,
+      });
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers({
+            'x-workflow-stream-tail-index': 'not-a-number',
+          }),
+          body: makeSSEStream(),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          body: makeSSEStream('{"type":"finish"}'),
+        });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      while (!(await reader.read()).done) {}
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('valid "x-workflow-stream-tail-index"')
+      );
+
+      // Retry falls back to 0
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/chat/test-chat/stream?startIndex=0',
+        expect.any(Object)
+      );
+
+      warnSpy.mockRestore();
+    });
+  });
+
   describe('callbacks', () => {
     it('should call onChatSendMessage callback', async () => {
       const onChatSendMessage = vi.fn();

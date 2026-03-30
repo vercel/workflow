@@ -59,6 +59,44 @@ export function getPackageName(filePath: string) {
 }
 
 /**
+ * Get the package name from an import specifier.
+ * @param specifier - The import specifier to parse.
+ * @returns The package name (for bare package imports), otherwise null.
+ */
+function getPackageNameFromSpecifier(specifier: string) {
+  // Not a bare package specifier (relative, absolute, or URL-like)
+  if (
+    !specifier ||
+    specifier.startsWith('.') ||
+    specifier.startsWith('/') ||
+    /^[A-Za-z]:[\\/]/.test(specifier)
+  ) {
+    return null;
+  }
+
+  // Ignore runtime built-ins and URL-like specifiers
+  if (
+    runtimeModulesRegex.test(specifier) ||
+    specifier.includes('://') ||
+    specifier.startsWith('#')
+  ) {
+    return null;
+  }
+
+  const normalized = specifier.replace(/\\/g, '/');
+  if (normalized.startsWith('@')) {
+    const [scope, name] = normalized.split('/');
+    if (!scope || !name) {
+      return null;
+    }
+    return `${scope}/${name}`;
+  }
+
+  const [name] = normalized.split('/');
+  return name ?? null;
+}
+
+/**
  * Escape a regular expression string.
  * @param value - The string to escape.
  * @returns The escaped string.
@@ -242,6 +280,9 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
       build.onResolve({ filter: /.*/ }, async (args) => {
         if (!args.importer) return null;
 
+        const parentValue = normalize(args.importer);
+        const specifierPackageName = getPackageNameFromSpecifier(args.path);
+
         try {
           const resolvedChild = await enhancedResolve(
             args.resolveDir,
@@ -250,14 +291,31 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
 
           if (resolvedChild) {
             const childKey = normalize(resolvedChild);
-            const parentValue = normalize(args.importer);
             importParents.set(childKey, parentValue);
+
+            // Record the resolved package edge so transitive builtin usage can
+            // still trace back even when esbuild and enhanced-resolve pick
+            // different entry files (e.g. `module` vs `main`).
+            const resolvedPackageName = getPackageName(childKey);
+            if (resolvedPackageName) {
+              importParents.set(resolvedPackageName, parentValue);
+            }
+          }
+
+          // Also preserve the bare package-specifier edge (e.g. "postgres"),
+          // which is the fallback key used when tracing from files in
+          // node_modules back to user code.
+          if (specifierPackageName) {
+            importParents.set(specifierPackageName, parentValue);
           }
         } catch {
           // For built-in modules that can't be resolved, still track using the import path
           const childKey = args.path;
-          const parentValue = normalize(args.importer);
           importParents.set(childKey, parentValue);
+
+          if (specifierPackageName) {
+            importParents.set(specifierPackageName, parentValue);
+          }
         }
         return null;
       });

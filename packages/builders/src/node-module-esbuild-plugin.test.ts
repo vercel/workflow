@@ -210,6 +210,83 @@ describe('workflow-node-module-error plugin', () => {
     }
   });
 
+  it('should detect packages when esbuild and resolver choose different entry fields', async () => {
+    const tempDir = mkdtempSync(join(realTmpdir, 'node-module-plugin-test-'));
+    const nodeModulesDir = join(tempDir, 'node_modules', 'dual-entry-package');
+    const esmDir = join(nodeModulesDir, 'esm');
+    const cjsDir = join(nodeModulesDir, 'cjs');
+    const { mkdirSync } = await import('node:fs');
+    mkdirSync(esmDir, { recursive: true });
+    mkdirSync(cjsDir, { recursive: true });
+
+    writeFileSync(
+      join(esmDir, 'index.js'),
+      `
+      import os from "os";
+      export function getPlatform() {
+        return os.platform();
+      }
+    `
+    );
+    writeFileSync(
+      join(cjsDir, 'index.cjs'),
+      `
+      module.exports = {
+        getPlatform() {
+          return "cjs";
+        }
+      };
+    `
+    );
+    writeFileSync(
+      join(nodeModulesDir, 'package.json'),
+      JSON.stringify({
+        name: 'dual-entry-package',
+        main: 'cjs/index.cjs',
+        module: 'esm/index.js',
+      })
+    );
+
+    const testCode = `
+      import { getPlatform } from "dual-entry-package";
+      export function workflow() {
+        return getPlatform();
+      }
+    `;
+    const entryFile = join(tempDir, 'workflow.ts');
+    writeFileSync(entryFile, testCode);
+    const relativeEntry = relative(process.cwd(), entryFile);
+
+    try {
+      await esbuild.build({
+        entryPoints: [entryFile],
+        bundle: true,
+        write: false,
+        platform: 'neutral',
+        format: 'cjs',
+        mainFields: ['module', 'main'],
+        logLevel: 'silent',
+        plugins: [createNodeModuleErrorPlugin()],
+      });
+      throw new Error('Expected build to fail');
+    } catch (error: any) {
+      if (error && typeof error === 'object' && 'errors' in error) {
+        const failure = error as esbuild.BuildFailure;
+        expect(failure.errors).toHaveLength(1);
+        const violation = failure.errors[0];
+        expect(violation.text).toContain('"dual-entry-package"');
+        expect(violation.text).toContain('depends on Node.js modules');
+        expect(violation.location).toMatchObject({
+          file: relativeEntry,
+        });
+      } else {
+        throw error;
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('should find usage of namespace imports', async () => {
     const testCode = `
       import * as fs from "fs";

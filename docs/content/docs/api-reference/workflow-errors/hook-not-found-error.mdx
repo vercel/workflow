@@ -1,0 +1,90 @@
+---
+title: HookNotFoundError
+description: Thrown when resuming a hook that does not exist.
+type: reference
+summary: Catch HookNotFoundError when calling resumeHook() or resumeWebhook() with a token that doesn't match any active hook.
+related:
+  - /docs/api-reference/workflow/create-hook
+  - /docs/api-reference/workflow/define-hook
+---
+
+`HookNotFoundError` is thrown when calling `resumeHook()` or `resumeWebhook()` with a token that does not match any active hook. This typically happens when:
+
+- The hook has expired (past its TTL)
+- The hook was already consumed and disposed
+- The workflow has not started yet, so the hook does not exist
+
+```typescript lineNumbers
+import { HookNotFoundError } from "workflow/errors"
+declare function resumeHook(token: string, payload: any): Promise<any>; // @setup
+declare const token: string; // @setup
+declare const payload: any; // @setup
+
+try {
+  await resumeHook(token, payload);
+} catch (error) {
+  if (HookNotFoundError.is(error)) { // [!code highlight]
+    console.error("Hook not found:", error.token);
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface HookNotFoundError {
+  /** The hook token that was not found. */
+  token: string;
+  /** The error message. */
+  message: string;
+}
+export default HookNotFoundError;`}
+/>
+
+### Static Methods
+
+#### `HookNotFoundError.is(value)`
+
+Type-safe check for `HookNotFoundError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { HookNotFoundError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (HookNotFoundError.is(error)) {
+  // error is typed as HookNotFoundError
+}
+```
+
+## Examples
+
+### Resume hook or start workflow
+
+A common pattern for idempotent workflows is to try resuming a hook, and if it doesn't exist yet, start a new workflow run with the input data.
+
+<Callout>
+This "resume or start" pattern is not atomic — there is a small window where a race condition is possible. A better native approach is being worked on, but this pattern works well for many use cases.
+</Callout>
+
+```typescript lineNumbers
+import { HookNotFoundError } from "workflow/errors"
+declare function resumeHook(token: string, data: unknown): Promise<any>; // @setup
+declare function startWorkflow(name: string, data: unknown): Promise<any>; // @setup
+
+async function handleIncomingEvent(token: string, data: unknown) {
+  try {
+    // Try to resume an existing hook
+    await resumeHook(token, data);
+  } catch (error) {
+    if (HookNotFoundError.is(error)) { // [!code highlight]
+      // Hook doesn't exist yet — start a new workflow run
+      await startWorkflow("processEvent", data); // [!code highlight]
+    } else {
+      throw error;
+    }
+  }
+}
+```

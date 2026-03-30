@@ -46,12 +46,16 @@ export function formatDuration(ms: number, compact = false): string {
     return `${secondsFormatter.format(ms / MS_IN_SECOND)}s`;
   }
 
-  // Compact format: single unit for timeline markers
+  // Compact format: multi-unit without decimals (e.g. "8m 20s", "2h 30m")
   if (compact) {
     if (ms < MS_IN_HOUR) {
-      return `${compactFormatter.format(ms / MS_IN_MINUTE)}m`;
+      const m = Math.floor(ms / MS_IN_MINUTE);
+      const s = Math.floor((ms % MS_IN_MINUTE) / MS_IN_SECOND);
+      return s > 0 ? `${m}m ${s}s` : `${m}m`;
     }
-    return `${compactFormatter.format(ms / MS_IN_HOUR)}h`;
+    const h = Math.floor(ms / MS_IN_HOUR);
+    const m = Math.floor((ms % MS_IN_HOUR) / MS_IN_MINUTE);
+    return m > 0 ? `${h}h ${m}m` : `${h}h`;
   }
 
   // Full format: decompose into larger units + fractional seconds

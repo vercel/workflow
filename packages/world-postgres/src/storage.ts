@@ -768,7 +768,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         ) {
           throw new TooEarlyError(
             `Cannot start step "${data.correlationId}": retryAfter timestamp has not been reached yet`,
-            { retryAfter: validatedStep.retryAfter }
+            {
+              retryAfter: Math.ceil(
+                (validatedStep.retryAfter.getTime() - Date.now()) / 1000
+              ),
+            }
           );
         }
 
@@ -1035,11 +1039,19 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
-      // Handle hook_disposed event: delete hook entity
+      // Handle hook_disposed event: delete hook entity atomically.
+      // Uses DELETE ... RETURNING to ensure only one concurrent caller
+      // succeeds — if no rows are returned, the hook was already disposed.
       if (data.eventType === 'hook_disposed' && data.correlationId) {
-        await drizzle
+        const [deleted] = await drizzle
           .delete(Schema.hooks)
-          .where(eq(Schema.hooks.hookId, data.correlationId));
+          .where(eq(Schema.hooks.hookId, data.correlationId))
+          .returning({ hookId: Schema.hooks.hookId });
+        if (!deleted) {
+          throw new EntityConflictError(
+            `Hook "${data.correlationId}" already disposed`
+          );
+        }
       }
 
       // Handle wait_created event: create wait entity

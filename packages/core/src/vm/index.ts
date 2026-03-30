@@ -97,6 +97,11 @@ export function createContext(options: CreateContextOptions) {
   g.URL = globalThis.URL;
   g.URLSearchParams = globalThis.URLSearchParams;
   g.structuredClone = globalThis.structuredClone;
+  g.atob = globalThis.atob;
+  g.btoa = globalThis.btoa;
+
+  // Node.js Buffer for base64 encoding/decoding and binary data manipulation
+  (g as any).Buffer = Buffer;
 
   // TC39 Explicit Resource Management polyfill for `using` keyword
   (g.Symbol as any).dispose ??= Symbol.for('Symbol.dispose');

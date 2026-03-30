@@ -6,17 +6,17 @@ import type { ModelMessage } from 'ai';
 import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useMemo, useState } from 'react';
+import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { useToast } from '../../lib/toast';
-import { isEncryptedMarker } from '../../lib/hydration';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
-import { RunClickContext, StreamClickContext } from '../ui/data-inspector';
-import { TimestampTooltip } from '../ui/timestamp-tooltip';
+import { StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import {
   ErrorStackBlock,
   isStructuredErrorWithStack,
 } from '../ui/error-stack-block';
 import { Skeleton } from '../ui/skeleton';
+import { TimestampTooltip } from '../ui/timestamp-tooltip';
 import { ConversationView } from './conversation-view';
 import { CopyableDataBlock } from './copyable-data-block';
 import { DetailCard } from './detail-card';
@@ -195,6 +195,24 @@ function EncryptedFieldBlock() {
   );
 }
 
+/**
+ * Inline display for an expired field — flat label indicating data is no longer available.
+ */
+function ExpiredFieldBlock() {
+  return (
+    <div
+      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+      style={{
+        borderColor: 'var(--ds-gray-300)',
+        backgroundColor: 'var(--ds-gray-100)',
+        color: 'var(--ds-gray-700)',
+      }}
+    >
+      <span className="font-medium">Data expired</span>
+    </div>
+  );
+}
+
 function JsonBlock(value: unknown) {
   return <CopyableDataBlock data={value} />;
 }
@@ -359,8 +377,7 @@ const attributeToDisplayFn: Record<
   workflowName: (value: unknown) =>
     parseWorkflowName(String(value))?.shortName ?? '?',
   moduleSpecifier: (value: unknown) => getModuleSpecifierFromName(value),
-  stepName: (value: unknown) =>
-    parseStepName(String(value))?.shortName ?? String(value),
+  stepName: (value: unknown) => parseStepName(String(value))?.shortName ?? '?',
   // IDs
   runId: (value: unknown) => String(value),
   stepId: (value: unknown) => String(value),
@@ -399,10 +416,12 @@ const attributeToDisplayFn: Record<
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     return JsonBlock(value);
   },
   input: (value: unknown, context?: DisplayContext) => {
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     // Check if input has args + closure vars structure
     if (value && typeof value === 'object' && 'args' in value) {
       const { args, closureVars, thisVal } = value as {
@@ -507,6 +526,7 @@ const attributeToDisplayFn: Record<
   output: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     return (
       <DetailCard
         summary="Output"
@@ -519,6 +539,7 @@ const attributeToDisplayFn: Record<
   },
   error: (value: unknown) => {
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
 
     // If the error object has a `stack` field, render it as readable
@@ -547,6 +568,7 @@ const attributeToDisplayFn: Record<
   },
   eventData: (value: unknown) => {
     if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     if (!hasDisplayContent(value)) return null;
     return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
   },
@@ -667,7 +689,6 @@ export const AttributePanel = ({
   error,
   expiredAt,
   onStreamClick,
-  onRunClick,
   resource,
 }: {
   data: Record<string, unknown>;
@@ -677,8 +698,6 @@ export const AttributePanel = ({
   expiredAt?: string | Date;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
-  /** Callback when a run reference is clicked */
-  onRunClick?: (runId: string) => void;
   /** Resource type of the selected span — used to show targeted loading skeletons. */
   resource?: string;
 }) => {
@@ -778,7 +797,6 @@ export const AttributePanel = ({
   }, []);
 
   return (
-    <RunClickContext.Provider value={onRunClick}>
     <StreamClickContext.Provider value={onStreamClick}>
       <div>
         {/* Basic attributes in a vertical layout with border */}
@@ -805,54 +823,54 @@ export const AttributePanel = ({
                 index < orderedBasicAttributes.length - 1 ||
                 showResumeAtSkeleton;
 
-                return (
-                  <div key={attribute} className="py-1">
-                    <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                      <span
-                        className={
-                          shouldCapitalizeLabel
-                            ? 'text-[14px] first-letter:uppercase'
-                            : 'text-[14px]'
+              return (
+                <div key={attribute} className="py-1">
+                  <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                    <span
+                      className={
+                        shouldCapitalizeLabel
+                          ? 'text-[14px] first-letter:uppercase'
+                          : 'text-[14px]'
+                      }
+                      style={{ color: 'var(--ds-gray-700)' }}
+                    >
+                      {getAttributeDisplayName(attribute)}
+                    </span>
+                    {isModuleSpecifier ? (
+                      <button
+                        type="button"
+                        className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
+                        style={{
+                          color: 'var(--ds-gray-1000)',
+                          background: 'transparent',
+                          border: 'none',
+                          padding: 0,
+                        }}
+                        title={moduleSpecifierValue}
+                        onClick={() =>
+                          handleCopyModuleSpecifier(moduleSpecifierValue)
                         }
-                        style={{ color: 'var(--ds-gray-700)' }}
                       >
-                        {getAttributeDisplayName(attribute)}
+                        {moduleSpecifierValue}
+                      </button>
+                    ) : (
+                      <span
+                        className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
+                        style={{ color: 'var(--ds-gray-1000)' }}
+                      >
+                        {displayValue}
                       </span>
-                      {isModuleSpecifier ? (
-                        <button
-                          type="button"
-                          className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                          style={{
-                            color: 'var(--ds-gray-1000)',
-                            background: 'transparent',
-                            border: 'none',
-                            padding: 0,
-                          }}
-                          title={moduleSpecifierValue}
-                          onClick={() =>
-                            handleCopyModuleSpecifier(moduleSpecifierValue)
-                          }
-                        >
-                          {moduleSpecifierValue}
-                        </button>
-                      ) : (
-                        <span
-                          className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                          style={{ color: 'var(--ds-gray-1000)' }}
-                        >
-                          {displayValue}
-                        </span>
-                      )}
-                    </div>
-                    {showDivider ? (
-                      <div
-                        className="mx-2.5 border-b"
-                        style={{ borderColor: 'var(--ds-gray-300)' }}
-                      />
-                    ) : null}
+                    )}
                   </div>
-                );
-              })}
+                  {showDivider ? (
+                    <div
+                      className="mx-2.5 border-b"
+                      style={{ borderColor: 'var(--ds-gray-300)' }}
+                    />
+                  ) : null}
+                </div>
+              );
+            })}
             {isLoading && resource === 'sleep' && !displayData.resumeAt && (
               <div className="py-1">
                 <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
@@ -891,6 +909,5 @@ export const AttributePanel = ({
         )}
       </div>
     </StreamClickContext.Provider>
-    </RunClickContext.Provider>
   );
 };

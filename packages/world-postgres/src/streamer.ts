@@ -1,7 +1,12 @@
 import { EventEmitter } from 'node:events';
-import type { Streamer } from '@workflow/world';
-import { and, eq } from 'drizzle-orm';
-import type { Sql } from 'postgres';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  Streamer,
+  StreamInfoResponse,
+} from '@workflow/world';
+import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { Client, type Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
 import * as z from 'zod';
 import { type Drizzle, Schema } from './drizzle/index.js';
@@ -38,15 +43,49 @@ class Rc<T extends { drop(): void }> {
   }
 }
 
+/**
+ * Subscribe to a PostgreSQL NOTIFY channel using a dedicated client created
+ * from the pool's connection options. `channel` must be a trusted identifier.
+ */
+export const listenChannel = async (
+  pool: Pool,
+  channel: string,
+  onPayload: (payload: string) => Promise<void>
+): Promise<{ close: () => Promise<void> }> => {
+  const client = new Client(pool.options);
+
+  try {
+    await client.connect();
+    await client.query(`LISTEN ${channel}`);
+  } catch (err) {
+    await client.end().catch(() => {});
+    throw err;
+  }
+
+  const onNotification = (msg: { payload?: string | undefined }) => {
+    onPayload(msg.payload ?? '').catch(() => {});
+  };
+
+  client.on('notification', onNotification);
+
+  return {
+    close: async () => {
+      client.removeListener('notification', onNotification);
+      try {
+        await client.query(`UNLISTEN ${channel}`);
+      } finally {
+        await client.end();
+      }
+    },
+  };
+};
+
 export type PostgresStreamer = Streamer & {
   /** Unlisten from the LISTEN subscription and release resources. */
   close(): Promise<void>;
 };
 
-export function createStreamer(
-  postgres: Sql,
-  drizzle: Drizzle
-): PostgresStreamer {
+export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
   const ulid = monotonicFactory();
   const events = new EventEmitter<{
     [key: `strm:${string}`]: [StreamChunkEvent];
@@ -67,7 +106,8 @@ export function createStreamer(
   };
 
   const STREAM_TOPIC = 'workflow_event_chunk';
-  const listenSubscription = postgres.listen(STREAM_TOPIC, async (msg) => {
+
+  const listenSubscription = listenChannel(pool, STREAM_TOPIC, async (msg) => {
     const parsed = StreamPublishMessage.parse(JSON.parse(msg));
 
     const key = `strm:${parsed.streamId}` as const;
@@ -93,6 +133,10 @@ export function createStreamer(
     });
   });
 
+  const notifyStream = async (payload: string) => {
+    await pool.query('SELECT pg_notify($1, $2)', [STREAM_TOPIC, payload]);
+  };
+
   // Helper to convert chunk to Buffer
   const toBuffer = (chunk: string | Uint8Array): Buffer =>
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
@@ -114,8 +158,7 @@ export function createStreamer(
         chunkData: toBuffer(chunk),
         eof: false,
       });
-      await postgres.notify(
-        STREAM_TOPIC,
+      await notifyStream(
         JSON.stringify(
           StreamPublishMessage.encode({
             chunkId,
@@ -151,8 +194,7 @@ export function createStreamer(
 
       // Notify for each chunk (could be batched in future if needed)
       for (const chunkId of chunkIds) {
-        await postgres.notify(
-          STREAM_TOPIC,
+        await notifyStream(
           JSON.stringify(
             StreamPublishMessage.encode({
               chunkId,
@@ -177,8 +219,7 @@ export function createStreamer(
         chunkData: Buffer.from([]),
         eof: true,
       });
-      await postgres.notify(
-        'workflow_event_chunk',
+      await notifyStream(
         JSON.stringify(
           StreamPublishMessage.encode({
             streamId: name,
@@ -187,6 +228,125 @@ export function createStreamer(
         )
       );
     },
+    async getStreamChunks(
+      name: string,
+      _runId: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const limit = options?.limit ?? 100;
+
+      // Decode cursor to get the last seen chunkId
+      let cursorChunkId: string | null = null;
+      if (options?.cursor) {
+        try {
+          const decoded = JSON.parse(
+            Buffer.from(options.cursor, 'base64').toString('utf-8')
+          );
+          cursorChunkId = decoded.c;
+        } catch {
+          // Invalid cursor, start from beginning
+        }
+      }
+
+      // Fetch only data rows (exclude EOF) with limit + 1 to detect hasMore.
+      // Filtering EOF here avoids the edge case where an EOF row sorting
+      // mid-batch (e.g. due to clock skew) silently drops data rows.
+      const rows = await drizzle
+        .select({
+          chunkId: streams.chunkId,
+          data: streams.chunkData,
+        })
+        .from(streams)
+        .where(
+          and(
+            eq(streams.streamId, name),
+            eq(streams.eof, false),
+            ...(cursorChunkId
+              ? [gt(streams.chunkId, cursorChunkId as `chnk_${string}`)]
+              : [])
+          )
+        )
+        .orderBy(asc(streams.chunkId))
+        .limit(limit + 1);
+
+      const hasMore = rows.length > limit;
+      const pageRows = rows.slice(0, limit);
+
+      // Check if stream is complete via a separate EOF query
+      let streamDone = false;
+      const [eofRow] = await drizzle
+        .select({ eof: streams.eof })
+        .from(streams)
+        .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
+        .limit(1);
+      if (eofRow) {
+        streamDone = true;
+      }
+
+      // Build the cursor index: we need a running index across pages.
+      // Decode the current start index from the cursor.
+      let baseIndex = 0;
+      if (options?.cursor) {
+        try {
+          const decoded = JSON.parse(
+            Buffer.from(options.cursor, 'base64').toString('utf-8')
+          );
+          if (typeof decoded.i === 'number') {
+            baseIndex = decoded.i;
+          }
+        } catch {
+          // Invalid cursor
+        }
+      }
+
+      const chunks = pageRows.map((row, i) => ({
+        index: baseIndex + i,
+        data: new Uint8Array(row.data),
+      }));
+
+      const nextCursor =
+        hasMore && pageRows.length > 0
+          ? Buffer.from(
+              JSON.stringify({
+                c: pageRows[pageRows.length - 1].chunkId,
+                i: baseIndex + pageRows.length,
+              })
+            ).toString('base64')
+          : null;
+
+      return {
+        data: chunks,
+        cursor: nextCursor,
+        hasMore,
+        done: streamDone,
+      };
+    },
+
+    async getStreamInfo(
+      name: string,
+      _runId: string
+    ): Promise<StreamInfoResponse> {
+      // Use COUNT(*) instead of fetching all rows into memory
+      const [countResult] = await drizzle
+        .select({ count: sql<number>`count(*)` })
+        .from(streams)
+        .where(and(eq(streams.streamId, name), eq(streams.eof, false)));
+
+      const dataCount = Number(countResult?.count ?? 0);
+
+      // Check for EOF
+      const [eofRow] = await drizzle
+        .select({ eof: streams.eof })
+        .from(streams)
+        .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
+        .limit(1);
+
+      return {
+        tailIndex: dataCount - 1,
+        done: !!eofRow,
+      };
+    },
+
     async readFromStream(
       name: string,
       startIndex?: number
@@ -263,7 +423,7 @@ export function createStreamer(
           buffer = null;
         },
         cancel() {
-          cleanups.forEach((fn) => fn());
+          cleanups.forEach((fn) => void fn());
         },
       });
     },
@@ -279,8 +439,8 @@ export function createStreamer(
     },
 
     async close() {
-      const sub = await listenSubscription;
-      await sub.unlisten();
+      const sub = await listenSubscription.catch(() => undefined);
+      if (sub) await sub.close();
     },
   };
 }

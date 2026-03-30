@@ -1,10 +1,10 @@
 import { type InferUITools, tool, type UIMessage } from 'ai';
 import { describe, expectTypeOf, it } from 'vitest';
 import { z } from 'zod';
-import type {
+import {
   DurableAgent,
-  InferDurableAgentTools,
-  InferDurableAgentUIMessage,
+  type InferDurableAgentTools,
+  type InferDurableAgentUIMessage,
 } from './durable-agent.js';
 
 const getWeather = tool({
@@ -20,6 +20,21 @@ type WeatherAgent = DurableAgent<{
 describe('InferDurableAgentTools', () => {
   it('infers the tools from a durable agent', () => {
     expectTypeOf<InferDurableAgentTools<WeatherAgent>>().toEqualTypeOf<{
+      getWeather: typeof getWeather;
+    }>();
+  });
+});
+
+describe('DurableAgent tools', () => {
+  it('exposes the configured tools on the agent instance', () => {
+    const agent = new DurableAgent({
+      model: 'test-model',
+      tools: {
+        getWeather,
+      },
+    });
+
+    expectTypeOf(agent.tools).toEqualTypeOf<{
       getWeather: typeof getWeather;
     }>();
   });

@@ -14,7 +14,7 @@
     "start": "node .output/server/index.mjs"
   },
   "dependencies": {
-    "express": "^5.1.0",
+    "express": "^5.2.1",
     "nitro": "catalog:"
   },
   "devDependencies": {

@@ -46,7 +46,9 @@ describe('postgres queue http execution', () => {
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
   const localWorldClose = vi.fn();
   const createQueueHandler = vi.fn(() => wrappedHandler);
-  const postgres = vi.fn(async () => [{ exists: false }]) as any;
+  const pool = {
+    query: vi.fn(async () => ({ rows: [{ exists: false }] })),
+  } as any;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -91,7 +93,7 @@ describe('postgres queue http execution', () => {
       return wrappedHandler;
     });
 
-    const queue = buildQueue({ connectionString: 'postgres://test' }, postgres);
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
 
     // Regression for #1416: when the worker process has a real step route
     // loaded but no matching step registration, beta.44 direct execution fails
@@ -141,7 +143,7 @@ describe('postgres queue http execution', () => {
       Number(new URL(server.baseUrl).port)
     );
 
-    const queue = buildQueue({ connectionString: 'postgres://test' }, postgres);
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();
 
     const task = getTaskHandler('workflow_steps');
@@ -168,7 +170,7 @@ describe('postgres queue http execution', () => {
   });
 
   it('keeps the base-url error when env vars and local port detection cannot resolve a target', async () => {
-    const queue = buildQueue({ connectionString: 'postgres://test' }, postgres);
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     await queue.start();
 
     const task = getTaskHandler('workflow_steps');
@@ -217,7 +219,7 @@ describe('postgres queue http execution', () => {
     vi.stubGlobal('fetch', fetchMock);
     process.env.WORKFLOW_LOCAL_BASE_URL = 'http://localhost:3000';
 
-    const queue = buildQueue({ connectionString: 'postgres://test' }, postgres);
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     try {
       await queue.start();
 
@@ -259,7 +261,7 @@ describe('postgres queue http execution', () => {
     vi.stubGlobal('fetch', fetchMock);
     process.env.WORKFLOW_LOCAL_BASE_URL = 'http://localhost:3000';
 
-    const queue = buildQueue({ connectionString: 'postgres://test' }, postgres);
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
     try {
       await queue.start();
 
@@ -290,10 +292,7 @@ describe('postgres queue http execution', () => {
     vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));
 
     try {
-      const queue = buildQueue(
-        { connectionString: 'postgres://test' },
-        postgres
-      );
+      const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
       await queue.start();
 
       await queue.queue(
@@ -333,9 +332,9 @@ describe('postgres queue http execution', () => {
 
 function buildQueue(
   config: Parameters<typeof createQueue>[0],
-  postgres: Parameters<typeof createQueue>[1]
+  pgPool: Parameters<typeof createQueue>[1]
 ) {
-  const queue = createQueue(config, postgres);
+  const queue = createQueue(config, pgPool);
   createdQueues.push(queue);
   return queue;
 }

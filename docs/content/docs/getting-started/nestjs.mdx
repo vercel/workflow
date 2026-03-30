@@ -11,6 +11,10 @@ related:
 
 This guide will walk through setting up your first workflow in a NestJS app. Along the way, you'll learn more about the concepts that are fundamental to using the development kit in your own projects.
 
+<Callout>
+NestJS integration is experimental and not yet supported for deployment to Vercel.
+</Callout>
+
 ---
 
 <Steps>
@@ -322,14 +326,6 @@ WorkflowModule.forRoot({
   skipBuild: false,
 });
 ```
-
-## Deploying to production
-
-Workflow DevKit apps currently work best when deployed to [Vercel](https://vercel.com/home) and needs no special configuration.
-
-<FluidComputeCallout />
-
-Check the [Deploying](/docs/deploying) section to learn how your workflows can be deployed elsewhere.
 
 ## Next Steps
 
