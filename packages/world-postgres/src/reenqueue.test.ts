@@ -71,11 +71,19 @@ describe('re-enqueue active runs on start', () => {
     end: vi.fn(),
   } as any;
 
-  function mockRunsList(runs: Array<{ runId: string; workflowName: string }>) {
-    const allRuns = runs.map((r) => ({ ...r, status: 'running' }));
+  function mockRunsList(
+    runsByStatus: Partial<
+      Record<
+        'pending' | 'running',
+        Array<{ runId: string; workflowName: string }>
+      >
+    >
+  ) {
     vi.mocked(createRunsStorage).mockReturnValue({
-      list: vi.fn(async () => ({
-        data: allRuns,
+      list: vi.fn(async (params: any) => ({
+        data: (runsByStatus[params?.status as 'pending' | 'running'] ?? []).map(
+          (r) => ({ ...r, status: params?.status })
+        ),
         hasMore: false,
         cursor: null,
       })),
@@ -97,7 +105,7 @@ describe('re-enqueue active runs on start', () => {
     vi.mocked(createStepsStorage).mockReturnValue({} as any);
 
     // Default: no active runs
-    mockRunsList([]);
+    mockRunsList({});
   });
 
   afterEach(async () => {
@@ -106,19 +114,15 @@ describe('re-enqueue active runs on start', () => {
   });
 
   it('re-enqueues active runs via graphile-worker on start', async () => {
-    mockRunsList([
-      { runId: 'wrun_AAA', workflowName: 'wfA' },
-      { runId: 'wrun_BBB', workflowName: 'wfB' },
-    ]);
+    mockRunsList({
+      pending: [{ runId: 'wrun_AAA', workflowName: 'wfA' }],
+      running: [{ runId: 'wrun_BBB', workflowName: 'wfB' }],
+    });
 
     const world = createWorld({ connectionString: 'postgres://test', pool });
     await world.start();
 
-    // Two runs × two statuses queried = 4 list calls, but mockRunsList
-    // returns the same data for each call. The queue should get 4 addJob
-    // calls (2 runs × 2 statuses). However, our mock returns the same runs
-    // for both 'pending' and 'running' queries, so we get 4 enqueues.
-    // In a real scenario each run would only match one status.
+    expect(workerUtilsMock.addJob).toHaveBeenCalledTimes(2);
     expect(workerUtilsMock.addJob).toHaveBeenCalledWith(
       'workflow_flows',
       expect.objectContaining({ id: 'wfA' }),
@@ -134,7 +138,7 @@ describe('re-enqueue active runs on start', () => {
   });
 
   it('does not enqueue anything when there are no active runs', async () => {
-    mockRunsList([]);
+    mockRunsList({});
 
     const world = createWorld({ connectionString: 'postgres://test', pool });
     await world.start();

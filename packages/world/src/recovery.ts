@@ -27,9 +27,15 @@ export async function reenqueueActiveRuns(
         pagination: { cursor },
       });
       for (const run of page.data) {
-        const queueName: ValidQueueName = `__wkf_workflow_${run.workflowName}`;
-        await enqueue(queueName, { runId: run.runId });
-        reenqueued++;
+        try {
+          const queueName: ValidQueueName = `__wkf_workflow_${run.workflowName}`;
+          await enqueue(queueName, { runId: run.runId });
+          reenqueued++;
+        } catch (err) {
+          console.warn(
+            `[${label}] Failed to re-enqueue run ${run.runId}: ${err}`
+          );
+        }
       }
       hasMore = page.hasMore;
       cursor = page.cursor ?? undefined;
