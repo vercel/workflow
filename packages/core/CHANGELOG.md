@@ -1,5 +1,16 @@
 # @workflow/core
 
+## 4.2.0-beta.74
+
+### Patch Changes
+
+- [#1546](https://github.com/vercel/workflow/pull/1546) [`62ff600`](https://github.com/vercel/workflow/commit/62ff6004f6f5c1b7b93099470a0097d8a81a42ee) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Remove `Buffer` global from workflow VM context
+
+- [#1547](https://github.com/vercel/workflow/pull/1547) [`4f646e3`](https://github.com/vercel/workflow/commit/4f646e3d58d27a5777922519a72e352814a7ef12) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Polyfill TC39 `Uint8Array` base64/hex methods in workflow VM context
+
+- Updated dependencies [[`bd1f7e4`](https://github.com/vercel/workflow/commit/bd1f7e4b4c45750f9b8a3f37057076f2e69a5c07)]:
+  - @workflow/world-local@4.1.0-beta.47
+
 ## 4.2.0-beta.73
 
 ### Patch Changes
