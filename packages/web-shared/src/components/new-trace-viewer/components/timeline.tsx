@@ -96,24 +96,33 @@ const TimelineBar = memo(function TimelineBar({
           />
         ) : segments.length > 0 ? (
           <div className="relative w-full h-4 top-1 [&>*:nth-child(2)]:rounded-l-sm">
-            {segments.map((seg, i) => (
-              <div
-                key={`${seg.status}-${i}`}
-                className={cn(
-                  'absolute h-full first:rounded-sm last:rounded-r-sm',
-                  SEGMENT_CONFIG[seg.status].className
-                )}
-                style={{
-                  left: `${seg.startFraction * 100}%`,
-                  width:
-                    seg.status === 'queued'
-                      ? `calc(${(seg.endFraction - seg.startFraction) * 100}% - 2px)`
-                      : `${(seg.endFraction - seg.startFraction) * 100}%`,
-                  minWidth: 2,
-                  ...SEGMENT_CONFIG[seg.status].style,
-                }}
-              />
-            ))}
+            {segments.map((seg, i) => {
+              const segPixelWidth =
+                (seg.endFraction - seg.startFraction) * pixelWidth;
+              const segStyle =
+                seg.status === 'queued' && segPixelWidth < 20
+                  ? { background: 'var(--ds-gray-500)' }
+                  : SEGMENT_CONFIG[seg.status].style;
+
+              return (
+                <div
+                  key={`${seg.status}-${i}`}
+                  className={cn(
+                    'absolute h-full first:rounded-sm last:rounded-r-sm',
+                    SEGMENT_CONFIG[seg.status].className
+                  )}
+                  style={{
+                    left: `${seg.startFraction * 100}%`,
+                    width:
+                      seg.status === 'queued'
+                        ? `calc(${(seg.endFraction - seg.startFraction) * 100}% - 2px)`
+                        : `${(seg.endFraction - seg.startFraction) * 100}%`,
+                    minWidth: 2,
+                    ...segStyle,
+                  }}
+                />
+              );
+            })}
           </div>
         ) : (
           <div
