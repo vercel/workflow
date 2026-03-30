@@ -7,9 +7,9 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-const compactFormatter = new Intl.NumberFormat(undefined, {
-  maximumFractionDigits: 2,
-});
+// const compactFormatter = new Intl.NumberFormat(undefined, {
+//   maximumFractionDigits: 2,
+// });
 
 const secondsFormatter = new Intl.NumberFormat(undefined, {
   minimumFractionDigits: 2,

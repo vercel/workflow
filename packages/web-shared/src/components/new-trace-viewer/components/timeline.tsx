@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { memo, useMemo } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { getHighResInMs } from '../../trace-viewer/util/timing';
@@ -33,14 +33,18 @@ const SEGMENT_CONFIG: Record<
   received: { className: 'bg-blue-700' },
 };
 
+const FIXED_BAR_WIDTH_PX = 4;
+
 const TimelineBar = memo(function TimelineBar({
   span,
   compression,
+  containerWidth,
   isSelected,
   onClick,
 }: {
   span: Span;
   compression: TimeCompression;
+  containerWidth: number;
   isSelected: boolean;
   onClick: () => void;
 }): ReactNode {
@@ -53,6 +57,9 @@ const TimelineBar = memo(function TimelineBar({
 
   const leftPct = leftFrac * 100;
   const widthPct = widthFrac * 100;
+
+  const pixelWidth = widthFrac * containerWidth;
+  const isCompressed = containerWidth > 0 && pixelWidth < FIXED_BAR_WIDTH_PX;
 
   const segments = useMemo(() => computeSpanSegments(span), [span]);
 
@@ -77,10 +84,17 @@ const TimelineBar = memo(function TimelineBar({
         className="absolute h-6 top-1.5 rounded-sm"
         style={{
           left: `${leftPct}%`,
-          width: `max(${widthPct}%, 4px)`,
+          width: isCompressed
+            ? `${FIXED_BAR_WIDTH_PX}px`
+            : `max(${widthPct}%, 4px)`,
         }}
       >
-        {segments.length > 0 ? (
+        {isCompressed ? (
+          <div
+            className="h-4 rounded-sm relative top-1"
+            style={{ width: '100%', background: fallbackColor }}
+          />
+        ) : segments.length > 0 ? (
           <div className="relative w-full h-4 top-1 [&>*:nth-child(2)]:rounded-l-sm">
             {segments.map((seg, i) => (
               <div
@@ -183,13 +197,27 @@ export function Timeline({
   selectedId: string | null;
   onSelect: (spanId: string) => void;
 }): ReactNode {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => {
+      setContainerWidth(entry.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   return (
-    <div className="relative py-2">
+    <div ref={containerRef} className="relative py-2">
       {spans.map((span) => (
         <TimelineBar
           key={span.spanId}
           span={span}
           compression={compression}
+          containerWidth={containerWidth}
           isSelected={selectedId === span.spanId}
           onClick={() => onSelect(span.spanId)}
         />
