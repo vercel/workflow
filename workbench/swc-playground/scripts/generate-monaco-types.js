@@ -251,18 +251,32 @@ for (const { moduleName, content } of declareModules) {
   declarations += `\n}\n\n`;
 }
 
-// Collect @types/node declarations
+// Collect @types/node declarations (recursively, including subdirectories
+// like fs/promises.d.ts, stream/web.d.ts, etc.)
 const nodeTypesDir = new URL('../node_modules/@types/node/', import.meta.url);
 const nodeTypesFiles = [];
-if (existsSync(nodeTypesDir)) {
-  console.log('Processing @types/node...');
-  const entries = readdirSync(nodeTypesDir);
+
+function collectNodeTypes(dirUrl, relativeTo) {
+  const entries = readdirSync(dirUrl, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.endsWith('.d.ts')) {
-      const content = readFileSync(new URL(entry, nodeTypesDir), 'utf-8');
-      nodeTypesFiles.push({ name: entry, content });
+    const entryUrl = new URL(
+      `${entry.name}${entry.isDirectory() ? '/' : ''}`,
+      dirUrl
+    );
+    if (entry.isDirectory() && entry.name !== 'node_modules') {
+      collectNodeTypes(entryUrl, relativeTo);
+    } else if (entry.name.endsWith('.d.ts')) {
+      const content = readFileSync(entryUrl, 'utf-8');
+      // Compute path relative to @types/node/
+      const relPath = entryUrl.pathname.slice(relativeTo.pathname.length);
+      nodeTypesFiles.push({ name: relPath, content });
     }
   }
+}
+
+if (existsSync(nodeTypesDir)) {
+  console.log('Processing @types/node...');
+  collectNodeTypes(nodeTypesDir, nodeTypesDir);
   console.log(`  Collected ${nodeTypesFiles.length} .d.ts files`);
 } else {
   console.warn('  @types/node not found, skipping');
