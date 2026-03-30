@@ -106,6 +106,17 @@ export abstract class BaseBuilder {
   }
 
   /**
+   * When outputting fully-bundled ESM, CJS dependencies that call require()
+   * for Node.js builtins (e.g. debug → require('tty')) break because esbuild's
+   * CJS-to-ESM __require shim doesn't have access to a real require function.
+   * This banner provides one via createRequire so bundled CJS code works in ESM.
+   */
+  private getEsmRequireBanner(format: string): string {
+    if (format !== 'esm') return '';
+    return 'import { createRequire as __createRequire } from "node:module";\nvar require = __createRequire(import.meta.url);\n';
+  }
+
+  /**
    * Performs the complete build process for workflows.
    * Subclasses must implement this to define their specific build steps.
    */
@@ -496,10 +507,11 @@ export abstract class BaseBuilder {
       await getEsbuildTsconfigOptions(tsconfigPath);
     const { banner: importMetaBanner, define: importMetaDefine } =
       this.getCjsImportMetaPolyfill(format);
+    const esmRequireBanner = this.getEsmRequireBanner(format);
 
     const esbuildCtx = await esbuild.context({
       banner: {
-        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}`,
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}${esmRequireBanner}`,
       },
       stdin: {
         contents: entryContent,
@@ -855,9 +867,10 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
         // Now bundle this so we can resolve the @workflow/core dependency
         // we could remove this if we do nft tracing or similar instead
+        const finalEsmRequireBanner = this.getEsmRequireBanner(format);
         const finalWorkflowResult = await esbuild.build({
           banner: {
-            js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+            js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${finalEsmRequireBanner}`,
           },
           stdin: {
             contents: workflowFunctionCode,
@@ -1098,10 +1111,11 @@ export const OPTIONS = handler;`;
 
     // For Build Output API, bundle with esbuild to resolve imports
 
+    const webhookEsmRequireBanner = this.getEsmRequireBanner('esm');
     const webhookBundleStart = Date.now();
     const result = await esbuild.build({
       banner: {
-        js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${webhookEsmRequireBanner}`,
       },
       stdin: {
         contents: routeContent,
