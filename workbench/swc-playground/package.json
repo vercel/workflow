@@ -2,17 +2,18 @@
   "name": "workflow-devkit-compiler-playground",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "build": "next build",
-    "dev": "next dev",
+    "copy-wasm": "node scripts/copy-wasm.js",
+    "build": "node scripts/copy-wasm.js && next build",
+    "dev": "node scripts/copy-wasm.js && next dev",
     "lint": "eslint .",
     "start": "next start"
   },
   "dependencies": {
     "@monaco-editor/react": "latest",
-    "@swc/core": "1.15.3",
     "@vercel/analytics": "latest",
-    "@workflow/swc-plugin": "workspace:*",
+    "@workflow/swc-playground-wasm": "workspace:*",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lucide-react": "^0.454.0",

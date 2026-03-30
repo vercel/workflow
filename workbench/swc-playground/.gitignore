@@ -4,3 +4,6 @@
 next-env.d.ts
 node_modules
 tsconfig.tsbuildinfo
+
+# WASM build artifacts (copied from packages/swc-playground-wasm/pkg)
+public/wasm/

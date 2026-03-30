@@ -8,7 +8,7 @@ import {
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Switch } from '@/components/ui/switch';
-import { transformCode } from '@/lib/transform-action';
+import { initWasm, transformCode } from '@/lib/transform';
 import { CodeEditor } from './editor';
 
 const STORAGE_KEY = 'swc-playground-code';
@@ -66,6 +66,8 @@ export function SwcPlayground({
   const [moduleSpecifier, setModuleSpecifier] = useState('');
   const [vimMode, setVimMode] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [wasmReady, setWasmReady] = useState(false);
+  const [wasmError, setWasmError] = useState<string | null>(null);
   const [results, setResults] = useState<Record<ViewMode, CompilationResult>>({
     workflow: { code: '' },
     step: { code: '' },
@@ -75,6 +77,18 @@ export function SwcPlayground({
   const [expandedPanels, setExpandedPanels] = useState<Set<ViewMode>>(
     new Set(['workflow', 'step', 'client'])
   );
+
+  // Initialize WASM module on mount
+  useEffect(() => {
+    initWasm()
+      .then(() => setWasmReady(true))
+      .catch((err) => {
+        console.error('Failed to initialize WASM:', err);
+        setWasmError(
+          err instanceof Error ? err.message : 'Failed to load WASM module'
+        );
+      });
+  }, []);
 
   // Hydrate from localStorage on mount
   useEffect(() => {
@@ -122,6 +136,7 @@ export function SwcPlayground({
 
   const compile = useCallback(
     async (sourceCode: string) => {
+      if (!wasmReady) return;
       setIsCompiling(true);
 
       try {
@@ -132,7 +147,7 @@ export function SwcPlayground({
         setResults(transformResults);
       } catch (err) {
         const errorMessage =
-          err instanceof Error ? err.message : 'Server error';
+          err instanceof Error ? err.message : 'Transform error';
         setResults({
           workflow: { code: '', error: errorMessage },
           step: { code: '', error: errorMessage },
@@ -142,15 +157,16 @@ export function SwcPlayground({
         setIsCompiling(false);
       }
     },
-    [moduleSpecifier]
+    [moduleSpecifier, wasmReady]
   );
 
   useEffect(() => {
+    if (!wasmReady) return;
     const timer = setTimeout(() => {
       compile(code);
-    }, 500);
+    }, 300);
     return () => clearTimeout(timer);
-  }, [code, compile]);
+  }, [code, compile, wasmReady]);
 
   const togglePanel = (mode: ViewMode) => {
     setExpandedPanels((prev) => {
@@ -174,6 +190,18 @@ export function SwcPlayground({
           <span className="text-xs px-2 py-1 bg-muted rounded text-muted-foreground">
             @workflow/swc-plugin{pluginVersion ? `@${pluginVersion}` : ''}
           </span>
+          {!wasmReady && !wasmError && (
+            <span className="text-xs px-2 py-1 bg-muted rounded text-muted-foreground flex items-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Loading WASM...
+            </span>
+          )}
+          {wasmError && (
+            <span className="text-xs px-2 py-1 bg-red-100 dark:bg-red-900/30 rounded text-red-600 dark:text-red-400 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              WASM failed to load
+            </span>
+          )}
           {gitCommitSha && (
             <a
               href={`https://github.com/vercel/workflow/commit/${gitCommitSha}`}
