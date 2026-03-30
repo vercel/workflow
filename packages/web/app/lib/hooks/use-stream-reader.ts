@@ -3,8 +3,9 @@ import {
   hydrateData,
   isEncryptedData,
 } from '@workflow/core/serialization-format';
+import type { WorkflowRunStatus } from '@workflow/world';
 import { getWebRevivers } from '@workflow/web-shared';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
 import { readStream } from '~/lib/workflow-api-client';
 
@@ -16,6 +17,11 @@ export interface StreamChunk {
 
 const FRAME_HEADER_SIZE = 4;
 const ENCRYPTED_PLACEHOLDER = '[Encrypted]';
+const POLL_INTERVAL_MS = 3000;
+
+function isRunActive(status?: WorkflowRunStatus): boolean {
+  return status === 'pending' || status === 'running';
+}
 
 /**
  * Maximum number of entries (array elements / object keys) to keep when
@@ -118,18 +124,91 @@ export function useStreamReader(
   env: EnvMap,
   streamId: string | null,
   runId?: string,
-  encryptionKey?: Uint8Array | null
+  encryptionKey?: Uint8Array | null,
+  runStatus?: WorkflowRunStatus
 ) {
   const [chunks, setChunks] = useState<StreamChunk[]>([]);
   const [isLive, setIsLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
   const chunkIdRef = useRef(0);
+  const frameCountRef = useRef(0);
+  const pollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const processFrame = useCallback(
+    async (
+      rawFrame: Uint8Array,
+      cryptoKey: CryptoKey | undefined,
+      revivers: ReturnType<typeof getWebRevivers>
+    ): Promise<
+      { encrypted: true } | { encrypted: false; chunk: StreamChunk }
+    > => {
+      let frameData = rawFrame;
+      if (
+        frameData.length >= FRAME_HEADER_SIZE + 4 &&
+        !isEncryptedData(frameData)
+      ) {
+        const innerView = new DataView(
+          frameData.buffer,
+          frameData.byteOffset,
+          frameData.byteLength
+        );
+        const innerLen = innerView.getUint32(0, false);
+        if (
+          innerLen > 0 &&
+          innerLen <= 10 * 1024 * 1024 &&
+          innerLen === frameData.length - FRAME_HEADER_SIZE
+        ) {
+          frameData = frameData.slice(FRAME_HEADER_SIZE);
+        }
+      }
+
+      let hydrated: unknown;
+      try {
+        if (isEncryptedData(frameData)) {
+          if (!cryptoKey) {
+            return { encrypted: true };
+          }
+          const payload = frameData.slice(4);
+          hydrated = hydrateData(
+            await aesGcmDecrypt(cryptoKey, payload),
+            revivers
+          );
+        } else {
+          hydrated = hydrateData(frameData, revivers);
+        }
+      } catch {
+        hydrated = ENCRYPTED_PLACEHOLDER;
+      }
+
+      let text: string;
+      try {
+        if (typeof hydrated === 'string') {
+          text = hydrated;
+        } else {
+          const safe = sanitizeForDisplay(hydrated);
+          text = JSON.stringify(safe, null, 2);
+        }
+      } catch {
+        text = '[Serialization Error]';
+      }
+
+      const chunkId = chunkIdRef.current++;
+      return { encrypted: false, chunk: { id: chunkId, text } };
+    },
+    []
+  );
 
   useEffect(() => {
     setChunks([]);
     setError(null);
     chunkIdRef.current = 0;
+    frameCountRef.current = 0;
+
+    if (pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+    }
 
     if (!streamId || !runId) {
       setIsLive(false);
@@ -143,187 +222,190 @@ export function useStreamReader(
 
     const revivers = getWebRevivers();
 
+    const parseLegacyLine = (line: string): StreamChunk => {
+      const chunkId = chunkIdRef.current++;
+      let text: string;
+      try {
+        const parsed = JSON.parse(line);
+        text = JSON.stringify(parsed, null, 2);
+      } catch {
+        text = line;
+      }
+      return { id: chunkId, text };
+    };
+
+    const fetchAndParse = async (
+      targetBuffer: StreamChunk[],
+      cryptoKey: CryptoKey | undefined,
+      skipFrames = 0
+    ): Promise<
+      { encrypted: true } | { encrypted: false; frameCount: number }
+    > => {
+      const rawStream = await readStream(
+        env,
+        streamId,
+        runId,
+        abortController.signal
+      );
+
+      const reader = rawStream.getReader();
+      const decoder = new TextDecoder();
+      let buffer = new Uint8Array(0);
+      let encoding: StreamEncoding | null = null;
+      let textRemainder = '';
+      let frameIndex = 0;
+
+      const appendToBuffer = (data: Uint8Array) => {
+        const newBuffer = new Uint8Array(buffer.length + data.length);
+        newBuffer.set(buffer, 0);
+        newBuffer.set(data, buffer.length);
+        buffer = newBuffer;
+      };
+
+      for (;;) {
+        if (abortController.signal.aborted) break;
+
+        const { value, done } = await reader.read();
+        if (done) {
+          if (encoding === 'legacy' && textRemainder.trim()) {
+            frameIndex++;
+            if (frameIndex > skipFrames) {
+              targetBuffer.push(parseLegacyLine(textRemainder.trim()));
+            }
+            textRemainder = '';
+          }
+          break;
+        }
+
+        if (encoding === null) {
+          appendToBuffer(value);
+          if (buffer.length >= FRAME_HEADER_SIZE) {
+            encoding = detectEncoding(buffer);
+          }
+          if (encoding === 'legacy') {
+            textRemainder = decoder.decode(buffer, { stream: true });
+            buffer = new Uint8Array(0);
+          }
+        } else if (encoding === 'legacy') {
+          textRemainder += decoder.decode(value, { stream: true });
+        } else {
+          appendToBuffer(value);
+        }
+
+        if (encoding === 'legacy') {
+          const lines = textRemainder.split('\n');
+          textRemainder = lines.pop() ?? '';
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed) {
+              frameIndex++;
+              if (frameIndex > skipFrames) {
+                targetBuffer.push(parseLegacyLine(trimmed));
+              }
+            }
+          }
+          continue;
+        }
+
+        let offset = 0;
+        let framesInBatch = 0;
+
+        while (offset + FRAME_HEADER_SIZE <= buffer.length) {
+          const view = new DataView(
+            buffer.buffer,
+            buffer.byteOffset + offset,
+            buffer.byteLength - offset
+          );
+          const frameLength = view.getUint32(0, false);
+
+          if (frameLength === 0 || frameLength > 10 * 1024 * 1024) {
+            break;
+          }
+
+          if (offset + FRAME_HEADER_SIZE + frameLength > buffer.length) {
+            break;
+          }
+
+          const frameData = buffer.slice(
+            offset + FRAME_HEADER_SIZE,
+            offset + FRAME_HEADER_SIZE + frameLength
+          );
+          offset += FRAME_HEADER_SIZE + frameLength;
+
+          frameIndex++;
+          if (frameIndex <= skipFrames) {
+            continue;
+          }
+
+          const result = await processFrame(frameData, cryptoKey, revivers);
+          if (result.encrypted) {
+            reader.cancel().catch(() => {});
+            return { encrypted: true };
+          }
+          targetBuffer.push(result.chunk);
+
+          framesInBatch++;
+          if (framesInBatch % YIELD_EVERY_N_FRAMES === 0) {
+            await yieldToMain();
+            if (abortController.signal.aborted || !mounted) break;
+          }
+        }
+
+        buffer = buffer.slice(offset);
+      }
+
+      return { encrypted: false, frameCount: frameIndex };
+    };
+
     const readStreamData = async () => {
       try {
-        const rawStream = await readStream(
-          env,
-          streamId,
-          runId,
-          abortController.signal
-        );
-
         const cryptoKey = encryptionKey
           ? await importKey(encryptionKey)
           : undefined;
 
-        const reader = rawStream.getReader();
-        const decoder = new TextDecoder();
-        let buffer = new Uint8Array(0);
-        let encoding: StreamEncoding | null = null;
-        let textRemainder = '';
+        const initialChunks: StreamChunk[] = [];
+        const result = await fetchAndParse(initialChunks, cryptoKey);
 
-        const appendToBuffer = (data: Uint8Array) => {
-          const newBuffer = new Uint8Array(buffer.length + data.length);
-          newBuffer.set(buffer, 0);
-          newBuffer.set(data, buffer.length);
-          buffer = newBuffer;
-        };
-
-        const addLegacyLine = (line: string) => {
-          if (!mounted || !line) return;
-          const chunkId = chunkIdRef.current++;
-          let text: string;
-          try {
-            const parsed = JSON.parse(line);
-            text = JSON.stringify(parsed, null, 2);
-          } catch {
-            text = line;
+        if (result.encrypted) {
+          if (mounted) {
+            setError('This stream is encrypted. Click Decrypt to view.');
+            setIsLive(false);
           }
-          setChunks((prev) => [...prev, { id: chunkId, text }]);
-        };
+          return;
+        }
 
-        const addFramedChunk = async (rawFrame: Uint8Array) => {
-          if (!mounted) return;
+        frameCountRef.current = result.frameCount;
 
-          // The getStreamChunks API returns chunks that include a
-          // length-prefixed frame wrapper. Detect and unwrap it so we
-          // get to the actual payload (devl/encr prefixed data).
-          let frameData = rawFrame;
-          if (
-            frameData.length >= FRAME_HEADER_SIZE + 4 &&
-            !isEncryptedData(frameData)
-          ) {
-            const innerView = new DataView(
-              frameData.buffer,
-              frameData.byteOffset,
-              frameData.byteLength
-            );
-            const innerLen = innerView.getUint32(0, false);
-            if (
-              innerLen > 0 &&
-              innerLen <= 10 * 1024 * 1024 &&
-              innerLen === frameData.length - FRAME_HEADER_SIZE
-            ) {
-              frameData = frameData.slice(FRAME_HEADER_SIZE);
-            }
-          }
+        if (!mounted || abortController.signal.aborted) return;
 
-          let hydrated: unknown;
-          try {
-            if (isEncryptedData(frameData)) {
-              if (!cryptoKey) {
-                if (mounted) {
-                  setError('This stream is encrypted. Click Decrypt to view.');
-                  setIsLive(false);
-                }
-                return 'encrypted' as const;
-              }
-              const payload = frameData.slice(4);
-              hydrated = hydrateData(
-                await aesGcmDecrypt(cryptoKey, payload),
-                revivers
-              );
-            } else {
-              hydrated = hydrateData(frameData, revivers);
-            }
-          } catch {
-            hydrated = ENCRYPTED_PLACEHOLDER;
-          }
+        setChunks(initialChunks);
 
-          if (mounted && hydrated !== undefined && hydrated !== null) {
-            const chunkId = chunkIdRef.current++;
-            let text: string;
+        if (isRunActive(runStatus)) {
+          const poll = async () => {
+            if (!mounted || abortController.signal.aborted) return;
             try {
-              if (typeof hydrated === 'string') {
-                text = hydrated;
-              } else {
-                const safe = sanitizeForDisplay(hydrated);
-                text = JSON.stringify(safe, null, 2);
+              const newChunks: StreamChunk[] = [];
+              const pollResult = await fetchAndParse(
+                newChunks,
+                cryptoKey,
+                frameCountRef.current
+              );
+              if (!pollResult.encrypted) {
+                frameCountRef.current = pollResult.frameCount;
+                if (newChunks.length > 0 && mounted) {
+                  setChunks((prev) => [...prev, ...newChunks]);
+                }
               }
             } catch {
-              text = '[Serialization Error]';
+              // Silently ignore poll errors
             }
-            setChunks((prev) => [...prev, { id: chunkId, text }]);
-          }
-        };
-
-        for (;;) {
-          if (abortController.signal.aborted) break;
-
-          const { value, done } = await reader.read();
-          if (done) {
-            if (encoding === 'legacy' && textRemainder.trim()) {
-              addLegacyLine(textRemainder.trim());
-              textRemainder = '';
+            if (mounted && !abortController.signal.aborted) {
+              pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MS);
             }
-            if (mounted) setIsLive(false);
-            break;
-          }
-
-          if (encoding === null) {
-            appendToBuffer(value);
-            if (buffer.length >= FRAME_HEADER_SIZE) {
-              encoding = detectEncoding(buffer);
-            }
-            if (encoding === 'legacy') {
-              textRemainder = decoder.decode(buffer, { stream: true });
-              buffer = new Uint8Array(0);
-            }
-          } else if (encoding === 'legacy') {
-            textRemainder += decoder.decode(value, { stream: true });
-          } else {
-            appendToBuffer(value);
-          }
-
-          if (encoding === 'legacy') {
-            const lines = textRemainder.split('\n');
-            textRemainder = lines.pop() ?? '';
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (trimmed) addLegacyLine(trimmed);
-            }
-            continue;
-          }
-
-          let offset = 0;
-          let framesInBatch = 0;
-
-          while (offset + FRAME_HEADER_SIZE <= buffer.length) {
-            const view = new DataView(
-              buffer.buffer,
-              buffer.byteOffset + offset,
-              buffer.byteLength - offset
-            );
-            const frameLength = view.getUint32(0, false);
-
-            if (frameLength === 0 || frameLength > 10 * 1024 * 1024) {
-              break;
-            }
-
-            if (offset + FRAME_HEADER_SIZE + frameLength > buffer.length) {
-              break;
-            }
-
-            const frameData = buffer.slice(
-              offset + FRAME_HEADER_SIZE,
-              offset + FRAME_HEADER_SIZE + frameLength
-            );
-            offset += FRAME_HEADER_SIZE + frameLength;
-
-            const chunkResult = await addFramedChunk(frameData);
-            if (chunkResult === 'encrypted') {
-              reader.cancel().catch(() => {});
-              return;
-            }
-
-            framesInBatch++;
-            if (framesInBatch % YIELD_EVERY_N_FRAMES === 0) {
-              await yieldToMain();
-              if (abortController.signal.aborted || !mounted) break;
-            }
-          }
-
-          buffer = buffer.slice(offset);
+          };
+          pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MS);
+        } else {
+          setIsLive(false);
         }
       } catch (err) {
         if (abortController.signal.aborted) return;
@@ -338,12 +420,23 @@ export function useStreamReader(
 
     return () => {
       mounted = false;
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
+      abortController.abort();
+      if (pollTimerRef.current) {
+        clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [env, streamId, runId, encryptionKey]);
+  }, [env, streamId, runId, encryptionKey, processFrame]);
+
+  // When run finishes, stop polling
+  useEffect(() => {
+    if (!isRunActive(runStatus) && pollTimerRef.current) {
+      clearTimeout(pollTimerRef.current);
+      pollTimerRef.current = null;
+      setIsLive(false);
+    }
+  }, [runStatus]);
 
   return { chunks, isLive, error };
 }
