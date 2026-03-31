@@ -258,6 +258,33 @@ export function createLimitsContractSuite(
         expect(second.reason).toBe('rate');
         expect(second.retryAfterMs).toBeGreaterThanOrEqual(0);
 
+        let secondRetry = await harness.limits.acquire(
+          acquireRequest(
+            ownerB,
+            'step:provider:openai',
+            { rate: { count: 1, periodMs } },
+            1_000
+          )
+        );
+        const deadline = Date.now() + periodMs + 1_000;
+        while (secondRetry.status === 'blocked' && Date.now() < deadline) {
+          await sleep(Math.max(25, secondRetry.retryAfterMs ?? 0) + 50);
+          secondRetry = await harness.limits.acquire(
+            acquireRequest(
+              ownerB,
+              'step:provider:openai',
+              { rate: { count: 1, periodMs } },
+              1_000
+            )
+          );
+        }
+
+        expect(secondRetry.status).toBe('acquired');
+        if (secondRetry.status !== 'acquired')
+          throw new Error('expected acquisition');
+
+        await harness.limits.release(releaseRequest(secondRetry.lease));
+
         let third = await harness.limits.acquire(
           acquireRequest(
             ownerC,
@@ -266,8 +293,8 @@ export function createLimitsContractSuite(
             1_000
           )
         );
-        const deadline = Date.now() + periodMs + 1_000;
-        while (third.status === 'blocked' && Date.now() < deadline) {
+        const thirdDeadline = Date.now() + periodMs + 1_000;
+        while (third.status === 'blocked' && Date.now() < thirdDeadline) {
           await sleep(Math.max(25, third.retryAfterMs ?? 0) + 50);
           third = await harness.limits.acquire(
             acquireRequest(

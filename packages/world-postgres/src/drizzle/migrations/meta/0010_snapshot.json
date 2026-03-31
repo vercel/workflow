@@ -1,5 +1,5 @@
 {
-  "id": "c4af56df-d588-4810-a8b4-f4eb68b270b2",
+  "id": "c3c21664-f021-4db5-be29-7c2991e325eb",
   "prevId": "7adbbd35-ca90-4353-bb34-3d1b2435a027",
   "version": "7",
   "dialect": "postgresql",
@@ -209,6 +209,43 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "workflow.workflow_limit_keys": {
+      "name": "workflow_limit_keys",
+      "schema": "workflow",
+      "columns": {
+        "limit_key": {
+          "name": "limit_key",
+          "type": "varchar",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "concurrency_max": {
+          "name": "concurrency_max",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rate_count": {
+          "name": "rate_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "rate_period_ms": {
+          "name": "rate_period_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
     "workflow.workflow_limit_leases": {
       "name": "workflow_limit_leases",
       "schema": "workflow",
@@ -241,24 +278,6 @@
         "expires_at": {
           "name": "expires_at",
           "type": "timestamp",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "concurrency_max": {
-          "name": "concurrency_max",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rate_count": {
-          "name": "rate_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rate_period_ms": {
-          "name": "rate_period_ms",
-          "type": "integer",
           "primaryKey": false,
           "notNull": false
         }
@@ -307,73 +326,18 @@
           "with": {}
         }
       },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "workflow.workflow_limit_tokens": {
-      "name": "workflow_limit_tokens",
-      "schema": "workflow",
-      "columns": {
-        "token_id": {
-          "name": "token_id",
-          "type": "varchar",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "limit_key": {
-          "name": "limit_key",
-          "type": "varchar",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "holder_id": {
-          "name": "holder_id",
-          "type": "varchar",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "acquired_at": {
-          "name": "acquired_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp",
-          "primaryKey": false,
-          "notNull": true
+      "foreignKeys": {
+        "workflow_limit_leases_limit_key_workflow_limit_keys_limit_key_fk": {
+          "name": "workflow_limit_leases_limit_key_workflow_limit_keys_limit_key_fk",
+          "tableFrom": "workflow_limit_leases",
+          "tableTo": "workflow_limit_keys",
+          "schemaTo": "workflow",
+          "columnsFrom": ["limit_key"],
+          "columnsTo": ["limit_key"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
-      "indexes": {
-        "workflow_limit_tokens_limit_key_expires_at_index": {
-          "name": "workflow_limit_tokens_limit_key_expires_at_index",
-          "columns": [
-            {
-              "expression": "limit_key",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "expires_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -411,24 +375,6 @@
         },
         "lease_ttl_ms": {
           "name": "lease_ttl_ms",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "concurrency_max": {
-          "name": "concurrency_max",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rate_count": {
-          "name": "rate_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "rate_period_ms": {
-          "name": "rate_period_ms",
           "type": "integer",
           "primaryKey": false,
           "notNull": false
@@ -478,7 +424,95 @@
           "with": {}
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "workflow_limit_waiters_limit_key_workflow_limit_keys_limit_key_fk": {
+          "name": "workflow_limit_waiters_limit_key_workflow_limit_keys_limit_key_fk",
+          "tableFrom": "workflow_limit_waiters",
+          "tableTo": "workflow_limit_keys",
+          "schemaTo": "workflow",
+          "columnsFrom": ["limit_key"],
+          "columnsTo": ["limit_key"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "workflow.workflow_rate_limit_tokens": {
+      "name": "workflow_rate_limit_tokens",
+      "schema": "workflow",
+      "columns": {
+        "token_id": {
+          "name": "token_id",
+          "type": "varchar",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "limit_key": {
+          "name": "limit_key",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "holder_id": {
+          "name": "holder_id",
+          "type": "varchar",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "acquired_at": {
+          "name": "acquired_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "workflow_rate_limit_tokens_limit_key_expires_at_index": {
+          "name": "workflow_rate_limit_tokens_limit_key_expires_at_index",
+          "columns": [
+            {
+              "expression": "limit_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_rate_limit_tokens_limit_key_workflow_limit_keys_limit_key_fk": {
+          "name": "workflow_rate_limit_tokens_limit_key_workflow_limit_keys_limit_key_fk",
+          "tableFrom": "workflow_rate_limit_tokens",
+          "tableTo": "workflow_limit_keys",
+          "schemaTo": "workflow",
+          "columnsFrom": ["limit_key"],
+          "columnsTo": ["limit_key"],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},

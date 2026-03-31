@@ -65,9 +65,10 @@ type HttpExecutionResult =
  *   - `step` for step jobs
  *
  * When a message is queued, it is sent to graphile-worker with the appropriate job type.
- * When a job is processed, it is deserialized and then re-queued into the _local world_, showing that
- * we can reuse the local world, mix and match worlds to build
- * hybrid architectures, and even migrate between worlds.
+ * When a job is processed, the worker POSTs the payload directly to the
+ * workflow HTTP endpoints. We reuse `world-local` only for its
+ * `createQueueHandler()` HTTP adapter so the request/response contract stays
+ * consistent across worlds; execution is not re-enqueued into the local queue.
  */
 export type PostgresQueue = Queue & {
   start(): Promise<void>;

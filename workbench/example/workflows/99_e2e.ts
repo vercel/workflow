@@ -440,6 +440,31 @@ export async function workflowRateLimitContentionWorkflow(
   };
 }
 
+export async function releasedRateLimitReplayWorkflow(
+  userId = 'user-123',
+  periodMs = 6_000,
+  sleepMs = 100
+) {
+  'use workflow';
+
+  const startedAt = Date.now();
+  {
+    await using _releasedRateLimit = await lock({
+      key: `workflow:replay-rate:${userId}`,
+      rate: { count: 1, periodMs },
+      leaseTtlMs: periodMs + 5_000,
+    });
+  }
+
+  await sleep(sleepMs);
+
+  return {
+    elapsedMs: Date.now() - startedAt,
+    periodMs,
+    sleepMs,
+  };
+}
+
 export async function workflowMixedLimitContentionWorkflow(
   userId = 'user-123',
   holdMs = 250,

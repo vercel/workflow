@@ -1,53 +1,33 @@
-import { JsonTransport } from '@vercel/queue';
 import { and, asc, eq, isNotNull, lte, sql } from 'drizzle-orm';
-import { WorkflowWorldError } from '@workflow/errors';
+import {
+  LimitDefinitionConflictError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import {
   createLockId,
-  createLockWakeCorrelationId,
+  type LimitDefinition,
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
   LimitHeartbeatRequestSchema,
   type LimitLease,
+  type LimitNextWaiter,
+  type LimitReleaseResult,
   LimitReleaseRequestSchema,
   type Limits,
-  MessageId,
   parseLockId,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import type { PostgresWorldConfig } from './config.js';
 import type { Drizzle } from './drizzle/index.js';
 import * as Schema from './drizzle/schema.js';
-import { MessageData } from './message.js';
 
 type LeaseRow = typeof Schema.limitLeases.$inferSelect;
-type TokenRow = typeof Schema.limitTokens.$inferSelect;
+type LimitKeyRow = typeof Schema.limitKeys.$inferSelect;
+type TokenRow = typeof Schema.rateLimitTokens.$inferSelect;
 type WaiterRow = typeof Schema.limitWaiters.$inferSelect;
-type RunRow = Pick<
-  typeof Schema.runs.$inferSelect,
-  'workflowName' | 'startedAt' | 'status'
->;
 type Tx = Parameters<Parameters<Drizzle['transaction']>[0]>[0];
 type Db = Drizzle | Tx;
-
-type HolderTarget =
-  | {
-      kind: 'lock';
-      runId: string;
-      correlationId: string;
-    }
-  | {
-      kind: 'opaque';
-    };
-
-const transport = new JsonTransport();
 const generateId = monotonicFactory();
-
-function getQueues(config: PostgresWorldConfig) {
-  const prefix = config.jobPrefix || 'workflow_';
-  return {
-    workflow: `${prefix}flows`,
-  } as const;
-}
 
 function nowPlus(ms?: number): Date | undefined {
   if (ms === undefined) return undefined;
@@ -64,27 +44,7 @@ function toMillis(value: Date | string | null | undefined): number | undefined {
   return date ? date.getTime() : undefined;
 }
 
-/*
-Holder ids double as wake-up hints.
-When a waiter is promoted, we decode the holder id to decide which queue to poke.
-*/
-function parseHolderId(lockId: string): HolderTarget {
-  const parsedLockId = parseLockId(lockId);
-  if (parsedLockId) {
-    return {
-      kind: 'lock',
-      runId: parsedLockId.runId,
-      correlationId: createLockWakeCorrelationId(
-        parsedLockId.runId,
-        parsedLockId.lockIndex
-      ),
-    };
-  }
-
-  return { kind: 'opaque' };
-}
-
-function toLease(row: LeaseRow): LimitLease {
+function toLease(row: LeaseRow, definition: LimitDefinition): LimitLease {
   const parsedLockId = parseLockId(row.holderId);
   return {
     leaseId: row.leaseId,
@@ -94,17 +54,45 @@ function toLease(row: LeaseRow): LimitLease {
     lockIndex: parsedLockId?.lockIndex ?? 0,
     acquiredAt: toDate(row.acquiredAt)!,
     expiresAt: toDate(row.expiresAt),
-    definition: {
-      concurrency:
-        row.concurrencyMax !== null ? { max: row.concurrencyMax } : undefined,
-      rate:
-        row.rateCount !== null && row.ratePeriodMs !== null
-          ? {
-              count: row.rateCount,
-              periodMs: row.ratePeriodMs,
-            }
-          : undefined,
-    },
+    definition,
+  };
+}
+
+function definitionFromRow(
+  row: Pick<LimitKeyRow, 'concurrencyMax' | 'rateCount' | 'ratePeriodMs'>
+): LimitDefinition {
+  return {
+    concurrency:
+      row.concurrencyMax !== null ? { max: row.concurrencyMax } : undefined,
+    rate:
+      row.rateCount !== null && row.ratePeriodMs !== null
+        ? { count: row.rateCount, periodMs: row.ratePeriodMs }
+        : undefined,
+  };
+}
+
+function areLimitDefinitionsEqual(
+  left: LimitDefinition | undefined,
+  right: LimitDefinition
+): boolean {
+  return (
+    left?.concurrency?.max === right.concurrency?.max &&
+    left?.rate?.count === right.rate?.count &&
+    left?.rate?.periodMs === right.rate?.periodMs
+  );
+}
+
+function toNextWaiter(holderId: string): LimitNextWaiter | undefined {
+  const parsedLockId = parseLockId(holderId);
+  if (!parsedLockId) {
+    return undefined;
+  }
+
+  return {
+    runId: parsedLockId.runId,
+    lockIndex: parsedLockId.lockIndex,
+    wakeCorrelationId: `wflock_wait_${parsedLockId.runId}:${parsedLockId.lockIndex}`,
+    lockCorrelationId: `wflock_${parsedLockId.runId}:${parsedLockId.lockIndex}`,
   };
 }
 
@@ -148,71 +136,47 @@ function getRetryAfterMs(
   return Math.min(...candidates);
 }
 
-async function queueWorkflowWake(
-  tx: Db,
-  config: PostgresWorldConfig,
-  runId: string,
-  workflowName: string,
-  idempotencyKey: string
-) {
-  const messageId = MessageId.parse(`msg_${generateId()}`);
-  const payload = MessageData.encode({
-    id: workflowName,
-    data: Buffer.from(
-      transport.serialize({
-        runId,
-        requestedAt: new Date(),
-      })
-    ),
-    attempt: 1,
-    idempotencyKey,
-    messageId,
-  });
-
-  await tx.execute(sql`
-    select graphile_worker.add_job(
-      ${getQueues(config).workflow}::text,
-      payload := ${JSON.stringify(payload)}::json,
-      max_attempts := 3,
-      job_key := ${idempotencyKey}::text,
-      job_key_mode := 'replace'
-    )
-  `);
+function getWaiterRetryAfterMs(
+  leases: LeaseRow[],
+  tokens: TokenRow[],
+  now: number,
+  definition: LimitDefinition
+): number | undefined {
+  return getRetryAfterMs(
+    leases,
+    tokens,
+    now,
+    definition.concurrency !== undefined &&
+      leases.length >= definition.concurrency.max,
+    definition.rate !== undefined && tokens.length >= definition.rate.count
+  );
 }
 
-async function queueWakeForHolder(
-  tx: Db,
-  config: PostgresWorldConfig,
-  holderId: string
-) {
-  /*
-  Limit state is durable in Postgres, but wake-ups still need a runtime target.
-  If the workflow is already terminal, there is nothing left to resume.
-  */
-  const target = parseHolderId(holderId);
-  if (target.kind === 'opaque') {
-    return;
-  }
-
-  const [run] = (await tx
-    .select({
-      workflowName: Schema.runs.workflowName,
-      startedAt: Schema.runs.startedAt,
-      status: Schema.runs.status,
-    })
-    .from(Schema.runs)
-    .where(eq(Schema.runs.runId, target.runId))
-    .limit(1)) as RunRow[];
-  if (!run || ['completed', 'failed', 'cancelled'].includes(run.status)) {
-    return;
-  }
-
-  await queueWorkflowWake(
-    tx,
-    config,
-    target.runId,
-    run.workflowName,
-    target.correlationId
+function getBlockedRetryAfterMs(
+  state: {
+    keyRow?: LimitKeyRow;
+    leases: LeaseRow[];
+    tokens: TokenRow[];
+    waiters: WaiterRow[];
+  },
+  now: number,
+  concurrencyBlocked: boolean,
+  rateBlocked: boolean
+): number {
+  const headWaiter = state.waiters[0];
+  const definition = state.keyRow ? definitionFromRow(state.keyRow) : undefined;
+  return (
+    (headWaiter && definition
+      ? getWaiterRetryAfterMs(state.leases, state.tokens, now, definition)
+      : undefined) ??
+    getRetryAfterMs(
+      state.leases,
+      state.tokens,
+      now,
+      concurrencyBlocked,
+      rateBlocked
+    ) ??
+    1000
   );
 }
 
@@ -224,11 +188,11 @@ async function pruneExpired(tx: Db, key: string): Promise<void> {
   const now = new Date();
 
   await tx
-    .delete(Schema.limitTokens)
+    .delete(Schema.rateLimitTokens)
     .where(
       and(
-        eq(Schema.limitTokens.limitKey, key),
-        lte(Schema.limitTokens.expiresAt, now)
+        eq(Schema.rateLimitTokens.limitKey, key),
+        lte(Schema.rateLimitTokens.expiresAt, now)
       )
     );
 
@@ -247,11 +211,15 @@ async function getActiveState(
   tx: Db,
   key: string
 ): Promise<{
+  keyRow?: LimitKeyRow;
   leases: LeaseRow[];
   tokens: TokenRow[];
   waiters: WaiterRow[];
 }> {
-  const [leases, tokens, waiters] = await Promise.all([
+  const [keyRow, leases, tokens, waiters] = await Promise.all([
+    tx.query.limitKeys.findFirst({
+      where: eq(Schema.limitKeys.limitKey, key),
+    }),
     tx
       .select()
       .from(Schema.limitLeases)
@@ -262,9 +230,9 @@ async function getActiveState(
       ),
     tx
       .select()
-      .from(Schema.limitTokens)
-      .where(eq(Schema.limitTokens.limitKey, key))
-      .orderBy(asc(Schema.limitTokens.expiresAt)),
+      .from(Schema.rateLimitTokens)
+      .where(eq(Schema.rateLimitTokens.limitKey, key))
+      .orderBy(asc(Schema.rateLimitTokens.expiresAt)),
     tx
       .select()
       .from(Schema.limitWaiters)
@@ -275,7 +243,7 @@ async function getActiveState(
       ),
   ]);
 
-  return { leases, tokens, waiters };
+  return { keyRow, leases, tokens, waiters };
 }
 
 /*
@@ -289,8 +257,8 @@ async function lockLimitKey(tx: Db, key: string): Promise<void> {
 }
 
 async function isHolderLive(tx: Db, holderId: string): Promise<boolean> {
-  const target = parseHolderId(holderId);
-  if (target.kind === 'opaque') {
+  const parsedLockId = parseLockId(holderId);
+  if (!parsedLockId) {
     return true;
   }
 
@@ -299,94 +267,134 @@ async function isHolderLive(tx: Db, holderId: string): Promise<boolean> {
       status: Schema.runs.status,
     })
     .from(Schema.runs)
-    .where(eq(Schema.runs.runId, target.runId))
+    .where(eq(Schema.runs.runId, parsedLockId.runId))
     .limit(1)) as Pick<typeof Schema.runs.$inferSelect, 'status'>[];
 
   return !!run && !['completed', 'failed', 'cancelled'].includes(run.status);
 }
 
-async function promoteWaiters(
-  tx: Db,
-  config: PostgresWorldConfig,
-  key: string
-): Promise<void> {
-  /*
-  We walk waiters in FIFO order and stop at the first waiter that is still blocked.
-  Later waiters cannot jump ahead of an earlier waiter for the same key. (getActiveState returns waiters in FIFO order)
-  */
-  const state = await getActiveState(tx, key);
-  let activeLeases = state.leases.length;
-  let activeTokens = state.tokens.length;
+async function pruneDeadWaiters(tx: Db, key: string): Promise<void> {
+  const waiters = await tx
+    .select({
+      waiterId: Schema.limitWaiters.waiterId,
+      holderId: Schema.limitWaiters.holderId,
+    })
+    .from(Schema.limitWaiters)
+    .where(eq(Schema.limitWaiters.limitKey, key));
 
-  for (const waiter of state.waiters) {
+  for (const waiter of waiters) {
     if (!(await isHolderLive(tx, waiter.holderId))) {
       await tx
         .delete(Schema.limitWaiters)
         .where(eq(Schema.limitWaiters.waiterId, waiter.waiterId));
-      continue;
     }
-
-    const concurrencyBlocked =
-      waiter.concurrencyMax !== null && activeLeases >= waiter.concurrencyMax;
-    const rateBlocked =
-      waiter.rateCount !== null && activeTokens >= waiter.rateCount;
-
-    if (concurrencyBlocked || rateBlocked) {
-      break;
-    }
-
-    const leaseId = `lmt_${generateId()}`;
-    const expiresAt = nowPlus(waiter.leaseTtlMs ?? undefined);
-    const [lease] = await tx
-      .insert(Schema.limitLeases)
-      .values({
-        leaseId,
-        limitKey: key,
-        holderId: waiter.holderId,
-        acquiredAt: new Date(),
-        expiresAt,
-        concurrencyMax: waiter.concurrencyMax,
-        rateCount: waiter.rateCount,
-        ratePeriodMs: waiter.ratePeriodMs,
-      })
-      .onConflictDoNothing()
-      .returning();
-
-    const acquiredLease =
-      lease ??
-      (await tx.query.limitLeases.findFirst({
-        where: and(
-          eq(Schema.limitLeases.limitKey, key),
-          eq(Schema.limitLeases.holderId, waiter.holderId)
-        ),
-      }));
-
-    if (!acquiredLease) {
-      continue;
-    }
-
-    if (waiter.rateCount !== null && waiter.ratePeriodMs !== null) {
-      await tx.insert(Schema.limitTokens).values({
-        tokenId: `lmttok_${generateId()}`,
-        limitKey: key,
-        holderId: waiter.holderId,
-        acquiredAt: new Date(),
-        expiresAt: new Date(Date.now() + waiter.ratePeriodMs),
-      });
-      activeTokens += 1;
-    }
-
-    await tx
-      .delete(Schema.limitWaiters)
-      .where(eq(Schema.limitWaiters.waiterId, waiter.waiterId));
-
-    activeLeases += 1;
-    await queueWakeForHolder(tx, config, acquiredLease.holderId);
   }
 }
 
+async function ensureCanonicalDefinition(
+  tx: Db,
+  key: string,
+  requested: LimitDefinition,
+  state: {
+    keyRow?: LimitKeyRow;
+    leases: LeaseRow[];
+    tokens: TokenRow[];
+    waiters: WaiterRow[];
+  }
+) {
+  const existing = state.keyRow;
+
+  if (
+    existing &&
+    state.leases.length === 0 &&
+    state.tokens.length === 0 &&
+    state.waiters.length === 0
+  ) {
+    await tx.delete(Schema.limitKeys).where(eq(Schema.limitKeys.limitKey, key));
+  }
+
+  const current =
+    existing &&
+    state.leases.length === 0 &&
+    state.tokens.length === 0 &&
+    state.waiters.length === 0
+      ? undefined
+      : (existing ??
+        (await tx.query.limitKeys.findFirst({
+          where: eq(Schema.limitKeys.limitKey, key),
+        })));
+
+  if (!current) {
+    await tx.insert(Schema.limitKeys).values({
+      limitKey: key,
+      concurrencyMax: requested.concurrency?.max ?? null,
+      rateCount: requested.rate?.count ?? null,
+      ratePeriodMs: requested.rate?.periodMs ?? null,
+    });
+    return;
+  }
+
+  const currentDefinition = definitionFromRow(current);
+  if (!areLimitDefinitionsEqual(currentDefinition, requested)) {
+    throw new LimitDefinitionConflictError(key, currentDefinition, requested);
+  }
+}
+
+async function promoteWaiter(
+  tx: Db,
+  key: string,
+  waiter: WaiterRow,
+  definition: LimitDefinition
+): Promise<{ lease: LimitLease; nextWaiter?: LimitNextWaiter }> {
+  const leaseId = `lmt_${generateId()}`;
+  const expiresAt = nowPlus(waiter.leaseTtlMs ?? undefined);
+  const [lease] = await tx
+    .insert(Schema.limitLeases)
+    .values({
+      leaseId,
+      limitKey: key,
+      holderId: waiter.holderId,
+      acquiredAt: new Date(),
+      expiresAt,
+    })
+    .onConflictDoNothing()
+    .returning();
+
+  const acquiredLease =
+    lease ??
+    (await tx.query.limitLeases.findFirst({
+      where: and(
+        eq(Schema.limitLeases.limitKey, key),
+        eq(Schema.limitLeases.holderId, waiter.holderId)
+      ),
+    }));
+
+  if (!acquiredLease) {
+    throw new WorkflowWorldError(`Failed to promote waiter for key "${key}"`);
+  }
+
+  if (definition.rate) {
+    await tx.insert(Schema.rateLimitTokens).values({
+      tokenId: `lmttok_${generateId()}`,
+      limitKey: key,
+      holderId: waiter.holderId,
+      acquiredAt: new Date(),
+      expiresAt: new Date(Date.now() + definition.rate.periodMs),
+    });
+  }
+
+  await tx
+    .delete(Schema.limitWaiters)
+    .where(eq(Schema.limitWaiters.waiterId, waiter.waiterId));
+
+  return {
+    lease: toLease(acquiredLease, definition),
+    nextWaiter: toNextWaiter(waiter.holderId),
+  };
+}
+
 export function createLimits(
-  config: PostgresWorldConfig,
+  _config: PostgresWorldConfig,
   drizzle: Drizzle
 ): Limits {
   return {
@@ -395,57 +403,93 @@ export function createLimits(
 
       return drizzle.transaction(async (tx) => {
         await lockLimitKey(tx, parsed.key);
-        // Prune expired leases and tokens, promote pre-existing waiters before attempting to acquire a new lease or token.
         await pruneExpired(tx, parsed.key);
-        await promoteWaiters(tx, config, parsed.key);
+        await pruneDeadWaiters(tx, parsed.key);
 
         const state = await getActiveState(tx, parsed.key);
+        await ensureCanonicalDefinition(
+          tx,
+          parsed.key,
+          parsed.definition,
+          state
+        );
+        const currentState = await getActiveState(tx, parsed.key);
+        const definition =
+          currentState.keyRow && definitionFromRow(currentState.keyRow);
         const lockId = createLockId(parsed.runId, parsed.lockIndex);
-        const existingLease = state.leases.find(
+        const existingLease = currentState.leases.find(
           (lease) => lease.holderId === lockId
         );
         if (existingLease) {
+          if (!definition) {
+            throw new WorkflowWorldError(
+              `Missing canonical definition for key "${parsed.key}"`
+            );
+          }
           return {
             status: 'acquired',
-            lease: toLease(existingLease),
+            lease: toLease(existingLease, definition),
           } satisfies LimitAcquireResult;
         }
 
-        const existingWaiter = state.waiters.find(
+        const existingWaiter = currentState.waiters.find(
           (waiter) => waiter.holderId === lockId
         );
-        // If there are already waiters for this key and holder no need to queue a new waiter.
         if (existingWaiter) {
-          const now = Date.now();
           const concurrencyBlocked =
             parsed.definition.concurrency !== undefined &&
-            state.leases.length >= parsed.definition.concurrency.max;
+            currentState.leases.length >= parsed.definition.concurrency.max;
           const rateBlocked =
             parsed.definition.rate !== undefined &&
-            state.tokens.length >= parsed.definition.rate.count;
+            currentState.tokens.length >= parsed.definition.rate.count;
+
+          if (
+            currentState.waiters[0]?.waiterId === existingWaiter.waiterId &&
+            !concurrencyBlocked &&
+            !rateBlocked
+          ) {
+            if (!definition) {
+              throw new WorkflowWorldError(
+                `Missing canonical definition for key "${parsed.key}"`
+              );
+            }
+            const promoted = await promoteWaiter(
+              tx,
+              parsed.key,
+              existingWaiter,
+              definition
+            );
+            return {
+              status: 'acquired',
+              lease: promoted.lease,
+            } satisfies LimitAcquireResult;
+          }
+
+          const now = Date.now();
           return {
             status: 'blocked',
             reason: getBlockedReason(concurrencyBlocked, rateBlocked),
-            retryAfterMs:
-              getRetryAfterMs(
-                state.leases,
-                state.tokens,
-                now,
-                concurrencyBlocked,
-                rateBlocked
-              ) ?? 1000,
+            retryAfterMs: getBlockedRetryAfterMs(
+              currentState,
+              now,
+              concurrencyBlocked,
+              rateBlocked
+            ),
           } satisfies LimitAcquireResult;
         }
 
         const concurrencyBlocked =
           parsed.definition.concurrency !== undefined &&
-          state.leases.length >= parsed.definition.concurrency.max;
+          currentState.leases.length >= parsed.definition.concurrency.max;
         const rateBlocked =
           parsed.definition.rate !== undefined &&
-          state.tokens.length >= parsed.definition.rate.count;
+          currentState.tokens.length >= parsed.definition.rate.count;
 
-        // If we are not blocked, and there are no waiters for this key and holder, we can acquire a new lease or token.
-        if (!concurrencyBlocked && !rateBlocked && state.waiters.length === 0) {
+        if (
+          !concurrencyBlocked &&
+          !rateBlocked &&
+          currentState.waiters.length === 0
+        ) {
           const expiresAt = nowPlus(parsed.leaseTtlMs);
           const [lease] = await tx
             .insert(Schema.limitLeases)
@@ -455,14 +499,11 @@ export function createLimits(
               holderId: lockId,
               acquiredAt: new Date(),
               expiresAt,
-              concurrencyMax: parsed.definition.concurrency?.max ?? null,
-              rateCount: parsed.definition.rate?.count ?? null,
-              ratePeriodMs: parsed.definition.rate?.periodMs ?? null,
             })
             .returning();
 
           if (parsed.definition.rate) {
-            await tx.insert(Schema.limitTokens).values({
+            await tx.insert(Schema.rateLimitTokens).values({
               tokenId: `lmttok_${generateId()}`,
               limitKey: parsed.key,
               holderId: lockId,
@@ -473,11 +514,10 @@ export function createLimits(
 
           return {
             status: 'acquired',
-            lease: toLease(lease),
+            lease: toLease(lease, definition ?? parsed.definition),
           } satisfies LimitAcquireResult;
         }
 
-        // If we are blocked, we need to queue a waiter.
         await tx
           .insert(Schema.limitWaiters)
           .values({
@@ -486,9 +526,6 @@ export function createLimits(
             holderId: lockId,
             createdAt: new Date(),
             leaseTtlMs: parsed.leaseTtlMs ?? null,
-            concurrencyMax: parsed.definition.concurrency?.max ?? null,
-            rateCount: parsed.definition.rate?.count ?? null,
-            ratePeriodMs: parsed.definition.rate?.periodMs ?? null,
           })
           .onConflictDoNothing();
 
@@ -496,14 +533,12 @@ export function createLimits(
         return {
           status: 'blocked',
           reason: getBlockedReason(concurrencyBlocked, rateBlocked),
-          retryAfterMs:
-            getRetryAfterMs(
-              state.leases,
-              state.tokens,
-              now,
-              parsed.definition.concurrency !== undefined,
-              parsed.definition.rate !== undefined
-            ) ?? 1000,
+          retryAfterMs: getBlockedRetryAfterMs(
+            currentState,
+            now,
+            parsed.definition.concurrency !== undefined,
+            parsed.definition.rate !== undefined
+          ),
         } satisfies LimitAcquireResult;
       });
     },
@@ -511,7 +546,7 @@ export function createLimits(
     async release(request) {
       const parsed = LimitReleaseRequestSchema.parse(request);
 
-      await drizzle.transaction(async (tx) => {
+      return drizzle.transaction(async (tx): Promise<LimitReleaseResult> => {
         const key =
           parsed.key ??
           (
@@ -536,12 +571,54 @@ export function createLimits(
         const [deleted] = await tx
           .delete(Schema.limitLeases)
           .where(where)
-          .returning({ limitKey: Schema.limitLeases.limitKey });
+          .returning({
+            limitKey: Schema.limitLeases.limitKey,
+            holderId: Schema.limitLeases.holderId,
+          });
 
         if (deleted?.limitKey) {
           await pruneExpired(tx, deleted.limitKey);
-          await promoteWaiters(tx, config, deleted.limitKey);
+          await pruneDeadWaiters(tx, deleted.limitKey);
+          const state = await getActiveState(tx, deleted.limitKey);
+          const headWaiter = state.waiters[0];
+
+          if (headWaiter) {
+            const definition = state.keyRow && definitionFromRow(state.keyRow);
+            if (!definition) {
+              throw new WorkflowWorldError(
+                `Missing canonical definition for key "${deleted.limitKey}"`
+              );
+            }
+            const concurrencyBlocked =
+              definition.concurrency !== undefined &&
+              state.leases.length >= definition.concurrency.max;
+            const rateBlocked =
+              definition.rate !== undefined &&
+              state.tokens.length >= definition.rate.count;
+
+            if (!concurrencyBlocked && !rateBlocked) {
+              const promoted = await promoteWaiter(
+                tx,
+                deleted.limitKey,
+                headWaiter,
+                definition
+              );
+              return { nextWaiter: promoted.nextWaiter };
+            }
+          }
+
+          if (
+            state.leases.length === 0 &&
+            state.tokens.length === 0 &&
+            state.waiters.length === 0
+          ) {
+            await tx
+              .delete(Schema.limitKeys)
+              .where(eq(Schema.limitKeys.limitKey, deleted.limitKey));
+          }
         }
+
+        return {};
       });
     },
 
@@ -559,9 +636,21 @@ export function createLimits(
         }
 
         await lockLimitKey(tx, existing.limitKey);
+        await pruneExpired(tx, existing.limitKey);
+
+        const current = await tx.query.limitLeases.findFirst({
+          where: and(
+            eq(Schema.limitLeases.leaseId, parsed.leaseId),
+            eq(Schema.limitLeases.limitKey, existing.limitKey)
+          ),
+        });
+
+        if (!current) {
+          throw new WorkflowWorldError(`Lease "${parsed.leaseId}" not found`);
+        }
 
         const now = Date.now();
-        const currentExpiry = toMillis(existing.expiresAt);
+        const currentExpiry = toMillis(current.expiresAt);
         const ttlMs =
           parsed.ttlMs ?? (currentExpiry ? currentExpiry - now : 30_000);
         const expiresAt = new Date(now + Math.max(1, ttlMs));
@@ -572,7 +661,21 @@ export function createLimits(
           .where(eq(Schema.limitLeases.leaseId, parsed.leaseId))
           .returning();
 
-        return toLease(updated);
+        if (!updated) {
+          throw new WorkflowWorldError(`Lease "${parsed.leaseId}" not found`);
+        }
+
+        const keyRow = await tx.query.limitKeys.findFirst({
+          where: eq(Schema.limitKeys.limitKey, current.limitKey),
+        });
+
+        if (!keyRow) {
+          throw new WorkflowWorldError(
+            `Missing canonical definition for key "${current.limitKey}"`
+          );
+        }
+
+        return toLease(updated, definitionFromRow(keyRow));
       });
     },
   };

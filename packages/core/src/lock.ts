@@ -4,8 +4,7 @@ import {
   type LimitKey,
   type LimitLease,
 } from '@workflow/world';
-import { contextStorage } from './step/context-storage.js';
-import { WORKFLOW_LOCK } from './symbols.js';
+import { WORKFLOW_HAS_STEP_CONTEXT, WORKFLOW_LOCK } from './symbols.js';
 
 export { LIMITS_NOT_IMPLEMENTED_MESSAGE } from '@workflow/world';
 
@@ -46,7 +45,10 @@ export async function lock(options: LockOptions): Promise<LockHandle> {
     return workflowLock(options);
   }
 
-  if (contextStorage.getStore()) {
+  const hasStepContext = (globalThis as any)[WORKFLOW_HAS_STEP_CONTEXT] as
+    | (() => boolean)
+    | undefined;
+  if (hasStepContext?.()) {
     throw new Error(LOCK_WORKFLOW_ONLY_MESSAGE);
   }
 

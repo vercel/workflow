@@ -90,8 +90,10 @@ export { __private_getClosureVars } from './step/get-closure-vars.js';
 
 export interface WorkflowOrchestratorContext {
   runId: string;
+  lockPreApproval?: string;
   encryptionKey: CryptoKey | undefined;
   globalThis: typeof globalThis;
+  advanceTimestamp: (timestamp: number) => void;
   eventsConsumer: EventsConsumer;
   nextLockIndex: number;
   /**

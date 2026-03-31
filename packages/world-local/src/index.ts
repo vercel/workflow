@@ -61,13 +61,17 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
-  const storage = createStorage(mergedConfig.dataDir, tag);
+  let limits: World['limits'] | undefined;
+  const storage = createStorage(mergedConfig.dataDir, tag, {
+    getLimits: () => limits,
+    queue,
+  });
+  limits = createLimits(mergedConfig.dataDir, {
+    tag,
+    storage,
+  });
   return {
-    limits: createLimits(mergedConfig.dataDir, {
-      tag,
-      queue,
-      storage,
-    }),
+    limits,
     ...queue,
     ...storage,
     ...createStreamer(mergedConfig.dataDir, tag),

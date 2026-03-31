@@ -250,6 +250,30 @@ export class EntityConflictError extends WorkflowError {
   }
 }
 
+export class LimitDefinitionConflictError extends WorkflowError {
+  key: string;
+  existingDefinition: unknown;
+  requestedDefinition: unknown;
+
+  constructor(
+    key: string,
+    existingDefinition: unknown,
+    requestedDefinition: unknown
+  ) {
+    super(
+      `Limit key "${key}" is already configured with a different definition`
+    );
+    this.name = 'LimitDefinitionConflictError';
+    this.key = key;
+    this.existingDefinition = existingDefinition;
+    this.requestedDefinition = requestedDefinition;
+  }
+
+  static is(value: unknown): value is LimitDefinitionConflictError {
+    return isError(value) && value.name === 'LimitDefinitionConflictError';
+  }
+}
+
 /**
  * Thrown when a run is no longer available — either because it has been
  * cleaned up, expired, or already reached a terminal state (completed/failed).

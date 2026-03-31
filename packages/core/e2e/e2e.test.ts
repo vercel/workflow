@@ -55,15 +55,6 @@ type E2EWorkflowMetadata = Awaited<ReturnType<typeof getWorkflowMetadata>>;
 
 async function start<TResult = any>(
   workflow: E2EWorkflowMetadata,
-  options?: StartOptions
-): Promise<Run<TResult>>;
-async function start<TArgs extends unknown[], TResult = any>(
-  workflow: E2EWorkflowMetadata,
-  args: TArgs,
-  options?: StartOptions
-): Promise<Run<TResult>>;
-async function start<TResult = any>(
-  workflow: E2EWorkflowMetadata,
   argsOrOptions?: unknown[] | StartOptions,
   options?: StartOptions
 ): Promise<Run<TResult>> {
@@ -319,6 +310,11 @@ describe('e2e', () => {
           await sleep(100);
           const runB = await start(workflow, [userId, holdMs, periodMs, 'B']);
           return await Promise.all([runA.returnValue, runB.returnValue]);
+        },
+        async runReleasedRateLimitReplay(userId, periodMs, sleepMs) {
+          const workflow = await e2e('releasedRateLimitReplayWorkflow');
+          const run = await start(workflow, [userId, periodMs, sleepMs]);
+          return await run.returnValue;
         },
         async runWorkflowFifoThreeWaiters(userId, holdMs) {
           const workflow = await e2e('workflowOnlyLockContentionWorkflow');

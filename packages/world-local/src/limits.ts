@@ -1,14 +1,21 @@
 import path from 'node:path';
-import { WorkflowWorldError } from '@workflow/errors';
-import type { Queue, Storage, WorkflowRunWithoutData } from '@workflow/world';
 import {
+  LimitDefinitionConflictError,
+  WorkflowWorldError,
+} from '@workflow/errors';
+import type { Storage, WorkflowRunWithoutData } from '@workflow/world';
+import {
+  createLockCorrelationId,
   createLockId,
   createLockWakeCorrelationId,
+  type LimitDefinition,
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
   LimitHeartbeatRequestSchema,
   type LimitLease,
   LimitLeaseSchema,
+  type LimitNextWaiter,
+  type LimitReleaseResult,
   LimitReleaseRequestSchema,
   type Limits,
   parseLockId,
@@ -38,13 +45,24 @@ const LimitWaiterSchema = z.object({
 
 const KeyStateSchema = z.object({
   key: z.string(),
+  definition: z
+    .object({
+      concurrency: z.object({ max: z.number().int().positive() }).optional(),
+      rate: z
+        .object({
+          count: z.number().int().positive(),
+          periodMs: z.number().int().positive(),
+        })
+        .optional(),
+    })
+    .optional(),
   leases: z.array(LimitLeaseSchema),
   tokens: z.array(LimitTokenSchema),
   waiters: z.array(LimitWaiterSchema),
 });
 
 const LimitsStateSchema = z.object({
-  version: z.literal(2),
+  version: z.union([z.literal(2), z.literal(3)]),
   keys: z.record(z.string(), KeyStateSchema),
 });
 
@@ -57,7 +75,8 @@ type HolderTarget =
   | {
       kind: 'lock';
       runId: string;
-      correlationId: string;
+      wakeCorrelationId: string;
+      lockCorrelationId: string;
     }
   | {
       kind: 'opaque';
@@ -65,12 +84,11 @@ type HolderTarget =
 
 export interface LocalLimitsOptions {
   tag?: string;
-  queue?: Pick<Queue, 'queue'>;
   storage?: Pick<Storage, 'runs'>;
 }
 
 const EMPTY_STATE: LimitsState = {
-  version: 2,
+  version: 3,
   keys: {},
 };
 
@@ -89,6 +107,7 @@ function cloneWaiter(waiter: LimitWaiter): LimitWaiter {
 function normalizeKeyState(keyState: KeyState): KeyState {
   return {
     key: keyState.key,
+    definition: keyState.definition,
     leases: keyState.leases.map((lease) => ({ ...lease })),
     tokens: keyState.tokens.map(cloneToken),
     waiters: keyState.waiters.map(cloneWaiter),
@@ -97,7 +116,7 @@ function normalizeKeyState(keyState: KeyState): KeyState {
 
 function cloneState(state: LimitsState): LimitsState {
   return {
-    version: 2,
+    version: 3,
     keys: Object.fromEntries(
       Object.entries(state.keys).map(([key, keyState]) => [
         key,
@@ -110,6 +129,7 @@ function cloneState(state: LimitsState): LimitsState {
 function pruneKeyState(keyState: KeyState, now = Date.now()): KeyState {
   return {
     key: keyState.key,
+    definition: keyState.definition,
     leases: keyState.leases.filter(
       (lease) =>
         lease.expiresAt === undefined || lease.expiresAt.getTime() > now
@@ -117,6 +137,32 @@ function pruneKeyState(keyState: KeyState, now = Date.now()): KeyState {
     tokens: keyState.tokens.filter((token) => token.expiresAt.getTime() > now),
     waiters: keyState.waiters.map(cloneWaiter),
   };
+}
+
+function areLimitDefinitionsEqual(
+  left: LimitDefinition | undefined,
+  right: LimitDefinition
+): boolean {
+  return (
+    left?.concurrency?.max === right.concurrency?.max &&
+    left?.rate?.count === right.rate?.count &&
+    left?.rate?.periodMs === right.rate?.periodMs
+  );
+}
+
+function assertCanonicalDefinition(
+  key: string,
+  keyState: KeyState,
+  requested: LimitDefinition
+) {
+  if (!keyState.definition) {
+    keyState.definition = requested;
+    return;
+  }
+
+  if (!areLimitDefinitionsEqual(keyState.definition, requested)) {
+    throw new LimitDefinitionConflictError(key, keyState.definition, requested);
+  }
 }
 
 function getBlockedReason(
@@ -155,6 +201,35 @@ function getRetryAfterMs(
   }
 
   return Math.min(...candidates);
+}
+
+function getWaiterRetryAfterMs(
+  keyState: KeyState,
+  now: number,
+  waiter: Pick<LimitWaiter, 'concurrencyMax' | 'rateCount'>
+): number | undefined {
+  return getRetryAfterMs(
+    keyState,
+    now,
+    waiter.concurrencyMax !== null &&
+      keyState.leases.length >= waiter.concurrencyMax,
+    waiter.rateCount !== null && keyState.tokens.length >= waiter.rateCount
+  );
+}
+
+function getBlockedRetryAfterMs(
+  keyState: KeyState,
+  now: number,
+  concurrencyBlocked: boolean,
+  rateBlocked: boolean
+): number | undefined {
+  const headWaiter = keyState.waiters[0];
+  return (
+    (headWaiter
+      ? getWaiterRetryAfterMs(keyState, now, headWaiter)
+      : undefined) ??
+    getRetryAfterMs(keyState, now, concurrencyBlocked, rateBlocked)
+  );
 }
 
 function createLease(
@@ -200,7 +275,11 @@ function parseHolderId(lockId: string): HolderTarget {
     return {
       kind: 'lock',
       runId: parsedLockId.runId,
-      correlationId: createLockWakeCorrelationId(
+      wakeCorrelationId: createLockWakeCorrelationId(
+        parsedLockId.runId,
+        parsedLockId.lockIndex
+      ),
+      lockCorrelationId: createLockCorrelationId(
         parsedLockId.runId,
         parsedLockId.lockIndex
       ),
@@ -208,6 +287,26 @@ function parseHolderId(lockId: string): HolderTarget {
   }
 
   return { kind: 'opaque' };
+}
+
+function toNextWaiter(holderId: string): LimitNextWaiter | undefined {
+  const parsedLockId = parseLockId(holderId);
+  if (!parsedLockId) {
+    return undefined;
+  }
+
+  return {
+    runId: parsedLockId.runId,
+    lockIndex: parsedLockId.lockIndex,
+    wakeCorrelationId: createLockWakeCorrelationId(
+      parsedLockId.runId,
+      parsedLockId.lockIndex
+    ),
+    lockCorrelationId: createLockCorrelationId(
+      parsedLockId.runId,
+      parsedLockId.lockIndex
+    ),
+  };
 }
 
 function isTerminalRun(run: WorkflowRunWithoutData | undefined) {
@@ -275,104 +374,67 @@ export function createLimits(
     return !isTerminalRun(run);
   };
 
-  const queueWakeForHolder = async (holderId: string): Promise<void> => {
-    const target = parseHolderId(holderId);
-    if (target.kind === 'opaque' || !options?.queue || !options?.storage) {
-      return;
+  const pruneDeadWaiters = async (keyState: KeyState): Promise<KeyState> => {
+    const prunedKeyState = pruneKeyState(keyState);
+    const waiters: LimitWaiter[] = [];
+
+    for (const waiter of prunedKeyState.waiters) {
+      if (await isHolderLive(waiter.lockId)) {
+        waiters.push(waiter);
+      }
     }
 
-    try {
-      const run = await getRun(target.runId);
-      if (isTerminalRun(run) || !run) return;
-
-      await options.queue.queue(
-        `__wkf_workflow_${run.workflowName}`,
-        {
-          runId: target.runId,
-          requestedAt: new Date(),
-        },
-        {
-          idempotencyKey: target.correlationId,
-        }
-      );
-    } catch (error) {
-      console.warn('[world-local] Failed to queue lock wake-up', error);
-    }
+    prunedKeyState.waiters = waiters;
+    return prunedKeyState;
   };
 
-  const promoteWaiters = async (
+  const promoteWaiter = (
     key: string,
-    keyState: KeyState
-  ): Promise<{ keyState: KeyState; wakeHolders: string[] }> => {
-    const wakeHolders: string[] = [];
-    const promotedKeyState = pruneKeyState(keyState);
-    const remainingWaiters: LimitWaiter[] = [];
-    let activeLeases = promotedKeyState.leases.length;
-    let activeTokens = promotedKeyState.tokens.length;
+    keyState: KeyState,
+    waiter: LimitWaiter
+  ): {
+    keyState: KeyState;
+    lease: LimitLease;
+    nextWaiter?: LimitNextWaiter;
+  } => {
+    const acquiredAt = new Date();
+    const definition = {
+      concurrency:
+        waiter.concurrencyMax !== null
+          ? { max: waiter.concurrencyMax }
+          : undefined,
+      rate:
+        waiter.rateCount !== null && waiter.ratePeriodMs !== null
+          ? {
+              count: waiter.rateCount,
+              periodMs: waiter.ratePeriodMs,
+            }
+          : undefined,
+    } satisfies LimitDefinition;
 
-    for (let index = 0; index < promotedKeyState.waiters.length; index++) {
-      const waiter = promotedKeyState.waiters[index];
+    const lease = createLease(
+      key,
+      waiter.runId,
+      waiter.lockIndex,
+      definition,
+      acquiredAt,
+      waiter.leaseTtlMs
+    );
 
-      if (!(await isHolderLive(waiter.lockId))) {
-        continue;
-      }
+    keyState.waiters = keyState.waiters.filter(
+      (candidate) => candidate.waiterId !== waiter.waiterId
+    );
+    keyState.leases.push(lease);
 
-      const concurrencyBlocked =
-        waiter.concurrencyMax !== null && activeLeases >= waiter.concurrencyMax;
-      const rateBlocked =
-        waiter.rateCount !== null && activeTokens >= waiter.rateCount;
-
-      if (concurrencyBlocked || rateBlocked) {
-        remainingWaiters.push(
-          waiter,
-          ...promotedKeyState.waiters.slice(index + 1)
-        );
-        promotedKeyState.waiters = remainingWaiters;
-        return { keyState: promotedKeyState, wakeHolders };
-      }
-
-      const acquiredAt = new Date();
-      const definition = {
-        concurrency:
-          waiter.concurrencyMax !== null
-            ? { max: waiter.concurrencyMax }
-            : undefined,
-        rate:
-          waiter.rateCount !== null && waiter.ratePeriodMs !== null
-            ? {
-                count: waiter.rateCount,
-                periodMs: waiter.ratePeriodMs,
-              }
-            : undefined,
-      };
-
-      promotedKeyState.leases.push(
-        createLease(
-          key,
-          waiter.runId,
-          waiter.lockIndex,
-          definition,
-          acquiredAt,
-          waiter.leaseTtlMs
-        )
-      );
-      activeLeases += 1;
-
-      if (waiter.rateCount !== null && waiter.ratePeriodMs !== null) {
-        insertToken(
-          promotedKeyState,
-          waiter.lockId,
-          acquiredAt,
-          waiter.ratePeriodMs
-        );
-        activeTokens += 1;
-      }
-
-      wakeHolders.push(waiter.lockId);
+    if (waiter.rateCount !== null && waiter.ratePeriodMs !== null) {
+      insertToken(keyState, waiter.lockId, acquiredAt, waiter.ratePeriodMs);
     }
 
-    promotedKeyState.waiters = remainingWaiters;
-    return { keyState: promotedKeyState, wakeHolders };
+    return {
+      keyState,
+      lease,
+      nextWaiter: toNextWaiter(waiter.lockId),
+    };
   };
 
   return {
@@ -382,18 +444,23 @@ export function createLimits(
 
       return withStateLock(async (): Promise<LimitAcquireResult> => {
         const state = cloneState(await readState());
-        const baseKeyState = pruneKeyState(
+        const keyState = await pruneDeadWaiters(
           state.keys[parsed.key] ?? {
             key: parsed.key,
+            definition: undefined,
             leases: [],
             tokens: [],
             waiters: [],
           }
         );
-        const { keyState, wakeHolders } = await promoteWaiters(
-          parsed.key,
-          baseKeyState
-        );
+        if (
+          keyState.leases.length === 0 &&
+          keyState.tokens.length === 0 &&
+          keyState.waiters.length === 0
+        ) {
+          keyState.definition = undefined;
+        }
+        assertCanonicalDefinition(parsed.key, keyState, parsed.definition);
         state.keys[parsed.key] = keyState;
 
         const existingLease = keyState.leases.find(
@@ -401,7 +468,6 @@ export function createLimits(
         );
         if (existingLease) {
           await writeState(state);
-          await Promise.all(wakeHolders.map(queueWakeForHolder));
           return {
             status: 'acquired',
             lease: existingLease,
@@ -417,6 +483,25 @@ export function createLimits(
         const existingWaiter = keyState.waiters.find(
           (waiter) => waiter.lockId === lockId
         );
+
+        if (
+          existingWaiter &&
+          keyState.waiters[0]?.waiterId === existingWaiter.waiterId
+        ) {
+          if (!concurrencyBlocked && !rateBlocked) {
+            const promoted = promoteWaiter(
+              parsed.key,
+              keyState,
+              existingWaiter
+            );
+            state.keys[parsed.key] = promoted.keyState;
+            await writeState(state);
+            return {
+              status: 'acquired',
+              lease: promoted.lease,
+            };
+          }
+        }
 
         if (
           existingWaiter ||
@@ -440,11 +525,10 @@ export function createLimits(
 
           state.keys[parsed.key] = keyState;
           await writeState(state);
-          await Promise.all(wakeHolders.map(queueWakeForHolder));
           return {
             status: 'blocked',
             reason: getBlockedReason(concurrencyBlocked, rateBlocked),
-            retryAfterMs: getRetryAfterMs(
+            retryAfterMs: getBlockedRetryAfterMs(
               keyState,
               Date.now(),
               concurrencyBlocked,
@@ -476,7 +560,6 @@ export function createLimits(
 
         state.keys[parsed.key] = keyState;
         await writeState(state);
-        await Promise.all(wakeHolders.map(queueWakeForHolder));
 
         return {
           status: 'acquired',
@@ -488,12 +571,12 @@ export function createLimits(
     async release(request) {
       const parsed = LimitReleaseRequestSchema.parse(request);
 
-      await withStateLock(async () => {
+      return withStateLock(async (): Promise<LimitReleaseResult> => {
         const state = cloneState(await readState());
-        const wakeHolders: string[] = [];
+        let nextWaiter: LimitNextWaiter | undefined;
 
         for (const [key, keyStateValue] of Object.entries(state.keys)) {
-          const keyState = pruneKeyState(keyStateValue);
+          const keyState = await pruneDeadWaiters(keyStateValue);
           const beforeLeases = keyState.leases.length;
           keyState.leases = keyState.leases.filter((lease) => {
             if (lease.leaseId !== parsed.leaseId) return true;
@@ -505,9 +588,25 @@ export function createLimits(
           });
 
           if (keyState.leases.length !== beforeLeases) {
-            const promoted = await promoteWaiters(key, keyState);
-            state.keys[key] = promoted.keyState;
-            wakeHolders.push(...promoted.wakeHolders);
+            const headWaiter = keyState.waiters[0];
+            if (headWaiter) {
+              const concurrencyBlocked =
+                headWaiter.concurrencyMax !== null &&
+                keyState.leases.length >= headWaiter.concurrencyMax;
+              const rateBlocked =
+                headWaiter.rateCount !== null &&
+                keyState.tokens.length >= headWaiter.rateCount;
+
+              if (!concurrencyBlocked && !rateBlocked) {
+                const promoted = promoteWaiter(key, keyState, headWaiter);
+                nextWaiter = promoted.nextWaiter;
+                state.keys[key] = promoted.keyState;
+              } else {
+                state.keys[key] = keyState;
+              }
+            } else {
+              state.keys[key] = keyState;
+            }
           } else {
             state.keys[key] = keyState;
           }
@@ -516,7 +615,7 @@ export function createLimits(
         }
 
         await writeState(state);
-        await Promise.all(wakeHolders.map(queueWakeForHolder));
+        return { nextWaiter };
       });
     },
 

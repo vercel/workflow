@@ -1,5 +1,5 @@
 import type { Socket } from 'node:net';
-import type { Storage, World } from '@workflow/world';
+import type { Limits, Queue, Storage, World } from '@workflow/world';
 import createPostgres from 'postgres';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
@@ -13,10 +13,20 @@ import {
 } from './storage.js';
 import { createStreamer } from './streamer.js';
 
-function createStorage(drizzle: Drizzle): Storage {
+function createStorage(
+  drizzle: Drizzle,
+  options?: {
+    getLimits?: () => Limits | undefined;
+    queue?: Pick<Queue, 'queue'>;
+  }
+): Storage {
+  const runs = createRunsStorage(drizzle);
   return {
-    runs: createRunsStorage(drizzle),
-    events: createEventsStorage(drizzle),
+    runs,
+    events: createEventsStorage(drizzle, {
+      ...options,
+      runs,
+    }),
     hooks: createHooksStorage(drizzle),
     steps: createStepsStorage(drizzle),
   };
@@ -36,9 +46,13 @@ export function createWorld(
   const postgres = createPostgres(config.connectionString);
   const drizzle = createClient(postgres);
   const queue = createQueue(config, postgres);
-  const storage = createStorage(drizzle);
   const streamer = createStreamer(postgres, drizzle);
-  const limits = createLimits(config, drizzle);
+  let limits: Limits | undefined;
+  const storage = createStorage(drizzle, {
+    getLimits: () => limits,
+    queue,
+  });
+  limits = createLimits(config, drizzle);
 
   return {
     limits,

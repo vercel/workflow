@@ -1,9 +1,15 @@
-import type { Storage } from '@workflow/world';
+import type { Limits, Queue, Storage } from '@workflow/world';
 import { instrumentObject } from '../instrumentObject.js';
 import { createEventsStorage } from './events-storage.js';
 import { createHooksStorage } from './hooks-storage.js';
 import { createRunsStorage } from './runs-storage.js';
 import { createStepsStorage } from './steps-storage.js';
+
+export interface LocalStorageOptions {
+  getLimits?: () => Limits | undefined;
+  queue?: Pick<Queue, 'queue'>;
+  runs?: Pick<Storage['runs'], 'get'>;
+}
 
 /**
  * Creates a complete storage implementation using the filesystem.
@@ -14,12 +20,19 @@ import { createStepsStorage } from './steps-storage.js';
  * @param basedir - The base directory for storing workflow data
  * @returns A complete Storage implementation with tracing
  */
-export function createStorage(basedir: string, tag?: string): Storage {
-  // Create raw storage implementations
+export function createStorage(
+  basedir: string,
+  tag?: string,
+  options?: LocalStorageOptions
+): Storage {
+  const runs = createRunsStorage(basedir, tag);
   const storage: Storage = {
-    runs: createRunsStorage(basedir, tag),
+    runs,
     steps: createStepsStorage(basedir, tag),
-    events: createEventsStorage(basedir, tag),
+    events: createEventsStorage(basedir, tag, {
+      ...options,
+      runs,
+    }),
     hooks: createHooksStorage(basedir, tag),
   };
 

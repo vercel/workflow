@@ -16,6 +16,7 @@ const DEFAULT_CONCURRENCY_LIMIT = 1000;
 const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
+const MAX_SET_TIMEOUT_DELAY_MS = 2_147_483_647;
 
 export type DirectHandler = (req: Request) => Promise<Response>;
 
@@ -101,13 +102,18 @@ export function createQueue(config: Partial<Config>): LocalQueue {
       return;
     }
 
+    const timeoutMs = Math.min(delayMs, MAX_SET_TIMEOUT_DELAY_MS);
     message.timer = globalThis.setTimeout(() => {
       if (message.version !== version || closed) {
         return;
       }
       message.timer = undefined;
+      if (delayMs > MAX_SET_TIMEOUT_DELAY_MS) {
+        scheduleExecution(message, delayMs - MAX_SET_TIMEOUT_DELAY_MS);
+        return;
+      }
       enqueueRun();
-    }, delayMs);
+    }, timeoutMs);
   };
 
   const deliverMessage = async (
@@ -270,6 +276,10 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     if (opts?.idempotencyKey) {
       const existing = scheduledMessages.get(opts.idempotencyKey);
       if (existing) {
+        if (existing.running) {
+          return { messageId: existing.messageId };
+        }
+
         existing.queueName = queueName;
         existing.body = body;
         existing.headers = opts.headers;

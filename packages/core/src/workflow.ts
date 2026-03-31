@@ -78,7 +78,8 @@ export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
   events: Event[],
-  encryptionKey: CryptoKey | undefined
+  encryptionKey: CryptoKey | undefined,
+  lockPreApproval?: string
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -135,8 +136,12 @@ export async function runWorkflow(
 
     const workflowContext: WorkflowOrchestratorContext = {
       runId: workflowRun.runId,
+      lockPreApproval,
       encryptionKey,
       globalThis: vmGlobalThis,
+      advanceTimestamp: (timestamp) => {
+        updateTimestamp(Math.max(timestamp, vmGlobalThis.Date.now()));
+      },
       onWorkflowError: workflowDiscontinuation.reject,
       eventsConsumer,
       nextLockIndex: 0,

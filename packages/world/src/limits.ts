@@ -66,6 +66,13 @@ export function createLockWakeCorrelationId(
   return `wflock_wait_${runId}:${lockIndex}`;
 }
 
+export function createLockCorrelationId(
+  runId: string,
+  lockIndex: number
+): string {
+  return `wflock_${runId}:${lockIndex}`;
+}
+
 export const LimitLeaseSchema = z.object({
   leaseId: z.string().min(1),
   key: LimitKeySchema,
@@ -127,6 +134,19 @@ export const LimitReleaseRequestSchema = z.object({
 });
 export type LimitReleaseRequest = z.infer<typeof LimitReleaseRequestSchema>;
 
+export const LimitNextWaiterSchema = z.object({
+  runId: z.string().min(1),
+  lockIndex: z.number().int().nonnegative(),
+  wakeCorrelationId: z.string().min(1),
+  lockCorrelationId: z.string().min(1),
+});
+export type LimitNextWaiter = z.infer<typeof LimitNextWaiterSchema>;
+
+export const LimitReleaseResultSchema = z.object({
+  nextWaiter: LimitNextWaiterSchema.optional(),
+});
+export type LimitReleaseResult = z.infer<typeof LimitReleaseResultSchema>;
+
 export const LimitHeartbeatRequestSchema = z.object({
   leaseId: z.string().min(1),
   ttlMs: z.number().int().positive().optional(),
@@ -135,6 +155,6 @@ export type LimitHeartbeatRequest = z.infer<typeof LimitHeartbeatRequestSchema>;
 
 export interface Limits {
   acquire(request: LimitAcquireRequest): Promise<LimitAcquireResult>;
-  release(request: LimitReleaseRequest): Promise<void>;
+  release(request: LimitReleaseRequest): Promise<LimitReleaseResult>;
   heartbeat(request: LimitHeartbeatRequest): Promise<LimitLease>;
 }

@@ -42,8 +42,9 @@ export async function createPostgresTestDb(): Promise<PostgresTestDb> {
     async truncateLimits() {
       await sql`
         truncate table
+          workflow.workflow_limit_keys,
           workflow.workflow_limit_waiters,
-          workflow.workflow_limit_tokens,
+          workflow.workflow_rate_limit_tokens,
           workflow.workflow_limit_leases,
           workflow.workflow_steps,
           workflow.workflow_events,

@@ -13,6 +13,7 @@ export type * from './interfaces.js';
 export type * from './limits.js';
 export {
   createLockId,
+  createLockCorrelationId,
   createLockWakeCorrelationId,
   createLimitsNotImplementedError,
   LimitAcquireAcquiredResultSchema,
@@ -27,7 +28,9 @@ export {
   LimitKeySchema,
   LimitLeaseSchema,
   LimitLockIdSchema,
+  LimitNextWaiterSchema,
   LimitRateSchema,
+  LimitReleaseResultSchema,
   LimitReleaseRequestSchema,
   LIMITS_NOT_IMPLEMENTED_MESSAGE,
   parseLockId,

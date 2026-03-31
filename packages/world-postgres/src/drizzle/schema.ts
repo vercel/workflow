@@ -193,17 +193,25 @@ export const waits = schema.table(
   (tb) => [index().on(tb.runId)]
 );
 
+export const limitKeys = schema.table('workflow_limit_keys', {
+  limitKey: varchar('limit_key').primaryKey(),
+  concurrencyMax: integer('concurrency_max'),
+  rateCount: integer('rate_count'),
+  ratePeriodMs: integer('rate_period_ms'),
+});
+
 export const limitLeases = schema.table(
   'workflow_limit_leases',
   {
     leaseId: varchar('lease_id').primaryKey(),
-    limitKey: varchar('limit_key').notNull(),
+    limitKey: varchar('limit_key')
+      .references(() => limitKeys.limitKey, {
+        onDelete: 'cascade',
+      })
+      .notNull(),
     holderId: varchar('holder_id').notNull(),
     acquiredAt: timestamp('acquired_at').defaultNow().notNull(),
     expiresAt: timestamp('expires_at'),
-    concurrencyMax: integer('concurrency_max'),
-    rateCount: integer('rate_count'),
-    ratePeriodMs: integer('rate_period_ms'),
   },
   (tb) => [
     uniqueIndex().on(tb.limitKey, tb.holderId),
@@ -211,11 +219,15 @@ export const limitLeases = schema.table(
   ]
 );
 
-export const limitTokens = schema.table(
-  'workflow_limit_tokens',
+export const rateLimitTokens = schema.table(
+  'workflow_rate_limit_tokens',
   {
     tokenId: varchar('token_id').primaryKey(),
-    limitKey: varchar('limit_key').notNull(),
+    limitKey: varchar('limit_key')
+      .references(() => limitKeys.limitKey, {
+        onDelete: 'cascade',
+      })
+      .notNull(),
     holderId: varchar('holder_id').notNull(),
     acquiredAt: timestamp('acquired_at').defaultNow().notNull(),
     expiresAt: timestamp('expires_at').notNull(),
@@ -227,13 +239,14 @@ export const limitWaiters = schema.table(
   'workflow_limit_waiters',
   {
     waiterId: varchar('waiter_id').primaryKey(),
-    limitKey: varchar('limit_key').notNull(),
+    limitKey: varchar('limit_key')
+      .references(() => limitKeys.limitKey, {
+        onDelete: 'cascade',
+      })
+      .notNull(),
     holderId: varchar('holder_id').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     leaseTtlMs: integer('lease_ttl_ms'),
-    concurrencyMax: integer('concurrency_max'),
-    rateCount: integer('rate_count'),
-    ratePeriodMs: integer('rate_period_ms'),
   },
   (tb) => [
     uniqueIndex().on(tb.limitKey, tb.holderId),

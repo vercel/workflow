@@ -5,10 +5,12 @@ import {
   LOCK_WORKFLOW_ONLY_MESSAGE,
 } from './lock.js';
 import { contextStorage } from './step/context-storage.js';
-import { WORKFLOW_LOCK } from './symbols.js';
+import { WORKFLOW_HAS_STEP_CONTEXT, WORKFLOW_LOCK } from './symbols.js';
 
 afterEach(() => {
   delete (globalThis as any)[WORKFLOW_LOCK];
+  (globalThis as any)[WORKFLOW_HAS_STEP_CONTEXT] = () =>
+    contextStorage.getStore() !== undefined;
 });
 
 describe('lock', () => {

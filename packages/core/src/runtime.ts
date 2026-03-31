@@ -4,7 +4,6 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { classifyRunError } from './classify-error.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -12,6 +11,7 @@ import {
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
 } from '@workflow/world';
+import { classifyRunError } from './classify-error.js';
 import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
@@ -101,6 +101,7 @@ export function workflowEntrypoint(
 
       const {
         runId,
+        lockPreApproval,
         traceCarrier: traceContext,
         requestedAt,
       } = WorkflowInvokePayloadSchema.parse(message_);
@@ -314,7 +315,8 @@ export function workflowEntrypoint(
                         workflowCode,
                         workflowRun,
                         events,
-                        encryptionKey
+                        encryptionKey,
+                        lockPreApproval
                       );
                     }
                   );

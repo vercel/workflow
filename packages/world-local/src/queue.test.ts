@@ -10,6 +10,7 @@ const stepPayload: StepInvokePayload = {
 };
 
 describe('queue timeout re-enqueue', () => {
+  const maxSetTimeoutDelayMs = 2_147_483_647;
   let localQueue: ReturnType<typeof createQueue>;
 
   beforeEach(() => {
@@ -132,5 +133,56 @@ describe('queue timeout re-enqueue', () => {
     await vi.runAllTimersAsync();
 
     expect(seenStepIds).toEqual(['step_replacement']);
+  });
+
+  it('does not fire long delayed messages before the setTimeout max delay elapses', async () => {
+    let callCount = 0;
+    const delaySeconds = Math.ceil((maxSetTimeoutDelayMs + 5_000) / 1000);
+    const remainingDelayMs = delaySeconds * 1000 - maxSetTimeoutDelayMs;
+    const handler = localQueue.createQueueHandler('__wkf_step_', async () => {
+      callCount++;
+      return undefined;
+    });
+
+    localQueue.registerHandler('__wkf_step_', handler);
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload, {
+      delaySeconds,
+    });
+
+    await vi.advanceTimersByTimeAsync(maxSetTimeoutDelayMs);
+    expect(callCount).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(remainingDelayMs);
+    expect(callCount).toBe(1);
+  });
+
+  it('replaces chunked long-delay deliveries with an immediate idempotent wake-up', async () => {
+    const seenStepIds: string[] = [];
+    const handler = localQueue.createQueueHandler(
+      '__wkf_step_',
+      async (body) => {
+        seenStepIds.push((body as StepInvokePayload).stepId);
+        return undefined;
+      }
+    );
+
+    localQueue.registerHandler('__wkf_step_', handler);
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload, {
+      idempotencyKey: 'step_very_delayed',
+      delaySeconds: Math.ceil((maxSetTimeoutDelayMs + 5_000) / 1000),
+    });
+    await localQueue.queue(
+      '__wkf_step_test' as any,
+      { ...stepPayload, stepId: 'step_immediate_replacement' },
+      {
+        idempotencyKey: 'step_very_delayed',
+      }
+    );
+
+    await vi.runAllTimersAsync();
+
+    expect(seenStepIds).toEqual(['step_immediate_replacement']);
   });
 });

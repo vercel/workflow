@@ -23,6 +23,7 @@ export type TraceCarrier = z.infer<typeof TraceCarrierSchema>;
 
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
+  lockPreApproval: z.string().optional(),
   traceCarrier: TraceCarrierSchema.optional(),
   requestedAt: z.coerce.date().optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */

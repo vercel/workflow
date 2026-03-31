@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  LimitDefinitionSchema,
+  LimitLeaseSchema,
+  LimitNextWaiterSchema,
+} from './limits.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
@@ -74,6 +79,11 @@ export const EventTypeSchema = z.enum([
   // Wait lifecycle events
   'wait_created',
   'wait_completed',
+  // Lock lifecycle events
+  'lock_created',
+  'lock_acquired',
+  'lock_release',
+  'lock_waiter_queued',
 ]);
 
 // Base event schema with common properties
@@ -202,6 +212,45 @@ const WaitCompletedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
 });
 
+const LockCreatedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('lock_created'),
+  correlationId: z.string(),
+  eventData: z.object({
+    key: z.string(),
+    definition: LimitDefinitionSchema,
+    leaseTtlMs: z.number().int().positive().optional(),
+    acquireAt: z.coerce.date().optional(),
+  }),
+});
+
+const LockAcquiredEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('lock_acquired'),
+  correlationId: z.string(),
+  eventData: z
+    .object({
+      lease: LimitLeaseSchema,
+    })
+    .optional(),
+});
+
+const LockReleaseEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('lock_release'),
+  correlationId: z.string(),
+  eventData: z
+    .object({
+      leaseId: z.string().min(1),
+      key: z.string(),
+      lockId: z.string(),
+      nextWaiter: LimitNextWaiterSchema.optional(),
+    })
+    .optional(),
+});
+
+const LockWaiterQueuedEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('lock_waiter_queued'),
+  correlationId: z.string(),
+});
+
 // =============================================================================
 // Run lifecycle events
 // =============================================================================
@@ -281,6 +330,11 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
+  // Lock lifecycle events
+  LockCreatedEventSchema,
+  LockAcquiredEventSchema,
+  LockReleaseEventSchema,
+  LockWaiterQueuedEventSchema,
 ]);
 
 // Discriminated union for ALL events (includes World-only events like hook_conflict)
@@ -306,6 +360,11 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   // Wait lifecycle events
   WaitCreatedEventSchema,
   WaitCompletedEventSchema,
+  // Lock lifecycle events
+  LockCreatedEventSchema,
+  LockAcquiredEventSchema,
+  LockReleaseEventSchema,
+  LockWaiterQueuedEventSchema,
 ]);
 
 // Server response includes runId, eventId, and createdAt

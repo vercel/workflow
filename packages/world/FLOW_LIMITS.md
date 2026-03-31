@@ -109,30 +109,27 @@ independent from flow limits like:
 - `step:db:cheap`
 - `step:provider:openai`
 
-### 4. Use a sliding-window model for rate limits in v1
+### 4. Rate-limited waits are scheduled with `acquireAt`
 
-The current rate-limit model is a sliding-window log model, not a token bucket.
-
-For a limit like:
+For a rate limit like:
 
 - `rate: { count: 10, periodMs: 60_000 }`
 
-the intended semantics are:
+the observable contract is:
 
-- allow at most 10 successful acquires in the last 60 seconds
-- each successful acquire records a timestamped rate usage entry
-- rate capacity returns only when that entry ages out of the window
+- blocked acquires receive an `acquireAt` time through `lock_created`
+- a workflow retries `lock_acquired` only once that `acquireAt` has arrived, or
+  sooner if it is explicitly re-queued with lock pre-approval
+- a historical `lock_acquired` is only valid while its lease is still live
+- once the lease has expired, replay must ignore that old acquisition and
+  acquire again
 
-This is simpler than a token bucket and matches the current local-world
-implementation direction well.
+The important distinction in the event log is:
 
-Important distinction:
-
-- `lease`: active occupancy / ownership for a holder
-- `token`: internal rate-usage record that remains until the rate window expires
-
-Releasing a lease should free concurrency capacity immediately, but it should
-not restore rate capacity until the associated rate usage entry expires.
+- `lock_created`: reservation / retry scheduling information
+- `lock_acquired`: proof that a live lease was actually granted
+- `lock_release`: disposal of the granted lease, optionally with a nominated
+  next waiter to wake
 
 ### 5. Use one `lock()` API from workflow scope
 
@@ -212,6 +209,16 @@ Important details:
 This gives deterministic and inspectable fairness for a key without requiring a
 global scheduler.
 
+### 9.5. First writer wins for key configuration
+
+Each limit key has one canonical definition while it is live.
+
+- the first acquire for a key seeds that definition
+- later acquires for the same key must match it exactly
+- a mismatched definition is a hard error
+- once a key fully drains, the canonical definition is forgotten and the next
+  acquire may seed a new one
+
 ### 10. Blocked limits do not consume worker concurrency
 
 Blocked flow limits and worker concurrency are intentionally separate.
@@ -236,7 +243,9 @@ Current behavior:
 
 - leases, rate tokens, and waiters live in world-owned limit state
 - promotion decisions are made from that limit state
-- when a waiter is promoted, the runtime is woken by enqueuing the workflow job
+- `lock_release` may nominate the next waiter to wake
+- event storage is responsible for enqueuing that waiter with lock pre-approval
+  and then appending `lock_waiter_queued` for the waiter correlation
 - workflows also keep a delayed replay fallback so progress is still possible if
   an immediate wake-up is missed
 
@@ -350,8 +359,8 @@ Two more practical clarifications:
 - a blocked workflow lock should not monopolize
   `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` or
   `WORKFLOW_LOCAL_QUEUE_CONCURRENCY` just because it is waiting
-- a released concurrency lease frees concurrency immediately, but associated
-  rate usage still remains counted until its token ages out of the rate window
+- a released lease may nominate one waiter for prompt wake-up, but delayed retry
+  remains in place as the fallback path
 
 ## Open Questions
 
@@ -360,4 +369,3 @@ Two more practical clarifications:
 - Whether `heartbeat()` should remain user-visible or become mostly internal.
 - Whether `lock()` should eventually grow optional metadata or
   config sugar for common per-step resource keys.
-- Exact event-log representation for acquire/block/dispose transitions.

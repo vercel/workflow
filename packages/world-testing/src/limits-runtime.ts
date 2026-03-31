@@ -28,6 +28,12 @@ type WorkflowRateLimitResult = {
   periodMs: number;
 };
 
+type ReleasedRateLimitReplayResult = {
+  elapsedMs: number;
+  periodMs: number;
+  sleepMs: number;
+};
+
 type LeakedLockResult = {
   label: string;
   key: string;
@@ -78,6 +84,11 @@ export interface LimitsRuntimeHarness {
     holdMs: number,
     periodMs: number
   ): Promise<[WorkflowRateLimitResult, WorkflowRateLimitResult]>;
+  runReleasedRateLimitReplay(
+    userId: string,
+    periodMs: number,
+    sleepMs: number
+  ): Promise<ReleasedRateLimitReplayResult>;
   runWorkflowFifoThreeWaiters(
     userId: string,
     holdMs: number
@@ -239,6 +250,17 @@ export function createLimitsRuntimeSuite(
       expect(
         resultB.workflowRateAcquiredAt - resultA.workflowRateReleasedAt
       ).toBeGreaterThanOrEqual(Math.max(0, remainingWindowAfterRelease - 100));
+    });
+
+    it('does not reacquire a released rate-only lock on later replay', async () => {
+      const harness = await createHarness();
+      const result = await harness.runReleasedRateLimitReplay(
+        'replay-user',
+        6_000,
+        100
+      );
+
+      expect(result.elapsedMs).toBeLessThan(4_000);
     });
 
     it('promotes 3 workflow waiters in FIFO order', async () => {
