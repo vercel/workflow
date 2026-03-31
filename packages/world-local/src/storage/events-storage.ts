@@ -452,7 +452,7 @@ export function createEventsStorage(
           if (result.status !== 'acquired') {
             const retryAfter =
               result.retryAfterMs !== undefined
-                ? new Date(Date.now() + result.retryAfterMs)
+                ? Math.ceil(result.retryAfterMs / 1000)
                 : undefined;
             throw new TooEarlyError(
               `Lock "${data.correlationId}" is not ready to acquire`,
