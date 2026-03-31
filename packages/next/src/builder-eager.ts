@@ -420,7 +420,7 @@ export async function getNextBuilderEager() {
           experimentalTriggers: [STEP_QUEUE_TRIGGER],
         },
         workflows: {
-          maxDuration: 180,
+          maxDuration: 'max',
           experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
         },
       };
