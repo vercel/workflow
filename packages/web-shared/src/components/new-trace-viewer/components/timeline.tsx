@@ -85,10 +85,10 @@ const DeltaIndicator = memo(function DeltaIndicator({
         height: END_CAP_HEIGHT,
       }}
     >
-      <div className="absolute left-0 top-0 w-px h-full bg-orange-500" />
-      <div className="absolute left-0 right-0 top-1/2 h-px bg-orange-500" />
-      <div className="absolute right-0 top-0 w-px h-full bg-orange-500" />
-      <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 font-mono text-[10px] leading-none whitespace-nowrap rounded px-1 py-0.5 text-orange-800 bg-orange-100/90">
+      <div className="absolute left-0 top-0 w-px h-full bg-amber-800" />
+      <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-800" />
+      <div className="absolute right-0 top-0 w-px h-full bg-amber-800" />
+      <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-label-12 leading-none whitespace-nowrap rounded-xs px-1 py-0.5 text-gray-100 bg-amber-800">
         {label}
       </span>
     </div>

@@ -393,7 +393,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             />
           }
         >
-          <div className="block min-h-0 overflow-visible">
+          <div className="block overflow-visible">
             <EventList
               spans={filteredSpans}
               activeSpanId={activeSpanId}
