@@ -1,7 +1,15 @@
-import { execSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { createTestSuite } from '../../world-testing/dist/src/index.mjs';
 import { afterAll, beforeAll, test } from 'vitest';
+
+const packageDir = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..'
+);
+const workspaceDir = path.resolve(packageDir, '..', '..');
 
 // Skip these tests on Windows since it relies on a docker container
 if (process.platform === 'win32') {
@@ -17,15 +25,24 @@ if (process.platform === 'win32') {
 
     execSync('pnpm build', {
       stdio: 'inherit',
-      cwd: process.cwd(),
+      cwd: packageDir,
       env: process.env,
     });
 
-    execSync('pnpm exec tsx src/cli.ts', {
-      stdio: 'inherit',
-      cwd: process.cwd(),
-      env: process.env,
-    });
+    execFileSync(
+      'pnpm',
+      [
+        '--dir',
+        workspaceDir,
+        'exec',
+        'tsx',
+        'packages/world-postgres/src/cli.ts',
+      ],
+      {
+        stdio: 'inherit',
+        env: process.env,
+      }
+    );
   }, 120_000);
 
   afterAll(async () => {
