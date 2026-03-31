@@ -36,6 +36,7 @@ export function computeRootBounds(spans: Span[]): RootBounds {
 
 export interface TimeCompression {
   toVisual(time: number): number;
+  fromVisual(fraction: number): number;
   isCompressed: boolean;
 }
 
@@ -51,6 +52,9 @@ export function buildTimeCompression(
     toVisual(time: number): number {
       if (range <= 0) return 0;
       return Math.min(Math.max((time - viewStart) / range, 0), 1);
+    },
+    fromVisual(fraction: number): number {
+      return viewStart + fraction * range;
     },
   };
 }
@@ -133,6 +137,37 @@ export function computeCompressedTimeMarkers(
   }
 
   return markers;
+}
+
+// ---------------------------------------------------------------------------
+// Span gaps — time deltas between consecutive spans (Alt-key overlay)
+// ---------------------------------------------------------------------------
+
+export interface SpanGap {
+  gapMs: number;
+  leftFrac: number;
+  rightFrac: number;
+  rowIndex: number;
+}
+
+export function computeSpanGaps(
+  spans: Span[],
+  compression: TimeCompression
+): SpanGap[] {
+  const gaps: SpanGap[] = [];
+  for (let i = 0; i < spans.length - 1; i++) {
+    const endTime = getHighResInMs(spans[i].endTime);
+    const startTime = getHighResInMs(spans[i + 1].startTime);
+    const gapMs = startTime - endTime;
+    if (gapMs <= 0) continue;
+
+    const leftFrac = compression.toVisual(endTime);
+    const rightFrac = compression.toVisual(startTime);
+    if (rightFrac - leftFrac < 0.001) continue;
+
+    gaps.push({ gapMs, leftFrac, rightFrac, rowIndex: i });
+  }
+  return gaps;
 }
 
 // ---------------------------------------------------------------------------

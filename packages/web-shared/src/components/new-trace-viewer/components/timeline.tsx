@@ -1,13 +1,15 @@
 'use client';
 
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import type { ReactNode } from 'react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
-import { getHighResInMs } from '../../trace-viewer/util/timing';
-import type { SegmentStatus, TimeCompression } from '../utils';
+import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
+import type { Segment, SegmentStatus, TimeCompression } from '../utils';
 import {
   computeCompressedTimeMarkers,
+  computeSpanGaps,
   computeSpanSegments,
   computeTimeMarkers,
   getResourceColor,
@@ -33,7 +35,116 @@ const SEGMENT_CONFIG: Record<
   received: { className: 'bg-blue-700' },
 };
 
+const SEGMENT_LABELS: Record<SegmentStatus, string> = {
+  queued: 'Queued',
+  retrying: 'Retrying',
+  waiting: 'Waiting',
+  running: 'Running',
+  failed: 'Failed',
+  succeeded: 'Succeeded',
+  sleeping: 'Sleeping',
+  received: 'Received',
+};
+
+const SEGMENT_DOT_COLORS: Record<SegmentStatus, string> = {
+  queued: 'bg-gray-500',
+  retrying: 'bg-gray-500',
+  waiting: 'bg-gray-500',
+  running: 'bg-blue-700',
+  failed: 'bg-red-700',
+  succeeded: 'bg-green-700',
+  sleeping: 'bg-amber-700',
+  received: 'bg-blue-700',
+};
+
 const FIXED_BAR_WIDTH_PX = 4;
+const ROW_HEIGHT = 36;
+const CONTAINER_PAD_Y = 8;
+const END_CAP_HEIGHT = 8;
+
+const DeltaIndicator = memo(function DeltaIndicator({
+  leftFrac,
+  rightFrac,
+  label,
+  rowIndex,
+}: {
+  leftFrac: number;
+  rightFrac: number;
+  label: string;
+  rowIndex: number;
+}) {
+  const centerY = CONTAINER_PAD_Y + (rowIndex + 1) * ROW_HEIGHT;
+
+  return (
+    <div
+      className="absolute pointer-events-none"
+      style={{
+        left: `${leftFrac * 100}%`,
+        width: `${(rightFrac - leftFrac) * 100}%`,
+        top: centerY - END_CAP_HEIGHT / 2,
+        height: END_CAP_HEIGHT,
+      }}
+    >
+      <div className="absolute left-0 top-0 w-px h-full bg-orange-500" />
+      <div className="absolute left-0 right-0 top-1/2 h-px bg-orange-500" />
+      <div className="absolute right-0 top-0 w-px h-full bg-orange-500" />
+      <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 font-mono text-[10px] leading-none whitespace-nowrap rounded px-1 py-0.5 text-orange-800 bg-orange-100/90">
+        {label}
+      </span>
+    </div>
+  );
+});
+
+function BarTooltipContent({
+  segments,
+  totalDurationMs,
+}: {
+  segments: Segment[];
+  totalDurationMs: number;
+}) {
+  const mergedSegments = useMemo(() => {
+    const merged: Segment[] = [];
+    for (const seg of segments) {
+      const last = merged[merged.length - 1];
+      if (last && last.status === seg.status) {
+        last.endFraction = seg.endFraction;
+      } else {
+        merged.push({ ...seg });
+      }
+    }
+    return merged;
+  }, [segments]);
+
+  return (
+    <div className="flex flex-col gap-1">
+      {mergedSegments.map((seg, i) => {
+        const segDuration =
+          (seg.endFraction - seg.startFraction) * totalDurationMs;
+        return (
+          <div
+            key={`${seg.status}-${i}`}
+            className="flex items-center justify-between gap-3"
+          >
+            <div className="flex items-center gap-1.5">
+              <span
+                className={cn(
+                  'w-1.5 h-1.5 rounded-full shrink-0',
+                  SEGMENT_DOT_COLORS[seg.status]
+                )}
+              />
+              <span className="text-label-12 font-medium">
+                {SEGMENT_LABELS[seg.status]}
+              </span>
+            </div>
+            <span className="text-label-12 font-mono font-medium text-gray-900 tabular-nums">
+              {formatDuration(segDuration)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 const TimelineBar = memo(function TimelineBar({
   span,
@@ -50,6 +161,7 @@ const TimelineBar = memo(function TimelineBar({
 }): ReactNode {
   const startTime = getHighResInMs(span.startTime);
   const endTime = getHighResInMs(span.endTime);
+  const totalDurationMs = endTime - startTime;
 
   const leftFrac = compression.toVisual(startTime);
   const rightFrac = compression.toVisual(endTime);
@@ -69,6 +181,54 @@ const TimelineBar = memo(function TimelineBar({
     ? (colors.errorBar ?? 'var(--ds-red-700)')
     : colors.bar;
 
+  const barContent = isCompressed ? (
+    <div
+      className="h-4 rounded-sm relative top-1"
+      style={{ width: '100%', background: fallbackColor }}
+    />
+  ) : segments.length > 0 ? (
+    <div className="relative w-full h-4 top-1 [&>*:nth-child(2)]:rounded-l-sm">
+      {segments.map((seg, i) => {
+        const segPixelWidth =
+          (seg.endFraction - seg.startFraction) * pixelWidth;
+        const segStyle =
+          seg.status === 'queued' && segPixelWidth < 20
+            ? { background: 'var(--ds-gray-500)' }
+            : SEGMENT_CONFIG[seg.status].style;
+
+        return (
+          <div
+            key={`${seg.status}-${i}`}
+            className={cn(
+              'absolute h-full first:rounded-sm last:rounded-r-sm',
+              SEGMENT_CONFIG[seg.status].className
+            )}
+            style={{
+              left: `${seg.startFraction * 100}%`,
+              width:
+                seg.status === 'queued'
+                  ? `calc(${(seg.endFraction - seg.startFraction) * 100}% - 2px)`
+                  : `${(seg.endFraction - seg.startFraction) * 100}%`,
+              minWidth: 2,
+              ...segStyle,
+            }}
+          />
+        );
+      })}
+    </div>
+  ) : (
+    <div
+      className="h-4 rounded-sm relative top-1"
+      style={{
+        width: '100%',
+        minWidth: 4,
+        background: fallbackColor,
+      }}
+    />
+  );
+
+  const hasTooltip = segments.length > 0;
+
   return (
     <div
       role="treeitem"
@@ -80,61 +240,47 @@ const TimelineBar = memo(function TimelineBar({
       )}
       onClick={onClick}
     >
-      <div
-        className="absolute h-6 top-1.5 rounded-sm"
-        style={{
-          left: `${leftPct}%`,
-          width: isCompressed
-            ? `${FIXED_BAR_WIDTH_PX}px`
-            : `max(${widthPct}%, 4px)`,
-        }}
-      >
-        {isCompressed ? (
-          <div
-            className="h-4 rounded-sm relative top-1"
-            style={{ width: '100%', background: fallbackColor }}
-          />
-        ) : segments.length > 0 ? (
-          <div className="relative w-full h-4 top-1 [&>*:nth-child(2)]:rounded-l-sm">
-            {segments.map((seg, i) => {
-              const segPixelWidth =
-                (seg.endFraction - seg.startFraction) * pixelWidth;
-              const segStyle =
-                seg.status === 'queued' && segPixelWidth < 20
-                  ? { background: 'var(--ds-gray-500)' }
-                  : SEGMENT_CONFIG[seg.status].style;
-
-              return (
-                <div
-                  key={`${seg.status}-${i}`}
-                  className={cn(
-                    'absolute h-full first:rounded-sm last:rounded-r-sm',
-                    SEGMENT_CONFIG[seg.status].className
-                  )}
-                  style={{
-                    left: `${seg.startFraction * 100}%`,
-                    width:
-                      seg.status === 'queued'
-                        ? `calc(${(seg.endFraction - seg.startFraction) * 100}% - 2px)`
-                        : `${(seg.endFraction - seg.startFraction) * 100}%`,
-                    minWidth: 2,
-                    ...segStyle,
-                  }}
-                />
-              );
-            })}
-          </div>
-        ) : (
-          <div
-            className="h-4 rounded-sm relative top-1"
-            style={{
-              width: '100%',
-              minWidth: 4,
-              background: fallbackColor,
-            }}
-          />
-        )}
-      </div>
+      {hasTooltip ? (
+        <TooltipPrimitive.Root delayDuration={200}>
+          <TooltipPrimitive.Trigger asChild>
+            <div
+              className="absolute h-6 top-1.5 rounded-sm"
+              style={{
+                left: `${leftPct}%`,
+                width: isCompressed
+                  ? `${FIXED_BAR_WIDTH_PX}px`
+                  : `max(${widthPct}%, 4px)`,
+              }}
+            >
+              {barContent}
+            </div>
+          </TooltipPrimitive.Trigger>
+          <TooltipPrimitive.Portal>
+            <TooltipPrimitive.Content
+              side="top"
+              sideOffset={6}
+              className="z-50 rounded border border-gray-alpha-400 bg-background-100 shadow-md px-3 py-2 min-w-[160px] origin-[var(--radix-tooltip-content-transform-origin)] data-[state=delayed-open]:animate-[tooltip-enter_150ms_ease-out]"
+            >
+              <BarTooltipContent
+                segments={segments}
+                totalDurationMs={totalDurationMs}
+              />
+            </TooltipPrimitive.Content>
+          </TooltipPrimitive.Portal>
+        </TooltipPrimitive.Root>
+      ) : (
+        <div
+          className="absolute h-6 top-1.5 rounded-sm"
+          style={{
+            left: `${leftPct}%`,
+            width: isCompressed
+              ? `${FIXED_BAR_WIDTH_PX}px`
+              : `max(${widthPct}%, 4px)`,
+          }}
+        >
+          {barContent}
+        </div>
+      )}
     </div>
   );
 });
@@ -148,6 +294,7 @@ export function TimelineHeader({
   compression,
   isZoomed,
   onResetZoom,
+  hoverInfo,
 }: {
   viewStart: number;
   viewDuration: number;
@@ -155,6 +302,7 @@ export function TimelineHeader({
   compression: TimeCompression;
   isZoomed: boolean;
   onResetZoom: () => void;
+  hoverInfo?: { fraction: number; label: string } | null;
 }): ReactNode {
   const viewEnd = viewStart + viewDuration;
 
@@ -182,6 +330,14 @@ export function TimelineHeader({
           {m.label}
         </span>
       ))}
+      {hoverInfo && (
+        <span
+          className="absolute top-1 pointer-events-none z-10 font-mono text-[11px] leading-4 text-gray-1000 whitespace-nowrap bg-background-100 border border-gray-alpha-400 rounded px-1 -translate-x-1/2"
+          style={{ left: `${hoverInfo.fraction * 100}%` }}
+        >
+          {hoverInfo.label}
+        </span>
+      )}
       {isZoomed && (
         <button
           type="button"
@@ -200,11 +356,15 @@ export function Timeline({
   compression,
   selectedId,
   onSelect,
+  hoverFraction,
+  altHeld = false,
 }: {
   spans: Span[];
   compression: TimeCompression;
   selectedId: string | null;
   onSelect: (spanId: string) => void;
+  hoverFraction?: number | null;
+  altHeld?: boolean;
 }): ReactNode {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
@@ -219,8 +379,19 @@ export function Timeline({
     return () => ro.disconnect();
   }, []);
 
+  const gaps = useMemo(
+    () => computeSpanGaps(spans, compression),
+    [spans, compression]
+  );
+
   return (
     <div ref={containerRef} className="relative py-2">
+      {hoverFraction != null && (
+        <div
+          className="absolute top-0 bottom-0 w-px bg-gray-alpha-400 pointer-events-none z-10"
+          style={{ left: `${hoverFraction * 100}%` }}
+        />
+      )}
       {spans.map((span) => (
         <TimelineBar
           key={span.spanId}
@@ -231,6 +402,19 @@ export function Timeline({
           onClick={() => onSelect(span.spanId)}
         />
       ))}
+      {altHeld && (
+        <div aria-hidden className="absolute inset-0 pointer-events-none">
+          {gaps.map((gap) => (
+            <DeltaIndicator
+              key={gap.rowIndex}
+              leftFrac={gap.leftFrac}
+              rightFrac={gap.rightFrac}
+              label={formatDuration(gap.gapMs, true)}
+              rowIndex={gap.rowIndex}
+            />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

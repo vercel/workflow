@@ -10,7 +10,7 @@ import {
   useState,
 } from 'react';
 import type { Trace } from '../trace-viewer/types';
-import { getHighResInMs } from '../trace-viewer/util/timing';
+import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { SplitPane } from './components/split-pane';
 import EventList from './components/event-list';
 import { Timeline, TimelineHeader } from './components/timeline';
@@ -209,17 +209,63 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     [animateTo, setActiveSpan, trace.spans, root.startTime, root.duration]
   );
 
+  const [altHeld, setAltHeld] = useState(false);
+
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         clearActiveSpan();
       }
+      if (e.key === 'Alt') {
+        e.preventDefault();
+        setAltHeld(true);
+      }
     };
+    const onKeyUp = (e: KeyboardEvent): void => {
+      if (e.key === 'Alt') setAltHeld(false);
+    };
+    const onBlur = (): void => setAltHeld(false);
+
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
   }, [clearActiveSpan]);
 
   const timelineRef = useRef<HTMLDivElement>(null);
+  const [hoverFraction, setHoverFraction] = useState<number | null>(null);
+
+  const hoverInfo = useMemo(() => {
+    if (hoverFraction == null) return null;
+    const absTime = compression.fromVisual(hoverFraction);
+    const offset = absTime - root.startTime;
+    return { fraction: hoverFraction, label: formatDuration(offset, true) };
+  }, [hoverFraction, compression, root.startTime]);
+
+  const handleTimelineMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const el = timelineRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const padding = 8;
+      const contentWidth = rect.width - padding * 2;
+      if (contentWidth <= 0) return;
+      const fraction = Math.max(
+        0,
+        Math.min(1, (e.clientX - rect.left - padding) / contentWidth)
+      );
+      setHoverFraction(fraction);
+    },
+    []
+  );
+
+  const handleTimelineMouseLeave = useCallback(() => {
+    setHoverFraction(null);
+  }, []);
 
   useEffect(() => {
     const el = timelineRef.current;
@@ -343,6 +389,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               compression={compression}
               isZoomed={isZoomed}
               onResetZoom={resetZoom}
+              hoverInfo={hoverInfo}
             />
           }
         >
@@ -357,12 +404,16 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             ref={timelineRef}
             className="block min-h-0 overflow-visible relative px-2"
             onDoubleClick={resetZoom}
+            onMouseMove={handleTimelineMouseMove}
+            onMouseLeave={handleTimelineMouseLeave}
           >
             <Timeline
               spans={filteredSpans}
               compression={compression}
               selectedId={activeSpanId}
               onSelect={handleSelectSpan}
+              hoverFraction={hoverFraction}
+              altHeld={altHeld}
             />
           </div>
         </SplitPane>
