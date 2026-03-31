@@ -104,7 +104,7 @@ describe('local world limit retry timing', () => {
         eventData: {
           key: 'workflow:user:test',
           definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
+          leaseTtlMs: 10_000,
         },
       });
       const second = await world.events.create(runB.runId, {
@@ -114,7 +114,7 @@ describe('local world limit retry timing', () => {
         eventData: {
           key: 'workflow:user:test',
           definition: { concurrency: { max: 1 } },
-          leaseTtlMs: 1_000,
+          leaseTtlMs: 10_000,
         },
       });
 
@@ -164,7 +164,7 @@ describe('local world limit retry timing', () => {
           definition: {
             concurrency: { max: 1 },
           },
-          leaseTtlMs: 10,
+          leaseTtlMs: 60_000,
         })
       ).resolves.toMatchObject({ status: 'acquired' });
 
@@ -176,9 +176,44 @@ describe('local world limit retry timing', () => {
           definition: {
             rate: { count: 1, periodMs: 5_000 },
           },
-          leaseTtlMs: 10,
+          leaseTtlMs: 60_000,
         })
       ).rejects.toBeInstanceOf(LimitDefinitionConflictError);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('allows a key definition to be reseeded after the key fully drains', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'workflow-limits-'));
+    const limits = createLimits(dir);
+
+    try {
+      await expect(
+        limits.acquire({
+          key: 'shared-key',
+          runId: 'run-a',
+          lockIndex: 0,
+          definition: {
+            concurrency: { max: 1 },
+          },
+          leaseTtlMs: 200,
+        })
+      ).resolves.toMatchObject({ status: 'acquired' });
+
+      await new Promise((resolve) => setTimeout(resolve, 400));
+
+      await expect(
+        limits.acquire({
+          key: 'shared-key',
+          runId: 'run-b',
+          lockIndex: 0,
+          definition: {
+            rate: { count: 1, periodMs: 5_000 },
+          },
+          leaseTtlMs: 200,
+        })
+      ).resolves.toMatchObject({ status: 'acquired' });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

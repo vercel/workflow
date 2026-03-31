@@ -227,7 +227,7 @@ export function createLimitsContractSuite(
     it('keeps rate capacity consumed until the window expires', async () => {
       const harness = await createHarness();
       try {
-        const periodMs = 200;
+        const periodMs = 1_000;
         const ownerA = await createLockOwner(harness.storage, 'holder-a');
         const ownerB = await createLockOwner(harness.storage, 'holder-b');
         const ownerC = await createLockOwner(harness.storage, 'holder-c');
@@ -236,7 +236,7 @@ export function createLimitsContractSuite(
             ownerA,
             'step:provider:openai',
             { rate: { count: 1, periodMs } },
-            1_000
+            5_000
           )
         );
         expect(first.status).toBe('acquired');
@@ -250,7 +250,7 @@ export function createLimitsContractSuite(
             ownerB,
             'step:provider:openai',
             { rate: { count: 1, periodMs } },
-            1_000
+            5_000
           )
         );
         expect(second.status).toBe('blocked');
@@ -263,7 +263,7 @@ export function createLimitsContractSuite(
             ownerB,
             'step:provider:openai',
             { rate: { count: 1, periodMs } },
-            1_000
+            5_000
           )
         );
         const deadline = Date.now() + periodMs + 1_000;
@@ -290,7 +290,7 @@ export function createLimitsContractSuite(
             ownerC,
             'step:provider:openai',
             { rate: { count: 1, periodMs } },
-            1_000
+            5_000
           )
         );
         const thirdDeadline = Date.now() + periodMs + 1_000;
@@ -314,7 +314,7 @@ export function createLimitsContractSuite(
     it('returns a combined blocked reason when both limits are saturated', async () => {
       const harness = await createHarness();
       try {
-        const periodMs = 300;
+        const periodMs = 1_500;
         const ownerA = await createLockOwner(harness.storage, 'holder-a');
         const ownerB = await createLockOwner(harness.storage, 'holder-b');
         const first = await harness.limits.acquire(
@@ -325,7 +325,7 @@ export function createLimitsContractSuite(
               concurrency: { max: 1 },
               rate: { count: 1, periodMs },
             },
-            1_000
+            5_000
           )
         );
         expect(first.status).toBe('acquired');
@@ -340,7 +340,7 @@ export function createLimitsContractSuite(
               concurrency: { max: 1 },
               rate: { count: 1, periodMs },
             },
-            1_000
+            5_000
           )
         );
         expect(second).toMatchObject({
@@ -379,7 +379,7 @@ export function createLimitsContractSuite(
                 concurrency: { max: 1 },
                 rate: { count: 1, periodMs },
               },
-              1_000
+              5_000
             )
           );
         }
@@ -443,7 +443,7 @@ export function createLimitsContractSuite(
             ownerA,
             'workflow:user:heartbeat',
             { concurrency: { max: 1 } },
-            200
+            1_000
           )
         );
         expect(first.status).toBe('acquired');
@@ -452,7 +452,7 @@ export function createLimitsContractSuite(
 
         const heartbeat = await harness.limits.heartbeat({
           leaseId: first.lease.leaseId,
-          ttlMs: 600,
+          ttlMs: 5_000,
         });
 
         expect(heartbeat.expiresAt?.getTime()).toBeGreaterThan(
@@ -464,7 +464,7 @@ export function createLimitsContractSuite(
             ownerB,
             'workflow:user:heartbeat',
             { concurrency: { max: 1 } },
-            1_000
+            5_000
           )
         );
         expect(second.status).toBe('blocked');
@@ -483,7 +483,7 @@ export function createLimitsContractSuite(
             ownerA,
             'workflow:user:expired',
             { concurrency: { max: 1 } },
-            250
+            1_000
           )
         );
         expect(first.status).toBe('acquired');
@@ -495,19 +495,19 @@ export function createLimitsContractSuite(
             ownerB,
             'workflow:user:expired',
             { concurrency: { max: 1 } },
-            1_000
+            5_000
           )
         );
         expect(second.status).toBe('blocked');
 
-        await sleep(400);
+        await sleep(1_500);
 
         const third = await harness.limits.acquire(
           acquireRequest(
             ownerB,
             'workflow:user:expired',
             { concurrency: { max: 1 } },
-            1_000
+            5_000
           )
         );
         expect(third.status).toBe('acquired');
