@@ -82,6 +82,30 @@ export abstract class BaseBuilder {
   }
 
   /**
+   * When outputting CJS, esbuild replaces `import.meta` with an empty object,
+   * making `import.meta.url` (and `import.meta.resolve`) undefined. This method
+   * returns banner code and `define` entries that polyfill them using CJS
+   * equivalents (`__filename`, `require.resolve`) so user code (e.g. Prisma)
+   * that relies on `import.meta.url` works correctly in bundled CJS output.
+   */
+  private getCjsImportMetaPolyfill(format: string): {
+    banner: string;
+    define: Record<string, string>;
+  } {
+    if (format !== 'cjs') return { banner: '', define: {} };
+    return {
+      banner:
+        'var __import_meta_url = typeof __filename !== "undefined" ? require("url").pathToFileURL(__filename).href : undefined;\n' +
+        'var __import_meta_resolve = typeof require !== "undefined" && typeof __filename !== "undefined" ' +
+        '? (s) => require("url").pathToFileURL(require.resolve(s)).href : undefined;\n',
+      define: {
+        'import.meta.url': '__import_meta_url',
+        'import.meta.resolve': '__import_meta_resolve',
+      },
+    };
+  }
+
+  /**
    * Performs the complete build process for workflows.
    * Subclasses must implement this to define their specific build steps.
    */
@@ -337,6 +361,7 @@ export abstract class BaseBuilder {
     format = 'cjs',
     outfile,
     externalizeNonSteps,
+    rewriteTsExtensions,
     tsconfigPath,
     discoveredEntries,
   }: {
@@ -345,6 +370,7 @@ export abstract class BaseBuilder {
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
+    rewriteTsExtensions?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     context: esbuild.BuildContext | undefined;
@@ -468,9 +494,12 @@ export abstract class BaseBuilder {
       : undefined;
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
+    const { banner: importMetaBanner, define: importMetaDefine } =
+      this.getCjsImportMetaPolyfill(format);
+
     const esbuildCtx = await esbuild.context({
       banner: {
-        js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}`,
       },
       stdin: {
         contents: entryContent,
@@ -494,6 +523,7 @@ export abstract class BaseBuilder {
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
+      define: importMetaDefine,
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -519,6 +549,7 @@ export abstract class BaseBuilder {
           outdir: outfile ? dirname(outfile) : undefined,
           projectRoot: this.transformProjectRoot,
           workflowManifest,
+          rewriteTsExtensions,
         }),
       ],
       // Plugin should catch most things, but this lets users hard override
@@ -1067,10 +1098,14 @@ export const OPTIONS = handler;`;
 
     // For Build Output API, bundle with esbuild to resolve imports
 
+    const webhookFormat = 'cjs' as const;
+    const { banner: webhookImportMetaBanner, define: webhookImportMetaDefine } =
+      this.getCjsImportMetaPolyfill(webhookFormat);
+
     const webhookBundleStart = Date.now();
     const result = await esbuild.build({
       banner: {
-        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */`,
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${webhookImportMetaBanner}`,
       },
       stdin: {
         contents: routeContent,
@@ -1082,7 +1117,7 @@ export const OPTIONS = handler;`;
       absWorkingDir: this.config.workingDir,
       bundle: true,
       jsx: 'preserve',
-      format: 'cjs',
+      format: webhookFormat,
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],
       target: 'es2022',
@@ -1090,6 +1125,7 @@ export const OPTIONS = handler;`;
       treeShaking: true,
       keepNames: true,
       minify: false,
+      define: webhookImportMetaDefine,
       resolveExtensions: [
         '.ts',
         '.tsx',

@@ -57,6 +57,41 @@ export async function myWorkflow() {
 }
 ```
 
+## Binary Data
+
+Standard JavaScript typed arrays (`Uint8Array`, `Int32Array`, `Float64Array`, etc.) are available in workflow functions.
+
+### Base64 and hex encoding
+
+The workflow environment provides [`Uint8Array` base64 and hex methods](https://tc39.es/proposal-arraybuffer-base64/) for encoding and decoding binary data:
+
+{/* @skip-typecheck: polyfilled methods not available in host TypeScript */}
+```typescript
+// Encode to base64
+const bytes = new Uint8Array([72, 101, 108, 108, 111]);
+bytes.toBase64(); // "SGVsbG8="
+bytes.toBase64({ alphabet: "base64url" }); // URL-safe variant
+bytes.toBase64({ omitPadding: true }); // "SGVsbG8"
+
+// Decode from base64
+Uint8Array.fromBase64("SGVsbG8="); // Uint8Array([72, 101, 108, 108, 111])
+
+// Encode to hex
+bytes.toHex(); // "48656c6c6f"
+
+// Decode from hex
+Uint8Array.fromHex("48656c6c6f"); // Uint8Array([72, 101, 108, 108, 111])
+
+// Write into an existing array
+const target = new Uint8Array(5);
+target.setFromBase64("SGVsbG8="); // { read: 8, written: 5 }
+target.setFromHex("48656c6c6f"); // { read: 10, written: 5 }
+```
+
+<Callout type="info">
+These methods are polyfilled in the workflow environment. When the JavaScript runtime ships native support, the polyfill is automatically bypassed.
+</Callout>
+
 ## Not Available
 
 The following are **not available** in workflow functions. Move this logic to [step functions](/docs/foundations/workflows-and-steps#step-functions) instead.
@@ -64,4 +99,4 @@ The following are **not available** in workflow functions. Move this logic to [s
 - **Node.js core modules**: `fs`, `path`, `http`, `https`, `net`, `dns`, `child_process`, `cluster`, `os`, `stream`, `crypto` (Node.js version), etc. See [node-js-module-in-workflow](/docs/errors/node-js-module-in-workflow).
 - **Global `fetch`**: Use [`import { fetch } from "workflow"`](/docs/api-reference/workflow/fetch) instead. See [fetch-in-workflow](/docs/errors/fetch-in-workflow).
 - **Timers**: `setTimeout`, `setInterval`, `setImmediate`, and their `clear*` counterparts. Use [`sleep()`](/docs/api-reference/workflow/sleep) instead. See [timeout-in-workflow](/docs/errors/timeout-in-workflow).
-- **`Buffer`**: Node.js-specific API. Use `atob()` / `btoa()` for base64 encoding/decoding of strings.
+- **`Buffer`**: Node.js-specific API. Use `Uint8Array` with `toBase64()` / `fromBase64()` / `toHex()` / `fromHex()` for binary data encoding, or `atob()` / `btoa()` for string-based base64.

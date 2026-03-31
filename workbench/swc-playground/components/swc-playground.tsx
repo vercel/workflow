@@ -1,14 +1,16 @@
 'use client';
 
+import type { Monaco } from '@monaco-editor/react';
 import { AlertCircle, ChevronDownIcon, Loader2, RotateCcw } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
 import { Switch } from '@/components/ui/switch';
-import { transformCode } from '@/lib/transform-action';
+import { nodeTypeDeclarations, typeDeclarations } from '@/lib/generated-types';
+import { initWasm, transformCode } from '@/lib/transform';
 import { CodeEditor } from './editor';
 
 const STORAGE_KEY = 'swc-playground-code';
@@ -66,6 +68,8 @@ export function SwcPlayground({
   const [moduleSpecifier, setModuleSpecifier] = useState('');
   const [vimMode, setVimMode] = useState(false);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [wasmReady, setWasmReady] = useState(false);
+  const [wasmError, setWasmError] = useState<string | null>(null);
   const [results, setResults] = useState<Record<ViewMode, CompilationResult>>({
     workflow: { code: '' },
     step: { code: '' },
@@ -75,6 +79,49 @@ export function SwcPlayground({
   const [expandedPanels, setExpandedPanels] = useState<Set<ViewMode>>(
     new Set(['workflow', 'step', 'client'])
   );
+  const monacoConfigured = useRef(false);
+
+  // Configure Monaco TypeScript language service with workflow type definitions
+  const configureMonaco = useCallback((monaco: Monaco) => {
+    if (monacoConfigured.current) return;
+    monacoConfigured.current = true;
+
+    const ts = monaco.languages.typescript;
+
+    // Configure TypeScript compiler options for the editor
+    ts.typescriptDefaults.setCompilerOptions({
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeJs,
+      allowNonTsExtensions: true,
+      strict: true,
+      jsx: ts.JsxEmit.ReactJSX,
+      esModuleInterop: true,
+      allowImportingTsExtensions: true,
+    });
+
+    // Register ambient module declarations for workflow packages.
+    // This is a single string containing `declare module "..."` blocks
+    // with inlined type content for each package.
+    ts.typescriptDefaults.addExtraLib(typeDeclarations);
+
+    // Register @types/node declarations for Node.js built-in modules
+    for (const [path, content] of Object.entries(nodeTypeDeclarations)) {
+      ts.typescriptDefaults.addExtraLib(content, path);
+    }
+  }, []);
+
+  // Initialize WASM module on mount
+  useEffect(() => {
+    initWasm()
+      .then(() => setWasmReady(true))
+      .catch((err) => {
+        console.error('Failed to initialize WASM:', err);
+        setWasmError(
+          err instanceof Error ? err.message : 'Failed to load WASM module'
+        );
+      });
+  }, []);
 
   // Hydrate from localStorage on mount
   useEffect(() => {
@@ -122,6 +169,7 @@ export function SwcPlayground({
 
   const compile = useCallback(
     async (sourceCode: string) => {
+      if (!wasmReady) return;
       setIsCompiling(true);
 
       try {
@@ -132,7 +180,7 @@ export function SwcPlayground({
         setResults(transformResults);
       } catch (err) {
         const errorMessage =
-          err instanceof Error ? err.message : 'Server error';
+          err instanceof Error ? err.message : 'Transform error';
         setResults({
           workflow: { code: '', error: errorMessage },
           step: { code: '', error: errorMessage },
@@ -142,15 +190,16 @@ export function SwcPlayground({
         setIsCompiling(false);
       }
     },
-    [moduleSpecifier]
+    [moduleSpecifier, wasmReady]
   );
 
   useEffect(() => {
+    if (!wasmReady) return;
     const timer = setTimeout(() => {
       compile(code);
-    }, 500);
+    }, 300);
     return () => clearTimeout(timer);
-  }, [code, compile]);
+  }, [code, compile, wasmReady]);
 
   const togglePanel = (mode: ViewMode) => {
     setExpandedPanels((prev) => {
@@ -174,6 +223,18 @@ export function SwcPlayground({
           <span className="text-xs px-2 py-1 bg-muted rounded text-muted-foreground">
             @workflow/swc-plugin{pluginVersion ? `@${pluginVersion}` : ''}
           </span>
+          {!wasmReady && !wasmError && (
+            <span className="text-xs px-2 py-1 bg-muted rounded text-muted-foreground flex items-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Loading WASM...
+            </span>
+          )}
+          {wasmError && (
+            <span className="text-xs px-2 py-1 bg-red-100 dark:bg-red-900/30 rounded text-red-600 dark:text-red-400 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" />
+              WASM failed to load
+            </span>
+          )}
           {gitCommitSha && (
             <a
               href={`https://github.com/vercel/workflow/commit/${gitCommitSha}`}
@@ -226,7 +287,7 @@ export function SwcPlayground({
                 <button
                   type="button"
                   onClick={() => setCode(DEFAULT_CODE)}
-                  disabled={code === DEFAULT_CODE}
+                  disabled={isHydrated && code === DEFAULT_CODE}
                   className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
                   title="Reset to default code"
                 >
@@ -240,6 +301,7 @@ export function SwcPlayground({
                   value={code}
                   onChange={(val) => setCode(val || '')}
                   vimMode={vimMode}
+                  onMount={(_editor, monaco) => configureMonaco(monaco)}
                 />
               </div>
             </div>

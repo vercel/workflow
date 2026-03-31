@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { World } from '@workflow/world';
+import { reenqueueActiveRuns } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
 import {
@@ -81,6 +82,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
     ),
     async start() {
       await initDataDir(mergedConfig.dataDir);
+      await reenqueueActiveRuns(storage.runs, queue.queue, 'world-local');
     },
     async close() {
       await queue.close();
