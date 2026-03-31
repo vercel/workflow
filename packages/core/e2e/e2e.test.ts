@@ -350,9 +350,9 @@ describe('e2e', () => {
           const runB = await start(workflow, [userId, holdMs, 'B']);
           await waitForRunLockAttempt(runB.runId);
           await cancelRun(getWorld(), runB.runId);
-          const cancelledError = await runB.returnValue.catch((error) => error);
           const runC = await start(workflow, [userId, holdMs, 'C']);
-          const [resultA, resultC] = await Promise.all([
+          const [cancelledError, resultA, resultC] = await Promise.all([
+            runB.returnValue.catch((error) => error),
             runA.returnValue,
             runC.returnValue,
           ]);
