@@ -276,11 +276,14 @@ describe('createLock', () => {
   });
 
   it('re-suspends when a stale lock wake-up becomes too early again', async () => {
-    const retryAfter = new Date(Date.now() + 30_000);
+    const now = Date.parse('2026-03-31T03:50:29.624Z');
+    const retryAfterSeconds = 30;
+    const retryAfter = new Date(now + retryAfterSeconds * 1000);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
     const createEvent = vi
       .fn<() => Promise<EventResult>>()
       .mockRejectedValueOnce(
-        new TooEarlyError('not ready yet', { retryAfter })
+        new TooEarlyError('not ready yet', { retryAfter: retryAfterSeconds })
       );
 
     setWorld({
