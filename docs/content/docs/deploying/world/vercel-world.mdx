@@ -23,14 +23,30 @@ Deploy your application to Vercel:
 vercel deploy
 ```
 
-<FluidComputeCallout />
-
 That's it. Vercel automatically:
 
 - Selects the Vercel World backend
 - Configures authentication using OIDC tokens
 - Provisions storage and queuing infrastructure
 - Isolates data per environment (production, preview, development)
+
+<FluidComputeCallout />
+
+## Vercel platform documentation
+
+For complete details on pricing, usage limits, and included allotments on Vercel, see the official Vercel documentation:
+
+- **[Vercel Workflow](https://vercel.com/docs/workflow)** — Pricing details, concepts, and observability for Workflow on Vercel
+- **[Vercel limits](https://vercel.com/docs/limits)** — Platform-wide limits including Workflow-specific constraints
+- **[Vercel Hobby plan](https://vercel.com/docs/plans/hobby)** — Free tier included usage for Workflow and other resources
+
+For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
+
+## Limitations
+
+- **Single-region deployment** - The backend infrastructure is currently deployed only in `iad1`. Applications in other regions will route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy your Vercel apps using Workflow to `iad1`. Global deployment is planned to colocate the backend closer to your applications.
+
+- **Data residency** - The Vercel World is currently deployed in the `iad1` region. This means independently of the deployment location of your application, the data for your workflows will be stored in the `iad1` region.
 
 ## Observability
 
@@ -97,7 +113,8 @@ Custom base URL for the Vercel workflow API. Automatically detected.
 
 ### Programmatic configuration
 
-{/* @skip-typecheck: incomplete code sample */}
+{/*@skip-typecheck: incomplete code sample*/}
+
 ```typescript title="workflow.config.ts" lineNumbers
 import { createVercelWorld } from "@workflow/world-vercel";
 
@@ -131,13 +148,3 @@ The Vercel World uses Vercel's infrastructure for workflow execution:
 - **Authentication** - OIDC tokens provide secure, automatic authentication
 
 For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflow).
-
-## Pricing and More
-
-See the [Vercel Workflow documentation](https://vercel.com/docs/workflow) for current pricing and to learn more.
-
-For self-hosted deployments, use the [Postgres World](/worlds/postgres). For local development, use the [Local World](/worlds/local).
-
-## Limitations
-
-- **Single-region deployment** - The backend infrastructure is currently deployed only in `iad1`. Applications in other regions will route workflow requests to `iad1`, which may result in higher latency. For best performance, deploy your Vercel apps using Workflow to `iad1`. Global deployment is planned to colocate the backend closer to your applications.

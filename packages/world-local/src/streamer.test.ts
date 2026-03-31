@@ -775,6 +775,126 @@ describe('streamer', () => {
       });
     });
 
+    describe('getStreamChunks', () => {
+      it('should paginate through all chunks', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'paginated-stream';
+
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'a');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'b');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'c');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        // Page 1: limit=2
+        const page1 = await streamer.getStreamChunks(streamName, TEST_RUN_ID, {
+          limit: 2,
+        });
+        expect(page1.data).toHaveLength(2);
+        expect(page1.data[0].index).toBe(0);
+        expect(page1.data[1].index).toBe(1);
+        expect(page1.hasMore).toBe(true);
+        expect(page1.cursor).not.toBeNull();
+
+        // Page 2: remaining chunks
+        const page2 = await streamer.getStreamChunks(streamName, TEST_RUN_ID, {
+          limit: 2,
+          cursor: page1.cursor!,
+        });
+        expect(page2.data).toHaveLength(1);
+        expect(page2.data[0].index).toBe(2);
+        expect(page2.hasMore).toBe(false);
+        expect(page2.done).toBe(true);
+      });
+
+      it('should return done=false for in-progress stream', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'in-progress';
+
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'data');
+
+        const result = await streamer.getStreamChunks(streamName, TEST_RUN_ID);
+        expect(result.data).toHaveLength(1);
+        expect(result.done).toBe(false);
+      });
+
+      it('should return empty data for nonexistent stream', async () => {
+        const { streamer } = await setupStreamer();
+
+        const result = await streamer.getStreamChunks(
+          'nonexistent',
+          TEST_RUN_ID
+        );
+        expect(result.data).toEqual([]);
+        expect(result.hasMore).toBe(false);
+      });
+
+      it('should handle invalid cursor gracefully', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'bad-cursor';
+
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'data');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        // Invalid cursor should reset to beginning
+        const result = await streamer.getStreamChunks(streamName, TEST_RUN_ID, {
+          cursor: 'not-valid-base64-json',
+        });
+        expect(result.data).toHaveLength(1);
+        expect(result.data[0].index).toBe(0);
+      });
+    });
+
+    describe('getStreamInfo', () => {
+      it('should return tailIndex and done for completed stream', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'info-completed';
+
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'a');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'b');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const info = await streamer.getStreamInfo(streamName, TEST_RUN_ID);
+        expect(info.tailIndex).toBe(1);
+        expect(info.done).toBe(true);
+      });
+
+      it('should return tailIndex for in-progress stream', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'info-progress';
+
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'a');
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'b');
+
+        const info = await streamer.getStreamInfo(streamName, TEST_RUN_ID);
+        expect(info.tailIndex).toBe(1);
+        expect(info.done).toBe(false);
+      });
+
+      it('should return -1 for nonexistent stream', async () => {
+        const { streamer } = await setupStreamer();
+
+        const info = await streamer.getStreamInfo('nonexistent', TEST_RUN_ID);
+        expect(info.tailIndex).toBe(-1);
+        expect(info.done).toBe(false);
+      });
+
+      it('should return 0 tailIndex for single-chunk stream', async () => {
+        const { streamer } = await setupStreamer();
+        const streamName = 'single-chunk';
+
+        await streamer.writeToStream(streamName, TEST_RUN_ID, 'only');
+        await streamer.closeStream(streamName, TEST_RUN_ID);
+
+        const info = await streamer.getStreamInfo(streamName, TEST_RUN_ID);
+        expect(info.tailIndex).toBe(0);
+        expect(info.done).toBe(true);
+      });
+    });
+
     describe('integration scenarios', () => {
       it('should handle runId as a promise and flush correctly when promise resolves', async () => {
         const { streamer } = await setupStreamer();

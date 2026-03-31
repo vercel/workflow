@@ -13,13 +13,13 @@ interface Tab {
 const tabs: Tab[] = [
   {
     id: 'with',
-    smallLabel: 'With WDK',
-    label: 'With Workflow DevKit',
+    smallLabel: 'With Workflow SDK',
+    label: 'With Workflow SDK',
   },
   {
     id: 'without',
-    smallLabel: 'Without WDK',
-    label: 'Without Workflow DevKit',
+    smallLabel: 'Without Workflow SDK',
+    label: 'Without Workflow SDK',
   },
 ];
 

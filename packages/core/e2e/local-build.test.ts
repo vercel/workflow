@@ -64,7 +64,28 @@ async function runCommandWithLiveOutput(
   });
 }
 
+/**
+ * Read a file if it exists, return null otherwise.
+ */
+async function readFileIfExists(filePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Projects that use the VercelBuildOutputAPIBuilder and produce CJS step bundles.
+ * Their step bundles should contain the import.meta.url CJS polyfill.
+ */
+const CJS_STEP_BUNDLE_PROJECTS: Record<string, string> = {
+  example:
+    '.vercel/output/functions/.well-known/workflow/v1/step.func/index.js',
+};
+
 describe.each([
+  'example',
   'nextjs-webpack',
   'nextjs-turbopack',
   'nitro',
@@ -97,6 +118,20 @@ describe.each([
         '.vercel/output/diagnostics/workflows-manifest.json'
       );
       await fs.access(diagnosticsManifestPath);
+    }
+
+    // Verify CJS import.meta polyfill is present in CJS step bundles
+    const cjsBundlePath = CJS_STEP_BUNDLE_PROJECTS[project];
+    if (cjsBundlePath) {
+      const bundleContent = await readFileIfExists(
+        path.join(getWorkbenchAppPath(project), cjsBundlePath)
+      );
+      expect(bundleContent).not.toBeNull();
+      expect(bundleContent).toContain('var __import_meta_url');
+      expect(bundleContent).toContain('pathToFileURL(__filename)');
+      expect(bundleContent).toContain('var __import_meta_resolve');
+      // Raw import.meta.url should be replaced by the define
+      expect(bundleContent).not.toMatch(/\bimport\.meta\.url\b/);
     }
   });
 });

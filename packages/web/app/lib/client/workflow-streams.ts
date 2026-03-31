@@ -13,14 +13,27 @@ function isServerActionError(value: unknown): value is ServerActionError {
   );
 }
 
+export interface StreamResponse {
+  body: ReadableStream<Uint8Array>;
+  /** Cursor to pass on the next request for incremental fetching */
+  cursor: string | null;
+  /** Whether the stream is fully closed (no new chunks will arrive) */
+  done: boolean;
+}
+
 export async function readStream(
   _env: EnvMap,
   streamId: string,
-  startIndex?: number,
-  signal?: AbortSignal
-): Promise<ReadableStream<unknown>> {
+  runId: string,
+  signal?: AbortSignal,
+  cursor?: string | null
+): Promise<StreamResponse> {
   try {
-    const url = `/api/stream/${encodeURIComponent(streamId)}${startIndex != null ? `?startIndex=${startIndex}` : ''}`;
+    const params = new URLSearchParams({ runId });
+    if (cursor) {
+      params.set('cursor', cursor);
+    }
+    const url = `/api/stream/${encodeURIComponent(streamId)}?${params.toString()}`;
     const response = await fetch(url, { signal });
     if (!response.ok) {
       const errorData = await response.json().catch(() => null);
@@ -43,7 +56,15 @@ export async function readStream(
         layer: 'client',
       });
     }
-    return response.body;
+
+    const responseCursor = response.headers.get('X-Stream-Cursor');
+    const streamDone = response.headers.get('X-Stream-Done') === 'true';
+
+    return {
+      body: response.body,
+      cursor: responseCursor,
+      done: streamDone,
+    };
   } catch (error) {
     if (error instanceof WorkflowWebAPIError) {
       throw error;

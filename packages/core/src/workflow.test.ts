@@ -895,7 +895,7 @@ describe('runWorkflow', () => {
   });
 
   describe('error handling', () => {
-    it('should throw ReferenceError when workflow code does not return a function', async () => {
+    it('should throw WorkflowNotRegisteredError when workflow function is not found', async () => {
       let error: Error | undefined;
       try {
         const ops: Promise<any>[] = [];
@@ -927,9 +927,9 @@ describe('runWorkflow', () => {
         error = err as Error;
       }
       assert(error);
-      expect(error.name).toEqual('ReferenceError');
-      expect(error.message).toEqual(
-        'Workflow "value" must be a function, but got "undefined" instead'
+      expect(error.name).toEqual('WorkflowNotRegisteredError');
+      expect(error.message).toContain(
+        'Workflow "value" is not registered in the current deployment'
       );
     });
 

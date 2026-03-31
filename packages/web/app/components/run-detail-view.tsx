@@ -220,8 +220,9 @@ export function RunDetailView({
   // Empty env object - server actions read from process.env
   const env: EnvMap = useMemo(() => ({}), []);
 
-  // Read tab and streamId from URL search params
-  const activeTab = (searchParams.get('tab') as Tab) || 'trace';
+  // Read tab and streamId from URL search params (graph tab is hidden for now)
+  const rawTab = (searchParams.get('tab') as Tab) || 'trace';
+  const activeTab = rawTab === 'graph' ? 'trace' : rawTab;
   const selectedStreamId = searchParams.get('streamId');
 
   // Helper to update URL search params
@@ -242,8 +243,9 @@ export function RunDetailView({
 
   const setActiveTab = useCallback(
     (tab: Tab) => {
-      // When switching to trace or graph tab, clear streamId
-      if (tab === 'trace' || tab === 'graph') {
+      // When switching away from streams tab, clear streamId so
+      // useStreamReader stops fetching/polling in the background.
+      if (tab !== 'streams') {
         updateSearchParams({ tab, streamId: null });
       } else {
         updateSearchParams({ tab });
@@ -436,7 +438,7 @@ export function RunDetailView({
     chunks: streamChunks,
     isLive: streamIsLive,
     error: streamError,
-  } = useStreamReader(env, selectedStreamId, runId, encryptionKey);
+  } = useStreamReader(env, selectedStreamId, runId, encryptionKey, run.status);
 
   const handleCancelClick = () => {
     setShowCancelDialog(true);
@@ -728,7 +730,8 @@ export function RunDetailView({
                 <List className="h-4 w-4" />
                 Trace
               </TabsTrigger>
-              {isLocalBackend && (
+              {/* Graph tab hidden for now */}
+              {false && isLocalBackend && (
                 <TabsTrigger value="graph" className="gap-2">
                   <GitBranch className="h-4 w-4" />
                   Graph
@@ -913,7 +916,8 @@ export function RunDetailView({
               </ErrorBoundary>
             </TabsContent>
 
-            {isLocalBackend && (
+            {/* Graph tab hidden for now */}
+            {false && isLocalBackend && (
               <TabsContent value="graph" className="mt-0 flex-1 min-h-0">
                 <ErrorBoundary title="Failed to load execution graph">
                   <div className="h-full min-h-[500px]">

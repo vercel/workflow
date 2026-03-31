@@ -1,3 +1,3 @@
 # @workflow/core
 
-Core runtime package for [Workflow DevKit](https://useworkflow.dev).
+Core runtime package for [Workflow SDK](https://useworkflow.dev).

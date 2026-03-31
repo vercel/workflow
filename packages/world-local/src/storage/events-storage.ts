@@ -714,6 +714,19 @@ export function createEventsStorage(
           hook
         );
       } else if (data.eventType === 'hook_disposed') {
+        // hook_disposed: Deletes hook entity, rejects duplicates.
+        // Uses writeExclusive on a lock file to atomically prevent concurrent
+        // invocations from both disposing the same hook (TOCTOU race).
+        const hookLockName = tag
+          ? `${data.correlationId}.disposed.${tag}`
+          : `${data.correlationId}.disposed`;
+        const lockPath = path.join(basedir, '.locks', 'hooks', hookLockName);
+        const claimed = await writeExclusive(lockPath, '');
+        if (!claimed) {
+          throw new EntityConflictError(
+            `Hook "${data.correlationId}" already disposed`
+          );
+        }
         // Read the hook to get its token before deleting
         const hookPath = taggedPath(basedir, 'hooks', data.correlationId, tag);
         const existingHook = await readJSONWithFallback(
