@@ -1,5 +1,6 @@
 'use client';
 
+import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { Search, X } from 'lucide-react';
 import {
   type ReactNode,
@@ -95,9 +96,11 @@ function useAnimatedViewport(initial: Viewport) {
 
 export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
   return (
-    <ActiveSpanProvider spans={trace.spans}>
-      <NewTraceViewerContent trace={trace} />
-    </ActiveSpanProvider>
+    <TooltipPrimitive.Provider delayDuration={0}>
+      <ActiveSpanProvider spans={trace.spans}>
+        <NewTraceViewerContent trace={trace} />
+      </ActiveSpanProvider>
+    </TooltipPrimitive.Provider>
   );
 }
 
