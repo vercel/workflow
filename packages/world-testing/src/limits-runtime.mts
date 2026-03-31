@@ -299,7 +299,7 @@ export function createLimitsRuntimeSuite(
     it('does not block unrelated workflow keys', async () => {
       const harness = await createHarness();
       const [resultA, resultB] =
-        await harness.runIndependentWorkflowKeys(1_000);
+        await harness.runIndependentWorkflowKeys(3_000);
 
       expect(resultB.workflowLockAcquiredAt).toBeLessThan(
         resultA.workflowLockReleasedAt
@@ -308,7 +308,7 @@ export function createLimitsRuntimeSuite(
 
     it('does not block unrelated step-like keys', async () => {
       const harness = await createHarness();
-      const [resultA, resultB] = await harness.runIndependentStepKeys(1_000);
+      const [resultA, resultB] = await harness.runIndependentStepKeys(3_000);
 
       expect(resultB.acquiredAt).toBeLessThan(resultA.releasedAt);
     });
