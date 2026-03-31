@@ -2,7 +2,7 @@ import { execSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import postgres from 'postgres';
+import { Pool } from 'pg';
 import { createClient } from '../src/drizzle/index.js';
 
 const packageDir = path.resolve(
@@ -12,7 +12,7 @@ const packageDir = path.resolve(
 
 export interface PostgresTestDb {
   container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
-  sql: ReturnType<typeof postgres>;
+  pool: Pool;
   drizzle: ReturnType<typeof createClient>;
   connectionString: string;
   truncateLimits(): Promise<void>;
@@ -25,22 +25,22 @@ export async function createPostgresTestDb(): Promise<PostgresTestDb> {
   process.env.DATABASE_URL = connectionString;
   process.env.WORKFLOW_POSTGRES_URL = connectionString;
 
-  execSync('pnpm db:push', {
+  execSync('pnpm exec tsx src/cli.ts', {
     stdio: 'inherit',
     cwd: packageDir,
     env: process.env,
   });
 
-  const sql = postgres(connectionString, { max: 10 });
-  const drizzle = createClient(sql);
+  const pool = new Pool({ connectionString, max: 10 });
+  const drizzle = createClient(pool);
 
   return {
     container,
-    sql,
+    pool,
     drizzle,
     connectionString,
     async truncateLimits() {
-      await sql`
+      await pool.query(`
         truncate table
           workflow.workflow_limit_keys,
           workflow.workflow_limit_waiters,
@@ -50,10 +50,10 @@ export async function createPostgresTestDb(): Promise<PostgresTestDb> {
           workflow.workflow_events,
           workflow.workflow_runs
         restart identity cascade
-      `;
+      `);
     },
     async close() {
-      await sql.end();
+      await pool.end();
       await container.stop();
     },
   };

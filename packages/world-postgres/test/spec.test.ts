@@ -1,6 +1,6 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
-import { createTestSuite } from '@workflow/world-testing';
+import { createTestSuite } from '../../world-testing/dist/src/index.mjs';
 import { afterAll, beforeAll, test } from 'vitest';
 
 // Skip these tests on Windows since it relies on a docker container
@@ -15,7 +15,13 @@ if (process.platform === 'win32') {
     process.env.WORKFLOW_POSTGRES_URL = dbUrl;
     process.env.DATABASE_URL = dbUrl;
 
-    execSync('pnpm db:push', {
+    execSync('pnpm build', {
+      stdio: 'inherit',
+      cwd: process.cwd(),
+      env: process.env,
+    });
+
+    execSync('pnpm exec tsx src/cli.ts', {
       stdio: 'inherit',
       cwd: process.cwd(),
       env: process.env,

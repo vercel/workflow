@@ -22,7 +22,7 @@ if (process.platform === 'win32') {
     db = await createPostgresTestDb();
     const queue = createQueue(
       { connectionString: db.connectionString, queueConcurrency: 1 },
-      db.sql
+      db.pool
     );
     await queue.start();
     await queue.close();
@@ -69,30 +69,39 @@ if (process.platform === 'win32') {
       },
       inspectKeyState: async (key) => {
         const [leases, waiters, tokens] = await Promise.all([
-          db.sql<{ lockId: string }[]>`
-            select holder_id as "lockId"
-            from workflow.workflow_limit_leases
-            where limit_key = ${key}
-            order by holder_id asc
-          `,
-          db.sql<{ lockId: string }[]>`
-            select holder_id as "lockId"
-            from workflow.workflow_limit_waiters
-            where limit_key = ${key}
-            order by created_at asc, holder_id asc
-          `,
-          db.sql<{ lockId: string }[]>`
-            select holder_id as "lockId"
-            from workflow.workflow_rate_limit_tokens
-            where limit_key = ${key}
-            order by acquired_at asc, holder_id asc
-          `,
+          db.pool.query<{ lockId: string }>(
+            `
+              select holder_id as "lockId"
+              from workflow.workflow_limit_leases
+              where limit_key = $1
+              order by holder_id asc
+            `,
+            [key]
+          ),
+          db.pool.query<{ lockId: string }>(
+            `
+              select holder_id as "lockId"
+              from workflow.workflow_limit_waiters
+              where limit_key = $1
+              order by created_at asc, holder_id asc
+            `,
+            [key]
+          ),
+          db.pool.query<{ lockId: string }>(
+            `
+              select holder_id as "lockId"
+              from workflow.workflow_rate_limit_tokens
+              where limit_key = $1
+              order by acquired_at asc, holder_id asc
+            `,
+            [key]
+          ),
         ]);
 
         return {
-          leaseHolderIds: leases.map((row) => row.lockId),
-          waiterHolderIds: waiters.map((row) => row.lockId),
-          tokenHolderIds: tokens.map((row) => row.lockId),
+          leaseHolderIds: leases.rows.map((row) => row.lockId),
+          waiterHolderIds: waiters.rows.map((row) => row.lockId),
+          tokenHolderIds: tokens.rows.map((row) => row.lockId),
         };
       },
     };
