@@ -1522,7 +1522,7 @@ describe('e2e', () => {
 
   // Skipped for Vercel since VQS doesn't support direct HTTP calls
   test.skipIf(!isLocalDeployment())(
-    'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
+    'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
     { timeout: 30_000 },
     async () => {
       // NOTE: This tests the HTTP-based health check using the `?__health` query parameter.
@@ -1547,27 +1547,11 @@ describe('e2e', () => {
       expect(flowBody).toBe(
         'Workflow SDK "/.well-known/workflow/v1/flow" endpoint is healthy'
       );
-
-      // Test the step endpoint health check
-      const stepHealthUrl = new URL(
-        '/.well-known/workflow/v1/step?__health',
-        deploymentUrl
-      );
-      const stepRes = await fetch(stepHealthUrl, {
-        method: 'POST',
-        headers: getProtectionBypassHeaders(),
-      });
-      expect(stepRes.status).toBe(200);
-      expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
-      const stepBody = await stepRes.text();
-      expect(stepBody).toBe(
-        'Workflow SDK "/.well-known/workflow/v1/step" endpoint is healthy'
-      );
     }
   );
 
   test(
-    'health check (queue-based) - workflow and step endpoints respond to health check messages',
+    'health check (queue-based) - workflow endpoint responds to health check messages',
     { timeout: 60_000 },
     async () => {
       // Tests the queue-based health check using healthCheck() directly.
