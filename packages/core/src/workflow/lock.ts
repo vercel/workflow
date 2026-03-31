@@ -347,8 +347,9 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
       } catch (error) {
         if (TooEarlyError.is(error)) {
           if (error.retryAfter) {
-            state.acquireAt = error.retryAfter;
-            scheduleRateRetry(error.retryAfter);
+            const acquireAt = new Date(Date.now() + error.retryAfter * 1000);
+            state.acquireAt = acquireAt;
+            scheduleRateRetry(acquireAt);
           } else {
             state.acquireAt = undefined;
             suspendWorkflow();

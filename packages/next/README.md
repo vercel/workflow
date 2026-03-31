@@ -1,3 +1,3 @@
 # @workflow/next
 
-Next.js plugin for [Workflow DevKit](https://useworkflow.dev).
+Next.js plugin for [Workflow SDK](https://useworkflow.dev).

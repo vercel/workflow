@@ -1,6 +1,6 @@
 ---
 title: Understanding Directives
-description: Explore how JavaScript directives enable the Workflow DevKit's durable execution model.
+description: Explore how JavaScript directives enable the Workflow SDK's durable execution model.
 type: conceptual
 summary: Explore the design decisions behind "use workflow" and "use step" directives.
 prerequisites:
@@ -12,18 +12,18 @@ related:
 import { File, Folder, Files } from "fumadocs-ui/components/files";
 
 <Callout>
-This guide explores how JavaScript directives enable the Workflow DevKit's execution model. For getting started with workflows, see the [getting started](/docs/getting-started) guides for your framework.
+This guide explores how JavaScript directives enable the Workflow SDK's execution model. For getting started with workflows, see the [getting started](/docs/getting-started) guides for your framework.
 </Callout>
 
 The Workflow Development Kit uses JavaScript directives (`"use workflow"` and `"use step"`) as the foundation for its durable execution model. Directives provide the compile-time semantic boundary necessary for workflows to suspend, resume, and maintain deterministic behavior across replays.
 
 This page explores how directives enable this execution model and the design principles that led us here.
 
-To understand how directives work, let's first understand what workflows and steps are in the Workflow DevKit.
+To understand how directives work, let's first understand what workflows and steps are in the Workflow SDK.
 
 ## Workflows and Steps Primer
 
-The Workflow DevKit has two types of functions:
+The Workflow SDK has two types of functions:
 
 **Step functions** are side-effecting operations with full Node.js runtime access. Think of them like named RPC calls - they run once, their result is persisted, and they can be [retried on failure](/docs/foundations/errors-and-retries):
 
@@ -60,7 +60,7 @@ export async function onboardUser(userId: string) {
 - **If already executed:** Returns the cached result immediately from the event log
 - **If not yet executed:** Suspends the workflow, enqueues the step for background execution, and resumes later with the result
 
-This replay mechanism requires deterministic code. If `Math.random()` weren't seeded, the first execution might return `0.7` (sending the email) but replay might return `0.3` (skipping it), thus breaking resumption. The Workflow DevKit sandbox provides seeded `Math.random()` and `Date` to ensure consistent behavior across replays.
+This replay mechanism requires deterministic code. If `Math.random()` weren't seeded, the first execution might return `0.7` (sending the email) but replay might return `0.3` (skipping it), thus breaking resumption. The Workflow SDK sandbox provides seeded `Math.random()` and `Date` to ensure consistent behavior across replays.
 
 <Callout>
 For a deeper dive into workflows and steps, see [Workflows and Steps](/docs/foundations/workflows-and-steps).
@@ -85,11 +85,11 @@ JavaScript directives have precedent for changing execution semantics within a d
 
 - `"use strict"` (introduced in ECMAScript 5 in 2009, TC39-standardized) changes language rules to make the runtime faster, safer, and more predictable.
 - `"use client"` and `"use server"` (introduced by [React Server Components](https://react.dev/reference/rsc/server-components)) define an explicit boundary of "where" code gets executed - client-side browser JavaScript vs server-side Node.js.
-- `"use workflow"` (introduced by the Workflow DevKit) defines both "where" code runs (in a deterministic sandbox environment) and "how" it runs (deterministic, resumable, sandboxed execution semantics).
+- `"use workflow"` (introduced by the Workflow SDK) defines both "where" code runs (in a deterministic sandbox environment) and "how" it runs (deterministic, resumable, sandboxed execution semantics).
 
 Directives provide a build-time contract.
 
-When the Workflow DevKit sees `"use workflow"`, it:
+When the Workflow SDK sees `"use workflow"`, it:
 
 - Bundles the workflow and its dependencies into code that can be run in a sandbox
 - Restricts access to Node.js APIs in that sandbox
@@ -99,7 +99,7 @@ When the Workflow DevKit sees `"use workflow"`, it:
 In addition to being important to the compiler, `"use workflow"` explicitly signals to the developer that you are entering a different execution mode.
 
 <Callout type="info">
-The `"use workflow"` directive is also used by the Language Server Plugin shipped with Workflow DevKit to provide IntelliSense to your IDE. Check the [getting started instructions](/docs/getting-started) for your framework for details on setting up the Language Server Plugin.
+The `"use workflow"` directive is also used by the Language Server Plugin shipped with Workflow SDK to provide IntelliSense to your IDE. Check the [getting started instructions](/docs/getting-started) for your framework for details on setting up the Language Server Plugin.
 </Callout>
 
 But we didn't get here immediately. This took some discovery to arrive at:
@@ -298,7 +298,7 @@ Different frameworks and developers have strong opinions about project structure
 
 **2. No support for publishable, reusable functions**
 
-We want developers to be able to publish libraries to npm that include step and workflow directives. Ideally, logic that is isomorphic so it could be used with and without Workflow DevKit. File system conventions made this impossible.
+We want developers to be able to publish libraries to npm that include step and workflow directives. Ideally, logic that is isomorphic so it could be used with and without Workflow SDK. File system conventions made this impossible.
 
 **3. Migration and code reuse became difficult**
 
@@ -375,7 +375,7 @@ class MyWorkflow {
 }
 ```
 
-The compiler could transform both to be equivalent to WDK's directive approach:
+The compiler could transform both to be equivalent to Workflow SDK's directive approach:
 
 ```typescript lineNumbers
 export const processOrder = async (orderId: string) => {
@@ -461,7 +461,7 @@ export async function badWorkflow() {
 }
 ```
 
-In fact, Workflow DevKit will throw an error that links to this error page: [Node.js module in workflow](/docs/errors/node-js-module-in-workflow)
+In fact, Workflow SDK will throw an error that links to this error page: [Node.js module in workflow](/docs/errors/node-js-module-in-workflow)
 
 **3. No closure ambiguity**
 

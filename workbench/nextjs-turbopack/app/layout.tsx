@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'Workflow DevKit Examples',
+  title: 'Workflow SDK Examples',
   description:
-    'Interactive examples for Workflow DevKit - durable, reliable TypeScript workflows',
+    'Interactive examples for Workflow SDK - durable, reliable TypeScript workflows',
 };
 
 export default function RootLayout({

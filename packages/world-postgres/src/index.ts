@@ -1,6 +1,5 @@
-import type { Socket } from 'node:net';
 import type { Limits, Queue, Storage, World } from '@workflow/world';
-import createPostgres from 'postgres';
+import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
 import { createLimits } from './limits.js';
@@ -32,6 +31,15 @@ function createStorage(
   };
 }
 
+function getDefaultMaxPoolSize(): number | undefined {
+  const parsed = parseInt(
+    process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE || '',
+    10
+  );
+
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
 export function createWorld(
   config: PostgresWorldConfig = {
     connectionString:
@@ -43,10 +51,19 @@ export function createWorld(
       10,
   }
 ): World & { start(): Promise<void> } {
-  const postgres = createPostgres(config.connectionString);
-  const drizzle = createClient(postgres);
-  const queue = createQueue(config, postgres);
-  const streamer = createStreamer(postgres, drizzle);
+  const maxPoolSize = config.maxPoolSize ?? getDefaultMaxPoolSize();
+  const pool =
+    config.pool ||
+    new Pool({
+      connectionString:
+        config.connectionString ||
+        'postgres://world:world@localhost:5432/world',
+      ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
+    });
+
+  const drizzle = createClient(pool);
+  const queue = createQueue(config, pool);
+  const streamer = createStreamer(pool, drizzle);
   let limits: Limits | undefined;
   const storage = createStorage(drizzle, {
     getLimits: () => limits,
@@ -65,17 +82,8 @@ export function createWorld(
     async close() {
       await streamer.close();
       await queue.close();
-      await postgres.end();
-      // Force-destroy any TCP sockets that survived postgres.end().
-      // postgres.js's terminate() calls socket.end() (graceful TCP FIN)
-      // rather than socket.destroy(), leaving sockets in FIN_WAIT state
-      // that prevent the process from exiting on slower networks (e.g.
-      // CI Docker containers).
-      // See: https://github.com/porsager/postgres/issues/1022
-      for (const h of (process as any)._getActiveHandles?.() ?? []) {
-        if (h?.constructor?.name === 'Socket' && !h._type && !h.destroyed) {
-          (h as Socket).destroy();
-        }
+      if (pool !== config.pool) {
+        await pool.end();
       }
     },
   };

@@ -35,6 +35,9 @@ export WORKFLOW_POSTGRES_JOB_PREFIX="myapp"
 
 # Optional: Worker concurrency (default: 10)
 export WORKFLOW_POSTGRES_WORKER_CONCURRENCY="10"
+
+# Optional: Internal pg.Pool max size (default: 10)
+export WORKFLOW_POSTGRES_MAX_POOL_SIZE="10"
 ```
 
 ### Programmatic Usage
@@ -49,16 +52,24 @@ const world = createWorld({
   connectionString: "postgres://username:password@localhost:5432/database",
   jobPrefix: "myapp", // optional
   queueConcurrency: 10, // optional
+  maxPoolSize: 10, // optional, overrides WORKFLOW_POSTGRES_MAX_POOL_SIZE when `pool` is omitted
 });
+
+// Or pass an existing pg.Pool (shared with your app Drizzle, etc.); `world.close()` will not end it.
+import { Pool } from "pg";
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const worldFromPool = createWorld({ pool });
 ```
 
 ## Configuration Options
 
-| Option             | Type     | Default                                                                                | Description                         |
-| ------------------ | -------- | -------------------------------------------------------------------------------------- | ----------------------------------- |
-| `connectionString` | `string` | `process.env.WORKFLOW_POSTGRES_URL` or `'postgres://world:world@localhost:5432/world'` | PostgreSQL connection string        |
-| `jobPrefix`        | `string` | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names |
-| `queueConcurrency` | `number` | `10`                                                                                   | Number of concurrent active step executions per process |
+| Option             | Type      | Default                                                                                | Description                                                                                          |
+| ------------------ | --------- | -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `connectionString` | `string`  | `process.env.WORKFLOW_POSTGRES_URL` or `'postgres://world:world@localhost:5432/world'` | Used only when `pool` is omitted, to construct an internal pool                                      |
+| `maxPoolSize`      | `number`  | `process.env.WORKFLOW_POSTGRES_MAX_POOL_SIZE` or `pg.Pool` default (`10`)              | Optional. Sets the internal `pg.Pool` max size when `createWorld()` creates the pool                |
+| `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
+| `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
+| `queueConcurrency` | `number`  | `10`                                                                                   | Number of concurrent active step executions per process                                              |
 
 ## Environment Variables
 
@@ -68,6 +79,11 @@ const world = createWorld({
 | `WORKFLOW_POSTGRES_URL`                | PostgreSQL connection string                                 | `'postgres://world:world@localhost:5432/world'` |
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | -                                               |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `10`                                            |
+| `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
+
+When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
+
+For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
 
 ## Database Setup
 
@@ -75,7 +91,7 @@ This package uses PostgreSQL with the following components:
 
 - **graphile-worker**: For queue processing and job management
 - **Drizzle ORM**: For database operations and schema management
-- **postgres**: For PostgreSQL client connections
+- **pg** (node-postgres): For PostgreSQL client connections. Drizzle and Graphile Worker share a `pg.Pool`, while LISTEN uses a dedicated `pg.Client` created from the same connection options.
 
 ### Quick Setup with CLI
 

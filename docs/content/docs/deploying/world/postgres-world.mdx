@@ -160,6 +160,12 @@ Prefix for graphile-worker queue job names. Useful when sharing a database betwe
 
 Number of concurrent workers polling for jobs. Default: `10`
 
+### `WORKFLOW_POSTGRES_MAX_POOL_SIZE`
+
+Maximum size of the internal `pg.Pool` used when `createWorld()` constructs the pool. Default: `10`
+
+For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` to `10` or `queueConcurrency + 2`, whichever is larger.
+
 ### Programmatic configuration
 
 {/* @skip-typecheck: incomplete code sample */}
@@ -170,6 +176,7 @@ const world = createWorld({
   connectionString: "postgres://user:password@host:5432/database",
   jobPrefix: "myapp_",
   queueConcurrency: 20,
+  maxPoolSize: 20, // overrides WORKFLOW_POSTGRES_MAX_POOL_SIZE
 });
 ```
 

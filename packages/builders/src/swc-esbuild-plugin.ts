@@ -17,6 +17,7 @@ export interface SwcPluginOptions {
   mode: 'step' | 'workflow' | 'client';
   entriesToBundle?: string[];
   outdir?: string;
+  projectRoot?: string;
   workflowManifest?: WorkflowManifest;
 }
 
@@ -123,15 +124,24 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           const isFilePath =
             args.path.startsWith('.') || args.path.startsWith('/');
 
-          return {
-            external: true,
-            path: isFilePath
-              ? relative(options.outdir || process.cwd(), resolvedPath).replace(
-                  /\\/g,
-                  '/'
-                )
-              : args.path,
-          };
+          let externalPath: string;
+          if (isFilePath) {
+            externalPath = relative(
+              options.outdir || process.cwd(),
+              resolvedPath
+            ).replace(/\\/g, '/');
+
+            // Rewrite TypeScript extensions to their JS equivalents so the
+            // externalized import is loadable by Node's native ESM loader.
+            externalPath = externalPath
+              .replace(/\.tsx?$/, '.js')
+              .replace(/\.mts$/, '.mjs')
+              .replace(/\.cts$/, '.cjs');
+          } else {
+            externalPath = args.path;
+          }
+
+          return { external: true, path: externalPath };
         } catch (_) {}
         return null;
       });
@@ -156,6 +166,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           // The filename parameter is used to generate workflowId/stepId, so it must be relative
           const workingDir =
             build.initialOptions.absWorkingDir || process.cwd();
+          const projectRoot = options.projectRoot || workingDir;
           // Normalize paths: convert backslashes to forward slashes and remove trailing slashes
           const normalizedWorkingDir = workingDir
             .replace(/\\/g, '/')
@@ -218,7 +229,8 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               relativeFilepath,
               normalizedSource,
               options.mode,
-              args.path // Pass absolute path for module specifier resolution
+              args.path, // Pass absolute path for module specifier resolution
+              projectRoot
             );
 
           if (!options.workflowManifest) {

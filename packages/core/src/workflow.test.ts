@@ -1,5 +1,5 @@
 import { types } from 'node:util';
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { assert, describe, expect, it, vi } from 'vitest';
 import type { WorkflowSuspension } from './global.js';
@@ -895,7 +895,7 @@ describe('runWorkflow', () => {
   });
 
   describe('error handling', () => {
-    it('should throw ReferenceError when workflow code does not return a function', async () => {
+    it('should throw WorkflowNotRegisteredError when workflow function is not found', async () => {
       let error: Error | undefined;
       try {
         const ops: Promise<any>[] = [];
@@ -927,9 +927,9 @@ describe('runWorkflow', () => {
         error = err as Error;
       }
       assert(error);
-      expect(error.name).toEqual('ReferenceError');
-      expect(error.message).toEqual(
-        'Workflow "value" must be a function, but got "undefined" instead'
+      expect(error.name).toEqual('WorkflowNotRegisteredError');
+      expect(error.message).toContain(
+        'Workflow "value" is not registered in the current deployment'
       );
     });
 
@@ -2093,7 +2093,7 @@ describe('runWorkflow', () => {
       });
     });
 
-    it('should reject with WorkflowRuntimeError when hook_conflict event is received', async () => {
+    it('should reject with HookConflictError when hook_conflict event is received', async () => {
       const ops: Promise<any>[] = [];
       const workflowRun: WorkflowRun = {
         runId: 'test-run-123',
@@ -2141,7 +2141,7 @@ describe('runWorkflow', () => {
         error = err as Error;
       }
 
-      expect(error).toBeInstanceOf(WorkflowRuntimeError);
+      expect(error).toBeInstanceOf(HookConflictError);
       expect(error?.message).toContain('already in use by another workflow');
       expect(error?.message).toContain('my-duplicate-token');
     });
@@ -2198,7 +2198,7 @@ describe('runWorkflow', () => {
         error = err as Error;
       }
 
-      expect(error).toBeInstanceOf(WorkflowRuntimeError);
+      expect(error).toBeInstanceOf(HookConflictError);
       expect(error?.message).toContain('already in use by another workflow');
     });
   });

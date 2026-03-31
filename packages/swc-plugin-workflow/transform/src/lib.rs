@@ -385,6 +385,9 @@ pub struct StepTransform {
     // Track identifiers that are known to be WORKFLOW_SERIALIZE symbols
     // (local name -> "workflow-serialize" or "workflow-deserialize")
     serialization_symbol_identifiers: HashMap<String, String>,
+    // Track identifiers that are bound to require() calls (CommonJS namespace pattern)
+    // e.g., `const serde_1 = require("@workflow/serde")` -> {"serde_1"}
+    require_namespace_identifiers: HashSet<String>,
     // Track class names for the manifest (preserved copy before drain)
     classes_for_manifest: HashSet<String>,
 }
@@ -1555,6 +1558,7 @@ impl StepTransform {
             instance_step_methods_to_strip: Vec::new(),
             classes_needing_serialization: HashSet::new(),
             serialization_symbol_identifiers: HashMap::new(),
+            require_namespace_identifiers: HashSet::new(),
             classes_for_manifest: HashSet::new(),
         }
     }
@@ -1606,6 +1610,74 @@ impl StepTransform {
     }
 
     // Collect all declared identifiers in the module to avoid naming collisions
+    /// Inspect a single `VarDeclarator` for serialization-related bindings:
+    /// - `Symbol.for('workflow-serialize')` / `Symbol.for('workflow-deserialize')` assignments
+    /// - CommonJS namespace require: `const serde_1 = require("...")`
+    /// - CommonJS destructured require: `const { WORKFLOW_SERIALIZE } = require("...")`
+    fn track_serialization_bindings(&mut self, declarator: &VarDeclarator) {
+        let Some(init) = &declarator.init else {
+            return;
+        };
+
+        // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+        if let Pat::Ident(ident) = &declarator.name {
+            if let Some(symbol_name) = self.extract_symbol_for_name(init) {
+                if symbol_name == "workflow-serialize" || symbol_name == "workflow-deserialize" {
+                    self.serialization_symbol_identifiers
+                        .insert(ident.id.sym.to_string(), symbol_name);
+                }
+            }
+            // Track CommonJS namespace require: const serde_1 = require("...")
+            if self.is_require_call(init) {
+                self.require_namespace_identifiers
+                    .insert(ident.id.sym.to_string());
+            }
+        }
+
+        // Track CommonJS destructured require:
+        // const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("...")
+        if let Pat::Object(obj_pat) = &declarator.name {
+            if self.is_require_call(init) {
+                for prop in &obj_pat.props {
+                    match prop {
+                        ObjectPatProp::Assign(assign) => {
+                            // const { WORKFLOW_SERIALIZE } = require("...")
+                            let name = assign.key.sym.to_string();
+                            if name == "WORKFLOW_SERIALIZE" {
+                                self.serialization_symbol_identifiers
+                                    .insert(name, "workflow-serialize".to_string());
+                            } else if name == "WORKFLOW_DESERIALIZE" {
+                                self.serialization_symbol_identifiers
+                                    .insert(name, "workflow-deserialize".to_string());
+                            }
+                        }
+                        ObjectPatProp::KeyValue(kv) => {
+                            // const { WORKFLOW_SERIALIZE: ws } = require("...")
+                            let key_name = match &kv.key {
+                                PropName::Ident(id) => Some(id.sym.to_string()),
+                                PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                                _ => None,
+                            };
+                            if let Some(key) = key_name {
+                                if let Pat::Ident(local) = &*kv.value {
+                                    let local_name = local.id.sym.to_string();
+                                    if key == "WORKFLOW_SERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-serialize".to_string());
+                                    } else if key == "WORKFLOW_DESERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-deserialize".to_string());
+                                    }
+                                }
+                            }
+                        }
+                        ObjectPatProp::Rest(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn collect_declared_identifiers(&mut self, items: &[ModuleItem]) {
         for item in items {
             match item {
@@ -1617,19 +1689,7 @@ impl StepTransform {
                     Decl::Var(var_decl) => {
                         for declarator in &var_decl.decls {
                             self.collect_idents_from_pat(&declarator.name);
-                            // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-                            if let Pat::Ident(ident) = &declarator.name {
-                                if let Some(init) = &declarator.init {
-                                    if let Some(symbol_name) = self.extract_symbol_for_name(init) {
-                                        if symbol_name == "workflow-serialize"
-                                            || symbol_name == "workflow-deserialize"
-                                        {
-                                            self.serialization_symbol_identifiers
-                                                .insert(ident.id.sym.to_string(), symbol_name);
-                                        }
-                                    }
-                                }
-                            }
+                            self.track_serialization_bindings(declarator);
                         }
                     }
                     Decl::Class(class_decl) => {
@@ -1647,21 +1707,7 @@ impl StepTransform {
                         Decl::Var(var_decl) => {
                             for declarator in &var_decl.decls {
                                 self.collect_idents_from_pat(&declarator.name);
-                                // Track exported const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-                                if let Pat::Ident(ident) = &declarator.name {
-                                    if let Some(init) = &declarator.init {
-                                        if let Some(symbol_name) =
-                                            self.extract_symbol_for_name(init)
-                                        {
-                                            if symbol_name == "workflow-serialize"
-                                                || symbol_name == "workflow-deserialize"
-                                            {
-                                                self.serialization_symbol_identifiers
-                                                    .insert(ident.id.sym.to_string(), symbol_name);
-                                            }
-                                        }
-                                    }
-                                }
+                                self.track_serialization_bindings(declarator);
                             }
                         }
                         Decl::Class(class_decl) => {
@@ -2627,11 +2673,30 @@ impl StepTransform {
         None
     }
 
+    /// Check if an expression is a `require('...')` or `require("...")` call.
+    /// Returns true only when the callee is `require` with exactly one string literal argument.
+    fn is_require_call(&self, expr: &Expr) -> bool {
+        if let Expr::Call(call) = expr {
+            if let Callee::Expr(callee) = &call.callee {
+                if let Expr::Ident(ident) = &**callee {
+                    if ident.sym.as_str() == "require" && call.args.len() == 1 {
+                        // Ensure the single argument is a string literal
+                        if let Expr::Lit(Lit::Str(_)) = &*call.args[0].expr {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Check if an expression represents a workflow serialization symbol.
     /// Supports multiple patterns:
     /// 1. Direct: `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
     /// 2. Identifier reference to an imported symbol: `WORKFLOW_SERIALIZE` (imported from '@workflow/serde')
     /// 3. Identifier reference to a local const: `const MY_SYM = Symbol.for('workflow-serialize')`
+    /// 4. Member expression on a require() namespace: `serde_1.WORKFLOW_SERIALIZE`
     fn is_workflow_serialization_symbol(&self, expr: &Expr, symbol_name: &str) -> bool {
         // Pattern 1: Direct Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
         if let Some(extracted_name) = self.extract_symbol_for_name(expr) {
@@ -2645,6 +2710,26 @@ impl StepTransform {
                 .get(&ident.sym.to_string())
             {
                 return known_symbol == symbol_name;
+            }
+        }
+
+        // Pattern 4: Member expression on a require() namespace binding
+        // e.g., serde_1.WORKFLOW_SERIALIZE where serde_1 = require("@workflow/serde")
+        if let Expr::Member(member) = expr {
+            if let Expr::Ident(obj) = &*member.obj {
+                if self
+                    .require_namespace_identifiers
+                    .contains(&obj.sym.to_string())
+                {
+                    if let MemberProp::Ident(prop) = &member.prop {
+                        let prop_name = prop.sym.as_str();
+                        if prop_name == "WORKFLOW_SERIALIZE" {
+                            return symbol_name == "workflow-serialize";
+                        } else if prop_name == "WORKFLOW_DESERIALIZE" {
+                            return symbol_name == "workflow-deserialize";
+                        }
+                    }
+                }
             }
         }
 
@@ -2809,49 +2894,276 @@ impl StepTransform {
         }))
     }
 
-    // Generate the import for registerSerializationClass from a Node.js-free module (workflow mode)
-    // This is separate from create_private_imports to avoid pulling in Node.js dependencies
-    // (like async_hooks) in workflow bundles.
-    fn create_class_serialization_import(&self) -> ModuleItem {
-        ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
-            span: DUMMY_SP,
-            specifiers: vec![ImportSpecifier::Named(ImportNamedSpecifier {
-                span: DUMMY_SP,
-                local: Ident::new(
-                    "registerSerializationClass".into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                ),
-                imported: None,
-                is_type_only: false,
-            })],
-            src: Box::new(Str {
-                span: DUMMY_SP,
-                value: "workflow/internal/class-serialization".into(),
-                raw: None,
-            }),
-            type_only: false,
-            with: None,
-            phase: ImportPhase::Evaluation,
-        }))
-    }
-
-    // Create a registration call statement: registerSerializationClass("class//...", ClassName)
-    // Used in workflow mode and client mode to register classes for serialization
+    // Create an inline class serialization registration statement.
+    // Instead of importing registerSerializationClass from "workflow/internal/class-serialization",
+    // we inline the registration logic as a self-contained IIFE that has zero module dependencies.
+    // This is critical for 3rd-party packages that define serializable classes but don't depend
+    // on the "workflow" package directly.
+    //
+    // Generates:
+    //   (function(__wf_cls, __wf_id) {
+    //     var __wf_sym = Symbol.for("workflow-class-registry");
+    //     var __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    //     __wf_reg.set(__wf_id, __wf_cls);
+    //     Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+    //   })(ClassName, "class//module_path//ClassName");
     fn create_class_serialization_registration(&self, class_name: &str) -> Stmt {
         let class_id = naming::format_name("class", &self.get_module_path(), class_name);
+
+        // Helper to create an identifier
+        let ident =
+            |name: &str| -> Ident { Ident::new(name.into(), DUMMY_SP, SyntaxContext::empty()) };
+
+        // Helper to create an identifier expression
+        let ident_expr = |name: &str| -> Box<Expr> { Box::new(Expr::Ident(ident(name))) };
+
+        // var __wf_sym = Symbol.for("workflow-class-registry");
+        let sym_decl = VarDeclarator {
+            span: DUMMY_SP,
+            name: Pat::Ident(BindingIdent {
+                id: ident("__wf_sym"),
+                type_ann: None,
+            }),
+            init: Some(Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("Symbol"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "for".into(),
+                    }),
+                }))),
+                args: vec![ExprOrSpread {
+                    spread: None,
+                    expr: Box::new(Expr::Lit(Lit::Str(Str {
+                        span: DUMMY_SP,
+                        value: "workflow-class-registry".into(),
+                        raw: None,
+                    }))),
+                }],
+                type_args: None,
+            }))),
+            definite: false,
+        };
+
+        // var __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+        let global_sym_access = Box::new(Expr::Member(MemberExpr {
+            span: DUMMY_SP,
+            obj: ident_expr("globalThis"),
+            prop: MemberProp::Computed(ComputedPropName {
+                span: DUMMY_SP,
+                expr: ident_expr("__wf_sym"),
+            }),
+        }));
+
+        let reg_decl = VarDeclarator {
+            span: DUMMY_SP,
+            name: Pat::Ident(BindingIdent {
+                id: ident("__wf_reg"),
+                type_ann: None,
+            }),
+            init: Some(Box::new(Expr::Bin(BinExpr {
+                span: DUMMY_SP,
+                op: BinaryOp::LogicalOr,
+                left: global_sym_access.clone(),
+                right: Box::new(Expr::Paren(ParenExpr {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Assign(AssignExpr {
+                        span: DUMMY_SP,
+                        op: AssignOp::Assign,
+                        left: AssignTarget::Simple(SimpleAssignTarget::Member(MemberExpr {
+                            span: DUMMY_SP,
+                            obj: ident_expr("globalThis"),
+                            prop: MemberProp::Computed(ComputedPropName {
+                                span: DUMMY_SP,
+                                expr: ident_expr("__wf_sym"),
+                            }),
+                        })),
+                        right: Box::new(Expr::New(NewExpr {
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            callee: ident_expr("Map"),
+                            args: Some(vec![]),
+                            type_args: None,
+                        })),
+                    })),
+                })),
+            }))),
+            definite: false,
+        };
+
+        // __wf_reg.set(__wf_id, __wf_cls);
+        let set_call = Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("__wf_reg"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "set".into(),
+                    }),
+                }))),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_id"),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_cls"),
+                    },
+                ],
+                type_args: None,
+            })),
+        });
+
+        // Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+        let define_property_call = Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("Object"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "defineProperty".into(),
+                    }),
+                }))),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_cls"),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                            span: DUMMY_SP,
+                            value: "classId".into(),
+                            raw: None,
+                        }))),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Object(ObjectLit {
+                            span: DUMMY_SP,
+                            props: vec![
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "value".into(),
+                                    }),
+                                    value: ident_expr("__wf_id"),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "writable".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: false,
+                                    }))),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "enumerable".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: false,
+                                    }))),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "configurable".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: false,
+                                    }))),
+                                }))),
+                            ],
+                        })),
+                    },
+                ],
+                type_args: None,
+            })),
+        });
+
+        // The function body: var decls + set + defineProperty
+        let function_body = BlockStmt {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            stmts: vec![
+                // var __wf_sym = ..., __wf_reg = ...;
+                Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                    span: DUMMY_SP,
+                    ctxt: SyntaxContext::empty(),
+                    kind: VarDeclKind::Var,
+                    declare: false,
+                    decls: vec![sym_decl, reg_decl],
+                }))),
+                set_call,
+                define_property_call,
+            ],
+        };
+
+        // The IIFE: (function(__wf_cls, __wf_id) { ... })(ClassName, /* generated class ID string */);
         Stmt::Expr(ExprStmt {
             span: DUMMY_SP,
             expr: Box::new(Expr::Call(CallExpr {
                 span: DUMMY_SP,
                 ctxt: SyntaxContext::empty(),
-                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-                    "registerSerializationClass".into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                )))),
+                callee: Callee::Expr(Box::new(Expr::Paren(ParenExpr {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Fn(FnExpr {
+                        ident: None,
+                        function: Box::new(Function {
+                            params: vec![
+                                Param {
+                                    span: DUMMY_SP,
+                                    decorators: vec![],
+                                    pat: Pat::Ident(BindingIdent {
+                                        id: ident("__wf_cls"),
+                                        type_ann: None,
+                                    }),
+                                },
+                                Param {
+                                    span: DUMMY_SP,
+                                    decorators: vec![],
+                                    pat: Pat::Ident(BindingIdent {
+                                        id: ident("__wf_id"),
+                                        type_ann: None,
+                                    }),
+                                },
+                            ],
+                            decorators: vec![],
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            body: Some(function_body),
+                            is_generator: false,
+                            is_async: false,
+                            type_params: None,
+                            return_type: None,
+                        }),
+                    })),
+                }))),
                 args: vec![
-                    // First argument: class ID
+                    // First argument: ClassName
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Ident(ident(class_name))),
+                    },
+                    // Second argument: class ID string
                     ExprOrSpread {
                         spread: None,
                         expr: Box::new(Expr::Lit(Lit::Str(Str {
@@ -2859,15 +3171,6 @@ impl StepTransform {
                             value: class_id.into(),
                             raw: None,
                         }))),
-                    },
-                    // Second argument: ClassName
-                    ExprOrSpread {
-                        spread: None,
-                        expr: Box::new(Expr::Ident(Ident::new(
-                            class_name.into(),
-                            DUMMY_SP,
-                            SyntaxContext::empty(),
-                        ))),
                     },
                 ],
                 type_args: None,
@@ -3910,12 +4213,7 @@ impl VisitMut for StepTransform {
 
                 match self.mode {
                     TransformMode::Workflow => {
-                        // In workflow mode, we need the import for class serialization
-                        let needs_class_serialization =
-                            !self.classes_needing_serialization.is_empty();
-                        if needs_class_serialization {
-                            imports_to_add.push(self.create_class_serialization_import());
-                        }
+                        // Class serialization registration is now inlined (no import needed)
                     }
                     TransformMode::Step => {
                         // Check what needs to be imported
@@ -3931,10 +4229,6 @@ impl VisitMut for StepTransform {
                             .iter()
                             .any(|(_, _, _, closure_vars, _, _)| !closure_vars.is_empty());
 
-                        // Check if we need to register classes for serialization
-                        let needs_class_serialization =
-                            !self.classes_needing_serialization.is_empty();
-
                         if needs_register_import || needs_closure_import {
                             imports_to_add.push(self.create_private_imports(
                                 needs_register_import,
@@ -3942,20 +4236,12 @@ impl VisitMut for StepTransform {
                             ));
                         }
 
-                        // Add separate import for class serialization
-                        if needs_class_serialization {
-                            imports_to_add.push(self.create_class_serialization_import());
-                        }
+                        // Class serialization registration is now inlined (no import needed)
                     }
                     TransformMode::Client => {
                         // In client mode, we use stepId property assignments instead of registerStepFunction
                         // for step functions, so no need to import registerStepFunction.
-                        // Class serialization registration is still needed.
-                        let needs_class_serialization =
-                            !self.classes_needing_serialization.is_empty();
-                        if needs_class_serialization {
-                            imports_to_add.push(self.create_class_serialization_import());
-                        }
+                        // Class serialization registration is now inlined (no import needed)
                     }
                 }
 
@@ -4360,52 +4646,14 @@ impl VisitMut for StepTransform {
                     }
 
                     // Add class serialization registrations for step mode
-                    // In step mode, we need:
-                    // 1. registerSerializationClass(classId, ClassName) - for deserialization
-                    // 2. ClassName.classId = "..." - for serialization (though not typically needed in step mode)
+                    // Uses inlined IIFE registration (no import needed)
                     // Sort for deterministic output ordering
                     let mut sorted_classes: Vec<_> =
                         self.classes_needing_serialization.drain().collect();
                     sorted_classes.sort();
-                    let module_path = self.get_module_path();
                     for class_name in sorted_classes {
-                        // Generate class ID: class//module_path//ClassName
-                        let class_id = naming::format_name("class", &module_path, &class_name);
-
-                        // Create: registerSerializationClass("class//...", ClassName)
-                        let registration_call = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Call(CallExpr {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-                                    "registerSerializationClass".into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                )))),
-                                args: vec![
-                                    // First argument: class ID
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                            span: DUMMY_SP,
-                                            value: class_id.into(),
-                                            raw: None,
-                                        }))),
-                                    },
-                                    // Second argument: ClassName
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Ident(Ident::new(
-                                            class_name.into(),
-                                            DUMMY_SP,
-                                            SyntaxContext::empty(),
-                                        ))),
-                                    },
-                                ],
-                                type_args: None,
-                            })),
-                        });
+                        let registration_call =
+                            self.create_class_serialization_registration(&class_name);
                         module.body.push(ModuleItem::Stmt(registration_call));
                     }
                 }
@@ -4785,25 +5033,18 @@ impl VisitMut for StepTransform {
                     match self.mode {
                         TransformMode::Workflow => {
                             // No imports needed for workflow mode
+                            // Class serialization registration is inlined (no import needed)
                         }
                         TransformMode::Step => {
-                            let needs_class_serialization =
-                                !self.classes_needing_serialization.is_empty();
                             if !self.registration_calls.is_empty() {
                                 module_items.push(self.create_private_imports(true, false));
                             }
-                            if needs_class_serialization {
-                                module_items.push(self.create_class_serialization_import());
-                            }
+                            // Class serialization registration is inlined (no import needed)
                         }
                         TransformMode::Client => {
-                            // In client mode, we still need class serialization registration
-                            // so that classes can be serialized when passed to start(workflow)
-                            let needs_class_serialization =
-                                !self.classes_needing_serialization.is_empty();
-                            if needs_class_serialization {
-                                module_items.push(self.create_class_serialization_import());
-                            }
+                            // In client mode, we use stepId property assignments instead of registerStepFunction
+                            // for step functions, so no need to import registerStepFunction.
+                            // Class serialization registration is inlined (no import needed)
                         }
                     }
 

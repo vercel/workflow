@@ -10,6 +10,7 @@ import {
   extractClassName,
   hydrateResourceIO as hydrateResourceIOGeneric,
   isEncryptedData,
+  isExpiredStub,
   observabilityRevivers,
   type Revivers,
 } from '@workflow/core/serialization-format';
@@ -149,7 +150,7 @@ export function hydrateResourceIO<T>(resource: T): T {
     resource as any,
     getRevivers()
   ) as T;
-  return replaceEncryptedWithMarkers(hydrated);
+  return replaceEncryptedAndExpiredWithMarkers(hydrated);
 }
 
 // ---------------------------------------------------------------------------
@@ -191,27 +192,60 @@ export function isEncryptedMarker(value: unknown): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Expired data display markers
+// ---------------------------------------------------------------------------
+
+export const EXPIRED_DISPLAY_NAME = 'Expired Data';
+
+/**
+ * Create a display-friendly object for expired data.
+ *
+ * Uses the same named-constructor trick as the encrypted marker so that
+ * ObjectInspector renders the constructor name ("Expired Data") with no
+ * expandable children.
+ */
+function createExpiredMarker(): object {
+  // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+  const ctor = { [EXPIRED_DISPLAY_NAME]: function () {} }[
+    EXPIRED_DISPLAY_NAME
+  ]!;
+  return Object.create(ctor.prototype);
+}
+
+/** Check if a value is an expired data display marker */
+export function isExpiredMarker(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    value.constructor?.name === EXPIRED_DISPLAY_NAME
+  );
+}
+
+/** Replace a single field value with a display marker if it's encrypted or expired. */
+function toDisplayMarker(value: unknown): unknown {
+  if (isEncryptedData(value)) return createEncryptedMarker(value as Uint8Array);
+  if (isExpiredStub(value)) return createExpiredMarker();
+  return value;
+}
+
 /**
  * Post-process hydrated resource data: replace encrypted Uint8Array values
- * with display-friendly marker objects in known data fields.
+ * and expired stubs with display-friendly marker objects in known data fields.
  */
-function replaceEncryptedWithMarkers<T>(resource: T): T {
+function replaceEncryptedAndExpiredWithMarkers<T>(resource: T): T {
   if (!resource || typeof resource !== 'object') return resource;
   const r = resource as Record<string, unknown>;
   const result = { ...r };
 
   for (const key of ['input', 'output', 'metadata', 'error']) {
-    if (isEncryptedData(result[key])) {
-      result[key] = createEncryptedMarker(result[key] as Uint8Array);
-    }
+    result[key] = toDisplayMarker(result[key]);
   }
 
   if (result.eventData && typeof result.eventData === 'object') {
     const ed = { ...(result.eventData as Record<string, unknown>) };
     for (const key of EVENT_DATA_SERIALIZED_FIELDS) {
-      if (isEncryptedData(ed[key])) {
-        ed[key] = createEncryptedMarker(ed[key] as Uint8Array);
-      }
+      ed[key] = toDisplayMarker(ed[key]);
     }
     result.eventData = ed;
   }

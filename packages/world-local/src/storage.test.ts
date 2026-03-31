@@ -1952,6 +1952,42 @@ describe('Storage', () => {
         name: 'EntityConflictError',
       });
     });
+
+    it('should reject concurrent hook_disposed for the same hook', async () => {
+      await createHook(storage, testRunId, {
+        hookId: 'hook_race_1',
+        token: 'hook-race-token-1',
+      });
+
+      const results = await Promise.allSettled([
+        disposeHook(storage, testRunId, 'hook_race_1'),
+        disposeHook(storage, testRunId, 'hook_race_1'),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      // Depending on timing, the loser may hit the lock file (EntityConflictError)
+      // or find the hook entity already deleted (HookNotFoundError).
+      const reason = (rejected[0] as PromiseRejectedResult).reason as {
+        name?: string;
+      };
+      expect(['EntityConflictError', 'HookNotFoundError']).toContain(
+        reason.name
+      );
+
+      // Verify only one hook_disposed event was written to the log
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const hookDisposedEvents = events.data.filter(
+        (e) => e.eventType === 'hook_disposed'
+      );
+      expect(hookDisposedEvents).toHaveLength(1);
+    });
   });
 
   describe('run terminal state validation', () => {

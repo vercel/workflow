@@ -6,9 +6,9 @@
 
 ## Overview
 
-Workflow DevKit is a durable functions framework for JavaScript/TypeScript that enables writing long-running, stateful application logic on top of stateless compute. The runtime persists progress as an event log and deterministically replays code to reconstruct state after cold starts, failures, or scale events.
+Workflow SDK is a durable functions framework for JavaScript/TypeScript that enables writing long-running, stateful application logic on top of stateless compute. The runtime persists progress as an event log and deterministically replays code to reconstruct state after cold starts, failures, or scale events.
 
-This repository contains the client-side SDK code for workflows, along with example apps that showcase Workflow DevKit in action.
+This repository contains the client-side SDK code for workflows, along with example apps that showcase Workflow SDK in action.
 
 ## Architecture
 
@@ -123,7 +123,7 @@ cd workbench/nextjs-turbopack && pnpm start
 
 ## Key Workflow Concepts
 
-**These are only relevant when writing code using the Workflow DevKit**
+**These are only relevant when writing code using the Workflow SDK**
 
 - Workflow functions orchestrate step execution but have limited runtime access
 - Step functions handle side effects, API calls, and complex logic with full Node.js access
@@ -133,7 +133,7 @@ cd workbench/nextjs-turbopack && pnpm start
 
 ## File Structure Conventions
 
-**These are only relevant when writing code using the Workflow DevKit**
+**These are only relevant when writing code using the Workflow SDK**
 
 - Workflow files go in `workflows/` directory (or `src/workflows/` if using src)
 - Generated API routes appear in `app/.well-known/workflow/v1/` (Next.js integration)

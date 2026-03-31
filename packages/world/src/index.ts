@@ -57,6 +57,12 @@ export {
   SerializedDataSchema,
 } from './serialization.js';
 export type * from './shared.js';
+export type {
+  GetChunksOptions,
+  StreamChunk,
+  StreamChunksResponse,
+  StreamInfoResponse,
+} from './shared.js';
 export {
   PaginatedResponseSchema,
   StructuredErrorSchema,
@@ -70,10 +76,10 @@ export {
 } from './spec-version.js';
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';
-export type * from './waits.js';
-export { WaitSchema, WaitStatusSchema } from './waits.js';
 export {
   DEFAULT_TIMESTAMP_THRESHOLD_MS,
   ulidToDate,
   validateUlidTimestamp,
 } from './ulid.js';
+export type * from './waits.js';
+export { WaitSchema, WaitStatusSchema } from './waits.js';

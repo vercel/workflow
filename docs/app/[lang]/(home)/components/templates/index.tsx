@@ -35,7 +35,7 @@ export const Templates = () => (
         Get started quickly
       </h2>
       <p className="text-balance text-lg text-muted-foreground">
-        See Workflow DevKit in action with one of our templates.
+        See Workflow SDK in action with one of our templates.
       </p>
     </div>
     <div className="grid md:grid-cols-3 gap-8">

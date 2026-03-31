@@ -44,7 +44,7 @@ export async function generateMetadata({
   }
 
   return {
-    title: `${data.world.name} World | Workflow DevKit`,
+    title: `${data.world.name} World | Workflow SDK`,
     description: data.world.description,
     openGraph: {
       images: [`/og/worlds/${id}`],
