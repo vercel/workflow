@@ -5,7 +5,10 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { classifyRunError } from './classify-error.js';
-import { MAX_QUEUE_DELIVERIES } from './runtime/constants.js';
+import {
+  MAX_QUEUE_DELIVERIES,
+  REPLAY_TIMEOUT_MS,
+} from './runtime/constants.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -160,6 +163,37 @@ export function workflowEntrypoint(
       }
 
       const spanLinks = await linkToCurrentContext();
+
+      // --- Replay timeout guard ---
+      // If the replay takes longer than the timeout, fail the run and exit.
+      // This must be lower than the function's maxDuration (180s) to ensure
+      // the failure is recorded before the platform kills the function.
+      const replayTimeout = setTimeout(async () => {
+        runtimeLogger.error('Workflow replay exceeded timeout', {
+          workflowRunId: runId,
+          timeoutMs: REPLAY_TIMEOUT_MS,
+        });
+        try {
+          const world = getWorld();
+          await world.events.create(
+            runId,
+            {
+              eventType: 'run_failed',
+              specVersion: SPEC_VERSION_CURRENT,
+              eventData: {
+                error: {
+                  message: `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s)`,
+                },
+                errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
+              },
+            },
+            { requestId }
+          );
+        } catch {
+          // Best effort — process exits regardless
+        }
+        process.exit(1);
+      }, REPLAY_TIMEOUT_MS);
 
       // Invoke user workflow within the propagated trace context and baggage
       return await withTraceContext(traceContext, async () => {
@@ -525,6 +559,8 @@ export function workflowEntrypoint(
             ); // End trace
           }
         ); // End withWorkflowBaggage
+      }).finally(() => {
+        clearTimeout(replayTimeout);
       }); // End withTraceContext
     }
   );

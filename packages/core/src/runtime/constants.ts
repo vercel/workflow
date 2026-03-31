@@ -11,3 +11,10 @@
 // At 48 attempts the total elapsed time is approximately 20 hours, which is
 // safely under the 24-hour message visibility limit.
 export const MAX_QUEUE_DELIVERIES = 48;
+
+// Maximum time allowed for a single workflow replay execution (in ms).
+// If a replay exceeds this duration, the run is failed and the process exits.
+// This must be lower than the function's maxDuration (180s) to ensure the
+// timeout handler has time to post the run_failed event before the platform
+// kills the function.
+export const REPLAY_TIMEOUT_MS = 120_000;
