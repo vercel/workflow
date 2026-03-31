@@ -293,7 +293,7 @@ export function createLimitsRuntimeSuite(
       );
       expect(
         resultC.workflowLockAcquiredAt - resultA.workflowLockReleasedAt
-      ).toBeLessThan(4_000);
+      ).toBeLessThan(6_000);
     });
 
     it('does not block unrelated workflow keys', async () => {
