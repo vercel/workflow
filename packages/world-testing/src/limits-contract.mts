@@ -206,7 +206,7 @@ export function createLimitsContractSuite(
                 owner,
                 'workflow:user:concurrent',
                 { concurrency: { max: 1 } },
-                1_000
+                10_000
               )
             )
           )
