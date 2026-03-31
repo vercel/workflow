@@ -578,7 +578,7 @@ export function createLimitsContractSuite(
             ownerA,
             'workflow:user:ordered',
             { concurrency: { max: 1 } },
-            1_000
+            10_000
           )
         );
         expect(first.status).toBe('acquired');
@@ -590,7 +590,7 @@ export function createLimitsContractSuite(
             ownerB,
             'workflow:user:ordered',
             { concurrency: { max: 1 } },
-            1_000
+            10_000
           )
         );
         const third = await harness.limits.acquire(
@@ -598,7 +598,7 @@ export function createLimitsContractSuite(
             ownerC,
             'workflow:user:ordered',
             { concurrency: { max: 1 } },
-            1_000
+            10_000
           )
         );
 
@@ -612,7 +612,7 @@ export function createLimitsContractSuite(
             ownerB,
             'workflow:user:ordered',
             { concurrency: { max: 1 } },
-            1_000
+            10_000
           )
         );
         const stillWaiting = await harness.limits.acquire(
@@ -620,7 +620,7 @@ export function createLimitsContractSuite(
             ownerC,
             'workflow:user:ordered',
             { concurrency: { max: 1 } },
-            1_000
+            10_000
           )
         );
 
@@ -636,7 +636,7 @@ export function createLimitsContractSuite(
             ownerC,
             'workflow:user:ordered',
             { concurrency: { max: 1 } },
-            1_000
+            10_000
           )
         );
 
