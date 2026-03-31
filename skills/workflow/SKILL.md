@@ -598,9 +598,9 @@ await world.events.create(runId, { eventType: 'run_cancelled' });
 const hook = await world.hooks.get(hookId);
 const hook = await world.hooks.getByToken(token);
 
-// Streams
-await world.streams.writeToStream(name, runId, chunk);
-const readable = await world.streams.readFromStream(name);
+// Streams (methods live directly on world, not nested)
+await world.writeToStream(name, runId, chunk);
+const readable = await world.readFromStream(name);
 ```
 
 ### `resolveData` Parameter
