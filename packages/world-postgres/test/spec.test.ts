@@ -9,7 +9,6 @@ const packageDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..'
 );
-const workspaceDir = path.resolve(packageDir, '..', '..');
 
 // Skip these tests on Windows since it relies on a docker container
 if (process.platform === 'win32') {
@@ -29,20 +28,11 @@ if (process.platform === 'win32') {
       env: process.env,
     });
 
-    execFileSync(
-      'pnpm',
-      [
-        '--dir',
-        workspaceDir,
-        'exec',
-        'tsx',
-        'packages/world-postgres/src/cli.ts',
-      ],
-      {
-        stdio: 'inherit',
-        env: process.env,
-      }
-    );
+    execFileSync('node', ['dist/cli.js'], {
+      stdio: 'inherit',
+      cwd: packageDir,
+      env: process.env,
+    });
   }, 120_000);
 
   afterAll(async () => {

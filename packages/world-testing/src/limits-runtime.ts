@@ -50,6 +50,14 @@ type WorkflowMultiStepScopeResult = {
   workflowLockReleasedAt: number;
 };
 
+function sortContentionResults<T extends { workflowLockAcquiredAt: number }>(
+  results: [T, T]
+): [T, T] {
+  return [...results].sort(
+    (a, b) => a.workflowLockAcquiredAt - b.workflowLockAcquiredAt
+  ) as [T, T];
+}
+
 export interface LimitsRuntimeHarness {
   runWorkflowWithScopedLocks(userId: string): Promise<{
     workflowKey: string;
@@ -139,9 +147,8 @@ export function createLimitsRuntimeSuite(
 
     it('serializes workflow locks and locks around step calls under contention', async () => {
       const harness = await createHarness();
-      const [resultA, resultB] = await harness.runWorkflowLockContention(
-        'shared-user',
-        750
+      const [resultA, resultB] = sortContentionResults(
+        await harness.runWorkflowLockContention('shared-user', 750)
       );
 
       expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
@@ -154,9 +161,8 @@ export function createLimitsRuntimeSuite(
 
     it('wakes promoted workflow and step-call lock waiters promptly', async () => {
       const harness = await createHarness();
-      const [resultA, resultB] = await harness.runWorkflowLockContention(
-        'shared-user',
-        1_500
+      const [resultA, resultB] = sortContentionResults(
+        await harness.runWorkflowLockContention('shared-user', 1_500)
       );
 
       expect(

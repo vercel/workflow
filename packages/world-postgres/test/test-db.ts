@@ -9,7 +9,6 @@ const packageDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..'
 );
-const workspaceDir = path.resolve(packageDir, '..', '..');
 
 export interface PostgresTestDb {
   container: Awaited<ReturnType<PostgreSqlContainer['start']>>;
@@ -26,20 +25,17 @@ export async function createPostgresTestDb(): Promise<PostgresTestDb> {
   process.env.DATABASE_URL = connectionString;
   process.env.WORKFLOW_POSTGRES_URL = connectionString;
 
-  execFileSync(
-    'pnpm',
-    [
-      '--dir',
-      workspaceDir,
-      'exec',
-      'tsx',
-      'packages/world-postgres/src/cli.ts',
-    ],
-    {
-      stdio: 'inherit',
-      env: process.env,
-    }
-  );
+  execFileSync('pnpm', ['build'], {
+    stdio: 'inherit',
+    cwd: packageDir,
+    env: process.env,
+  });
+
+  execFileSync('node', ['dist/cli.js'], {
+    stdio: 'inherit',
+    cwd: packageDir,
+    env: process.env,
+  });
 
   const pool = new Pool({ connectionString, max: 10 });
   const drizzle = createClient(pool);

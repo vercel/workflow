@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from 'vitest';
 import { LimitDefinitionConflictError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, createLockCorrelationId } from '@workflow/world';
-import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.js';
+import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.ts';
 import { createLimits } from './limits.js';
 import {
   createEventsStorage,
