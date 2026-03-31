@@ -96,6 +96,20 @@ function writeE2EMetadata() {
 const e2e = (fn: string) =>
   getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
 
+async function waitForRunLockAttempt(runId: string, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const { data: events } = await getWorld().events.list({ runId });
+    if (events.some((event) => event.eventType === 'lock_created')) {
+      return;
+    }
+    await sleep(50);
+  }
+
+  throw new Error(`Timed out waiting for lock attempt on run ${runId}`);
+}
+
 /**
  * Triggers a workflow via HTTP POST. Used only for Pages Router tests
  * that specifically need to validate the HTTP trigger endpoint.
@@ -321,7 +335,7 @@ describe('e2e', () => {
           const runA = await start(workflow, [userId, holdMs, 'A']);
           await sleep(100);
           const runB = await start(workflow, [userId, holdMs, 'B']);
-          await sleep(100);
+          await waitForRunLockAttempt(runB.runId);
           const runC = await start(workflow, [userId, holdMs, 'C']);
           return await Promise.all([
             runA.returnValue,
@@ -334,7 +348,7 @@ describe('e2e', () => {
           const runA = await start(workflow, [userId, holdMs, 'A']);
           await sleep(100);
           const runB = await start(workflow, [userId, holdMs, 'B']);
-          await sleep(100);
+          await waitForRunLockAttempt(runB.runId);
           await cancelRun(getWorld(), runB.runId);
           const cancelledError = await runB.returnValue.catch((error) => error);
           const runC = await start(workflow, [userId, holdMs, 'C']);

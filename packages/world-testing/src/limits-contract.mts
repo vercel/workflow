@@ -314,7 +314,7 @@ export function createLimitsContractSuite(
     it('returns a combined blocked reason when both limits are saturated', async () => {
       const harness = await createHarness();
       try {
-        const periodMs = 1_500;
+        const periodMs = 3_000;
         const ownerA = await createLockOwner(harness.storage, 'holder-a');
         const ownerB = await createLockOwner(harness.storage, 'holder-b');
         const first = await harness.limits.acquire(
