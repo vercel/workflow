@@ -1023,9 +1023,11 @@ export const POST = workflowEntrypoint(workflowCode);`;
     } else {
       // Bundle the combined code for standalone use
       const bundleStartTime = Date.now();
+      const { banner: importMetaBanner, define: importMetaDefine } =
+        this.getCjsImportMetaPolyfill(format);
       const finalResult = await esbuild.build({
         banner: {
-          js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+          js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}`,
         },
         stdin: {
           contents: combinedFunctionCode,
@@ -1042,6 +1044,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
         write: true,
         keepNames: true,
         minify: false,
+        define: importMetaDefine,
         external: ['@aws-sdk/credential-provider-web-identity'],
       });
       this.logEsbuildMessages(finalResult, 'combined bundle', true);
