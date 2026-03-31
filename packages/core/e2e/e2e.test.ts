@@ -14,7 +14,7 @@ import {
   expect,
   test,
 } from 'vitest';
-import { createLimitsRuntimeSuite } from '../../world-testing/src/limits-runtime.js';
+import { createLimitsRuntimeSuite } from '../../world-testing/src/limits-runtime.mts';
 import type { Run, StartOptions } from '../src/runtime.js';
 import {
   cancelRun,

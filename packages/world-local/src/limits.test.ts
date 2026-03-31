@@ -4,7 +4,7 @@ import path from 'node:path';
 import { LimitDefinitionConflictError } from '@workflow/errors';
 import { describe, expect, it } from 'vitest';
 import { SPEC_VERSION_CURRENT, createLockCorrelationId } from '@workflow/world';
-import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.js';
+import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.mts';
 import { createLocalWorld } from './index.js';
 import { createLimits } from './limits.js';
 

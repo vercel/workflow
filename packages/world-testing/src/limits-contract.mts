@@ -227,7 +227,7 @@ export function createLimitsContractSuite(
     it('keeps rate capacity consumed until the window expires', async () => {
       const harness = await createHarness();
       try {
-        const periodMs = 1_000;
+        const periodMs = 3_000;
         const ownerA = await createLockOwner(harness.storage, 'holder-a');
         const ownerB = await createLockOwner(harness.storage, 'holder-b');
         const ownerC = await createLockOwner(harness.storage, 'holder-c');
