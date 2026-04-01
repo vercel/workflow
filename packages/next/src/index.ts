@@ -174,6 +174,21 @@ export function withWorkflow(
           }
         },
       };
+
+      // Ensure @workflow packages are transpiled so our loader can process them
+      // and discover step functions in dependencies like @workflow/ai
+      const existingTranspilePackages = Array.isArray(
+        nextConfig.transpilePackages
+      )
+        ? nextConfig.transpilePackages
+        : [];
+      const workflowPackagesToTranspile = ['@workflow/ai'];
+      nextConfig.transpilePackages = [
+        ...new Set([
+          ...existingTranspilePackages,
+          ...workflowPackagesToTranspile,
+        ]),
+      ];
     }
 
     for (const key of [
