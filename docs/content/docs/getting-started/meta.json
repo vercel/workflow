@@ -9,7 +9,10 @@
     "nitro",
     "nuxt",
     "sveltekit",
-    "vite"
+    "vite",
+    "migrating-from-temporal",
+    "migrating-from-inngest",
+    "migrating-from-aws-step-functions"
   ],
   "defaultOpen": true
 }
