@@ -12,6 +12,7 @@ import type {
   Event,
   EventResult,
   Hook,
+  LimitPromotedWaiter,
   Limits,
   Queue,
   SerializedData,
@@ -98,6 +99,73 @@ export function createEventsStorage(
 ): Storage['events'] {
   const isLeaseLive = (lease: { expiresAt?: Date }) =>
     lease.expiresAt === undefined || lease.expiresAt.getTime() > Date.now();
+
+  const processPromotedWaiters = async (
+    promotedWaiters: LimitPromotedWaiter[],
+    specVersion: number
+  ) => {
+    const limits = options?.getLimits?.();
+    if (!limits) {
+      return;
+    }
+
+    const pending = [...promotedWaiters];
+    while (pending.length > 0) {
+      const promotedWaiter = pending.shift()!;
+      let queued = false;
+
+      if (options?.queue && options?.runs) {
+        try {
+          const nextRun = await options.runs.get(promotedWaiter.runId, {
+            resolveData: 'none',
+          });
+          if (!['completed', 'failed', 'cancelled'].includes(nextRun.status)) {
+            await options.queue.queue(
+              `__wkf_workflow_${nextRun.workflowName}`,
+              {
+                runId: promotedWaiter.runId,
+                lockPreApproval: promotedWaiter.lockCorrelationId,
+                requestedAt: new Date(),
+              },
+              {
+                idempotencyKey: promotedWaiter.wakeCorrelationId,
+              }
+            );
+
+            const waiterQueuedEvent = EventSchema.parse({
+              eventType: 'lock_waiter_queued',
+              correlationId: promotedWaiter.lockCorrelationId,
+              runId: promotedWaiter.runId,
+              eventId: `evnt_${monotonicUlid()}`,
+              createdAt: new Date(),
+              specVersion,
+            });
+            await writeJSON(
+              taggedPath(
+                basedir,
+                'events',
+                `${waiterQueuedEvent.runId}-${waiterQueuedEvent.eventId}`,
+                tag
+              ),
+              waiterQueuedEvent
+            );
+            queued = true;
+          }
+        } catch {}
+      }
+
+      if (queued) {
+        continue;
+      }
+
+      const releaseResult = await limits.release({
+        leaseId: promotedWaiter.leaseId,
+        key: promotedWaiter.key,
+        lockId: promotedWaiter.lockId,
+      });
+      pending.push(...releaseResult.promotedWaiters);
+    }
+  };
 
   return {
     async create(runId, data, params): Promise<EventResult> {
@@ -505,7 +573,7 @@ export function createEventsStorage(
               leaseId: lease.leaseId,
               key: lease.key,
               lockId: lease.lockId,
-              nextWaiter: releaseResult.nextWaiter,
+              promotedWaiters: releaseResult.promotedWaiters,
             },
             runId: effectiveRunId,
             eventId,
@@ -522,47 +590,12 @@ export function createEventsStorage(
 
         if (
           event.eventType === 'lock_release' &&
-          event.eventData?.nextWaiter &&
-          options?.queue &&
-          options?.runs
+          event.eventData?.promotedWaiters?.length
         ) {
-          const nextRun = await options.runs.get(
-            event.eventData.nextWaiter.runId,
-            {
-              resolveData: 'none',
-            }
+          await processPromotedWaiters(
+            event.eventData.promotedWaiters,
+            effectiveSpecVersion
           );
-          if (!['completed', 'failed', 'cancelled'].includes(nextRun.status)) {
-            await options.queue.queue(
-              `__wkf_workflow_${nextRun.workflowName}`,
-              {
-                runId: event.eventData.nextWaiter.runId,
-                lockPreApproval: event.eventData.nextWaiter.lockCorrelationId,
-                requestedAt: new Date(),
-              },
-              {
-                idempotencyKey: event.eventData.nextWaiter.wakeCorrelationId,
-              }
-            );
-
-            const waiterQueuedEvent = EventSchema.parse({
-              eventType: 'lock_waiter_queued',
-              correlationId: event.eventData.nextWaiter.lockCorrelationId,
-              runId: event.eventData.nextWaiter.runId,
-              eventId: `evnt_${monotonicUlid()}`,
-              createdAt: new Date(),
-              specVersion: effectiveSpecVersion,
-            });
-            await writeJSON(
-              taggedPath(
-                basedir,
-                'events',
-                `${waiterQueuedEvent.runId}-${waiterQueuedEvent.eventId}`,
-                tag
-              ),
-              waiterQueuedEvent
-            );
-          }
         }
 
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;

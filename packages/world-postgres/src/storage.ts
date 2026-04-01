@@ -13,6 +13,7 @@ import type {
   GetEventParams,
   Hook,
   LimitLease,
+  LimitPromotedWaiter,
   Limits,
   ListEventsParams,
   ListHooksParams,
@@ -338,6 +339,67 @@ export function createEventsStorage(
     .where(eq(Schema.waits.waitId, sql.placeholder('waitId')))
     .limit(1)
     .prepare('events_get_wait_for_validation');
+
+  const processPromotedWaiters = async (
+    promotedWaiters: LimitPromotedWaiter[],
+    specVersion: number
+  ) => {
+    const limits = options?.getLimits?.();
+    if (!limits) {
+      return;
+    }
+
+    const pending = [...promotedWaiters];
+    while (pending.length > 0) {
+      const promotedWaiter = pending.shift();
+      if (!promotedWaiter) {
+        continue;
+      }
+
+      let queued = false;
+
+      if (options?.queue && options?.runs) {
+        try {
+          const nextRun = await options.runs.get(promotedWaiter.runId, {
+            resolveData: 'none',
+          });
+          if (!['completed', 'failed', 'cancelled'].includes(nextRun.status)) {
+            await options.queue.queue(
+              `__wkf_workflow_${nextRun.workflowName}`,
+              {
+                runId: promotedWaiter.runId,
+                lockPreApproval: promotedWaiter.lockCorrelationId,
+                requestedAt: new Date(),
+              },
+              {
+                idempotencyKey: promotedWaiter.wakeCorrelationId,
+              }
+            );
+
+            await drizzle.insert(Schema.events).values({
+              runId: promotedWaiter.runId,
+              eventId: `wevt_${ulid()}`,
+              correlationId: promotedWaiter.lockCorrelationId,
+              eventType: 'lock_waiter_queued',
+              specVersion,
+            });
+            queued = true;
+          }
+        } catch {}
+      }
+
+      if (queued) {
+        continue;
+      }
+
+      const releaseResult = await limits.release({
+        leaseId: promotedWaiter.leaseId,
+        key: promotedWaiter.key,
+        lockId: promotedWaiter.lockId,
+      });
+      pending.push(...releaseResult.promotedWaiters);
+    }
+  };
 
   return {
     async create(runId, data, params): Promise<EventResult> {
@@ -765,7 +827,7 @@ export function createEventsStorage(
                 leaseId: lease.leaseId,
                 key: lease.key,
                 lockId: lease.lockId,
-                nextWaiter: releaseResult.nextWaiter,
+                promotedWaiters: releaseResult.promotedWaiters,
               },
             };
           }
@@ -817,37 +879,12 @@ export function createEventsStorage(
         const resolveData = params?.resolveData ?? 'all';
         if (
           parsed.eventType === 'lock_release' &&
-          parsed.eventData?.nextWaiter &&
-          options?.queue &&
-          options?.runs
+          parsed.eventData?.promotedWaiters?.length
         ) {
-          const nextRun = await options.runs.get(
-            parsed.eventData.nextWaiter.runId,
-            {
-              resolveData: 'none',
-            }
+          await processPromotedWaiters(
+            parsed.eventData.promotedWaiters,
+            effectiveSpecVersion
           );
-          if (!['completed', 'failed', 'cancelled'].includes(nextRun.status)) {
-            await options.queue.queue(
-              `__wkf_workflow_${nextRun.workflowName}`,
-              {
-                runId: parsed.eventData.nextWaiter.runId,
-                lockPreApproval: parsed.eventData.nextWaiter.lockCorrelationId,
-                requestedAt: new Date(),
-              },
-              {
-                idempotencyKey: parsed.eventData.nextWaiter.wakeCorrelationId,
-              }
-            );
-
-            await drizzle.insert(Schema.events).values({
-              runId: parsed.eventData.nextWaiter.runId,
-              eventId: `wevt_${ulid()}`,
-              correlationId: parsed.eventData.nextWaiter.lockCorrelationId,
-              eventType: 'lock_waiter_queued',
-              specVersion: effectiveSpecVersion,
-            });
-          }
         }
         return {
           event: stripEventDataRefs(parsed, resolveData),

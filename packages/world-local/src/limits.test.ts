@@ -2,11 +2,32 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { LimitDefinitionConflictError } from '@workflow/errors';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { SPEC_VERSION_CURRENT, createLockCorrelationId } from '@workflow/world';
 import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.mts';
 import { createLocalWorld } from './index.js';
 import { createLimits } from './limits.js';
+import { createEventsStorage } from './storage/events-storage.js';
+import { createRunsStorage } from './storage/runs-storage.js';
+
+async function createRun(
+  events: ReturnType<typeof createEventsStorage>,
+  workflowName: string
+) {
+  const result = await events.create(null, {
+    eventType: 'run_created',
+    specVersion: SPEC_VERSION_CURRENT,
+    eventData: {
+      deploymentId: 'deployment-123',
+      workflowName,
+      input: [],
+    },
+  });
+  if (!result.run) {
+    throw new Error('expected run');
+  }
+  return result.run;
+}
 
 createLimitsContractSuite('local world limits', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'workflow-limits-'));
@@ -61,67 +82,88 @@ createLimitsContractSuite('local world limits', async () => {
 });
 
 describe('local world limit retry timing', () => {
-  it('persists nextWaiter metadata and emits lock_waiter_queued on release', async () => {
+  it('persists promotedWaiters metadata and emits lock_waiter_queued for every promoted waiter', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'workflow-limits-'));
-    const world = createLocalWorld({ dataDir: dir });
-    world.registerHandler('__wkf_workflow_', async () =>
-      Response.json({ ok: true })
-    );
+    const runs = createRunsStorage(dir);
+    const queue = { queue: vi.fn().mockResolvedValue(undefined) };
+    let limits = createLimits(dir, { storage: { runs } });
+    const events = createEventsStorage(dir, undefined, {
+      getLimits: () => limits,
+      queue,
+      runs,
+    });
 
     try {
-      const runA = (
-        await world.events.create(null, {
-          eventType: 'run_created',
+      const runA = await createRun(events, 'holder-a');
+      const runB = await createRun(events, 'holder-b');
+      const runC = await createRun(events, 'holder-c');
+      const runD = await createRun(events, 'holder-d');
+
+      for (const run of [runA, runB, runC, runD]) {
+        await events.create(run.runId, {
+          eventType: 'run_started',
           specVersion: SPEC_VERSION_CURRENT,
-          eventData: {
-            deploymentId: 'deployment-123',
-            workflowName: 'holder-a',
-            input: [],
-          },
-        })
-      ).run;
-      const runB = (
-        await world.events.create(null, {
-          eventType: 'run_created',
-          specVersion: SPEC_VERSION_CURRENT,
-          eventData: {
-            deploymentId: 'deployment-123',
-            workflowName: 'holder-b',
-            input: [],
-          },
-        })
-      ).run;
-      if (!runA || !runB) {
-        throw new Error('expected runs');
+        });
       }
+
       const correlationA = createLockCorrelationId(runA.runId, 0);
       const correlationB = createLockCorrelationId(runB.runId, 0);
+      const correlationC = createLockCorrelationId(runC.runId, 0);
+      const correlationD = createLockCorrelationId(runD.runId, 0);
 
-      const first = await world.events.create(runA.runId, {
+      const first = await events.create(runA.runId, {
         eventType: 'lock_created',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: correlationA,
         eventData: {
           key: 'workflow:user:test',
-          definition: { concurrency: { max: 1 } },
+          definition: { concurrency: { max: 2 } },
           leaseTtlMs: 10_000,
         },
       });
-      const second = await world.events.create(runB.runId, {
+      const second = await events.create(runB.runId, {
         eventType: 'lock_created',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: correlationB,
         eventData: {
           key: 'workflow:user:test',
-          definition: { concurrency: { max: 1 } },
+          definition: { concurrency: { max: 2 } },
+          leaseTtlMs: 10_000,
+        },
+      });
+      const third = await events.create(runC.runId, {
+        eventType: 'lock_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: correlationC,
+        eventData: {
+          key: 'workflow:user:test',
+          definition: { concurrency: { max: 2 } },
+          leaseTtlMs: 10_000,
+        },
+      });
+      const fourth = await events.create(runD.runId, {
+        eventType: 'lock_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: correlationD,
+        eventData: {
+          key: 'workflow:user:test',
+          definition: { concurrency: { max: 2 } },
           leaseTtlMs: 10_000,
         },
       });
 
       expect(first.event?.eventType).toBe('lock_acquired');
-      expect(second.event?.eventType).toBe('lock_created');
+      expect(second.event?.eventType).toBe('lock_acquired');
+      expect(third.event?.eventType).toBe('lock_created');
+      expect(fourth.event?.eventType).toBe('lock_created');
 
-      const released = await world.events.create(runA.runId, {
+      await events.create(runB.runId, {
+        eventType: 'run_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { output: null },
+      });
+
+      const released = await events.create(runA.runId, {
         eventType: 'lock_release',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId: correlationA,
@@ -131,22 +173,236 @@ describe('local world limit retry timing', () => {
       if (!released.event || released.event.eventType !== 'lock_release') {
         throw new Error('expected lock_release event');
       }
-      expect(released.event.eventData?.nextWaiter).toMatchObject({
-        runId: runB.runId,
-        lockIndex: 0,
-        lockCorrelationId: correlationB,
+      expect(released.event.eventData?.promotedWaiters).toEqual([
+        expect.objectContaining({
+          runId: runC.runId,
+          lockIndex: 0,
+          lockCorrelationId: correlationC,
+        }),
+        expect.objectContaining({
+          runId: runD.runId,
+          lockIndex: 0,
+          lockCorrelationId: correlationD,
+        }),
+      ]);
+      expect(queue.queue).toHaveBeenCalledTimes(2);
+
+      for (const correlationId of [correlationC, correlationD]) {
+        const correlated = await events.listByCorrelationId({
+          correlationId,
+        });
+        expect(
+          correlated.data.some(
+            (event) => event.eventType === 'lock_waiter_queued'
+          )
+        ).toBe(true);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('compensates skipped or failed waiter wake-ups and recursively queues the next waiter', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'workflow-limits-'));
+    const runs = createRunsStorage(dir);
+    const queue = {
+      queue: vi
+        .fn()
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('queue failed'))
+        .mockResolvedValue(undefined),
+    };
+    const limits = createLimits(dir, { storage: { runs } });
+    const events = createEventsStorage(dir, undefined, {
+      getLimits: () => limits,
+      queue,
+      runs,
+    });
+
+    try {
+      const holderRun = await createRun(events, 'holder-a');
+      const terminalWaiterRun = await createRun(events, 'holder-b');
+      const liveWaiterRun = await createRun(events, 'holder-c');
+
+      for (const run of [holderRun, terminalWaiterRun, liveWaiterRun]) {
+        await events.create(run.runId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+      }
+
+      const holderCorrelation = createLockCorrelationId(holderRun.runId, 0);
+      const terminalCorrelation = createLockCorrelationId(
+        terminalWaiterRun.runId,
+        0
+      );
+      const liveCorrelation = createLockCorrelationId(liveWaiterRun.runId, 0);
+
+      await events.create(holderRun.runId, {
+        eventType: 'lock_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: holderCorrelation,
+        eventData: {
+          key: 'workflow:user:terminal-promoted',
+          definition: { concurrency: { max: 1 } },
+          leaseTtlMs: 10_000,
+        },
+      });
+      await events.create(terminalWaiterRun.runId, {
+        eventType: 'lock_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: terminalCorrelation,
+        eventData: {
+          key: 'workflow:user:terminal-promoted',
+          definition: { concurrency: { max: 1 } },
+          leaseTtlMs: 10_000,
+        },
+      });
+      await events.create(liveWaiterRun.runId, {
+        eventType: 'lock_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: liveCorrelation,
+        eventData: {
+          key: 'workflow:user:terminal-promoted',
+          definition: { concurrency: { max: 1 } },
+          leaseTtlMs: 10_000,
+        },
       });
 
-      const correlated = await world.events.listByCorrelationId({
-        correlationId: correlationB,
+      await events.create(terminalWaiterRun.runId, {
+        eventType: 'run_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: { output: null },
+      });
+
+      await events.create(holderRun.runId, {
+        eventType: 'lock_release',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: holderCorrelation,
+      });
+
+      expect(queue.queue).toHaveBeenCalledTimes(1);
+      expect(queue.queue).toHaveBeenCalledWith(
+        '__wkf_workflow_holder-c',
+        expect.objectContaining({
+          runId: liveWaiterRun.runId,
+          lockPreApproval: liveCorrelation,
+        }),
+        expect.objectContaining({
+          idempotencyKey: expect.any(String),
+        })
+      );
+
+      const terminalEvents = await events.listByCorrelationId({
+        correlationId: terminalCorrelation,
       });
       expect(
-        correlated.data.some(
+        terminalEvents.data.some(
+          (event) => event.eventType === 'lock_waiter_queued'
+        )
+      ).toBe(false);
+
+      const liveEvents = await events.listByCorrelationId({
+        correlationId: liveCorrelation,
+      });
+      expect(
+        liveEvents.data.some(
+          (event) => event.eventType === 'lock_waiter_queued'
+        )
+      ).toBe(true);
+      const failedHolderRun = await createRun(events, 'holder-d');
+      const failedFirstWaiterRun = await createRun(events, 'holder-e');
+      const failedSecondWaiterRun = await createRun(events, 'holder-f');
+
+      for (const run of [
+        failedHolderRun,
+        failedFirstWaiterRun,
+        failedSecondWaiterRun,
+      ]) {
+        await events.create(run.runId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+      }
+
+      const failedHolderCorrelation = createLockCorrelationId(
+        failedHolderRun.runId,
+        0
+      );
+      const failedFirstCorrelation = createLockCorrelationId(
+        failedFirstWaiterRun.runId,
+        0
+      );
+      const failedSecondCorrelation = createLockCorrelationId(
+        failedSecondWaiterRun.runId,
+        0
+      );
+
+      await events.create(failedHolderRun.runId, {
+        eventType: 'lock_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: failedHolderCorrelation,
+        eventData: {
+          key: 'workflow:user:queue-failure',
+          definition: { concurrency: { max: 1 } },
+          leaseTtlMs: 10_000,
+        },
+      });
+      await events.create(failedFirstWaiterRun.runId, {
+        eventType: 'lock_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: failedFirstCorrelation,
+        eventData: {
+          key: 'workflow:user:queue-failure',
+          definition: { concurrency: { max: 1 } },
+          leaseTtlMs: 10_000,
+        },
+      });
+      await events.create(failedSecondWaiterRun.runId, {
+        eventType: 'lock_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: failedSecondCorrelation,
+        eventData: {
+          key: 'workflow:user:queue-failure',
+          definition: { concurrency: { max: 1 } },
+          leaseTtlMs: 10_000,
+        },
+      });
+
+      await events.create(failedHolderRun.runId, {
+        eventType: 'lock_release',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: failedHolderCorrelation,
+      });
+
+      expect(queue.queue).toHaveBeenCalledTimes(3);
+      expect(queue.queue.mock.calls[1]?.[1]).toMatchObject({
+        runId: failedFirstWaiterRun.runId,
+        lockPreApproval: failedFirstCorrelation,
+      });
+      expect(queue.queue.mock.calls[2]?.[1]).toMatchObject({
+        runId: failedSecondWaiterRun.runId,
+        lockPreApproval: failedSecondCorrelation,
+      });
+
+      const firstEvents = await events.listByCorrelationId({
+        correlationId: failedFirstCorrelation,
+      });
+      expect(
+        firstEvents.data.some(
+          (event) => event.eventType === 'lock_waiter_queued'
+        )
+      ).toBe(false);
+
+      const secondEvents = await events.listByCorrelationId({
+        correlationId: failedSecondCorrelation,
+      });
+      expect(
+        secondEvents.data.some(
           (event) => event.eventType === 'lock_waiter_queued'
         )
       ).toBe(true);
     } finally {
-      await world.close?.();
       await rm(dir, { recursive: true, force: true });
     }
   });

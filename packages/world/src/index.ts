@@ -29,6 +29,7 @@ export {
   LimitLeaseSchema,
   LimitLockIdSchema,
   LimitNextWaiterSchema,
+  LimitPromotedWaiterSchema,
   LimitRateSchema,
   LimitReleaseResultSchema,
   LimitReleaseRequestSchema,

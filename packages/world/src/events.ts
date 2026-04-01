@@ -2,7 +2,7 @@ import { z } from 'zod';
 import {
   LimitDefinitionSchema,
   LimitLeaseSchema,
-  LimitNextWaiterSchema,
+  LimitPromotedWaiterSchema,
 } from './limits.js';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
@@ -241,7 +241,7 @@ const LockReleaseEventSchema = BaseEventSchema.extend({
       leaseId: z.string().min(1),
       key: z.string(),
       lockId: z.string(),
-      nextWaiter: LimitNextWaiterSchema.optional(),
+      promotedWaiters: z.array(LimitPromotedWaiterSchema).optional(),
     })
     .optional(),
 });

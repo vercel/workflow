@@ -142,8 +142,15 @@ export const LimitNextWaiterSchema = z.object({
 });
 export type LimitNextWaiter = z.infer<typeof LimitNextWaiterSchema>;
 
+export const LimitPromotedWaiterSchema = LimitNextWaiterSchema.extend({
+  leaseId: z.string().min(1),
+  key: LimitKeySchema,
+  lockId: LimitLockIdSchema,
+});
+export type LimitPromotedWaiter = z.infer<typeof LimitPromotedWaiterSchema>;
+
 export const LimitReleaseResultSchema = z.object({
-  nextWaiter: LimitNextWaiterSchema.optional(),
+  promotedWaiters: z.array(LimitPromotedWaiterSchema),
 });
 export type LimitReleaseResult = z.infer<typeof LimitReleaseResultSchema>;
 

@@ -14,7 +14,7 @@ import {
   LimitHeartbeatRequestSchema,
   type LimitLease,
   LimitLeaseSchema,
-  type LimitNextWaiter,
+  type LimitPromotedWaiter,
   type LimitReleaseResult,
   LimitReleaseRequestSchema,
   type Limits,
@@ -289,13 +289,19 @@ function parseHolderId(lockId: string): HolderTarget {
   return { kind: 'opaque' };
 }
 
-function toNextWaiter(holderId: string): LimitNextWaiter | undefined {
+function toPromotedWaiter(
+  holderId: string,
+  lease: Pick<LimitLease, 'leaseId' | 'key' | 'lockId'>
+): LimitPromotedWaiter | undefined {
   const parsedLockId = parseLockId(holderId);
   if (!parsedLockId) {
     return undefined;
   }
 
   return {
+    leaseId: lease.leaseId,
+    key: lease.key,
+    lockId: lease.lockId,
     runId: parsedLockId.runId,
     lockIndex: parsedLockId.lockIndex,
     wakeCorrelationId: createLockWakeCorrelationId(
@@ -405,7 +411,7 @@ export function createLimits(
   ): {
     keyState: KeyState;
     lease: LimitLease;
-    nextWaiter?: LimitNextWaiter;
+    promotedWaiter?: LimitPromotedWaiter;
   } => {
     const acquiredAt = new Date();
     const definition = {
@@ -443,8 +449,44 @@ export function createLimits(
     return {
       keyState,
       lease,
-      nextWaiter: toNextWaiter(waiter.lockId),
+      promotedWaiter: toPromotedWaiter(waiter.lockId, lease),
     };
+  };
+
+  const promoteEligibleWaiters = (
+    key: string,
+    keyState: KeyState
+  ): {
+    keyState: KeyState;
+    promotedWaiters: LimitPromotedWaiter[];
+  } => {
+    const promotedWaiters: LimitPromotedWaiter[] = [];
+
+    while (true) {
+      const headWaiter = keyState.waiters[0];
+      if (!headWaiter) {
+        break;
+      }
+
+      const concurrencyBlocked =
+        headWaiter.concurrencyMax !== null &&
+        keyState.leases.length >= headWaiter.concurrencyMax;
+      const rateBlocked =
+        headWaiter.rateCount !== null &&
+        keyState.tokens.length >= headWaiter.rateCount;
+
+      if (concurrencyBlocked || rateBlocked) {
+        break;
+      }
+
+      const promoted = promoteWaiter(key, keyState, headWaiter);
+      keyState = promoted.keyState;
+      if (promoted.promotedWaiter) {
+        promotedWaiters.push(promoted.promotedWaiter);
+      }
+    }
+
+    return { keyState, promotedWaiters };
   };
 
   return {
@@ -583,52 +625,43 @@ export function createLimits(
 
       return withStateLock(async (): Promise<LimitReleaseResult> => {
         const state = cloneState(await readState());
-        let nextWaiter: LimitNextWaiter | undefined;
+        const key =
+          parsed.key ??
+          Object.entries(state.keys).find(([, keyState]) =>
+            keyState.leases.some((lease) => lease.leaseId === parsed.leaseId)
+          )?.[0];
 
-        for (const [key, keyStateValue] of Object.entries(state.keys)) {
-          const beforeLeases = keyStateValue.leases.length;
-          const keyState = await pruneDeadHoldersAndWaiters(keyStateValue);
-          let capacityFreed = keyState.leases.length !== beforeLeases;
-          const beforeExplicitRelease = keyState.leases.length;
-          keyState.leases = keyState.leases.filter((lease) => {
-            if (lease.leaseId !== parsed.leaseId) return true;
-            if (parsed.key && lease.key !== parsed.key) return true;
-            if (parsed.lockId && lease.lockId !== parsed.lockId) {
-              return true;
-            }
-            return false;
-          });
-          capacityFreed ||= keyState.leases.length !== beforeExplicitRelease;
-
-          if (capacityFreed) {
-            const headWaiter = keyState.waiters[0];
-            if (headWaiter) {
-              const concurrencyBlocked =
-                headWaiter.concurrencyMax !== null &&
-                keyState.leases.length >= headWaiter.concurrencyMax;
-              const rateBlocked =
-                headWaiter.rateCount !== null &&
-                keyState.tokens.length >= headWaiter.rateCount;
-
-              if (!concurrencyBlocked && !rateBlocked) {
-                const promoted = promoteWaiter(key, keyState, headWaiter);
-                nextWaiter = promoted.nextWaiter;
-                state.keys[key] = promoted.keyState;
-              } else {
-                state.keys[key] = keyState;
-              }
-            } else {
-              state.keys[key] = keyState;
-            }
-          } else {
-            state.keys[key] = keyState;
-          }
-
-          deleteEmptyKey(state, key);
+        if (!key) {
+          return { promotedWaiters: [] };
         }
 
+        const keyStateValue = state.keys[key];
+        if (!keyStateValue) {
+          return { promotedWaiters: [] };
+        }
+
+        const beforeLeases = keyStateValue.leases.length;
+        let keyState = await pruneDeadHoldersAndWaiters(keyStateValue);
+        let capacityFreed = keyState.leases.length !== beforeLeases;
+        const beforeExplicitRelease = keyState.leases.length;
+        keyState.leases = keyState.leases.filter((lease) => {
+          if (lease.leaseId !== parsed.leaseId) return true;
+          if (parsed.key && lease.key !== parsed.key) return true;
+          if (parsed.lockId && lease.lockId !== parsed.lockId) {
+            return true;
+          }
+          return false;
+        });
+        capacityFreed ||= keyState.leases.length !== beforeExplicitRelease;
+
+        const promoted = capacityFreed
+          ? promoteEligibleWaiters(key, keyState)
+          : { keyState, promotedWaiters: [] };
+        state.keys[key] = promoted.keyState;
+        deleteEmptyKey(state, key);
+
         await writeState(state);
-        return { nextWaiter };
+        return { promotedWaiters: promoted.promotedWaiters };
       });
     },
 
