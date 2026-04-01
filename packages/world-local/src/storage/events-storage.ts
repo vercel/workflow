@@ -328,8 +328,11 @@ export function createEventsStorage(
       } else if (data.eventType === 'run_started') {
         // Reuse currentRun from validation (already read above)
         if (currentRun) {
-          // If already running, return the run directly without
-          // creating a duplicate event.
+          // If already running, return the run without inserting a
+          // duplicate event.  This makes run_started idempotent for
+          // concurrent invocations.  We omit preloaded events here
+          // because this is a rare race-condition path — the runtime
+          // falls back to getAllWorkflowRunEvents().
           if (currentRun.status === 'running') {
             return { run: currentRun };
           }

@@ -571,7 +571,12 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // Handle run_started event: update run status
       if (data.eventType === 'run_started') {
-        // If already running, return the run directly without event
+        // If the run is already running, return it without inserting a
+        // duplicate run_started event.  This makes run_started idempotent
+        // for concurrent invocations: replay is deterministic, so letting
+        // multiple callers proceed with the same run is safe.  We skip
+        // preloaded events here because this is a rare race-condition path
+        // — the runtime falls back to getAllWorkflowRunEvents().
         if (currentRun?.status === 'running') {
           const [fullRun] = await drizzle
             .select()
@@ -1201,7 +1206,11 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           .from(Schema.events)
           .where(eq(Schema.events.runId, effectiveRunId))
           .orderBy(Schema.events.eventId);
-        allEvents = eventRows.map((e) => EventSchema.parse(compact(e)));
+        allEvents = eventRows.map((e) => {
+          e.eventData ||= e.eventDataJson;
+          const parsed = EventSchema.parse(compact(e));
+          return stripEventDataRefs(parsed, resolveData);
+        });
       }
 
       return {
