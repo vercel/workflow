@@ -1,0 +1,289 @@
+---
+title: Observability Utilities
+description: Hydrate step I/O, parse display names, and decrypt workflow data using workflow/observability.
+type: reference
+summary: "Functions: hydrateResourceIO(), parseStepName(), parseWorkflowName(), parseClassName(), getEncryptionKeyForRun(), hydrateResourceIOWithKey()."
+prerequisites:
+  - /docs/api-reference/workflow-api/get-world
+related:
+  - /docs/api-reference/workflow-api/world/steps
+  - /docs/api-reference/workflow-api/world/runs
+keywords:
+  - workflow/observability
+  - hydrateResourceIO
+  - observabilityRevivers
+  - parseStepName
+  - parseWorkflowName
+  - parseClassName
+  - getEncryptionKeyForRun
+  - hydrateResourceIOWithKey
+  - data hydration
+  - devalue deserialization
+  - encryption decryption
+  - display name parsing
+---
+
+The `workflow/observability` module provides utilities for working with workflow data in observability and debugging tools. It includes functions to hydrate serialized step I/O, parse machine-readable names into display-friendly formats, and decrypt encrypted workflow data.
+
+## Import
+
+```typescript lineNumbers
+import { // [!code highlight]
+  hydrateResourceIO, // [!code highlight]
+  observabilityRevivers, // [!code highlight]
+  parseStepName, // [!code highlight]
+  parseWorkflowName, // [!code highlight]
+  parseClassName, // [!code highlight]
+} from "workflow/observability"; // [!code highlight]
+```
+
+## Data Hydration
+
+### hydrateResourceIO()
+
+Deserialize step or run data that was serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. This is required to display step input/output in your UI.
+
+```typescript lineNumbers
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+const step = await world.steps.get(runId, stepId);
+
+const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+console.log(hydrated.input); // Deserialized input data
+console.log(hydrated.output); // Deserialized output data
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `resource` | `Step \| WorkflowRun` | The step or run with serialized data |
+| `revivers` | `Revivers` | Reviver functions for deserialization. Use `observabilityRevivers` for standard use. |
+
+**Returns:** The resource with hydrated `input` and `output` fields.
+
+### observabilityRevivers
+
+A set of reviver functions that handle standard workflow serialization types (Date, Map, Set, Error, etc.).
+
+```typescript lineNumbers
+import { observabilityRevivers } from "workflow/observability";
+```
+
+## Name Parsing
+
+Workflow and step names are stored as machine-readable identifiers. These utilities extract display-friendly names.
+
+### parseStepName()
+
+Parse a machine-readable step name into its components.
+
+```typescript lineNumbers
+import { parseStepName } from "workflow/observability"; // [!code highlight]
+
+const parsed = parseStepName("step//./src/workflows/order//processPayment"); // [!code highlight]
+// parsed.shortName → "processPayment"
+// parsed.moduleSpecifier → "./src/workflows/order"
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `stepName` | `string` | The machine-readable step name |
+
+**Returns:** `{ shortName: string, moduleSpecifier: string } | null`
+
+### parseWorkflowName()
+
+Parse a machine-readable workflow name into its components.
+
+```typescript lineNumbers
+import { parseWorkflowName } from "workflow/observability"; // [!code highlight]
+
+const parsed = parseWorkflowName("workflow//./src/workflows/order//processOrder"); // [!code highlight]
+// parsed.shortName → "processOrder"
+// parsed.moduleSpecifier → "./src/workflows/order"
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `workflowName` | `string` | The machine-readable workflow name |
+
+**Returns:** `{ shortName: string, moduleSpecifier: string } | null`
+
+### parseClassName()
+
+Parse a machine-readable class name into its components.
+
+```typescript lineNumbers
+import { parseClassName } from "workflow/observability"; // [!code highlight]
+
+const parsed = parseClassName("class//./src/models//User"); // [!code highlight]
+// parsed.shortName → "User"
+// parsed.moduleSpecifier → "./src/models"
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `className` | `string` | The machine-readable class name |
+
+**Returns:** `{ shortName: string, moduleSpecifier: string } | null`
+
+## Encryption
+
+For workflows with encrypted step data, use these utilities to decrypt before hydrating.
+
+### getEncryptionKeyForRun()
+
+Retrieve the encryption key used for a specific workflow run.
+
+{/* @expect-error:2305 */}
+```typescript lineNumbers
+import { getEncryptionKeyForRun } from "workflow/observability"; // [!code highlight]
+
+const key = await getEncryptionKeyForRun(runId); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string` | The workflow run ID |
+
+**Returns:** Encryption key for the run
+
+### hydrateResourceIOWithKey()
+
+Hydrate step or run data using a decryption key. Use this instead of `hydrateResourceIO()` when data is encrypted.
+
+{/* @expect-error:2305,2724 */}
+```typescript lineNumbers
+import { // [!code highlight]
+  getEncryptionKeyForRun, // [!code highlight]
+  hydrateResourceIOWithKey, // [!code highlight]
+} from "workflow/observability"; // [!code highlight]
+
+const key = await getEncryptionKeyForRun(runId); // [!code highlight]
+const hydrated = hydrateResourceIOWithKey(step, key); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `resource` | `Step \| WorkflowRun` | The step or run with encrypted serialized data |
+| `key` | `EncryptionKey` | The encryption key from `getEncryptionKeyForRun()` |
+
+**Returns:** The resource with decrypted and hydrated `input` and `output` fields.
+
+## Examples
+
+### Hydrate Step Input and Output Data
+
+```typescript lineNumbers
+// app/api/workflow-steps/hydrate/route.ts
+import { getWorld } from "workflow/runtime";
+import { // [!code highlight]
+  hydrateResourceIO, // [!code highlight]
+  observabilityRevivers, // [!code highlight]
+  parseStepName, // [!code highlight]
+} from "workflow/observability"; // [!code highlight]
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+  const stepId = url.searchParams.get("stepId");
+
+  if (!runId || !stepId) {
+    return Response.json({ error: "runId and stepId required" }, { status: 400 });
+  }
+
+  const world = getWorld();
+  const step = await world.steps.get(runId, stepId);
+
+  const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+  const parsed = parseStepName(step.stepName);
+
+  return Response.json({
+    displayName: parsed?.shortName ?? step.stepName,
+    input: hydrated.input, // [!code highlight]
+    output: hydrated.output, // [!code highlight]
+  });
+}
+```
+
+### Decrypt and Hydrate Encrypted Step Data
+
+For teams with encryption enabled, step data must be decrypted before hydration:
+
+{/* @expect-error:2305,2724 */}
+```typescript lineNumbers
+// app/api/workflow-steps/decrypt/route.ts
+import { getWorld } from "workflow/runtime";
+import { // [!code highlight]
+  getEncryptionKeyForRun, // [!code highlight]
+  hydrateResourceIOWithKey, // [!code highlight]
+  parseStepName, // [!code highlight]
+} from "workflow/observability"; // [!code highlight]
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+  const stepId = url.searchParams.get("stepId");
+
+  if (!runId || !stepId) {
+    return Response.json({ error: "runId and stepId required" }, { status: 400 });
+  }
+
+  const world = getWorld();
+  const step = await world.steps.get(runId, stepId);
+
+  // Decrypt then hydrate // [!code highlight]
+  const key = await getEncryptionKeyForRun(runId); // [!code highlight]
+  const hydrated = hydrateResourceIOWithKey(step, key); // [!code highlight]
+
+  const parsed = parseStepName(step.stepName);
+
+  return Response.json({
+    displayName: parsed?.shortName ?? step.stepName,
+    input: hydrated.input,
+    output: hydrated.output,
+  });
+}
+```
+
+### Parse Display Names for a Run's Steps
+
+Build a progress dashboard with human-readable step names:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { parseStepName, parseWorkflowName } from "workflow/observability"; // [!code highlight]
+
+const world = getWorld();
+
+// Parse workflow name
+const run = await world.runs.get(runId, { resolveData: "none" });
+const workflowDisplay = parseWorkflowName(run.workflowName); // [!code highlight]
+console.log("Workflow:", workflowDisplay?.shortName); // [!code highlight]
+
+// Parse step names
+const steps = await world.steps.list({ runId, resolveData: "none" });
+for (const step of steps.data) {
+  const stepDisplay = parseStepName(step.stepName); // [!code highlight]
+  console.log(`  ${stepDisplay?.shortName}: ${step.status}`); // [!code highlight]
+}
+```
+
+## Related
+
+- [world.steps](/docs/api-reference/workflow-api/world/steps) — Query step data to hydrate
+- [world.runs](/docs/api-reference/workflow-api/world/runs) — Query run data to hydrate
+- [Serialization](/docs/foundations/serialization) — How workflow data is serialized

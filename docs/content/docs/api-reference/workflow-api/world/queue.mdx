@@ -1,0 +1,127 @@
+---
+title: world.queue
+description: Enqueue workflow runs and create queue handlers for background processing.
+type: reference
+summary: "Methods: getDeploymentId(), queue(), createQueueHandler(). Manage workflow run queuing and processing."
+prerequisites:
+  - /docs/api-reference/workflow-api/get-world
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/foundations/starting-workflows
+keywords:
+  - world.queue
+  - getDeploymentId
+  - queue
+  - createQueueHandler
+  - background processing
+  - enqueue workflow
+  - ValidQueueName
+---
+
+The `world.queue` interface provides access to workflow run queuing and processing. Use it to enqueue runs for background execution and create handlers to process queued items.
+
+## Import
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+const queue = world.queue; // [!code highlight]
+```
+
+## Methods
+
+### getDeploymentId()
+
+Get the current deployment ID. Useful for routing queue messages to the correct deployment.
+
+```typescript lineNumbers
+const deploymentId = await world.queue.getDeploymentId(); // [!code highlight]
+```
+
+**Returns:** `string` — The current deployment ID
+
+### queue()
+
+Enqueue a workflow run for background processing.
+
+```typescript lineNumbers
+const messageId = await world.queue.queue(name, message, opts); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `ValidQueueName` | The queue name |
+| `message` | `object` | The message payload to enqueue |
+| `opts` | `object` | Optional configuration |
+
+**Returns:** `MessageId`
+
+### createQueueHandler()
+
+Create a handler function for processing queued messages.
+
+```typescript lineNumbers
+const handler = world.queue.createQueueHandler(prefix, callback); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `prefix` | `string` | Queue name prefix to match |
+| `callback` | `function` | Handler function called for each queued message |
+
+**Returns:** Queue handler function
+
+## Examples
+
+### Enqueue a Workflow Run for Background Processing
+
+```typescript lineNumbers
+// app/api/workflow-queue/route.ts
+import { getWorld } from "workflow/runtime";
+
+export async function POST(req: Request) {
+  const { workflowName, input } = await req.json();
+
+  const world = getWorld();
+  const messageId = await world.queue.queue(workflowName, { // [!code highlight]
+    input,
+    priority: "normal",
+  }); // [!code highlight]
+
+  return Response.json({ messageId });
+}
+```
+
+### Create a Queue Handler for Processing
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+
+const handler = world.queue.createQueueHandler("my-workflows", async (message) => { // [!code highlight]
+  console.log("Processing:", message);
+  // Handle the queued workflow message
+}); // [!code highlight]
+```
+
+### Get Current Deployment ID
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+const deploymentId = await world.queue.getDeploymentId(); // [!code highlight]
+console.log("Running on deployment:", deploymentId);
+```
+
+## Related
+
+- [start()](/docs/api-reference/workflow-api/start) — Higher-level API for starting workflow runs
+- [Starting Workflows](/docs/foundations/starting-workflows) — Core concepts for workflow invocation
+- [world.runs](/docs/api-reference/workflow-api/world/runs) — Inspect queued and running workflows

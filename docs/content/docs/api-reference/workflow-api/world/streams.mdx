@@ -1,0 +1,152 @@
+---
+title: Streams
+description: Read, write, and manage real-time data streams for workflow runs.
+type: reference
+summary: "Methods: writeToStream(), readFromStream(), closeStream(), listStreamsByRunId(). Stream methods live directly on the world object."
+prerequisites:
+  - /docs/api-reference/workflow-api/get-world
+related:
+  - /docs/foundations/streaming
+  - /docs/api-reference/workflow/get-writable
+keywords:
+  - writeToStream
+  - readFromStream
+  - closeStream
+  - listStreamsByRunId
+  - Streamer interface
+  - real-time streaming
+  - stream lifecycle
+---
+
+Stream methods live directly on the `world` object returned by `getWorld()`. Use them to write chunks, read streams, and manage stream lifecycle outside of the standard `getWritable()` pattern.
+
+<Callout type="info">
+  For most streaming use cases, use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside steps. Direct stream methods are for advanced scenarios like building custom stream consumers or managing streams from outside a workflow.
+</Callout>
+
+## Import
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld(); // [!code highlight]
+// Stream methods are called directly on world — e.g. world.writeToStream()
+```
+
+## Methods
+
+### writeToStream()
+
+Write a data chunk to a named stream for a workflow run.
+
+```typescript lineNumbers
+await world.writeToStream("default", runId, chunk); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | The stream name |
+| `runId` | `string` | The workflow run ID |
+| `chunk` | `string \| Uint8Array` | Data to write to the stream |
+
+### readFromStream()
+
+Read data from a named stream as a `ReadableStream`. Returns a live stream that waits for new chunks in real time.
+
+```typescript lineNumbers
+const readable = await world.readFromStream("default"); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | The stream name |
+| `startIndex` | `number` | Optional starting index for partial reads. Negative values read from the tail (e.g. `-3` starts 3 chunks from the end). |
+
+**Returns:** `ReadableStream<Uint8Array>`
+
+### closeStream()
+
+Close a stream when done writing.
+
+```typescript lineNumbers
+await world.closeStream("default", runId); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | The stream name |
+| `runId` | `string` | The workflow run ID |
+
+### listStreamsByRunId()
+
+List all stream names associated with a workflow run.
+
+```typescript lineNumbers
+const streamNames = await world.listStreamsByRunId(runId); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string` | The workflow run ID |
+
+**Returns:** `string[]` — Array of stream names
+
+## Examples
+
+### List All Streams for a Workflow Run
+
+```typescript lineNumbers
+// app/api/workflow-streams/route.ts
+import { getWorld } from "workflow/runtime";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+
+  if (!runId) {
+    return Response.json({ error: "runId required" }, { status: 400 });
+  }
+
+  const world = getWorld();
+  const streamNames = await world.listStreamsByRunId(runId); // [!code highlight]
+
+  return Response.json({ streams: streamNames });
+}
+```
+
+### Read a Stream as a Response
+
+```typescript lineNumbers
+// app/api/workflow-streams/read/route.ts
+import { getWorld } from "workflow/runtime";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const streamName = url.searchParams.get("name");
+
+  if (!streamName) {
+    return Response.json({ error: "name required" }, { status: 400 });
+  }
+
+  const world = getWorld();
+  const readable = await world.readFromStream(streamName); // [!code highlight]
+
+  return new Response(readable, {
+    headers: { "Content-Type": "application/octet-stream" },
+  });
+}
+```
+
+## Related
+
+- [Streaming](/docs/foundations/streaming) — Core concepts for streaming data from workflows
+- [getWritable()](/docs/api-reference/workflow/get-writable) — The standard way to write to streams from within steps
+- [world.runs](/docs/api-reference/workflow-api/world/runs) — List runs that may have associated streams

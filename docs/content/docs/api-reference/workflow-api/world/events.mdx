@@ -1,0 +1,227 @@
+---
+title: world.events
+description: Query the append-only event log for workflow state changes, audit trails, and run cancellation.
+type: reference
+summary: "Methods: create(), get(), list(), listByCorrelationId(). The event log is the source of truth for all workflow state."
+prerequisites:
+  - /docs/api-reference/workflow-api/get-world
+related:
+  - /docs/api-reference/workflow-api/world/runs
+  - /docs/api-reference/workflow-api/world/steps
+keywords:
+  - world.events
+  - world.events.create
+  - world.events.get
+  - world.events.list
+  - world.events.listByCorrelationId
+  - event log
+  - audit trail
+  - run_cancelled
+  - event types
+  - correlation ID
+  - cancel workflow run
+---
+
+The `world.events` interface provides access to the append-only event log that drives all workflow state. Runs, steps, and hooks are materialized views derived from events. Use this interface for audit trails, debugging, and programmatic run cancellation.
+
+## Import
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+const events = world.events; // [!code highlight]
+```
+
+## Methods
+
+### create()
+
+Create a new event for a workflow run. Most commonly used to cancel a run.
+
+```typescript lineNumbers
+await world.events.create(runId, { // [!code highlight]
+  eventType: "run_cancelled", // [!code highlight]
+}); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string` | The workflow run ID |
+| `data` | `object` | Event data including `eventType` |
+| `params` | `object` | Optional parameters |
+
+**Returns:** `Event`
+
+### get()
+
+Retrieve a single event by run ID and event ID.
+
+```typescript lineNumbers
+const event = await world.events.get(runId, eventId); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string` | The workflow run ID |
+| `eventId` | `string` | The event ID |
+| `params` | `object` | Optional parameters |
+
+**Returns:** `Event`
+
+### list()
+
+List events with cursor pagination.
+
+```typescript lineNumbers
+const result = await world.events.list({ // [!code highlight]
+  runId,
+  pagination: { cursor },
+}); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.runId` | `string` | Filter events by run ID |
+| `params.pagination.cursor` | `string` | Cursor for the next page |
+
+**Returns:** `{ data: Event[], cursor?: string }`
+
+### listByCorrelationId()
+
+List events that share a correlation ID, useful for tracing related events across runs.
+
+```typescript lineNumbers
+const result = await world.events.listByCorrelationId({ // [!code highlight]
+  correlationId: "order-123",
+}); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.correlationId` | `string` | The correlation ID to filter by |
+| `params.pagination.cursor` | `string` | Cursor for the next page |
+
+**Returns:** `{ data: Event[], cursor?: string }`
+
+## Event Types
+
+Events are grouped by the entity they affect:
+
+### Run Events
+
+| Event Type | Description |
+|-----------|-------------|
+| `run_created` | Workflow run was created |
+| `run_started` | Workflow run execution began |
+| `run_completed` | Workflow run completed successfully |
+| `run_failed` | Workflow run failed with an error |
+| `run_cancelled` | Workflow run was cancelled |
+
+### Step Events
+
+| Event Type | Description |
+|-----------|-------------|
+| `step_created` | Step was created |
+| `step_started` | Step execution began |
+| `step_completed` | Step completed successfully |
+| `step_failed` | Step failed with an error |
+| `step_retrying` | Step scheduled for retry |
+
+### Hook Events
+
+| Event Type | Description |
+|-----------|-------------|
+| `hook_created` | Hook was created (workflow paused) |
+| `hook_received` | Hook received a payload |
+| `hook_disposed` | Hook was disposed (workflow reached terminal state) |
+| `hook_conflict` | Hook token conflict detected |
+
+### Wait Events
+
+| Event Type | Description |
+|-----------|-------------|
+| `wait_created` | Workflow entered a wait state (e.g., `sleep()`) |
+| `wait_completed` | Wait state completed |
+
+<Callout type="info">
+  Events are the append-only source of truth for all workflow state. `WorkflowRun`, `Step`, and `Hook` objects are materialized views derived from these events.
+</Callout>
+
+## Examples
+
+### List Events for a Run as Audit Trail
+
+```typescript lineNumbers
+// app/api/workflow-events/route.ts
+import { getWorld } from "workflow/runtime";
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+
+  if (!runId) {
+    return Response.json({ error: "runId required" }, { status: 400 });
+  }
+
+  const world = getWorld();
+  const events = await world.events.list({ runId }); // [!code highlight]
+
+  return Response.json(events);
+}
+```
+
+### Cancel a Run via Event Creation
+
+Cancelling a run is done by creating a `run_cancelled` event:
+
+```typescript lineNumbers
+// app/api/workflow-runs/cancel/route.ts
+import { getWorld } from "workflow/runtime";
+
+export async function POST(req: Request) {
+  const { runId } = await req.json();
+
+  const world = getWorld();
+  await world.events.create(runId, { // [!code highlight]
+    eventType: "run_cancelled", // [!code highlight]
+  }); // [!code highlight]
+
+  return Response.json({ cancelled: true });
+}
+```
+
+<Callout type="info">
+  `world.runs.cancel(runId)` is a convenience wrapper around this event creation pattern. Use `world.events.create()` directly when you need to attach custom data to the cancellation event.
+</Callout>
+
+### List Events by Correlation ID
+
+Trace related events across workflow runs using a shared correlation ID:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+const events = await world.events.listByCorrelationId({ // [!code highlight]
+  correlationId: "order-123", // [!code highlight]
+}); // [!code highlight]
+
+for (const event of events.data) {
+  console.log(event.eventType, event.runId, event.createdAt);
+}
+```
+
+## Related
+
+- [world.runs](/docs/api-reference/workflow-api/world/runs) — Inspect runs (materialized from events)
+- [world.steps](/docs/api-reference/workflow-api/world/steps) — Inspect steps (materialized from events)
+- [world.hooks](/docs/api-reference/workflow-api/world/hooks) — Inspect hooks (materialized from events)

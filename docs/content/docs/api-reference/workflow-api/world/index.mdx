@@ -1,0 +1,67 @@
+---
+title: World SDK
+description: Low-level API for inspecting and managing workflow runs, steps, events, hooks, streams, and queues.
+type: overview
+summary: Access workflow infrastructure directly via getWorld() for building observability dashboards, admin tools, and custom integrations.
+prerequisites:
+  - /docs/api-reference/workflow-api/get-world
+keywords:
+  - getWorld
+  - World SDK
+  - workflow runtime
+  - observability dashboard
+  - admin panel
+  - workflow management
+---
+
+The World SDK provides direct access to workflow infrastructure — runs, steps, events, hooks, streams, and queues. Use it to build observability dashboards, admin panels, debugging tools, and custom workflow management logic.
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld(); // [!code highlight]
+```
+
+## Entities
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-api/world/runs" title="world.runs">
+        List, filter, and inspect workflow runs with pagination and status filtering.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/steps" title="world.steps">
+        List and inspect step execution data including input/output hydration.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/hooks" title="world.hooks">
+        Look up hooks by ID or token for webhook resume flows.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/events" title="world.events">
+        Query the append-only event log — the source of truth for all workflow state changes.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/streams" title="Streams">
+        Read, write, and manage real-time data streams for workflow runs.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/queue" title="world.queue">
+        Enqueue workflow runs and create queue handlers for processing.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/observability" title="Observability Utilities">
+        Hydrate step I/O, parse display names, and decrypt workflow data.
+    </Card>
+</Cards>
+
+<Callout type="info">
+  The World SDK is the low-level foundation that higher-level functions like [`getRun()`](/docs/api-reference/workflow-api/get-run) and [`start()`](/docs/api-reference/workflow-api/start) are built on. Use it when you need capabilities beyond what those functions provide.
+</Callout>
+
+## Data Hydration
+
+Step input/output data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. To display this data in your UI, use the hydration utilities from `workflow/observability`:
+
+```typescript lineNumbers
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]
+
+const step = await world.steps.get(runId, stepId);
+const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+console.log(hydrated.input, hydrated.output);
+```
+
+See [Observability Utilities](/docs/api-reference/workflow-api/world/observability) for the full API.
