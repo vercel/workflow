@@ -4,11 +4,6 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { classifyRunError } from './classify-error.js';
-import {
-  MAX_QUEUE_DELIVERIES,
-  REPLAY_TIMEOUT_MS,
-} from './runtime/constants.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import {
   type Event,
@@ -16,9 +11,14 @@ import {
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
 } from '@workflow/world';
+import { classifyRunError } from './classify-error.js';
 import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import {
+  MAX_QUEUE_DELIVERIES,
+  REPLAY_TIMEOUT_MS,
+} from './runtime/constants.js';
 import {
   getAllWorkflowRunEvents,
   getQueueOverhead,
@@ -166,7 +166,7 @@ export function workflowEntrypoint(
 
       // --- Replay timeout guard ---
       // If the replay takes longer than the timeout, fail the run and exit.
-      // This must be lower than the function's maxDuration (180s) to ensure
+      // This must be lower than the function's maxDuration to ensure
       // the failure is recorded before the platform kills the function.
       const replayTimeout = setTimeout(async () => {
         runtimeLogger.error('Workflow replay exceeded timeout', {
