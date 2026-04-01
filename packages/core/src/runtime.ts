@@ -168,32 +168,37 @@ export function workflowEntrypoint(
       // If the replay takes longer than the timeout, fail the run and exit.
       // This must be lower than the function's maxDuration to ensure
       // the failure is recorded before the platform kills the function.
-      const replayTimeout = setTimeout(async () => {
-        runtimeLogger.error('Workflow replay exceeded timeout', {
-          workflowRunId: runId,
-          timeoutMs: REPLAY_TIMEOUT_MS,
-        });
-        try {
-          const world = getWorld();
-          await world.events.create(
-            runId,
-            {
-              eventType: 'run_failed',
-              specVersion: SPEC_VERSION_CURRENT,
-              eventData: {
-                error: {
-                  message: `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s)`,
+      let replayTimeout: NodeJS.Timeout | undefined;
+      if (process.env.VERCEL_URL !== undefined) {
+        replayTimeout = setTimeout(async () => {
+          runtimeLogger.error('Workflow replay exceeded timeout', {
+            workflowRunId: runId,
+            timeoutMs: REPLAY_TIMEOUT_MS,
+          });
+          try {
+            const world = getWorld();
+            await world.events.create(
+              runId,
+              {
+                eventType: 'run_failed',
+                specVersion: SPEC_VERSION_CURRENT,
+                eventData: {
+                  error: {
+                    message: `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s)`,
+                  },
+                  errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
                 },
-                errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
               },
-            },
-            { requestId }
-          );
-        } catch {
-          // Best effort — process exits regardless
-        }
-        process.exit(1);
-      }, REPLAY_TIMEOUT_MS);
+              { requestId }
+            );
+          } catch {
+            // Best effort — process exits regardless
+          }
+          // Note that this also prevents the runtime to acking the queue message,
+          // so the queue will call back once, after which a 410 will get it to exit early.
+          process.exit(1);
+        }, REPLAY_TIMEOUT_MS);
+      }
 
       // Invoke user workflow within the propagated trace context and baggage
       return await withTraceContext(traceContext, async () => {
@@ -560,7 +565,9 @@ export function workflowEntrypoint(
           }
         ); // End withWorkflowBaggage
       }).finally(() => {
-        clearTimeout(replayTimeout);
+        if (replayTimeout) {
+          clearTimeout(replayTimeout);
+        }
       }); // End withTraceContext
     }
   );
