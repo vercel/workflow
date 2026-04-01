@@ -1,4 +1,3 @@
-import type { NextConfig } from '@workflow/builders';
 import { constants } from 'node:fs';
 import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
@@ -24,8 +23,6 @@ export async function getNextBuilderEager() {
   )) as typeof import('@workflow/builders');
 
   class NextBuilder extends BaseBuilderClass {
-    protected declare config: NextConfig;
-
     async build() {
       const outputDir = await this.findAppDirectory();
       const workflowGeneratedDir = join(outputDir, '.well-known/workflow/v1');

@@ -1,4 +1,3 @@
-import type { NextConfig } from '@workflow/builders';
 import { createHash } from 'node:crypto';
 import { constants, existsSync, realpathSync } from 'node:fs';
 import {
@@ -66,8 +65,6 @@ export async function getNextBuilderDeferred() {
   )) as typeof import('@workflow/builders');
 
   class NextDeferredBuilder extends BaseBuilderClass {
-    protected declare config: NextConfig;
-
     private socketIO?: SocketIO;
     private readonly discoveredWorkflowFiles = new Set<string>();
     private readonly discoveredStepFiles = new Set<string>();
@@ -674,12 +671,9 @@ export async function getNextBuilderDeferred() {
       }
 
       await this.loadWorkflowsCache();
-      // Only perform eager discovery when dirs are entrypoints (default behavior).
-      // When user specifies explicit workflow directories (dirsAreEntrypoints: false),
-      // skip eager discovery and rely on loader socket notifications instead.
-      if (this.config.dirsAreEntrypoints) {
-        await this.loadDiscoveredEntriesFromInputGraph();
-      }
+      // In deferred mode, skip eager discovery entirely.
+      // Workflows are discovered on-demand via loader socket notifications.
+      // Eager discovery only happens in eager mode (builder-eager.ts).
       this.cacheInitialized = true;
     }
 
