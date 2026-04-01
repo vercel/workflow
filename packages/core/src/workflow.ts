@@ -7,7 +7,11 @@ import {
 import { withResolvers } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
-import type { Event, WorkflowRun } from '@workflow/world';
+import {
+  createLimitsNotImplementedError,
+  type Event,
+  type WorkflowRun,
+} from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import type { CryptoKey } from './encryption.js';
@@ -196,7 +200,11 @@ export async function runWorkflow(
 
     const useStep = createUseStep(workflowContext);
     const createHook = createCreateHook(workflowContext);
-    const lock = createLock(workflowContext);
+    const lock = isVercel
+      ? async () => {
+          throw createLimitsNotImplementedError();
+        }
+      : createLock(workflowContext);
     const sleep = createSleep(workflowContext);
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work

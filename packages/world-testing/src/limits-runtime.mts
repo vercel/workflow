@@ -83,6 +83,10 @@ export interface LimitsRuntimeHarness {
     userId: string,
     leaseTtlMs: number
   ): Promise<[LeakedLockResult, WorkflowOnlyLockResult]>;
+  runWorkflowTerminalHolderRecovery(
+    userId: string,
+    leaseTtlMs: number
+  ): Promise<[LeakedLockResult, WorkflowOnlyLockResult]>;
   runLeakedKeyExpiredLeaseRecovery(
     userId: string,
     leaseTtlMs: number
@@ -204,7 +208,7 @@ export function createLimitsRuntimeSuite(
       ).toBeLessThan(4_000);
     });
 
-    it('reclaims expired leaked workflow locks without manual cleanup', async () => {
+    it('reclaims terminal workflow-held locks on workflow keys', async () => {
       const harness = await createHarness();
       const leaseTtlMs = 1_250;
       const [resultA, resultB] = await harness.runWorkflowExpiredLeaseRecovery(
@@ -215,12 +219,26 @@ export function createLimitsRuntimeSuite(
       expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
         resultA.workflowCompletedAt
       );
-      expect(
-        resultB.workflowLockAcquiredAt - resultA.lockAcquiredAt
-      ).toBeGreaterThanOrEqual(leaseTtlMs - 100);
     });
 
-    it('reclaims expired leaked locks on arbitrary keys without manual cleanup', async () => {
+    it('reclaims terminal workflow holder leases promptly before ttl expiry', async () => {
+      const harness = await createHarness();
+      const leaseTtlMs = 30_000;
+      const [resultA, resultB] =
+        await harness.runWorkflowTerminalHolderRecovery(
+          'terminal-holder-user',
+          leaseTtlMs
+        );
+
+      expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
+        resultA.workflowCompletedAt
+      );
+      expect(
+        resultB.workflowLockAcquiredAt - resultA.lockAcquiredAt
+      ).toBeLessThan(leaseTtlMs - 5_000);
+    });
+
+    it('reclaims terminal workflow-held locks on arbitrary keys', async () => {
       const harness = await createHarness();
       const leaseTtlMs = 1_250;
       const [resultA, resultB] = await harness.runLeakedKeyExpiredLeaseRecovery(
@@ -231,9 +249,6 @@ export function createLimitsRuntimeSuite(
       expect(resultB.acquiredAt).toBeGreaterThanOrEqual(
         resultA.workflowCompletedAt
       );
-      expect(
-        resultB.acquiredAt - resultA.lockAcquiredAt
-      ).toBeGreaterThanOrEqual(leaseTtlMs - 100);
     });
 
     it('keeps mixed concurrency and rate waiters blocked until the rate window expires', async () => {

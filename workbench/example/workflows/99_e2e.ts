@@ -307,6 +307,7 @@ export async function workflowLockContentionWorkflow(
     });
     step = await serializedLimitStep(userId, holdMs);
   }
+  const stepCallLockReleasedAt = Date.now();
   await workflowLock.dispose();
   const workflowLockReleasedAt = Date.now();
 
@@ -315,7 +316,7 @@ export async function workflowLockContentionWorkflow(
     workflowLockAcquiredAt,
     workflowLockReleasedAt,
     stepCallLockAcquiredAt: step.acquiredAt,
-    stepCallLockReleasedAt: step.releasedAt,
+    stepCallLockReleasedAt,
   };
 }
 

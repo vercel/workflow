@@ -726,6 +726,148 @@ export function createLimitsContractSuite(
       }
     });
 
+    it('reclaims a terminal workflow holder lease before its ttl expires', async () => {
+      const harness = await createHarness();
+      try {
+        if (!harness.storage) {
+          throw new Error('storage is required for workflow holder liveness');
+        }
+
+        const terminalRun = await createRun(harness.storage, 'terminal-holder');
+        await harness.storage.events.create(terminalRun.runId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+        const waiterRun = await createRun(harness.storage, 'waiter-holder');
+        await harness.storage.events.create(waiterRun.runId, {
+          eventType: 'run_started',
+          specVersion: SPEC_VERSION_CURRENT,
+        });
+
+        const acquired = await harness.limits.acquire({
+          key: 'workflow:user:terminal-holder',
+          runId: terminalRun.runId,
+          lockIndex: 0,
+          definition: { concurrency: { max: 1 } },
+          leaseTtlMs: 60_000,
+        });
+        expect(acquired.status).toBe('acquired');
+        if (acquired.status !== 'acquired') {
+          throw new Error('expected acquisition');
+        }
+
+        await harness.storage.events.create(terminalRun.runId, {
+          eventType: 'run_completed',
+          specVersion: SPEC_VERSION_CURRENT,
+          eventData: { output: null },
+        });
+
+        const promoted = await harness.limits.acquire({
+          key: 'workflow:user:terminal-holder',
+          runId: waiterRun.runId,
+          lockIndex: 0,
+          definition: { concurrency: { max: 1 } },
+          leaseTtlMs: 5_000,
+        });
+
+        expect(promoted.status).toBe('acquired');
+      } finally {
+        await harness.close?.();
+      }
+    });
+
+    it('prunes terminal holders during release before promoting the next waiter', async () => {
+      const harness = await createHarness();
+      try {
+        if (!harness.storage) {
+          throw new Error('storage is required for workflow holder liveness');
+        }
+
+        const liveRun = await createRun(harness.storage, 'live-holder');
+        const deadRunA = await createRun(harness.storage, 'dead-holder-a');
+        const deadRunB = await createRun(harness.storage, 'dead-holder-b');
+        const waiterRun = await createRun(harness.storage, 'waiter-holder');
+
+        for (const run of [liveRun, deadRunA, deadRunB, waiterRun]) {
+          await harness.storage.events.create(run.runId, {
+            eventType: 'run_started',
+            specVersion: SPEC_VERSION_CURRENT,
+          });
+        }
+
+        const key = 'workflow:user:terminal-holder-release';
+        const definition = { concurrency: { max: 3 } } as const;
+        const acquiredLive = await harness.limits.acquire({
+          key,
+          runId: liveRun.runId,
+          lockIndex: 0,
+          definition,
+          leaseTtlMs: 60_000,
+        });
+        const acquiredDeadA = await harness.limits.acquire({
+          key,
+          runId: deadRunA.runId,
+          lockIndex: 0,
+          definition,
+          leaseTtlMs: 60_000,
+        });
+        const acquiredDeadB = await harness.limits.acquire({
+          key,
+          runId: deadRunB.runId,
+          lockIndex: 0,
+          definition,
+          leaseTtlMs: 60_000,
+        });
+
+        expect(acquiredLive.status).toBe('acquired');
+        expect(acquiredDeadA.status).toBe('acquired');
+        expect(acquiredDeadB.status).toBe('acquired');
+        if (
+          acquiredLive.status !== 'acquired' ||
+          acquiredDeadA.status !== 'acquired' ||
+          acquiredDeadB.status !== 'acquired'
+        ) {
+          throw new Error('expected acquisition');
+        }
+
+        const blockedWaiter = await harness.limits.acquire({
+          key,
+          runId: waiterRun.runId,
+          lockIndex: 0,
+          definition,
+          leaseTtlMs: 5_000,
+        });
+        expect(blockedWaiter.status).toBe('blocked');
+
+        for (const run of [deadRunA, deadRunB]) {
+          await harness.storage.events.create(run.runId, {
+            eventType: 'run_completed',
+            specVersion: SPEC_VERSION_CURRENT,
+            eventData: { output: null },
+          });
+        }
+
+        const released = await harness.limits.release(
+          releaseRequest(acquiredLive.lease)
+        );
+        expect(released.nextWaiter).toMatchObject({
+          runId: waiterRun.runId,
+          lockIndex: 0,
+        });
+
+        const promoted = await harness.limits.acquire({
+          key,
+          runId: waiterRun.runId,
+          lockIndex: 0,
+          definition,
+          leaseTtlMs: 5_000,
+        });
+        expect(promoted.status).toBe('acquired');
+      } finally {
+        await harness.close?.();
+      }
+    });
+
     it('does not duplicate a replayed blocked holder waiter or lease', async () => {
       const harness = await createHarness();
       try {

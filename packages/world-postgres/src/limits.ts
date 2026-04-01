@@ -270,7 +270,7 @@ async function isHolderLive(tx: Db, holderId: string): Promise<boolean> {
     .where(eq(Schema.runs.runId, parsedLockId.runId))
     .limit(1)) as Pick<typeof Schema.runs.$inferSelect, 'status'>[];
 
-  return !!run && !['completed', 'failed', 'cancelled'].includes(run.status);
+  return !run || !['completed', 'failed', 'cancelled'].includes(run.status);
 }
 
 async function pruneDeadWaiters(tx: Db, key: string): Promise<void> {
@@ -287,6 +287,24 @@ async function pruneDeadWaiters(tx: Db, key: string): Promise<void> {
       await tx
         .delete(Schema.limitWaiters)
         .where(eq(Schema.limitWaiters.waiterId, waiter.waiterId));
+    }
+  }
+}
+
+async function pruneDeadHolders(tx: Db, key: string): Promise<void> {
+  const leases = await tx
+    .select({
+      leaseId: Schema.limitLeases.leaseId,
+      holderId: Schema.limitLeases.holderId,
+    })
+    .from(Schema.limitLeases)
+    .where(eq(Schema.limitLeases.limitKey, key));
+
+  for (const lease of leases) {
+    if (!(await isHolderLive(tx, lease.holderId))) {
+      await tx
+        .delete(Schema.limitLeases)
+        .where(eq(Schema.limitLeases.leaseId, lease.leaseId));
     }
   }
 }
@@ -404,6 +422,7 @@ export function createLimits(
       return drizzle.transaction(async (tx) => {
         await lockLimitKey(tx, parsed.key);
         await pruneExpired(tx, parsed.key);
+        await pruneDeadHolders(tx, parsed.key);
         await pruneDeadWaiters(tx, parsed.key);
 
         const state = await getActiveState(tx, parsed.key);
@@ -558,7 +577,10 @@ export function createLimits(
 
         if (key) {
           await lockLimitKey(tx, key);
+          await pruneExpired(tx, key);
         }
+
+        const beforeState = key ? await getActiveState(tx, key) : undefined;
 
         let where = eq(Schema.limitLeases.leaseId, parsed.leaseId);
         if (parsed.key) {
@@ -568,25 +590,24 @@ export function createLimits(
           where = and(where, eq(Schema.limitLeases.holderId, parsed.lockId))!;
         }
 
-        const [deleted] = await tx
-          .delete(Schema.limitLeases)
-          .where(where)
-          .returning({
-            limitKey: Schema.limitLeases.limitKey,
-            holderId: Schema.limitLeases.holderId,
-          });
+        await tx.delete(Schema.limitLeases).where(where).returning({
+          limitKey: Schema.limitLeases.limitKey,
+          holderId: Schema.limitLeases.holderId,
+        });
 
-        if (deleted?.limitKey) {
-          await pruneExpired(tx, deleted.limitKey);
-          await pruneDeadWaiters(tx, deleted.limitKey);
-          const state = await getActiveState(tx, deleted.limitKey);
+        if (key) {
+          await pruneDeadHolders(tx, key);
+          await pruneDeadWaiters(tx, key);
+          const state = await getActiveState(tx, key);
           const headWaiter = state.waiters[0];
+          const capacityFreed =
+            (beforeState?.leases.length ?? 0) > state.leases.length;
 
-          if (headWaiter) {
+          if (headWaiter && capacityFreed) {
             const definition = state.keyRow && definitionFromRow(state.keyRow);
             if (!definition) {
               throw new WorkflowWorldError(
-                `Missing canonical definition for key "${deleted.limitKey}"`
+                `Missing canonical definition for key "${key}"`
               );
             }
             const concurrencyBlocked =
@@ -599,7 +620,7 @@ export function createLimits(
             if (!concurrencyBlocked && !rateBlocked) {
               const promoted = await promoteWaiter(
                 tx,
-                deleted.limitKey,
+                key,
                 headWaiter,
                 definition
               );
@@ -614,7 +635,7 @@ export function createLimits(
           ) {
             await tx
               .delete(Schema.limitKeys)
-              .where(eq(Schema.limitKeys.limitKey, deleted.limitKey));
+              .where(eq(Schema.limitKeys.limitKey, key));
           }
         }
 

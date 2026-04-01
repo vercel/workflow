@@ -45,7 +45,7 @@ semantics across implemented worlds. That shared contract includes:
 - same-holder lease reuse
 - serialization of concurrent acquires for a single key
 - FIFO waiter promotion per key
-- pruning cancelled workflow waiters
+- pruning terminal workflow holders and waiters
 - blocked acquisitions not consuming execution concurrency
 - prompt wake-up with delayed fallback replay
 
@@ -201,10 +201,15 @@ Important details:
 
 - FIFO is per key, not global across all limit keys
 - promotion order is based on waiter creation order
+- terminal holders are pruned before capacity decisions
 - dead or terminal waiters are pruned before promotion
 - a live waiter may still be skipped if it is no longer eligible when promotion runs
 - releasing a lease or reclaiming an expired lease can both trigger promotion
 - rate-window expiry can also make the head waiter eligible again
+
+Implemented worlds currently reclaim terminal holders opportunistically when a
+key is touched, so completed, failed, or cancelled workflows do not hold
+concurrency capacity until lease TTL expiry.
 
 This gives deterministic and inspectable fairness for a key without requiring a
 global scheduler.

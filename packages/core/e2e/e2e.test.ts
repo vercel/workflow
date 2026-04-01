@@ -301,6 +301,21 @@ describe('e2e', () => {
           const waiterResult = await waiterRun.returnValue;
           return [leakedResult, waiterResult];
         },
+        async runWorkflowTerminalHolderRecovery(userId, leaseTtlMs) {
+          const leakedWorkflow = await e2e('workflowLeakedLockWorkflow');
+          const waiterWorkflow = await e2e(
+            'workflowOnlyLockContentionWorkflow'
+          );
+          const leakedRun = await start(leakedWorkflow, [
+            userId,
+            leaseTtlMs,
+            'A',
+          ]);
+          const leakedResult = await leakedRun.returnValue;
+          const waiterRun = await start(waiterWorkflow, [userId, 0, 'B']);
+          const waiterResult = await waiterRun.returnValue;
+          return [leakedResult, waiterResult];
+        },
         async runLeakedKeyExpiredLeaseRecovery(userId, leaseTtlMs) {
           const leakedWorkflow = await e2e('leakedKeyLockWorkflow');
           const waiterWorkflow = await e2e('lockedStepCallContentionWorkflow');

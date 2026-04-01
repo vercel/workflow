@@ -1,6 +1,10 @@
 import { types } from 'node:util';
 import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
-import type { Event, WorkflowRun } from '@workflow/world';
+import {
+  LIMITS_NOT_IMPLEMENTED_MESSAGE,
+  type Event,
+  type WorkflowRun,
+} from '@workflow/world';
 import { assert, describe, expect, it, vi } from 'vitest';
 import type { WorkflowSuspension } from './global.js';
 import {
@@ -145,6 +149,46 @@ describe('runWorkflow', () => {
       expect(result.name).toEqual('TypeError');
       expect(result.message).toEqual('my workflow error');
     });
+  });
+
+  it('keeps lock() unsupported in the workflow vm on Vercel', async () => {
+    vi.stubEnv('VERCEL_URL', 'workflow.vercel.app');
+
+    try {
+      const ops: Promise<any>[] = [];
+      const workflowCode = `
+        const lock = globalThis[Symbol.for("WORKFLOW_LOCK")];
+        async function workflow() {
+          await lock({
+            key: 'workflow:user:test',
+            concurrency: { max: 1 },
+          });
+        }
+        ${getWorkflowTransformCode('workflow')}
+      `;
+
+      const workflowRun: WorkflowRun = {
+        runId: 'wrun_123',
+        workflowName: 'workflow',
+        status: 'running',
+        input: await dehydrateWorkflowArguments(
+          [],
+          'wrun_123',
+          noEncryptionKey,
+          ops
+        ),
+        createdAt: new Date('2024-01-01T00:00:00.000Z'),
+        updatedAt: new Date('2024-01-01T00:00:00.000Z'),
+        startedAt: new Date('2024-01-01T00:00:00.000Z'),
+        deploymentId: 'test-deployment',
+      };
+
+      await expect(
+        runWorkflow(workflowCode, workflowRun, [], noEncryptionKey)
+      ).rejects.toThrow(LIMITS_NOT_IMPLEMENTED_MESSAGE);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('should resolve a step that has a `step_completed` event', async () => {

@@ -310,7 +310,7 @@ function toNextWaiter(holderId: string): LimitNextWaiter | undefined {
 }
 
 function isTerminalRun(run: WorkflowRunWithoutData | undefined) {
-  return !run || ['completed', 'failed', 'cancelled'].includes(run.status);
+  return !!run && ['completed', 'failed', 'cancelled'].includes(run.status);
 }
 
 function deleteEmptyKey(state: LimitsState, key: string) {
@@ -374,9 +374,18 @@ export function createLimits(
     return !isTerminalRun(run);
   };
 
-  const pruneDeadWaiters = async (keyState: KeyState): Promise<KeyState> => {
+  const pruneDeadHoldersAndWaiters = async (
+    keyState: KeyState
+  ): Promise<KeyState> => {
     const prunedKeyState = pruneKeyState(keyState);
+    const leases: LimitLease[] = [];
     const waiters: LimitWaiter[] = [];
+
+    for (const lease of prunedKeyState.leases) {
+      if (await isHolderLive(lease.lockId)) {
+        leases.push(lease);
+      }
+    }
 
     for (const waiter of prunedKeyState.waiters) {
       if (await isHolderLive(waiter.lockId)) {
@@ -384,6 +393,7 @@ export function createLimits(
       }
     }
 
+    prunedKeyState.leases = leases;
     prunedKeyState.waiters = waiters;
     return prunedKeyState;
   };
@@ -444,7 +454,7 @@ export function createLimits(
 
       return withStateLock(async (): Promise<LimitAcquireResult> => {
         const state = cloneState(await readState());
-        const keyState = await pruneDeadWaiters(
+        const keyState = await pruneDeadHoldersAndWaiters(
           state.keys[parsed.key] ?? {
             key: parsed.key,
             definition: undefined,
@@ -576,8 +586,10 @@ export function createLimits(
         let nextWaiter: LimitNextWaiter | undefined;
 
         for (const [key, keyStateValue] of Object.entries(state.keys)) {
-          const keyState = await pruneDeadWaiters(keyStateValue);
-          const beforeLeases = keyState.leases.length;
+          const beforeLeases = keyStateValue.leases.length;
+          const keyState = await pruneDeadHoldersAndWaiters(keyStateValue);
+          let capacityFreed = keyState.leases.length !== beforeLeases;
+          const beforeExplicitRelease = keyState.leases.length;
           keyState.leases = keyState.leases.filter((lease) => {
             if (lease.leaseId !== parsed.leaseId) return true;
             if (parsed.key && lease.key !== parsed.key) return true;
@@ -586,8 +598,9 @@ export function createLimits(
             }
             return false;
           });
+          capacityFreed ||= keyState.leases.length !== beforeExplicitRelease;
 
-          if (keyState.leases.length !== beforeLeases) {
+          if (capacityFreed) {
             const headWaiter = keyState.waiters[0];
             if (headWaiter) {
               const concurrencyBlocked =
