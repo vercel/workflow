@@ -1,5 +1,17 @@
 # @workflow/nitro
 
+## 4.0.1-beta.70
+
+### Patch Changes
+
+- [#1386](https://github.com/vercel/workflow/pull/1386) [`0e8a880`](https://github.com/vercel/workflow/commit/0e8a880b6b6b05547e981c591ff4e1fb7ee17f60) Thanks [@comfuture](https://github.com/comfuture)! - Preserve generated step bundle side effects in Nitro virtual handlers so local production builds keep workflow step registrations available at runtime.
+
+- Updated dependencies [[`a98f8de`](https://github.com/vercel/workflow/commit/a98f8de53f1af222cccea6d091b68d544957b4e3), [`d38114b`](https://github.com/vercel/workflow/commit/d38114bff1c0a786e103b3da8c2d9afc93b41fbe), [`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff)]:
+  - @workflow/core@4.2.0-beta.75
+  - @workflow/builders@4.0.1-beta.66
+  - @workflow/rollup@4.0.0-beta.32
+  - @workflow/vite@4.0.0-beta.25
+
 ## 4.0.1-beta.69
 
 ### Patch Changes
