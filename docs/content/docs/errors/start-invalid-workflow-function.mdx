@@ -9,18 +9,18 @@ related:
   - /docs/api-reference/workflow-api/start
 ---
 
-This error occurs when you try to call `start()` with a function that is not a valid workflow function or when the Workflow DevKit is not configured correctly.
+This error occurs when you try to call `start()` with a function that is not a valid workflow function or when the Workflow SDK is not configured correctly.
 
 ## Error Message
 
 ```
-'start' received an invalid workflow function. Ensure the Workflow DevKit
+'start' received an invalid workflow function. Ensure the Workflow SDK
 is configured correctly and the function includes a 'use workflow' directive.
 ```
 
 ## Why This Happens
 
-The `start()` function expects a workflow function that has been properly processed by Workflow DevKit's build system. During the build process, workflow functions are transformed and marked with special metadata that `start()` uses to identify and execute them.
+The `start()` function expects a workflow function that has been properly processed by Workflow SDK's build system. During the build process, workflow functions are transformed and marked with special metadata that `start()` uses to identify and execute them.
 
 This error typically happens when:
 

@@ -8,7 +8,7 @@ import { ThemeProvider } from '@/components/theme-provider';
 const _geist = Geist({ subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'Workflow DevKit Compiler Playground',
+  title: 'Workflow SDK Compiler Playground',
   description: 'Playground for SWC with @workflow/swc-plugin',
 };
 

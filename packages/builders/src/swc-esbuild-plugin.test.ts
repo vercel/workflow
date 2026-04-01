@@ -50,10 +50,47 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     { inputExt: '.tsx', outputExt: '.js' },
     { inputExt: '.mts', outputExt: '.mjs' },
     { inputExt: '.cts', outputExt: '.cjs' },
-  ])('rewrites externalized $inputExt imports to $outputExt', async ({
+  ])('rewrites externalized $inputExt imports to $outputExt when rewriteTsExtensions is enabled', async ({
     inputExt,
     outputExt,
   }) => {
+    const outdir = join(testRoot, 'out');
+    const srcDir = join(testRoot, 'src');
+    const stepFile = join(srcDir, 'step.ts');
+
+    writeFile(join(srcDir, `dep${inputExt}`), 'export const dep = {};');
+    writeFile(stepFile, `import { dep } from './dep';\nconsole.log(dep);`);
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+          rewriteTsExtensions: true,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).toContain(`/dep${outputExt}`);
+    expect(output).not.toContain(`/dep${inputExt}`);
+  });
+
+  it.each([
+    '.ts',
+    '.tsx',
+    '.mts',
+    '.cts',
+  ])('preserves externalized %s extensions by default', async (inputExt) => {
     const outdir = join(testRoot, 'out');
     const srcDir = join(testRoot, 'src');
     const stepFile = join(srcDir, 'step.ts');
@@ -80,8 +117,7 @@ describe('createSwcPlugin externalizeNonSteps', () => {
 
     expect(result.errors).toHaveLength(0);
     const output = result.outputFiles[0].text;
-    expect(output).toContain(`/dep${outputExt}`);
-    expect(output).not.toContain(`/dep${inputExt}`);
+    expect(output).toContain(`/dep${inputExt}`);
   });
 });
 

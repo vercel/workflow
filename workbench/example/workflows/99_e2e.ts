@@ -1477,3 +1477,28 @@ export async function sleepWithSequentialStepsWorkflow() {
   const c = await addNumbers(b, 4);
   return { a, b, c, shouldCancel };
 }
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Validates that import.meta.url is correctly polyfilled in CJS step bundles
+ * and natively available in ESM step bundles.
+ */
+async function checkImportMetaUrl(): Promise<{
+  isDefined: boolean;
+  type: string;
+  isFileUrl: boolean;
+}> {
+  'use step';
+  const url = import.meta.url;
+  return {
+    isDefined: typeof url === 'string' && url.length > 0,
+    type: typeof url,
+    isFileUrl: typeof url === 'string' && url.startsWith('file://'),
+  };
+}
+
+export async function importMetaUrlWorkflow() {
+  'use workflow';
+  return await checkImportMetaUrl();
+}

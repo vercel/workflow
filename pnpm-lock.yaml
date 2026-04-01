@@ -898,6 +898,8 @@ importers:
         specifier: 7.1.12
         version: 7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3)
 
+  packages/swc-playground-wasm: {}
+
   packages/swc-plugin-workflow:
     dependencies:
       '@swc/core':
@@ -2149,15 +2151,27 @@ importers:
       '@monaco-editor/react':
         specifier: latest
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      '@swc/core':
-        specifier: 1.15.3
-        version: 1.15.3
       '@vercel/analytics':
         specifier: latest
         version: 2.0.1(baf0aac73cdb99e7b4aee2bd440a0745)
-      '@workflow/swc-plugin':
+      '@workflow/core':
         specifier: workspace:*
-        version: link:../../packages/swc-plugin-workflow
+        version: link:../../packages/core
+      '@workflow/errors':
+        specifier: workspace:*
+        version: link:../../packages/errors
+      '@workflow/serde':
+        specifier: workspace:*
+        version: link:../../packages/serde
+      '@workflow/swc-playground-wasm':
+        specifier: workspace:*
+        version: link:../../packages/swc-playground-wasm
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../../packages/utils
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../../packages/world
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -2194,6 +2208,9 @@ importers:
       tailwind-merge:
         specifier: ^2.5.5
         version: 2.5.5
+      workflow:
+        specifier: workspace:*
+        version: link:../../packages/workflow
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4.1.9
@@ -23148,6 +23165,10 @@ snapshots:
     dependencies:
       acorn: 8.15.0
 
+  acorn-import-attributes@1.9.5(acorn@8.16.0):
+    dependencies:
+      acorn: 8.16.0
+
   acorn-import-phases@1.0.4(acorn@8.15.0):
     dependencies:
       acorn: 8.15.0
@@ -26141,8 +26162,8 @@ snapshots:
 
   import-in-the-middle@1.15.0:
     dependencies:
-      acorn: 8.15.0
-      acorn-import-attributes: 1.9.5(acorn@8.15.0)
+      acorn: 8.16.0
+      acorn-import-attributes: 1.9.5(acorn@8.16.0)
       cjs-module-lexer: 1.4.3
       module-details-from-path: 1.0.4
 

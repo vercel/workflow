@@ -1,4 +1,5 @@
 import type { Storage, World } from '@workflow/world';
+import { reenqueueActiveRuns } from '@workflow/world';
 import { Pool } from 'pg';
 import type { PostgresWorldConfig } from './config.js';
 import { createClient, type Drizzle } from './drizzle/index.js';
@@ -61,6 +62,7 @@ export function createWorld(
     ...queue,
     async start() {
       await queue.start();
+      await reenqueueActiveRuns(storage.runs, queue.queue, 'world-postgres');
     },
     async close() {
       await streamer.close();

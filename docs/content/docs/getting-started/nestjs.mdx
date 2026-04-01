@@ -2,7 +2,7 @@
 title: NestJS
 description: Set up your first durable workflow in a NestJS application.
 type: guide
-summary: Set up Workflow DevKit in a NestJS app.
+summary: Set up Workflow SDK in a NestJS app.
 prerequisites:
   - /docs/getting-started
 related:
@@ -59,7 +59,7 @@ When using ESM with NestJS, local imports must include the `.js` extension (e.g.
 
 ### Configure NestJS to use SWC
 
-NestJS supports SWC as an alternative compiler for faster builds. The Workflow DevKit uses an SWC plugin to transform workflow files.
+NestJS supports SWC as an alternative compiler for faster builds. The Workflow SDK uses an SWC plugin to transform workflow files.
 
 Install the required SWC packages:
 
@@ -190,7 +190,7 @@ export async function handleUserSignup(email: string) {
 We'll fill in those functions next, but let's take a look at this code:
 
 - We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
-- The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
+- The Workflow SDK's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
 
 ## Create Your Workflow Steps
 
@@ -291,7 +291,7 @@ curl -X POST -H "Content-Type: application/json" -d '{"email":"hello@example.com
 
 Check the NestJS development server logs to see your workflow execute as well as the steps that are being processed.
 
-Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
+Additionally, you can use the [Workflow SDK CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
 ```bash
 # Open the observability Web UI
@@ -300,7 +300,7 @@ npx workflow web
 npx workflow inspect runs
 ```
 
-![Workflow DevKit Web UI](/o11y-ui.png)
+![Workflow SDK Web UI](/o11y-ui.png)
 
 </Step>
 

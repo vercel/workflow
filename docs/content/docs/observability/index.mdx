@@ -10,7 +10,7 @@ related:
   - /docs/how-it-works/encryption
 ---
 
-Workflow DevKit provides powerful tools to inspect, monitor, and debug your workflows through the CLI and Web UI. These tools allow you to inspect workflow runs, steps, webhooks, [events](/docs/how-it-works/event-sourcing), and stream output.
+Workflow SDK provides powerful tools to inspect, monitor, and debug your workflows through the CLI and Web UI. These tools allow you to inspect workflow runs, steps, webhooks, [events](/docs/how-it-works/event-sourcing), and stream output.
 
 ## Quick Start
 
@@ -18,7 +18,7 @@ Workflow DevKit provides powerful tools to inspect, monitor, and debug your work
 npx workflow
 ```
 
-The CLI comes pre-installed with the Workflow DevKit and registers the `workflow` command. If the `workflow` package is not already installed, `npx workflow` will install it globally, or use the local installed version if available.
+The CLI comes pre-installed with the Workflow SDK and registers the `workflow` command. If the `workflow` package is not already installed, `npx workflow` will install it globally, or use the local installed version if available.
 
 Get started inspecting your local workflows:
 
@@ -32,7 +32,7 @@ npx workflow inspect runs
 
 ## Web UI
 
-Workflow DevKit ships with a local web UI for inspecting your workflows. The CLI
+Workflow SDK ships with a local web UI for inspecting your workflows. The CLI
 will locally serve the Web UI when using the `--web` flag.
 
 ```bash
@@ -40,11 +40,11 @@ will locally serve the Web UI when using the `--web` flag.
 npx workflow inspect runs --web
 ```
 
-![Workflow DevKit Web UI](/o11y-ui.png)
+![Workflow SDK Web UI](/o11y-ui.png)
 
 ## Backends
 
-The Workflow DevKit CLI can inspect data from any [World](/docs/deploying). By default, it inspects data in your local development environment. For example, if you are using Next.js to develop workflows locally, the
+The Workflow SDK CLI can inspect data from any [World](/docs/deploying). By default, it inspects data in your local development environment. For example, if you are using Next.js to develop workflows locally, the
 CLI will find the data in your `.next/workflow-data/` directory.
 
 If you're deploying workflows to a production environment, but want to inspect the data by using the CLI, you can specify the world you are using by setting the `--backend` flag to your world's name or package name, e.g. `vercel`.

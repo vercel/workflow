@@ -1,5 +1,14 @@
 # @workflow/ai
 
+## 4.1.0-beta.59
+
+### Patch Changes
+
+- [#1529](https://github.com/vercel/workflow/pull/1529) [`a0a7195`](https://github.com/vercel/workflow/commit/a0a71957efe83a6e6223dd7c7c64a1bb65b9dabe) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `WorkflowChatTransport` blocking browser paint during stream reconnect by yielding to the macrotask queue between chunks
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.74
+
 ## 4.1.0-beta.58
 
 ### Patch Changes
