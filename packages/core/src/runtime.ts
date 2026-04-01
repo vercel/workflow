@@ -198,6 +198,7 @@ export function workflowEntrypoint(
           // so the queue will call back once, after which a 410 will get it to exit early.
           process.exit(1);
         }, REPLAY_TIMEOUT_MS);
+        replayTimeout.unref();
       }
 
       // Invoke user workflow within the propagated trace context and baggage
