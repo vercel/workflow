@@ -875,10 +875,18 @@ export async function getNextBuilderDeferred() {
             /\\/g,
             '/'
           );
+
+          // Skip generated files and most node_modules, but allow @workflow scoped packages
+          // to be discovered (they may contain step functions that need to be registered)
+          const isWorkflowPackage =
+            normalizedSourcePathForCheck.includes('/node_modules/@workflow/') ||
+            normalizedSourcePathForCheck.includes('/.pnpm/@workflow+');
           if (
             normalizedSourcePathForCheck.includes('/.well-known/workflow/') ||
-            normalizedSourcePathForCheck.includes('/node_modules/') ||
-            normalizedSourcePathForCheck.includes('/.pnpm/') ||
+            (normalizedSourcePathForCheck.includes('/node_modules/') &&
+              !isWorkflowPackage) ||
+            (normalizedSourcePathForCheck.includes('/.pnpm/') &&
+              !isWorkflowPackage) ||
             normalizedSourcePathForCheck.includes('/.next/') ||
             normalizedSourcePathForCheck.endsWith('/virtual-entry.js')
           ) {
