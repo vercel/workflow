@@ -3,4 +3,4 @@
 "@workflow/next": patch
 ---
 
-Remove eager workflow discovery from deferred mode and fix @workflow/ai export conditions. In deferred mode, workflows are now only discovered through cache restoration and loader socket notifications. Added workflow export condition to @workflow/ai/agent to ensure step directives are preserved.
+Optimize workflow discovery in deferred mode to skip discovery in dev mode when cache exists. Production builds and first dev builds still perform discovery as required. Added workflow export condition and transpilePackages configuration for @workflow/ai.

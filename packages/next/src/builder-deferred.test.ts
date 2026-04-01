@@ -17,7 +17,7 @@ describe('NextDeferredBuilder', () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
-  it('should not perform eager workflow discovery during initialization', async () => {
+  it('should not perform eager workflow discovery in dev mode when cache exists', async () => {
     // Create a test workflow file
     const workflowsDir = join(testDir, 'workflows');
     await mkdir(workflowsDir, { recursive: true });
@@ -58,6 +58,7 @@ describe('NextDeferredBuilder', () => {
       workflowsBundlePath: '',
       webhookBundlePath: '',
       distDir: '.next',
+      watch: true, // Dev mode
     });
 
     // Clear any logs from builder instantiation
@@ -67,7 +68,7 @@ describe('NextDeferredBuilder', () => {
     await builder.build();
 
     // Check that "Discovering workflow directives" log was NOT printed
-    // In deferred mode, discovery only happens via loader socket notifications
+    // In dev mode with cache, discovery is skipped (uses socket notifications)
     const discoveryLogs = consoleLogSpy.mock.calls.filter((call) =>
       call.some((arg) =>
         String(arg).includes('Discovering workflow directives')
