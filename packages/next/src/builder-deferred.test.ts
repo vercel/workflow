@@ -21,14 +21,27 @@ describe('NextDeferredBuilder', () => {
     // Create a test workflow file
     const workflowsDir = join(testDir, 'workflows');
     await mkdir(workflowsDir, { recursive: true });
+    const testWorkflowPath = join(workflowsDir, 'test.ts');
     await writeFile(
-      join(workflowsDir, 'test.ts'),
+      testWorkflowPath,
       `
       "use workflow";
       export async function testWorkflow() {
         return "test";
       }
       `,
+      'utf-8'
+    );
+
+    // Create a cache file to simulate having cache
+    const cacheDir = join(testDir, '.next', 'cache');
+    await mkdir(cacheDir, { recursive: true });
+    await writeFile(
+      join(cacheDir, 'workflows.json'),
+      JSON.stringify({
+        workflowFiles: [testWorkflowPath],
+        stepFiles: [],
+      }),
       'utf-8'
     );
 
@@ -54,6 +67,7 @@ describe('NextDeferredBuilder', () => {
     await builder.build();
 
     // Check that "Discovering workflow directives" log was NOT printed
+    // In deferred mode, discovery only happens via loader socket notifications
     const discoveryLogs = consoleLogSpy.mock.calls.filter((call) =>
       call.some((arg) =>
         String(arg).includes('Discovering workflow directives')
