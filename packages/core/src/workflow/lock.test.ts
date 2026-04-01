@@ -14,6 +14,7 @@ import type { WorkflowOrchestratorContext } from '../private.js';
 import { setWorld } from '../runtime/world.js';
 import { createContext } from '../vm/index.js';
 import { createLock } from './lock.js';
+import { createSleep } from './sleep.js';
 
 function createLease(): LimitLease {
   return {
@@ -30,22 +31,26 @@ function createLease(): LimitLease {
   };
 }
 
-function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
+function setupWorkflowContext(
+  events: Event[],
+  options?: { onUnconsumedEvent?: (event: Event) => void }
+): WorkflowOrchestratorContext {
   const context = createContext({
     seed: 'test',
     fixedTimestamp: 1753481739458,
   });
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
-  return {
+  const promiseQueueHolder = { current: Promise.resolve() };
+  const workflowContext: WorkflowOrchestratorContext = {
     runId: 'wrun_test',
     lockPreApproval: undefined,
     encryptionKey: undefined,
     globalThis: context.globalThis,
     advanceTimestamp: vi.fn(),
     eventsConsumer: new EventsConsumer(events, {
-      onUnconsumedEvent: () => {},
-      getPromiseQueue: () => Promise.resolve(),
+      onUnconsumedEvent: options?.onUnconsumedEvent ?? (() => {}),
+      getPromiseQueue: () => promiseQueueHolder.current,
     }),
     nextLockIndex: 0,
     invocationsQueue: new Map(),
@@ -54,9 +59,20 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
     onWorkflowError: vi.fn(),
-    promiseQueue: Promise.resolve(),
     pendingDeliveries: 0,
   };
+  Object.defineProperty(workflowContext, 'promiseQueue', {
+    get() {
+      return promiseQueueHolder.current;
+    },
+    set(value: Promise<void>) {
+      promiseQueueHolder.current = value;
+    },
+    enumerable: true,
+    configurable: true,
+  });
+  workflowContext.promiseQueue = Promise.resolve();
+  return workflowContext;
 }
 
 function asEventResult(event: Event): EventResult {
@@ -326,6 +342,64 @@ describe('createLock', () => {
       correlationId: createLockWakeCorrelationId('wrun_test', 0),
       resumeAt: retryAfter,
     });
+  });
+
+  it('does not orphan wait_created when a replayed lock is immediately followed by sleep', async () => {
+    const lease = createLease();
+    const createEvent = vi.fn();
+    const tempCtx = setupWorkflowContext([]);
+    const waitCorrelationId = `wait_${tempCtx.generateUlid()}`;
+    const onUnconsumedEvent = vi.fn();
+
+    setWorld({
+      events: { create: createEvent },
+      limits: { heartbeat: vi.fn() },
+    } as any);
+
+    const correlationId = createLockCorrelationId('wrun_test', 0);
+    const ctx = setupWorkflowContext(
+      [
+        {
+          eventId: 'evnt_lock_acquired',
+          runId: 'wrun_test',
+          eventType: 'lock_acquired',
+          correlationId,
+          eventData: { lease },
+          createdAt: new Date('2025-01-01T00:00:00.000Z'),
+        },
+        {
+          eventId: 'evnt_wait_created',
+          runId: 'wrun_test',
+          eventType: 'wait_created',
+          correlationId: waitCorrelationId,
+          eventData: {
+            resumeAt: new Date('2025-01-01T00:00:01.000Z'),
+          },
+          createdAt: new Date('2025-01-01T00:00:00.010Z'),
+        },
+        {
+          eventId: 'evnt_wait_completed',
+          runId: 'wrun_test',
+          eventType: 'wait_completed',
+          correlationId: waitCorrelationId,
+          createdAt: new Date('2025-01-01T00:00:01.000Z'),
+        },
+      ],
+      { onUnconsumedEvent }
+    );
+    const lock = createLock(ctx);
+    const sleep = createSleep(ctx);
+
+    await lock({
+      key: lease.key,
+      concurrency: { max: 1 },
+    });
+    await sleep(1_000);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    expect(createEvent).not.toHaveBeenCalled();
+    expect(onUnconsumedEvent).not.toHaveBeenCalled();
+    expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
   it('rejects heartbeat in workflow scope to preserve replay determinism', async () => {

@@ -209,7 +209,9 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
       if (resolved) return;
       resolved = true;
       ctx.invocationsQueue.delete(state.wakeCorrelationId);
-      resolve(createLockHandle(state, ctx));
+      ctx.promiseQueue = ctx.promiseQueue.then(() => {
+        resolve(createLockHandle(state, ctx));
+      });
     };
 
     const suspendWorkflow = () => {
