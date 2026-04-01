@@ -11,6 +11,28 @@ describe('getRunCapabilities', () => {
     });
   });
 
+  describe('invalid or malformed version strings', () => {
+    it.each([
+      'dev',
+      'not-a-version',
+      '',
+      '4.2',
+      '4',
+    ])('"%s" falls back to baseline formats without throwing', (version) => {
+      const { supportedFormats } = getRunCapabilities(version);
+      expect(supportedFormats.has(SerializationFormat.DEVALUE_V1)).toBe(true);
+      expect(supportedFormats.has(SerializationFormat.ENCRYPTED)).toBe(false);
+    });
+  });
+
+  describe('v-prefixed versions', () => {
+    it('handles v-prefixed version strings', () => {
+      // semver.valid() coerces "v" prefix — this is valid input
+      const { supportedFormats } = getRunCapabilities('v4.2.0-beta.64');
+      expect(supportedFormats.has(SerializationFormat.ENCRYPTED)).toBe(true);
+    });
+  });
+
   describe('pre-encryption versions', () => {
     it.each([
       '4.1.0-beta.63',

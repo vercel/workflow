@@ -129,8 +129,9 @@ export async function resumeHook<T = any>(
         // payload in a format the run's deployment can decode. For example,
         // runs created before encryption support was added cannot decode
         // the 'encr' serialization format.
+        const rawVersion = workflowRun.executionContext?.workflowCoreVersion;
         const { supportedFormats } = getRunCapabilities(
-          workflowRun.executionContext?.workflowCoreVersion
+          typeof rawVersion === 'string' ? rawVersion : undefined
         );
         if (!supportedFormats.has(SerializationFormat.ENCRYPTED)) {
           encryptionKey = undefined;

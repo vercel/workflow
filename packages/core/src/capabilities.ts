@@ -14,6 +14,12 @@
  * 2. Add an entry to `FORMAT_VERSION_TABLE` below with the minimum
  *    `@workflow/core` version that supports it
  * 3. The `getRunCapabilities()` function will automatically include it
+ *
+ * ## History
+ *
+ * - `encr` (AES-256-GCM encryption): added in `4.2.0-beta.64`
+ *   Commit: 7618ac36 "Wire AES-GCM encryption into serialization layer (#1251)"
+ *   https://github.com/vercel/workflow/commit/7618ac36
  */
 
 import semver from 'semver';
@@ -62,13 +68,14 @@ const BASELINE_FORMATS: ReadonlySet<SerializationFormatType> = new Set([
  * Look up what serialization capabilities a workflow run supports based on
  * its `@workflow/core` version string (from `executionContext.workflowCoreVersion`).
  *
- * When the version is `undefined` (e.g. very old runs that predate the field),
+ * When the version is `undefined`, not a string, or not a valid semver string
+ * (e.g. very old runs that predate the field, or corrupted metadata),
  * we assume the most conservative capabilities (baseline formats only).
  */
 export function getRunCapabilities(
   workflowCoreVersion: string | undefined
 ): RunCapabilities {
-  if (!workflowCoreVersion) {
+  if (!workflowCoreVersion || !semver.valid(workflowCoreVersion)) {
     return { supportedFormats: BASELINE_FORMATS };
   }
 
