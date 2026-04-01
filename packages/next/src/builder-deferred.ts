@@ -1,3 +1,4 @@
+import type { NextConfig } from '@workflow/builders';
 import { createHash } from 'node:crypto';
 import { constants, existsSync, realpathSync } from 'node:fs';
 import {
@@ -65,6 +66,8 @@ export async function getNextBuilderDeferred() {
   )) as typeof import('@workflow/builders');
 
   class NextDeferredBuilder extends BaseBuilderClass {
+    protected declare config: NextConfig;
+
     private socketIO?: SocketIO;
     private readonly discoveredWorkflowFiles = new Set<string>();
     private readonly discoveredStepFiles = new Set<string>();
