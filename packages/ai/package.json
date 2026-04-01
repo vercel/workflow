@@ -32,6 +32,7 @@
     },
     "./agent": {
       "types": "./dist/agent/durable-agent.d.ts",
+      "workflow": "./src/agent/durable-agent.ts",
       "default": "./dist/agent/durable-agent.js"
     },
     "./anthropic": {
