@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.5'
+  version: '1.6'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -569,9 +569,7 @@ import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowN
 ```
 
 **Key docs** (grep `node_modules/workflow/docs/` for full details):
-- `api-reference/workflow-api/world/runs.mdx` — runs, pagination, status
-- `api-reference/workflow-api/world/steps.mdx` — step I/O, duration
-- `api-reference/workflow-api/world/events.mdx` — event log, cancellation
+- `api-reference/workflow-api/world/storage.mdx` — events, runs, steps, hooks (events are source of truth; others are materialized views)
 - `api-reference/workflow-api/world/observability.mdx` — hydration, parsing, encryption
 
 ### World SDK Method Signatures
@@ -584,7 +582,8 @@ const world = getWorld();
 // Runs
 const { data, cursor } = await world.runs.list({ pagination: { cursor }, resolveData: 'all' | 'none' });
 const run = await world.runs.get(runId, { resolveData: 'all' | 'none' });
-const run = await world.runs.cancel(runId);
+// Cancel via event creation (no cancel() method on runs)
+await world.events.create(runId, { eventType: 'run_cancelled' });
 
 // Steps — runId is top-level, NOT inside pagination
 const { data, cursor } = await world.steps.list({ runId, pagination: { cursor }, resolveData: 'all' | 'none' });
@@ -601,6 +600,13 @@ const hook = await world.hooks.getByToken(token);
 // Streams (methods live directly on world, not nested)
 await world.writeToStream(name, runId, chunk);
 const readable = await world.readFromStream(name);
+const chunks = await world.getStreamChunks(name, runId, { limit, cursor });
+const info = await world.getStreamInfo(name, runId);
+const streams = await world.listStreamsByRunId(runId);
+
+// Queue (methods live directly on world — internal SDK infrastructure)
+await world.queue(queueName, payload, opts);
+const deploymentId = await world.getDeploymentId();
 ```
 
 ### `resolveData` Parameter

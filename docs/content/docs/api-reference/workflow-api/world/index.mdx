@@ -22,26 +22,17 @@ import { getWorld } from "workflow/runtime";
 const world = getWorld(); // [!code highlight]
 ```
 
-## Entities
+## Interfaces
 
 <Cards>
-    <Card href="/docs/api-reference/workflow-api/world/runs" title="world.runs">
-        List, filter, and inspect workflow runs with pagination and status filtering.
-    </Card>
-    <Card href="/docs/api-reference/workflow-api/world/steps" title="world.steps">
-        List and inspect step execution data including input/output hydration.
-    </Card>
-    <Card href="/docs/api-reference/workflow-api/world/hooks" title="world.hooks">
-        Look up hooks by ID or token for webhook resume flows.
-    </Card>
-    <Card href="/docs/api-reference/workflow-api/world/events" title="world.events">
-        Query the append-only event log — the source of truth for all workflow state changes.
+    <Card href="/docs/api-reference/workflow-api/world/storage" title="Storage">
+        Query runs, steps, hooks, and the underlying event log.
     </Card>
     <Card href="/docs/api-reference/workflow-api/world/streams" title="Streams">
         Read, write, and manage real-time data streams for workflow runs.
     </Card>
-    <Card href="/docs/api-reference/workflow-api/world/queue" title="world.queue">
-        Enqueue workflow runs and create queue handlers for processing.
+    <Card href="/docs/api-reference/workflow-api/world/queue" title="Queue">
+        Low-level queue dispatch (internal SDK infrastructure).
     </Card>
     <Card href="/docs/api-reference/workflow-api/world/observability" title="Observability Utilities">
         Hydrate step I/O, parse display names, and decrypt workflow data.

@@ -182,7 +182,6 @@ declare global {
     runs: {
       get: (...args: any[]) => Promise<any>;
       list: (...args: any[]) => Promise<any>;
-      cancel: (...args: any[]) => Promise<any>;
     };
     steps: {
       get: (...args: any[]) => Promise<any>;
@@ -205,19 +204,29 @@ declare global {
       runId: string,
       chunk: string | Uint8Array
     ) => Promise<void>;
+    writeToStreamMulti?: (
+      name: string,
+      runId: string,
+      chunks: (string | Uint8Array)[]
+    ) => Promise<void>;
     readFromStream: (
       name: string,
       startIndex?: number
     ) => Promise<ReadableStream<Uint8Array>>;
     closeStream: (name: string, runId: string) => Promise<void>;
     listStreamsByRunId: (runId: string) => Promise<string[]>;
+    getStreamChunks: (
+      name: string,
+      runId: string,
+      options?: { limit?: number; cursor?: string }
+    ) => Promise<any>;
+    getStreamInfo: (
+      name: string,
+      runId: string
+    ) => Promise<{ tailIndex: number; done: boolean }>;
     // Queue methods live directly on world (Queue interface)
     getDeploymentId: (...args: any[]) => Promise<any>;
-    queue: {
-      getDeploymentId: (...args: any[]) => Promise<any>;
-      queue: (...args: any[]) => Promise<any>;
-      createQueueHandler: (...args: any[]) => any;
-    };
+    queue: (...args: any[]) => Promise<any>;
     createQueueHandler: (...args: any[]) => any;
   };
   const streamId: string;
@@ -227,12 +236,16 @@ declare global {
   const cursor: string | undefined;
   const name: string;
   const chunk: any;
+  const chunk1: any;
+  const chunk2: any;
   const step: any;
   const message: any;
   const opts: any;
   const prefix: string;
   const callback: (...args: any[]) => any;
   const token: string;
+  const queueName: any;
+  const payload: any;
 
   // Workflow placeholders used in examples
   const myWorkflow: (...args: any[]) => Promise<any>;
