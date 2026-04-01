@@ -671,7 +671,12 @@ export async function getNextBuilderDeferred() {
       }
 
       await this.loadWorkflowsCache();
-      await this.loadDiscoveredEntriesFromInputGraph();
+      // Only perform eager discovery when dirs are entrypoints (default behavior).
+      // When user specifies explicit workflow directories (dirsAreEntrypoints: false),
+      // skip eager discovery and rely on loader socket notifications instead.
+      if (this.config.dirsAreEntrypoints) {
+        await this.loadDiscoveredEntriesFromInputGraph();
+      }
       this.cacheInitialized = true;
     }
 
