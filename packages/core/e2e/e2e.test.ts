@@ -1143,6 +1143,45 @@ describe('e2e', () => {
           expect(runData.status).toBe('completed');
         }
       );
+
+      test(
+        'FatalError preserves class identity through serialization',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(await e2e('errorFatalSerdeRoundTrip'), []);
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.isFatal).toBe(true);
+          expect(result.isInstanceOf).toBe(true);
+          expect(result.message).toContain('Fatal step error');
+          expect(result.hasFatalProp).toBe(true);
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+        }
+      );
+
+      test(
+        'RetryableError preserves class identity through serialization',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(
+            await e2e('errorRetryableSerdeRoundTrip'),
+            []
+          );
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.isRetryable).toBe(true);
+          expect(result.isInstanceOf).toBe(true);
+          expect(result.message).toBe('retryable serde test');
+          expect(result.hasRetryAfter).toBe(true);
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+        }
+      );
     });
 
     describe('not registered', () => {

@@ -961,6 +961,47 @@ export async function errorFatalCatchable() {
   }
 }
 
+/** Test: FatalError preserves class identity through step error serialization */
+export async function errorFatalSerdeRoundTrip() {
+  'use workflow';
+  try {
+    await throwFatalError();
+    return { caught: false, isFatal: false, isInstanceOf: false };
+  } catch (e: any) {
+    return {
+      caught: true,
+      isFatal: FatalError.is(e),
+      isInstanceOf: e instanceof FatalError,
+      message: e.message,
+      hasFatalProp: e.fatal === true,
+    };
+  }
+}
+
+/** Test: RetryableError preserves class identity through step error serialization */
+async function throwRetryableErrorStep() {
+  'use step';
+  throw new RetryableError('retryable serde test', {
+    retryAfter: new Date('2099-01-01T00:00:00.000Z'),
+  });
+}
+
+export async function errorRetryableSerdeRoundTrip() {
+  'use workflow';
+  try {
+    await throwRetryableErrorStep();
+    return { caught: false };
+  } catch (e: any) {
+    return {
+      caught: true,
+      isRetryable: RetryableError.is(e),
+      isInstanceOf: e instanceof RetryableError,
+      message: e.message,
+      hasRetryAfter: e.retryAfter instanceof Date,
+    };
+  }
+}
+
 // ------------------------------------------------------------
 // SECTION 4: NOT REGISTERED ERRORS
 // Tests for step/workflow not registered in the current deployment

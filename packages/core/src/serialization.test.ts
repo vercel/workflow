@@ -1,5 +1,6 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
+import { FatalError, RetryableError } from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
@@ -3495,6 +3496,100 @@ describe('DOMException serialization', () => {
     expect(result).toBeInstanceOf(DOMException);
     expect(result.name).toBe('AbortError');
     expect(result.message).toBe('test');
+  });
+});
+
+describe('FatalError and RetryableError serialization', () => {
+  // In production, the SWC plugin auto-discovers classes with WORKFLOW_SERIALIZE/
+  // WORKFLOW_DESERIALIZE and generates classId + registration code. In unit tests
+  // we simulate this by manually registering the classes.
+  const FATAL_CLASS_ID = '@workflow/errors//FatalError';
+  const RETRYABLE_CLASS_ID = '@workflow/errors//RetryableError';
+
+  beforeAll(() => {
+    registerSerializationClass(FATAL_CLASS_ID, FatalError);
+    registerSerializationClass(RETRYABLE_CLASS_ID, RetryableError);
+  });
+
+  async function roundTrip(value: unknown) {
+    const serialized = await dehydrateStepReturnValue(
+      value,
+      mockRunId,
+      noEncryptionKey
+    );
+    return hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+  }
+
+  it('should round-trip FatalError preserving type and message', async () => {
+    const error = new FatalError('step failed permanently');
+    const hydrated = (await roundTrip(error)) as FatalError;
+    expect(hydrated).toBeInstanceOf(FatalError);
+    expect(hydrated.message).toBe('step failed permanently');
+    expect(hydrated.fatal).toBe(true);
+    expect(hydrated.name).toBe('FatalError');
+    expect(FatalError.is(hydrated)).toBe(true);
+  });
+
+  it('should round-trip FatalError preserving stack', async () => {
+    const error = new FatalError('with stack');
+    const originalStack = error.stack;
+    const hydrated = (await roundTrip(error)) as FatalError;
+    expect(hydrated.stack).toBe(originalStack);
+  });
+
+  it('should serialize FatalError using Instance key (custom class serde)', async () => {
+    const error = new FatalError('test');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    // Should be serialized as Instance (custom class serde), not as Error
+    expect(str).toContain('Instance');
+    expect(str).toContain(FATAL_CLASS_ID);
+  });
+
+  it('should round-trip RetryableError preserving type, message, and retryAfter', async () => {
+    const retryDate = new Date('2025-01-01T00:00:00.000Z');
+    const error = new RetryableError('temporary failure', {
+      retryAfter: retryDate,
+    });
+    const hydrated = (await roundTrip(error)) as RetryableError;
+    expect(hydrated).toBeInstanceOf(RetryableError);
+    expect(hydrated.message).toBe('temporary failure');
+    expect(hydrated.name).toBe('RetryableError');
+    expect(hydrated.retryAfter).toBeInstanceOf(Date);
+    expect(hydrated.retryAfter.toISOString()).toBe('2025-01-01T00:00:00.000Z');
+    expect(RetryableError.is(hydrated)).toBe(true);
+  });
+
+  it('should round-trip RetryableError preserving stack', async () => {
+    const error = new RetryableError('with stack');
+    const originalStack = error.stack;
+    const hydrated = (await roundTrip(error)) as RetryableError;
+    expect(hydrated.stack).toBe(originalStack);
+  });
+
+  it('should serialize RetryableError using Instance key (custom class serde)', async () => {
+    const error = new RetryableError('test');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('Instance');
+    expect(str).toContain(RETRYABLE_CLASS_ID);
   });
 });
 

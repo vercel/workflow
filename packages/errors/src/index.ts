@@ -1,3 +1,4 @@
+import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { parseDurationToDate } from '@workflow/utils';
 import type { StructuredError } from '@workflow/world';
 import type { StringValue } from 'ms';
@@ -555,6 +556,19 @@ export class FatalError extends Error {
   static is(value: unknown): value is FatalError {
     return isError(value) && value.name === 'FatalError';
   }
+
+  static [WORKFLOW_SERIALIZE](instance: FatalError) {
+    return {
+      message: instance.message,
+      stack: instance.stack,
+    };
+  }
+
+  static [WORKFLOW_DESERIALIZE](data: { message: string; stack?: string }) {
+    const error = new FatalError(data.message);
+    if (data.stack !== undefined) error.stack = data.stack;
+    return error;
+  }
 }
 
 export interface RetryableErrorOptions {
@@ -590,6 +604,26 @@ export class RetryableError extends Error {
 
   static is(value: unknown): value is RetryableError {
     return isError(value) && value.name === 'RetryableError';
+  }
+
+  static [WORKFLOW_SERIALIZE](instance: RetryableError) {
+    return {
+      message: instance.message,
+      stack: instance.stack,
+      retryAfter: instance.retryAfter,
+    };
+  }
+
+  static [WORKFLOW_DESERIALIZE](data: {
+    message: string;
+    stack?: string;
+    retryAfter: Date;
+  }) {
+    const error = new RetryableError(data.message, {
+      retryAfter: data.retryAfter,
+    });
+    if (data.stack !== undefined) error.stack = data.stack;
+    return error;
   }
 }
 
