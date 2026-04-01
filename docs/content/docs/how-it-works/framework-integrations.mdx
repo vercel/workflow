@@ -259,7 +259,7 @@ class MyFrameworkBuilder extends BaseBuilder {
 }
 ```
 
-If your framework supports virtual server routes and dev mode watching, make sure to adapt accordingly. Please open a PR to the Workflow DevKit if the base builder class is missing necessary functionality.
+If your framework supports virtual server routes and dev mode watching, make sure to adapt accordingly. Please open a PR to the Workflow SDK if the base builder class is missing necessary functionality.
 
 Hook into your framework's build:
 
@@ -341,8 +341,8 @@ const server = Bun.serve({
 ```
 
 Production framework integrations should handle this routing in the plugin instead of leaving it to the user, and this depends on each framework's unique implementaiton.
-Check the Workflow DevKit source code for examples of production framework implementations.
-In the future, the Workflow DevKit will emit more routes under the `.well-known/workflow` namespace.
+Check the Workflow SDK source code for examples of production framework implementations.
+In the future, the Workflow SDK will emit more routes under the `.well-known/workflow` namespace.
 
 ## Security
 

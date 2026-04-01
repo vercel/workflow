@@ -2,7 +2,7 @@
 title: Express
 description: Set up your first durable workflow in an Express application.
 type: guide
-summary: Set up Workflow DevKit in an Express app.
+summary: Set up Workflow SDK in an Express app.
 prerequisites:
   - /docs/getting-started
 related:
@@ -136,7 +136,7 @@ export async function handleUserSignup(email: string) {
 We'll fill in those functions next, but let's take a look at this code:
 
 - We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
-- The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
+- The Workflow SDK's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
 
 ## Create Your Workflow Steps
 
@@ -237,7 +237,7 @@ curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/si
 
 Check the Express development server logs to see your workflow execute as well as the steps that are being processed.
 
-Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
+Additionally, you can use the [Workflow SDK CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
 ```bash
 # Open the observability Web UI
@@ -246,7 +246,7 @@ npx workflow web
 npx workflow inspect runs
 ```
 
-![Workflow DevKit Web UI](/o11y-ui.png)
+![Workflow SDK Web UI](/o11y-ui.png)
 
 </Step>
 
@@ -256,7 +256,7 @@ npx workflow inspect runs
 
 ## Deploying to production
 
-Workflow DevKit apps currently work best when deployed to [Vercel](https://vercel.com/home) and needs no special configuration.
+Workflow SDK apps currently work best when deployed to [Vercel](https://vercel.com/home) and needs no special configuration.
 
 <FluidComputeCallout />
 

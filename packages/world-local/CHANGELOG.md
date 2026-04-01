@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.1.0-beta.47
+
+### Patch Changes
+
+- [#1494](https://github.com/vercel/workflow/pull/1494) [`bd1f7e4`](https://github.com/vercel/workflow/commit/bd1f7e4b4c45750f9b8a3f37057076f2e69a5c07) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Tidy code for stream chunk listing and metadata
+
 ## 4.1.0-beta.46
 
 ### Patch Changes

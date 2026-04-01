@@ -1,3 +1,3 @@
 # @workflow/rollup
 
-Rollup plugin for the Workflow DevKit.
+Rollup plugin for the Workflow SDK.

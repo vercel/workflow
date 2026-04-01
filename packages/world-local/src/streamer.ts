@@ -55,6 +55,43 @@ export function deserializeChunk(serialized: Buffer) {
   return { eof, chunk };
 }
 
+/**
+ * List chunk files for a stream, sorted chronologically (ULID order).
+ * Returns both the sorted file names and a map of file → extension for
+ * resolving the full path. Handles tagged and legacy (.json) formats.
+ */
+async function listChunkFilesForStream(
+  chunksDir: string,
+  name: string,
+  tag?: string
+): Promise<{ files: string[]; extMap: Map<string, string> }> {
+  const listPromises: Promise<string[]>[] = [
+    listFilesByExtension(chunksDir, '.bin'),
+    listFilesByExtension(chunksDir, '.json'),
+  ];
+  if (tag) {
+    listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
+  }
+  const [binFiles, jsonFiles, ...taggedResults] =
+    await Promise.all(listPromises);
+  const taggedBinFiles = taggedResults[0] ?? [];
+
+  const extMap = new Map<string, string>();
+  for (const f of jsonFiles) extMap.set(f, '.json');
+  const tagSfx = tag ? `.${tag}` : '';
+  for (const f of binFiles) {
+    if (tag && f.endsWith(tagSfx)) continue;
+    extMap.set(f, '.bin');
+  }
+  for (const f of taggedBinFiles) extMap.set(f, `.${tag}.bin`);
+
+  const files = [...extMap.keys()]
+    .filter((file) => file.startsWith(`${name}-`))
+    .sort();
+
+  return { files, extMap };
+}
+
 export function createStreamer(basedir: string, tag?: string): Streamer {
   const tagSuffix = tag ? `.${tag}` : '';
   const streamEmitter = new EventEmitter<{
@@ -261,29 +298,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
     ): Promise<StreamChunksResponse> {
       const limit = options?.limit ?? 100;
       const chunksDir = path.join(basedir, 'streams', 'chunks');
-
-      // List chunk files for this stream
-      const listPromises: Promise<string[]>[] = [
-        listFilesByExtension(chunksDir, '.bin'),
-        listFilesByExtension(chunksDir, '.json'),
-      ];
-      if (tag) {
-        listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
-      }
-      const [binFiles, jsonFiles, ...taggedResults] =
-        await Promise.all(listPromises);
-      const taggedBinFiles = taggedResults[0] ?? [];
-      const fileExtMap = new Map<string, string>();
-      for (const f of jsonFiles) fileExtMap.set(f, '.json');
-      const tagSfx = tag ? `.${tag}` : '';
-      for (const f of binFiles) {
-        if (tag && f.endsWith(tagSfx)) continue;
-        fileExtMap.set(f, '.bin');
-      }
-      for (const f of taggedBinFiles) fileExtMap.set(f, `.${tag}.bin`);
-      const chunkFiles = [...fileExtMap.keys()]
-        .filter((file) => file.startsWith(`${name}-`))
-        .sort(); // ULID lexicographic sort = chronological order
+      const { files: chunkFiles, extMap: fileExtMap } =
+        await listChunkFilesForStream(chunksDir, name, tag);
 
       // Decode cursor
       let startIndex = 0;
@@ -363,30 +379,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
       _runId: string
     ): Promise<StreamInfoResponse> {
       const chunksDir = path.join(basedir, 'streams', 'chunks');
-
-      const listPromises: Promise<string[]>[] = [
-        listFilesByExtension(chunksDir, '.bin'),
-        listFilesByExtension(chunksDir, '.json'),
-      ];
-      if (tag) {
-        listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
-      }
-      const [binFiles, jsonFiles, ...taggedResults] =
-        await Promise.all(listPromises);
-      const taggedBinFiles = taggedResults[0] ?? [];
-
-      const fileExtMap = new Map<string, string>();
-      for (const f of jsonFiles) fileExtMap.set(f, '.json');
-      const tagSfx = tag ? `.${tag}` : '';
-      for (const f of binFiles) {
-        if (tag && f.endsWith(tagSfx)) continue;
-        fileExtMap.set(f, '.bin');
-      }
-      for (const f of taggedBinFiles) fileExtMap.set(f, `.${tag}.bin`);
-
-      const chunkFiles = [...fileExtMap.keys()]
-        .filter((file) => file.startsWith(`${name}-`))
-        .sort();
+      const { files: chunkFiles, extMap: fileExtMap } =
+        await listChunkFilesForStream(chunksDir, name, tag);
 
       // Only read the first byte of each file to check EOF — no full
       // deserialization needed since we just need a count.
@@ -472,36 +466,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           streamEmitter.on(`close:${name}` as const, closeListener);
 
           // Now load existing chunks from disk.
-          // List both .bin (current) and .json (legacy) chunk files for
-          // backwards compatibility with streams written before this change.
-          // Also list tagged .bin files (e.g., `.vitest-0.bin`).
-          const listPromises: Promise<string[]>[] = [
-            listFilesByExtension(chunksDir, '.bin'),
-            listFilesByExtension(chunksDir, '.json'),
-          ];
-          if (tag) {
-            listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
-          }
-          const [binFiles, jsonFiles, ...taggedResults] =
-            await Promise.all(listPromises);
-          const taggedBinFiles = taggedResults[0] ?? [];
-          const fileExtMap = new Map<string, string>();
-          for (const f of jsonFiles) fileExtMap.set(f, '.json');
-          // When a tag is set, skip .bin entries that end with the tag suffix
-          // because those same files will be properly handled by taggedBinFiles.
-          // Without this filter, a file like "stream-chnk_ABC.vitest-0.bin" would
-          // appear twice: once as "stream-chnk_ABC.vitest-0" (from .bin listing)
-          // and once as "stream-chnk_ABC" (from .vitest-0.bin listing), causing
-          // duplicate data in the stream.
-          const tagSuffix = tag ? `.${tag}` : '';
-          for (const f of binFiles) {
-            if (tag && f.endsWith(tagSuffix)) continue;
-            fileExtMap.set(f, '.bin'); // .bin takes precedence
-          }
-          for (const f of taggedBinFiles) fileExtMap.set(f, `.${tag}.bin`); // tagged .bin takes precedence
-          const chunkFiles = [...fileExtMap.keys()]
-            .filter((file) => file.startsWith(`${name}-`))
-            .sort(); // ULID lexicographic sort = chronological order
+          const { files: chunkFiles, extMap: fileExtMap } =
+            await listChunkFilesForStream(chunksDir, name, tag);
 
           // Resolve negative startIndex relative to the number of data chunks
           // (excluding the trailing EOF marker chunk, if present).

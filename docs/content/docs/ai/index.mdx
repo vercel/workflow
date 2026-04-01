@@ -2,7 +2,7 @@
 title: Building Durable AI Agents
 description: Build AI agents that survive crashes, scale across requests, and maintain state with durable LLM tool-call loops.
 type: overview
-summary: Convert a basic AI chat app into a durable, resumable agent using Workflow DevKit.
+summary: Convert a basic AI chat app into a durable, resumable agent using Workflow SDK.
 related:
   - /docs/foundations/workflows-and-steps
   - /docs/foundations/streaming
@@ -15,11 +15,11 @@ related:
 
 AI agents are built on the primitive of LLM and tool-call loops, often with additional processes for data fetching, resource provisioning, or reacting to external events.
 
-Workflow DevKit makes your agents production-ready, by turning them into durable, resumable workflows. It transforms your LLM calls, tool executions, and other async operations into retryable, scalable, and observable steps.
+Workflow SDK makes your agents production-ready, by turning them into durable, resumable workflows. It transforms your LLM calls, tool executions, and other async operations into retryable, scalable, and observable steps.
 
 <AgentTraces />
 
-This guide walks you through converting a basic AI chat app into a durable AI agent using Workflow DevKit.
+This guide walks you through converting a basic AI chat app into a durable AI agent using Workflow SDK.
 
 ## Why Durable Agents?
 
@@ -30,20 +30,20 @@ Aside from the usual challenges of getting your long-running tasks to be product
 - **Resumability**: Resuming streams requires not just storing your messages, but also storing streams, and piping them across services.
 - **Human-in-the-loop**: Your client, API, and async job orchestration need to work together to create, track, route to, and display human approval requests, or similar webhook operations.
 
-Workflow DevKit provides all of these capabilities out of the box. Your agent becomes a workflow, your tools become steps, and the framework handles interplay with your existing infrastructure.
+Workflow SDK provides all of these capabilities out of the box. Your agent becomes a workflow, your tools become steps, and the framework handles interplay with your existing infrastructure.
 
 ## Getting Started
 
 To make an Agent durable, we first need an Agent, which we'll be setting up here. If you already have an app you'd like to follow along with, you can skip this section.
 
-For our example, we'll need an app with a simple chat interface and an API route calling an LLM, so that we can add Workflow DevKit to it. We'll use the [Flight Booking Agent](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) example as a starting point, which comes with a chat interface built using Next.js, AI SDK, and Shadcn UI.
+For our example, we'll need an app with a simple chat interface and an API route calling an LLM, so that we can add Workflow SDK to it. We'll use the [Flight Booking Agent](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) example as a starting point, which comes with a chat interface built using Next.js, AI SDK, and Shadcn UI.
 
 <Steps>
 
 <Step>
 ### Clone example app
 
-We'll need an app with a simple chat interface and an API route calling an LLM, so that we can add Workflow DevKit to it. For the follow-along steps, we'll use the [Flight Booking Agent](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) example as a starting point, which comes with a chat interface built using Next.js, AI SDK, and Shadcn UI.
+We'll need an app with a simple chat interface and an API route calling an LLM, so that we can add Workflow SDK to it. For the follow-along steps, we'll use the [Flight Booking Agent](https://github.com/vercel/workflow-examples/tree/main/flight-booking-app) example as a starting point, which comes with a chat interface built using Next.js, AI SDK, and Shadcn UI.
 
 If you have your own project, you can skip this step, and simply apply the changes of the following steps to your own project.
 
@@ -219,7 +219,7 @@ export default function ChatPage() {
 
 </Steps>
 
-## Integrating Workflow DevKit
+## Integrating Workflow SDK
 
 Now that we have a basic agent using AI SDK, we can modify it to make it durable.
 
@@ -228,7 +228,7 @@ Now that we have a basic agent using AI SDK, we can modify it to make it durable
 
 ### Install Dependencies
 
-Add the Workflow DevKit packages to your project:
+Add the Workflow SDK packages to your project:
 
 ```package-install
 npm i workflow @workflow/ai

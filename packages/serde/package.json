@@ -1,6 +1,6 @@
 {
   "name": "@workflow/serde",
-  "description": "Serialization symbols for custom class serialization in Workflow DevKit",
+  "description": "Serialization symbols for custom class serialization in Workflow SDK",
   "version": "4.1.0-beta.2",
   "type": "module",
   "main": "dist/index.js",

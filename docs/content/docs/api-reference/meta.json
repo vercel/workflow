@@ -1,4 +1,13 @@
 {
   "title": "API Reference",
-  "pages": ["...", "workflow-errors", "workflow-serde", "workflow-ai", "vitest"]
+  "pages": [
+    "workflow-globals",
+    "workflow",
+    "workflow-api",
+    "workflow-next",
+    "workflow-errors",
+    "workflow-serde",
+    "workflow-ai",
+    "vitest"
+  ]
 }

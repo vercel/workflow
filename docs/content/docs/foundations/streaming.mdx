@@ -105,7 +105,7 @@ Because streams are live and continue receiving chunks, negative `startIndex` va
 
 ## Streams as Data Types
 
-[`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow DevKit makes serializable. These are not custom types - they follow the web standard - but Workflow DevKit adds the ability to pass them between functions while maintaining their streaming capabilities.
+[`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow SDK makes serializable. These are not custom types - they follow the web standard - but Workflow SDK adds the ability to pass them between functions while maintaining their streaming capabilities.
 
 Unlike regular values that are fully serialized to the [event log](/docs/how-it-works/event-sourcing), streams maintain their streaming capabilities when passed between functions.
 
@@ -117,7 +117,7 @@ Unlike regular values that are fully serialized to the [event log](/docs/how-it-
 <Callout type="info">
 **How Streams Persist Across Workflow Suspensions**
 
-Streams in Workflow DevKit are backed by persistent, resumable storage provided by the "world" implementation. This is what enables streams to maintain their state even when workflows suspend and resume:
+Streams in Workflow SDK are backed by persistent, resumable storage provided by the "world" implementation. This is what enables streams to maintain their state even when workflows suspend and resume:
 
 - **Vercel deployments**: Streams are backed by a performant Redis-based stream
 - **Local development**: Stream chunks are stored in the filesystem

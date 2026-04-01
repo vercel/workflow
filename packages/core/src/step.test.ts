@@ -1,4 +1,5 @@
 import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -546,10 +547,8 @@ describe('createUseStep', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const useStep = createUseStep(ctx);
     const add = useStep('add');
@@ -557,9 +556,7 @@ describe('createUseStep', () => {
     // Start the step - it will process the event asynchronously
     const stepPromise = add(1, 2);
 
-    // Wait for the error handler to be called
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
     expect(workflowError?.message).toContain('Unexpected event type for step');
     expect(workflowError?.message).toContain('step_01K11TFZ62YS0YYFDQ3E8B9YCV');

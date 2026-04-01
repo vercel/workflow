@@ -20,6 +20,7 @@ export {
   ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
+export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
   WorkflowRunBaseSchema,

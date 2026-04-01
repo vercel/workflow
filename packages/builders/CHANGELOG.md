@@ -1,5 +1,16 @@
 # @workflow/builders
 
+## 4.0.1-beta.65
+
+### Patch Changes
+
+- [#1560](https://github.com/vercel/workflow/pull/1560) [`a3b7c48`](https://github.com/vercel/workflow/commit/a3b7c480e058e9070d2ecb8b84b38bbf2081840a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Only rewrite .ts extensions to .js in externalized step imports when targeting Node's native ESM loader (vitest), preserving original extensions for framework bundlers (Next.js, SvelteKit, etc.)
+
+- [#1509](https://github.com/vercel/workflow/pull/1509) [`d119c74`](https://github.com/vercel/workflow/commit/d119c740d095ae601598bc2a62e6269e06f70f3e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix import.meta.url being undefined when using CJS builds
+
+- Updated dependencies [[`62ff600`](https://github.com/vercel/workflow/commit/62ff6004f6f5c1b7b93099470a0097d8a81a42ee), [`4f646e3`](https://github.com/vercel/workflow/commit/4f646e3d58d27a5777922519a72e352814a7ef12)]:
+  - @workflow/core@4.2.0-beta.74
+
 ## 4.0.1-beta.64
 
 ### Patch Changes
