@@ -6,4 +6,4 @@
 "@workflow/next": patch
 ---
 
-Increase flow route limit to max fluid duration and fail run if a single replay exceeds takes too long
+Increase flow route limit to max fluid duration and fail run if a single replay takes too long
