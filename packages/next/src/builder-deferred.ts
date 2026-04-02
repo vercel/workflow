@@ -678,7 +678,8 @@ export async function getNextBuilderDeferred() {
       // we can skip initial discovery after the first build (when cache exists).
       const hasCache =
         this.discoveredWorkflowFiles.size > 0 ||
-        this.discoveredStepFiles.size > 0;
+        this.discoveredStepFiles.size > 0 ||
+        this.discoveredSerdeFiles.size > 0;
       const isProduction = !this.config.watch;
 
       if (isProduction || !hasCache) {
@@ -1424,11 +1425,17 @@ export async function getNextBuilderDeferred() {
 
     private shouldSkipTransitiveStepFile(filePath: string): boolean {
       const normalizedPath = filePath.replace(/\\/g, '/');
+
+      // Allow @workflow scoped packages to be followed transitively
+      const isWorkflowPackage =
+        normalizedPath.includes('/node_modules/@workflow/') ||
+        normalizedPath.includes('/.pnpm/@workflow+');
+
       return (
         normalizedPath.includes('/.well-known/workflow/') ||
         normalizedPath.includes('/.next/') ||
-        normalizedPath.includes('/node_modules/') ||
-        normalizedPath.includes('/.pnpm/')
+        (normalizedPath.includes('/node_modules/') && !isWorkflowPackage) ||
+        (normalizedPath.includes('/.pnpm/') && !isWorkflowPackage)
       );
     }
 

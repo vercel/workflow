@@ -176,7 +176,9 @@ export function withWorkflow(
       };
 
       // Ensure @workflow packages are transpiled so our loader can process them
-      // and discover step functions in dependencies like @workflow/ai
+      // and discover step functions in dependencies like @workflow/ai.
+      // Note: @workflow/ai is optional - Next.js handles missing transpilePackages
+      // entries gracefully, so this is safe even if the package isn't installed.
       const existingTranspilePackages = Array.isArray(
         nextConfig.transpilePackages
       )

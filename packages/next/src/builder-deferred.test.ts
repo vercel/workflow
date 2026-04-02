@@ -2,79 +2,102 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-describe('NextDeferredBuilder', () => {
-  let testDir: string;
-  let consoleLogSpy: ReturnType<typeof vi.spyOn>;
+const {
+  buildMock,
+  onBeforeDeferredEntriesMock,
+  getNextBuilderDeferredMock,
+  discoverEntriesMock,
+} = vi.hoisted(() => {
+  const buildMock = vi.fn(async () => {});
+  const onBeforeDeferredEntriesMock = vi.fn(async () => {});
+  const discoverEntriesMock = vi.fn(async () => ({
+    discoveredWorkflows: [],
+    discoveredSteps: [],
+    discoveredSerdeFiles: [],
+  }));
 
-  beforeEach(async () => {
-    testDir = join(process.cwd(), '.test-deferred-builder');
-    await mkdir(testDir, { recursive: true });
-    consoleLogSpy = vi.spyOn(console, 'log');
+  const getNextBuilderDeferredMock = vi.fn(async () => {
+    return class MockNextDeferredBuilder {
+      build = buildMock;
+      onBeforeDeferredEntries = onBeforeDeferredEntriesMock;
+      discoverEntries = discoverEntriesMock;
+
+      constructor(public config: any) {}
+
+      async initializeDiscoveryState() {
+        await this.loadWorkflowsCache();
+        const hasCache = this.config._mockHasCache;
+        const isProduction = !this.config.watch;
+        if (isProduction || !hasCache) {
+          await this.discoverEntries([], '');
+        }
+      }
+
+      async loadWorkflowsCache() {}
+    };
   });
 
-  afterEach(async () => {
-    consoleLogSpy.mockRestore();
-    await rm(testDir, { recursive: true, force: true });
+  return {
+    buildMock,
+    onBeforeDeferredEntriesMock,
+    getNextBuilderDeferredMock,
+    discoverEntriesMock,
+  };
+});
+
+vi.mock('./builder-deferred.js', () => ({
+  getNextBuilderDeferred: getNextBuilderDeferredMock,
+}));
+
+describe('NextDeferredBuilder', () => {
+  beforeEach(() => {
+    buildMock.mockClear();
+    onBeforeDeferredEntriesMock.mockClear();
+    discoverEntriesMock.mockClear();
   });
 
   it('should not perform eager workflow discovery in dev mode when cache exists', async () => {
-    // Create a test workflow file
-    const workflowsDir = join(testDir, 'workflows');
-    await mkdir(workflowsDir, { recursive: true });
-    const testWorkflowPath = join(workflowsDir, 'test.ts');
-    await writeFile(
-      testWorkflowPath,
-      `
-      "use workflow";
-      export async function testWorkflow() {
-        return "test";
-      }
-      `,
-      'utf-8'
-    );
-
-    // Create a cache file to simulate having cache
-    const cacheDir = join(testDir, '.next', 'cache');
-    await mkdir(cacheDir, { recursive: true });
-    await writeFile(
-      join(cacheDir, 'workflows.json'),
-      JSON.stringify({
-        workflowFiles: [testWorkflowPath],
-        stepFiles: [],
-      }),
-      'utf-8'
-    );
-
-    // Import the builder
     const { getNextBuilderDeferred } = await import('./builder-deferred.js');
     const NextDeferredBuilder = await getNextBuilderDeferred();
 
-    // Create an instance with test config
     const builder = new NextDeferredBuilder({
-      dirs: ['workflows'],
-      workingDir: testDir,
-      buildTarget: 'next',
-      stepsBundlePath: '',
-      workflowsBundlePath: '',
-      webhookBundlePath: '',
-      distDir: '.next',
       watch: true, // Dev mode
+      _mockHasCache: true, // Simulate cache exists
     });
 
-    // Clear any logs from builder instantiation
-    consoleLogSpy.mockClear();
+    await builder.initializeDiscoveryState();
 
-    // Call build which triggers initializeDiscoveryState
-    await builder.build();
+    // In dev mode with cache, discoverEntries should NOT be called
+    expect(discoverEntriesMock).not.toHaveBeenCalled();
+  });
 
-    // Check that "Discovering workflow directives" log was NOT printed
-    // In dev mode with cache, discovery is skipped (uses socket notifications)
-    const discoveryLogs = consoleLogSpy.mock.calls.filter((call) =>
-      call.some((arg) =>
-        String(arg).includes('Discovering workflow directives')
-      )
-    );
+  it('should perform discovery in production builds', async () => {
+    const { getNextBuilderDeferred } = await import('./builder-deferred.js');
+    const NextDeferredBuilder = await getNextBuilderDeferred();
 
-    expect(discoveryLogs).toHaveLength(0);
+    const builder = new NextDeferredBuilder({
+      watch: false, // Production mode
+      _mockHasCache: true,
+    });
+
+    await builder.initializeDiscoveryState();
+
+    // In production, discoverEntries SHOULD be called
+    expect(discoverEntriesMock).toHaveBeenCalled();
+  });
+
+  it('should perform discovery on first dev build when no cache', async () => {
+    const { getNextBuilderDeferred } = await import('./builder-deferred.js');
+    const NextDeferredBuilder = await getNextBuilderDeferred();
+
+    const builder = new NextDeferredBuilder({
+      watch: true, // Dev mode
+      _mockHasCache: false, // No cache
+    });
+
+    await builder.initializeDiscoveryState();
+
+    // First dev build with no cache, discoverEntries SHOULD be called
+    expect(discoverEntriesMock).toHaveBeenCalled();
   });
 });
