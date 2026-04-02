@@ -43,7 +43,7 @@
     "@workflow/serde": "4.0.0",
     "@workflow/nest": "4.0.0",
     "@workflow/example-nest": "0.0.0",
-    "workflow-devkit-compiler-playground": "0.1.0",
+    "workflow-sdk-compiler-playground": "0.1.0",
     "@workflow/example-nitro": "0.0.0",
     "@workflow/vitest": "4.0.1-beta.1",
     "@workflow/vitest-workbench": "0.0.1",

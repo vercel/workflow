@@ -35,7 +35,7 @@ describe('start', () => {
         // @ts-expect-error - intentionally passing undefined
         start(undefined, [])
       ).rejects.toThrow(
-        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`
+        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`
       );
     });
 
@@ -49,7 +49,7 @@ describe('start', () => {
         // @ts-expect-error - intentionally passing null
         start(null, [])
       ).rejects.toThrow(
-        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`
+        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`
       );
     });
 
@@ -61,7 +61,7 @@ describe('start', () => {
       );
 
       await expect(start(invalidWorkflow, [])).rejects.toThrow(
-        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`
+        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`
       );
     });
 
