@@ -156,7 +156,7 @@ const result = await world.runs.list({ // [!code highlight]
 
 ### Cancelling Runs
 
-There is no `cancel()` method on `world.runs`. To cancel a run, create a `run_cancelled` event via `world.events.create()` (see above).
+There is no `cancel()` method on `world.runs`. The previous `world.runs.cancel()` method was removed — to cancel a run, create a `run_cancelled` event via `world.events.create()` instead (see [Events](/docs/api-reference/workflow-api/world/events)).
 
 ### WorkflowRun Type
 
@@ -305,9 +305,13 @@ const result = await world.hooks.list({ // [!code highlight]
 import { getWorld } from "workflow/runtime";
 
 const world = getWorld();
+let cursor: string | undefined;
+
 const runs = await world.runs.list({ // [!code highlight]
   pagination: { cursor },
 }); // [!code highlight]
+
+cursor = runs.cursor; // pass to next call for pagination
 ```
 
 ### Get a Run — Full Data vs. Metadata Only

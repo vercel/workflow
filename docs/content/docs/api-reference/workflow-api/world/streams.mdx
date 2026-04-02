@@ -179,6 +179,8 @@ const info = await world.getStreamInfo("default", runId); // [!code highlight]
 import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const streamName = url.searchParams.get("name") ?? "default";
   const world = getWorld();
   const readable = await world.readFromStream(streamName); // [!code highlight]
 
