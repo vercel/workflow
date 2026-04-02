@@ -1502,3 +1502,51 @@ export async function importMetaUrlWorkflow() {
   'use workflow';
   return await checkImportMetaUrl();
 }
+
+//////////////////////////////////////////////////////////
+// Regression test for #1577:
+// getWorkflowMetadata()/getStepMetadata() called from a module-level helper
+// function (not directly inside the step body) must still have access to the
+// AsyncLocalStorage context.
+
+const withStrictMetadataCheck = async <T>(fn: () => Promise<T>) => {
+  const workflowMetadata = getWorkflowMetadata();
+  const stepMetadata = getStepMetadata();
+
+  return await fn().then((result) => ({
+    result,
+    workflowMetadata,
+    stepMetadata,
+  }));
+};
+
+async function metadataHelperStep(label: string): Promise<{
+  label: string;
+  workflowRunId: string;
+  stepId: string;
+  attempt: number;
+}> {
+  'use step';
+
+  const { workflowMetadata, stepMetadata } = await withStrictMetadataCheck(
+    async () => label
+  );
+
+  return {
+    label,
+    workflowRunId: workflowMetadata.workflowRunId,
+    stepId: stepMetadata.stepId,
+    attempt: stepMetadata.attempt,
+  };
+}
+
+export async function metadataFromHelperWorkflow(label: string): Promise<{
+  label: string;
+  workflowRunId: string;
+  stepId: string;
+  attempt: number;
+}> {
+  'use workflow';
+
+  return await metadataHelperStep(label);
+}

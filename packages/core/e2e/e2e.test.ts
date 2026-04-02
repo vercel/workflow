@@ -2156,4 +2156,20 @@ describe('e2e', () => {
       });
     }
   );
+
+  test(
+    'metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('metadataFromHelperWorkflow'), [
+        'smoke-test',
+      ]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue.label).toBe('smoke-test');
+      expect(typeof returnValue.workflowRunId).toBe('string');
+      expect(typeof returnValue.stepId).toBe('string');
+      expect(returnValue.attempt).toBeGreaterThanOrEqual(1);
+    }
+  );
 });
