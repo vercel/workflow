@@ -4,7 +4,7 @@ import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
-import z from 'zod';
+import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl } from './config.js';
 import { getPackageInfo } from './init.js';
