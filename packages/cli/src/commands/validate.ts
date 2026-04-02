@@ -152,7 +152,7 @@ export default class Validate extends BaseCommand {
       };
 
       if (flags.strict && totalIssues > 0) {
-        this.exit(1);
+        process.exitCode = 1;
       }
 
       return output;
@@ -210,7 +210,7 @@ export default class Validate extends BaseCommand {
     }
 
     if (flags.strict && totalIssues > 0) {
-      this.exit(1);
+      process.exitCode = 1;
     }
 
     return {};
