@@ -190,7 +190,7 @@ async function doublePoint(point: Point) {
 ### Requirements
 
 <Callout type="warn">
-Both methods must be implemented as **static** methods on the class. Instance methods are not supported.
+`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented as **static** methods on the class. Defining them as instance methods is not supported.
 </Callout>
 
 - The data returned by `WORKFLOW_SERIALIZE` must itself be serializable (see [Supported Serializable Types](#supported-serializable-types))
