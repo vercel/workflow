@@ -1,5 +1,11 @@
 # @workflow/world-local
 
+## 4.1.0-beta.49
+
+### Patch Changes
+
+- [#1588](https://github.com/vercel/workflow/pull/1588) [`ef2218a`](https://github.com/vercel/workflow/commit/ef2218ab22310afa04e4e1709906a86969126e52) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix zod v3/v4 schema mismatch crash (`keyValidator._parse is not a function`) by using consistent `zod/v4` imports in queue files that consume v4-native schemas from `@workflow/world`
+
 ## 4.1.0-beta.48
 
 ### Patch Changes
