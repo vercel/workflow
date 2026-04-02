@@ -156,7 +156,7 @@ const result = await world.runs.list({ // [!code highlight]
 
 ### Cancelling Runs
 
-There is no `cancel()` method on `world.runs`. The previous `world.runs.cancel()` method was removed — to cancel a run, create a `run_cancelled` event via `world.events.create()` instead (see [Events](/docs/api-reference/workflow-api/world/events)).
+To cancel a run, create a `run_cancelled` event via `world.events.create()` (see [Events](/docs/api-reference/workflow-api/world/events)), or use the CLI or Web UI helpers.
 
 ### WorkflowRun Type
 
