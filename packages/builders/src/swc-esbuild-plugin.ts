@@ -113,6 +113,14 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           return null;
         }
 
+        // When only sideEffectEntries is set (no entriesToBundle), we only
+        // need to override sideEffects for top-level bare imports — typically
+        // from the virtual entry. Skip resolution for transitive imports
+        // (dynamic imports, requires, etc.) to avoid unnecessary overhead.
+        if (!options.entriesToBundle && args.kind !== 'import-statement') {
+          return null;
+        }
+
         try {
           let resolvedPath: string | false | undefined = args.path;
 
