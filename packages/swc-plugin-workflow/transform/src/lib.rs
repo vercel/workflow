@@ -331,6 +331,9 @@ pub struct StepTransform {
     default_exports_to_replace: Vec<(String, Expr)>, // (export_name, replacement_expr)
     // Track default workflow exports that need const declarations in workflow mode
     default_workflow_exports: Vec<(String, Expr, swc_core::common::Span)>, // (const_name, expr, span)
+    // Track default class exports that need const declarations so the class has an
+    // accessible binding name at module scope for registration code (serde / step IIFEs).
+    default_class_exports: Vec<(String, ClassExpr)>, // (const_name, class_expr)
     // Track all declared identifiers in module scope to avoid collisions
     declared_identifiers: HashSet<String>,
     // Track object property step functions for hoisting in step mode
@@ -1542,6 +1545,7 @@ impl StepTransform {
             step_exports_to_convert: Vec::new(),
             default_exports_to_replace: Vec::new(),
             default_workflow_exports: Vec::new(),
+            default_class_exports: Vec::new(),
             declared_identifiers: HashSet::new(),
             object_property_step_functions: Vec::new(),
             nested_step_functions: Vec::new(),
@@ -5737,6 +5741,71 @@ impl VisitMut for StepTransform {
             }
         }
 
+        // Handle default class exports that need a binding name.
+        // Rewrites `export default class { ... }` to:
+        //   const __defaultClass = class __defaultClass { ... };
+        //   export default __defaultClass;
+        if !self.default_class_exports.is_empty() {
+            let class_exports: Vec<_> = self.default_class_exports.drain(..).collect();
+
+            // Find the original export default position
+            let mut export_position = None;
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(_))
+                    | ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(_)) => {
+                        export_position = Some(i);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(pos) = export_position {
+                // Remove the original export default
+                items.remove(pos);
+
+                for (const_name, class_expr) in class_exports {
+                    // Insert: const __defaultClass = class __defaultClass { ... };
+                    items.insert(
+                        pos,
+                        ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            kind: VarDeclKind::Const,
+                            declare: false,
+                            decls: vec![VarDeclarator {
+                                span: DUMMY_SP,
+                                name: Pat::Ident(BindingIdent {
+                                    id: Ident::new(
+                                        const_name.clone().into(),
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                    ),
+                                    type_ann: None,
+                                }),
+                                init: Some(Box::new(Expr::Class(class_expr))),
+                                definite: false,
+                            }],
+                        })))),
+                    );
+
+                    // Insert: export default __defaultClass;
+                    items.insert(
+                        pos + 1,
+                        ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(ExportDefaultExpr {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Ident(Ident::new(
+                                const_name.into(),
+                                DUMMY_SP,
+                                SyntaxContext::empty(),
+                            ))),
+                        })),
+                    );
+                }
+            }
+        }
+
         // Clear the workflow_functions_needing_id since we've already processed them
         self.workflow_functions_needing_id.clear();
 
@@ -8118,6 +8187,52 @@ impl VisitMut for StepTransform {
 
                 decl.visit_mut_children_with(self);
             }
+            DefaultDecl::Class(class_expr) => {
+                // Handle `export default class { ... }` and `export default class Foo { ... }`
+                // When the class has serde methods or step methods, we need a binding name
+                // accessible at module scope for registration code. Named class exports
+                // already have their ident in scope; for anonymous class exports, generate
+                // a unique name and defer rewriting to visit_mut_module_items.
+                let has_serde = self.has_custom_serialization_methods(&class_expr.class);
+                let has_step_or_workflow_methods = class_expr.class.body.iter().any(|member| {
+                    if let ClassMember::Method(method) = member {
+                        if let Some(body) = &method.function.body {
+                            return self.has_use_step_directive(&Some(body.clone()))
+                                || self.has_use_workflow_directive(&Some(body.clone()));
+                        }
+                    }
+                    false
+                });
+                let is_anonymous = class_expr.ident.is_none();
+                let needs_rewrite = (has_serde || has_step_or_workflow_methods) && is_anonymous;
+
+                // Set the binding name before visiting children
+                if needs_rewrite {
+                    let const_name = self.generate_unique_name("__defaultClass");
+                    self.current_class_binding_name = Some(const_name);
+                } else if let Some(ident) = &class_expr.ident {
+                    self.current_class_binding_name = Some(ident.sym.to_string());
+                }
+
+                // Visit the class body so serde/step transforms run
+                decl.visit_mut_children_with(self);
+
+                // After visiting, defer the rewrite for anonymous classes
+                if needs_rewrite {
+                    if let DefaultDecl::Class(class_expr) = &decl.decl {
+                        // Retrieve the const_name from current_class_binding_name
+                        // (it was consumed by visit_mut_class_expr, but we can
+                        // get it from the class expr ident that was re-inserted)
+                        let const_name = class_expr
+                            .ident
+                            .as_ref()
+                            .map(|i| i.sym.to_string())
+                            .expect("anonymous class should have had binding name re-inserted");
+                        self.default_class_exports
+                            .push((const_name, class_expr.clone()));
+                    }
+                }
+            }
             _ => {
                 decl.visit_mut_children_with(self);
             }
@@ -8325,6 +8440,35 @@ impl VisitMut for StepTransform {
                         self.step_function_names.insert("default".to_string());
                         // Similar logic for steps...
                     }
+                }
+            }
+            Expr::Class(class_expr) => {
+                // Handle `export default (class { ... })` expression form.
+                // Same logic as DefaultDecl::Class above.
+                let has_serde = self.has_custom_serialization_methods(&class_expr.class);
+                let has_step_or_workflow_methods = class_expr.class.body.iter().any(|member| {
+                    if let ClassMember::Method(method) = member {
+                        if let Some(body) = &method.function.body {
+                            return self.has_use_step_directive(&Some(body.clone()))
+                                || self.has_use_workflow_directive(&Some(body.clone()));
+                        }
+                    }
+                    false
+                });
+
+                if (has_serde || has_step_or_workflow_methods) && class_expr.ident.is_none() {
+                    let const_name = self.generate_unique_name("__defaultClass");
+                    self.current_class_binding_name = Some(const_name.clone());
+                    // Must visit children before cloning so transforms run on the class body
+                    expr.visit_mut_children_with(self);
+                    // Clone after transform so we capture the transformed class
+                    if let Expr::Class(transformed) = &*expr.expr {
+                        self.default_class_exports
+                            .push((const_name, transformed.clone()));
+                    }
+                    return; // Don't call visit_mut_children_with again
+                } else if let Some(ident) = &class_expr.ident {
+                    self.current_class_binding_name = Some(ident.sym.to_string());
                 }
             }
             _ => {}

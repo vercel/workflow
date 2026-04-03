@@ -892,6 +892,40 @@ Note that:
 - Classes that already have an internal name (e.g., `class _Bash { ... }`) are not modified
 - Only classes with serialization methods (`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`) are affected
 
+### Anonymous Default Class Export Rewriting
+
+When an anonymous class with serialization methods or step methods is exported as the default export, the plugin rewrites it into a `const` declaration + re-export so that the class has a binding name accessible at module scope. Without this, the generated registration code would reference an undefined variable.
+
+Input:
+```javascript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+export default class {
+  constructor(id) { this.id = id; }
+  static [WORKFLOW_SERIALIZE](inst) { return { id: inst.id }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new __defaultClass(data.id); }
+  async process(input) { "use step"; return { result: input }; }
+}
+```
+
+Output (step mode):
+```javascript
+const __defaultClass = class __defaultClass {
+    constructor(id) { this.id = id; }
+    // ... serde methods preserved ...
+    async process(input) { return { result: input }; }
+};
+export default __defaultClass;
+registerStepFunction("step//./input//__defaultClass#process", __defaultClass.prototype["process"]);
+(function(__wf_cls, __wf_id) { /* ... */ })(__defaultClass, "class//./input//__defaultClass");
+```
+
+Note that:
+- The anonymous class `export default class { ... }` is rewritten to `const __defaultClass = class __defaultClass { ... }; export default __defaultClass;`
+- The generated name `__defaultClass` is used for all registrations (step, class, serde)
+- If `__defaultClass` is already declared in scope, the name is suffixed (`__defaultClass$1`, etc.)
+- Named default exports (e.g., `export default class MyService { ... }`) are NOT rewritten — the class name `MyService` is already in scope
+
 ### File Discovery for Custom Serialization
 
 Files containing classes with custom serialization are automatically discovered for transformation, even if they don't contain `"use step"` or `"use workflow"` directives. The discovery mechanism looks for:
