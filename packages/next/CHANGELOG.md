@@ -1,5 +1,16 @@
 # @workflow/next
 
+## 4.0.1-beta.73
+
+### Patch Changes
+
+- [#1597](https://github.com/vercel/workflow/pull/1597) [`4429078`](https://github.com/vercel/workflow/commit/44290785e1f6768ccf360572bf558f582b382ab7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Stop unconditionally setting `WORKFLOW_PUBLIC_MANIFEST=1` during `next dev`, which caused `public/.well-known/workflow/v1/manifest.json` to be created without the env var being explicitly set.
+
+- Updated dependencies [[`d1330cf`](https://github.com/vercel/workflow/commit/d1330cfebca1b2f552bd80c06e37bff4fba1b79e), [`d8aaf27`](https://github.com/vercel/workflow/commit/d8aaf27c7913a1a44561325c9a08f50b4340100d), [`5d22e61`](https://github.com/vercel/workflow/commit/5d22e61446d5146887f8c268d305ea42e3f67b09), [`047c01b`](https://github.com/vercel/workflow/commit/047c01bc1545845b4251a58a380e627ef164e6d5), [`7c996a7`](https://github.com/vercel/workflow/commit/7c996a76c59cb88fa58d15942218b308d1cd100f), [`443a9e6`](https://github.com/vercel/workflow/commit/443a9e62f938b91cd818106155d384329cf5c82c)]:
+  - @workflow/builders@4.0.1-beta.68
+  - @workflow/core@4.2.0-beta.77
+  - @workflow/swc-plugin@4.1.0-beta.22
+
 ## 4.0.1-beta.72
 
 ### Patch Changes
