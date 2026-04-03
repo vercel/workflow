@@ -9,6 +9,10 @@ import type { World } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
 
+const require = createRequire(
+  pathToFileURL(process.cwd() + '/package.json').href
+);
+
 const WorldCache = Symbol.for('@workflow/world//cache');
 const StubbedWorldCache = Symbol.for('@workflow/world//stubbedCache');
 const WorldCachePromise = Symbol.for('@workflow/world//cachePromise');
@@ -24,9 +28,10 @@ const globalSymbols: typeof globalThis & {
 } = globalThis;
 
 /**
- * This hides the dynamic import behind a function to prevent the bundler from
- * trying to resolve it at build time, instead of at runtime, since the world
- * being imported might not exist at build time.
+ * Hides the dynamic import behind `new Function` to prevent bundlers from
+ * trying to resolve it at build time, since the world module may not exist
+ * at build time. Falls back to `require()` in environments where
+ * `new Function`-based `import()` is unavailable (e.g. CJS test runners).
  */
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string
@@ -47,9 +52,6 @@ function resolveModulePath(specifier: string): string {
   }
   // Package specifier - use require.resolve to find the package
   try {
-    const require = createRequire(
-      pathToFileURL(process.cwd() + '/package.json').href
-    );
     return pathToFileURL(require.resolve(specifier)).href;
   } catch {
     return specifier;
@@ -100,8 +102,16 @@ export const createWorld = async (): Promise<World> => {
     });
   }
 
-  const resolvedPath = resolveModulePath(targetWorld);
-  const mod = await dynamicImport(resolvedPath);
+  // Try require() first — works for CJS-compatible packages and in test
+  // runners where `new Function`-based import() is unavailable.
+  // Fall back to dynamic import() for ESM-only modules.
+  let mod: any;
+  try {
+    mod = require(targetWorld);
+  } catch {
+    const resolvedPath = resolveModulePath(targetWorld);
+    mod = await dynamicImport(resolvedPath);
+  }
   if (typeof mod === 'function') {
     return mod() as World;
   } else if (typeof mod.default === 'function') {
