@@ -15,7 +15,7 @@ export default class {
   }
 
   static [WORKFLOW_DESERIALIZE](data) {
-    return new __DefaultClass(data.id);
+    return new this(data.id);
   }
 
   async process(input) {

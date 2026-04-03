@@ -5747,6 +5747,12 @@ impl VisitMut for StepTransform {
         //   export default __DefaultClass;
         if !self.default_class_exports.is_empty() {
             let class_exports: Vec<_> = self.default_class_exports.drain(..).collect();
+            // A module can only have one default export, so at most one rewrite is queued.
+            debug_assert!(
+                class_exports.len() <= 1,
+                "expected at most one default class export rewrite, got {}",
+                class_exports.len()
+            );
 
             // Find the original export default position
             let mut export_position = None;
@@ -8206,28 +8212,26 @@ impl VisitMut for StepTransform {
                 let is_anonymous = class_expr.ident.is_none();
                 let needs_rewrite = (has_serde || has_step_or_workflow_methods) && is_anonymous;
 
-                // Set the binding name before visiting children
-                if needs_rewrite {
+                // Set the binding name before visiting children.
+                // Save const_name for use after visiting (current_class_binding_name
+                // will be consumed by visit_mut_class_expr).
+                let saved_const_name = if needs_rewrite {
                     let const_name = self.generate_unique_name("__DefaultClass");
-                    self.current_class_binding_name = Some(const_name);
-                } else if let Some(ident) = &class_expr.ident {
-                    self.current_class_binding_name = Some(ident.sym.to_string());
-                }
+                    self.current_class_binding_name = Some(const_name.clone());
+                    Some(const_name)
+                } else {
+                    if let Some(ident) = &class_expr.ident {
+                        self.current_class_binding_name = Some(ident.sym.to_string());
+                    }
+                    None
+                };
 
                 // Visit the class body so serde/step transforms run
                 decl.visit_mut_children_with(self);
 
                 // After visiting, defer the rewrite for anonymous classes
-                if needs_rewrite {
+                if let Some(const_name) = saved_const_name {
                     if let DefaultDecl::Class(class_expr) = &decl.decl {
-                        // Retrieve the const_name from current_class_binding_name
-                        // (it was consumed by visit_mut_class_expr, but we can
-                        // get it from the class expr ident that was re-inserted)
-                        let const_name = class_expr
-                            .ident
-                            .as_ref()
-                            .map(|i| i.sym.to_string())
-                            .expect("anonymous class should have had binding name re-inserted");
                         self.default_class_exports
                             .push((const_name, class_expr.clone()));
                     }

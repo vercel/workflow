@@ -15,7 +15,7 @@ const __DefaultClass = class __DefaultClass {
         };
     }
     static [WORKFLOW_DESERIALIZE](data) {
-        return new __DefaultClass(data.id);
+        return new this(data.id);
     }
     async process(input) {
         return {

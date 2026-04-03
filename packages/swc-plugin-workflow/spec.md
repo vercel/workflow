@@ -903,7 +903,7 @@ import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
 export default class {
   constructor(id) { this.id = id; }
   static [WORKFLOW_SERIALIZE](inst) { return { id: inst.id }; }
-  static [WORKFLOW_DESERIALIZE](data) { return new __DefaultClass(data.id); }
+  static [WORKFLOW_DESERIALIZE](data) { return new this(data.id); }
   async process(input) { "use step"; return { result: input }; }
 }
 ```
