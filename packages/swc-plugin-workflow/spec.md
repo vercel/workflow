@@ -922,6 +922,7 @@ registerStepFunction("step//./input//__DefaultClass#process", __DefaultClass.pro
 
 Note that:
 - The anonymous class `export default class { ... }` is rewritten to `const __DefaultClass = class __DefaultClass { ... }; export default __DefaultClass;`
+- When the class has serialization methods, the class expression also gets the binding name re-inserted (e.g., `class __DefaultClass { ... }`). For step-only classes without serde, the class expression remains anonymous (e.g., `class { ... }`) — but the `const` binding name is what matters for module-scope registration code
 - The generated name `__DefaultClass` is used for all registrations (step, class, serde)
 - If `__DefaultClass` is already declared in scope, the name is suffixed (`__DefaultClass$1`, etc.)
 - Named default exports (e.g., `export default class MyService { ... }`) are NOT rewritten — the class name `MyService` is already in scope

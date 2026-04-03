@@ -2768,6 +2768,22 @@ impl StepTransform {
         has_serialize && has_deserialize
     }
 
+    /// Returns `true` if the class has any methods with `"use step"` or `"use workflow"`
+    /// directives, or has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE).
+    /// Used to determine whether an anonymous default class export needs a binding name rewrite.
+    fn class_needs_binding_rewrite(&self, class: &Class) -> bool {
+        if self.has_custom_serialization_methods(class) {
+            return true;
+        }
+        class.body.iter().any(|member| {
+            if let ClassMember::Method(method) = member {
+                return self.has_use_step_directive(&method.function.body)
+                    || self.has_use_workflow_directive(&method.function.body);
+            }
+            false
+        })
+    }
+
     // Remove "use step" directive from arrow function body
     fn remove_use_step_directive_arrow(&self, body: &mut BlockStmtOrExpr) {
         if let BlockStmtOrExpr::BlockStmt(body) = body {
@@ -5626,6 +5642,13 @@ impl VisitMut for StepTransform {
         // Clear workflow_exports_to_expand since workflowId is now added inline
         self.workflow_exports_to_expand.clear();
 
+        // A module can only have one default export, so default workflow exports and
+        // default class exports are mutually exclusive.
+        debug_assert!(
+            self.default_workflow_exports.is_empty() || self.default_class_exports.is_empty(),
+            "both default_workflow_exports and default_class_exports are populated"
+        );
+
         // Handle default workflow exports (all modes)
         // We need to: 1) find the export default position, 2) replace it with const declaration,
         // 3) add workflowId assignment, 4) add export default at the end
@@ -8199,18 +8222,8 @@ impl VisitMut for StepTransform {
                 // accessible at module scope for registration code. Named class exports
                 // already have their ident in scope; for anonymous class exports, generate
                 // a unique name and defer rewriting to visit_mut_module_items.
-                let has_serde = self.has_custom_serialization_methods(&class_expr.class);
-                let has_step_or_workflow_methods = class_expr.class.body.iter().any(|member| {
-                    if let ClassMember::Method(method) = member {
-                        if let Some(body) = &method.function.body {
-                            return self.has_use_step_directive(&Some(body.clone()))
-                                || self.has_use_workflow_directive(&Some(body.clone()));
-                        }
-                    }
-                    false
-                });
-                let is_anonymous = class_expr.ident.is_none();
-                let needs_rewrite = (has_serde || has_step_or_workflow_methods) && is_anonymous;
+                let needs_rewrite = class_expr.ident.is_none()
+                    && self.class_needs_binding_rewrite(&class_expr.class);
 
                 // Set the binding name before visiting children.
                 // Save const_name for use after visiting (current_class_binding_name
@@ -8446,35 +8459,11 @@ impl VisitMut for StepTransform {
                     }
                 }
             }
-            Expr::Class(class_expr) => {
-                // Handle `export default (class { ... })` expression form.
-                // Same logic as DefaultDecl::Class above.
-                let has_serde = self.has_custom_serialization_methods(&class_expr.class);
-                let has_step_or_workflow_methods = class_expr.class.body.iter().any(|member| {
-                    if let ClassMember::Method(method) = member {
-                        if let Some(body) = &method.function.body {
-                            return self.has_use_step_directive(&Some(body.clone()))
-                                || self.has_use_workflow_directive(&Some(body.clone()));
-                        }
-                    }
-                    false
-                });
-
-                if (has_serde || has_step_or_workflow_methods) && class_expr.ident.is_none() {
-                    let const_name = self.generate_unique_name("__DefaultClass");
-                    self.current_class_binding_name = Some(const_name.clone());
-                    // Must visit children before cloning so transforms run on the class body
-                    expr.visit_mut_children_with(self);
-                    // Clone after transform so we capture the transformed class
-                    if let Expr::Class(transformed) = &*expr.expr {
-                        self.default_class_exports
-                            .push((const_name, transformed.clone()));
-                    }
-                    return; // Don't call visit_mut_children_with again
-                } else if let Some(ident) = &class_expr.ident {
-                    self.current_class_binding_name = Some(ident.sym.to_string());
-                }
-            }
+            // Note: `export default (class { ... })` with parentheses is parsed by SWC
+            // as Expr::Paren(ParenExpr { expr: Class(...) }), NOT as Expr::Class directly.
+            // The declaration form `export default class { ... }` is handled in
+            // visit_mut_export_default_decl above. The parenthesized expression form is
+            // rare enough that we don't handle it here.
             _ => {}
         }
 
