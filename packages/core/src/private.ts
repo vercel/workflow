@@ -16,10 +16,19 @@ export type StepFunction<
 };
 
 const registeredSteps = new Map<string, StepFunction>();
-const BUILTIN_RESPONSE_STEP_NAMES = new Set([
+const BUILTIN_STEP_NAMES = new Set([
   '__builtin_response_array_buffer',
   '__builtin_response_json',
   '__builtin_response_text',
+  'start',
+  'Run.cancel',
+  'Run.status',
+  'Run.returnValue',
+  'Run.workflowName',
+  'Run.createdAt',
+  'Run.startedAt',
+  'Run.completedAt',
+  'Run.exists',
 ]);
 
 function getStepIdAliasCandidates(stepId: string): string[] {
@@ -58,13 +67,20 @@ function getStepIdAliasCandidates(stepId: string): string[] {
   );
 }
 
-function getBuiltinResponseStepAlias(stepId: string): StepFunction | undefined {
-  if (!BUILTIN_RESPONSE_STEP_NAMES.has(stepId)) {
+function getBuiltinStepAlias(stepId: string): StepFunction | undefined {
+  // Accept both bare names ('__builtin_response_text') and fully-qualified
+  // IDs ('step//workflow/internal/builtins@4.2.0//__builtin_response_text').
+  // Extract the function name from the last segment of a full step ID.
+  const fnName = stepId.startsWith('step//')
+    ? stepId.split('//').pop()!
+    : stepId;
+
+  if (!BUILTIN_STEP_NAMES.has(fnName)) {
     return undefined;
   }
 
   for (const [registeredStepId, stepFn] of registeredSteps.entries()) {
-    if (registeredStepId.endsWith(`//${stepId}`)) {
+    if (registeredStepId.endsWith(`//${fnName}`)) {
       return stepFn;
     }
   }
@@ -98,7 +114,7 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
     }
   }
 
-  const builtinAliasMatch = getBuiltinResponseStepAlias(stepId);
+  const builtinAliasMatch = getBuiltinStepAlias(stepId);
   if (builtinAliasMatch) {
     return builtinAliasMatch;
   }
