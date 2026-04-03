@@ -15,8 +15,19 @@ export type StepFunction<
   stepId?: string;
 };
 
-const registeredSteps = new Map<string, StepFunction>();
-const BUILTIN_RESPONSE_STEP_NAMES = new Set([
+const RegisteredStepsKey = Symbol.for('@workflow/core//registeredSteps');
+
+const globalSymbols: typeof globalThis & {
+  [RegisteredStepsKey]?: Map<string, StepFunction>;
+} = globalThis;
+
+// biome-ignore lint/suspicious/noAssignInExpressions: /
+const registeredSteps = (globalSymbols[RegisteredStepsKey] ??= new Map<
+  string,
+  StepFunction
+>());
+
+const BUILTIN_STEP_NAMES = new Set([
   '__builtin_response_array_buffer',
   '__builtin_response_json',
   '__builtin_response_text',
