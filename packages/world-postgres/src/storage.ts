@@ -444,7 +444,15 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           };
         }
 
-        // Run state transitions are not allowed on terminal runs
+        // For run_started on terminal runs, use RunExpiredError so the
+        // runtime knows to exit without retrying.
+        if (data.eventType === 'run_started') {
+          throw new RunExpiredError(
+            `Workflow run "${effectiveRunId}" is already in terminal state "${currentRun.status}"`
+          );
+        }
+
+        // Other run state transitions are not allowed on terminal runs
         if (
           runTerminalEvents.includes(data.eventType) ||
           data.eventType === 'run_cancelled'
@@ -563,6 +571,23 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
 
       // Handle run_started event: update run status
       if (data.eventType === 'run_started') {
+        // If the run is already running, return it without inserting a
+        // duplicate run_started event.  This makes run_started idempotent
+        // for concurrent invocations: replay is deterministic, so letting
+        // multiple callers proceed with the same run is safe.  We skip
+        // preloaded events here because this is a rare race-condition path
+        // — the runtime falls back to getAllWorkflowRunEvents().
+        if (currentRun?.status === 'running') {
+          const [fullRun] = await drizzle
+            .select()
+            .from(Schema.runs)
+            .where(eq(Schema.runs.runId, effectiveRunId))
+            .limit(1);
+          if (fullRun) {
+            return { run: deserializeRunError(compact(fullRun)) };
+          }
+        }
+
         const [runValue] = await drizzle
           .update(Schema.runs)
           .set({
@@ -1135,6 +1160,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         }
       }
 
+      // Strip eventData from run_started — it belongs on run_created only.
+      const storedEventData =
+        data.eventType === 'run_started'
+          ? undefined
+          : 'eventData' in data
+            ? data.eventData
+            : undefined;
+
       const [value] = await drizzle
         .insert(events)
         .values({
@@ -1142,22 +1175,51 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           eventId,
           correlationId: data.correlationId,
           eventType: data.eventType,
-          eventData: 'eventData' in data ? data.eventData : undefined,
+          eventData: storedEventData,
           specVersion: effectiveSpecVersion,
         })
         .returning({ createdAt: events.createdAt });
       if (!value) {
         throw new EntityConflictError(`Event ${eventId} could not be created`);
       }
-      const result = { ...data, ...value, runId: effectiveRunId, eventId };
+      const result = {
+        ...data,
+        ...value,
+        runId: effectiveRunId,
+        eventId,
+        ...(storedEventData !== undefined
+          ? { eventData: storedEventData }
+          : {}),
+      };
+      if (data.eventType === 'run_started') {
+        delete (result as any).eventData;
+      }
       const parsed = EventSchema.parse(result);
       const resolveData = params?.resolveData ?? 'all';
+
+      // For run_started: include all events so the runtime can skip
+      // the initial events.list call and reduce TTFB.
+      let allEvents: Event[] | undefined;
+      if (data.eventType === 'run_started' && run) {
+        const eventRows = await drizzle
+          .select()
+          .from(Schema.events)
+          .where(eq(Schema.events.runId, effectiveRunId))
+          .orderBy(Schema.events.eventId);
+        allEvents = eventRows.map((e) => {
+          e.eventData ||= e.eventDataJson;
+          const parsed = EventSchema.parse(compact(e));
+          return stripEventDataRefs(parsed, resolveData);
+        });
+      }
+
       return {
         event: stripEventDataRefs(parsed, resolveData),
         run,
         step,
         hook,
         wait,
+        events: allEvents,
       };
     },
     async get(

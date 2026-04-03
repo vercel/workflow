@@ -20,6 +20,7 @@ export {
   ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
+export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
   WorkflowRunBaseSchema,
@@ -52,7 +53,9 @@ export {
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';
 export {
+  DEFAULT_TIMESTAMP_THRESHOLD_FUTURE_MS,
   DEFAULT_TIMESTAMP_THRESHOLD_MS,
+  DEFAULT_TIMESTAMP_THRESHOLD_PAST_MS,
   ulidToDate,
   validateUlidTimestamp,
 } from './ulid.js';

@@ -1,3 +1,3 @@
 # @workflow/utils
 
-Utility functions for [Workflow DevKit](https://useworkflow.dev).
+Utility functions for [Workflow SDK](https://useworkflow.dev).

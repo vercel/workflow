@@ -19,6 +19,28 @@ export interface SwcPluginOptions {
   outdir?: string;
   projectRoot?: string;
   workflowManifest?: WorkflowManifest;
+  /**
+   * Rewrite TypeScript extensions (.ts, .tsx, .mts, .cts) to their JS
+   * equivalents (.js, .mjs, .cjs) in externalized import paths.
+   *
+   * Enable this when the output bundle is consumed directly by Node's native
+   * ESM loader (e.g. vitest), which cannot resolve .ts extensions.
+   *
+   * Leave disabled (default) when a downstream bundler (webpack, Vite, etc.)
+   * handles resolution — those tools resolve .ts natively and rewriting
+   * breaks them because the .js file doesn't exist on disk.
+   */
+  rewriteTsExtensions?: boolean;
+  /**
+   * Absolute file paths of discovered workflow/step/serde entries whose
+   * imports must be treated as side-effectful.
+   *
+   * The SWC compiler transform injects registration calls (workflow IDs,
+   * step IDs, class serialization, etc.) into these files. Without this
+   * override, esbuild honours `"sideEffects": false` from the package's
+   * `package.json` and silently drops bare imports of these modules.
+   */
+  sideEffectEntries?: string[];
 }
 
 const NODE_RESOLVE_OPTIONS = {
@@ -78,8 +100,24 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
         }
       };
 
+      // Pre-compute the normalized side-effect entries set for O(1) lookups.
+      const normalizedSideEffectEntries = new Set(
+        options.sideEffectEntries?.map((e) => e.replace(/\\/g, '/'))
+      );
+
       build.onResolve({ filter: /.*/ }, async (args) => {
-        if (!options.entriesToBundle) {
+        if (
+          !options.entriesToBundle &&
+          normalizedSideEffectEntries.size === 0
+        ) {
+          return null;
+        }
+
+        // When only sideEffectEntries is set (no entriesToBundle), we only
+        // need to override sideEffects for top-level bare imports — typically
+        // from the virtual entry. Skip resolution for transitive imports
+        // (dynamic imports, requires, etc.) to avoid unnecessary overhead.
+        if (!options.entriesToBundle && args.kind !== 'import-statement') {
           return null;
         }
 
@@ -106,42 +144,81 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
           // Normalize to forward slashes for cross-platform comparison
           const normalizedResolvedPath = resolvedPath.replace(/\\/g, '/');
 
-          for (const entryToBundle of options.entriesToBundle) {
-            const normalizedEntry = entryToBundle.replace(/\\/g, '/');
+          // Check if this module is a discovered entry whose SWC-transformed
+          // code contains side effects (workflow/step/class registration).
+          // Override the package.json "sideEffects": false so esbuild does not
+          // drop bare imports of these modules.
+          const hasSideEffects = normalizedSideEffectEntries.has(
+            normalizedResolvedPath
+          );
 
-            if (normalizedResolvedPath === normalizedEntry) {
-              return null;
+          if (options.entriesToBundle) {
+            let shouldBundle = false;
+            for (const entryToBundle of options.entriesToBundle) {
+              const normalizedEntry = entryToBundle.replace(/\\/g, '/');
+
+              if (normalizedResolvedPath === normalizedEntry) {
+                shouldBundle = true;
+                break;
+              }
+
+              // if the current entry imports a child that needs
+              // to be bundled then it needs to also be bundled so
+              // that the child can have our transform applied
+              if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
+                shouldBundle = true;
+                break;
+              }
             }
 
-            // if the current entry imports a child that needs
-            // to be bundled then it needs to also be bundled so
-            // that the child can have our transform applied
-            if (parentHasChild(normalizedResolvedPath, normalizedEntry)) {
-              return null;
+            if (shouldBundle) {
+              // Let esbuild bundle this entry, but override sideEffects if needed.
+              // We must return the resolved `path` alongside `sideEffects` because
+              // returning only `{ sideEffects: true }` without a path causes esbuild
+              // to fall through to its own resolver, which re-reads the package.json
+              // and applies `"sideEffects": false` from there.
+              return hasSideEffects
+                ? { path: resolvedPath, sideEffects: true }
+                : null;
             }
+
+            const isFilePath =
+              args.path.startsWith('.') || args.path.startsWith('/');
+
+            let externalPath: string;
+            if (isFilePath) {
+              externalPath = relative(
+                options.outdir || process.cwd(),
+                resolvedPath
+              ).replace(/\\/g, '/');
+
+              if (options.rewriteTsExtensions) {
+                // Rewrite TypeScript extensions to their JS equivalents so the
+                // externalized import is loadable by Node's native ESM loader.
+                externalPath = externalPath
+                  .replace(/\.tsx?$/, '.js')
+                  .replace(/\.mts$/, '.mjs')
+                  .replace(/\.cts$/, '.cjs');
+              }
+            } else {
+              externalPath = args.path;
+            }
+
+            return {
+              external: true,
+              path: externalPath,
+              sideEffects: hasSideEffects || undefined,
+            };
           }
 
-          const isFilePath =
-            args.path.startsWith('.') || args.path.startsWith('/');
-
-          let externalPath: string;
-          if (isFilePath) {
-            externalPath = relative(
-              options.outdir || process.cwd(),
-              resolvedPath
-            ).replace(/\\/g, '/');
-
-            // Rewrite TypeScript extensions to their JS equivalents so the
-            // externalized import is loadable by Node's native ESM loader.
-            externalPath = externalPath
-              .replace(/\.tsx?$/, '.js')
-              .replace(/\.mts$/, '.mjs')
-              .replace(/\.cts$/, '.cjs');
-          } else {
-            externalPath = args.path;
-          }
-
-          return { external: true, path: externalPath };
+          // No entriesToBundle — only override sideEffects when needed.
+          // We must return the resolved `path` alongside `sideEffects` because
+          // returning only `{ sideEffects: true }` without a path causes esbuild
+          // to fall through to its own resolver, which re-reads the package.json
+          // and applies `"sideEffects": false` from there.
+          return hasSideEffects
+            ? { path: resolvedPath, sideEffects: true }
+            : null;
         } catch (_) {}
         return null;
       });

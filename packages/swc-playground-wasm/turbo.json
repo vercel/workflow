@@ -1,0 +1,10 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "outputs": ["pkg/**"],
+      "env": ["RUSTUP_HOME", "CARGO_HOME"]
+    }
+  }
+}

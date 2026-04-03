@@ -108,7 +108,7 @@ function Sidebar() {
       <div>
         <h2 className="font-semibold text-base">DurableAgent Chat</h2>
         <p className="text-xs text-muted-foreground mt-1">
-          Powered by Workflow DevKit
+          Powered by Workflow SDK
         </p>
       </div>
 

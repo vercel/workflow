@@ -11,10 +11,12 @@ import {
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
+import { getRunCapabilities } from '../capabilities.js';
 import { type CryptoKey, importKey } from '../encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
+  SerializationFormat,
 } from '../serialization.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -122,6 +124,18 @@ export async function resumeHook<T = any>(
           ...Attribute.HookId(hook.hookId),
           ...Attribute.WorkflowRunId(hook.runId),
         });
+
+        // Check the target run's capabilities to ensure we encode the
+        // payload in a format the run's deployment can decode. For example,
+        // runs created before encryption support was added cannot decode
+        // the 'encr' serialization format.
+        const rawVersion = workflowRun.executionContext?.workflowCoreVersion;
+        const { supportedFormats } = getRunCapabilities(
+          typeof rawVersion === 'string' ? rawVersion : undefined
+        );
+        if (!supportedFormats.has(SerializationFormat.ENCRYPTED)) {
+          encryptionKey = undefined;
+        }
 
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];

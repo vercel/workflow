@@ -21,6 +21,7 @@ export async function trackMdRequest({
   referer,
   acceptHeader,
   requestType,
+  detectionMethod,
 }: TrackMdRequestParams): Promise<void> {
   try {
     const response = await fetch(PLATFORM_URL, {
@@ -35,6 +36,7 @@ export async function trackMdRequest({
         referer,
         acceptHeader,
         requestType,
+        detectionMethod,
       }),
     });
 

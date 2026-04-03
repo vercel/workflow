@@ -17,19 +17,7 @@ import { getWorld } from './world.js';
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
 
-export interface StartOptions {
-  /**
-   * The deployment ID to use for the workflow run.
-   *
-   * By default, this is automatically inferred from environment variables
-   * when deploying to Vercel.
-   *
-   * Set to `'latest'` to automatically resolve the most recent deployment
-   * for the current environment (same production target or git branch).
-   * This is currently a Vercel-specific feature.
-   */
-  deploymentId?: 'latest' | (string & {});
-
+export interface StartOptionsBase {
   /**
    * The world to use for the workflow run creation,
    * by default the world is inferred from the environment variables.
@@ -41,6 +29,34 @@ export interface StartOptions {
    */
   specVersion?: number;
 }
+
+export interface StartOptionsWithDeploymentId extends StartOptionsBase {
+  /**
+   * The deployment ID to use for the workflow run.
+   *
+   * By default, this is automatically inferred from environment variables
+   * when deploying to Vercel.
+   *
+   * Set to `'latest'` to automatically resolve the most recent deployment
+   * for the current environment (same production target or git branch).
+   * This is currently a Vercel-specific feature.
+   *
+   * **Note:** When `deploymentId` is provided, the argument and return types become `unknown`
+   * since there is no guarantee the types will be consistent across deployments.
+   */
+  deploymentId: 'latest' | (string & {});
+}
+
+export interface StartOptionsWithoutDeploymentId extends StartOptionsBase {
+  deploymentId?: undefined;
+}
+
+/**
+ * Options for starting a workflow run.
+ */
+export type StartOptions =
+  | StartOptionsWithDeploymentId
+  | StartOptionsWithoutDeploymentId;
 
 /**
  * Represents an imported workflow function.
@@ -62,15 +78,30 @@ export type WorkflowMetadata = { workflowId: string };
  * @param options - The options for the workflow run (optional).
  * @returns The unique run ID for the newly started workflow invocation.
  */
+// Overloads with deploymentId - args and return type become unknown
+// Uses generics so typed workflows are assignable (avoids contravariance issues),
+// but the return type and args are still unknown since the deployed version may differ.
+export function start<TArgs extends unknown[], TResult>(
+  workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata,
+  args: unknown[],
+  options: StartOptionsWithDeploymentId
+): Promise<Run<unknown>>;
+
+export function start<TResult>(
+  workflow: WorkflowFunction<[], TResult> | WorkflowMetadata,
+  options: StartOptionsWithDeploymentId
+): Promise<Run<unknown>>;
+
+// Overloads without deploymentId - preserve type inference
 export function start<TArgs extends unknown[], TResult>(
   workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata,
   args: TArgs,
-  options?: StartOptions
+  options?: StartOptionsWithoutDeploymentId
 ): Promise<Run<TResult>>;
 
 export function start<TResult>(
   workflow: WorkflowFunction<[], TResult> | WorkflowMetadata,
-  options?: StartOptions
+  options?: StartOptionsWithoutDeploymentId
 ): Promise<Run<TResult>>;
 
 export async function start<TArgs extends unknown[], TResult>(
@@ -84,7 +115,7 @@ export async function start<TArgs extends unknown[], TResult>(
 
     if (!workflowName) {
       throw new WorkflowRuntimeError(
-        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`,
+        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`,
         { slug: 'start-invalid-workflow-function' }
       );
     }

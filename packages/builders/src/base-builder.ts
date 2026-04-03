@@ -26,6 +26,25 @@ const enhancedResolve = promisify(enhancedResolveOriginal);
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
 
+/**
+ * Normalize an array of file paths by appending the `realpath()` of each entry
+ * (to handle symlinks, e.g. pnpm/workspace layouts) and deduplicating.
+ */
+async function withRealpaths(entries: string[]): Promise<string[]> {
+  return Array.from(
+    new Set(
+      (
+        await Promise.all(
+          entries.map(async (entry) => {
+            const resolved = await realpath(entry).catch(() => undefined);
+            return resolved ? [entry, resolved] : [entry];
+          })
+        )
+      ).flat()
+    )
+  );
+}
+
 export interface DiscoveredEntries {
   discoveredSteps: string[];
   discoveredWorkflows: string[];
@@ -79,6 +98,30 @@ export abstract class BaseBuilder {
     if (!this.config.suppressCreateManifestLogs) {
       this.logBaseBuilderInfo(...args);
     }
+  }
+
+  /**
+   * When outputting CJS, esbuild replaces `import.meta` with an empty object,
+   * making `import.meta.url` (and `import.meta.resolve`) undefined. This method
+   * returns banner code and `define` entries that polyfill them using CJS
+   * equivalents (`__filename`, `require.resolve`) so user code (e.g. Prisma)
+   * that relies on `import.meta.url` works correctly in bundled CJS output.
+   */
+  private getCjsImportMetaPolyfill(format: string): {
+    banner: string;
+    define: Record<string, string>;
+  } {
+    if (format !== 'cjs') return { banner: '', define: {} };
+    return {
+      banner:
+        'var __import_meta_url = typeof __filename !== "undefined" ? require("url").pathToFileURL(__filename).href : undefined;\n' +
+        'var __import_meta_resolve = typeof require !== "undefined" && typeof __filename !== "undefined" ' +
+        '? (s) => require("url").pathToFileURL(require.resolve(s)).href : undefined;\n',
+      define: {
+        'import.meta.url': '__import_meta_url',
+        'import.meta.resolve': '__import_meta_resolve',
+      },
+    };
   }
 
   /**
@@ -337,6 +380,7 @@ export abstract class BaseBuilder {
     format = 'cjs',
     outfile,
     externalizeNonSteps,
+    rewriteTsExtensions,
     tsconfigPath,
     discoveredEntries,
   }: {
@@ -345,6 +389,7 @@ export abstract class BaseBuilder {
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
+    rewriteTsExtensions?: boolean;
     discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     context: esbuild.BuildContext | undefined;
@@ -449,28 +494,21 @@ export abstract class BaseBuilder {
         ]
       : undefined;
     const normalizedEntriesToBundle = entriesToBundle
-      ? Array.from(
-          new Set(
-            (
-              await Promise.all(
-                entriesToBundle.map(async (entryToBundle) => {
-                  const resolvedEntry = await realpath(entryToBundle).catch(
-                    () => undefined
-                  );
-                  return resolvedEntry
-                    ? [entryToBundle, resolvedEntry]
-                    : [entryToBundle];
-                })
-              )
-            ).flat()
-          )
-        )
+      ? await withRealpaths(entriesToBundle)
       : undefined;
+    const normalizedSideEffectEntries = await withRealpaths([
+      ...stepFiles,
+      ...serdeOnlyFiles,
+      ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
+    ]);
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
+    const { banner: importMetaBanner, define: importMetaDefine } =
+      this.getCjsImportMetaPolyfill(format);
+
     const esbuildCtx = await esbuild.context({
       banner: {
-        js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}`,
       },
       stdin: {
         contents: entryContent,
@@ -494,6 +532,7 @@ export abstract class BaseBuilder {
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
+      define: importMetaDefine,
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -519,6 +558,8 @@ export abstract class BaseBuilder {
           outdir: outfile ? dirname(outfile) : undefined,
           projectRoot: this.transformProjectRoot,
           workflowManifest,
+          rewriteTsExtensions,
+          sideEffectEntries: normalizedSideEffectEntries,
         }),
       ],
       // Plugin should catch most things, but this lets users hard override
@@ -676,6 +717,10 @@ export abstract class BaseBuilder {
     const workflowManifest: WorkflowManifest = {};
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
+    const normalizedWorkflowSideEffectEntries = await withRealpaths([
+      ...workflowFiles,
+      ...serdeOnlyFiles,
+    ]);
 
     // Bundle with esbuild and our custom SWC plugin in workflow mode.
     // this bundle will be run inside a vm isolate
@@ -728,6 +773,7 @@ export abstract class BaseBuilder {
           mode: 'workflow',
           projectRoot: this.transformProjectRoot,
           workflowManifest,
+          sideEffectEntries: normalizedWorkflowSideEffectEntries,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths
@@ -790,6 +836,45 @@ export abstract class BaseBuilder {
         interimBundle.outputFiles.length === 0
       ) {
         throw new Error('No output files generated from esbuild');
+      }
+
+      // Serde compliance warnings: check if workflow bundle has Node.js imports
+      // alongside serde-registered classes (these will fail at runtime in the sandbox)
+      if (
+        workflowManifest.classes &&
+        Object.keys(workflowManifest.classes).length > 0
+      ) {
+        const { analyzeSerdeCompliance } = await import('./serde-checker.js');
+        const bundleText = interimBundle.outputFiles[0].text;
+        const serdeResult = analyzeSerdeCompliance({
+          sourceCode: '',
+          workflowCode: bundleText,
+          manifest: workflowManifest,
+        });
+        // De-dupe warnings: group identical issues across classes
+        const issuesToClasses = new Map<string, Set<string>>();
+        for (const cls of serdeResult.classes) {
+          if (!cls.compliant) {
+            for (const issue of cls.issues) {
+              let affectedClasses = issuesToClasses.get(issue);
+              if (!affectedClasses) {
+                affectedClasses = new Set<string>();
+                issuesToClasses.set(issue, affectedClasses);
+              }
+              affectedClasses.add(cls.className);
+            }
+          }
+        }
+        for (const [issue, affectedClasses] of issuesToClasses) {
+          const classNames = [...affectedClasses];
+          const classLabel =
+            classNames.length === 1
+              ? `class "${classNames[0]}"`
+              : `classes ${classNames.map((name) => `"${name}"`).join(', ')}`;
+          console.warn(
+            chalk.yellow(`⚠ Serde warning for ${classLabel}: `) + issue
+          );
+        }
       }
 
       const bundleFinal = async (interimBundle: string) => {
@@ -969,6 +1054,10 @@ export const POST = workflowEntrypoint(workflowCode);`;
       : reexports;
 
     // Bundle with esbuild and our custom SWC plugin
+    const normalizedClientSideEffectEntries = await withRealpaths([
+      ...inputFiles,
+      ...serdeOnlyFiles,
+    ]);
     const clientResult = await esbuild.build({
       banner: {
         js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
@@ -1002,6 +1091,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
         createSwcPlugin({
           mode: 'client',
           projectRoot: this.transformProjectRoot,
+          sideEffectEntries: normalizedClientSideEffectEntries,
         }),
       ],
     });
@@ -1067,10 +1157,14 @@ export const OPTIONS = handler;`;
 
     // For Build Output API, bundle with esbuild to resolve imports
 
+    const webhookFormat = 'cjs' as const;
+    const { banner: webhookImportMetaBanner, define: webhookImportMetaDefine } =
+      this.getCjsImportMetaPolyfill(webhookFormat);
+
     const webhookBundleStart = Date.now();
     const result = await esbuild.build({
       banner: {
-        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */`,
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${webhookImportMetaBanner}`,
       },
       stdin: {
         contents: routeContent,
@@ -1082,7 +1176,7 @@ export const OPTIONS = handler;`;
       absWorkingDir: this.config.workingDir,
       bundle: true,
       jsx: 'preserve',
-      format: 'cjs',
+      format: webhookFormat,
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],
       target: 'es2022',
@@ -1090,6 +1184,7 @@ export const OPTIONS = handler;`;
       treeShaking: true,
       keepNames: true,
       minify: false,
+      define: webhookImportMetaDefine,
       resolveExtensions: [
         '.ts',
         '.tsx',

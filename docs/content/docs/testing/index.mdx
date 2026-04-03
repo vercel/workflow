@@ -3,7 +3,7 @@ title: Testing
 description: Unit test individual steps and integration test entire workflows using Vitest.
 ---
 
-Testing is a critical part of building reliable workflows. Because steps are just functions annotated with directives, they can be unit tested like any other JavaScript function. Workflow DevKit also provides a Vitest plugin that runs full workflows in-process — no running server required.
+Testing is a critical part of building reliable workflows. Because steps are just functions annotated with directives, they can be unit tested like any other JavaScript function. Workflow SDK also provides a Vitest plugin that runs full workflows in-process — no running server required.
 
 This guide covers two approaches:
 
@@ -356,7 +356,7 @@ For advanced setups that require a running server (e.g. testing against your act
 
 ## Debugging Test Runs
 
-When integration tests fail, the [Workflow DevKit CLI and Web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state locally, you can use the same observability tools you would use in development.
+When integration tests fail, the [Workflow SDK CLI and Web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state locally, you can use the same observability tools you would use in development.
 
 Launch the Web UI to visually explore your test workflow runs:
 
@@ -376,7 +376,7 @@ npx workflow inspect runs <run-id>
 
 The Web UI shows each step, its inputs and outputs, retry attempts, hook state, and timing. This is especially useful for diagnosing issues with hooks that were not resumed, steps that failed unexpectedly, or workflows that timed out.
 
-![Workflow DevKit Web UI](/o11y-ui.png)
+![Workflow SDK Web UI](/o11y-ui.png)
 
 <Callout type="info">
 See the [Observability](/docs/observability) docs for the full set of CLI commands and Web UI features.
@@ -418,5 +418,5 @@ Integration tests are the right place to verify that your workflows handle error
 ---
 
 <Callout type="info">
-This guide was inspired by the testing approach described in Mux's article [*Launching durable AI workflows for video with @mux/ai*](https://www.mux.com/blog/launching-durable-ai-workflows-for-video-with-mux-ai#testing), which demonstrates how Mux uses the `workflow/vite` plugin with Vitest to integration test their durable AI video workflows built on Workflow DevKit.
+This guide was inspired by the testing approach described in Mux's article [*Launching durable AI workflows for video with @mux/ai*](https://www.mux.com/blog/launching-durable-ai-workflows-for-video-with-mux-ai#testing), which demonstrates how Mux uses the `workflow/vite` plugin with Vitest to integration test their durable AI video workflows built on Workflow SDK.
 </Callout>
