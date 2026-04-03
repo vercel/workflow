@@ -34,12 +34,12 @@ export interface Streamer {
    * Override the default flush interval (in milliseconds) for buffered stream writes.
    * Chunks are accumulated in a buffer and flushed together on this interval.
    *
-   * The default is 10ms, which is appropriate for HTTP-based backends like world-vercel
-   * where each flush is a network round-trip. For backends with sub-millisecond writes
+   * The default is 10ms, which is appropriate for HTTP-based backends where
+   * each flush is a network round-trip. For backends with sub-millisecond writes
    * (e.g., Redis, local filesystem), a lower value (or 0 for immediate flushing) reduces
    * end-to-end stream latency.
    *
-   * Not supported by world-vercel.
+   * Not supported by all worlds.
    */
   streamFlushIntervalMs?: number;
 
