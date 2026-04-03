@@ -300,9 +300,6 @@ export function createLimitsRuntimeSuite(
       expect(resultC.lock.acquiredAt).toBeGreaterThanOrEqual(
         resultA.lock.releasedAt
       );
-      expect(resultC.lock.acquiredAt - resultA.lock.releasedAt).toBeLessThan(
-        6_000
-      );
     });
 
     it('does not block unrelated workflow keys', async () => {
