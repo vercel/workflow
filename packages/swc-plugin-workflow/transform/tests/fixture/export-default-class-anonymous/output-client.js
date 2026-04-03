@@ -1,11 +1,11 @@
 // Test anonymous default class export with serde and step methods.
 // The plugin should rewrite to:
-//   const __defaultClass = class __defaultClass { ... };
-//   export default __defaultClass;
+//   const __DefaultClass = class __DefaultClass { ... };
+//   export default __DefaultClass;
 // so that registration code can reference the class at module scope.
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
-/**__internal_workflows{"steps":{"input.js":{"__defaultClass#process":{"stepId":"step//./input//__defaultClass#process"}}},"classes":{"input.js":{"__defaultClass":{"classId":"class//./input//__defaultClass"}}}}*/;
-const __defaultClass = class __defaultClass {
+/**__internal_workflows{"steps":{"input.js":{"__DefaultClass#process":{"stepId":"step//./input//__DefaultClass#process"}}},"classes":{"input.js":{"__DefaultClass":{"classId":"class//./input//__DefaultClass"}}}}*/;
+const __DefaultClass = class __DefaultClass {
     constructor(id){
         this.id = id;
     }
@@ -15,7 +15,7 @@ const __defaultClass = class __defaultClass {
         };
     }
     static [WORKFLOW_DESERIALIZE](data) {
-        return new __defaultClass(data.id);
+        return new __DefaultClass(data.id);
     }
     async process(input) {
         return {
@@ -23,7 +23,7 @@ const __defaultClass = class __defaultClass {
         };
     }
 };
-export default __defaultClass;
+export default __DefaultClass;
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);
@@ -33,4 +33,4 @@ export default __defaultClass;
         enumerable: false,
         configurable: false
     });
-})(__defaultClass, "class//./input//__defaultClass");
+})(__DefaultClass, "class//./input//__DefaultClass");

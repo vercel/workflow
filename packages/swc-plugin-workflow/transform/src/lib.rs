@@ -5743,8 +5743,8 @@ impl VisitMut for StepTransform {
 
         // Handle default class exports that need a binding name.
         // Rewrites `export default class { ... }` to:
-        //   const __defaultClass = class __defaultClass { ... };
-        //   export default __defaultClass;
+        //   const __DefaultClass = class __DefaultClass { ... };
+        //   export default __DefaultClass;
         if !self.default_class_exports.is_empty() {
             let class_exports: Vec<_> = self.default_class_exports.drain(..).collect();
 
@@ -5766,7 +5766,7 @@ impl VisitMut for StepTransform {
                 items.remove(pos);
 
                 for (const_name, class_expr) in class_exports {
-                    // Insert: const __defaultClass = class __defaultClass { ... };
+                    // Insert: const __DefaultClass = class __DefaultClass { ... };
                     items.insert(
                         pos,
                         ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
@@ -5790,7 +5790,7 @@ impl VisitMut for StepTransform {
                         })))),
                     );
 
-                    // Insert: export default __defaultClass;
+                    // Insert: export default __DefaultClass;
                     items.insert(
                         pos + 1,
                         ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(ExportDefaultExpr {
@@ -8208,7 +8208,7 @@ impl VisitMut for StepTransform {
 
                 // Set the binding name before visiting children
                 if needs_rewrite {
-                    let const_name = self.generate_unique_name("__defaultClass");
+                    let const_name = self.generate_unique_name("__DefaultClass");
                     self.current_class_binding_name = Some(const_name);
                 } else if let Some(ident) = &class_expr.ident {
                     self.current_class_binding_name = Some(ident.sym.to_string());
@@ -8457,7 +8457,7 @@ impl VisitMut for StepTransform {
                 });
 
                 if (has_serde || has_step_or_workflow_methods) && class_expr.ident.is_none() {
-                    let const_name = self.generate_unique_name("__defaultClass");
+                    let const_name = self.generate_unique_name("__DefaultClass");
                     self.current_class_binding_name = Some(const_name.clone());
                     // Must visit children before cloning so transforms run on the class body
                     expr.visit_mut_children_with(self);

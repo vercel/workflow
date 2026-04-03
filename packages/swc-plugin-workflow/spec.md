@@ -903,27 +903,27 @@ import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
 export default class {
   constructor(id) { this.id = id; }
   static [WORKFLOW_SERIALIZE](inst) { return { id: inst.id }; }
-  static [WORKFLOW_DESERIALIZE](data) { return new __defaultClass(data.id); }
+  static [WORKFLOW_DESERIALIZE](data) { return new __DefaultClass(data.id); }
   async process(input) { "use step"; return { result: input }; }
 }
 ```
 
 Output (step mode):
 ```javascript
-const __defaultClass = class __defaultClass {
+const __DefaultClass = class __DefaultClass {
     constructor(id) { this.id = id; }
     // ... serde methods preserved ...
     async process(input) { return { result: input }; }
 };
-export default __defaultClass;
-registerStepFunction("step//./input//__defaultClass#process", __defaultClass.prototype["process"]);
-(function(__wf_cls, __wf_id) { /* ... */ })(__defaultClass, "class//./input//__defaultClass");
+export default __DefaultClass;
+registerStepFunction("step//./input//__DefaultClass#process", __DefaultClass.prototype["process"]);
+(function(__wf_cls, __wf_id) { /* ... */ })(__DefaultClass, "class//./input//__DefaultClass");
 ```
 
 Note that:
-- The anonymous class `export default class { ... }` is rewritten to `const __defaultClass = class __defaultClass { ... }; export default __defaultClass;`
-- The generated name `__defaultClass` is used for all registrations (step, class, serde)
-- If `__defaultClass` is already declared in scope, the name is suffixed (`__defaultClass$1`, etc.)
+- The anonymous class `export default class { ... }` is rewritten to `const __DefaultClass = class __DefaultClass { ... }; export default __DefaultClass;`
+- The generated name `__DefaultClass` is used for all registrations (step, class, serde)
+- If `__DefaultClass` is already declared in scope, the name is suffixed (`__DefaultClass$1`, etc.)
 - Named default exports (e.g., `export default class MyService { ... }`) are NOT rewritten — the class name `MyService` is already in scope
 
 ### File Discovery for Custom Serialization

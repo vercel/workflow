@@ -1,7 +1,7 @@
 // Test anonymous default class export with serde and step methods.
 // The plugin should rewrite to:
-//   const __defaultClass = class __defaultClass { ... };
-//   export default __defaultClass;
+//   const __DefaultClass = class __DefaultClass { ... };
+//   export default __DefaultClass;
 // so that registration code can reference the class at module scope.
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 
@@ -15,7 +15,7 @@ export default class {
   }
 
   static [WORKFLOW_DESERIALIZE](data) {
-    return new __defaultClass(data.id);
+    return new __DefaultClass(data.id);
   }
 
   async process(input) {
