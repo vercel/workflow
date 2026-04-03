@@ -13,8 +13,8 @@ const decoratorOptionsCache = new Map<
   ReturnType<typeof getDecoratorOptionsForDirectory>
 >();
 
-function getDecoratorOptions() {
-  const cwd = process.cwd();
+function getDecoratorOptions(projectRoot?: string) {
+  const cwd = projectRoot ?? process.cwd();
   let cached = decoratorOptionsCache.get(cwd);
   if (!cached) {
     cached = getDecoratorOptionsForDirectory(cwd);
@@ -56,12 +56,18 @@ export async function applySwcTransform(
    * Used for module specifier resolution when filename is relative.
    * If not provided, filename is joined with process.cwd().
    */
-  absolutePath?: string
+  absolutePath?: string,
+  /**
+   * Optional project root used for module specifier resolution.
+   * Defaults to process.cwd() for backwards compatibility.
+   */
+  projectRoot?: string
 ): Promise<{
   code: string;
   workflowManifest: WorkflowManifest;
 }> {
-  const decoratorOptions = await getDecoratorOptions();
+  const resolvedProjectRoot = projectRoot ?? process.cwd();
+  const decoratorOptions = await getDecoratorOptions(resolvedProjectRoot);
 
   const swcPluginPath = require.resolve('@workflow/swc-plugin', {
     paths: [dirname(fileURLToPath(import.meta.url))],
@@ -75,15 +81,14 @@ export async function applySwcTransform(
     filename.endsWith('.cts');
 
   // Resolve module specifier for packages (node_modules or workspace packages)
-  const projectRoot = process.cwd();
   const absoluteFilename = absolutePath
     ? absolutePath
     : isAbsolute(filename)
       ? filename
-      : join(projectRoot, filename);
+      : join(resolvedProjectRoot, filename);
   const { moduleSpecifier } = resolveModuleSpecifier(
     absoluteFilename,
-    projectRoot
+    resolvedProjectRoot
   );
 
   // Transform with SWC to support syntax esbuild doesn't

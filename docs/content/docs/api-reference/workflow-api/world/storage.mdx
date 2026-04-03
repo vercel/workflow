@@ -1,0 +1,408 @@
+---
+title: Storage
+description: Query workflow runs, steps, hooks, and the underlying event log via the World storage interface.
+type: reference
+summary: "Interfaces: world.events, world.runs, world.steps, world.hooks. Events are the source of truth; runs, steps, and hooks are materialized views."
+prerequisites:
+  - /docs/api-reference/workflow-api/get-world
+related:
+  - /docs/api-reference/workflow-api/get-run
+  - /docs/how-it-works/event-sourcing
+  - /docs/api-reference/workflow-api/world/observability
+keywords:
+  - world.events
+  - world.runs
+  - world.steps
+  - world.hooks
+  - event log
+  - event sourcing
+  - materialized views
+  - WorkflowRun
+  - Step
+  - Hook
+  - Event
+  - cursor pagination
+  - resolveData
+  - run_cancelled
+  - correlation ID
+  - parseStepName
+  - parseWorkflowName
+---
+
+The World storage interface exposes four sub-interfaces for querying workflow data:
+
+- **`world.events`** — The append-only event log. This is the source of truth for all workflow state. See [Event Sourcing](/docs/how-it-works/event-sourcing) for background.
+- **`world.runs`**, **`world.steps`**, **`world.hooks`** — Materialized views derived from the event log, provided as convenience accessors for the most common query patterns.
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld(); // [!code highlight]
+```
+
+---
+
+## world.events
+
+The event log drives all workflow state. Use it for audit trails, debugging, and programmatic run cancellation.
+
+### events.create()
+
+Create a new event for a workflow run. Most commonly used to cancel a run.
+
+```typescript lineNumbers
+await world.events.create(runId, { // [!code highlight]
+  eventType: "run_cancelled", // [!code highlight]
+}); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string \| null` | The workflow run ID (`null` only for `run_created` events, where the server generates an ID) |
+| `data` | `CreateEventRequest` | Event data including `eventType` |
+| `params` | `object` | Optional parameters |
+
+**Returns:** `EventResult` — The created event and the affected entity (run/step/hook)
+
+### events.get()
+
+Retrieve a single event by run ID and event ID.
+
+```typescript lineNumbers
+const event = await world.events.get(runId, eventId); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string` | The workflow run ID |
+| `eventId` | `string` | The event ID |
+
+**Returns:** `Event`
+
+### events.list()
+
+List events for a run with cursor pagination.
+
+```typescript lineNumbers
+const result = await world.events.list({ runId, pagination: { cursor } }); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.runId` | `string` | Filter events by run ID |
+| `params.pagination.cursor` | `string` | Cursor for the next page |
+
+**Returns:** `{ data: Event[], cursor?: string }`
+
+### events.listByCorrelationId()
+
+List events that share a correlation ID, useful for tracing related events across runs.
+
+```typescript lineNumbers
+const result = await world.events.listByCorrelationId({ // [!code highlight]
+  correlationId: "order-123",
+}); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.correlationId` | `string` | The correlation ID to filter by |
+| `params.pagination.cursor` | `string` | Cursor for the next page |
+
+**Returns:** `{ data: Event[], cursor?: string }`
+
+### Event Types
+
+| Category | Types |
+|----------|-------|
+| Run | `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled` |
+| Step | `step_created`, `step_started`, `step_completed`, `step_failed`, `step_retrying` |
+| Hook | `hook_created`, `hook_received`, `hook_disposed`, `hook_conflict` |
+| Wait | `wait_created`, `wait_completed` |
+
+---
+
+## world.runs
+
+Materialized from run events. Use it to list and inspect workflow runs.
+
+### runs.get()
+
+```typescript lineNumbers
+const run = await world.runs.get(runId); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string` | The workflow run ID |
+| `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data. Default: `'all'` |
+
+**Returns:** `WorkflowRun` (or `WorkflowRunWithoutData` when `resolveData: 'none'`)
+
+### runs.list()
+
+```typescript lineNumbers
+const result = await world.runs.list({ // [!code highlight]
+  pagination: { cursor },
+}); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.pagination.cursor` | `string` | Cursor for the next page |
+| `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
+
+**Returns:** `{ data: WorkflowRun[], cursor?: string }`
+
+### Cancelling Runs
+
+To cancel a run, create a `run_cancelled` event via `world.events.create()` (see [world.events](#worldevents) above), or use the CLI or Web UI helpers.
+
+### WorkflowRun Type
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `runId` | `string` | Unique run identifier |
+| `status` | `string` | `'running'`, `'completed'`, `'failed'`, `'cancelled'` |
+| `workflowName` | `string` | Machine-readable workflow identifier |
+| `input` | `any` | Workflow input data (when `resolveData: 'all'`) |
+| `output` | `any` | Workflow output data (when `resolveData: 'all'`) |
+| `error` | `any` | Error data if the run failed |
+| `startedAt` | `string` | ISO timestamp when the run started |
+| `completedAt` | `string \| null` | ISO timestamp when the run completed |
+
+<Callout type="warn">
+  `workflowName` is a machine-readable identifier like `workflow//./src/workflows/order//processOrder`. Use `parseWorkflowName()` from `workflow/observability` to extract a display-friendly name.
+</Callout>
+
+---
+
+## world.steps
+
+Materialized from step events. Use it to list steps, inspect their input/output, and build progress dashboards.
+
+### steps.get()
+
+```typescript lineNumbers
+const step = await world.steps.get(runId, stepId); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `runId` | `string \| undefined` | The workflow run ID |
+| `stepId` | `string` | The step ID |
+| `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data. Default: `'all'` |
+
+**Returns:** `Step` (or `StepWithoutData` when `resolveData: 'none'`)
+
+### steps.list()
+
+```typescript lineNumbers
+const result = await world.steps.list({ // [!code highlight]
+  runId,
+  pagination: { cursor },
+}); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.runId` | `string` | Filter steps by run ID |
+| `params.pagination.cursor` | `string` | Cursor for the next page |
+| `params.resolveData` | `'all' \| 'none'` | Whether to include input/output data |
+
+**Returns:** `{ data: Step[], cursor?: string }`
+
+### Step Type
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `runId` | `string` | Parent workflow run ID |
+| `stepId` | `string` | Unique step identifier |
+| `stepName` | `string` | Machine-readable step identifier |
+| `status` | `string` | `'running'`, `'completed'`, `'failed'` |
+| `input` | `any` | Step input data (when `resolveData: 'all'`) |
+| `output` | `any` | Step output data (when `resolveData: 'all'`) |
+| `error` | `any` | Error data if the step failed |
+| `attempt` | `number` | Current retry attempt number |
+| `startedAt` | `string` | ISO timestamp when the step started |
+| `completedAt` | `string \| null` | ISO timestamp when the step completed |
+| `retryAfter` | `string \| null` | ISO timestamp for next retry attempt |
+
+<Callout type="info">
+  Step I/O is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. Use `hydrateResourceIO()` from `workflow/observability` to deserialize it for display. See [Observability Utilities](/docs/api-reference/workflow-api/world/observability).
+</Callout>
+
+<Callout type="warn">
+  `stepName` is a machine-readable identifier like `step//./src/workflows/order//processPayment`. Use `parseStepName()` from `workflow/observability` to extract the `shortName` for UI display.
+</Callout>
+
+---
+
+## world.hooks
+
+Materialized from hook events. Hooks are pause points in workflows that wait for external input. Use this interface to look up hooks by ID or token, inspect metadata, and build UIs for pending approvals.
+
+### hooks.get()
+
+```typescript lineNumbers
+const hook = await world.hooks.get(hookId); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `hookId` | `string` | The hook ID |
+
+**Returns:** `Hook`
+
+### hooks.getByToken()
+
+Look up a hook by its token. Useful in webhook resume flows where you receive a token in the callback URL.
+
+```typescript lineNumbers
+const hook = await world.hooks.getByToken(token); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `token` | `string` | The hook token |
+
+**Returns:** `Hook`
+
+### hooks.list()
+
+```typescript lineNumbers
+const result = await world.hooks.list({ // [!code highlight]
+  pagination: { cursor },
+}); // [!code highlight]
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `params.pagination.cursor` | `string` | Cursor for the next page |
+
+**Returns:** `{ data: Hook[], cursor?: string }`
+
+### Hook Type
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `runId` | `string` | Parent workflow run ID |
+| `hookId` | `string` | Unique hook identifier |
+| `token` | `string` | Hook token for resuming |
+| `ownerId` | `string` | Owner (team/user) ID |
+| `projectId` | `string` | Project ID |
+| `environment` | `string` | Deployment environment |
+| `metadata` | `object` | Custom metadata attached to the hook |
+| `isWebhook` | `boolean` | Whether this is a webhook-style hook |
+
+---
+
+## Examples
+
+### List Runs with Pagination
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+let cursor: string | undefined;
+
+const runs = await world.runs.list({ // [!code highlight]
+  pagination: { cursor },
+}); // [!code highlight]
+
+cursor = runs.cursor; // pass to next call for pagination
+```
+
+### Get a Run — Full Data vs. Metadata Only
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+
+// Full data (default) — includes serialized input/output
+const run = await world.runs.get(runId); // [!code highlight]
+
+// Metadata only — lighter, no I/O loaded
+const lightweight = await world.runs.get(runId, { // [!code highlight]
+  resolveData: "none", // [!code highlight]
+}); // [!code highlight]
+```
+
+### List Steps for a Progress Dashboard
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { parseStepName } from "workflow/observability"; // [!code highlight]
+
+const world = getWorld();
+const steps = await world.steps.list({ // [!code highlight]
+  runId,
+  resolveData: "none",
+}); // [!code highlight]
+
+const progress = steps.data.map((step) => {
+  const parsed = parseStepName(step.stepName); // [!code highlight]
+  return {
+    stepId: step.stepId,
+    displayName: parsed?.shortName ?? step.stepName, // [!code highlight]
+    status: step.status,
+  };
+});
+```
+
+### Hydrate Step I/O
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]
+
+const world = getWorld();
+const step = await world.steps.get(runId, stepId); // [!code highlight]
+const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+console.log(hydrated.input, hydrated.output);
+```
+
+### Cancel a Run
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+await world.events.create(runId, { // [!code highlight]
+  eventType: "run_cancelled", // [!code highlight]
+}); // [!code highlight]
+```
+
+### Look Up Hook by Token
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+const hook = await world.hooks.getByToken(token); // [!code highlight]
+console.log(hook.runId, hook.metadata); // [!code highlight]
+```
+
+### List Events for Audit Trail
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+const events = await world.events.list({ runId }); // [!code highlight]
+
+for (const event of events.data) {
+  console.log(event.eventType, event.createdAt);
+}
+```
+
+## Related
+
+- [Event Sourcing](/docs/how-it-works/event-sourcing) — How the event log powers workflow replay and state
+- [getRun()](/docs/api-reference/workflow-api/get-run) — Higher-level API for working with individual runs
+- [Observability Utilities](/docs/api-reference/workflow-api/world/observability) — Hydrate step I/O, parse display names, decrypt data
+- [resumeHook()](/docs/api-reference/workflow-api/resume-hook) — Resume a workflow by sending a payload to a hook
+- [Hooks](/docs/foundations/hooks) — Core concepts for hooks and pause points
+- [Workflows and Steps](/docs/foundations/workflows-and-steps) — Core concepts for steps

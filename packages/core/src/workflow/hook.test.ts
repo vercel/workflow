@@ -1,4 +1,4 @@
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -283,7 +283,7 @@ describe('createCreateHook', () => {
     expect(workflowError?.message).toContain('my-custom-token');
   });
 
-  it('should reject with WorkflowRuntimeError when hook_conflict event is received', async () => {
+  it('should reject with HookConflictError when hook_conflict event is received', async () => {
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -300,9 +300,9 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook({ token: 'my-conflicting-token' });
 
-    // Await should reject with WorkflowRuntimeError
-    await expect(hook).rejects.toThrow(WorkflowRuntimeError);
-    await expect(hook).rejects.toThrow(/hook-conflict/);
+    // Await should reject with HookConflictError
+    await expect(hook).rejects.toThrow(HookConflictError);
+    await expect(hook).rejects.toThrow(/already in use/);
   });
 
   it('should reject multiple awaits when hook_conflict event is received (iterator case)', async () => {
@@ -323,11 +323,11 @@ describe('createCreateHook', () => {
     const hook = createHook({ token: 'my-conflicting-token' });
 
     // First await should reject
-    await expect(hook).rejects.toThrow(WorkflowRuntimeError);
+    await expect(hook).rejects.toThrow(HookConflictError);
 
     // Subsequent awaits should also reject (simulating iterator pattern)
-    await expect(hook).rejects.toThrow(WorkflowRuntimeError);
-    await expect(hook).rejects.toThrow(WorkflowRuntimeError);
+    await expect(hook).rejects.toThrow(HookConflictError);
+    await expect(hook).rejects.toThrow(HookConflictError);
   });
 
   it('should be no-op on replay when hook_disposed is in event log', async () => {

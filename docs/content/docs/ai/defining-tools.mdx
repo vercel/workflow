@@ -1,6 +1,6 @@
 ---
 title: Patterns for Defining Tools
-description: Common patterns for defining tools in durable AI agents using Workflow DevKit.
+description: Common patterns for defining tools in durable AI agents using Workflow SDK.
 type: guide
 summary: Define step-level and workflow-level tools for durable AI agents with stream writing and context access.
 prerequisites:
@@ -12,7 +12,7 @@ related:
   - /docs/api-reference/workflow/get-writable
 ---
 
-This page covers the details for some common patterns when defining tools for AI agents using Workflow DevKit.
+This page covers the details for some common patterns when defining tools for AI agents using Workflow SDK.
 
 Using DurableAgent, we model most tools as steps. These can be anything from a simple function call to a entire multi-day long workflow.
 
@@ -23,6 +23,9 @@ Just like in regular AI SDK tool definitions, tool in DurableAgent are called wi
 When you tool needs access to the full message history, you can access it via the `messages` property of the tool call context:
 
 ```typescript title="tools.ts" lineNumbers
+import { Experimental_Agent as Agent } from "ai";
+import type { ModelMessage } from "ai";
+
 async function getWeather(
   { city }: { city: string },
   { messages, toolCallId }: { messages: ModelMessage[], toolCallId: string }) { // [!code highlight]
@@ -65,6 +68,9 @@ Tools can be implemented either at the step level or the workflow level, with di
 Tools can also combine both by starting out on the workflow level, and calling into steps for I/O operations, like so:
 
 ```typescript title="tools.ts" lineNumbers
+import { sleep } from "workflow";
+import type { LanguageModel, ModelMessage } from "ai";
+
 // Step: handles I/O with retries
 async function performFetch(url: string) {
   "use step";

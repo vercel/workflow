@@ -4,7 +4,7 @@ import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
-import z from 'zod';
+import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl } from './config.js';
 import { getPackageInfo } from './init.js';
@@ -90,6 +90,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const { pathname, prefix } = getQueueRoute(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
 
+    // Extract identifiers from the message for structured logging.
+    // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
+    const msg = message as Record<string, unknown>;
+    const runId = (msg.runId ?? msg.workflowRunId ?? undefined) as
+      | string
+      | undefined;
+    const stepId = (msg.stepId ?? undefined) as string | undefined;
+
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
       inflightMessages.set(key, messageId);
@@ -106,11 +114,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         );
         await semaphore.acquire();
       }
+      // Safety limit to prevent infinite loops in the local queue.
+      // The actual max delivery enforcement happens in the workflow/step handlers
+      // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
+      const MAX_LOCAL_SAFETY_LIMIT = 256;
       try {
-        let defaultRetriesLeft = 3;
-        for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
-          defaultRetriesLeft--;
-
+        for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
@@ -162,24 +171,38 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   );
                   await setTimeout(timeoutMs);
                 }
-                defaultRetriesLeft++;
                 continue;
               }
             } catch {}
             return;
           }
 
-          console.error(`[local world] Failed to queue message`, {
-            queueName,
-            text,
-            status: response.status,
-            headers: Object.fromEntries(response.headers.entries()),
-            body: body.toString(),
-          });
+          console.error(
+            `[world-local] Queue message failed (attempt ${attempt + 1}, HTTP ${response.status})`,
+            {
+              queueName,
+              messageId,
+              ...(runId && { runId }),
+              ...(stepId && { stepId }),
+              handlerError: text,
+            }
+          );
+
+          // 5s linear backoff to approximate VQS retry timing in local dev.
+          // VQS uses 5s linear for attempts 1–32, then exponential, but for
+          // local dev linear 5s is sufficient — the handler enforces the real
+          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
+          await setTimeout(5000);
         }
 
         console.error(
-          `[local world] Reached max retries of local world queue implementation`
+          `[world-local] Queue message exhausted safety limit (${MAX_LOCAL_SAFETY_LIMIT} attempts)`,
+          {
+            queueName,
+            messageId,
+            ...(runId && { runId }),
+            ...(stepId && { stepId }),
+          }
         );
       } finally {
         semaphore.release();

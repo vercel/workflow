@@ -1,4 +1,4 @@
-import { WorkflowAPIError } from '@workflow/errors';
+import { WorkflowWorldError } from '@workflow/errors';
 import { decode } from 'cbor-x';
 import { getDispatcher } from './http-client.js';
 import {
@@ -118,7 +118,7 @@ export async function resolveRefDescriptor(
       });
 
       if (!response.ok) {
-        const error = new WorkflowAPIError(
+        const error = new WorkflowWorldError(
           `Failed to resolve ref: HTTP ${response.status}`,
           { url, status: response.status }
         );

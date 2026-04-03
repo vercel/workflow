@@ -26,6 +26,7 @@ import {
   type UIMessageChunk,
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
+import { getErrorMessage } from '../get-error-message.js';
 import { streamTextIterator } from './stream-text-iterator.js';
 import { recordSpan } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
@@ -368,6 +369,15 @@ export interface DurableAgentOptions<TTools extends ToolSet = ToolSet>
    * Optional telemetry configuration (experimental).
    */
   experimental_telemetry?: TelemetrySettings;
+
+  /**
+   * Default context that is passed into tool execution for every stream call on this agent.
+   *
+   * Per-stream `experimental_context` values passed to `stream()` override this default.
+   * Experimental (can break in patch releases).
+   * @default undefined
+   */
+  experimental_context?: unknown;
 
   /**
    * Default callback function called before each step in the agent loop.
@@ -742,7 +752,7 @@ export interface DurableAgentStreamResult<
  *
  * DurableAgent enables you to create AI-powered agents that can maintain state
  * across workflow steps, call tools, and gracefully handle interruptions and resumptions.
- * It integrates seamlessly with the AI SDK and the Workflow DevKit for
+ * It integrates seamlessly with the AI SDK and the Workflow SDK for
  * production-grade reliability.
  *
  * @example
@@ -767,7 +777,10 @@ export interface DurableAgentStreamResult<
  */
 export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private model: string | (() => Promise<CompatibleLanguageModel>);
-  private tools: TBaseTools;
+  /**
+   * The tool set configured for this agent.
+   */
+  public readonly tools: TBaseTools;
   private instructions?:
     | string
     | SystemModelMessage
@@ -775,6 +788,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
   private generationSettings: GenerationSettings;
   private toolChoice?: ToolChoice<TBaseTools>;
   private telemetry?: TelemetrySettings;
+  private experimentalContext: unknown;
   private prepareStep?: PrepareStepCallback<TBaseTools>;
   private constructorOnStepFinish?: StreamTextOnStepFinishCallback<ToolSet>;
   private constructorOnFinish?: StreamTextOnFinishCallback<ToolSet>;
@@ -786,6 +800,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     this.instructions = options.instructions ?? options.system;
     this.toolChoice = options.toolChoice;
     this.telemetry = options.experimental_telemetry;
+    this.experimentalContext = options.experimental_context;
     this.prepareStep = options.prepareStep;
     this.constructorOnStepFinish = options.onStepFinish;
     this.constructorOnFinish = options.onFinish;
@@ -945,7 +960,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
         : this.tools;
 
     // Initialize context
-    let experimentalContext = options.experimental_context;
+    let experimentalContext =
+      options.experimental_context ?? this.experimentalContext;
 
     const steps: StepResult<TTools>[] = [];
 
@@ -1484,23 +1500,6 @@ function safeParseInput(input: string | undefined): unknown {
   } catch {
     return input;
   }
-}
-
-// Matches AI SDK's getErrorMessage from @ai-sdk/provider-utils
-function getErrorMessage(error: unknown): string {
-  if (error == null) {
-    return 'unknown error';
-  }
-
-  if (typeof error === 'string') {
-    return error;
-  }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return JSON.stringify(error);
 }
 
 function resolveProviderToolResult(

@@ -1,0 +1,62 @@
+---
+title: TooEarlyError
+description: Thrown when a request is made before the system is ready to process it.
+type: reference
+summary: Catch TooEarlyError when a world operation is attempted before the system is ready.
+related:
+  - /docs/api-reference/workflow-errors/workflow-world-error
+  - /docs/api-reference/workflow-errors/throttle-error
+---
+
+`TooEarlyError` is thrown by world implementations when a request is made before the system is ready to process it. It corresponds to HTTP 425 Too Early semantics.
+
+The `retryAfter` property contains the number of seconds to wait before retrying.
+
+<Callout>
+The Workflow runtime handles this error automatically by retrying after the specified delay. You will only encounter it when interacting with world storage APIs directly.
+</Callout>
+
+```typescript lineNumbers
+import { TooEarlyError } from "workflow/errors"
+declare const world: { events: { create(...args: any[]): Promise<any> } }; // @setup
+declare const runId: string; // @setup
+declare const event: any; // @setup
+
+try {
+  await world.events.create(runId, event);
+} catch (error) {
+  if (TooEarlyError.is(error)) { // [!code highlight]
+    console.log(`Retry after ${error.retryAfter} seconds`);
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface TooEarlyError {
+  /** Delay in seconds before the operation can be retried. Present when the server sends a Retry-After header. */
+  retryAfter?: number;
+  /** The error message. */
+  message: string;
+}
+export default TooEarlyError;`}
+/>
+
+### Static Methods
+
+#### `TooEarlyError.is(value)`
+
+Type-safe check for `TooEarlyError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { TooEarlyError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (TooEarlyError.is(error)) {
+  // error is typed as TooEarlyError
+}
+```

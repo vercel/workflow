@@ -1,0 +1,79 @@
+---
+title: WorkflowWorldError
+description: Base error for failures from workflow storage backends.
+type: reference
+summary: Catch WorkflowWorldError to handle any error originating from a workflow world (storage backend).
+related:
+  - /docs/api-reference/workflow-errors/entity-conflict-error
+  - /docs/api-reference/workflow-errors/run-expired-error
+  - /docs/api-reference/workflow-errors/too-early-error
+  - /docs/api-reference/workflow-errors/throttle-error
+---
+
+`WorkflowWorldError` is the base error class for failures originating from a workflow world (storage backend). World implementations (local, Postgres, Vercel) throw subclasses of this error when storage operations fail.
+
+You can use `instanceof WorkflowWorldError` to catch any world-related error regardless of the specific type. Note that the static `.is()` method only matches errors constructed directly as `WorkflowWorldError` — use the subclass-specific `.is()` methods (e.g. `EntityConflictError.is()`) to match specific error types.
+
+<Callout>
+Most world errors are handled automatically by the Workflow runtime. You will typically only encounter these errors when interacting with world storage APIs directly or when there are infrastructure-level issues.
+</Callout>
+
+```typescript lineNumbers
+import { WorkflowWorldError } from "workflow/errors"
+declare const world: { events: { create(...args: any[]): Promise<any> } }; // @setup
+declare const runId: string; // @setup
+declare const event: any; // @setup
+
+try {
+  await world.events.create(runId, event);
+} catch (error) {
+  if (error instanceof WorkflowWorldError) { // [!code highlight]
+    console.error("Storage backend error:", error.message);
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface WorkflowWorldError {
+  /** HTTP status code from the world backend, if available. */
+  status?: number;
+  /** Machine-readable error code, if available. */
+  code?: string;
+  /** The URL that was requested, if available. */
+  url?: string;
+  /** Retry-After value in seconds, present on 429 and 425 responses. */
+  retryAfter?: number;
+  /** The error message. */
+  message: string;
+}
+export default WorkflowWorldError;`}
+/>
+
+### Static Methods
+
+#### `WorkflowWorldError.is(value)`
+
+Type-safe check that matches only errors constructed directly as `WorkflowWorldError`. Does not match subclasses like `EntityConflictError` — use `instanceof` to catch all world errors, or the subclass-specific `.is()` methods.
+
+```typescript
+import { WorkflowWorldError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (WorkflowWorldError.is(error)) {
+  // error is typed as WorkflowWorldError (not subclasses)
+}
+```
+
+### Subclasses
+
+The following error types extend `WorkflowWorldError`:
+
+- [`EntityConflictError`](/docs/api-reference/workflow-errors/entity-conflict-error) — operation conflicts with entity state
+- [`RunExpiredError`](/docs/api-reference/workflow-errors/run-expired-error) — run has expired
+- [`TooEarlyError`](/docs/api-reference/workflow-errors/too-early-error) — request made before system is ready
+- [`ThrottleError`](/docs/api-reference/workflow-errors/throttle-error) — request was rate-limited

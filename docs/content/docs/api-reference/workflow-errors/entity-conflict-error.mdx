@@ -1,0 +1,60 @@
+---
+title: EntityConflictError
+description: Thrown when a storage operation conflicts with the current entity state.
+type: reference
+summary: Catch EntityConflictError when a world operation conflicts with entity state (e.g. duplicate events or runs).
+related:
+  - /docs/api-reference/workflow-errors/workflow-world-error
+  - /docs/api-reference/workflow-errors/run-expired-error
+---
+
+`EntityConflictError` is thrown by world implementations when a storage operation conflicts with the current entity state. This includes cases like creating a run that already exists or writing an event that has already been persisted.
+
+It corresponds to HTTP 409 Conflict semantics.
+
+<Callout>
+The Workflow runtime handles this error automatically during replay and event deduplication. You will only encounter it when interacting with world storage APIs directly.
+</Callout>
+
+```typescript lineNumbers
+import { EntityConflictError } from "workflow/errors"
+declare const world: { events: { create(...args: any[]): Promise<any> } }; // @setup
+declare const runId: string; // @setup
+declare const event: any; // @setup
+
+try {
+  await world.events.create(runId, event);
+} catch (error) {
+  if (EntityConflictError.is(error)) { // [!code highlight]
+    // Event already exists — safe to ignore during replay
+  }
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface EntityConflictError {
+  /** The error message. */
+  message: string;
+}
+export default EntityConflictError;`}
+/>
+
+### Static Methods
+
+#### `EntityConflictError.is(value)`
+
+Type-safe check for `EntityConflictError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+```typescript
+import { EntityConflictError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (EntityConflictError.is(error)) {
+  // error is typed as EntityConflictError
+}
+```

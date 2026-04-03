@@ -614,47 +614,175 @@ describe('e2e', () => {
   // Output stream tests use run.getReadable() which requires in-process streaming
   // infrastructure. The local world's streamer uses an EventEmitter that doesn't work
   // cross-process (test runner ↔ workbench app).
-  test.skipIf(isLocalDeployment())(
-    'outputStreamWorkflow',
-    { timeout: 60_000 },
-    async () => {
-      const run = await start(await e2e('outputStreamWorkflow'), []);
-      const reader = run.getReadable().getReader();
-      const namedReader = run.getReadable({ namespace: 'test' }).getReader();
+  //
+  // outputStreamWorkflow writes 2 chunks to the default stream:
+  //   chunk 0: binary "Hello, world!"
+  //   chunk 1: object { foo: 'test' }
+  // and 2 chunks to the "test" named stream:
+  //   chunk 0: binary "Hello, named stream!"
+  //   chunk 1: object { foo: 'bar' }
+  describe.skipIf(isLocalDeployment())('outputStreamWorkflow', () => {
+    const startIndexCases = [
+      {
+        name: 'no startIndex (reads all chunks)',
+        startIndex: undefined,
+        expectedDefault: [
+          { type: 'binary', value: 'Hello, world!' },
+          { type: 'object', value: { foo: 'test' } },
+        ],
+        expectedNamed: [
+          { type: 'binary', value: 'Hello, named stream!' },
+          { type: 'object', value: { foo: 'bar' } },
+        ],
+        // Can stream in real-time without waiting for completion
+        waitForCompletion: false,
+      },
+      {
+        name: 'positive startIndex (skips first chunk)',
+        startIndex: 1,
+        expectedDefault: [{ type: 'object', value: { foo: 'test' } }],
+        expectedNamed: [{ type: 'object', value: { foo: 'bar' } }],
+        // Positive startIndex needs the stream written up to that point
+        waitForCompletion: true,
+      },
+      {
+        name: 'negative startIndex (reads from end)',
+        startIndex: -1,
+        expectedDefault: [{ type: 'object', value: { foo: 'test' } }],
+        expectedNamed: [{ type: 'object', value: { foo: 'bar' } }],
+        // Negative startIndex resolves at connection time using knownChunkCount,
+        // so the stream must be fully written before connecting the reader.
+        waitForCompletion: true,
+      },
+    ] as const;
 
-      // First chunk from default stream: binary data
-      const r1 = await reader.read();
-      assert(r1.value);
-      assert(r1.value instanceof Uint8Array);
-      expect(Buffer.from(r1.value).toString()).toEqual('Hello, world!');
+    for (const tc of startIndexCases) {
+      test(tc.name, { timeout: 60_000 }, async () => {
+        const run = await start(await e2e('outputStreamWorkflow'), []);
 
-      // First chunk from named stream: binary data
-      const r1Named = await namedReader.read();
-      assert(r1Named.value);
-      assert(r1Named.value instanceof Uint8Array);
-      expect(Buffer.from(r1Named.value).toString()).toEqual(
-        'Hello, named stream!'
+        if (tc.waitForCompletion) {
+          await run.returnValue;
+        }
+
+        const reader = run
+          .getReadable({ startIndex: tc.startIndex })
+          .getReader();
+        const namedReader = run
+          .getReadable({ namespace: 'test', startIndex: tc.startIndex })
+          .getReader();
+
+        for (const expected of tc.expectedDefault) {
+          const { value } = await reader.read();
+          assert(value);
+          if (expected.type === 'binary') {
+            assert(value instanceof Uint8Array);
+            expect(Buffer.from(value).toString()).toEqual(expected.value);
+          } else {
+            expect(value).toEqual(expected.value);
+          }
+        }
+
+        // Default stream should be closed after expected chunks
+        expect((await reader.read()).done).toBe(true);
+
+        for (const expected of tc.expectedNamed) {
+          const { value } = await namedReader.read();
+          assert(value);
+          if (expected.type === 'binary') {
+            assert(value instanceof Uint8Array);
+            expect(Buffer.from(value).toString()).toEqual(expected.value);
+          } else {
+            expect(value).toEqual(expected.value);
+          }
+        }
+
+        // Named stream should be closed after expected chunks
+        expect((await namedReader.read()).done).toBe(true);
+
+        const returnValue = await run.returnValue;
+        expect(returnValue).toEqual('done');
+      });
+    }
+  });
+
+  describe.skipIf(isLocalDeployment())(
+    'outputStreamWorkflow - getTailIndex and getStreamChunks',
+    () => {
+      test(
+        'getTailIndex returns correct index after stream completes',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+          await run.returnValue;
+
+          const readable = run.getReadable();
+          const tailIndex = await readable.getTailIndex();
+
+          // outputStreamWorkflow writes 2 chunks to the default stream
+          expect(tailIndex).toBe(1);
+        }
       );
 
-      // Second chunk from default stream: JSON object
-      const r2 = await reader.read();
-      assert(r2.value);
-      expect(r2.value).toEqual({ foo: 'test' });
+      test(
+        'getTailIndex returns -1 before any chunks are written',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
 
-      // Second chunk from named stream: JSON object
-      const r2Named = await namedReader.read();
-      assert(r2Named.value);
-      expect(r2Named.value).toEqual({ foo: 'bar' });
+          // Don't await returnValue — check immediately while stream is
+          // still being written (or hasn't started yet). The world should
+          // report tailIndex = -1 for streams with no data.
+          const readable = run.getReadable({ namespace: 'nonexistent' });
+          const tailIndex = await readable.getTailIndex();
+          expect(tailIndex).toBe(-1);
+        }
+      );
 
-      // Streams should be closed
-      const r3 = await reader.read();
-      expect(r3.done).toBe(true);
+      test(
+        'getStreamChunks returns same content as reading the stream',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+          await run.returnValue;
 
-      const r3Named = await namedReader.read();
-      expect(r3Named.done).toBe(true);
+          // Read all chunks via the stream
+          const reader = run.getReadable().getReader();
+          const streamChunks: unknown[] = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            streamChunks.push(value);
+          }
 
-      const returnValue = await run.returnValue;
-      expect(returnValue).toEqual('done');
+          // Read all chunks via getStreamChunks pagination
+          const world = getWorld();
+          const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
+          const paginatedChunks: Uint8Array[] = [];
+          let cursor: string | null = null;
+          do {
+            const page = await world.getStreamChunks(streamName, run.runId, {
+              limit: 1, // small page size to exercise pagination
+              ...(cursor ? { cursor } : {}),
+            });
+            for (const chunk of page.data) {
+              paginatedChunks.push(chunk.data);
+            }
+            cursor = page.cursor;
+            if (!page.hasMore) {
+              expect(page.done).toBe(true);
+            }
+          } while (cursor);
+
+          // Both methods should return the same number of chunks
+          expect(paginatedChunks).toHaveLength(streamChunks.length);
+        }
+      );
     }
   );
 
@@ -734,6 +862,7 @@ describe('e2e', () => {
             expect(WorkflowRunFailedError.is(error)).toBe(true);
             assert(WorkflowRunFailedError.is(error));
             expect(error.cause.message).toContain('Nested workflow error');
+            expect(error.cause.code).toBe('USER_ERROR');
 
             // Workflow source maps are not properly supported everywhere. Check the definition
             // of hasWorkflowSourceMaps() to see where they are supported
@@ -747,8 +876,11 @@ describe('e2e', () => {
               expect(error.cause.stack).not.toContain('evalmachine');
             }
 
-            const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+            const { json: runData } = await cliInspectJson(
+              `runs ${run.runId} --withData`
+            );
             expect(runData.status).toBe('failed');
+            expect(runData.error.code).toBe('USER_ERROR');
           }
         );
 
@@ -921,6 +1053,7 @@ describe('e2e', () => {
           expect(WorkflowRunFailedError.is(error)).toBe(true);
           assert(WorkflowRunFailedError.is(error));
           expect(error.cause.message).toContain('Fatal step error');
+          expect(error.cause.code).toBe('USER_ERROR');
 
           const { json: steps } = await cliInspectJson(
             `steps --runId ${run.runId}`
@@ -968,6 +1101,71 @@ describe('e2e', () => {
           // Verify workflow completed successfully (error was caught)
           const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
           expect(runData.status).toBe('completed');
+        }
+      );
+    });
+
+    describe('not registered', () => {
+      test(
+        'WorkflowNotRegisteredError fails the run when workflow does not exist',
+        { timeout: 60_000 },
+        async () => {
+          // Start a run with a workflowId that doesn't exist in the deployment bundle.
+          // This simulates starting a run against a deployment that doesn't have the workflow.
+          const run = await start(
+            {
+              workflowId: 'workflow//./workflows/99_e2e//nonExistentWorkflow',
+            } as any,
+            []
+          );
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.message).toContain('is not registered');
+          expect(error.cause.code).toBe('RUNTIME_ERROR');
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('failed');
+        }
+      );
+
+      test(
+        'StepNotRegisteredError fails the step but workflow can catch it',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(await e2e('stepNotRegisteredCatchable'), []);
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.error).toContain('is not registered');
+
+          // Verify workflow completed successfully (error was caught)
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+
+          // Verify the step itself failed
+          const { json: steps } = await cliInspectJson(
+            `steps --runId ${run.runId}`
+          );
+          const ghostStep = steps.find((s: any) =>
+            s.stepName.includes('nonExistentStep')
+          );
+          expect(ghostStep).toBeDefined();
+          expect(ghostStep.status).toBe('failed');
+        }
+      );
+
+      test(
+        'StepNotRegisteredError fails the run when not caught in workflow',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(await e2e('stepNotRegisteredUncaught'), []);
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.message).toContain('is not registered');
         }
       );
     });
@@ -1347,7 +1545,7 @@ describe('e2e', () => {
       expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
       const flowBody = await flowRes.text();
       expect(flowBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/flow" endpoint is healthy'
+        'Workflow SDK "/.well-known/workflow/v1/flow" endpoint is healthy'
       );
 
       // Test the step endpoint health check
@@ -1363,7 +1561,7 @@ describe('e2e', () => {
       expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
       const stepBody = await stepRes.text();
       expect(stepBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/step" endpoint is healthy'
+        'Workflow SDK "/.well-known/workflow/v1/step" endpoint is healthy'
       );
     }
   );
@@ -1942,6 +2140,36 @@ describe('e2e', () => {
 
       const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
       expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
+    'importMetaUrlWorkflow - import.meta.url is available in step bundles',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('importMetaUrlWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        isDefined: true,
+        type: 'string',
+        isFileUrl: true,
+      });
+    }
+  );
+
+  test(
+    'metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('metadataFromHelperWorkflow'), [
+        'smoke-test',
+      ]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue.label).toBe('smoke-test');
+      expect(typeof returnValue.workflowRunId).toBe('string');
+      expect(typeof returnValue.stepId).toBe('string');
+      expect(returnValue.attempt).toBeGreaterThanOrEqual(1);
     }
   );
 });

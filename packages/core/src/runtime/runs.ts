@@ -1,4 +1,4 @@
-import { WorkflowAPIError } from '@workflow/errors';
+import { EntityConflictError } from '@workflow/errors';
 import {
   type Event,
   isLegacySpecVersion,
@@ -23,6 +23,7 @@ export interface StopSleepResult {
 export interface ReadStreamOptions {
   /**
    * The index to start reading from. Defaults to 0.
+   * Negative values start from the end (e.g. -3 reads the last 3 chunks).
    */
   startIndex?: number;
 }
@@ -192,7 +193,7 @@ export async function wakeUpRun(
         await world.events.create(runId, eventData, { v1Compat: compatMode });
         stoppedCount++;
       } catch (err) {
-        if (WorkflowAPIError.is(err) && err.status === 409) {
+        if (EntityConflictError.is(err)) {
           stoppedCount++;
         } else {
           errors.push(err instanceof Error ? err : new Error(String(err)));

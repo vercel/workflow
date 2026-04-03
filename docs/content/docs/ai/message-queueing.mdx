@@ -32,6 +32,8 @@ If you just need basic multi-turn conversations where messages arrive between tu
 The `prepareStep` callback runs before each step in the agent loop. It receives the current state and can modify the messages sent to the model:
 
 ```typescript lineNumbers
+import type { ModelMessage, LanguageModel } from "ai";
+
 interface PrepareStepInfo {
   model: string | (() => Promise<LanguageModel>);    // Current model
   stepNumber: number;                                // 0-indexed step count

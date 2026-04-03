@@ -85,6 +85,7 @@ export function CodeEditor({
             fontSize: 14,
             scrollBeyondLastLine: false,
             automaticLayout: true,
+            fixedOverflowWidgets: true,
             padding: { top: 16, bottom: 16 },
           }}
           onMount={handleMount}

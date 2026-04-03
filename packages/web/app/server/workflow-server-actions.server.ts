@@ -16,7 +16,7 @@ import {
 } from '@workflow/core/runtime/helpers';
 import { resumeHook as resumeHookRuntime } from '@workflow/core/runtime/resume-hook';
 
-import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import type {
   Event,
@@ -463,7 +463,7 @@ function createServerActionError<T>(
   const err = error instanceof Error ? error : new Error(String(error));
   let errorResponse: ServerActionError;
 
-  if (WorkflowAPIError.is(error)) {
+  if (WorkflowWorldError.is(error)) {
     // API-level errors (4xx/5xx from the world backend).
     // 4xx errors are client-recoverable and shouldn't spam logs.
     const status = error.status ?? 500;
@@ -947,6 +947,84 @@ export async function readStreamServerAction(
       return actionError.error;
     }
     // Shouldn't happen, this is just a type guard
+    throw new Error();
+  }
+}
+
+const CHUNKS_PAGE_SIZE = 500;
+
+export interface StreamChunksResult {
+  buffer: Uint8Array;
+  /** Cursor the client should send back on the next poll to resume, or null */
+  cursor: string | null;
+  /** Whether the stream is fully closed (no more chunks will ever be written) */
+  done: boolean;
+}
+
+/**
+ * Fetch stream chunks using paginated batch API.
+ *
+ * When `startCursor` is provided, only chunks after that position are
+ * returned — used for incremental polling so previously-seen data is
+ * never re-transferred. Returns a `cursor` the client passes back on
+ * the next request.
+ */
+export async function readStreamChunksServerAction(
+  env: EnvMap,
+  streamId: string,
+  runId: string,
+  startCursor?: string
+): Promise<StreamChunksResult | ServerActionError> {
+  try {
+    const world = await getWorldFromEnv(env);
+    const allChunks: Uint8Array[] = [];
+    let pageCursor: string | undefined = startCursor;
+    let streamDone = false;
+    // Track the last non-null cursor so we can resume from the start of
+    // the final page on the next poll. When getStreamChunks returns
+    // cursor=null we've exhausted all pages, but this saved cursor lets
+    // the client re-fetch only the last page + any new chunks.
+    let resumeCursor: string | null = startCursor ?? null;
+
+    do {
+      const result = await world.getStreamChunks(streamId, runId, {
+        limit: CHUNKS_PAGE_SIZE,
+        cursor: pageCursor,
+      });
+
+      for (const chunk of result.data) {
+        allChunks.push(chunk.data);
+      }
+
+      streamDone = result.done;
+      if (result.cursor) {
+        resumeCursor = result.cursor;
+      }
+      pageCursor = result.cursor ?? undefined;
+    } while (pageCursor);
+
+    let totalSize = 0;
+    for (const chunk of allChunks) {
+      totalSize += chunk.length;
+    }
+
+    const body = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const chunk of allChunks) {
+      body.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    return { buffer: body, cursor: resumeCursor, done: streamDone };
+  } catch (error) {
+    const actionError = createServerActionError(
+      error,
+      'world.getStreamChunks',
+      { streamId, runId }
+    );
+    if (!actionError.success) {
+      return actionError.error;
+    }
     throw new Error();
   }
 }

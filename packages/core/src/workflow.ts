@@ -1,5 +1,9 @@
 import { runInContext } from 'node:vm';
-import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  ERROR_SLUGS,
+  WorkflowNotRegisteredError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
@@ -704,11 +708,7 @@ export async function runWorkflow(
     );
 
     if (typeof workflowFn !== 'function') {
-      throw new ReferenceError(
-        `Workflow ${JSON.stringify(
-          workflowRun.workflowName
-        )} must be a function, but got "${typeof workflowFn}" instead`
-      );
+      throw new WorkflowNotRegisteredError(workflowRun.workflowName);
     }
 
     // Chain workflow argument hydration onto the promiseQueue so that the

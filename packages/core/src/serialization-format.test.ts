@@ -10,6 +10,7 @@ import {
   hydrateResourceIO,
   isClassInstanceRef,
   isEncryptedData,
+  isExpiredStub,
   isStreamId,
   isStreamRef,
   observabilityRevivers,
@@ -636,6 +637,76 @@ describe('encrypted data handling', () => {
         undefined
       );
       expect(result).toBe(legacyValue);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // isExpiredStub
+  // ---------------------------------------------------------------------------
+
+  describe('isExpiredStub', () => {
+    it('should detect unwrapped expired stub', () => {
+      expect(isExpiredStub({ expiredAt: '2025-03-18T00:00:00.000Z' })).toBe(
+        true
+      );
+    });
+
+    it('should detect array-wrapped expired stub (devalue unflatten format)', () => {
+      expect(isExpiredStub([{ expiredAt: '2025-03-18T00:00:00.000Z' }])).toBe(
+        true
+      );
+    });
+
+    it('should return false for objects with extra keys', () => {
+      expect(
+        isExpiredStub({ expiredAt: '2025-03-18T00:00:00.000Z', other: 'data' })
+      ).toBe(false);
+    });
+
+    it('should return false for non-string expiredAt', () => {
+      expect(isExpiredStub({ expiredAt: 12345 })).toBe(false);
+      expect(isExpiredStub({ expiredAt: null })).toBe(false);
+      expect(isExpiredStub({ expiredAt: new Date() })).toBe(false);
+    });
+
+    it('should return false for non-object values', () => {
+      expect(isExpiredStub(null)).toBe(false);
+      expect(isExpiredStub(undefined)).toBe(false);
+      expect(isExpiredStub('hello')).toBe(false);
+      expect(isExpiredStub(42)).toBe(false);
+      expect(isExpiredStub([])).toBe(false);
+    });
+
+    it('should return false for empty objects', () => {
+      expect(isExpiredStub({})).toBe(false);
+    });
+
+    it('should return false for objects with different single key', () => {
+      expect(isExpiredStub({ input: 'hello' })).toBe(false);
+    });
+
+    it('should return false for array with non-expired object', () => {
+      expect(isExpiredStub([{ input: 'hello' }])).toBe(false);
+    });
+
+    it('should return false for array with multiple elements', () => {
+      expect(
+        isExpiredStub([
+          { expiredAt: '2025-03-18T00:00:00.000Z' },
+          { expiredAt: '2025-03-18T00:00:00.000Z' },
+        ])
+      ).toBe(false);
+    });
+  });
+
+  describe('hydrateData with expired stubs', () => {
+    it('should unflatten server expired stub into array-wrapped form', () => {
+      // Server format: makeExpiredStub produces [[1], { expiredAt: 2 }, isoString]
+      // After unflatten: [{ expiredAt: "..." }] (array-wrapped due to devalue encoding)
+      const serverStub = [[1], { expiredAt: 2 }, '2025-03-18T00:00:00.000Z'];
+      const result = hydrateData(serverStub, observabilityRevivers);
+      expect(isExpiredStub(result)).toBe(true);
+      expect(result).toEqual([{ expiredAt: '2025-03-18T00:00:00.000Z' }]);
     });
   });
 });

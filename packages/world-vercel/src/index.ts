@@ -1,5 +1,6 @@
 import type { World } from '@workflow/world';
 import { createGetEncryptionKeyForRun } from './encryption.js';
+import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
 import { createStorage } from './storage.js';
@@ -25,7 +26,7 @@ export function createVercelWorld(config?: APIConfig): World {
   return {
     ...createQueue(config),
     ...createStorage(config),
-    ...createStreamer(config),
+    ...instrumentObject('world.streams', createStreamer(config)),
     getEncryptionKeyForRun: createGetEncryptionKeyForRun(
       projectId,
       config?.projectConfig?.teamId,
