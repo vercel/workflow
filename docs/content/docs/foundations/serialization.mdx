@@ -190,7 +190,7 @@ async function doublePoint(point: Point) {
 ### Requirements
 
 <Callout type="warn">
-Both methods must be implemented as **static** methods on the class. Instance methods are not supported.
+`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` must be implemented as **static** methods on the class. Defining them as instance methods is not supported.
 </Callout>
 
 - The data returned by `WORKFLOW_SERIALIZE` must itself be serializable (see [Supported Serializable Types](#supported-serializable-types))
@@ -205,9 +205,9 @@ The `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE` methods run inside the workf
 Keep these methods simple and focused on data transformation only.
 </Callout>
 
-### Complex Example
+### Instance Methods as Steps
 
-A class that uses Node.js APIs or other non-deterministic operations cannot be used directly inside a workflow function. The recommended approach is to make the class workflow-compatible by adding `"use step"` to its instance methods. The SWC compiler will strip the method bodies from the workflow bundle and replace them with proxy functions that invoke the method as a step — with full Node.js runtime access. The `this` context (the class instance) is automatically serialized and deserialized across the workflow/step boundary.
+In practice, many classes have methods that need Node.js APIs, perform network calls, or interact with databases — operations that are not allowed in the `"use workflow"` execution context. You can make these methods workflow-compatible by adding `"use step"` to them. The SWC compiler will strip the method bodies from the workflow bundle and replace them with proxy functions that invoke the method as a step — with full Node.js runtime access. The `this` context (the class instance) is automatically serialized and deserialized across the workflow/step boundary.
 
 This requires the class to implement `WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`, so that the instance can be passed to the step execution context.
 

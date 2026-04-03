@@ -15,7 +15,7 @@ import { File, Folder, Files } from "fumadocs-ui/components/files";
 This guide explores how JavaScript directives enable the Workflow SDK's execution model. For getting started with workflows, see the [getting started](/docs/getting-started) guides for your framework.
 </Callout>
 
-The Workflow Development Kit uses JavaScript directives (`"use workflow"` and `"use step"`) as the foundation for its durable execution model. Directives provide the compile-time semantic boundary necessary for workflows to suspend, resume, and maintain deterministic behavior across replays.
+The Workflow SDK uses JavaScript directives (`"use workflow"` and `"use step"`) as the foundation for its durable execution model. Directives provide the compile-time semantic boundary necessary for workflows to suspend, resume, and maintain deterministic behavior across replays.
 
 This page explores how directives enable this execution model and the design principles that led us here.
 
@@ -339,7 +339,7 @@ This approach requires:
 - Storing/mutating class properties was not obvious (similar closure/mutation issues as the runtime-only approach)
 - Class-based syntax that doesn't feel "JavaScript native" to developers used to functional patterns
 
-As the JavaScript ecosystem has moved toward function-forward programming (exemplified by React's shift from class components to functions and hooks), requiring developers to use classes felt like a step backward and also didn't match our own personal taste as authors of the DevKit.
+As the JavaScript ecosystem has moved toward function-forward programming (exemplified by React's shift from class components to functions and hooks), requiring developers to use classes felt like a step backward and also didn't match our own personal taste as authors of the SDK.
 
 **The core problem: Presents workflows as regular runtime code**
 
@@ -615,4 +615,4 @@ As TC39 members, we at Vercel are actively working with the standards body and b
 
 Directives aren't about syntax preference, they're about expressing semantic boundaries. `"use workflow"` tells the compiler, developer, and runtime that this code is deterministic, resumable, and sandboxed.
 
-This clarity enables the Workflow Development Kit to provide durable execution with familiar JavaScript patterns, while maintaining the compile-time guarantees necessary for reliable workflow orchestration.
+This clarity enables the Workflow SDK to provide durable execution with familiar JavaScript patterns, while maintaining the compile-time guarantees necessary for reliable workflow orchestration.

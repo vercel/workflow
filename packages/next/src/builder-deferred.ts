@@ -1109,7 +1109,7 @@ export async function getNextBuilderDeferred() {
           experimentalTriggers: [STEP_QUEUE_TRIGGER],
         },
         workflows: {
-          maxDuration: 60,
+          maxDuration: 'max',
           experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
         },
       };

@@ -190,7 +190,15 @@ export function createEventsStorage(
           };
         }
 
-        // Run state transitions are not allowed on terminal runs
+        // For run_started on terminal runs, use RunExpiredError so the
+        // runtime knows to exit without retrying.
+        if (data.eventType === 'run_started') {
+          throw new RunExpiredError(
+            `Workflow run "${effectiveRunId}" is already in terminal state "${currentRun.status}"`
+          );
+        }
+
+        // Other run state transitions are not allowed on terminal runs
         if (
           runTerminalEvents.includes(data.eventType) ||
           data.eventType === 'run_cancelled'
@@ -280,6 +288,10 @@ export function createEventsStorage(
         createdAt: now,
         specVersion: effectiveSpecVersion,
       };
+      // Strip eventData from run_started — it belongs on run_created only.
+      if (data.eventType === 'run_started' && 'eventData' in event) {
+        delete (event as any).eventData;
+      }
 
       // Track entity created/updated for EventResult
       let run: WorkflowRun | undefined;
@@ -316,6 +328,15 @@ export function createEventsStorage(
       } else if (data.eventType === 'run_started') {
         // Reuse currentRun from validation (already read above)
         if (currentRun) {
+          // If already running, return the run without inserting a
+          // duplicate event.  This makes run_started idempotent for
+          // concurrent invocations.  We omit preloaded events here
+          // because this is a rare race-condition path — the runtime
+          // falls back to getAllWorkflowRunEvents().
+          if (currentRun.status === 'running') {
+            return { run: currentRun };
+          }
+
           run = {
             runId: currentRun.runId,
             deploymentId: currentRun.deploymentId,
@@ -832,6 +853,21 @@ export function createEventsStorage(
       const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const filteredEvent = stripEventDataRefs(event, resolveData);
 
+      // For run_started: include all events so the runtime can skip
+      // the initial events.list call and reduce TTFB.
+      let events: Event[] | undefined;
+      if (data.eventType === 'run_started' && run) {
+        const allEvents = await paginatedFileSystemQuery({
+          directory: path.join(basedir, 'events'),
+          schema: EventSchema,
+          filePrefix: `${effectiveRunId}-`,
+          sortOrder: 'asc',
+          getCreatedAt: getObjectCreatedAt('evnt'),
+          getId: (e) => e.eventId,
+        });
+        events = allEvents.data;
+      }
+
       // Return EventResult with event and any created/updated entity
       return {
         event: filteredEvent,
@@ -839,6 +875,7 @@ export function createEventsStorage(
         step,
         hook,
         wait,
+        events,
       };
     },
 

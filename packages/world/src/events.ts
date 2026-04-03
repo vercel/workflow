@@ -369,6 +369,12 @@ export interface EventResult {
   hook?: import('./hooks.js').Hook;
   /** The wait entity (for wait_created/wait_completed events) */
   wait?: import('./waits.js').Wait;
+  /**
+   * All events up to this point, with data resolved. When populated
+   * on a run_started response, the runtime uses these to skip the
+   * initial events.list call and reduce TTFB.
+   */
+  events?: Event[];
 }
 
 export interface GetEventParams {

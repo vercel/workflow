@@ -7327,28 +7327,34 @@ impl VisitMut for StepTransform {
         // Get the binding name set by visit_mut_var_decl (e.g., "Foo" from `var Foo = class { ... }`)
         let binding_name = self.current_class_binding_name.take();
 
-        // Get the internal class name (used for current_class_name tracking)
-        let mut internal_class_name = class_expr
+        // Get the internal class expression name (e.g. `_Foo` from `class _Foo { ... }`)
+        let expr_ident_name = class_expr
             .ident
             .as_ref()
             .map(|i| i.sym.to_string())
             .unwrap_or_else(|| "AnonymousClass".to_string());
 
-        // For serialization registration, use the binding name if available
-        // e.g., for `var Bash = class _Bash {}`, use "Bash" not "_Bash"
-        // because "_Bash" is not accessible at module scope
-        let registration_name = binding_name
+        // Compute the tracked class name: prefer the binding name (e.g. `Foo`
+        // from `var Foo = class _Foo {}`) over the internal class expression
+        // name (`_Foo`). The internal name is only scoped inside the class body
+        // and is not accessible at module level, so all generated code emitted
+        // outside the class — method step registrations, class serialization
+        // IIFEs, and method-stripping filters — must use the binding name.
+        // Without this, generated code like
+        // `registerStepFunction("...", _Foo.prototype["method"])` would
+        // produce a ReferenceError at runtime.
+        let tracked_class_name = binding_name
             .clone()
-            .unwrap_or_else(|| internal_class_name.clone());
+            .unwrap_or_else(|| expr_ident_name.clone());
 
         let old_class_name = self.current_class_name.take();
-        self.current_class_name = Some(internal_class_name.clone());
+        self.current_class_name = Some(tracked_class_name.clone());
 
         // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
         let has_serde = self.has_custom_serialization_methods(&class_expr.class);
         if has_serde {
             self.classes_needing_serialization
-                .insert(registration_name.clone());
+                .insert(tracked_class_name.clone());
         }
 
         // esbuild emits anonymous class expressions for classes that don't
@@ -7366,12 +7372,6 @@ impl VisitMut for StepTransform {
                     DUMMY_SP,
                     SyntaxContext::empty(),
                 ));
-                // Recompute internal_class_name and update current_class_name so
-                // that subsequent logic (e.g. step/workflow method naming and
-                // method-stripping filters) uses the actual class name rather
-                // than "AnonymousClass".
-                internal_class_name = name.clone();
-                self.current_class_name = Some(name.clone());
             }
         }
 
@@ -7383,14 +7383,14 @@ impl VisitMut for StepTransform {
             let static_methods_to_strip: Vec<_> = self
                 .static_step_methods_to_strip
                 .iter()
-                .filter(|(cn, _, _)| cn == &internal_class_name)
+                .filter(|(cn, _, _)| cn == &tracked_class_name)
                 .map(|(_, mn, _)| mn.clone())
                 .collect();
 
             let instance_methods_to_strip: Vec<_> = self
                 .instance_step_methods_to_strip
                 .iter()
-                .filter(|(cn, _, _)| cn == &internal_class_name)
+                .filter(|(cn, _, _)| cn == &tracked_class_name)
                 .map(|(_, mn, _)| mn.clone())
                 .collect();
 

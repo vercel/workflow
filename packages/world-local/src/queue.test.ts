@@ -1,5 +1,7 @@
 import type { StepInvokePayload } from '@workflow/world';
+import { MessageId, ValidQueueName } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod/v4';
 import { createQueue } from './queue';
 
 // Mock node:timers/promises so setTimeout resolves immediately
@@ -13,6 +15,29 @@ const stepPayload: StepInvokePayload = {
   workflowStartedAt: Date.now(),
   stepId: 'step_01ABC',
 };
+
+describe('zod v3/v4 schema compatibility (regression #1587)', () => {
+  it('ValidQueueName and MessageId from @workflow/world parse correctly in z.object()', () => {
+    const HeaderParser = z.object({
+      'x-vqs-queue-name': ValidQueueName,
+      'x-vqs-message-id': MessageId,
+      'x-vqs-message-attempt': z.coerce.number(),
+    });
+
+    const result = HeaderParser.safeParse({
+      'x-vqs-queue-name': '__wkf_workflow_test',
+      'x-vqs-message-id': 'msg_01ABC',
+      'x-vqs-message-attempt': '1',
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data['x-vqs-queue-name']).toBe('__wkf_workflow_test');
+      expect(result.data['x-vqs-message-id']).toBe('msg_01ABC');
+      expect(result.data['x-vqs-message-attempt']).toBe(1);
+    }
+  });
+});
 
 describe('queue timeout re-enqueue', () => {
   let localQueue: ReturnType<typeof createQueue>;
