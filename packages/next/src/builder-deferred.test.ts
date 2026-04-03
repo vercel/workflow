@@ -11,6 +11,13 @@ type DiscoverEntriesOwner = {
   discoverEntries: (...args: unknown[]) => Promise<unknown>;
 };
 
+type BuilderWithTransitiveSteps = {
+  collectTransitiveStepFiles: (args: {
+    stepFiles: string[];
+    seedFiles?: string[];
+  }) => Promise<string[]>;
+};
+
 describe('NextDeferredBuilder discovery behavior', () => {
   let testDir: string;
   let discoverEntriesSpy: ReturnType<typeof vi.spyOn>;
@@ -107,5 +114,73 @@ describe('NextDeferredBuilder discovery behavior', () => {
     await (builder as unknown as BuilderWithInit).initializeDiscoveryState();
 
     expect(discoverEntriesSpy).not.toHaveBeenCalled();
+  });
+
+  it('should collect transitive @workflow package step files from workflow imports', async () => {
+    const appDir = join(testDir, 'app');
+    const workflowFilePath = join(appDir, 'page.ts');
+    await mkdir(appDir, { recursive: true });
+    await writeFile(
+      workflowFilePath,
+      [
+        '"use workflow";',
+        "import { closeStream } from '@workflow/ai/agent';",
+        'export async function workflowEntry() {',
+        '  return closeStream();',
+        '}',
+      ].join('\n'),
+      'utf-8'
+    );
+
+    const workflowAiPackageDir = join(testDir, 'node_modules/@workflow/ai');
+    await mkdir(workflowAiPackageDir, { recursive: true });
+    await writeFile(
+      join(workflowAiPackageDir, 'package.json'),
+      JSON.stringify({ name: '@workflow/ai', version: '0.0.0' }),
+      'utf-8'
+    );
+    await writeFile(
+      join(workflowAiPackageDir, 'agent.js'),
+      [
+        "import { nestedStep } from './nested.js';",
+        'export async function closeStream() {',
+        "  'use step';",
+        '  return nestedStep();',
+        '}',
+      ].join('\n'),
+      'utf-8'
+    );
+    await writeFile(
+      join(workflowAiPackageDir, 'nested.js'),
+      [
+        'export async function nestedStep() {',
+        "  'use step';",
+        "  return 'ok';",
+        '}',
+      ].join('\n'),
+      'utf-8'
+    );
+
+    const builder = await createBuilder(true);
+    const transitiveStepFiles = await (
+      builder as unknown as BuilderWithTransitiveSteps
+    ).collectTransitiveStepFiles({
+      stepFiles: [],
+      seedFiles: [workflowFilePath],
+    });
+
+    const normalizedStepFiles = transitiveStepFiles.map((filePath) =>
+      filePath.replace(/\\/g, '/')
+    );
+    expect(
+      normalizedStepFiles.some((filePath) =>
+        filePath.includes('/node_modules/@workflow/ai/agent')
+      )
+    ).toBe(true);
+    expect(
+      normalizedStepFiles.some((filePath) =>
+        filePath.includes('/node_modules/@workflow/ai/nested.js')
+      )
+    ).toBe(true);
   });
 });

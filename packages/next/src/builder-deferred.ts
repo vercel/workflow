@@ -10,6 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
+import { createRequire } from 'node:module';
 import {
   basename,
   dirname,
@@ -1347,8 +1348,12 @@ export async function getNextBuilderDeferred() {
       return rewrittenSource;
     }
 
-    private extractRelativeImportSpecifiers(source: string): string[] {
-      const relativeSpecifiers = new Set<string>();
+    private isTransitivePackageSpecifier(specifier: string): boolean {
+      return specifier.startsWith('@workflow/');
+    }
+
+    private extractTransitiveImportSpecifiers(source: string): string[] {
+      const matchingSpecifiers = new Set<string>();
       const importPatterns = [
         /from\s+['"]([^'"]+)['"]/g,
         /import\s+['"]([^'"]+)['"]/g,
@@ -1359,13 +1364,22 @@ export async function getNextBuilderDeferred() {
       for (const importPattern of importPatterns) {
         for (const match of source.matchAll(importPattern)) {
           const specifier = match[1];
-          if (specifier?.startsWith('.')) {
-            relativeSpecifiers.add(specifier);
+          if (!specifier) {
+            continue;
+          }
+          const specifierMatch = specifier.match(/^([^?#]+)(.*)$/);
+          const importPath = specifierMatch?.[1] ?? specifier;
+
+          if (
+            importPath.startsWith('.') ||
+            this.isTransitivePackageSpecifier(importPath)
+          ) {
+            matchingSpecifiers.add(specifier);
           }
         }
       }
 
-      return Array.from(relativeSpecifiers);
+      return Array.from(matchingSpecifiers);
     }
 
     private shouldSkipTransitiveStepFile(filePath: string): boolean {
@@ -1390,6 +1404,40 @@ export async function getNextBuilderDeferred() {
     ): Promise<string | null> {
       const specifierMatch = specifier.match(/^([^?#]+)(.*)$/);
       const importPath = specifierMatch?.[1] ?? specifier;
+
+      if (!importPath.startsWith('.')) {
+        if (!this.isTransitivePackageSpecifier(importPath)) {
+          return null;
+        }
+
+        let resolvedPackagePath: string;
+        try {
+          const sourceRequire = createRequire(sourceFilePath);
+          resolvedPackagePath = sourceRequire.resolve(importPath);
+        } catch {
+          try {
+            resolvedPackagePath = require.resolve(importPath, {
+              paths: [dirname(sourceFilePath), this.config.workingDir],
+            });
+          } catch {
+            return null;
+          }
+        }
+
+        const normalizedResolvedPath =
+          this.normalizeDiscoveredFilePath(resolvedPackagePath);
+        if (this.shouldSkipTransitiveStepFile(normalizedResolvedPath)) {
+          return null;
+        }
+
+        try {
+          const fileStats = await stat(normalizedResolvedPath);
+          return fileStats.isFile() ? normalizedResolvedPath : null;
+        } catch {
+          return null;
+        }
+      }
+
       const absoluteTargetPath = resolve(dirname(sourceFilePath), importPath);
 
       const candidatePaths = new Set<string>([
@@ -1511,9 +1559,9 @@ export async function getNextBuilderDeferred() {
           discoveredStepFiles.add(currentFile);
         }
 
-        const relativeImportSpecifiers =
-          this.extractRelativeImportSpecifiers(currentSource);
-        for (const specifier of relativeImportSpecifiers) {
+        const transitiveImportSpecifiers =
+          this.extractTransitiveImportSpecifiers(currentSource);
+        for (const specifier of transitiveImportSpecifiers) {
           const resolvedImportPath =
             await this.resolveTransitiveStepImportTargetPath(
               currentFile,
@@ -1621,9 +1669,9 @@ export async function getNextBuilderDeferred() {
           continue;
         }
 
-        const relativeImportSpecifiers =
-          this.extractRelativeImportSpecifiers(currentSource);
-        for (const specifier of relativeImportSpecifiers) {
+        const transitiveImportSpecifiers =
+          this.extractTransitiveImportSpecifiers(currentSource);
+        for (const specifier of transitiveImportSpecifiers) {
           const resolvedImportPath =
             await this.resolveTransitiveStepImportTargetPath(
               currentFile,
