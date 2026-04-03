@@ -22,7 +22,7 @@ type Tracer = {
     options: Attributes,
     fn: (span: Span) => T
   ): T;
-  startSpan(name: string, options?: Attributes): Span;
+  startSpan(name: string, options?: Attributes, context?: Context): Span;
 };
 
 // Full OTel API surface we use
@@ -227,7 +227,11 @@ export async function createSpan(options: {
     options.attributes
   );
 
-  return tracer.startSpan(options.name, { attributes: attrs });
+  // Capture the active context so the span parents under the caller's
+  // current span, matching how recordSpan uses context.with().
+  const ctx = otelApi.context.active();
+  const span = tracer.startSpan(options.name, { attributes: attrs }, ctx);
+  return span;
 }
 
 /**
