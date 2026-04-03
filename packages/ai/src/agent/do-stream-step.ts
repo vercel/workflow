@@ -21,6 +21,7 @@ import type {
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
+import { getErrorMessage } from '../get-error-message.js';
 import { recordSpan } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
 
@@ -462,8 +463,7 @@ export async function doStreamStep(
               const error = part.error;
               controller.enqueue({
                 type: 'error',
-                errorText:
-                  error instanceof Error ? error.message : String(error),
+                errorText: getErrorMessage(error),
               });
 
               break;

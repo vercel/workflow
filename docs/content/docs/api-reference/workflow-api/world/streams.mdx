@@ -2,7 +2,7 @@
 title: Streams
 description: Read, write, and manage real-time data streams for workflow runs.
 type: reference
-summary: "Methods: writeToStream(), readFromStream(), closeStream(), listStreamsByRunId(). Stream methods live directly on the world object."
+summary: "Methods: writeToStream(), writeToStreamMulti(), readFromStream(), closeStream(), listStreamsByRunId(), getStreamChunks(), getStreamInfo(). Stream methods live directly on the world object."
 prerequisites:
   - /docs/api-reference/workflow-api/get-world
 related:
@@ -10,9 +10,12 @@ related:
   - /docs/api-reference/workflow/get-writable
 keywords:
   - writeToStream
+  - writeToStreamMulti
   - readFromStream
   - closeStream
   - listStreamsByRunId
+  - getStreamChunks
+  - getStreamInfo
   - Streamer interface
   - real-time streaming
   - stream lifecycle
@@ -37,7 +40,7 @@ const world = getWorld(); // [!code highlight]
 
 ### writeToStream()
 
-Write a data chunk to a named stream for a workflow run.
+Write a data chunk to a named stream.
 
 ```typescript lineNumbers
 await world.writeToStream("default", runId, chunk); // [!code highlight]
@@ -49,11 +52,27 @@ await world.writeToStream("default", runId, chunk); // [!code highlight]
 |-----------|------|-------------|
 | `name` | `string` | The stream name |
 | `runId` | `string` | The workflow run ID |
-| `chunk` | `string \| Uint8Array` | Data to write to the stream |
+| `chunk` | `string \| Uint8Array` | Data to write |
+
+### writeToStreamMulti()
+
+Write multiple chunks in a single operation. Optional optimization — not all World implementations support it. Falls back to sequential `writeToStream()` calls if unavailable.
+
+```typescript lineNumbers
+await world.writeToStreamMulti?.("default", runId, [chunk1, chunk2]); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | The stream name |
+| `runId` | `string` | The workflow run ID |
+| `chunks` | `(string \| Uint8Array)[]` | Chunks to write, in order |
 
 ### readFromStream()
 
-Read data from a named stream as a `ReadableStream`. Returns a live stream that waits for new chunks in real time.
+Read data from a named stream as a live `ReadableStream` that waits for new chunks in real time.
 
 ```typescript lineNumbers
 const readable = await world.readFromStream("default"); // [!code highlight]
@@ -64,7 +83,7 @@ const readable = await world.readFromStream("default"); // [!code highlight]
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `name` | `string` | The stream name |
-| `startIndex` | `number` | Optional starting index for partial reads. Negative values read from the tail (e.g. `-3` starts 3 chunks from the end). |
+| `startIndex` | `number` | Optional. Positive values skip chunks from the start (0-based). Negative values read from the tail (e.g. `-3` starts 3 chunks from the end). Clamped to 0. |
 
 **Returns:** `ReadableStream<Uint8Array>`
 
@@ -97,30 +116,61 @@ const streamNames = await world.listStreamsByRunId(runId); // [!code highlight]
 |-----------|------|-------------|
 | `runId` | `string` | The workflow run ID |
 
-**Returns:** `string[]` — Array of stream names
+**Returns:** `string[]`
 
-## Examples
+### getStreamChunks()
 
-### List All Streams for a Workflow Run
+Fetch stream chunks with cursor-based pagination. Unlike `readFromStream()` (which returns a live `ReadableStream`), this returns a snapshot of currently available chunks.
 
 ```typescript lineNumbers
-// app/api/workflow-streams/route.ts
-import { getWorld } from "workflow/runtime";
-
-export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const runId = url.searchParams.get("runId");
-
-  if (!runId) {
-    return Response.json({ error: "runId required" }, { status: 400 });
-  }
-
-  const world = getWorld();
-  const streamNames = await world.listStreamsByRunId(runId); // [!code highlight]
-
-  return Response.json({ streams: streamNames });
-}
+const result = await world.getStreamChunks("default", runId, { // [!code highlight]
+  limit: 50,
+}); // [!code highlight]
+// result.data: StreamChunk[], result.cursor, result.hasMore, result.done
 ```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | The stream name |
+| `runId` | `string` | The workflow run ID |
+| `options.limit` | `number` | Max chunks per page (default: 100, max: 1000) |
+| `options.cursor` | `string` | Cursor from a previous response |
+
+**Returns:** `StreamChunksResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `data` | `StreamChunk[]` | Chunks in index order. Each has `index` (0-based) and `data` (`Uint8Array`). |
+| `cursor` | `string \| null` | Cursor for the next page |
+| `hasMore` | `boolean` | Whether more pages of already-written chunks exist |
+| `done` | `boolean` | Whether the stream is fully closed. When `false`, new chunks may appear in future requests even after `hasMore` is `false`. |
+
+### getStreamInfo()
+
+Retrieve lightweight metadata about a stream without fetching chunks.
+
+```typescript lineNumbers
+const info = await world.getStreamInfo("default", runId); // [!code highlight]
+// info.tailIndex: last chunk index (-1 if empty), info.done: whether stream is closed
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `name` | `string` | The stream name |
+| `runId` | `string` | The workflow run ID |
+
+**Returns:** `StreamInfoResponse`
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tailIndex` | `number` | Index of the last known chunk (0-based). `-1` when no chunks have been written. |
+| `done` | `boolean` | Whether the stream is fully complete (closed). |
+
+## Examples
 
 ### Read a Stream as a Response
 
@@ -130,12 +180,7 @@ import { getWorld } from "workflow/runtime";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const streamName = url.searchParams.get("name");
-
-  if (!streamName) {
-    return Response.json({ error: "name required" }, { status: 400 });
-  }
-
+  const streamName = url.searchParams.get("name") ?? "default";
   const world = getWorld();
   const readable = await world.readFromStream(streamName); // [!code highlight]
 
@@ -145,8 +190,25 @@ export async function GET(req: Request) {
 }
 ```
 
+### Paginate Through Stream Chunks
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+let cursor: string | undefined;
+
+do {
+  const result = await world.getStreamChunks("default", runId, { cursor }); // [!code highlight]
+  for (const chunk of result.data) {
+    console.log(`Chunk ${chunk.index}:`, chunk.data);
+  }
+  cursor = result.cursor ?? undefined;
+} while (cursor);
+```
+
 ## Related
 
 - [Streaming](/docs/foundations/streaming) — Core concepts for streaming data from workflows
 - [getWritable()](/docs/api-reference/workflow/get-writable) — The standard way to write to streams from within steps
-- [world.runs](/docs/api-reference/workflow-api/world/runs) — List runs that may have associated streams
+- [Storage](/docs/api-reference/workflow-api/world/storage) — Query runs, steps, hooks, and events

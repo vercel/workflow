@@ -19,7 +19,7 @@ import {
 } from 'graphile-worker';
 import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
-import z from 'zod';
+import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
 import { MessageData } from './message.js';
 

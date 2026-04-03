@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { QueueClient, DuplicateMessageError } from '@vercel/queue';
+import { DuplicateMessageError, QueueClient } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
@@ -8,7 +8,7 @@ import {
   QueuePayloadSchema,
   ValidQueueName,
 } from '@workflow/world';
-import * as z from 'zod';
+import { z } from 'zod/v4';
 import { getDispatcher } from './http-client.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
 

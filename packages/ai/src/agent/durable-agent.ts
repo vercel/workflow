@@ -26,6 +26,7 @@ import {
   type UIMessageChunk,
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
+import { getErrorMessage } from '../get-error-message.js';
 import { streamTextIterator } from './stream-text-iterator.js';
 import { recordSpan } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
@@ -1499,23 +1500,6 @@ function safeParseInput(input: string | undefined): unknown {
   } catch {
     return input;
   }
-}
-
-// Matches AI SDK's getErrorMessage from @ai-sdk/provider-utils
-function getErrorMessage(error: unknown): string {
-  if (error == null) {
-    return 'unknown error';
-  }
-
-  if (typeof error === 'string') {
-    return error;
-  }
-
-  if (error instanceof Error) {
-    return error.message;
-  }
-
-  return JSON.stringify(error);
 }
 
 function resolveProviderToolResult(
