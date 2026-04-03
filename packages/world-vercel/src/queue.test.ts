@@ -180,7 +180,7 @@ describe('createQueue', () => {
       }
     });
 
-    it('should auto-inject x-workflow-run-id header for workflow payloads', async () => {
+    it('should auto-inject x-vercel-workflow-run-id header for workflow payloads', async () => {
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
 
       const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
@@ -196,7 +196,7 @@ describe('createQueue', () => {
         expect(sendOpts).toEqual(
           expect.objectContaining({
             headers: expect.objectContaining({
-              'x-workflow-run-id': 'wrun_abc123',
+              'x-vercel-workflow-run-id': 'wrun_abc123',
             }),
           })
         );
@@ -209,7 +209,7 @@ describe('createQueue', () => {
       }
     });
 
-    it('should auto-inject x-workflow-run-id and x-workflow-step-id headers for step payloads', async () => {
+    it('should auto-inject x-vercel-workflow-run-id and x-vercel-workflow-step-id headers for step payloads', async () => {
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
 
       const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
@@ -230,8 +230,8 @@ describe('createQueue', () => {
         expect(sendOpts).toEqual(
           expect.objectContaining({
             headers: expect.objectContaining({
-              'x-workflow-run-id': 'wrun_abc123',
-              'x-workflow-step-id': 'step_xyz789',
+              'x-vercel-workflow-run-id': 'wrun_abc123',
+              'x-vercel-workflow-step-id': 'step_xyz789',
             }),
           })
         );
@@ -283,7 +283,7 @@ describe('createQueue', () => {
           { runId: 'wrun_abc123' },
           {
             headers: {
-              'x-workflow-run-id': 'wrun_override',
+              'x-vercel-workflow-run-id': 'wrun_override',
               'x-custom-header': 'custom-value',
             },
           }
@@ -293,7 +293,7 @@ describe('createQueue', () => {
         // send(topicName, payload, options)
         const sendOpts = mockSend.mock.calls[0][2];
         expect(sendOpts.headers).toEqual({
-          'x-workflow-run-id': 'wrun_override',
+          'x-vercel-workflow-run-id': 'wrun_override',
           'x-custom-header': 'custom-value',
         });
       } finally {
@@ -550,7 +550,7 @@ describe('createQueue', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('should auto-inject x-workflow-run-id header on delayed re-enqueue', async () => {
+    it('should auto-inject x-vercel-workflow-run-id header on delayed re-enqueue', async () => {
       mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
       const handler = setupHandler({ timeoutSeconds: 300 });
 
@@ -569,7 +569,7 @@ describe('createQueue', () => {
       expect(sendOpts).toEqual(
         expect.objectContaining({
           headers: expect.objectContaining({
-            'x-workflow-run-id': 'wrun_abc123',
+            'x-vercel-workflow-run-id': 'wrun_abc123',
           }),
         })
       );
@@ -601,8 +601,8 @@ describe('createQueue', () => {
       expect(sendOpts).toEqual(
         expect.objectContaining({
           headers: expect.objectContaining({
-            'x-workflow-run-id': 'wrun_abc123',
-            'x-workflow-step-id': 'step_xyz789',
+            'x-vercel-workflow-run-id': 'wrun_abc123',
+            'x-vercel-workflow-step-id': 'step_xyz789',
           }),
         })
       );

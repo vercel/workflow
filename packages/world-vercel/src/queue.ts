@@ -62,13 +62,13 @@ function getHeadersFromPayload(
   const headers: Record<string, string> = {};
 
   if ('runId' in payload && typeof payload.runId === 'string') {
-    headers['x-workflow-run-id'] = payload.runId;
+    headers['x-vercel-workflow-run-id'] = payload.runId;
   }
   if ('workflowRunId' in payload && typeof payload.workflowRunId === 'string') {
-    headers['x-workflow-run-id'] = payload.workflowRunId;
+    headers['x-vercel-workflow-run-id'] = payload.workflowRunId;
   }
   if ('stepId' in payload && typeof payload.stepId === 'string') {
-    headers['x-workflow-step-id'] = payload.stepId;
+    headers['x-vercel-workflow-step-id'] = payload.stepId;
   }
 
   return Object.keys(headers).length > 0 ? headers : undefined;
