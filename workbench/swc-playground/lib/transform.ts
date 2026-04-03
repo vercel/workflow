@@ -22,7 +22,10 @@ export interface SerdeAnalysis {
   classes: SerdeClassAnalysis[];
 }
 
-// Common Node.js built-in module names for client-side detection
+// Node.js built-in module base names for client-side detection.
+// Generated from `require('module').builtinModules` (Node 22).
+// Keep in sync with Node.js releases — sub-paths like 'fs/promises'
+// are matched by the regex via the `/[^'"]*` suffix.
 const NODE_BUILTINS = [
   'assert',
   'async_hooks',
@@ -55,6 +58,7 @@ const NODE_BUILTINS = [
   'stream',
   'string_decoder',
   'sys',
+  'test',
   'timers',
   'tls',
   'trace_events',

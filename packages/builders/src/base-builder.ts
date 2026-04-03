@@ -836,15 +836,29 @@ export abstract class BaseBuilder {
           workflowCode: bundleText,
           manifest: workflowManifest,
         });
+        // De-dupe warnings: group identical issues across classes
+        const issuesToClasses = new Map<string, Set<string>>();
         for (const cls of serdeResult.classes) {
           if (!cls.compliant) {
             for (const issue of cls.issues) {
-              console.warn(
-                chalk.yellow(`⚠ Serde warning for class "${cls.className}": `) +
-                  issue
-              );
+              let affectedClasses = issuesToClasses.get(issue);
+              if (!affectedClasses) {
+                affectedClasses = new Set<string>();
+                issuesToClasses.set(issue, affectedClasses);
+              }
+              affectedClasses.add(cls.className);
             }
           }
+        }
+        for (const [issue, affectedClasses] of issuesToClasses) {
+          const classNames = [...affectedClasses];
+          const classLabel =
+            classNames.length === 1
+              ? `class "${classNames[0]}"`
+              : `classes ${classNames.map((name) => `"${name}"`).join(', ')}`;
+          console.warn(
+            chalk.yellow(`⚠ Serde warning for ${classLabel}: `) + issue
+          );
         }
       }
 

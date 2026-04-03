@@ -43,10 +43,6 @@ export default class Transform extends BaseCommand {
       description: 'Run serde compliance analysis on the transformed output',
       default: false,
     }),
-    'module-specifier': Flags.string({
-      description:
-        'Module specifier for the file (e.g. "my-package@1.0.0"). Auto-detected if not provided.',
-    }),
   };
 
   public async run(): Promise<Record<string, unknown>> {

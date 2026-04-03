@@ -83,6 +83,7 @@ function getStoredVimMode(): boolean {
 }
 
 type ViewMode = 'workflow' | 'step' | 'client';
+type PanelId = ViewMode | 'serde';
 
 interface CompilationResult {
   code: string;
@@ -113,8 +114,8 @@ export function SwcPlayground({
   const [serdeAnalysis, setSerdeAnalysis] = useState<SerdeAnalysis | null>(
     null
   );
-  const [expandedPanels, setExpandedPanels] = useState<Set<ViewMode>>(
-    new Set(['workflow', 'step', 'client'])
+  const [expandedPanels, setExpandedPanels] = useState<Set<PanelId>>(
+    new Set(['workflow', 'step', 'client', 'serde'])
   );
   const monacoConfigured = useRef(false);
 
@@ -253,7 +254,7 @@ export function SwcPlayground({
     return () => clearTimeout(timer);
   }, [code, compile, wasmReady]);
 
-  const togglePanel = (mode: ViewMode) => {
+  const togglePanel = (mode: PanelId) => {
     setExpandedPanels((prev) => {
       const next = new Set(prev);
       if (next.has(mode)) {
@@ -419,68 +420,111 @@ export function SwcPlayground({
               })}
 
               {/* Serde Analysis Panel */}
-              {serdeAnalysis && (
-                <div className="border-t bg-muted/20 p-4 text-sm overflow-auto max-h-48">
-                  <div className="font-medium mb-2 text-foreground">
-                    Serde Analysis
-                  </div>
-                  {serdeAnalysis.classes.map((cls) => (
+              {serdeAnalysis &&
+                (() => {
+                  const isSerdeOpen = expandedPanels.has('serde');
+                  const allCompliant = serdeAnalysis.classes.every(
+                    (c) => c.compliant
+                  );
+                  return (
                     <div
-                      key={cls.classId || cls.className}
-                      className="mb-3 last:mb-0"
+                      className={`flex flex-col min-h-0 border-b last:border-b-0 ${
+                        isSerdeOpen ? 'flex-1' : ''
+                      }`}
                     >
-                      <div className="flex items-center gap-2 mb-1">
-                        {cls.compliant ? (
-                          <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
-                        ) : (
-                          <XCircle className="w-4 h-4 text-red-500 shrink-0" />
-                        )}
-                        <span className="font-medium">{cls.className}</span>
-                        <span
-                          className={
-                            cls.compliant ? 'text-green-500' : 'text-red-500'
-                          }
+                      <button
+                        type="button"
+                        onClick={() => togglePanel('serde')}
+                        aria-expanded={isSerdeOpen}
+                        aria-controls="output-panel-serde"
+                        className="bg-muted px-4 py-2 text-sm font-medium border-b flex items-center justify-between shrink-0 hover:bg-muted/80 transition-colors cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2">
+                          <ChevronDownIcon
+                            className={`size-4 shrink-0 text-muted-foreground transition-transform duration-200 ${
+                              isSerdeOpen ? '' : '-rotate-90'
+                            }`}
+                          />
+                          <span>Serde Analysis</span>
+                          {allCompliant ? (
+                            <CheckCircle2 className="w-3.5 h-3.5 text-green-500" />
+                          ) : (
+                            <XCircle className="w-3.5 h-3.5 text-red-500" />
+                          )}
+                        </div>
+                      </button>
+                      {isSerdeOpen && (
+                        <div
+                          id="output-panel-serde"
+                          className="flex-1 min-h-0 overflow-auto p-4 text-sm"
                         >
-                          {cls.compliant ? 'Compliant' : 'Not Compliant'}
-                        </span>
-                      </div>
-                      <div className="ml-6 text-muted-foreground space-y-0.5">
-                        {cls.classId && (
-                          <div>
-                            classId:{' '}
-                            <code className="text-xs bg-muted px-1 rounded">
-                              {cls.classId}
-                            </code>
-                          </div>
-                        )}
-                        <div>
-                          Detected by SWC: {cls.detected ? 'yes' : 'no'}
+                          {serdeAnalysis.classes.map((cls) => (
+                            <div
+                              key={cls.classId || cls.className}
+                              className="mb-3 last:mb-0"
+                            >
+                              <div className="flex items-center gap-2 mb-1">
+                                {cls.compliant ? (
+                                  <CheckCircle2 className="w-4 h-4 text-green-500 shrink-0" />
+                                ) : (
+                                  <XCircle className="w-4 h-4 text-red-500 shrink-0" />
+                                )}
+                                <span className="font-medium">
+                                  {cls.className}
+                                </span>
+                                <span
+                                  className={
+                                    cls.compliant
+                                      ? 'text-green-500'
+                                      : 'text-red-500'
+                                  }
+                                >
+                                  {cls.compliant
+                                    ? 'Compliant'
+                                    : 'Not Compliant'}
+                                </span>
+                              </div>
+                              <div className="ml-6 text-muted-foreground space-y-0.5">
+                                {cls.classId && (
+                                  <div>
+                                    classId:{' '}
+                                    <code className="text-xs bg-muted px-1 rounded">
+                                      {cls.classId}
+                                    </code>
+                                  </div>
+                                )}
+                                <div>
+                                  Detected by SWC: {cls.detected ? 'yes' : 'no'}
+                                </div>
+                                <div>
+                                  Registration IIFE:{' '}
+                                  {cls.registered ? 'yes' : 'no'}
+                                </div>
+                                {cls.nodeImports.length > 0 && (
+                                  <div className="text-yellow-500">
+                                    Node.js imports in workflow bundle:{' '}
+                                    {cls.nodeImports.join(', ')}
+                                  </div>
+                                )}
+                                {cls.issues.map((issue, i) => (
+                                  <div key={i} className="text-yellow-500">
+                                    {issue}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                          {serdeAnalysis.globalNodeImports.length > 0 && (
+                            <div className="mt-2 pt-2 border-t text-yellow-500">
+                              All Node.js imports in workflow output:{' '}
+                              {serdeAnalysis.globalNodeImports.join(', ')}
+                            </div>
+                          )}
                         </div>
-                        <div>
-                          Registration IIFE: {cls.registered ? 'yes' : 'no'}
-                        </div>
-                        {cls.nodeImports.length > 0 && (
-                          <div className="text-yellow-500">
-                            Node.js imports in workflow bundle:{' '}
-                            {cls.nodeImports.join(', ')}
-                          </div>
-                        )}
-                        {cls.issues.map((issue, i) => (
-                          <div key={i} className="text-yellow-500">
-                            {issue}
-                          </div>
-                        ))}
-                      </div>
+                      )}
                     </div>
-                  ))}
-                  {serdeAnalysis.globalNodeImports.length > 0 && (
-                    <div className="mt-2 pt-2 border-t text-yellow-500">
-                      All Node.js imports in workflow output:{' '}
-                      {serdeAnalysis.globalNodeImports.join(', ')}
-                    </div>
-                  )}
-                </div>
-              )}
+                  );
+                })()}
             </div>
           </ResizablePanel>
         </ResizablePanelGroup>
