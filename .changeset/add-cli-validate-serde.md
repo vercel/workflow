@@ -2,4 +2,4 @@
 "@workflow/cli": patch
 ---
 
-Implement `workflow validate` command with serde compliance checks
+Implement serde compliance checks in `workflow validate`

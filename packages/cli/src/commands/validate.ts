@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { relative, resolve } from 'node:path';
+import { join, relative, resolve } from 'node:path';
 import { Flags } from '@oclif/core';
 import {
   analyzeSerdeCompliance,
@@ -10,6 +10,22 @@ import {
 import chalk from 'chalk';
 import { glob } from 'tinyglobby';
 import { BaseCommand } from '../base.js';
+
+/**
+ * Parse a .gitignore file into glob-compatible ignore patterns.
+ * Returns an empty array if the file doesn't exist.
+ */
+async function loadGitignorePatterns(dir: string): Promise<string[]> {
+  try {
+    const content = await readFile(join(dir, '.gitignore'), 'utf-8');
+    return content
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#'));
+  } catch {
+    return [];
+  }
+}
 
 interface FileValidationResult {
   file: string;
@@ -46,23 +62,23 @@ export default class Validate extends BaseCommand {
     const { flags } = await this.parse(Validate);
     const targetDir = resolve(flags.dir);
 
+    // Build ignore list from .gitignore (if present) plus baseline patterns
+    const gitignorePatterns = await loadGitignorePatterns(targetDir);
+    const ignore = [
+      ...gitignorePatterns,
+      // Always exclude these regardless of .gitignore
+      '**/node_modules/**',
+      '**/*.test.*',
+      '**/*.spec.*',
+      '**/*.d.ts',
+    ];
+
     // Find all TS/JS files in the target directory
     const files = await glob(
       ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx', '**/*.mts', '**/*.cts'],
       {
         cwd: targetDir,
-        ignore: [
-          '**/node_modules/**',
-          '**/dist/**',
-          '**/.next/**',
-          '**/.nuxt/**',
-          '**/.svelte-kit/**',
-          '**/.vercel/**',
-          '**/.well-known/**',
-          '**/*.test.*',
-          '**/*.spec.*',
-          '**/*.d.ts',
-        ],
+        ignore,
       }
     );
 
