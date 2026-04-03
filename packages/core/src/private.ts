@@ -70,7 +70,7 @@ function getStepIdAliasCandidates(stepId: string): string[] {
 }
 
 function getBuiltinResponseStepAlias(stepId: string): StepFunction | undefined {
-  if (!BUILTIN_RESPONSE_STEP_NAMES.has(stepId)) {
+  if (!BUILTIN_STEP_NAMES.has(stepId)) {
     return undefined;
   }
 
