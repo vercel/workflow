@@ -11,7 +11,7 @@ type DiscoverEntriesOwner = {
   discoverEntries: (...args: unknown[]) => Promise<unknown>;
 };
 
-describe('NextDeferredBuilder conditional discovery', () => {
+describe('NextDeferredBuilder discovery behavior', () => {
   let testDir: string;
   let discoverEntriesSpy: ReturnType<typeof vi.spyOn>;
   let evalSpy: ReturnType<typeof vi.spyOn>;
@@ -93,21 +93,19 @@ describe('NextDeferredBuilder conditional discovery', () => {
     expect(discoverEntriesSpy).not.toHaveBeenCalled();
   });
 
-  it('should perform discovery in production builds', async () => {
+  it('should skip discovery in production builds', async () => {
     await createAppEntrypoint();
     const builder = await createBuilder(false);
     await (builder as unknown as BuilderWithInit).initializeDiscoveryState();
 
-    // In production, discoverEntries SHOULD be called
-    expect(discoverEntriesSpy).toHaveBeenCalled();
+    expect(discoverEntriesSpy).not.toHaveBeenCalled();
   });
 
-  it('should perform discovery on first dev build when no cache', async () => {
+  it('should skip discovery on first dev build when no cache', async () => {
     await createAppEntrypoint();
     const builder = await createBuilder(true);
     await (builder as unknown as BuilderWithInit).initializeDiscoveryState();
 
-    // First dev build with no cache, discoverEntries SHOULD be called
-    expect(discoverEntriesSpy).toHaveBeenCalled();
+    expect(discoverEntriesSpy).not.toHaveBeenCalled();
   });
 });

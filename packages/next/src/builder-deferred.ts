@@ -672,62 +672,7 @@ export async function getNextBuilderDeferred() {
 
       await this.loadWorkflowsCache();
 
-      // In production builds (watch: false), socket notifications don't trigger
-      // rebuilds (scheduleDeferredRebuild is a no-op). We need initial discovery
-      // to bootstrap. In dev mode (watch: true), socket notifications work, so
-      // we can skip initial discovery after the first build (when cache exists).
-      const hasCache =
-        this.discoveredWorkflowFiles.size > 0 ||
-        this.discoveredStepFiles.size > 0 ||
-        this.discoveredSerdeFiles.size > 0;
-      const isProduction = !this.config.watch;
-
-      if (isProduction || !hasCache) {
-        await this.loadDiscoveredEntriesFromInputGraph();
-      }
-
       this.cacheInitialized = true;
-    }
-
-    private async loadDiscoveredEntriesFromInputGraph(): Promise<void> {
-      const inputFiles = await this.getInputFiles();
-      if (inputFiles.length === 0) {
-        return;
-      }
-
-      const { discoveredWorkflows, discoveredSteps, discoveredSerdeFiles } =
-        await this.discoverEntries(inputFiles, this.config.workingDir);
-      const { workflowFiles, stepFiles, serdeFiles } =
-        await this.reconcileDiscoveredEntries({
-          workflowCandidates: discoveredWorkflows,
-          stepCandidates: discoveredSteps,
-          serdeCandidates: discoveredSerdeFiles,
-          validatePatterns: true,
-        });
-
-      let hasChanges = false;
-      for (const filePath of workflowFiles) {
-        if (!this.discoveredWorkflowFiles.has(filePath)) {
-          this.discoveredWorkflowFiles.add(filePath);
-          hasChanges = true;
-        }
-      }
-      for (const filePath of stepFiles) {
-        if (!this.discoveredStepFiles.has(filePath)) {
-          this.discoveredStepFiles.add(filePath);
-          hasChanges = true;
-        }
-      }
-      for (const filePath of serdeFiles) {
-        if (!this.discoveredSerdeFiles.has(filePath)) {
-          this.discoveredSerdeFiles.add(filePath);
-          hasChanges = true;
-        }
-      }
-
-      if (hasChanges) {
-        this.scheduleWorkflowsCacheWrite();
-      }
     }
 
     private getDistDir(): string {
