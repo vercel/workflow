@@ -43,8 +43,12 @@ vi.mock('./telemetry.js', () => ({
       return options.fn(mockSpanForRecordSpan.span);
     }
   ),
-  createSpan: vi.fn(async () => mockSpanForCreateSpan.span),
+  createSpan: vi.fn(async () => ({
+    span: mockSpanForCreateSpan.span,
+    context: {},
+  })),
   endSpan: vi.fn(),
+  runInContext: vi.fn((_handle: unknown, fn: () => unknown) => fn()),
 }));
 
 // Mock streamTextIterator for executeTool tests (DurableAgent needs it)

@@ -24,7 +24,7 @@ import type {
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
-import { createSpan, endSpan } from './telemetry.js';
+import { createSpan, endSpan, runInContext } from './telemetry.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 import type { CompatibleLanguageModel } from './types.js';
 
@@ -113,8 +113,11 @@ export async function* streamTextIterator({
   let lastStepUIChunks: UIMessageChunk[] | undefined;
   let allAccumulatedUIChunks: UIMessageChunk[] = [];
 
-  // Outer ai.streamText span matching AI SDK convention
-  const outerSpan = await createSpan({
+  // Outer ai.streamText span matching AI SDK convention.
+  // Uses JSON.stringify({ prompt }) (wrapped object) to match the AI SDK's
+  // convention for the outer span, whereas the inner doStream span uses
+  // JSON.stringify(conversationPrompt) (bare array) for ai.prompt.messages.
+  const outerSpanHandle = await createSpan({
     name: 'ai.streamText',
     telemetry: experimental_telemetry,
     attributes: {
@@ -272,18 +275,19 @@ export async function* streamTextIterator({
             ? filterToolSet(tools, currentActiveTools)
             : tools;
 
+        // Wrap doStreamStep in the outer span's context so that inner
+        // spans (ai.streamText.doStream) parent under ai.streamText.
+        // Each call is wrapped individually because context.with() does
+        // not propagate across generator yield boundaries.
+        const modelTools = await toolsToModelTools(effectiveTools);
         const {
           toolCalls,
           finish,
           step,
           uiChunks: stepUIChunks,
           providerExecutedToolResults,
-        } = await doStreamStep(
-          conversationPrompt,
-          currentModel,
-          writable,
-          await toolsToModelTools(effectiveTools),
-          {
+        } = await runInContext(outerSpanHandle, () =>
+          doStreamStep(conversationPrompt, currentModel, writable, modelTools, {
             sendStart: sendStart && isFirstIteration,
             ...currentGenerationSettings,
             toolChoice: currentToolChoice,
@@ -292,7 +296,7 @@ export async function* streamTextIterator({
             transforms,
             responseFormat,
             collectUIChunks,
-          }
+          })
         );
         isFirstIteration = false;
         stepNumber++;
@@ -434,7 +438,6 @@ export async function* streamTextIterator({
           await onStepFinish(step);
         }
       } catch (error) {
-        outerSpanError = error;
         if (onError) {
           await onError({ error });
         }
@@ -456,9 +459,12 @@ export async function* streamTextIterator({
         uiChunks: finalUIChunks,
       };
     }
+  } catch (error) {
+    outerSpanError = error;
+    throw error;
   } finally {
     // End the outer ai.streamText span with aggregated attributes
-    if (outerSpan) {
+    if (outerSpanHandle) {
       // Aggregate usage across all steps
       let totalInputTokens = 0;
       let totalOutputTokens = 0;
@@ -485,8 +491,8 @@ export async function* streamTextIterator({
         }
       }
 
-      outerSpan.setAttributes(attrs);
-      endSpan(outerSpan, outerSpanError);
+      outerSpanHandle.span.setAttributes(attrs);
+      endSpan(outerSpanHandle.span, outerSpanError);
     }
   }
 

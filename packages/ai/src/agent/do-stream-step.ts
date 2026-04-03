@@ -531,6 +531,8 @@ export async function doStreamStep(
         )
         .pipeTo(writable, { preventClose: true });
 
+      const step = chunksToStep(chunks, toolCalls, conversationPrompt, finish);
+
       // ── Record response-time telemetry attributes on the span ──
       if (span) {
         const msToFinish = Date.now() - startTime;
@@ -595,29 +597,14 @@ export async function doStreamStep(
           'gen_ai.usage.output_tokens': outputTokens,
         };
 
-        // Output-gated response attributes
+        // Output-gated response attributes — reuse aggregated values
+        // from chunksToStep to avoid redundant iteration over chunks.
         if (telemetry?.recordOutputs !== false) {
-          const text = chunks
-            .filter(
-              (c): c is Extract<typeof c, { type: 'text-delta' }> =>
-                c.type === 'text-delta'
-            )
-            .map((c) => c.delta)
-            .join('');
-
-          const reasoningText = chunks
-            .filter(
-              (c): c is Extract<typeof c, { type: 'reasoning-delta' }> =>
-                c.type === 'reasoning-delta'
-            )
-            .map((c) => c.delta)
-            .join('');
-
-          if (text) {
-            responseAttrs['ai.response.text'] = text;
+          if (step.text) {
+            responseAttrs['ai.response.text'] = step.text;
           }
-          if (reasoningText) {
-            responseAttrs['ai.response.reasoning'] = reasoningText;
+          if (step.reasoningText) {
+            responseAttrs['ai.response.reasoning'] = step.reasoningText;
           }
           if (toolCalls.length > 0) {
             responseAttrs['ai.response.toolCalls'] = JSON.stringify(toolCalls);
@@ -627,7 +614,6 @@ export async function doStreamStep(
         span.setAttributes(responseAttrs);
       }
 
-      const step = chunksToStep(chunks, toolCalls, conversationPrompt, finish);
       return {
         toolCalls,
         finish,

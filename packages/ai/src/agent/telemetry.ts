@@ -143,6 +143,16 @@ function recordErrorOnSpan(span: Span, error: unknown): void {
 export type { Span };
 
 /**
+ * A handle returned by `createSpan` containing both the span and the OTel
+ * context with that span set as active. Callers should use `runInContext`
+ * to execute code "within" this span so that nested spans parent correctly.
+ */
+export interface SpanHandle {
+  span: Span;
+  context: Context;
+}
+
+/**
  * Record a span around an async function.
  *
  * Self-initialising: the first call lazily loads `@opentelemetry/api`.
@@ -207,13 +217,17 @@ export async function recordSpan<T>(options: {
  * Use this when the span must stay open across yield boundaries (e.g. in
  * async generators) where `recordSpan`'s callback pattern doesn't work.
  *
+ * Returns a `SpanHandle` containing the span and the OTel context with the
+ * span set as active. Use `runInContext(handle, fn)` to execute code within
+ * this span so that nested spans (e.g. `recordSpan` calls) parent correctly.
+ *
  * Returns `undefined` if telemetry is disabled or OTel is unavailable.
  */
 export async function createSpan(options: {
   name: string;
   telemetry?: TelemetrySettings;
   attributes?: Attributes;
-}): Promise<Span | undefined> {
+}): Promise<SpanHandle | undefined> {
   if (!otelLoadAttempted) {
     await ensureOtelApi();
   }
@@ -229,18 +243,45 @@ export async function createSpan(options: {
 
   // Capture the active context so the span parents under the caller's
   // current span, matching how recordSpan uses context.with().
-  const ctx = otelApi.context.active();
-  const span = tracer.startSpan(options.name, { attributes: attrs }, ctx);
-  return span;
+  const parentCtx = otelApi.context.active();
+  const span = tracer.startSpan(options.name, { attributes: attrs }, parentCtx);
+  const context = otelApi.trace.setSpan(parentCtx, span);
+  return { span, context };
+}
+
+/**
+ * Execute `fn` with the given span's context as the active OTel context.
+ *
+ * This ensures that any spans created inside `fn` (e.g. via `recordSpan`)
+ * will parent under the span in `handle`. For generators, wrap each
+ * iteration's async work individually since `context.with` doesn't
+ * propagate across yield boundaries.
+ *
+ * If `handle` is undefined (telemetry disabled), `fn` runs directly.
+ */
+export function runInContext<T>(
+  handle: SpanHandle | undefined,
+  fn: () => T
+): T {
+  if (!handle || !otelApi) return fn();
+  return otelApi.context.with(handle.context, fn);
 }
 
 /**
  * Safely end a span, recording an error if one occurred.
+ * Defensive: telemetry failures never propagate to the caller.
  */
 export function endSpan(span: Span | undefined, error?: unknown): void {
   if (!span) return;
-  if (error) {
-    recordErrorOnSpan(span, error);
+  try {
+    if (error) {
+      recordErrorOnSpan(span, error);
+    }
+  } finally {
+    try {
+      span.end();
+    } catch {
+      /* best effort */
+    }
   }
-  span.end();
 }
