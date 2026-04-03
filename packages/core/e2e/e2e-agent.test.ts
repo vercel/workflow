@@ -12,7 +12,7 @@
  */
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Run } from '../src/runtime';
-import { start as rawStart } from '../src/runtime';
+import { getWorld, healthCheck, start as rawStart } from '../src/runtime';
 import {
   getWorkflowMetadata,
   setupRunTracking,
@@ -48,6 +48,9 @@ async function agentE2e(fn: string) {
 
 beforeAll(async () => {
   setupWorld(deploymentUrl);
+  const world = getWorld();
+  await healthCheck(world, 'workflow', { timeout: 30_000 });
+  await healthCheck(world, 'step', { timeout: 30_000 });
 });
 
 beforeEach((ctx) => {

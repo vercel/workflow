@@ -1,14 +1,13 @@
+import { createLockCorrelationId, SPEC_VERSION_CURRENT } from '@workflow/world';
 import { afterAll, beforeAll, beforeEach, expect, test, vi } from 'vitest';
-import { LimitDefinitionConflictError } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT, createLockCorrelationId } from '@workflow/world';
 import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.mts';
 import { createLimits } from './limits.js';
+import { createQueue } from './queue.js';
 import {
   createEventsStorage,
   createRunsStorage,
   createStepsStorage,
 } from './storage.js';
-import { createQueue } from './queue.js';
 
 if (process.platform === 'win32') {
   test.skip('skipped on Windows since it relies on a docker container', () => {});
@@ -105,68 +104,6 @@ if (process.platform === 'win32') {
         };
       },
     };
-  });
-
-  test('uses the head waiter retryAfter for waiters queued behind a long rate window', async () => {
-    const limits = createLimits(
-      { connectionString: db.connectionString, queueConcurrency: 1 },
-      db.drizzle
-    );
-    const key = 'workflow:fifo:head-waiter-rate';
-    const periodMs = 60_000;
-    const ownerA = await createLockOwner('holder-a');
-    const ownerB = await createLockOwner('holder-b');
-    const ownerC = await createLockOwner('holder-c');
-
-    const first = await limits.acquire({
-      key,
-      runId: ownerA.runId,
-      lockIndex: ownerA.lockIndex,
-      definition: { rate: { count: 1, periodMs } },
-      leaseTtlMs: 1_000,
-    });
-    expect(first.status).toBe('acquired');
-    if (first.status !== 'acquired') throw new Error('expected acquisition');
-
-    await limits.release({
-      leaseId: first.lease.leaseId,
-      key: first.lease.key,
-      lockId: first.lease.lockId,
-    });
-
-    const headWaiter = await limits.acquire({
-      key,
-      runId: ownerB.runId,
-      lockIndex: ownerB.lockIndex,
-      definition: { rate: { count: 1, periodMs } },
-      leaseTtlMs: 1_000,
-    });
-    expect(headWaiter.status).toBe('blocked');
-    if (headWaiter.status !== 'blocked') throw new Error('expected blocked');
-
-    const behindHead = await limits.acquire({
-      key,
-      runId: ownerC.runId,
-      lockIndex: ownerC.lockIndex,
-      definition: { rate: { count: 1, periodMs } },
-      leaseTtlMs: 1_000,
-    });
-    expect(behindHead.status).toBe('blocked');
-    if (behindHead.status !== 'blocked') throw new Error('expected blocked');
-    expect(behindHead.retryAfterMs).toBeGreaterThan(5_000);
-
-    const existingWaiterRetry = await limits.acquire({
-      key,
-      runId: ownerC.runId,
-      lockIndex: ownerC.lockIndex,
-      definition: { rate: { count: 1, periodMs } },
-      leaseTtlMs: 1_000,
-    });
-    expect(existingWaiterRetry.status).toBe('blocked');
-    if (existingWaiterRetry.status !== 'blocked') {
-      throw new Error('expected blocked');
-    }
-    expect(existingWaiterRetry.retryAfterMs).toBeGreaterThan(5_000);
   });
 
   test('persists promotedWaiters metadata and emits lock_waiter_queued for every promoted waiter', async () => {
@@ -507,37 +444,6 @@ if (process.platform === 'win32') {
         (event) => event.eventType === 'lock_waiter_queued'
       )
     ).toBe(true);
-  });
-
-  test('throws when the same key is acquired with a conflicting definition', async () => {
-    const limits = createLimits(
-      { connectionString: db.connectionString, queueConcurrency: 1 },
-      db.drizzle
-    );
-
-    await expect(
-      limits.acquire({
-        key: 'shared-key',
-        runId: 'run-a',
-        lockIndex: 0,
-        definition: {
-          concurrency: { max: 1 },
-        },
-        leaseTtlMs: 1_000,
-      })
-    ).resolves.toMatchObject({ status: 'acquired' });
-
-    await expect(
-      limits.acquire({
-        key: 'shared-key',
-        runId: 'run-b',
-        lockIndex: 0,
-        definition: {
-          rate: { count: 1, periodMs: 5_000 },
-        },
-        leaseTtlMs: 1_000,
-      })
-    ).rejects.toBeInstanceOf(LimitDefinitionConflictError);
   });
 
   test('does not resurrect an expired lease when heartbeating after the key lock', async () => {

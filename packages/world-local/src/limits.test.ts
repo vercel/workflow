@@ -524,6 +524,7 @@ describe('local world limit retry timing', () => {
       if (backlogOnlyWaiter.status !== 'blocked') {
         throw new Error('expected blocked');
       }
+      expect(backlogOnlyWaiter.reason).toBe('queued');
       expect(backlogOnlyWaiter.retryAfterMs).toBeGreaterThan(0);
     } finally {
       await rm(dir, { recursive: true, force: true });

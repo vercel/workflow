@@ -21,17 +21,26 @@ export const LimitRateSchema = z.object({
 });
 export type LimitRate = z.infer<typeof LimitRateSchema>;
 
-export const LimitDefinitionSchema = z
-  .object({
-    concurrency: LimitConcurrencySchema.optional(),
-    rate: LimitRateSchema.optional(),
-  })
-  .refine(
-    (value) => value.concurrency !== undefined || value.rate !== undefined,
-    {
-      message: 'At least one limit must be configured',
-    }
-  );
+const LimitConcurrencyOnlySchema = z.object({
+  concurrency: LimitConcurrencySchema,
+  rate: z.undefined().optional(),
+});
+
+const LimitRateOnlySchema = z.object({
+  concurrency: z.undefined().optional(),
+  rate: LimitRateSchema,
+});
+
+const LimitConcurrencyAndRateSchema = z.object({
+  concurrency: LimitConcurrencySchema,
+  rate: LimitRateSchema,
+});
+
+export const LimitDefinitionSchema = z.union([
+  LimitConcurrencyOnlySchema,
+  LimitRateOnlySchema,
+  LimitConcurrencyAndRateSchema,
+]);
 export type LimitDefinition = z.infer<typeof LimitDefinitionSchema>;
 
 export const LimitLockIdSchema = z.string().min(1);
@@ -57,6 +66,16 @@ export function parseLockId(
   }
 
   return { runId, lockIndex };
+}
+
+export function parseLockCorrelationId(
+  correlationId: string
+): { runId: string; lockIndex: number } | null {
+  if (!correlationId.startsWith('wflock_')) {
+    return null;
+  }
+
+  return parseLockId(correlationId.slice('wflock_'.length));
 }
 
 export function createLockWakeCorrelationId(
@@ -95,11 +114,25 @@ export const LimitAcquireRequestSchema = z.object({
 export type LimitAcquireRequest = z.infer<typeof LimitAcquireRequestSchema>;
 
 export const LimitBlockedReasonSchema = z.enum([
+  'queued',
   'concurrency',
   'rate',
   'concurrency_and_rate',
 ]);
 export type LimitBlockedReason = z.infer<typeof LimitBlockedReasonSchema>;
+
+export function getBlockedReason(
+  queuedBlocked: boolean,
+  concurrencyBlocked: boolean,
+  rateBlocked: boolean
+): LimitBlockedReason {
+  if (queuedBlocked) return 'queued';
+  if (concurrencyBlocked && rateBlocked) return 'concurrency_and_rate';
+  if (concurrencyBlocked) return 'concurrency';
+  if (rateBlocked) return 'rate';
+
+  throw new Error('Blocked reason requires a blocked state');
+}
 
 export const LimitAcquireStatusSchema = z.enum(['acquired', 'blocked']);
 export type LimitAcquireStatus = z.infer<typeof LimitAcquireStatusSchema>;
@@ -127,11 +160,37 @@ export const LimitAcquireResultSchema = z.discriminatedUnion('status', [
 ]);
 export type LimitAcquireResult = z.infer<typeof LimitAcquireResultSchema>;
 
-export const LimitReleaseRequestSchema = z.object({
+export function areLimitDefinitionsEqual(
+  left: LimitDefinition | undefined,
+  right: LimitDefinition
+): boolean {
+  return (
+    left?.concurrency?.max === right.concurrency?.max &&
+    left?.rate?.count === right.rate?.count &&
+    left?.rate?.periodMs === right.rate?.periodMs
+  );
+}
+
+const LimitReleaseByLeaseIdSchema = z.object({
   leaseId: z.string().min(1),
-  key: LimitKeySchema.optional(),
-  lockId: LimitLockIdSchema.optional(),
 });
+
+const LimitReleaseByKeySchema = z.object({
+  leaseId: z.string().min(1),
+  key: LimitKeySchema,
+});
+
+const LimitReleaseByLockSchema = z.object({
+  leaseId: z.string().min(1),
+  key: LimitKeySchema,
+  lockId: LimitLockIdSchema,
+});
+
+export const LimitReleaseRequestSchema = z.union([
+  LimitReleaseByLeaseIdSchema,
+  LimitReleaseByKeySchema,
+  LimitReleaseByLockSchema,
+]);
 export type LimitReleaseRequest = z.infer<typeof LimitReleaseRequestSchema>;
 
 export const LimitNextWaiterSchema = z.object({

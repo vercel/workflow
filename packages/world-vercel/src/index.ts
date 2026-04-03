@@ -25,7 +25,7 @@ export function createVercelWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    limits: createLimits(config),
+    limits: createLimits(),
     ...createQueue(config),
     ...createStorage(config),
     ...instrumentObject('world.streams', createStreamer(config)),

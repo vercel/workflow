@@ -161,6 +161,9 @@ describe('e2e', () => {
   // run.returnValue can communicate with the same backend as the workbench app.
   beforeAll(async () => {
     setupWorld(deploymentUrl);
+    const world = getWorld();
+    await healthCheck(world, 'workflow', { timeout: 30_000 });
+    await healthCheck(world, 'step', { timeout: 30_000 });
   });
 
   // Enable automatic run diagnostics on test failure
@@ -267,16 +270,11 @@ describe('e2e', () => {
           const runB = await start(workflow, [userId, holdMs]);
           return await Promise.all([runA.returnValue, runB.returnValue]);
         },
-        async runLockedStepCallContention(
-          key,
-          holdMs,
-          labelA = 'A',
-          labelB = 'B'
-        ) {
+        async runLockedStepCallContention(key, holdMs) {
           const workflow = await e2e('lockedStepCallContentionWorkflow');
-          const runA = await start(workflow, [key, holdMs, labelA]);
+          const runA = await start(workflow, [key, holdMs, 'A']);
           await sleep(100);
-          const runB = await start(workflow, [key, holdMs, labelB]);
+          const runB = await start(workflow, [key, holdMs, 'B']);
           return await Promise.all([runA.returnValue, runB.returnValue]);
         },
         async runWorkflowLockAcrossSuspension(userId, holdMs) {

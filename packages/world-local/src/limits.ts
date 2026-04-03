@@ -1,20 +1,24 @@
 import path from 'node:path';
 import {
   LimitDefinitionConflictError,
+  WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { Storage, WorkflowRunWithoutData } from '@workflow/world';
 import {
+  areLimitDefinitionsEqual,
   createLockCorrelationId,
   createLockId,
   createLockWakeCorrelationId,
   type LimitDefinition,
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
+  LimitDefinitionSchema,
   LimitHeartbeatRequestSchema,
   type LimitLease,
   LimitLeaseSchema,
   type LimitPromotedWaiter,
+  type LimitReleaseRequest,
   type LimitReleaseResult,
   LimitReleaseRequestSchema,
   type Limits,
@@ -38,49 +42,30 @@ const LimitWaiterSchema = z.object({
   lockIndex: z.number().int().nonnegative(),
   createdAt: z.coerce.date(),
   leaseTtlMs: z.number().int().positive().optional(),
-  concurrencyMax: z.number().int().positive().nullable(),
-  rateCount: z.number().int().positive().nullable(),
-  ratePeriodMs: z.number().int().positive().nullable(),
 });
 
 const KeyStateSchema = z.object({
   key: z.string(),
-  definition: z
-    .object({
-      concurrency: z.object({ max: z.number().int().positive() }).optional(),
-      rate: z
-        .object({
-          count: z.number().int().positive(),
-          periodMs: z.number().int().positive(),
-        })
-        .optional(),
-    })
-    .optional(),
+  definition: LimitDefinitionSchema.optional(),
   leases: z.array(LimitLeaseSchema),
   tokens: z.array(LimitTokenSchema),
   waiters: z.array(LimitWaiterSchema),
 });
 
-const LimitsStateSchema = z.object({
-  version: z.union([z.literal(2), z.literal(3)]),
+const CurrentLimitsStateSchema = z.object({
+  version: z.literal(3),
+  keys: z.record(z.string(), KeyStateSchema),
+});
+
+const LegacyLimitsStateSchema = z.object({
+  version: z.literal(2),
   keys: z.record(z.string(), KeyStateSchema),
 });
 
 type LimitToken = z.infer<typeof LimitTokenSchema>;
 type LimitWaiter = z.infer<typeof LimitWaiterSchema>;
 type KeyState = z.infer<typeof KeyStateSchema>;
-type LimitsState = z.infer<typeof LimitsStateSchema>;
-
-type HolderTarget =
-  | {
-      kind: 'lock';
-      runId: string;
-      wakeCorrelationId: string;
-      lockCorrelationId: string;
-    }
-  | {
-      kind: 'opaque';
-    };
+type LimitsState = z.infer<typeof CurrentLimitsStateSchema>;
 
 export interface LocalLimitsOptions {
   tag?: string;
@@ -139,17 +124,6 @@ function pruneKeyState(keyState: KeyState, now = Date.now()): KeyState {
   };
 }
 
-function areLimitDefinitionsEqual(
-  left: LimitDefinition | undefined,
-  right: LimitDefinition
-): boolean {
-  return (
-    left?.concurrency?.max === right.concurrency?.max &&
-    left?.rate?.count === right.rate?.count &&
-    left?.rate?.periodMs === right.rate?.periodMs
-  );
-}
-
 function assertCanonicalDefinition(
   key: string,
   keyState: KeyState,
@@ -166,12 +140,25 @@ function assertCanonicalDefinition(
 }
 
 function getBlockedReason(
+  queuedBlocked: boolean,
   concurrencyBlocked: boolean,
   rateBlocked: boolean
-): 'concurrency' | 'rate' | 'concurrency_and_rate' {
+): 'queued' | 'concurrency' | 'rate' | 'concurrency_and_rate' {
+  if (queuedBlocked) return 'queued';
   if (concurrencyBlocked && rateBlocked) return 'concurrency_and_rate';
   if (concurrencyBlocked) return 'concurrency';
-  return 'rate';
+  if (rateBlocked) return 'rate';
+  throw new Error('Blocked reason requires a blocked state');
+}
+
+function getKeyDefinition(key: string, keyState: KeyState): LimitDefinition {
+  if (!keyState.definition) {
+    throw new WorkflowWorldError(
+      `Missing canonical definition for key "${key}"`
+    );
+  }
+
+  return keyState.definition;
 }
 
 function getRetryAfterMs(
@@ -205,15 +192,17 @@ function getRetryAfterMs(
 
 function getWaiterRetryAfterMs(
   keyState: KeyState,
-  now: number,
-  waiter: Pick<LimitWaiter, 'concurrencyMax' | 'rateCount'>
+  now: number
 ): number | undefined {
+  const definition = getKeyDefinition(keyState.key, keyState);
+
   return getRetryAfterMs(
     keyState,
     now,
-    waiter.concurrencyMax !== null &&
-      keyState.leases.length >= waiter.concurrencyMax,
-    waiter.rateCount !== null && keyState.tokens.length >= waiter.rateCount
+    definition.concurrency !== undefined &&
+      keyState.leases.length >= definition.concurrency.max,
+    definition.rate !== undefined &&
+      keyState.tokens.length >= definition.rate.count
   );
 }
 
@@ -225,9 +214,7 @@ function getBlockedRetryAfterMs(
 ): number | undefined {
   const headWaiter = keyState.waiters[0];
   return (
-    (headWaiter
-      ? getWaiterRetryAfterMs(keyState, now, headWaiter)
-      : undefined) ??
+    (headWaiter ? getWaiterRetryAfterMs(keyState, now) : undefined) ??
     getRetryAfterMs(keyState, now, concurrencyBlocked, rateBlocked)
   );
 }
@@ -269,34 +256,19 @@ function insertToken(
   });
 }
 
-function parseHolderId(lockId: string): HolderTarget {
+function parseRequiredLockId(lockId: string) {
   const parsedLockId = parseLockId(lockId);
-  if (parsedLockId) {
-    return {
-      kind: 'lock',
-      runId: parsedLockId.runId,
-      wakeCorrelationId: createLockWakeCorrelationId(
-        parsedLockId.runId,
-        parsedLockId.lockIndex
-      ),
-      lockCorrelationId: createLockCorrelationId(
-        parsedLockId.runId,
-        parsedLockId.lockIndex
-      ),
-    };
+  if (!parsedLockId) {
+    throw new WorkflowWorldError(`Invalid lock ID "${lockId}"`);
   }
-
-  return { kind: 'opaque' };
+  return parsedLockId;
 }
 
 function toPromotedWaiter(
   holderId: string,
   lease: Pick<LimitLease, 'leaseId' | 'key' | 'lockId'>
-): LimitPromotedWaiter | undefined {
-  const parsedLockId = parseLockId(holderId);
-  if (!parsedLockId) {
-    return undefined;
-  }
+): LimitPromotedWaiter {
+  const parsedLockId = parseRequiredLockId(holderId);
 
   return {
     leaseId: lease.leaseId,
@@ -331,13 +303,51 @@ function deleteEmptyKey(state: LimitsState, key: string) {
   }
 }
 
+function createEmptyKeyState(key: string): KeyState {
+  return {
+    key,
+    definition: undefined,
+    leases: [],
+    tokens: [],
+    waiters: [],
+  };
+}
+
+function resetKeyDefinition(keyState: KeyState): KeyState {
+  if (
+    keyState.leases.length === 0 &&
+    keyState.tokens.length === 0 &&
+    keyState.waiters.length === 0
+  ) {
+    keyState.definition = undefined;
+  }
+
+  return keyState;
+}
+
+function resolveReleaseKey(
+  state: LimitsState,
+  request: LimitReleaseRequest
+): string | undefined {
+  if ('key' in request) {
+    return request.key;
+  }
+
+  return Object.entries(state.keys).find(([, keyState]) =>
+    keyState.leases.some((lease) => lease.leaseId === request.leaseId)
+  )?.[0];
+}
+
 export function createLimits(
   dataDir: string,
   tagOrOptions?: string | LocalLimitsOptions
 ): Limits {
   const options =
-    typeof tagOrOptions === 'string' ? { tag: tagOrOptions } : tagOrOptions;
-  const statePath = getStatePath(dataDir, options?.tag);
+    typeof tagOrOptions === 'string'
+      ? { tag: tagOrOptions }
+      : (tagOrOptions ?? {});
+  const statePath = getStatePath(dataDir, options.tag);
+  const runsStorage = options.storage?.runs;
   let stateOp = Promise.resolve();
 
   const withStateLock = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -351,9 +361,15 @@ export function createLimits(
 
   const readState = async (): Promise<LimitsState> => {
     const raw =
-      (await readJSON(statePath, LimitsStateSchema)) ?? cloneState(EMPTY_STATE);
+      (await readJSON(
+        statePath,
+        z.union([CurrentLimitsStateSchema, LegacyLimitsStateSchema])
+      )) ?? EMPTY_STATE;
 
-    return cloneState(raw);
+    return cloneState({
+      version: 3,
+      keys: raw.keys,
+    });
   };
 
   const writeState = async (state: LimitsState): Promise<void> => {
@@ -363,20 +379,26 @@ export function createLimits(
   const getRun = async (
     runId: string
   ): Promise<WorkflowRunWithoutData | undefined> => {
-    try {
-      return await options?.storage?.runs.get(runId, { resolveData: 'none' });
-    } catch {
+    if (!runsStorage) {
       return undefined;
+    }
+
+    try {
+      return await runsStorage.get(runId, { resolveData: 'none' });
+    } catch (error) {
+      if (WorkflowRunNotFoundError.is(error)) {
+        return undefined;
+      }
+      throw error;
     }
   };
 
   const isHolderLive = async (holderId: string): Promise<boolean> => {
-    const target = parseHolderId(holderId);
-    if (target.kind === 'opaque' || !options?.storage) {
+    if (!runsStorage) {
       return true;
     }
 
-    const run = await getRun(target.runId);
+    const run = await getRun(parseRequiredLockId(holderId).runId);
     return !isTerminalRun(run);
   };
 
@@ -411,22 +433,10 @@ export function createLimits(
   ): {
     keyState: KeyState;
     lease: LimitLease;
-    promotedWaiter?: LimitPromotedWaiter;
+    promotedWaiter: LimitPromotedWaiter;
   } => {
     const acquiredAt = new Date();
-    const definition = {
-      concurrency:
-        waiter.concurrencyMax !== null
-          ? { max: waiter.concurrencyMax }
-          : undefined,
-      rate:
-        waiter.rateCount !== null && waiter.ratePeriodMs !== null
-          ? {
-              count: waiter.rateCount,
-              periodMs: waiter.ratePeriodMs,
-            }
-          : undefined,
-    } satisfies LimitDefinition;
+    const definition = getKeyDefinition(key, keyState);
 
     const lease = createLease(
       key,
@@ -442,8 +452,13 @@ export function createLimits(
     );
     keyState.leases.push(lease);
 
-    if (waiter.rateCount !== null && waiter.ratePeriodMs !== null) {
-      insertToken(keyState, waiter.lockId, acquiredAt, waiter.ratePeriodMs);
+    if (definition.rate) {
+      insertToken(
+        keyState,
+        waiter.lockId,
+        acquiredAt,
+        definition.rate.periodMs
+      );
     }
 
     return {
@@ -468,12 +483,13 @@ export function createLimits(
         break;
       }
 
+      const definition = getKeyDefinition(key, keyState);
       const concurrencyBlocked =
-        headWaiter.concurrencyMax !== null &&
-        keyState.leases.length >= headWaiter.concurrencyMax;
+        definition.concurrency !== undefined &&
+        keyState.leases.length >= definition.concurrency.max;
       const rateBlocked =
-        headWaiter.rateCount !== null &&
-        keyState.tokens.length >= headWaiter.rateCount;
+        definition.rate !== undefined &&
+        keyState.tokens.length >= definition.rate.count;
 
       if (concurrencyBlocked || rateBlocked) {
         break;
@@ -481,9 +497,7 @@ export function createLimits(
 
       const promoted = promoteWaiter(key, keyState, headWaiter);
       keyState = promoted.keyState;
-      if (promoted.promotedWaiter) {
-        promotedWaiters.push(promoted.promotedWaiter);
-      }
+      promotedWaiters.push(promoted.promotedWaiter);
     }
 
     return { keyState, promotedWaiters };
@@ -495,23 +509,12 @@ export function createLimits(
       const lockId = createLockId(parsed.runId, parsed.lockIndex);
 
       return withStateLock(async (): Promise<LimitAcquireResult> => {
-        const state = cloneState(await readState());
-        const keyState = await pruneDeadHoldersAndWaiters(
-          state.keys[parsed.key] ?? {
-            key: parsed.key,
-            definition: undefined,
-            leases: [],
-            tokens: [],
-            waiters: [],
-          }
+        const state = await readState();
+        const keyState = resetKeyDefinition(
+          await pruneDeadHoldersAndWaiters(
+            state.keys[parsed.key] ?? createEmptyKeyState(parsed.key)
+          )
         );
-        if (
-          keyState.leases.length === 0 &&
-          keyState.tokens.length === 0 &&
-          keyState.waiters.length === 0
-        ) {
-          keyState.definition = undefined;
-        }
         assertCanonicalDefinition(parsed.key, keyState, parsed.definition);
         state.keys[parsed.key] = keyState;
 
@@ -535,6 +538,9 @@ export function createLimits(
         const existingWaiter = keyState.waiters.find(
           (waiter) => waiter.lockId === lockId
         );
+        const queuedBlocked =
+          keyState.waiters.length > 0 &&
+          keyState.waiters[0]?.waiterId !== existingWaiter?.waiterId;
 
         if (
           existingWaiter &&
@@ -557,9 +563,9 @@ export function createLimits(
 
         if (
           existingWaiter ||
+          queuedBlocked ||
           concurrencyBlocked ||
-          rateBlocked ||
-          keyState.waiters.length > 0
+          rateBlocked
         ) {
           if (!existingWaiter) {
             keyState.waiters.push({
@@ -569,9 +575,6 @@ export function createLimits(
               lockIndex: parsed.lockIndex,
               createdAt: new Date(),
               leaseTtlMs: parsed.leaseTtlMs,
-              concurrencyMax: parsed.definition.concurrency?.max ?? null,
-              rateCount: parsed.definition.rate?.count ?? null,
-              ratePeriodMs: parsed.definition.rate?.periodMs ?? null,
             });
           }
 
@@ -579,7 +582,11 @@ export function createLimits(
           await writeState(state);
           return {
             status: 'blocked',
-            reason: getBlockedReason(concurrencyBlocked, rateBlocked),
+            reason: getBlockedReason(
+              queuedBlocked,
+              concurrencyBlocked,
+              rateBlocked
+            ),
             retryAfterMs: getBlockedRetryAfterMs(
               keyState,
               Date.now(),
@@ -624,12 +631,8 @@ export function createLimits(
       const parsed = LimitReleaseRequestSchema.parse(request);
 
       return withStateLock(async (): Promise<LimitReleaseResult> => {
-        const state = cloneState(await readState());
-        const key =
-          parsed.key ??
-          Object.entries(state.keys).find(([, keyState]) =>
-            keyState.leases.some((lease) => lease.leaseId === parsed.leaseId)
-          )?.[0];
+        const state = await readState();
+        const key = resolveReleaseKey(state, parsed);
 
         if (!key) {
           return { promotedWaiters: [] };
@@ -641,13 +644,13 @@ export function createLimits(
         }
 
         const beforeLeases = keyStateValue.leases.length;
-        let keyState = await pruneDeadHoldersAndWaiters(keyStateValue);
+        const keyState = await pruneDeadHoldersAndWaiters(keyStateValue);
         let capacityFreed = keyState.leases.length !== beforeLeases;
         const beforeExplicitRelease = keyState.leases.length;
         keyState.leases = keyState.leases.filter((lease) => {
           if (lease.leaseId !== parsed.leaseId) return true;
-          if (parsed.key && lease.key !== parsed.key) return true;
-          if (parsed.lockId && lease.lockId !== parsed.lockId) {
+          if ('key' in parsed && lease.key !== parsed.key) return true;
+          if ('lockId' in parsed && lease.lockId !== parsed.lockId) {
             return true;
           }
           return false;
@@ -669,7 +672,7 @@ export function createLimits(
       const parsed = LimitHeartbeatRequestSchema.parse(request);
 
       return withStateLock(async () => {
-        const state = cloneState(await readState());
+        const state = await readState();
         const now = Date.now();
 
         for (const [key, keyStateValue] of Object.entries(state.keys)) {

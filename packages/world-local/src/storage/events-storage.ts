@@ -25,6 +25,7 @@ import {
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
+  parseLockCorrelationId,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
@@ -84,6 +85,65 @@ async function listEventsByCorrelationId(
   return result.data;
 }
 
+type LockCreatedEvent = Extract<Event, { eventType: 'lock_created' }>;
+type LockAcquiredEvent = Extract<Event, { eventType: 'lock_acquired' }>;
+type LockReleaseEvent = Extract<Event, { eventType: 'lock_release' }>;
+type LockStoredEvent = LockCreatedEvent | LockAcquiredEvent | LockReleaseEvent;
+type LockHistory = {
+  created?: LockCreatedEvent;
+  acquired?: LockAcquiredEvent;
+  released?: LockReleaseEvent;
+};
+
+function isLeaseLive(lease: { expiresAt?: Date }) {
+  return (
+    lease.expiresAt === undefined || lease.expiresAt.getTime() > Date.now()
+  );
+}
+
+function getLockIndex(correlationId: string): number {
+  const parsed = parseLockCorrelationId(correlationId);
+  if (!parsed) {
+    throw new WorkflowWorldError(
+      `Invalid lock correlation ID "${correlationId}"`
+    );
+  }
+
+  return parsed.lockIndex;
+}
+
+function getLockHistory(events: Event[]): LockHistory {
+  const history: LockHistory = {};
+
+  for (const event of events) {
+    switch (event.eventType) {
+      case 'lock_created':
+        history.created ??= event;
+        break;
+      case 'lock_acquired':
+        history.acquired = event;
+        break;
+      case 'lock_release':
+        history.released = event;
+        break;
+    }
+  }
+
+  return history;
+}
+
+function getLiveAcquiredEvent(
+  history: LockHistory
+): LockAcquiredEvent | undefined {
+  if (!history.acquired) {
+    return undefined;
+  }
+
+  return isLeaseLive(history.acquired.eventData.lease)
+    ? history.acquired
+    : undefined;
+}
+
 /**
  * Creates the events storage implementation using the filesystem.
  * Implements the Storage['events'] interface with create, list, and listByCorrelationId operations.
@@ -97,9 +157,6 @@ export function createEventsStorage(
     runs?: Pick<Storage['runs'], 'get'>;
   }
 ): Storage['events'] {
-  const isLeaseLive = (lease: { expiresAt?: Date }) =>
-    lease.expiresAt === undefined || lease.expiresAt.getTime() > Date.now();
-
   const processPromotedWaiters = async (
     promotedWaiters: LimitPromotedWaiter[],
     specVersion: number
@@ -379,19 +436,8 @@ export function createEventsStorage(
           throw new HookNotFoundError(data.correlationId);
         }
       }
-      let event: Event = {
-        ...data,
-        runId: effectiveRunId,
-        eventId,
-        createdAt: now,
-        specVersion: effectiveSpecVersion,
-      };
-      // Strip eventData from run_started — it belongs on run_created only.
-      if (data.eventType === 'run_started' && 'eventData' in event) {
-        delete (event as any).eventData;
-      }
-
       // Track entity created/updated for EventResult
+      let event: Event;
       let run: WorkflowRun | undefined;
       let step: Step | undefined;
       let hook: Hook | undefined;
@@ -413,43 +459,31 @@ export function createEventsStorage(
           basedir,
           data.correlationId
         );
-        const existingCreatedEvent = existingEvents.find(
-          (event) => event.eventType === 'lock_created'
-        );
-        const existingAcquiredEvent = [...existingEvents]
-          .reverse()
-          .find((event) => event.eventType === 'lock_acquired');
-        const existingReleaseEvent = [...existingEvents]
-          .reverse()
-          .find((event) => event.eventType === 'lock_release');
+        const history = getLockHistory(existingEvents);
+        const liveAcquiredEvent = getLiveAcquiredEvent(history);
+        const returnExistingEvent = (existingEvent: LockStoredEvent) => {
+          const resolveData =
+            params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
+          return {
+            event: stripEventDataRefs(existingEvent, resolveData),
+            run,
+            step,
+            hook,
+            wait,
+          };
+        };
 
         if (data.eventType === 'lock_created') {
           const existingEvent =
-            existingReleaseEvent ??
-            (existingAcquiredEvent?.eventData?.lease &&
-            isLeaseLive(existingAcquiredEvent.eventData.lease)
-              ? existingAcquiredEvent
-              : undefined) ??
-            existingCreatedEvent;
+            history.released ?? liveAcquiredEvent ?? history.created;
           if (existingEvent) {
-            const resolveData =
-              params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-            return {
-              event: stripEventDataRefs(existingEvent, resolveData),
-              run,
-              step,
-              hook,
-              wait,
-            };
+            return returnExistingEvent(existingEvent);
           }
 
           const result = await limits.acquire({
             key: data.eventData.key,
             runId: effectiveRunId,
-            lockIndex: Number.parseInt(
-              data.correlationId.split(':').at(-1) ?? '0',
-              10
-            ),
+            lockIndex: getLockIndex(data.correlationId),
             definition: data.eventData.definition,
             leaseTtlMs: data.eventData.leaseTtlMs,
           });
@@ -486,34 +520,15 @@ export function createEventsStorage(
                   specVersion: effectiveSpecVersion,
                 });
         } else if (data.eventType === 'lock_acquired') {
-          if (existingReleaseEvent) {
-            const resolveData =
-              params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-            return {
-              event: stripEventDataRefs(existingReleaseEvent, resolveData),
-              run,
-              step,
-              hook,
-              wait,
-            };
+          if (history.released) {
+            return returnExistingEvent(history.released);
           }
-          if (
-            existingAcquiredEvent?.eventData?.lease &&
-            isLeaseLive(existingAcquiredEvent.eventData.lease)
-          ) {
-            const resolveData =
-              params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-            return {
-              event: stripEventDataRefs(existingAcquiredEvent, resolveData),
-              run,
-              step,
-              hook,
-              wait,
-            };
+          if (liveAcquiredEvent) {
+            return returnExistingEvent(liveAcquiredEvent);
           }
 
-          const createdEvent = existingCreatedEvent;
-          if (!createdEvent || !createdEvent.eventData) {
+          const createdEvent = history.created;
+          if (!createdEvent) {
             throw new WorkflowWorldError(
               `Lock "${data.correlationId}" cannot be acquired before lock_created`
             );
@@ -522,10 +537,7 @@ export function createEventsStorage(
           const result = await limits.acquire({
             key: createdEvent.eventData.key,
             runId: effectiveRunId,
-            lockIndex: Number.parseInt(
-              data.correlationId.split(':').at(-1) ?? '0',
-              10
-            ),
+            lockIndex: getLockIndex(data.correlationId),
             definition: createdEvent.eventData.definition,
             leaseTtlMs: createdEvent.eventData.leaseTtlMs,
           });
@@ -551,25 +563,16 @@ export function createEventsStorage(
             specVersion: effectiveSpecVersion,
           });
         } else {
-          if (existingReleaseEvent) {
-            const resolveData =
-              params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
-            return {
-              event: stripEventDataRefs(existingReleaseEvent, resolveData),
-              run,
-              step,
-              hook,
-              wait,
-            };
+          if (history.released) {
+            return returnExistingEvent(history.released);
           }
 
-          const acquiredEvent = existingAcquiredEvent;
-          const lease = acquiredEvent?.eventData?.lease;
-          if (!lease) {
+          if (!history.acquired) {
             throw new WorkflowWorldError(
               `Lock "${data.correlationId}" cannot be released before lock_acquired`
             );
           }
+          const lease = history.acquired.eventData.lease;
 
           const releaseResult = await limits.release({
             leaseId: lease.leaseId,
@@ -619,6 +622,19 @@ export function createEventsStorage(
           wait,
         };
       }
+
+      const eventInput = {
+        ...data,
+        runId: effectiveRunId,
+        eventId,
+        createdAt: now,
+        specVersion: effectiveSpecVersion,
+      };
+      // Strip eventData from run_started — it belongs on run_created only.
+      if (data.eventType === 'run_started' && 'eventData' in eventInput) {
+        delete eventInput.eventData;
+      }
+      event = EventSchema.parse(eventInput);
 
       // Create/update entity based on event type (event-sourced architecture)
       // Run lifecycle events
@@ -1176,7 +1192,7 @@ export function createEventsStorage(
 
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
-      let events: Event[] | undefined;
+      let preloadedEvents: Event[] | undefined;
       if (data.eventType === 'run_started' && run) {
         const allEvents = await paginatedFileSystemQuery({
           directory: path.join(basedir, 'events'),
@@ -1186,7 +1202,7 @@ export function createEventsStorage(
           getCreatedAt: getObjectCreatedAt('evnt'),
           getId: (e) => e.eventId,
         });
-        events = allEvents.data;
+        preloadedEvents = allEvents.data;
       }
 
       // Return EventResult with event and any created/updated entity
@@ -1196,7 +1212,7 @@ export function createEventsStorage(
         step,
         hook,
         wait,
-        events,
+        preloadedEvents,
       };
     },
 

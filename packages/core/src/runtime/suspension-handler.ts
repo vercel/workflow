@@ -317,38 +317,6 @@ export async function handleSuspension({
     }
   }
 
-  // Lock waits: schedule a delayed workflow replay keyed by correlationId so a
-  // later immediate wake-up can replace it.
-  for (const queueItem of limitWaitItems) {
-    ops.push(
-      (async () => {
-        /*
-        Lock waits are runtime control flow, not user-visible wait events.
-        We only enqueue a fallback replay here; promoted waiters can replace it.
-        */
-        const delayMs = Math.max(
-          1000,
-          queueItem.resumeAt.getTime() - Date.now()
-        );
-        const traceCarrier = await serializeTraceCarrier();
-        await queueMessage(
-          world,
-          `__wkf_workflow_${workflowName}`,
-          {
-            runId,
-            traceCarrier,
-            requestedAt: new Date(),
-          },
-          {
-            delaySeconds: Math.ceil(delayMs / 1000),
-            idempotencyKey: queueItem.correlationId,
-            headers: extractTraceHeaders(traceCarrier),
-          }
-        );
-      })()
-    );
-  }
-
   // Wait for all step and wait operations to complete
   waitUntil(
     Promise.all(ops).catch((opErr) => {
@@ -361,16 +329,15 @@ export async function handleSuspension({
 
   // Calculate minimum timeout from waits
   const now = Date.now();
-  const minTimeoutSeconds = waitItems.reduce<number | null>(
-    (min, queueItem) => {
-      const resumeAtMs = queueItem.resumeAt.getTime();
-      const delayMs = Math.max(1000, resumeAtMs - now);
-      const timeoutSeconds = Math.ceil(delayMs / 1000);
-      if (min === null) return timeoutSeconds;
-      return Math.min(min, timeoutSeconds);
-    },
-    null
-  );
+  const minTimeoutSeconds = [...waitItems, ...limitWaitItems].reduce<
+    number | null
+  >((min, queueItem) => {
+    const resumeAtMs = queueItem.resumeAt.getTime();
+    const delayMs = Math.max(1000, resumeAtMs - now);
+    const timeoutSeconds = Math.ceil(delayMs / 1000);
+    if (min === null) return timeoutSeconds;
+    return Math.min(min, timeoutSeconds);
+  }, null);
 
   span?.setAttributes({
     ...Attribute.WorkflowRunStatus('workflow_suspended'),

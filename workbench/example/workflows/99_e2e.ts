@@ -227,21 +227,56 @@ async function expensiveAIStep(prompt: string) {
   return `summary:${prompt}`;
 }
 
+const WORKFLOW_LOCK_LEASE_TTL_MS = 30_000;
+const DB_STEP_KEY = 'step:db:cheap';
+const AI_STEP_KEY = 'step:provider:openai';
+const SERIALIZED_STEP_KEY = 'step:db:serialized';
+const DEFAULT_CONTENTION_KEY = 'step:db:key-contention';
+const MULTI_STEP_KEY = 'step:db:batch';
+
+function workflowUserKey(userId: string) {
+  return `workflow:user:${userId}`;
+}
+
+function workflowRateKey(userId: string) {
+  return `workflow:rate:${userId}`;
+}
+
+function workflowMixedKey(userId: string) {
+  return `workflow:mixed:${userId}`;
+}
+
+function leakedWorkflowKey(userId: string) {
+  return `workflow:key:expired:${userId}`;
+}
+
+function holdLeaseTtlMs(holdMs: number) {
+  return holdMs + 5_000;
+}
+
+function rateLeaseTtlMs(periodMs: number) {
+  return periodMs + 5_000;
+}
+
+function lockWindow(acquiredAt: number, releasedAt: number) {
+  return { acquiredAt, releasedAt };
+}
+
 export async function workflowWithScopedLocks(userId = 'user-123') {
   'use workflow';
 
   await using userLimit = await lock({
-    key: `workflow:user:${userId}`,
+    key: workflowUserKey(userId),
     concurrency: { max: 2 },
-    leaseTtlMs: 30_000,
+    leaseTtlMs: WORKFLOW_LOCK_LEASE_TTL_MS,
   });
 
   let row: Awaited<ReturnType<typeof cheapDbStep>>;
   {
     await using _dbLimit = await lock({
-      key: 'step:db:cheap',
+      key: DB_STEP_KEY,
       concurrency: { max: 20 },
-      leaseTtlMs: 30_000,
+      leaseTtlMs: WORKFLOW_LOCK_LEASE_TTL_MS,
     });
     row = await cheapDbStep(userId);
   }
@@ -249,17 +284,17 @@ export async function workflowWithScopedLocks(userId = 'user-123') {
   let summary: Awaited<ReturnType<typeof expensiveAIStep>>;
   {
     await using _aiLimit = await lock({
-      key: 'step:provider:openai',
+      key: AI_STEP_KEY,
       rate: { count: 10, periodMs: 60_000 },
-      leaseTtlMs: 30_000,
+      leaseTtlMs: WORKFLOW_LOCK_LEASE_TTL_MS,
     });
     summary = await expensiveAIStep(row.prompt);
   }
 
   return {
     workflowKey: userLimit.key,
-    dbKey: 'step:db:cheap',
-    aiKey: 'step:provider:openai',
+    dbKey: DB_STEP_KEY,
+    aiKey: AI_STEP_KEY,
     summary,
   };
 }
@@ -267,21 +302,16 @@ export async function workflowWithScopedLocks(userId = 'user-123') {
 async function serializedLimitStep(
   label: string,
   holdMs: number,
-  key = 'step:db:serialized'
+  key = SERIALIZED_STEP_KEY
 ) {
   'use step';
 
-  const metadata = getStepMetadata();
   const acquiredAt = Date.now();
   await new Promise((resolve) => setTimeout(resolve, holdMs));
-  const releasedAt = Date.now();
-
   return {
     label,
     key,
-    attempt: metadata.attempt,
-    acquiredAt,
-    releasedAt,
+    lock: lockWindow(acquiredAt, Date.now()),
   };
 }
 
@@ -292,50 +322,51 @@ export async function workflowLockContentionWorkflow(
   'use workflow';
 
   const workflowLock = await lock({
-    key: `workflow:user:${userId}`,
+    key: workflowUserKey(userId),
     concurrency: { max: 1 },
-    leaseTtlMs: holdMs + 5_000,
+    leaseTtlMs: holdLeaseTtlMs(holdMs),
   });
 
   const workflowLockAcquiredAt = Date.now();
   let step: Awaited<ReturnType<typeof serializedLimitStep>>;
   {
     await using _nestedLock = await lock({
-      key: 'step:db:serialized',
+      key: SERIALIZED_STEP_KEY,
       concurrency: { max: 1 },
-      leaseTtlMs: holdMs + 5_000,
+      leaseTtlMs: holdLeaseTtlMs(holdMs),
     });
-    step = await serializedLimitStep(userId, holdMs);
+    step = await serializedLimitStep(userId, holdMs, SERIALIZED_STEP_KEY);
   }
   const stepCallLockReleasedAt = Date.now();
   await workflowLock.dispose();
-  const workflowLockReleasedAt = Date.now();
 
   return {
-    userId,
-    workflowLockAcquiredAt,
-    workflowLockReleasedAt,
-    stepCallLockAcquiredAt: step.acquiredAt,
-    stepCallLockReleasedAt,
+    workflow: lockWindow(workflowLockAcquiredAt, Date.now()),
+    step: lockWindow(step.lock.acquiredAt, stepCallLockReleasedAt),
   };
 }
 
 export async function lockedStepCallContentionWorkflow(
-  key = 'step:db:key-contention',
+  key = DEFAULT_CONTENTION_KEY,
   holdMs = 750,
   label = key
 ) {
   'use workflow';
 
+  let step: Awaited<ReturnType<typeof serializedLimitStep>>;
   {
     await using _lock = await lock({
       key,
       concurrency: { max: 1 },
-      leaseTtlMs: holdMs + 5_000,
+      leaseTtlMs: holdLeaseTtlMs(holdMs),
     });
-
-    return await serializedLimitStep(label, holdMs, key);
+    step = await serializedLimitStep(label, holdMs, key);
   }
+
+  return {
+    ...step,
+    lock: lockWindow(step.lock.acquiredAt, Date.now()),
+  };
 }
 
 //////////////////////////////////////////////////////////
@@ -347,21 +378,21 @@ export async function workflowOnlyLockContentionWorkflow(
 ) {
   'use workflow';
 
-  await using _workflowLock = await lock({
-    key: `workflow:user:${userId}`,
-    concurrency: { max: 1 },
-    leaseTtlMs: holdMs + 5_000,
-  });
+  let workflowLockAcquiredAt: number;
+  {
+    await using _workflowLock = await lock({
+      key: workflowUserKey(userId),
+      concurrency: { max: 1 },
+      leaseTtlMs: holdLeaseTtlMs(holdMs),
+    });
 
-  const workflowLockAcquiredAt = Date.now();
-  await sleep(holdMs);
-  const workflowLockReleasedAt = Date.now();
+    workflowLockAcquiredAt = Date.now();
+    await sleep(holdMs);
+  }
 
   return {
     label,
-    userId,
-    workflowLockAcquiredAt,
-    workflowLockReleasedAt,
+    lock: lockWindow(workflowLockAcquiredAt, Date.now()),
   };
 }
 
@@ -373,20 +404,18 @@ export async function workflowLeakedLockWorkflow(
   'use workflow';
 
   const leakedWorkflowLock = await lock({
-    key: `workflow:user:${userId}`,
+    key: workflowUserKey(userId),
     concurrency: { max: 1 },
     leaseTtlMs,
   });
 
-  const workflowLockAcquiredAt = Date.now();
+  const lockAcquiredAt = Date.now();
 
   return {
     label,
-    userId,
     key: leakedWorkflowLock.key,
     leaseTtlMs,
-    leakedLeaseId: leakedWorkflowLock.leaseId,
-    lockAcquiredAt: workflowLockAcquiredAt,
+    lockAcquiredAt,
     workflowCompletedAt: Date.now(),
   };
 }
@@ -399,7 +428,7 @@ export async function leakedKeyLockWorkflow(
   'use workflow';
 
   const leakedLock = await lock({
-    key: `workflow:key:expired:${userId}`,
+    key: leakedWorkflowKey(userId),
     concurrency: { max: 1 },
     leaseTtlMs,
   });
@@ -408,7 +437,6 @@ export async function leakedKeyLockWorkflow(
     label,
     key: leakedLock.key,
     leaseTtlMs,
-    leakedLeaseId: leakedLock.leaseId,
     lockAcquiredAt: Date.now(),
     workflowCompletedAt: Date.now(),
   };
@@ -422,22 +450,22 @@ export async function workflowRateLimitContentionWorkflow(
 ) {
   'use workflow';
 
-  await using _workflowRateLimit = await lock({
-    key: `workflow:rate:${userId}`,
-    rate: { count: 1, periodMs },
-    leaseTtlMs: periodMs + 5_000,
-  });
+  let workflowRateAcquiredAt: number;
+  {
+    await using _workflowRateLimit = await lock({
+      key: workflowRateKey(userId),
+      rate: { count: 1, periodMs },
+      leaseTtlMs: rateLeaseTtlMs(periodMs),
+    });
 
-  const workflowRateAcquiredAt = Date.now();
-  await sleep(holdMs);
-  const workflowRateReleasedAt = Date.now();
+    workflowRateAcquiredAt = Date.now();
+    await sleep(holdMs);
+  }
 
   return {
     label,
-    userId,
     periodMs,
-    workflowRateAcquiredAt,
-    workflowRateReleasedAt,
+    lock: lockWindow(workflowRateAcquiredAt, Date.now()),
   };
 }
 
@@ -453,7 +481,7 @@ export async function releasedRateLimitReplayWorkflow(
     await using _releasedRateLimit = await lock({
       key: `workflow:replay-rate:${userId}`,
       rate: { count: 1, periodMs },
-      leaseTtlMs: periodMs + 5_000,
+      leaseTtlMs: rateLeaseTtlMs(periodMs),
     });
   }
 
@@ -474,48 +502,42 @@ export async function workflowMixedLimitContentionWorkflow(
 ) {
   'use workflow';
 
-  await using _mixedLimit = await lock({
-    key: `workflow:mixed:${userId}`,
-    concurrency: { max: 1 },
-    rate: { count: 1, periodMs },
-    leaseTtlMs: periodMs + 5_000,
-  });
+  let workflowRateAcquiredAt: number;
+  {
+    await using _mixedLimit = await lock({
+      key: workflowMixedKey(userId),
+      concurrency: { max: 1 },
+      rate: { count: 1, periodMs },
+      leaseTtlMs: rateLeaseTtlMs(periodMs),
+    });
 
-  const workflowRateAcquiredAt = Date.now();
-  await sleep(holdMs);
-  const workflowRateReleasedAt = Date.now();
+    workflowRateAcquiredAt = Date.now();
+    await sleep(holdMs);
+  }
 
   return {
     label,
-    userId,
     periodMs,
-    workflowRateAcquiredAt,
-    workflowRateReleasedAt,
+    lock: lockWindow(workflowRateAcquiredAt, Date.now()),
   };
 }
 
-async function scopedMultiStepStep(label: string, holdMs: number) {
+async function scopedMultiStepStep(holdMs: number) {
   'use step';
 
-  const metadata = getStepMetadata();
   await new Promise((resolve) => setTimeout(resolve, holdMs));
-  return {
-    label,
-    attempt: metadata.attempt,
-    completedAt: Date.now(),
-  };
+  return Date.now();
 }
 
 export async function singleLockAcrossMultipleStepsWorkflow(
-  key = 'step:db:batch',
+  key = MULTI_STEP_KEY,
   holdMs = 400
 ) {
   'use workflow';
 
   let workflowLockAcquiredAt: number;
-  let first: Awaited<ReturnType<typeof scopedMultiStepStep>>;
-  let second: Awaited<ReturnType<typeof scopedMultiStepStep>>;
-  let workflowLockReleasedAt: number;
+  let firstStepCompletedAt: number;
+  let secondStepCompletedAt: number;
   {
     await using _lock = await lock({
       key,
@@ -524,17 +546,15 @@ export async function singleLockAcrossMultipleStepsWorkflow(
     });
 
     workflowLockAcquiredAt = Date.now();
-    first = await scopedMultiStepStep('first', holdMs);
-    second = await scopedMultiStepStep('second', holdMs);
-    workflowLockReleasedAt = Date.now();
+    firstStepCompletedAt = await scopedMultiStepStep(holdMs);
+    secondStepCompletedAt = await scopedMultiStepStep(holdMs);
   }
 
   return {
     key,
-    workflowLockAcquiredAt,
-    firstStepCompletedAt: first.completedAt,
-    secondStepCompletedAt: second.completedAt,
-    workflowLockReleasedAt,
+    lock: lockWindow(workflowLockAcquiredAt, Date.now()),
+    firstStepCompletedAt,
+    secondStepCompletedAt,
   };
 }
 

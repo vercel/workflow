@@ -265,8 +265,11 @@ export function workflowEntrypoint(
 
                   // If the world returned events, use them to skip
                   // the initial events.list call and reduce TTFB.
-                  if (result.events && result.events.length > 0) {
-                    preloadedEvents = result.events;
+                  if (
+                    result.preloadedEvents &&
+                    result.preloadedEvents.length > 0
+                  ) {
+                    preloadedEvents = result.preloadedEvents;
                   }
 
                   if (!workflowRun.startedAt) {

@@ -1,31 +1,31 @@
 import { describe, expect, it } from 'vitest';
 
-type WorkflowLockContentionResult = {
-  workflowLockAcquiredAt: number;
-  workflowLockReleasedAt: number;
-  stepCallLockAcquiredAt: number;
-  stepCallLockReleasedAt: number;
-};
-
-type LockedStepCallResult = {
-  label: string;
-  key?: string;
-  attempt: number;
+type LockWindow = {
   acquiredAt: number;
   releasedAt: number;
 };
 
-type WorkflowOnlyLockResult = {
+type WorkflowLockResult = {
   label: string;
-  workflowLockAcquiredAt: number;
-  workflowLockReleasedAt: number;
+  lock: LockWindow;
 };
 
-type WorkflowRateLimitResult = {
+type StepLockResult = {
   label: string;
-  workflowRateAcquiredAt: number;
-  workflowRateReleasedAt: number;
+  key: string;
+  attempt: number;
+  lock: LockWindow;
+};
+
+type WorkflowLockContentionResult = {
+  workflow: LockWindow;
+  step: LockWindow;
+};
+
+type WorkflowRateResult = {
+  label: string;
   periodMs: number;
+  lock: LockWindow;
 };
 
 type ReleasedRateLimitReplayResult = {
@@ -44,17 +44,16 @@ type LeakedLockResult = {
 
 type WorkflowMultiStepScopeResult = {
   key: string;
-  workflowLockAcquiredAt: number;
+  lock: LockWindow;
   firstStepCompletedAt: number;
   secondStepCompletedAt: number;
-  workflowLockReleasedAt: number;
 };
 
-function sortContentionResults<T extends { workflowLockAcquiredAt: number }>(
+function sortByWorkflowLock<T extends { workflow: LockWindow }>(
   results: [T, T]
 ): [T, T] {
   return [...results].sort(
-    (a, b) => a.workflowLockAcquiredAt - b.workflowLockAcquiredAt
+    (a, b) => a.workflow.acquiredAt - b.workflow.acquiredAt
   ) as [T, T];
 }
 
@@ -71,31 +70,29 @@ export interface LimitsRuntimeHarness {
   ): Promise<[WorkflowLockContentionResult, WorkflowLockContentionResult]>;
   runLockedStepCallContention(
     key: string,
-    holdMs: number,
-    labelA?: string,
-    labelB?: string
-  ): Promise<[LockedStepCallResult, LockedStepCallResult]>;
+    holdMs: number
+  ): Promise<[StepLockResult, StepLockResult]>;
   runWorkflowLockAcrossSuspension(
     userId: string,
     holdMs: number
-  ): Promise<[WorkflowOnlyLockResult, WorkflowOnlyLockResult]>;
+  ): Promise<[WorkflowLockResult, WorkflowLockResult]>;
   runWorkflowExpiredLeaseRecovery(
     userId: string,
     leaseTtlMs: number
-  ): Promise<[LeakedLockResult, WorkflowOnlyLockResult]>;
+  ): Promise<[LeakedLockResult, WorkflowLockResult]>;
   runWorkflowTerminalHolderRecovery(
     userId: string,
     leaseTtlMs: number
-  ): Promise<[LeakedLockResult, WorkflowOnlyLockResult]>;
+  ): Promise<[LeakedLockResult, WorkflowLockResult]>;
   runLeakedKeyExpiredLeaseRecovery(
     userId: string,
     leaseTtlMs: number
-  ): Promise<[LeakedLockResult, LockedStepCallResult]>;
+  ): Promise<[LeakedLockResult, StepLockResult]>;
   runWorkflowMixedLimitContention(
     userId: string,
     holdMs: number,
     periodMs: number
-  ): Promise<[WorkflowRateLimitResult, WorkflowRateLimitResult]>;
+  ): Promise<[WorkflowRateResult, WorkflowRateResult]>;
   runReleasedRateLimitReplay(
     userId: string,
     periodMs: number,
@@ -104,27 +101,25 @@ export interface LimitsRuntimeHarness {
   runWorkflowFifoThreeWaiters(
     userId: string,
     holdMs: number
-  ): Promise<
-    [WorkflowOnlyLockResult, WorkflowOnlyLockResult, WorkflowOnlyLockResult]
-  >;
+  ): Promise<[WorkflowLockResult, WorkflowLockResult, WorkflowLockResult]>;
   runCancelledWorkflowWaiter(
     userId: string,
     holdMs: number
   ): Promise<{
     cancelledError: unknown;
-    resultA: WorkflowOnlyLockResult;
-    resultC: WorkflowOnlyLockResult;
+    resultA: WorkflowLockResult;
+    resultC: WorkflowLockResult;
   }>;
   runIndependentWorkflowKeys(
     holdMs: number
-  ): Promise<[WorkflowOnlyLockResult, WorkflowOnlyLockResult]>;
+  ): Promise<[WorkflowLockResult, WorkflowLockResult]>;
   runIndependentStepKeys(
     holdMs: number
-  ): Promise<[LockedStepCallResult, LockedStepCallResult]>;
+  ): Promise<[StepLockResult, StepLockResult]>;
   runBlockedWaiterWithUnrelatedWorkflow(holdMs: number): Promise<{
-    holder: WorkflowOnlyLockResult;
-    waiter: WorkflowOnlyLockResult;
-    unrelated: WorkflowOnlyLockResult;
+    holder: WorkflowLockResult;
+    waiter: WorkflowLockResult;
+    unrelated: WorkflowLockResult;
   }>;
   runWorkflowSingleLockAcrossMultipleSteps(
     holdMs: number
@@ -151,30 +146,30 @@ export function createLimitsRuntimeSuite(
 
     it('serializes workflow locks and locks around step calls under contention', async () => {
       const harness = await createHarness();
-      const [resultA, resultB] = sortContentionResults(
+      const [resultA, resultB] = sortByWorkflowLock(
         await harness.runWorkflowLockContention('shared-user', 750)
       );
 
-      expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
-        resultA.workflowLockReleasedAt
+      expect(resultB.workflow.acquiredAt).toBeGreaterThanOrEqual(
+        resultA.workflow.releasedAt
       );
-      expect(resultB.stepCallLockAcquiredAt).toBeGreaterThanOrEqual(
-        resultA.stepCallLockReleasedAt
+      expect(resultB.step.acquiredAt).toBeGreaterThanOrEqual(
+        resultA.step.releasedAt
       );
     });
 
     it('wakes promoted workflow and step-call lock waiters promptly', async () => {
       const harness = await createHarness();
-      const [resultA, resultB] = sortContentionResults(
+      const [resultA, resultB] = sortByWorkflowLock(
         await harness.runWorkflowLockContention('shared-user', 1_500)
       );
 
       expect(
-        resultB.workflowLockAcquiredAt - resultA.workflowLockReleasedAt
+        resultB.workflow.acquiredAt - resultA.workflow.releasedAt
       ).toBeLessThan(4_000);
-      expect(
-        resultB.stepCallLockAcquiredAt - resultA.stepCallLockReleasedAt
-      ).toBeLessThan(4_000);
+      expect(resultB.step.acquiredAt - resultA.step.releasedAt).toBeLessThan(
+        4_000
+      );
     });
 
     it('can hold one workflow lock across multiple steps in the same scope', async () => {
@@ -183,12 +178,12 @@ export function createLimitsRuntimeSuite(
         await harness.runWorkflowSingleLockAcrossMultipleSteps(400);
 
       expect(result.firstStepCompletedAt).toBeGreaterThanOrEqual(
-        result.workflowLockAcquiredAt
+        result.lock.acquiredAt
       );
       expect(result.secondStepCompletedAt).toBeGreaterThanOrEqual(
         result.firstStepCompletedAt
       );
-      expect(result.workflowLockReleasedAt).toBeGreaterThanOrEqual(
+      expect(result.lock.releasedAt).toBeGreaterThanOrEqual(
         result.secondStepCompletedAt
       );
     });
@@ -200,12 +195,12 @@ export function createLimitsRuntimeSuite(
         1_500
       );
 
-      expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
-        resultA.workflowLockReleasedAt
+      expect(resultB.lock.acquiredAt).toBeGreaterThanOrEqual(
+        resultA.lock.releasedAt
       );
-      expect(
-        resultB.workflowLockAcquiredAt - resultA.workflowLockReleasedAt
-      ).toBeLessThan(4_000);
+      expect(resultB.lock.acquiredAt - resultA.lock.releasedAt).toBeLessThan(
+        4_000
+      );
     });
 
     it('reclaims terminal workflow-held locks on workflow keys', async () => {
@@ -216,7 +211,7 @@ export function createLimitsRuntimeSuite(
         leaseTtlMs
       );
 
-      expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
+      expect(resultB.lock.acquiredAt).toBeGreaterThanOrEqual(
         resultA.workflowCompletedAt
       );
     });
@@ -230,12 +225,12 @@ export function createLimitsRuntimeSuite(
           leaseTtlMs
         );
 
-      expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
+      expect(resultB.lock.acquiredAt).toBeGreaterThanOrEqual(
         resultA.workflowCompletedAt
       );
-      expect(
-        resultB.workflowLockAcquiredAt - resultA.lockAcquiredAt
-      ).toBeLessThan(leaseTtlMs - 5_000);
+      expect(resultB.lock.acquiredAt - resultA.lockAcquiredAt).toBeLessThan(
+        leaseTtlMs - 5_000
+      );
     });
 
     it('reclaims terminal workflow-held locks on arbitrary keys', async () => {
@@ -246,7 +241,7 @@ export function createLimitsRuntimeSuite(
         leaseTtlMs
       );
 
-      expect(resultB.acquiredAt).toBeGreaterThanOrEqual(
+      expect(resultB.lock.acquiredAt).toBeGreaterThanOrEqual(
         resultA.workflowCompletedAt
       );
     });
@@ -262,14 +257,13 @@ export function createLimitsRuntimeSuite(
       );
 
       expect(
-        resultB.workflowRateAcquiredAt - resultA.workflowRateAcquiredAt
+        resultB.lock.acquiredAt - resultA.lock.acquiredAt
       ).toBeGreaterThanOrEqual(periodMs - 100);
 
       const remainingWindowAfterRelease =
-        periodMs -
-        (resultA.workflowRateReleasedAt - resultA.workflowRateAcquiredAt);
+        periodMs - (resultA.lock.releasedAt - resultA.lock.acquiredAt);
       expect(
-        resultB.workflowRateAcquiredAt - resultA.workflowRateReleasedAt
+        resultB.lock.acquiredAt - resultA.lock.releasedAt
       ).toBeGreaterThanOrEqual(Math.max(0, remainingWindowAfterRelease - 100));
     });
 
@@ -289,11 +283,11 @@ export function createLimitsRuntimeSuite(
       const [resultA, resultB, resultC] =
         await harness.runWorkflowFifoThreeWaiters('shared-user', 750);
 
-      expect(resultB.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
-        resultA.workflowLockReleasedAt
+      expect(resultB.lock.acquiredAt).toBeGreaterThanOrEqual(
+        resultA.lock.releasedAt
       );
-      expect(resultC.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
-        resultB.workflowLockReleasedAt
+      expect(resultC.lock.acquiredAt).toBeGreaterThanOrEqual(
+        resultB.lock.releasedAt
       );
     });
 
@@ -303,12 +297,12 @@ export function createLimitsRuntimeSuite(
         await harness.runCancelledWorkflowWaiter('shared-user', 1_500);
 
       expect(cancelledError).toBeTruthy();
-      expect(resultC.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
-        resultA.workflowLockReleasedAt
+      expect(resultC.lock.acquiredAt).toBeGreaterThanOrEqual(
+        resultA.lock.releasedAt
       );
-      expect(
-        resultC.workflowLockAcquiredAt - resultA.workflowLockReleasedAt
-      ).toBeLessThan(6_000);
+      expect(resultC.lock.acquiredAt - resultA.lock.releasedAt).toBeLessThan(
+        6_000
+      );
     });
 
     it('does not block unrelated workflow keys', async () => {
@@ -316,16 +310,14 @@ export function createLimitsRuntimeSuite(
       const [resultA, resultB] =
         await harness.runIndependentWorkflowKeys(3_000);
 
-      expect(resultB.workflowLockAcquiredAt).toBeLessThan(
-        resultA.workflowLockReleasedAt
-      );
+      expect(resultB.lock.acquiredAt).toBeLessThan(resultA.lock.releasedAt);
     });
 
     it('does not block unrelated step-like keys', async () => {
       const harness = await createHarness();
       const [resultA, resultB] = await harness.runIndependentStepKeys(3_000);
 
-      expect(resultB.acquiredAt).toBeLessThan(resultA.releasedAt);
+      expect(resultB.lock.acquiredAt).toBeLessThan(resultA.lock.releasedAt);
     });
 
     it.skipIf(process.env.WORKFLOW_LIMITS_LOW_CONCURRENCY !== '1')(
@@ -335,12 +327,10 @@ export function createLimitsRuntimeSuite(
         const { holder, waiter, unrelated } =
           await harness.runBlockedWaiterWithUnrelatedWorkflow(1_500);
 
-        expect(waiter.workflowLockAcquiredAt).toBeGreaterThanOrEqual(
-          holder.workflowLockReleasedAt
+        expect(waiter.lock.acquiredAt).toBeGreaterThanOrEqual(
+          holder.lock.releasedAt
         );
-        expect(unrelated.workflowLockReleasedAt).toBeLessThan(
-          waiter.workflowLockAcquiredAt
-        );
+        expect(unrelated.lock.releasedAt).toBeLessThan(waiter.lock.acquiredAt);
       }
     );
   });

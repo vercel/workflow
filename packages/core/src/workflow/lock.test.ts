@@ -105,6 +105,11 @@ describe('createLock', () => {
           runId: 'wrun_test',
           eventType: 'lock_release',
           correlationId: createLockCorrelationId('wrun_test', 0),
+          eventData: {
+            leaseId: lease.leaseId,
+            key: lease.key,
+            lockId: lease.lockId,
+          },
           createdAt: new Date(),
         })
       );
@@ -276,6 +281,11 @@ describe('createLock', () => {
         runId: 'wrun_test',
         eventType: 'lock_release',
         correlationId,
+        eventData: {
+          leaseId: lease.leaseId,
+          key: lease.key,
+          lockId: lease.lockId,
+        },
         createdAt: new Date(),
       },
     ]);
@@ -292,10 +302,9 @@ describe('createLock', () => {
   });
 
   it('re-suspends when a stale lock wake-up becomes too early again', async () => {
-    const now = Date.parse('2026-03-31T03:50:29.624Z');
+    const workflowNow = 1753481739458;
     const retryAfterSeconds = 30;
-    const retryAfter = new Date(now + retryAfterSeconds * 1000);
-    vi.spyOn(Date, 'now').mockReturnValue(now);
+    const retryAfter = new Date(workflowNow + retryAfterSeconds * 1000);
     const createEvent = vi
       .fn<() => Promise<EventResult>>()
       .mockRejectedValueOnce(
@@ -306,6 +315,7 @@ describe('createLock', () => {
       events: { create: createEvent },
       limits: { heartbeat: vi.fn() },
     } as any);
+    vi.spyOn(Date, 'now').mockReturnValue(workflowNow);
 
     const correlationId = createLockCorrelationId('wrun_test', 0);
     const ctx = setupWorkflowContext([
@@ -317,7 +327,7 @@ describe('createLock', () => {
         eventData: {
           key: 'workflow:rate:test',
           definition: { rate: { count: 1, periodMs: 60_000 } },
-          acquireAt: new Date(Date.now() - 1_000),
+          acquireAt: new Date(workflowNow - 1_000),
         },
         createdAt: new Date(),
       },
@@ -342,6 +352,65 @@ describe('createLock', () => {
       correlationId: createLockWakeCorrelationId('wrun_test', 0),
       resumeAt: retryAfter,
     });
+  });
+
+  it('retries a timed lock when wall time has passed even if replay time has not', async () => {
+    const workflowNow = 1753481739458;
+    const acquireAt = new Date(workflowNow + 1_000);
+    const lease = {
+      ...createLease(),
+      key: 'workflow:rate:test',
+      definition: { rate: { count: 1, periodMs: 60_000 } },
+    };
+    const createEvent = vi
+      .fn<() => Promise<EventResult>>()
+      .mockResolvedValueOnce(
+        asEventResult({
+          eventId: 'evnt_lock_acquired',
+          runId: 'wrun_test',
+          eventType: 'lock_acquired',
+          correlationId: createLockCorrelationId('wrun_test', 0),
+          eventData: { lease },
+          createdAt: new Date(workflowNow + 2_000),
+        })
+      );
+
+    vi.spyOn(Date, 'now').mockReturnValue(workflowNow + 2_000);
+    setWorld({
+      events: { create: createEvent },
+      limits: { heartbeat: vi.fn() },
+    } as any);
+
+    const correlationId = createLockCorrelationId('wrun_test', 0);
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_lock_created',
+        runId: 'wrun_test',
+        eventType: 'lock_created',
+        correlationId,
+        eventData: {
+          key: lease.key,
+          definition: lease.definition,
+          acquireAt,
+        },
+        createdAt: new Date(workflowNow),
+      },
+    ]);
+
+    const lock = createLock(ctx);
+    const handle = await lock({
+      key: lease.key,
+      rate: { count: 1, periodMs: 60_000 },
+    });
+
+    expect(createEvent).toHaveBeenCalledWith(
+      'wrun_test',
+      expect.objectContaining({
+        eventType: 'lock_acquired',
+        correlationId,
+      })
+    );
+    expect(handle.leaseId).toBe(lease.leaseId);
   });
 
   it('does not orphan wait_created when a replayed lock is immediately followed by sleep', async () => {

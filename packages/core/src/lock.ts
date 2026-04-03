@@ -11,14 +11,10 @@ export { LIMITS_NOT_IMPLEMENTED_MESSAGE } from '@workflow/world';
 export const LOCK_WORKFLOW_ONLY_MESSAGE =
   '`lock()` is only supported in workflow functions. Wrap the step call with `await using` in workflow code.';
 
-/**
- * Reserved first-pass user-facing API for future flow concurrency and rate
- * limiting inside workflow functions.
- */
-export interface LockOptions extends LimitDefinition {
+export type LockOptions = LimitDefinition & {
   key: LimitKey;
   leaseTtlMs?: number;
-}
+};
 
 /**
  * Reserved handle shape for future lock acquisition.
@@ -29,7 +25,7 @@ export interface LockHandle
     'leaseId' | 'key' | 'lockId' | 'runId' | 'lockIndex' | 'expiresAt'
   > {
   dispose(): Promise<void>;
-  heartbeat(ttlMs?: number): Promise<void>;
+  heartbeat(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;
 }
 

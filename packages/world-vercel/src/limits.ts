@@ -1,7 +1,6 @@
 import { createLimitsNotImplementedError, type Limits } from '@workflow/world';
-import type { APIConfig } from './utils.js';
 
-export function createLimits(_config?: APIConfig): Limits {
+export function createLimits(): Limits {
   return {
     async acquire() {
       throw createLimitsNotImplementedError();

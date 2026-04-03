@@ -43,6 +43,11 @@ export function isLocalDeployment(): boolean {
   return localHosts.some((host) => deploymentUrl.includes(host));
 }
 
+function resetLocalWorldDataDir(dataDir: string) {
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  fs.mkdirSync(dataDir, { recursive: true });
+}
+
 /**
  * Checks if step error source maps are expected to work in the current test environment.
  * TODO: ideally it should work consistently everywhere and we should fix the issues and
@@ -421,7 +426,9 @@ export function setupWorld(deploymentUrl: string): void {
     const appName = process.env.APP_NAME!;
     const isNextJs = appName.includes('nextjs') || appName.includes('next-');
     const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
-    process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+    const dataDir = path.join(appPath, dataDirName);
+    resetLocalWorldDataDir(dataDir);
+    process.env.WORKFLOW_LOCAL_DATA_DIR = dataDir;
   } else if (process.env.WORKFLOW_VERCEL_ENV) {
     // For Vercel tests: WORKFLOW_VERCEL_AUTH_TOKEN, WORKFLOW_VERCEL_PROJECT, etc. are set by CI.
     // Build the Vercel world explicitly with the CI-provided config rather than relying on

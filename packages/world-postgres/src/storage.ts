@@ -12,7 +12,6 @@ import type {
   EventResult,
   GetEventParams,
   Hook,
-  LimitLease,
   LimitPromotedWaiter,
   Limits,
   ListEventsParams,
@@ -32,6 +31,7 @@ import {
   EventSchema,
   HookSchema,
   isLegacySpecVersion,
+  parseLockCorrelationId,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
@@ -45,24 +45,78 @@ import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
 
-function getAcquiredLease(
-  event:
-    | {
-        eventType: string;
-        eventData?: unknown;
-      }
-    | undefined
-): LimitLease | undefined {
-  if (!event || event.eventType !== 'lock_acquired') {
+type LockCreatedEvent = Extract<Event, { eventType: 'lock_created' }>;
+type LockAcquiredEvent = Extract<Event, { eventType: 'lock_acquired' }>;
+type LockReleaseEvent = Extract<Event, { eventType: 'lock_release' }>;
+type LockStoredEvent = LockCreatedEvent | LockAcquiredEvent | LockReleaseEvent;
+type LockHistory = {
+  created?: LockCreatedEvent;
+  acquired?: LockAcquiredEvent;
+  released?: LockReleaseEvent;
+};
+
+function parseLockStoredEvent(event: unknown): LockStoredEvent {
+  const parsed = EventSchema.parse(event);
+
+  switch (parsed.eventType) {
+    case 'lock_created':
+    case 'lock_acquired':
+    case 'lock_release':
+      return parsed;
+    default:
+      throw new WorkflowWorldError(
+        `Expected lock event, got "${parsed.eventType}"`
+      );
+  }
+}
+
+function isLeaseLive(lease: { expiresAt?: Date }) {
+  return (
+    lease.expiresAt === undefined || lease.expiresAt.getTime() > Date.now()
+  );
+}
+
+function getLockIndex(correlationId: string): number {
+  const parsed = parseLockCorrelationId(correlationId);
+  if (!parsed) {
+    throw new WorkflowWorldError(
+      `Invalid lock correlation ID "${correlationId}"`
+    );
+  }
+
+  return parsed.lockIndex;
+}
+
+function getLockHistory(events: LockStoredEvent[]): LockHistory {
+  const history: LockHistory = {};
+
+  for (const event of events) {
+    switch (event.eventType) {
+      case 'lock_created':
+        history.created ??= event;
+        break;
+      case 'lock_acquired':
+        history.acquired = event;
+        break;
+      case 'lock_release':
+        history.released = event;
+        break;
+    }
+  }
+
+  return history;
+}
+
+function getLiveAcquiredEvent(
+  history: LockHistory
+): LockAcquiredEvent | undefined {
+  if (!history.acquired) {
     return undefined;
   }
 
-  const data = event.eventData;
-  if (!data || typeof data !== 'object' || !('lease' in data)) {
-    return undefined;
-  }
-
-  return (data as { lease?: LimitLease }).lease;
+  return isLeaseLive(history.acquired.eventData.lease)
+    ? history.acquired
+    : undefined;
 }
 
 /**
@@ -294,8 +348,6 @@ export function createEventsStorage(
 ): Storage['events'] {
   const ulid = monotonicFactory();
   const { events } = Schema;
-  const isLeaseLive = (lease: { expiresAt?: Date }) =>
-    lease.expiresAt === undefined || lease.expiresAt.getTime() > Date.now();
 
   // Prepared statements for validation queries (performance optimization)
   const getRunForValidation = drizzle
@@ -646,91 +698,109 @@ export function createEventsStorage(
           );
         }
 
-        const lockIndex = Number.parseInt(
-          data.correlationId.split(':').at(-1) ?? '0',
-          10
-        );
-        const existingEvents = await drizzle
-          .select({
-            eventType: Schema.events.eventType,
-            eventData: Schema.events.eventData,
-            createdAt: Schema.events.createdAt,
-            eventId: Schema.events.eventId,
-          })
-          .from(Schema.events)
-          .where(
-            and(
-              eq(Schema.events.runId, effectiveRunId),
-              eq(Schema.events.correlationId, data.correlationId)
+        const lockIndex = getLockIndex(data.correlationId);
+        const existingEvents = (
+          await drizzle
+            .select({
+              eventType: Schema.events.eventType,
+              eventData: Schema.events.eventData,
+              createdAt: Schema.events.createdAt,
+              eventId: Schema.events.eventId,
+              specVersion: Schema.events.specVersion,
+            })
+            .from(Schema.events)
+            .where(
+              and(
+                eq(Schema.events.runId, effectiveRunId),
+                eq(Schema.events.correlationId, data.correlationId)
+              )
             )
-          )
-          .orderBy(asc(Schema.events.createdAt), asc(Schema.events.eventId));
-        const existingCreatedEvent = existingEvents.find(
-          (event) => event.eventType === 'lock_created'
+            .orderBy(asc(Schema.events.createdAt), asc(Schema.events.eventId))
+        ).map((event) =>
+          parseLockStoredEvent({
+            ...event,
+            runId: effectiveRunId,
+            correlationId: data.correlationId,
+            specVersion: event.specVersion ?? undefined,
+          })
         );
-        const existingAcquiredEvent = [...existingEvents]
-          .reverse()
-          .find((event) => event.eventType === 'lock_acquired');
-        const existingReleaseEvent = [...existingEvents]
-          .reverse()
-          .find((event) => event.eventType === 'lock_release');
-        let eventToStore:
-          | {
-              eventType: 'lock_created' | 'lock_acquired' | 'lock_release';
-              correlationId: string;
-              eventData?: unknown;
-            }
-          | undefined;
-        let eventToReturn:
-          | {
-              eventType: 'lock_created' | 'lock_acquired' | 'lock_release';
-              correlationId: string;
-              eventData?: unknown;
-              createdAt: Date;
-              eventId: string;
-            }
-          | undefined;
+        const history = getLockHistory(existingEvents);
+        const liveAcquiredEvent = getLiveAcquiredEvent(history);
+        const returnExistingEvent = (existingEvent: LockStoredEvent) => {
+          const resolveData = params?.resolveData ?? 'all';
+          return {
+            event: stripEventDataRefs(existingEvent, resolveData),
+            run,
+            step,
+            hook,
+            wait,
+          };
+        };
+        const insertLockEvent = async (event: LockStoredEvent) => {
+          const [value] = await drizzle
+            .insert(Schema.events)
+            .values({
+              runId: effectiveRunId,
+              eventId,
+              correlationId: event.correlationId,
+              eventType: event.eventType,
+              eventData: event.eventData,
+              specVersion: effectiveSpecVersion,
+            })
+            .returning({ createdAt: Schema.events.createdAt });
+
+          const storedEvent = EventSchema.parse({
+            ...event,
+            ...value,
+            runId: effectiveRunId,
+            eventId,
+          }) as LockStoredEvent;
+
+          if (
+            storedEvent.eventType === 'lock_release' &&
+            storedEvent.eventData.promotedWaiters?.length
+          ) {
+            await processPromotedWaiters(
+              storedEvent.eventData.promotedWaiters,
+              effectiveSpecVersion
+            );
+          }
+
+          const resolveData = params?.resolveData ?? 'all';
+          return {
+            event: stripEventDataRefs(storedEvent, resolveData),
+            run,
+            step,
+            hook,
+            wait,
+          };
+        };
 
         if (data.eventType === 'lock_created') {
-          const existingLeaseData = getAcquiredLease(existingAcquiredEvent);
           const existingEvent =
-            existingReleaseEvent ??
-            (existingLeaseData && isLeaseLive(existingLeaseData)
-              ? existingAcquiredEvent
-              : undefined) ??
-            existingCreatedEvent;
+            history.released ?? liveAcquiredEvent ?? history.created;
           if (existingEvent) {
-            eventToReturn = {
-              eventType: existingEvent.eventType as
-                | 'lock_created'
-                | 'lock_acquired'
-                | 'lock_release',
-              correlationId: data.correlationId,
-              eventData: existingEvent.eventData ?? undefined,
-              createdAt: existingEvent.createdAt,
-              eventId: existingEvent.eventId,
-            };
-          } else {
-            const result = await limits.acquire({
-              key: data.eventData.key,
-              runId: effectiveRunId,
-              lockIndex,
-              definition: data.eventData.definition,
-              leaseTtlMs: data.eventData.leaseTtlMs,
-            });
-            const eventCreatedAt = new Date();
+            return returnExistingEvent(existingEvent);
+          }
 
-            eventToStore =
-              result.status === 'acquired'
-                ? {
-                    eventType: 'lock_acquired',
-                    correlationId: data.correlationId,
-                    eventData: { lease: result.lease },
-                  }
-                : {
-                    eventType: 'lock_created',
-                    correlationId: data.correlationId,
-                    eventData: {
+          const result = await limits.acquire({
+            key: data.eventData.key,
+            runId: effectiveRunId,
+            lockIndex,
+            definition: data.eventData.definition,
+            leaseTtlMs: data.eventData.leaseTtlMs,
+          });
+          const eventCreatedAt = new Date();
+
+          return insertLockEvent(
+            parseLockStoredEvent({
+              eventType:
+                result.status === 'acquired' ? 'lock_acquired' : 'lock_created',
+              correlationId: data.correlationId,
+              eventData:
+                result.status === 'acquired'
+                  ? { lease: result.lease }
+                  : {
                       key: data.eventData.key,
                       definition: data.eventData.definition,
                       leaseTtlMs: data.eventData.leaseTtlMs,
@@ -741,166 +811,90 @@ export function createEventsStorage(
                             )
                           : undefined,
                     },
-                  };
-          }
-        } else if (data.eventType === 'lock_acquired') {
-          const existingLeaseData = getAcquiredLease(existingAcquiredEvent);
-          if (existingReleaseEvent) {
-            eventToReturn = {
-              eventType: 'lock_release',
-              correlationId: data.correlationId,
-              eventData: existingReleaseEvent.eventData ?? undefined,
-              createdAt: existingReleaseEvent.createdAt,
-              eventId: existingReleaseEvent.eventId,
-            };
-          } else if (
-            existingAcquiredEvent &&
-            existingLeaseData &&
-            isLeaseLive(existingLeaseData)
-          ) {
-            eventToReturn = {
-              eventType: 'lock_acquired',
-              correlationId: data.correlationId,
-              eventData: existingAcquiredEvent.eventData ?? undefined,
-              createdAt: existingAcquiredEvent.createdAt,
-              eventId: existingAcquiredEvent.eventId,
-            };
-          } else {
-            const createdEvent = existingCreatedEvent;
-            const createdData = createdEvent?.eventData as
-              | {
-                  key: string;
-                  definition: any;
-                  leaseTtlMs?: number;
-                }
-              | undefined;
-            if (!createdData) {
-              throw new WorkflowWorldError(
-                `Lock "${data.correlationId}" cannot be acquired before lock_created`
-              );
-            }
-
-            const result = await limits.acquire({
-              key: createdData.key,
+              createdAt: eventCreatedAt,
               runId: effectiveRunId,
-              lockIndex,
-              definition: createdData.definition,
-              leaseTtlMs: createdData.leaseTtlMs,
-            });
-            if (result.status !== 'acquired') {
-              const retryAfter =
-                result.retryAfterMs !== undefined
-                  ? Math.ceil(result.retryAfterMs / 1000)
-                  : undefined;
-              throw new TooEarlyError(
-                `Lock "${data.correlationId}" is not ready to acquire`,
-                { retryAfter }
-              );
-            }
+              eventId,
+              specVersion: effectiveSpecVersion,
+            })
+          );
+        }
 
-            eventToStore = {
+        if (data.eventType === 'lock_acquired') {
+          if (history.released) {
+            return returnExistingEvent(history.released);
+          }
+          if (liveAcquiredEvent) {
+            return returnExistingEvent(liveAcquiredEvent);
+          }
+          if (!history.created) {
+            throw new WorkflowWorldError(
+              `Lock "${data.correlationId}" cannot be acquired before lock_created`
+            );
+          }
+
+          const result = await limits.acquire({
+            key: history.created.eventData.key,
+            runId: effectiveRunId,
+            lockIndex,
+            definition: history.created.eventData.definition,
+            leaseTtlMs: history.created.eventData.leaseTtlMs,
+          });
+          if (result.status !== 'acquired') {
+            const retryAfter =
+              result.retryAfterMs !== undefined
+                ? Math.ceil(result.retryAfterMs / 1000)
+                : undefined;
+            throw new TooEarlyError(
+              `Lock "${data.correlationId}" is not ready to acquire`,
+              { retryAfter }
+            );
+          }
+
+          return insertLockEvent(
+            parseLockStoredEvent({
               eventType: 'lock_acquired',
               correlationId: data.correlationId,
               eventData: { lease: result.lease },
-            };
-          }
-        } else {
-          if (existingReleaseEvent) {
-            eventToReturn = {
-              eventType: 'lock_release',
-              correlationId: data.correlationId,
-              eventData: existingReleaseEvent.eventData ?? undefined,
-              createdAt: existingReleaseEvent.createdAt,
-              eventId: existingReleaseEvent.eventId,
-            };
-          } else {
-            const acquiredEvent = existingAcquiredEvent;
-            const lease = getAcquiredLease(acquiredEvent);
-            if (!lease) {
-              throw new WorkflowWorldError(
-                `Lock "${data.correlationId}" cannot be released before lock_acquired`
-              );
-            }
+              createdAt: new Date(),
+              runId: effectiveRunId,
+              eventId,
+              specVersion: effectiveSpecVersion,
+            })
+          );
+        }
 
-            const releaseResult = await limits.release({
+        if (history.released) {
+          return returnExistingEvent(history.released);
+        }
+        if (!history.acquired) {
+          throw new WorkflowWorldError(
+            `Lock "${data.correlationId}" cannot be released before lock_acquired`
+          );
+        }
+
+        const lease = history.acquired.eventData.lease;
+        const releaseResult = await limits.release({
+          leaseId: lease.leaseId,
+          key: lease.key,
+          lockId: lease.lockId,
+        });
+
+        return insertLockEvent(
+          parseLockStoredEvent({
+            eventType: 'lock_release',
+            correlationId: data.correlationId,
+            eventData: {
               leaseId: lease.leaseId,
               key: lease.key,
               lockId: lease.lockId,
-            });
-
-            eventToStore = {
-              eventType: 'lock_release',
-              correlationId: data.correlationId,
-              eventData: {
-                leaseId: lease.leaseId,
-                key: lease.key,
-                lockId: lease.lockId,
-                promotedWaiters: releaseResult.promotedWaiters,
-              },
-            };
-          }
-        }
-
-        if (eventToReturn) {
-          const parsed = EventSchema.parse({
-            eventType: eventToReturn.eventType,
-            correlationId: eventToReturn.correlationId,
-            eventData: eventToReturn.eventData,
-            createdAt: eventToReturn.createdAt,
-            runId: effectiveRunId,
-            eventId: eventToReturn.eventId,
-            specVersion: effectiveSpecVersion,
-          });
-          const resolveData = params?.resolveData ?? 'all';
-          return {
-            event: stripEventDataRefs(parsed, resolveData),
-            run,
-            step,
-            hook,
-            wait,
-          };
-        }
-        if (!eventToStore) {
-          throw new WorkflowWorldError(
-            `Lock event "${data.eventType}" did not resolve for "${data.correlationId}"`
-          );
-        }
-
-        const [value] = await drizzle
-          .insert(Schema.events)
-          .values({
+              promotedWaiters: releaseResult.promotedWaiters,
+            },
+            createdAt: new Date(),
             runId: effectiveRunId,
             eventId,
-            correlationId: eventToStore.correlationId,
-            eventType: eventToStore.eventType,
-            eventData: eventToStore.eventData as SerializedContent | undefined,
             specVersion: effectiveSpecVersion,
           })
-          .returning({ createdAt: Schema.events.createdAt });
-
-        const parsed = EventSchema.parse({
-          ...eventToStore,
-          ...value,
-          runId: effectiveRunId,
-          eventId,
-        });
-        const resolveData = params?.resolveData ?? 'all';
-        if (
-          parsed.eventType === 'lock_release' &&
-          parsed.eventData?.promotedWaiters?.length
-        ) {
-          await processPromotedWaiters(
-            parsed.eventData.promotedWaiters,
-            effectiveSpecVersion
-          );
-        }
-        return {
-          event: stripEventDataRefs(parsed, resolveData),
-          run,
-          step,
-          hook,
-          wait,
-        };
+        );
       }
 
       // ============================================================
@@ -1586,7 +1580,7 @@ export function createEventsStorage(
         step,
         hook,
         wait,
-        events: allEvents,
+        preloadedEvents: allEvents,
       };
     },
     async get(

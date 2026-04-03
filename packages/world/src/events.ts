@@ -86,10 +86,7 @@ export const EventTypeSchema = z.enum([
   'lock_waiter_queued',
 ]);
 
-// Base event schema with common properties
-// TODO: Event data on all specific event schemas can actually be undefined,
-// as the world may omit eventData when resolveData is set to 'none'.
-// Changing the type here will mainly improve type safety for o11y consumers.
+// Base event schema with common properties.
 // Note: specVersion is optional for backwards compatibility with legacy data in storage,
 // but is always sent by the runtime on new events.
 export const BaseEventSchema = z.object({
@@ -226,28 +223,34 @@ const LockCreatedEventSchema = BaseEventSchema.extend({
 const LockAcquiredEventSchema = BaseEventSchema.extend({
   eventType: z.literal('lock_acquired'),
   correlationId: z.string(),
-  eventData: z
-    .object({
-      lease: LimitLeaseSchema,
-    })
-    .optional(),
+  eventData: z.object({
+    lease: LimitLeaseSchema,
+  }),
 });
 
 const LockReleaseEventSchema = BaseEventSchema.extend({
   eventType: z.literal('lock_release'),
   correlationId: z.string(),
-  eventData: z
-    .object({
-      leaseId: z.string().min(1),
-      key: z.string(),
-      lockId: z.string(),
-      promotedWaiters: z.array(LimitPromotedWaiterSchema).optional(),
-    })
-    .optional(),
+  eventData: z.object({
+    leaseId: z.string().min(1),
+    key: z.string(),
+    lockId: z.string(),
+    promotedWaiters: z.array(LimitPromotedWaiterSchema).optional(),
+  }),
 });
 
 const LockWaiterQueuedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('lock_waiter_queued'),
+  correlationId: z.string(),
+});
+
+const LockAcquiredCreateEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('lock_acquired'),
+  correlationId: z.string(),
+});
+
+const LockReleaseCreateEventSchema = BaseEventSchema.extend({
+  eventType: z.literal('lock_release'),
   correlationId: z.string(),
 });
 
@@ -332,8 +335,8 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   WaitCompletedEventSchema,
   // Lock lifecycle events
   LockCreatedEventSchema,
-  LockAcquiredEventSchema,
-  LockReleaseEventSchema,
+  LockAcquiredCreateEventSchema,
+  LockReleaseCreateEventSchema,
   LockWaiterQueuedEventSchema,
 ]);
 
@@ -433,7 +436,7 @@ export interface EventResult {
    * on a run_started response, the runtime uses these to skip the
    * initial events.list call and reduce TTFB.
    */
-  events?: Event[];
+  preloadedEvents?: Event[];
 }
 
 export interface GetEventParams {
