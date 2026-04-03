@@ -109,4 +109,23 @@ describe('withWorkflow outputFileTracingRoot', () => {
       workingDir: process.cwd(),
     });
   });
+
+  it('keeps turbopack content conditions enabled in deferred mode', async () => {
+    shouldUseDeferredBuilderMock.mockReturnValue(true);
+
+    const config = withWorkflow({});
+    const nextConfig = await config('phase-development-server', {
+      defaultConfig: {},
+    });
+
+    const tsRule = (nextConfig.turbopack?.rules as Record<string, unknown>)?.[
+      '*.ts'
+    ] as {
+      condition?: { all?: unknown[] };
+    };
+
+    expect(tsRule?.condition?.all).toBeDefined();
+    expect(Array.isArray(tsRule?.condition?.all)).toBe(true);
+    expect((tsRule?.condition?.all?.length ?? 0) > 0).toBe(true);
+  });
 });

@@ -90,10 +90,10 @@ export function withWorkflow(
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
     const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
 
-    // Deferred builder discovers files via loader socket notifications, so
-    // turbopack content conditions are only needed with the eager builder.
-    const shouldApplyTurboCondition =
-      supportsTurboCondition && !useDeferredBuilder;
+    // Apply content conditions in both eager and deferred modes.
+    // Running the workflow loader on every TS/JS module in large apps can
+    // severely delay first-route compilation under Turbopack.
+    const shouldApplyTurboCondition = supportsTurboCondition;
     const shouldWatch = process.env.NODE_ENV === 'development';
     let workflowBuilderPromise: Promise<any> | undefined;
 
