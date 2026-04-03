@@ -22,6 +22,7 @@ type Tracer = {
     options: Attributes,
     fn: (span: Span) => T
   ): T;
+  startSpan(name: string, options?: Attributes): Span;
 };
 
 // Full OTel API surface we use
@@ -139,6 +140,8 @@ function recordErrorOnSpan(span: Span, error: unknown): void {
 
 // ── Public API ─────────────────────────────────────────────────────────
 
+export type { Span };
+
 /**
  * Record a span around an async function.
  *
@@ -196,4 +199,44 @@ export async function recordSpan<T>(options: {
       }
     }
   );
+}
+
+/**
+ * Manually create and start a span. The caller is responsible for ending it.
+ *
+ * Use this when the span must stay open across yield boundaries (e.g. in
+ * async generators) where `recordSpan`'s callback pattern doesn't work.
+ *
+ * Returns `undefined` if telemetry is disabled or OTel is unavailable.
+ */
+export async function createSpan(options: {
+  name: string;
+  telemetry?: TelemetrySettings;
+  attributes?: Attributes;
+}): Promise<Span | undefined> {
+  if (!otelLoadAttempted) {
+    await ensureOtelApi();
+  }
+
+  const tracer = getTracer(options.telemetry);
+  if (!tracer || !otelApi) return undefined;
+
+  const attrs = buildAttributes(
+    options.name,
+    options.telemetry,
+    options.attributes
+  );
+
+  return tracer.startSpan(options.name, { attributes: attrs });
+}
+
+/**
+ * Safely end a span, recording an error if one occurred.
+ */
+export function endSpan(span: Span | undefined, error?: unknown): void {
+  if (!span) return;
+  if (error) {
+    recordErrorOnSpan(span, error);
+  }
+  span.end();
 }

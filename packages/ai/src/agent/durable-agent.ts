@@ -1630,7 +1630,7 @@ async function executeTool(
         'ai.toolCall.args': toolCall.input,
       }),
     },
-    fn: async () => {
+    fn: async (span) => {
       try {
         // Extract execute function to avoid binding `this` to the tool object.
         // If we called `tool.execute(...)` directly, JavaScript would bind `this`
@@ -1655,6 +1655,13 @@ async function executeTool(
           : typeof toolResult === 'string'
             ? { type: 'text' as const, value: toolResult }
             : { type: 'json' as const, value: toolResult };
+
+        // Record tool result on the span (gated on recordOutputs)
+        if (span && telemetry?.recordOutputs !== false) {
+          span.setAttributes({
+            'ai.toolCall.result': JSON.stringify(output),
+          });
+        }
 
         return {
           type: 'tool-result' as const,
