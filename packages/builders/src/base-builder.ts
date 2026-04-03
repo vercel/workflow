@@ -550,6 +550,11 @@ export abstract class BaseBuilder {
           projectRoot: this.transformProjectRoot,
           workflowManifest,
           rewriteTsExtensions,
+          sideEffectEntries: [
+            ...stepFiles,
+            ...serdeOnlyFiles,
+            ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
+          ],
         }),
       ],
       // Plugin should catch most things, but this lets users hard override
@@ -759,6 +764,7 @@ export abstract class BaseBuilder {
           mode: 'workflow',
           projectRoot: this.transformProjectRoot,
           workflowManifest,
+          sideEffectEntries: [...workflowFiles, ...serdeOnlyFiles],
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths
@@ -1033,6 +1039,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
         createSwcPlugin({
           mode: 'client',
           projectRoot: this.transformProjectRoot,
+          sideEffectEntries: [...inputFiles, ...serdeOnlyFiles],
         }),
       ],
     });
