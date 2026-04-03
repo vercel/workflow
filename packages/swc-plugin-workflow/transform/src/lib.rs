@@ -7342,7 +7342,18 @@ impl VisitMut for StepTransform {
             .unwrap_or_else(|| internal_class_name.clone());
 
         let old_class_name = self.current_class_name.take();
-        self.current_class_name = Some(internal_class_name.clone());
+
+        // Always use the registration_name (binding name when available) for
+        // current_class_name and internal_class_name. This ensures that all
+        // downstream code — method step registrations, class serialization
+        // registrations, and method-stripping filters — consistently uses the
+        // externally-accessible binding name (e.g. `Foo`) rather than the
+        // internal class expression name (e.g. `_Foo`) which is only scoped
+        // inside the class body. Without this, generated code like
+        // `registerStepFunction("...", _Foo.prototype["method"])` would
+        // produce a ReferenceError at runtime.
+        internal_class_name = registration_name.clone();
+        self.current_class_name = Some(registration_name.clone());
 
         // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
         let has_serde = self.has_custom_serialization_methods(&class_expr.class);
@@ -7366,12 +7377,6 @@ impl VisitMut for StepTransform {
                     DUMMY_SP,
                     SyntaxContext::empty(),
                 ));
-                // Recompute internal_class_name and update current_class_name so
-                // that subsequent logic (e.g. step/workflow method naming and
-                // method-stripping filters) uses the actual class name rather
-                // than "AnonymousClass".
-                internal_class_name = name.clone();
-                self.current_class_name = Some(name.clone());
             }
         }
 

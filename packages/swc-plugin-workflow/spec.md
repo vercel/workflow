@@ -813,6 +813,35 @@ Note that:
 - The `classId` in the manifest also uses `Bash`
 - This ensures the registration call references a symbol that's actually in scope at module level
 
+This binding-name preference applies to **all** generated code that references the class at module scope, including:
+- Class serialization registration IIFEs
+- Step method registrations (`registerStepFunction` calls)
+- Workflow method stub assignments
+
+For example, a class expression with step methods:
+
+Input:
+```javascript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+var LanguageModel = class _LanguageModel {
+  constructor(modelId) { this.modelId = modelId; }
+  static [WORKFLOW_SERIALIZE](inst) { return { modelId: inst.modelId }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new _LanguageModel(data.modelId); }
+  async doStream(prompt) { "use step"; return { stream: prompt }; }
+  static async generate(input) { "use step"; return { result: input }; }
+};
+```
+
+Output (step mode):
+```javascript
+registerStepFunction("step//./input//LanguageModel.generate", LanguageModel.generate);
+registerStepFunction("step//./input//LanguageModel#doStream", LanguageModel.prototype["doStream"]);
+(function(__wf_cls, __wf_id) { /* ... */ })(LanguageModel, "class//./input//LanguageModel");
+```
+
+All references use `LanguageModel` (the binding name), not `_LanguageModel` (the internal class expression name). Only a single class registration IIFE is emitted. The step IDs also use the binding name.
+
 ### Anonymous Class Expression Name Re-insertion
 
 When a serializable class expression has no internal name (anonymous) but has a binding name from a variable declaration, the plugin re-inserts the binding name as the class expression's identifier. This handles the common case where upstream bundlers like esbuild/tsup transform `class Foo { ... }` into `var Foo = class { ... }` (stripping the class name).
