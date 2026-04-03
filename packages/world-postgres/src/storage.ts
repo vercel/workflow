@@ -49,25 +49,40 @@ type LockCreatedEvent = Extract<Event, { eventType: 'lock_created' }>;
 type LockAcquiredEvent = Extract<Event, { eventType: 'lock_acquired' }>;
 type LockReleaseEvent = Extract<Event, { eventType: 'lock_release' }>;
 type LockStoredEvent = LockCreatedEvent | LockAcquiredEvent | LockReleaseEvent;
+type LockHistoryEvent =
+  | LockStoredEvent
+  | Extract<Event, { eventType: 'lock_waiter_queued' }>;
 type LockHistory = {
   created?: LockCreatedEvent;
   acquired?: LockAcquiredEvent;
   released?: LockReleaseEvent;
 };
 
-function parseLockStoredEvent(event: unknown): LockStoredEvent {
+function parseLockHistoryEvent(event: unknown): LockHistoryEvent {
   const parsed = EventSchema.parse(event);
 
   switch (parsed.eventType) {
     case 'lock_created':
     case 'lock_acquired':
     case 'lock_release':
+    case 'lock_waiter_queued':
       return parsed;
     default:
       throw new WorkflowWorldError(
         `Expected lock event, got "${parsed.eventType}"`
       );
   }
+}
+
+function parseLockStoredEvent(event: unknown): LockStoredEvent {
+  const parsed = parseLockHistoryEvent(event);
+  if (parsed.eventType === 'lock_waiter_queued') {
+    throw new WorkflowWorldError(
+      'Expected stored lock event, got "lock_waiter_queued"'
+    );
+  }
+
+  return parsed;
 }
 
 function isLeaseLive(lease: { expiresAt?: Date }) {
@@ -87,7 +102,7 @@ function getLockIndex(correlationId: string): number {
   return parsed.lockIndex;
 }
 
-function getLockHistory(events: LockStoredEvent[]): LockHistory {
+function getLockHistory(events: LockHistoryEvent[]): LockHistory {
   const history: LockHistory = {};
 
   for (const event of events) {
@@ -717,7 +732,7 @@ export function createEventsStorage(
             )
             .orderBy(asc(Schema.events.createdAt), asc(Schema.events.eventId))
         ).map((event) =>
-          parseLockStoredEvent({
+          parseLockHistoryEvent({
             ...event,
             runId: effectiveRunId,
             correlationId: data.correlationId,
