@@ -4,17 +4,19 @@
  * alongside user defined steps. They are used internally by the runtime
  */
 
-export async function __builtin_response_array_buffer(res: Response) {
+export async function __builtin_response_array_buffer(
+  this: Request | Response
+) {
   'use step';
-  return res.arrayBuffer();
+  return this.arrayBuffer();
 }
 
-export async function __builtin_response_json(res: Response) {
+export async function __builtin_response_json(this: Request | Response) {
   'use step';
-  return res.json();
+  return this.json();
 }
 
-export async function __builtin_response_text(res: Response) {
+export async function __builtin_response_text(this: Request | Response) {
   'use step';
-  return res.text();
+  return this.text();
 }

@@ -38,7 +38,14 @@ export const streamToConsole = async (
       }
     }
   } catch (err) {
-    console.error(`Failed to read stream with ID ${id}:`, err);
+    // Provide a clear message when the stream is encrypted and --decrypt wasn't used
+    if (err instanceof Error && err.message.includes('no encryption key')) {
+      logger.error(
+        'This stream contains encrypted data. Use --decrypt --run=<run-id> to decrypt it.'
+      );
+    } else {
+      console.error(`Failed to read stream with ID ${id}:`, err);
+    }
     if (opts.json) {
       const json = JSON.stringify({
         error: `Failed to read stream with ID ${id}`,

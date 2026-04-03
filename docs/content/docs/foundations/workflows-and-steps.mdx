@@ -1,6 +1,13 @@
 ---
 title: Workflows and Steps
 description: Build long-running, stateful application logic that persists progress and resumes after failures.
+type: conceptual
+summary: Understand the two function types that make up a workflow.
+prerequisites:
+  - /docs/foundations
+related:
+  - /docs/how-it-works/understanding-directives
+  - /docs/foundations/serialization
 ---
 
 import { File, Folder, Files } from "fumadocs-ui/components/files";
@@ -36,7 +43,7 @@ export async function processOrderWorkflow(orderId: string) {
 
 **Key Characteristics:**
 
-- Runs in a sandboxed environment without full Node.js access
+- Runs in a sandboxed environment without full Node.js access (see [Workflow Globals](/docs/api-reference/workflow-globals) for what's available)
 - All step results are persisted to the [event log](/docs/how-it-works/event-sourcing)
 - Must be **deterministic** to allow resuming after failures
 
@@ -115,6 +122,8 @@ Keep in mind that calling a step function outside of a workflow function will no
 
 Workflow functions have the ability to automatically suspend while they wait on asynchronous work. While suspended, the workflow's state is stored via the [event log](/docs/how-it-works/event-sourcing) and no compute resources are used until the workflow resumes execution.
 
+<FluidComputeCallout />
+
 There are multiple ways a workflow can suspend:
 
 - Waiting on a step function: the workflow yields while the step runs in the step runtime.
@@ -127,7 +136,7 @@ import { sleep, createWebhook } from "workflow";
 export async function documentReviewProcess(userId: string) {
   "use workflow";
 
-  await sleep("1 month"); // Sleep will suspend without consuming any resources [!code highlight]
+  await sleep("30d"); // Sleep will suspend without consuming any resources [!code highlight]
 
   // Create a webhook for external workflow resumption
   const webhook = createWebhook();
@@ -194,5 +203,5 @@ While you can organize workflow and step functions however you like, we find tha
 You can choose to organize your steps into a single `steps.ts` file or separate files within a `steps` folder. The `shared` folder is a good place to put common steps that are used by multiple workflows.
 
 <Callout type="info">
-Splitting up steps and workflows will also help avoid most bundler related bugs with the Workflow DevKit.
+Splitting up steps and workflows will also help avoid most bundler related bugs with the Workflow SDK.
 </Callout>

@@ -1,13 +1,15 @@
 export type {
   Event,
   StartOptions,
+  StopSleepOptions,
+  StopSleepResult,
   WorkflowReadableStreamOptions,
   WorkflowRun,
 } from '@workflow/core/runtime';
 
 const workflowStub = (item: string) => {
   throw new Error(
-    `The workflow environment doesn't allow this runtime usage of ${item}.`
+    `The workflow environment doesn't allow this runtime usage of ${item}. Move this call to a step function ("use step") or call it outside the workflow context.`
   );
 };
 

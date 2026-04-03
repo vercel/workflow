@@ -1,5 +1,21 @@
-import type { Streamer } from '@workflow/world';
-import { type APIConfig, getHttpConfig, type HttpConfig } from './utils.js';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  Streamer,
+  StreamInfoResponse,
+} from '@workflow/world';
+import { z } from 'zod';
+import {
+  type APIConfig,
+  getHttpConfig,
+  type HttpConfig,
+  makeRequest,
+} from './utils.js';
+
+// Streaming calls use plain fetch() without the undici dispatcher.
+// The dispatcher's retry logic doesn't apply well to streaming operations
+// (partial writes, long-lived reads), and duplex streams are incompatible
+// with undici's experimental H2 support.
 
 function getStreamUrl(
   name: string,
@@ -8,7 +24,7 @@ function getStreamUrl(
 ) {
   if (runId) {
     return new URL(
-      `${httpConfig.baseUrl}/v2/runs/${runId}/stream/${encodeURIComponent(name)}`
+      `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
     );
   }
   return new URL(`${httpConfig.baseUrl}/v2/stream/${encodeURIComponent(name)}`);
@@ -51,6 +67,29 @@ export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
   return result;
 }
 
+const StreamInfoResponseSchema = z.object({
+  tailIndex: z.number(),
+  done: z.boolean(),
+});
+
+/**
+ * Zod schema for the paginated stream chunks response from the server.
+ * When using CBOR (the default for makeRequest), chunk data arrives as
+ * native Uint8Array byte strings — no base64 decoding required.
+ */
+const StreamChunksResponseSchema = z.object({
+  data: z.array(
+    z.object({
+      index: z.number(),
+      data: z.instanceof(Uint8Array),
+    })
+  ),
+  cursor: z.string().nullable(),
+  hasMore: z.boolean(),
+  done: z.boolean(),
+});
+
+/** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     async writeToStream(
@@ -62,12 +101,15 @@ export function createStreamer(config?: APIConfig): Streamer {
       const resolvedRunId = await runId;
 
       const httpConfig = await getHttpConfig(config);
-      await fetch(getStreamUrl(name, resolvedRunId, httpConfig), {
-        method: 'PUT',
-        body: chunk,
-        headers: httpConfig.headers,
-        duplex: 'half',
-      });
+      const response = await fetch(
+        getStreamUrl(name, resolvedRunId, httpConfig),
+        {
+          method: 'PUT',
+          body: chunk,
+          headers: httpConfig.headers,
+        }
+      );
+      await response.text();
     },
 
     async writeToStreamMulti(
@@ -86,12 +128,15 @@ export function createStreamer(config?: APIConfig): Streamer {
       httpConfig.headers.set('X-Stream-Multi', 'true');
 
       const body = encodeMultiChunks(chunks);
-      await fetch(getStreamUrl(name, resolvedRunId, httpConfig), {
-        method: 'PUT',
-        body,
-        headers: httpConfig.headers,
-        duplex: 'half',
-      });
+      const response = await fetch(
+        getStreamUrl(name, resolvedRunId, httpConfig),
+        {
+          method: 'PUT',
+          body,
+          headers: httpConfig.headers,
+        }
+      );
+      await response.text();
     },
 
     async closeStream(name: string, runId: string | Promise<string>) {
@@ -100,10 +145,14 @@ export function createStreamer(config?: APIConfig): Streamer {
 
       const httpConfig = await getHttpConfig(config);
       httpConfig.headers.set('X-Stream-Done', 'true');
-      await fetch(getStreamUrl(name, resolvedRunId, httpConfig), {
-        method: 'PUT',
-        headers: httpConfig.headers,
-      });
+      const response = await fetch(
+        getStreamUrl(name, resolvedRunId, httpConfig),
+        {
+          method: 'PUT',
+          headers: httpConfig.headers,
+        }
+      );
+      await response.text();
     },
 
     async readFromStream(name: string, startIndex?: number) {
@@ -112,17 +161,63 @@ export function createStreamer(config?: APIConfig): Streamer {
       if (typeof startIndex === 'number') {
         url.searchParams.set('startIndex', String(startIndex));
       }
-      const res = await fetch(url, { headers: httpConfig.headers });
-      if (!res.ok) throw new Error(`Failed to fetch stream: ${res.status}`);
-      return res.body as ReadableStream<Uint8Array>;
+      const response = await fetch(url, {
+        headers: httpConfig.headers,
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch stream: ${response.status}`);
+      }
+      if (!response.body) {
+        throw new Error('No response body for stream');
+      }
+      return response.body as ReadableStream<Uint8Array>;
+    },
+
+    async getStreamChunks(
+      name: string,
+      runId: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse> {
+      const params = new URLSearchParams();
+      if (options?.limit != null) {
+        params.set('limit', String(options.limit));
+      }
+      if (options?.cursor) {
+        params.set('cursor', options.cursor);
+      }
+      const qs = params.toString();
+      const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
+      return makeRequest({
+        endpoint,
+        config,
+        schema: StreamChunksResponseSchema,
+      });
+    },
+
+    async getStreamInfo(
+      name: string,
+      runId: string
+    ): Promise<StreamInfoResponse> {
+      const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info`;
+      return makeRequest({
+        endpoint,
+        config,
+        schema: StreamInfoResponseSchema,
+      });
     },
 
     async listStreamsByRunId(runId: string) {
       const httpConfig = await getHttpConfig(config);
-      const url = new URL(`${httpConfig.baseUrl}/v2/runs/${runId}/streams`);
-      const res = await fetch(url, { headers: httpConfig.headers });
-      if (!res.ok) throw new Error(`Failed to list streams: ${res.status}`);
-      return (await res.json()) as string[];
+      const url = new URL(
+        `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/streams`
+      );
+      const response = await fetch(url, {
+        headers: httpConfig.headers,
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to list streams: ${response.status}`);
+      }
+      return (await response.json()) as string[];
     },
   };
 }

@@ -3,7 +3,10 @@ import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { stepLogger } from './logger.js';
-import type { WorkflowOrchestratorContext } from './private.js';
+import {
+  scheduleWhenIdle,
+  type WorkflowOrchestratorContext,
+} from './private.js';
 import type { Serializable } from './schemas.js';
 import { hydrateStepReturnValue } from './serialization.js';
 
@@ -53,11 +56,11 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Crucially, if we got here, then this step Promise does
           // not resolve so that the user workflow code does not proceed any further.
           // Notify the workflow handler that this step has not been run / has not completed yet.
-          setTimeout(() => {
+          scheduleWhenIdle(ctx, () => {
             ctx.onWorkflowError(
               new WorkflowSuspension(ctx.invocationsQueue, ctx.globalThis)
             );
-          }, 0);
+          });
           return EventConsumerResult.NotConsumed;
         }
 
@@ -83,13 +86,13 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           if (!queueItem || queueItem.type !== 'step') {
             // This indicates event log corruption - step_created received
             // but the step was never invoked in the workflow during replay.
-            setTimeout(() => {
+            ctx.promiseQueue = ctx.promiseQueue.then(() => {
               reject(
                 new WorkflowRuntimeError(
                   `Corrupted event log: step ${correlationId} (${stepName}) created but not found in invocation queue`
                 )
               );
-            }, 0);
+            });
             return EventConsumerResult.Finished;
           }
           queueItem.hasCreatedEvent = true;
@@ -112,8 +115,9 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         if (event.eventType === 'step_failed') {
           // Terminal state - we can remove the invocationQueue item
           ctx.invocationsQueue.delete(event.correlationId);
-          // Step failed - bubble up to workflow
-          setTimeout(() => {
+          // Step failed - chain through promiseQueue to ensure
+          // deterministic ordering of all promise resolutions/rejections.
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
             const errorData = event.eventData.error;
             const isErrorObject =
               typeof errorData === 'object' && errorData !== null;
@@ -133,7 +137,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
               error.stack = errorStack;
             }
             reject(error);
-          }, 0);
+          });
           return EventConsumerResult.Finished;
         }
 
@@ -141,25 +145,39 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           // Terminal state - we can remove the invocationQueue item
           ctx.invocationsQueue.delete(event.correlationId);
 
-          // Step has completed, so resolve the Promise with the cached result
-          const hydratedResult = hydrateStepReturnValue(
-            event.eventData.result,
-            ctx.globalThis
-          );
-          setTimeout(() => {
-            resolve(hydratedResult);
-          }, 0);
+          // Step has completed, so resolve the Promise with the cached result.
+          // The hydration is async (e.g., decryption), so we chain it through
+          // ctx.promiseQueue to ensure that even if deserialization
+          // takes variable time, promises resolve in event log order.
+          // Each step's hydration + resolve waits for all prior hydrations
+          // to complete before executing, preserving deterministic ordering.
+          ctx.pendingDeliveries++;
+          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+            try {
+              const hydratedResult = await hydrateStepReturnValue(
+                event.eventData.result,
+                ctx.runId,
+                ctx.encryptionKey,
+                ctx.globalThis
+              );
+              resolve(hydratedResult as Result);
+            } catch (error) {
+              reject(error);
+            } finally {
+              ctx.pendingDeliveries--;
+            }
+          });
           return EventConsumerResult.Finished;
         }
 
         // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
-        setTimeout(() => {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
           ctx.onWorkflowError(
             new WorkflowRuntimeError(
               `Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`
             )
           );
-        }, 0);
+        });
         return EventConsumerResult.Finished;
       });
 

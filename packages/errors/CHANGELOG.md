@@ -1,11 +1,60 @@
 # @workflow/errors
 
+## 4.1.0-beta.20
+
+### Patch Changes
+
+- [#1567](https://github.com/vercel/workflow/pull/1567) [`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Increase flow route limit to max fluid duration and fail run if a single replay takes too long
+
+## 4.1.0-beta.19
+
+### Patch Changes
+
+- [#1448](https://github.com/vercel/workflow/pull/1448) [`73a851a`](https://github.com/vercel/workflow/commit/73a851ada6a4d46ae8f022ef243ebf4ee3de2ad8) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `HookConflictError` to `@workflow/errors` and use it for hook token conflicts instead of `WorkflowRuntimeError`
+
+- [#1340](https://github.com/vercel/workflow/pull/1340) [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Add error code classification (`USER_ERROR`, `RUNTIME_ERROR`) to `run_failed` events, improve queue and schema validation error logging
+
+- [#1447](https://github.com/vercel/workflow/pull/1447) [`2ef33d2`](https://github.com/vercel/workflow/commit/2ef33d2828ac06debf04ad9cc239d70fea6a8093) Thanks [@pranaygp](https://github.com/pranaygp)! - Export semantic error types from `workflow/internal/errors` and add API reference documentation
+
+- [#1452](https://github.com/vercel/workflow/pull/1452) [`672d919`](https://github.com/vercel/workflow/commit/672d9195a475a110a64dbaa7c5c87a24f244c11a) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix workflow/step not found errors to fail gracefully instead of causing infinite queue retries
+
+- [#1344](https://github.com/vercel/workflow/pull/1344) [`beccbc4`](https://github.com/vercel/workflow/commit/beccbc4298f434a4ffb9563c4f832f2230016f40) Thanks [@pranaygp](https://github.com/pranaygp)! - Remove VQS maxDeliveries cap and enforce max delivery limit in workflow/step handlers with graceful failure
+
+- [#1342](https://github.com/vercel/workflow/pull/1342) [`aee035f`](https://github.com/vercel/workflow/commit/aee035f94483ef3b842bb557e8c5b167dd0536c4) Thanks [@pranaygp](https://github.com/pranaygp)! - Replace HTTP status code checks with semantic error types (EntityConflictError, RunExpiredError, ThrottleError, TooEarlyError). **BREAKING CHANGE**: `WorkflowAPIError` renamed to `WorkflowWorldError`.
+
+## 4.1.0-beta.18
+
+### Patch Changes
+
+- [#1270](https://github.com/vercel/workflow/pull/1270) [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `HookNotFoundError` to `@workflow/errors` and adopt it across all world backends
+
+## 4.1.0-beta.17
+
+### Patch Changes
+
+- Updated dependencies [[`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - @workflow/utils@4.1.0-beta.13
+
+## 4.1.0-beta.16
+
+### Patch Changes
+
+- [#1055](https://github.com/vercel/workflow/pull/1055) [`c2b4fe9`](https://github.com/vercel/workflow/commit/c2b4fe9906fd0845fef646669034cd203d97a18d) Thanks [@pranaygp](https://github.com/pranaygp)! - Detect and fatal error on orphaned/invalid events in the event log instead of silently hanging
+
+## 4.1.0-beta.15
+
+### Patch Changes
+
+- [#966](https://github.com/vercel/workflow/pull/966) [`56f2221`](https://github.com/vercel/workflow/commit/56f22219b338a5a2c29466798a5ad36a6a450498) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add 429 throttle retry handling and 500 server error retry with exponential backoff to the workflow and step runtimes
+
+- Updated dependencies [[`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee)]:
+  - @workflow/utils@4.1.0-beta.12
+
 ## 4.1.0-beta.14
 
 ### Minor Changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
-
   - Remove `cancel`, `pause`, `resume` from `runs`
   - Remove `create`, `update` from `runs`, `steps`, `hooks`
   - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
@@ -16,7 +65,6 @@
 ### Patch Changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Add backwards compatibility for runs created with different spec versions
-
   - Add `RunNotSupportedError` for runs requiring newer world versions
   - Add semver-based version comparison utilities
   - Legacy runs (< 4.1): route to legacy handlers
@@ -25,7 +73,6 @@
   - Unknown legacy events: throw error
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - Add `hook_conflict` event type for duplicate token detection
-
   - World returns `hook_conflict` event when `hook_created` uses an existing token
   - Add `HOOK_CONFLICT` error slug
 

@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { BaseBuilder } from './base-builder.js';
 import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';
@@ -33,11 +33,25 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
 
     // Generate unified manifest
     const workflowBundlePath = join(workflowGeneratedDir, 'flow.func/index.js');
-    await this.createManifest({
+    const manifestJson = await this.createManifest({
       workflowBundlePath,
       manifestDir: workflowGeneratedDir,
       manifest,
     });
+
+    // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
+    // Vercel Build Output API serves static files from .vercel/output/static/
+    if (this.shouldExposePublicManifest && manifestJson) {
+      const staticManifestDir = join(
+        outputDir,
+        'static/.well-known/workflow/v1'
+      );
+      await mkdir(staticManifestDir, { recursive: true });
+      await copyFile(
+        join(workflowGeneratedDir, 'manifest.json'),
+        join(staticManifestDir, 'manifest.json')
+      );
+    }
 
     await this.createClientLibrary();
   }
@@ -66,6 +80,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createPackageJson(stepsFuncDir, 'commonjs');
     await this.createVcConfig(stepsFuncDir, {
       shouldAddSourcemapSupport: true,
+      maxDuration: 'max',
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
       runtime: this.config.runtime,
     });
@@ -95,6 +110,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create package.json and .vc-config.json for workflows function
     await this.createPackageJson(workflowsFuncDir, 'commonjs');
     await this.createVcConfig(workflowsFuncDir, {
+      maxDuration: 'max',
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       runtime: this.config.runtime,
     });

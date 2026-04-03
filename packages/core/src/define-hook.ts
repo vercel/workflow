@@ -32,12 +32,8 @@ export namespace TypedHook {
   /**
    * Extracts the input type from a {@link TypedHook}
    */
-  export type Input<T extends TypedHook<any, any>> = T extends TypedHook<
-    infer I,
-    any
-  >
-    ? I
-    : never;
+  export type Input<T extends TypedHook<any, any>> =
+    T extends TypedHook<infer I, any> ? I : never;
 }
 
 /**

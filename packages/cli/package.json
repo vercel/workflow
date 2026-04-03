@@ -1,7 +1,7 @@
 {
   "name": "@workflow/cli",
-  "version": "4.1.0-beta.52",
-  "description": "Command-line interface for Workflow DevKit",
+  "version": "4.2.0-beta.76",
+  "description": "Command-line interface for Workflow SDK",
   "type": "module",
   "bin": {
     "workflow": "./bin/run.js",
@@ -40,12 +40,13 @@
     "@workflow/tsconfig": "workspace:*"
   },
   "dependencies": {
-    "@oclif/core": "4.0.0",
-    "@oclif/plugin-help": "6.2.31",
+    "@oclif/core": "4.8.1",
+    "@oclif/plugin-help": "6.2.37",
     "@swc/core": "catalog:",
     "@workflow/builders": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/utils": "workspace:*",
+    "@vercel/cli-auth": "0.0.1",
     "@workflow/errors": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/web": "workspace:*",
@@ -57,16 +58,16 @@
     "chalk": "5.6.2",
     "chokidar": "4.0.3",
     "date-fns": "4.1.0",
-    "dotenv": "^16.4.7",
+    "dotenv": "^17.3.1",
     "easy-table": "1.2.0",
-    "enhanced-resolve": "5.18.2",
+    "enhanced-resolve": "5.19.0",
     "esbuild": "catalog:",
     "find-up": "7.0.0",
     "mixpart": "0.0.4",
     "open": "10.2.0",
     "ora": "8.2.0",
     "terminal-link": "5.0.0",
-    "tinyglobby": "0.2.14",
+    "tinyglobby": "0.2.15",
     "xdg-app-paths": "5.1.0",
     "zod": "catalog:"
   }

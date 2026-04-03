@@ -2,18 +2,40 @@ import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowRunNotCompletedError,
+  WorkflowRunNotFoundError,
 } from '@workflow/errors';
 import {
   SPEC_VERSION_CURRENT,
   type WorkflowRunStatus,
   type World,
 } from '@workflow/world';
+import { type CryptoKey, importKey } from '../encryption.js';
 import {
   getExternalRevivers,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
+import {
+  type StopSleepOptions,
+  type StopSleepResult,
+  wakeUpRun,
+} from './runs.js';
 import { getWorld } from './world.js';
+
+/**
+ * A `ReadableStream` extended with workflow-specific helpers.
+ */
+export type WorkflowReadableStream<R = any> = ReadableStream<R> & {
+  /**
+   * Returns the tail index (index of the last known chunk, 0-based) of the
+   * underlying workflow stream. Useful for resolving a negative `startIndex`
+   * into an absolute position — for example, when building reconnection
+   * endpoints that need to inform the client where the stream starts.
+   *
+   * Returns `-1` when no chunks have been written yet.
+   */
+  getTailIndex(): Promise<number>;
+};
 
 /**
  * Options for configuring a workflow's readable stream.
@@ -26,6 +48,7 @@ export interface WorkflowReadableStreamOptions {
   namespace?: string;
   /**
    * The index number of the starting chunk to begin reading the stream from.
+   * Negative values start from the end (e.g. -3 reads the last 3 chunks).
    */
   startIndex?: number;
   /**
@@ -57,9 +80,45 @@ export class Run<TResult> {
    */
   private worldPromise: Promise<World>;
 
+  /**
+   * Cached encryption key resolution. Resolved once on first use and
+   * reused for returnValue, getReadable(), etc.
+   * @internal
+   */
+  private encryptionKeyPromise: Promise<CryptoKey | undefined> | null = null;
+
   constructor(runId: string) {
     this.runId = runId;
     this.worldPromise = getWorld();
+  }
+
+  /**
+   * Resolves and caches the encryption key for this run.
+   * The key is the same for the lifetime of a run, so it only needs
+   * to be resolved once.
+   * @internal
+   */
+  private getEncryptionKey(): Promise<CryptoKey | undefined> {
+    if (!this.encryptionKeyPromise) {
+      this.encryptionKeyPromise = (async () => {
+        const world = await this.worldPromise;
+        const run = await world.runs.get(this.runId);
+        const rawKey = await world.getEncryptionKeyForRun?.(run);
+        return rawKey ? await importKey(rawKey) : undefined;
+      })();
+    }
+    return this.encryptionKeyPromise;
+  }
+
+  /**
+   * Interrupts pending `sleep()` calls, resuming the workflow early.
+   *
+   * @param options - Optional settings to target specific sleep calls by correlation ID.
+   *   If not provided, all pending sleep calls will be interrupted.
+   * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
+   */
+  async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
+    return wakeUpRun(await this.worldPromise, this.runId, options);
   }
 
   /**
@@ -71,6 +130,23 @@ export class Run<TResult> {
       eventType: 'run_cancelled',
       specVersion: SPEC_VERSION_CURRENT,
     });
+  }
+
+  /**
+   * Whether the workflow run exists.
+   */
+  get exists(): Promise<boolean> {
+    return this.worldPromise.then((world) =>
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then(() => true)
+        .catch((error) => {
+          if (WorkflowRunNotFoundError.is(error)) {
+            return false;
+          }
+          throw error;
+        })
+    );
   }
 
   /**
@@ -131,7 +207,7 @@ export class Run<TResult> {
   /**
    * The readable stream of the workflow run.
    */
-  get readable(): ReadableStream {
+  get readable(): WorkflowReadableStream {
     return this.getReadable();
   }
 
@@ -139,18 +215,41 @@ export class Run<TResult> {
    * Retrieves the workflow run's default readable stream, which reads chunks
    * written to the corresponding writable stream {@link getWritable}.
    *
+   * The returned stream has an additional {@link WorkflowReadableStream.getTailIndex | getTailIndex()}
+   * helper that returns the index of the last known chunk. This is useful when
+   * building reconnection endpoints that need to inform clients where the
+   * stream starts.
+   *
    * @param options - The options for the readable stream.
-   * @returns The `ReadableStream` for the workflow run.
+   * @returns A `WorkflowReadableStream` for the workflow run.
    */
   getReadable<R = any>(
     options: WorkflowReadableStreamOptions = {}
-  ): ReadableStream<R> {
+  ): WorkflowReadableStream<R> {
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
-    return getExternalRevivers(global, ops, this.runId).ReadableStream({
+    // Pass the key as a promise — it will be resolved lazily inside
+    // the first async transform() call of the deserialize stream.
+    const encryptionKey = this.getEncryptionKey();
+    const stream = getExternalRevivers(
+      global,
+      ops,
+      this.runId,
+      encryptionKey
+    ).ReadableStream({
       name,
       startIndex,
     }) as ReadableStream<R>;
+
+    const worldPromise = this.worldPromise;
+    const runId = this.runId;
+    return Object.assign(stream, {
+      getTailIndex: async (): Promise<number> => {
+        const world = await worldPromise;
+        const info = await world.getStreamInfo(name, runId);
+        return info.tailIndex;
+      },
+    });
   }
 
   /**
@@ -165,7 +264,12 @@ export class Run<TResult> {
         const run = await world.runs.get(this.runId);
 
         if (run.status === 'completed') {
-          return hydrateWorkflowReturnValue(run.output, [], this.runId);
+          const encryptionKey = await this.getEncryptionKey();
+          return await hydrateWorkflowReturnValue(
+            run.output,
+            this.runId,
+            encryptionKey
+          );
         }
 
         if (run.status === 'cancelled') {

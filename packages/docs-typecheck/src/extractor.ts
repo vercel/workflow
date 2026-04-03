@@ -1,13 +1,17 @@
 import type { CodeSample } from './types.js';
 
 const CODE_BLOCK_REGEX =
-  /```(typescript|ts|javascript|js)(?:\s+[^\n]*)?\n([\s\S]*?)```/g;
-const EXPECT_ERROR_REGEX = /<!--\s*@expect-error:([0-9,\s]+)\s*-->/;
+  /```(typescript|ts|javascript|js)(?:[^\S\n]+[^\n]*)?\n([\s\S]*?)```/g;
+// Support both HTML comments (<!-- @expect-error:2351 -->) and MDX comments ({/* @expect-error:2351 */})
+const EXPECT_ERROR_REGEX =
+  /(?:<!--\s*@expect-error:([0-9,\s]+)\s*-->|\{\/\*\s*@expect-error:([0-9,\s]+)\s*\*\/\})/;
 // Match entire line comments with [!code ...] including any trailing text
 const HIGHLIGHT_COMMENT_REGEX = /\s*\/\/\s*\[!code[^\]]*\].*$/gm;
 // Match ellipsis patterns indicating incomplete code: standalone "...", "// ...", or "/* ... */"
 const INCOMPLETE_CODE_REGEX =
   /(?:^\s*\.{3}\s*$|\/\/\s*\.{3}|\/\*\s*\.{3}\s*\*\/)/m;
+// Match code blocks that demonstrate errors (e.g., "// Error - ..." or "// Error!")
+const ERROR_DEMO_REGEX = /^\s*\/\/\s*Error\b/m;
 
 /**
  * Normalizes the language identifier
@@ -76,7 +80,9 @@ function getMarkersBeforeBlock(
     const textBetween = lookbackText.substring(lastIndex);
     // Only apply if no other code block between marker and this block
     if (!textBetween.includes('```')) {
-      expectedErrors = expectMatch[1]
+      // Use whichever capture group matched (HTML or MDX format)
+      const errorCodes = expectMatch[1] || expectMatch[2];
+      expectedErrors = errorCodes
         .split(',')
         .map((s) => parseInt(s.trim(), 10))
         .filter((n) => !isNaN(n));
@@ -129,12 +135,15 @@ export function extractCodeSamples(
     // Check if code contains ellipsis patterns indicating incomplete code
     const isIncomplete = INCOMPLETE_CODE_REGEX.test(processedCode);
 
+    // Auto-skip code blocks that demonstrate errors (e.g., "// Error - ...")
+    const isErrorDemo = ERROR_DEMO_REGEX.test(processedCode);
+
     samples.push({
       source: processedCode,
       language: normalizedLang,
       filePath,
       lineNumber,
-      skipTypeCheck,
+      skipTypeCheck: skipTypeCheck || isErrorDemo || isIncomplete,
       expectedErrors,
       isIncomplete,
     });

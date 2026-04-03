@@ -2,9 +2,11 @@
 export async function stepFunction(a, b) {
     return a + b;
 }
+stepFunction.stepId = "step//./input//stepFunction";
 async function stepFunctionWithoutExport(a, b) {
     return a - b;
 }
+stepFunctionWithoutExport.stepId = "step//./input//stepFunctionWithoutExport";
 export async function workflowFunction(a, b) {
     throw new Error("You attempted to execute workflow workflowFunction function directly. To start a workflow, use start(workflowFunction) from workflow/api");
 }

@@ -1,3 +1,4 @@
+import { helper } from './helper';
 import { unusedHelper } from './unused-helper';
 /**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//./input//processData"}}}}*/;
 // This variable is exported but not used anywhere in this file
@@ -13,6 +14,7 @@ export function formatData(data) {
 export async function processData(input) {
     return helper(input);
 }
+processData.stepId = "step//./input//processData";
 // This is used internally
 function internalHelper(value) {
     return value * 2;

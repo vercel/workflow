@@ -1,13 +1,13 @@
 'use client';
 
 import {
-  CheckCircle2,
   AlertCircle,
-  XCircle,
-  Clock,
   BadgeCheck,
+  CheckCircle2,
+  Clock,
   HeartHandshake,
-  Timer,
+  ShieldCheck,
+  XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
 import {
@@ -141,24 +141,33 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
               <p className="text-xs">E2E Test Suite Coverage</p>
             </TooltipContent>
           </Tooltip>
-          {/* PERF - right */}
+          {/* Encryption - right */}
           <Tooltip>
             <TooltipTrigger asChild>
               <div className="flex items-center gap-1.5 px-4 py-2.5 text-sm">
-                <Timer className="h-3.5 w-3.5 text-purple-500" />
-                <span className="text-muted-foreground">PERF</span>
-                <span className="font-mono text-foreground">
-                  {world.benchmark10SeqMs !== null
-                    ? `${(world.benchmark10SeqMs / 1000).toFixed(2)}s`
-                    : '—'}
+                <ShieldCheck
+                  className={cn(
+                    'h-3.5 w-3.5',
+                    world.features.includes('encryption')
+                      ? 'text-green-600/70'
+                      : 'text-red-600/70'
+                  )}
+                />
+                <span className="text-muted-foreground">Encrypted</span>
+                <span
+                  className={cn(
+                    'font-mono',
+                    world.features.includes('encryption')
+                      ? 'text-green-600/70'
+                      : 'text-red-600/70'
+                  )}
+                >
+                  {world.features.includes('encryption') ? 'Yes' : 'No'}
                 </span>
               </div>
             </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[260px]">
-              <p className="text-xs">
-                Avg time to run a 10 step workflow where each step sleeps 1
-                second
-              </p>
+            <TooltipContent side="bottom" className="max-w-[200px]">
+              <p className="text-xs">End-to-end user data encryption</p>
             </TooltipContent>
           </Tooltip>
         </div>

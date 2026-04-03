@@ -20,7 +20,10 @@ function resolveSwcPluginPath(): string {
 /**
  * Generate .swcrc configuration for NestJS with the workflow plugin.
  */
-function generateSwcrc(pluginPath: string): object {
+function generateSwcrc(
+  pluginPath: string,
+  moduleType: 'es6' | 'commonjs' = 'es6'
+): object {
   return {
     $schema: 'https://swc.rs/schema.json',
     jsc: {
@@ -37,7 +40,7 @@ function generateSwcrc(pluginPath: string): object {
       },
     },
     module: {
-      type: 'es6',
+      type: moduleType,
     },
     sourceMaps: true,
   };
@@ -52,7 +55,11 @@ Commands:
   help    Show this help message
 
 Usage:
-  npx @workflow/nest init
+  npx @workflow/nest init [options]
+
+Options:
+  --module <type>  SWC module type: 'es6' (default) or 'commonjs'
+  --force          Overwrite existing .swcrc file
 
 This command generates a .swcrc file configured with the Workflow SWC plugin
 for client-mode transformations. The plugin path is resolved from the
@@ -78,9 +85,25 @@ function hasWorkflowPlugin(swcrcContent: string): boolean {
   }
 }
 
+import { parseModuleType as parseModuleTypeRaw } from './parse-module-type.js';
+
+function parseModuleType(args: string[]): 'es6' | 'commonjs' {
+  const result = parseModuleTypeRaw(args);
+  if (result === null) {
+    const idx = args.indexOf('--module');
+    const value = idx >= 0 && idx + 1 < args.length ? args[idx + 1] : '';
+    console.error(
+      `Invalid module type: ${value}. Must be 'es6' or 'commonjs'.`
+    );
+    process.exit(1);
+  }
+  return result;
+}
+
 function handleInit(args: string[]): void {
   const swcrcPath = resolve(process.cwd(), '.swcrc');
   const forceMode = args.includes('--force');
+  const moduleType = parseModuleType(args);
 
   if (existsSync(swcrcPath)) {
     const existing = readFileSync(swcrcPath, 'utf-8');
@@ -98,7 +121,7 @@ function handleInit(args: string[]): void {
   }
 
   const pluginPath = resolveSwcPluginPath();
-  const swcrc = generateSwcrc(pluginPath);
+  const swcrc = generateSwcrc(pluginPath, moduleType);
 
   writeFileSync(swcrcPath, `${JSON.stringify(swcrc, null, 2)}\n`);
   console.log('✓ Created .swcrc with workflow plugin configuration');

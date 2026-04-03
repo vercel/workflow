@@ -1,12 +1,9 @@
-import { allWorkflows } from '@/_workflows';
+import 'server-only';
 
-export type WorkflowDefinition = {
-  workflowFile: string;
-  name: string;
-  displayName: string;
-  description?: string;
-  defaultArgs: unknown[];
-};
+import { allWorkflows } from '@/_workflows';
+import type { WorkflowDefinition } from './types';
+
+const RANDOM_ARG_PLACEHOLDER = '<random-id>';
 
 // Default arguments for workflows that require them
 // Based on e2e test arguments from packages/core/e2e/e2e.test.ts
@@ -26,20 +23,29 @@ const DEFAULT_ARGS_MAP: Record<string, unknown[]> = {
   // 98_duplicate_case.ts
   addTenWorkflow: [123],
   // 99_e2e.ts
-  hookWorkflow: [
-    Math.random().toString(36).slice(2),
-    Math.random().toString(36).slice(2),
-  ],
+  hookWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
   webhookWorkflow: [
-    Math.random().toString(36).slice(2),
-    Math.random().toString(36).slice(2),
-    Math.random().toString(36).slice(2),
+    RANDOM_ARG_PLACEHOLDER,
+    RANDOM_ARG_PLACEHOLDER,
+    RANDOM_ARG_PLACEHOLDER,
   ],
-  hookCleanupTestWorkflow: [
-    Math.random().toString(36).slice(2),
-    Math.random().toString(36).slice(2),
-  ],
+  hookCleanupTestWorkflow: [RANDOM_ARG_PLACEHOLDER, RANDOM_ARG_PLACEHOLDER],
   closureVariableWorkflow: [7],
+  // 100_durable_agent_e2e.ts
+  agentBasicE2e: ['hello world'],
+  agentToolCallE2e: [3, 7],
+  agentMultiStepE2e: [],
+  agentErrorToolE2e: [],
+  agentOnStepFinishE2e: [],
+  agentOnFinishE2e: [],
+  agentInstructionsStringE2e: [],
+  agentTimeoutE2e: [],
+  agentOnStartE2e: [],
+  agentOnStepStartE2e: [],
+  agentOnToolCallStartE2e: [],
+  agentOnToolCallFinishE2e: [],
+  agentPrepareCallE2e: [],
+  agentToolApprovalE2e: [],
 };
 
 // Dynamically generate workflow definitions from allWorkflows
@@ -68,5 +74,3 @@ export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = Object.entries(
     }
     return a.name.localeCompare(b.name);
   });
-
-export type WorkflowName = string;

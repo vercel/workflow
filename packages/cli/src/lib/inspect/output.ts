@@ -1,5 +1,6 @@
-import { hydrateResourceIO } from '@workflow/core/observability';
+import { importKey } from '@workflow/core/encryption';
 import {
+  type EncryptionKeyParam,
   getDeserializeStream,
   getExternalRevivers,
 } from '@workflow/core/serialization';
@@ -17,10 +18,41 @@ import type {
   World,
 } from '@workflow/world';
 import chalk from 'chalk';
+
 import { formatDistance } from 'date-fns';
 import Table from 'easy-table';
 import { logger } from '../config/log.js';
 import type { InspectCLIOptions } from '../config/types.js';
+import {
+  type EncryptionKeyResolver,
+  hydrateResourceIO,
+  isEncryptedRef,
+  isExpiredRef,
+} from './hydration.js';
+
+/**
+ * Create an EncryptionKeyResolver from a World instance.
+ * Returns null if decrypt is false — encrypted data will show as a placeholder.
+ *
+ * The resolver fetches the full WorkflowRun (cached per runId) so that the
+ * World can inspect deployment-specific fields for key resolution.
+ */
+function createResolver(world: World, decrypt: boolean): EncryptionKeyResolver {
+  if (!decrypt) return null;
+  if (!world.getEncryptionKeyForRun) return null;
+  const cache = new Map<string, Promise<Uint8Array | undefined>>();
+  return (runId: string) => {
+    let cached = cache.get(runId);
+    if (!cached) {
+      cached = world.runs
+        .get(runId)
+        .then((run) => world.getEncryptionKeyForRun!(run));
+      cache.set(runId, cached);
+    }
+    return cached;
+  };
+}
+
 import { setupListPagination } from './pagination.js';
 import { streamToConsole } from './stream.js';
 import {
@@ -207,6 +239,7 @@ const getStatusText = (status: number): string => {
     401: 'Unauthorized',
     403: 'Forbidden',
     404: 'Not Found',
+    429: 'Too Many Requests',
     500: 'Internal Server Error',
     502: 'Bad Gateway',
     503: 'Service Unavailable',
@@ -457,10 +490,21 @@ const showInspectInfoBox = (resource: string) => {
 const EXPIRED_DATA_MESSAGE = chalk.gray('<data expired>');
 
 /**
- * Checks if a run has expired data storage
+ * Checks if a run has expired data storage (run-level expiredAt field)
  */
 const hasExpiredData = (run: WorkflowRun): boolean => {
   return 'expiredAt' in run && run.expiredAt != null;
+};
+
+/**
+ * Checks if any data field in a hydrated resource has been replaced with an
+ * expired placeholder. Works for runs, steps, hooks, and events — unlike
+ * `hasExpiredData` which only checks the run-level `expiredAt` field.
+ */
+const hasExpiredFields = (resource: Record<string, unknown>): boolean => {
+  return ['input', 'output', 'error', 'metadata'].some((key) =>
+    isExpiredRef(resource[key])
+  );
 };
 
 /**
@@ -473,6 +517,10 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
     value = '<empty>';
   } else if (io === null) {
     value = '<null>';
+  } else if (isEncryptedRef(io)) {
+    value = chalk.dim.yellow('\u{1F512} Encrypted');
+  } else if (isExpiredRef(io)) {
+    value = chalk.gray('<data expired>');
   } else if (io && Array.isArray(io)) {
     if (io.length === 0) {
       value = '<empty>';
@@ -507,6 +555,8 @@ const inlineFormatIO = <T>(io: T, topLevel: boolean = true): string => {
 };
 
 export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.stepId || opts.runId) {
     logger.warn(
       'Filtering by step-id or run-id is not supported in list calls, ignoring filter.'
@@ -527,6 +577,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
     try {
       const runs = await world.runs.list({
         workflowName: opts.workflowName,
+        status: opts.status as any,
         pagination: {
           sortOrder: opts.sort || 'desc',
           cursor: opts.cursor,
@@ -534,7 +585,9 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
         },
         resolveData,
       });
-      const runsWithHydratedIO = runs.data.map(hydrateResourceIO);
+      const runsWithHydratedIO = await Promise.all(
+        runs.data.map((r) => hydrateResourceIO(r, resolveKey))
+      );
       showJson({ ...runs, data: runsWithHydratedIO });
       return;
     } catch (error) {
@@ -552,6 +605,7 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       try {
         const runs = await world.runs.list({
           workflowName: opts.workflowName,
+          status: opts.status as any,
           pagination: {
             sortOrder: opts.sort || 'desc',
             cursor,
@@ -572,7 +626,9 @@ export const listRuns = async (world: World, opts: InspectCLIOptions = {}) => {
       }
     },
     displayPage: async (runs) => {
-      const runsWithHydratedIO = runs.map(hydrateResourceIO);
+      const runsWithHydratedIO = await Promise.all(
+        runs.map((r) => hydrateResourceIO(r, resolveKey))
+      );
       logger.log(showTable(runsWithHydratedIO, props, opts));
     },
   });
@@ -582,13 +638,17 @@ export const getRecentRun = async (
   world: World,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   logger.warn(`No runId provided, fetching data for latest run instead.`);
   try {
     const runs = await world.runs.list({
       pagination: { limit: 1, sortOrder: opts.sort || 'desc' },
       resolveData: 'none', // Don't need data for just getting the ID
     });
-    runs.data = runs.data.map(hydrateResourceIO);
+    runs.data = await Promise.all(
+      runs.data.map((r) => hydrateResourceIO(r, resolveKey))
+    );
     return runs.data[0];
   } catch (error) {
     if (handleApiError(error, opts.backend)) {
@@ -603,12 +663,14 @@ export const showRun = async (
   runId: string,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when showing individual resources');
   }
   try {
     const run = await world.runs.get(runId, { resolveData: 'all' });
-    const runWithHydratedIO = hydrateResourceIO(run);
+    const runWithHydratedIO = await hydrateResourceIO(run, resolveKey);
     if (opts.json) {
       showJson(runWithHydratedIO);
       return;
@@ -634,6 +696,8 @@ export const listSteps = async (
     runId: undefined,
   }
 ) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.stepId) {
     logger.warn(
       'Filtering by step-id is not supported in list calls, ignoring filter.'
@@ -673,7 +737,10 @@ export const listSteps = async (
         },
         resolveData,
       });
-      showJson(stepChunks.data);
+      const stepsWithHydratedIO = await Promise.all(
+        stepChunks.data.map((s) => hydrateResourceIO(s, resolveKey))
+      );
+      showJson(stepsWithHydratedIO);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -711,7 +778,9 @@ export const listSteps = async (
       }
     },
     displayPage: async (steps) => {
-      const stepsWithHydratedIO = steps.map(hydrateResourceIO);
+      const stepsWithHydratedIO = await Promise.all(
+        steps.map((s) => hydrateResourceIO(s, resolveKey))
+      );
       logger.log(showTable(stepsWithHydratedIO, props, opts));
       showInspectInfoBox('step');
     },
@@ -723,6 +792,8 @@ export const showStep = async (
   stepId: string,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when showing individual resources');
   }
@@ -731,15 +802,33 @@ export const showStep = async (
       'Filtering by step-id is not supported in get calls, ignoring filter.'
     );
   }
+
+  const runId = opts.runId ?? (await getRecentRun(world, opts))?.runId;
+  if (!runId) {
+    logger.error(
+      'run-id is required for showing a step. Usage: `workflow inspect step <STEP_ID> --runId=<RUN_ID>`'
+    );
+    return;
+  }
+
   try {
-    const step = await world.steps.get(opts.runId, stepId, {
+    const step = await world.steps.get(runId, stepId, {
       resolveData: 'all',
     });
-    const stepWithHydratedIO = hydrateResourceIO(step);
+    const stepWithHydratedIO = await hydrateResourceIO(step, resolveKey);
     if (opts.json) {
       showJson(stepWithHydratedIO);
       return;
     } else {
+      if (
+        hasExpiredFields(
+          stepWithHydratedIO as unknown as Record<string, unknown>
+        )
+      ) {
+        logger.warn(
+          "This step's data (input/output/error) has expired and is no longer available."
+        );
+      }
       logger.log(stepWithHydratedIO);
     }
   } catch (error) {
@@ -755,16 +844,37 @@ export const showStream = async (
   streamId: string,
   opts: InspectCLIOptions = {}
 ) => {
-  if (opts.runId || opts.stepId) {
+  if (opts.stepId) {
     logger.warn(
-      'Filtering by run-id or step-id is not supported when showing a stream, ignoring filter.'
+      'Filtering by step-id is not supported when showing a stream, ignoring filter.'
     );
   }
   const rawStream = await world.readFromStream(streamId);
 
+  // Only resolve the encryption key when --decrypt is passed and --run is provided.
+  // We fetch the full WorkflowRun object so that getEncryptionKeyForRun has
+  // access to the deploymentId (needed for API-based key resolution).
+  let encryptionKey: EncryptionKeyParam;
+  if (opts.decrypt && opts.runId) {
+    encryptionKey = (async () => {
+      const run = await world.runs.get(opts.runId!);
+      const rawKey = await world.getEncryptionKeyForRun?.(run);
+      return rawKey ? await importKey(rawKey) : undefined;
+    })();
+  } else if (opts.decrypt && !opts.runId) {
+    logger.warn(
+      'Cannot decrypt stream content without a run ID. Use --run=<run-id> with --decrypt.'
+    );
+  }
+
   // Deserialize the stream to get JavaScript objects
-  const revivers = getExternalRevivers(globalThis, [], '');
-  const transform = getDeserializeStream(revivers);
+  const revivers = getExternalRevivers(
+    globalThis,
+    [],
+    opts.runId ?? '',
+    encryptionKey
+  );
+  const transform = getDeserializeStream(revivers, encryptionKey);
   const stream = rawStream.pipeThrough(transform);
 
   logger.info('Streaming to stdout, press CTRL+C to abort.');
@@ -834,23 +944,22 @@ export const listEvents = async (
   world: World,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
   if (opts.workflowName) {
     logger.warn(
       'Filtering by workflow-name is not supported for events, ignoring filter.'
     );
   }
 
-  let filterId: string | undefined = opts.hookId || opts.stepId || opts.runId;
-  if (!filterId) {
-    filterId = (await getRecentRun(world, opts))?.runId;
-    if (!filterId) {
-      logger.error('No run found.');
-      return;
-    }
+  const runId = opts.runId ?? (await getRecentRun(world, opts))?.runId;
+  if (!runId) {
+    logger.error('No run found.');
+    return;
   }
 
-  const isCorrelationId = Boolean(opts.hookId || opts.stepId);
-  const params: Omit<ListEventsParams, 'runId'> = {
+  const correlationIdFilter = opts.hookId || opts.stepId;
+  const params: ListEventsParams = {
+    runId,
     pagination: {
       sortOrder: opts.sort || 'desc',
       cursor: opts.cursor,
@@ -858,19 +967,21 @@ export const listEvents = async (
     },
     resolveData: opts.withData ? 'all' : 'none',
   };
-  const listCall = isCorrelationId
-    ? (correlationId: string, pagination: PaginationOptions) =>
-        world.events.listByCorrelationId({
-          ...params,
-          correlationId,
-          pagination: { ...params.pagination, ...pagination },
-        })
-    : (runId: string, pagination: PaginationOptions) =>
-        world.events.list({
-          ...params,
-          runId,
-          pagination: { ...params.pagination, ...pagination },
-        });
+  const listCall = async (pagination: PaginationOptions) => {
+    const result = await world.events.list({
+      ...params,
+      pagination: { ...params.pagination, ...pagination },
+    });
+    if (correlationIdFilter) {
+      return {
+        ...result,
+        data: result.data.filter(
+          (e) => e.correlationId === correlationIdFilter
+        ),
+      };
+    }
+    return result;
+  };
 
   // Determine which props to show based on withData flag
   const props = opts.withData
@@ -879,10 +990,13 @@ export const listEvents = async (
 
   // For JSON output, just fetch once and return
   if (opts.json) {
-    logger.debug(`Fetching events for run ${filterId}`);
+    logger.debug(`Fetching events for run ${runId}`);
     try {
-      const events = await listCall(filterId, {});
-      showJson(events.data);
+      const events = await listCall({});
+      const hydratedEvents = await Promise.all(
+        events.data.map((e) => hydrateResourceIO(e, resolveKey))
+      );
+      showJson(hydratedEvents);
       return;
     } catch (error) {
       if (handleApiError(error, opts.backend)) {
@@ -896,9 +1010,9 @@ export const listEvents = async (
     initialCursor: opts.cursor,
     interactive: opts.interactive,
     fetchPage: async (cursor) => {
-      logger.debug(`Fetching events for run ${filterId}`);
+      logger.debug(`Fetching events for run ${runId}`);
       try {
-        const events = await listCall(filterId, { cursor });
+        const events = await listCall({ cursor });
         return {
           data: events.data,
           cursor: events.cursor,
@@ -912,13 +1026,18 @@ export const listEvents = async (
       }
     },
     displayPage: async (events) => {
-      logger.log(showTable(events, props, opts));
+      const hydratedEvents = await Promise.all(
+        events.map((e) => hydrateResourceIO(e, resolveKey))
+      );
+      logger.log(showTable(hydratedEvents, props, opts));
       showInspectInfoBox('event');
     },
   });
 };
 
 export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.workflowName) {
     logger.warn(
       'Filtering by workflow-name is not supported for hooks, ignoring filter.'
@@ -950,7 +1069,9 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
         },
         resolveData,
       });
-      const hydratedHooks = hooks.data.map(hydrateResourceIO);
+      const hydratedHooks = await Promise.all(
+        hooks.data.map((h) => hydrateResourceIO(h, resolveKey))
+      );
       showJson({ ...hooks, data: hydratedHooks });
       return;
     } catch (error) {
@@ -994,7 +1115,9 @@ export const listHooks = async (world: World, opts: InspectCLIOptions = {}) => {
       }
     },
     displayPage: async (hooks) => {
-      const hydratedHooks = hooks.map(hydrateResourceIO);
+      const hydratedHooks = await Promise.all(
+        hooks.map((h) => hydrateResourceIO(h, resolveKey))
+      );
       logger.log(showTable(hydratedHooks, HOOK_LISTED_PROPS, opts));
       showInspectInfoBox('hook');
     },
@@ -1006,6 +1129,8 @@ export const showHook = async (
   hookId: string,
   opts: InspectCLIOptions = {}
 ) => {
+  const resolveKey = createResolver(world, opts?.decrypt ?? false);
+
   if (opts.withData) {
     logger.warn('`withData` flag is ignored when showing individual resources');
   }
@@ -1013,11 +1138,18 @@ export const showHook = async (
     const hook = await world.hooks.get(hookId, {
       resolveData: 'all',
     });
-    const hydratedHook = hydrateResourceIO(hook);
+    const hydratedHook = await hydrateResourceIO(hook, resolveKey);
     if (opts.json) {
       showJson(hydratedHook);
       return;
     } else {
+      if (
+        hasExpiredFields(hydratedHook as unknown as Record<string, unknown>)
+      ) {
+        logger.warn(
+          "This hook's data (metadata) has expired and is no longer available."
+        );
+      }
       logger.log(hydratedHook);
     }
   } catch (error) {
@@ -1054,14 +1186,14 @@ export const listSleeps = async (
   }
 
   try {
-    // Fetch all events for the run with resolveData=false
+    // Fetch all events for the run with resolveData='all' to get wait eventData
     const events = await world.events.list({
       runId: opts.runId,
       pagination: {
         sortOrder: opts.sort || 'desc',
         limit: 1000,
       },
-      resolveData: 'none',
+      resolveData: 'all',
     });
 
     // Show info message if there might be more sleeps
@@ -1071,15 +1203,17 @@ export const listSleeps = async (
       );
     }
 
-    // Filter locally by correlationId starting with 'wait_'
-    const waitCorrelationIds = new Set<string>();
+    // Group wait events by correlationId
+    const waitEventsByCorrelation = new Map<string, Event[]>();
     for (const event of events.data) {
       if (event.correlationId?.startsWith('wait_')) {
-        waitCorrelationIds.add(event.correlationId);
+        const existing = waitEventsByCorrelation.get(event.correlationId) ?? [];
+        existing.push(event);
+        waitEventsByCorrelation.set(event.correlationId, existing);
       }
     }
 
-    if (waitCorrelationIds.size === 0) {
+    if (waitEventsByCorrelation.size === 0) {
       logger.warn('No sleeps found for this run.');
       if (opts.json) {
         showJson([]);
@@ -1094,24 +1228,15 @@ export const listSleeps = async (
       return;
     }
 
-    // For each unique correlationId, fetch events by correlationId with resolveData=true
+    // Build sleeps from grouped wait events
     const sleeps: Sleep[] = [];
-    for (const correlationId of waitCorrelationIds) {
-      const correlationEvents = await world.events.listByCorrelationId({
-        correlationId,
-        pagination: {
-          sortOrder: 'asc',
-          limit: 10,
-        },
-        resolveData: 'all',
-      });
-
+    for (const [correlationId, correlationEvents] of waitEventsByCorrelation) {
       // Stitch up wait_created and wait_completed events
-      const waitCreated = correlationEvents.data.find(
-        (e) => e.eventType === 'wait_created'
+      const waitCreated = correlationEvents.find(
+        (e: Event) => e.eventType === 'wait_created'
       );
-      const waitCompleted = correlationEvents.data.find(
-        (e) => e.eventType === 'wait_completed'
+      const waitCompleted = correlationEvents.find(
+        (e: Event) => e.eventType === 'wait_completed'
       );
 
       if (waitCreated) {

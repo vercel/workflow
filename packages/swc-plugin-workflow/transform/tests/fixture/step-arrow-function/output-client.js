@@ -2,3 +2,4 @@
 export const multiply = async (a, b)=>{
     return a * b;
 };
+multiply.stepId = "step//./input//multiply";

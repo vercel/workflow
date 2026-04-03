@@ -4,7 +4,7 @@ import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
-import z from 'zod';
+import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl } from './config.js';
 import { getPackageInfo } from './init.js';
@@ -28,18 +28,42 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   parseInt(process.env.WORKFLOW_LOCAL_QUEUE_CONCURRENCY ?? '0', 10) ||
   DEFAULT_CONCURRENCY_LIMIT;
 
-// Create a custom agent optimized for high-concurrency local workflows:
-// - headersTimeout: 0 allows long-running steps
-// - connections: 1000 allows many parallel connections to the same host
-// - pipelining: 1 (default) for HTTP/1.1 compatibility
-// - keepAliveTimeout: 30s keeps connections warm for rapid step execution
-const httpAgent = new Agent({
-  headersTimeout: 0,
-  connections: 1000,
-  keepAliveTimeout: 30_000,
-});
+export type DirectHandler = (req: Request) => Promise<Response>;
 
-export function createQueue(config: Partial<Config>): Queue {
+export type LocalQueue = Queue & {
+  /** Close the HTTP agent and release resources. */
+  close(): Promise<void>;
+  /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
+  registerHandler(
+    prefix: '__wkf_step_' | '__wkf_workflow_',
+    handler: DirectHandler
+  ): void;
+};
+
+function getQueueRoute(queueName: ValidQueueName): {
+  pathname: 'flow' | 'step';
+  prefix: '__wkf_step_' | '__wkf_workflow_';
+} {
+  if (queueName.startsWith('__wkf_step_')) {
+    return { pathname: 'step', prefix: '__wkf_step_' };
+  }
+  if (queueName.startsWith('__wkf_workflow_')) {
+    return { pathname: 'flow', prefix: '__wkf_workflow_' };
+  }
+  throw new Error('Unknown queue name prefix');
+}
+
+export function createQueue(config: Partial<Config>): LocalQueue {
+  // Create a custom agent optimized for high-concurrency local workflows:
+  // - headersTimeout: 0 allows long-running steps
+  // - connections: 1000 allows many parallel connections to the same host
+  // - pipelining: 1 (default) for HTTP/1.1 compatibility
+  // - keepAliveTimeout: 30s keeps connections warm for rapid step execution
+  const httpAgent = new Agent({
+    headersTimeout: 0,
+    connections: 1000,
+    keepAliveTimeout: 30_000,
+  });
   const transport = new JsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
@@ -49,6 +73,8 @@ export function createQueue(config: Partial<Config>): Queue {
    * that we don't queue the same message multiple times
    */
   const inflightMessages = new Map<string, MessageId>();
+  /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
+  const directHandlers = new Map<string, DirectHandler>();
 
   const queue: Queue['queue'] = async (queueName, message, opts) => {
     const cleanup = [] as (() => void)[];
@@ -61,15 +87,16 @@ export function createQueue(config: Partial<Config>): Queue {
     }
 
     const body = transport.serialize(message);
-    let pathname: string;
-    if (queueName.startsWith('__wkf_step_')) {
-      pathname = `step`;
-    } else if (queueName.startsWith('__wkf_workflow_')) {
-      pathname = `flow`;
-    } else {
-      throw new Error('Unknown queue name prefix');
-    }
+    const { pathname, prefix } = getQueueRoute(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
+
+    // Extract identifiers from the message for structured logging.
+    // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
+    const msg = message as Record<string, unknown>;
+    const runId = (msg.runId ?? msg.workflowRunId ?? undefined) as
+      | string
+      | undefined;
+    const stepId = (msg.stepId ?? undefined) as string | undefined;
 
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
@@ -87,62 +114,95 @@ export function createQueue(config: Partial<Config>): Queue {
         );
         await semaphore.acquire();
       }
+      // Safety limit to prevent infinite loops in the local queue.
+      // The actual max delivery enforcement happens in the workflow/step handlers
+      // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
+      const MAX_LOCAL_SAFETY_LIMIT = 256;
       try {
-        let defaultRetriesLeft = 3;
-        const baseUrl = await resolveBaseUrl(config);
-        for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
-          defaultRetriesLeft--;
+        for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
+          const headers: Record<string, string> = {
+            ...opts?.headers,
+            'content-type': 'application/json',
+            'x-vqs-queue-name': queueName,
+            'x-vqs-message-id': messageId,
+            'x-vqs-message-attempt': String(attempt + 1),
+          };
+          const directHandler = directHandlers.get(prefix);
+          let response: Response;
 
-          const response = await fetch(
-            `${baseUrl}/.well-known/workflow/v1/${pathname}`,
-            {
-              method: 'POST',
-              duplex: 'half',
-              dispatcher: httpAgent,
-              headers: {
-                ...opts?.headers,
-                'content-type': 'application/json',
-                'x-vqs-queue-name': queueName,
-                'x-vqs-message-id': messageId,
-                'x-vqs-message-attempt': String(attempt + 1),
-              },
-              body,
-            }
-          );
-
-          if (response.ok) {
-            return;
+          if (directHandler) {
+            const req = new Request(
+              `http://localhost/.well-known/workflow/v1/${pathname}`,
+              {
+                method: 'POST',
+                headers,
+                body,
+              }
+            );
+            response = await directHandler(req);
+          } else {
+            const baseUrl = await resolveBaseUrl(config);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+            response = await fetch(
+              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+              {
+                method: 'POST',
+                duplex: 'half',
+                dispatcher: httpAgent,
+                headers,
+                body,
+              } as any
+            );
           }
 
           const text = await response.text();
 
-          if (response.status === 503) {
+          if (response.ok) {
             try {
               const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
-              // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
-              // When this fires early, the handler recalculates remaining time from
-              // persistent state and returns another timeoutSeconds if needed.
-              const timeoutMs = Math.min(
-                timeoutSeconds * 1000,
-                MAX_SAFE_TIMEOUT_MS
-              );
-              await setTimeout(timeoutMs);
-              defaultRetriesLeft++;
-              continue;
+              if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
+                // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
+                // When this fires early, the handler recalculates remaining time from
+                // persistent state and returns another timeoutSeconds if needed.
+                if (timeoutSeconds > 0) {
+                  const timeoutMs = Math.min(
+                    timeoutSeconds * 1000,
+                    MAX_SAFE_TIMEOUT_MS
+                  );
+                  await setTimeout(timeoutMs);
+                }
+                continue;
+              }
             } catch {}
+            return;
           }
 
-          console.error(`[local world] Failed to queue message`, {
-            queueName,
-            text,
-            status: response.status,
-            headers: Object.fromEntries(response.headers.entries()),
-            body: body.toString(),
-          });
+          console.error(
+            `[world-local] Queue message failed (attempt ${attempt + 1}, HTTP ${response.status})`,
+            {
+              queueName,
+              messageId,
+              ...(runId && { runId }),
+              ...(stepId && { stepId }),
+              handlerError: text,
+            }
+          );
+
+          // 5s linear backoff to approximate VQS retry timing in local dev.
+          // VQS uses 5s linear for attempts 1–32, then exponential, but for
+          // local dev linear 5s is sufficient — the handler enforces the real
+          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
+          await setTimeout(5000);
         }
 
         console.error(
-          `[local world] Reached max retries of local world queue implementation`
+          `[world-local] Queue message exhausted safety limit (${MAX_LOCAL_SAFETY_LIMIT} attempts)`,
+          {
+            queueName,
+            messageId,
+            ...(runId && { runId }),
+            ...(stepId && { stepId }),
+          }
         );
       } finally {
         semaphore.release();
@@ -207,8 +267,8 @@ export function createQueue(config: Partial<Config>): Queue {
           );
         }
 
-        if (timeoutSeconds) {
-          return Response.json({ timeoutSeconds }, { status: 503 });
+        if (timeoutSeconds != null) {
+          return Response.json({ timeoutSeconds });
         }
 
         return Response.json({ ok: true });
@@ -223,5 +283,18 @@ export function createQueue(config: Partial<Config>): Queue {
     return `dpl_local@${packageInfo.version}`;
   };
 
-  return { queue, createQueueHandler, getDeploymentId };
+  return {
+    queue,
+    createQueueHandler,
+    getDeploymentId,
+    registerHandler(
+      prefix: '__wkf_step_' | '__wkf_workflow_',
+      handler: DirectHandler
+    ) {
+      directHandlers.set(prefix, handler);
+    },
+    async close() {
+      await httpAgent.close();
+    },
+  };
 }

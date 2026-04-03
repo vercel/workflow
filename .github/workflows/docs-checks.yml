@@ -1,0 +1,89 @@
+name: Docs Checks
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "!*"
+  pull_request:
+
+concurrency:
+  # Unique group for this workflow and branch
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  docs-typecheck:
+    name: Docs Code Samples
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build packages
+        run: pnpm build
+
+      - name: Type-check documentation code samples
+        run: pnpm test:docs
+
+  docs-preview-smoke:
+    name: Docs Preview Smoke Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Waiting for the Docs Vercel deployment
+        id: waitForDocsDeployment
+        uses: ./.github/actions/wait-for-vercel-project
+        with:
+          team-id: "team_nLlpyC6REAqxydlFKbrMDlud"
+          project-id: "prj_aLMkVj1S4Alk08AThC76nXgwbLEB"
+          vercel-token: ${{ secrets.VERCEL_DOCS_TOKEN }}
+          timeout: 1000
+          check-interval: 15
+          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+
+      - name: Verify OpenGraph images and sitemap
+        run: pnpm --filter docs test:smoke
+        env:
+          DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          VERCEL_DOCS_TOKEN: ${{ secrets.VERCEL_DOCS_TOKEN }}

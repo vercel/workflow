@@ -1,7 +1,7 @@
 {
   "name": "@workflow/world-vercel",
-  "version": "4.1.0-beta.29",
-  "description": "Vercel platform World implementation for Workflow DevKit",
+  "version": "4.1.0-beta.47",
+  "description": "Vercel platform World implementation for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -35,6 +35,7 @@
     "@workflow/errors": "workspace:*",
     "@workflow/world": "workspace:*",
     "cbor-x": "1.6.0",
+    "undici": "catalog:",
     "zod": "catalog:"
   },
   "peerDependencies": {

@@ -9,6 +9,9 @@
  * NOTE: Unlike the trace() function in @workflow/core, this implementation does not
  * have special handling for WorkflowSuspension errors because world-vercel operates
  * at the HTTP layer and never encounters workflow suspension effects.
+ *
+ * IMPORTANT: This module uses the same tracer name 'workflow' as @workflow/core to ensure
+ * all spans are reported under the parent application's service, not as a separate service.
  */
 import type * as api from '@opentelemetry/api';
 import type { Span, SpanKind, SpanOptions } from '@opentelemetry/api';
@@ -28,7 +31,7 @@ let tracerPromise: Promise<api.Tracer | null> | null = null;
 async function getTracer(): Promise<api.Tracer | null> {
   if (!tracerPromise) {
     tracerPromise = getOtelApi().then((otel) =>
-      otel ? otel.trace.getTracer('workflow-world-vercel') : null
+      otel ? otel.trace.getTracer('workflow') : null
     );
   }
   return tracerPromise;
@@ -117,3 +120,18 @@ export const ErrorType = SemanticConvention<string>('error.type');
 export const WorldParseFormat = SemanticConvention<'cbor' | 'json'>(
   'workflow.world.parse.format'
 );
+
+// RPC/Peer Service attributes - For service maps and dependency tracking
+// See: https://opentelemetry.io/docs/specs/semconv/rpc/rpc-spans/
+
+/** The remote service name for Datadog service maps (Datadog-specific: peer.service) */
+export const PeerService = SemanticConvention<string>('peer.service');
+
+/** RPC system identifier (standard OTEL: rpc.system) */
+export const RpcSystem = SemanticConvention<string>('rpc.system');
+
+/** RPC service name (standard OTEL: rpc.service) */
+export const RpcService = SemanticConvention<string>('rpc.service');
+
+/** RPC method name (standard OTEL: rpc.method) */
+export const RpcMethod = SemanticConvention<string>('rpc.method');

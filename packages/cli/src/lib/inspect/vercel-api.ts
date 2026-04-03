@@ -40,10 +40,7 @@ export async function fetchTeamInfo(
           '\nPlease ensure you are logged in and have access to the team:'
         )
       );
-      logger.warn(chalk.yellow('  1. Run `vercel login` to authenticate'));
-      logger.warn(
-        chalk.yellow('  2. Run `vercel env pull` to sync environment variables')
-      );
+      logger.warn(chalk.yellow('  Run `vercel login` to authenticate'));
       return null;
     }
 
@@ -113,12 +110,12 @@ export function getVercelDashboardUrl(
   resource: string,
   id?: string
 ): string {
-  let url = `https://vercel.com/${teamSlug}/${projectName}/ai/workflows`;
+  let url = `https://vercel.com/${teamSlug}/${projectName}/observability/workflows`;
 
-  // Add resource-specific path segments if needed
-  if (id) {
-    // For specific resources with IDs, we can add them to the URL
-    // The dashboard should handle these
+  // Add resource-specific path segments
+  if (resource === 'run' && id) {
+    url += `/runs/${id}?environment=production`;
+  } else if (id) {
     url += `?${resource}Id=${id}`;
   }
 

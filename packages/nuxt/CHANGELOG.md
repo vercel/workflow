@@ -1,5 +1,177 @@
 # @workflow/nuxt
 
+## 4.0.1-beta.60
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.71
+
+## 4.0.1-beta.59
+
+### Patch Changes
+
+- Updated dependencies [[`0e8a880`](https://github.com/vercel/workflow/commit/0e8a880b6b6b05547e981c591ff4e1fb7ee17f60)]:
+  - @workflow/nitro@4.0.1-beta.70
+
+## 4.0.1-beta.58
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.69
+
+## 4.0.1-beta.57
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.68
+
+## 4.0.1-beta.56
+
+### Patch Changes
+
+- [#1501](https://github.com/vercel/workflow/pull/1501) [`1b4a3ab`](https://github.com/vercel/workflow/commit/1b4a3abbf15cfee1db9da28a7ab7dd177c3e91ee) Thanks [@pranaygp](https://github.com/pranaygp)! - Update nest, nitro, nuxt and sveltekit integration dependencies
+
+- Updated dependencies [[`1b4a3ab`](https://github.com/vercel/workflow/commit/1b4a3abbf15cfee1db9da28a7ab7dd177c3e91ee)]:
+  - @workflow/nitro@4.0.1-beta.67
+
+## 4.0.1-beta.55
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.66
+
+## 4.0.1-beta.54
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.65
+
+## 4.0.1-beta.53
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.64
+
+## 4.0.1-beta.52
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.63
+
+## 4.0.1-beta.51
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.62
+
+## 4.0.1-beta.50
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.61
+
+## 4.0.1-beta.49
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.60
+
+## 4.0.1-beta.48
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.59
+
+## 4.0.1-beta.47
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.58
+
+## 4.0.1-beta.46
+
+### Patch Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- Updated dependencies [[`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - @workflow/nitro@4.0.1-beta.57
+
+## 4.0.1-beta.45
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.56
+
+## 4.0.1-beta.44
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.55
+
+## 4.0.1-beta.43
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.54
+
+## 4.0.1-beta.42
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.53
+
+## 4.0.1-beta.41
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.52
+
+## 4.0.1-beta.40
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.51
+
+## 4.0.1-beta.39
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/nitro@4.0.1-beta.50
+
+## 4.0.1-beta.38
+
+### Patch Changes
+
+- Updated dependencies [[`5b5b36a`](https://github.com/vercel/workflow/commit/5b5b36a03bead5572fa5b1c6caca3a4e854c7c10)]:
+  - @workflow/nitro@4.0.1-beta.49
+
+## 4.0.1-beta.37
+
+### Patch Changes
+
+- Updated dependencies [[`35a9f0c`](https://github.com/vercel/workflow/commit/35a9f0cb0360ffc48c8a8e7db3a299924ab48375), [`661724c`](https://github.com/vercel/workflow/commit/661724c01e78691abad26fa99bd44f254a70f2dd)]:
+  - @workflow/nitro@4.0.1-beta.48
+
 ## 4.0.1-beta.36
 
 ### Patch Changes

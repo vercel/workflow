@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { findWorkflowDataDir } from '@workflow/utils/check-data-dir';
 import { logger } from '../config/log.js';
 import { getWorkflowConfig } from '../config/workflow-config.js';
-import { getAuth } from './auth.js';
+import { getAuthToken } from './auth.js';
 import { fetchTeamInfo } from './vercel-api.js';
 import {
   findRepoRoot,
@@ -15,9 +15,10 @@ import {
 /**
  * Overwrite values on process.env with the given values (if not undefined)
  *
- * We do this because the core world init code reads from environment
- * (or workflow.config.ts soon) on first invocations, so CLI needs to
- * overwrite the values.
+ * Used by the CLI to configure environment variables that are read by
+ * various subsystems (e.g., WORKFLOW_TARGET_WORLD, WORKFLOW_LOCAL_DATA_DIR).
+ * Note: WORKFLOW_VERCEL_* env vars are read back via getEnvVars() and passed
+ * to createVercelWorld() explicitly — they are NOT read by createWorld().
  */
 export const writeEnvVars = (envVars: Record<string, string>) => {
   Object.entries(envVars).forEach(([key, value]) => {
@@ -40,7 +41,9 @@ export const getEnvVars = (): Record<string, string> => {
     WORKFLOW_VERCEL_ENV: env.WORKFLOW_VERCEL_ENV || '',
     WORKFLOW_VERCEL_AUTH_TOKEN: env.WORKFLOW_VERCEL_AUTH_TOKEN || '',
     WORKFLOW_VERCEL_PROJECT: env.WORKFLOW_VERCEL_PROJECT || '',
+    WORKFLOW_VERCEL_PROJECT_NAME: env.WORKFLOW_VERCEL_PROJECT_NAME || '',
     WORKFLOW_VERCEL_TEAM: env.WORKFLOW_VERCEL_TEAM || '',
+    WORKFLOW_LOCAL_BASE_URL: env.WORKFLOW_LOCAL_BASE_URL || '',
     WORKFLOW_LOCAL_UI: env.WORKFLOW_LOCAL_UI || '',
     WORKFLOW_LOCAL_BASE_URL: env.WORKFLOW_LOCAL_BASE_URL || '',
     PORT: env.PORT || '',
@@ -178,21 +181,45 @@ export const inferVercelProjectAndTeam = async () => {
   };
 };
 
+export interface VercelEnvVars {
+  token?: string;
+  environment?: string;
+  projectId?: string;
+  projectName?: string;
+  teamId?: string;
+}
+
 /**
- * Overwrites process.env variables related to Vercel World configuration,
- * if relevant environment variables aren't set already.
+ * Infers Vercel World configuration from the local environment (`.vercel`
+ * folder, CLI auth file, Vercel API) and returns a resolved config object.
+ *
+ * Also writes the resolved values to `process.env` so the embedded web UI
+ * (which reads `process.env` as a fallback) can pick them up.
  */
-export const inferVercelEnvVars = async () => {
+export const inferVercelEnvVars = async (): Promise<VercelEnvVars> => {
   const envVars = getEnvVars();
 
-  if (!envVars.WORKFLOW_VERCEL_PROJECT || !envVars.WORKFLOW_VERCEL_TEAM) {
+  // Infer project/team from .vercel folder when:
+  // - WORKFLOW_VERCEL_PROJECT or WORKFLOW_VERCEL_TEAM is missing, OR
+  // - WORKFLOW_VERCEL_PROJECT is set but doesn't look like a real project ID
+  //   (e.g., user passed a slug via --project flag), OR
+  // - WORKFLOW_VERCEL_PROJECT_NAME is missing (need to populate the slug)
+  const needsInference =
+    !envVars.WORKFLOW_VERCEL_PROJECT ||
+    !envVars.WORKFLOW_VERCEL_TEAM ||
+    !envVars.WORKFLOW_VERCEL_PROJECT_NAME ||
+    !envVars.WORKFLOW_VERCEL_PROJECT.startsWith('prj_');
+
+  if (needsInference) {
     logger.debug('Inferring vercel project and team from .vercel folder');
     const inferredProject = await inferVercelProjectAndTeam();
     if (inferredProject) {
       const { projectId, projectName, teamId } = inferredProject;
-      envVars.WORKFLOW_VERCEL_PROJECT = projectName || projectId;
-      envVars.WORKFLOW_VERCEL_TEAM = teamId;
-      writeEnvVars(envVars);
+      // WORKFLOW_VERCEL_PROJECT is the real project ID (e.g., prj_xxx)
+      envVars.WORKFLOW_VERCEL_PROJECT = projectId;
+      // WORKFLOW_VERCEL_PROJECT_NAME is the project slug (e.g., my-app)
+      envVars.WORKFLOW_VERCEL_PROJECT_NAME = projectName || projectId;
+      envVars.WORKFLOW_VERCEL_TEAM = envVars.WORKFLOW_VERCEL_TEAM || teamId;
     } else {
       logger.warn(
         'Could not infer vercel project and team from .vercel folder, server authentication might fail.'
@@ -202,12 +229,11 @@ export const inferVercelEnvVars = async () => {
 
   if (!envVars.WORKFLOW_VERCEL_AUTH_TOKEN) {
     logger.debug('Inferring vercel auth token from CLI auth file');
-    const auth = getAuth();
-    if (!auth) {
+    const token = await getAuthToken();
+    if (!token) {
       throw new Error('Could not find credentials. Run `vc login` to log in.');
     }
-    envVars.WORKFLOW_VERCEL_AUTH_TOKEN = auth.token;
-    writeEnvVars(envVars);
+    envVars.WORKFLOW_VERCEL_AUTH_TOKEN = token;
   }
 
   // Fetch team information from Vercel API to get the team slug
@@ -223,8 +249,19 @@ export const inferVercelEnvVars = async () => {
     );
     if (teamInfo) {
       envVars.WORKFLOW_VERCEL_TEAM = teamInfo.teamSlug;
-      writeEnvVars(envVars);
       logger.debug(`Found team slug: ${teamInfo.teamSlug}`);
     }
   }
+
+  // Write resolved values to process.env for the embedded web UI, which
+  // reads them as fallbacks in its server actions.
+  writeEnvVars(envVars);
+
+  return {
+    token: envVars.WORKFLOW_VERCEL_AUTH_TOKEN || undefined,
+    environment: envVars.WORKFLOW_VERCEL_ENV || undefined,
+    projectId: envVars.WORKFLOW_VERCEL_PROJECT || undefined,
+    projectName: envVars.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
+    teamId: envVars.WORKFLOW_VERCEL_TEAM || undefined,
+  };
 };

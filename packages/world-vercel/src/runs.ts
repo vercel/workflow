@@ -1,4 +1,4 @@
-import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
 import {
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
@@ -28,11 +28,17 @@ import {
  * This is used for validation in makeRequest(), then deserializeError()
  * normalizes both formats into the expected StructuredError object.
  */
-const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
+export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
   error: true,
 }).extend({
   // Backend returns error as either a JSON string or structured object
   error: z.union([z.string(), StructuredErrorSchema]).optional(),
+  // errorCode is stored inline on the run entity (not inside errorRef).
+  // It's merged into StructuredError.code by deserializeError().
+  errorCode: z.string().optional(),
+  // Not part of the World interface, but passed through for direct consumers and debugging
+  blobStorageBytes: z.number().optional(),
+  streamStorageBytes: z.number().optional(),
 });
 
 // Wire schema for resolved data (full input/output)
@@ -50,8 +56,6 @@ const WorkflowRunWireWithRefsSchema = WorkflowRunWireBaseSchema.omit({
   // Accept both Uint8Array (v2 format) and any (legacy v1 JSON format)
   input: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
   output: z.union([z.instanceof(Uint8Array), z.any()]).optional(),
-  blobStorageBytes: z.number().optional(),
-  streamStorageBytes: z.number().optional(),
 });
 
 // Overloaded function signatures for filterRunData
@@ -182,7 +186,7 @@ export async function getWorkflowRun(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${id}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${encodeURIComponent(id)}${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({
@@ -196,7 +200,7 @@ export async function getWorkflowRun(
 
     return filterRunData(run, resolveData);
   } catch (error) {
-    if (error instanceof WorkflowAPIError && error.status === 404) {
+    if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
     }
     throw error;
@@ -230,7 +234,7 @@ export async function cancelWorkflowRunV1(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v1/runs/${id}/cancel${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v1/runs/${encodeURIComponent(id)}/cancel${queryString ? `?${queryString}` : ''}`;
 
   try {
     const run = await makeRequest({
@@ -244,7 +248,7 @@ export async function cancelWorkflowRunV1(
 
     return filterRunData(run, resolveData);
   } catch (error) {
-    if (error instanceof WorkflowAPIError && error.status === 404) {
+    if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
     }
     throw error;

@@ -5,12 +5,12 @@
   "devDependencies": {
     "@biomejs/biome": "catalog:",
     "@changesets/changelog-github": "0.5.2",
-    "@changesets/cli": "^2.29.5",
+    "@changesets/cli": "^2.29.8",
     "@vitest/coverage-v8": "catalog:",
     "esbuild": "catalog:",
     "husky": "^9.1.7",
-    "lint-staged": "^16.1.0",
-    "turbo": "^2.5.4",
+    "lint-staged": "^16.2.7",
+    "turbo": "^2.8.11",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
@@ -21,7 +21,7 @@
   "pnpm": {
     "overrides": {
       "rfc6902": "5.1.2",
-      "devalue": "5.6.0"
+      "devalue": "5.6.3"
     },
     "onlyBuiltDependencies": [
       "bun"
@@ -33,7 +33,8 @@
     "test": "turbo test",
     "clean": "turbo clean",
     "typecheck": "turbo typecheck",
-    "test:e2e": "vitest run packages/core/e2e/e2e.test.ts",
+    "test:e2e": "vitest run packages/core/e2e/e2e.test.ts packages/core/e2e/e2e-agent.test.ts",
+    "test:e2e:nextjs-webpack:staged": "node scripts/test-staged-nextjs-webpack.mjs",
     "test:docs": "pnpm --filter @workflow/docs-typecheck test:docs",
     "bench": "vitest bench packages/core/e2e/bench.bench.ts",
     "bench:local": "DEPLOYMENT_URL=http://localhost:3000 APP_NAME=nextjs-turbopack vitest bench packages/core/e2e/bench.bench.ts",
@@ -42,7 +43,8 @@
     "changeset": "changeset",
     "ci:version": "changeset version",
     "ci:publish": "pnpm build && changeset publish",
-    "release:notes": "node scripts/generate-release-notes.mjs"
+    "release:notes": "node scripts/generate-release-notes.mjs",
+    "workbench:stage": "node scripts/stage-workbench-with-tarballs.mjs"
   },
   "lint-staged": {
     "**/*": "biome format --write --no-errors-on-unmatched"

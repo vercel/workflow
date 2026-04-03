@@ -1,7 +1,7 @@
 {
   "name": "@workflow/sveltekit",
-  "version": "4.0.0-beta.41",
-  "description": "SvelteKit integration for Workflow DevKit",
+  "version": "4.0.0-beta.65",
+  "description": "SvelteKit integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
   "files": [
@@ -30,7 +30,7 @@
     "@workflow/rollup": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
     "@workflow/vite": "workspace:*",
-    "exsolve": "^1.0.7",
+    "exsolve": "^1.0.8",
     "fs-extra": "^11.3.2",
     "pathe": "^2.0.3"
   },

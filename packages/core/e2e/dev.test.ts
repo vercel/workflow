@@ -1,6 +1,6 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { afterEach, describe, expect, test } from 'vitest';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { afterEach, beforeAll, describe, expect, test } from 'vitest';
 import { getWorkbenchAppPath } from './utils';
 
 export interface DevTestConfig {
@@ -8,6 +8,7 @@ export interface DevTestConfig {
   generatedWorkflowPath: string;
   apiFilePath: string;
   apiFileImportPath: string;
+  canary?: boolean;
   /** The workflow file to modify for testing HMR. Defaults to '3_streams.ts' */
   testWorkflowFile?: string;
   /** The workflows directory relative to appPath. Defaults to 'workflows' */
@@ -35,6 +36,7 @@ export function createDevTests(config?: DevTestConfig) {
   }
   describe('dev e2e', () => {
     const appPath = getWorkbenchAppPath();
+    const deploymentUrl = process.env.DEPLOYMENT_URL;
     const generatedStep = path.join(appPath, finalConfig.generatedStepPath);
     const generatedWorkflow = path.join(
       appPath,
@@ -42,7 +44,97 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
+    const supportsDeferredStepCopies = generatedStep.includes(
+      path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
+    );
     const restoreFiles: Array<{ path: string; content: string }> = [];
+
+    const fetchWithTimeout = (pathname: string) => {
+      if (!deploymentUrl) {
+        return Promise.resolve();
+      }
+
+      return fetch(new URL(pathname, deploymentUrl), {
+        signal: AbortSignal.timeout(5_000),
+      });
+    };
+
+    const triggerWorkflowRun = async (
+      workflowName: string,
+      args: unknown[] = []
+    ) => {
+      if (!deploymentUrl) {
+        return;
+      }
+
+      const response = await fetch(
+        new URL('/api/workflows/start', deploymentUrl),
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({
+            workflowName,
+            args,
+          }),
+          signal: AbortSignal.timeout(5_000),
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `Failed to trigger workflow "${workflowName}": ${response.status}`
+        );
+      }
+    };
+
+    const prewarm = async () => {
+      // Pre-warm the app with bounded requests so cleanup hooks cannot hang.
+      await Promise.all([
+        fetchWithTimeout('/').catch(() => {}),
+        fetchWithTimeout('/api/chat').catch(() => {}),
+      ]);
+    };
+
+    const pollUntil = async ({
+      description,
+      check,
+      timeoutMs = 25_000,
+      intervalMs = 1_000,
+    }: {
+      description: string;
+      check: () => Promise<void>;
+      timeoutMs?: number;
+      intervalMs?: number;
+    }) => {
+      const deadline = Date.now() + timeoutMs;
+      let lastError: unknown = null;
+
+      while (Date.now() < deadline) {
+        try {
+          await check();
+          return;
+        } catch (error) {
+          lastError = error;
+          await new Promise((res) => setTimeout(res, intervalMs));
+        }
+      }
+
+      const lastErrorSuffix =
+        lastError instanceof Error
+          ? ` Last error: ${lastError.message}`
+          : lastError
+            ? ` Last error: ${String(lastError)}`
+            : '';
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for ${description}.${lastErrorSuffix}`
+      );
+    };
+
+    beforeAll(async () => {
+      await prewarm();
+    });
 
     afterEach(async () => {
       await Promise.all(
@@ -54,6 +146,7 @@ export function createDevTests(config?: DevTestConfig) {
           }
         })
       );
+      await prewarm();
       restoreFiles.length = 0;
     });
 
@@ -74,15 +167,13 @@ export async function myNewWorkflow() {
       );
       restoreFiles.push({ path: workflowFile, content });
 
-      while (true) {
-        try {
+      await pollUntil({
+        description: 'generated workflow to include myNewWorkflow',
+        check: async () => {
           const workflowContent = await fs.readFile(generatedWorkflow, 'utf8');
           expect(workflowContent).toContain('myNewWorkflow');
-          break;
-        } catch (_) {
-          await new Promise((res) => setTimeout(res, 1_000));
-        }
-      }
+        },
+      });
     });
 
     test('should rebuild on step change', { timeout: 30_000 }, async () => {
@@ -101,21 +192,102 @@ export async function myNewStep() {
 `
       );
       restoreFiles.push({ path: stepFile, content });
+      const copiedStepDir = path.join(
+        path.dirname(generatedStep),
+        '__workflow_step_files__'
+      );
 
-      while (true) {
-        try {
-          const workflowContent = await fs.readFile(generatedStep, 'utf8');
-          expect(workflowContent).toContain('myNewStep');
-          break;
-        } catch (_) {
-          await new Promise((res) => setTimeout(res, 1_000));
-        }
-      }
+      await pollUntil({
+        description: 'generated step outputs to include myNewStep',
+        check: async () => {
+          const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
+          if (stepRouteContent.includes('myNewStep')) {
+            return;
+          }
+
+          const copiedStepFileNames = await fs.readdir(copiedStepDir);
+          const copiedStepContents = await Promise.all(
+            copiedStepFileNames.map(async (copiedStepFileName) => {
+              const copiedStepFilePath = path.join(
+                copiedStepDir,
+                copiedStepFileName
+              );
+              const copiedStepStats = await fs.stat(copiedStepFilePath);
+              if (!copiedStepStats.isFile()) {
+                return '';
+              }
+              return await fs.readFile(copiedStepFilePath, 'utf8');
+            })
+          );
+          expect(
+            copiedStepContents.some((content) => content.includes('myNewStep'))
+          ).toBe(true);
+        },
+      });
     });
+
+    test.skipIf(!supportsDeferredStepCopies)(
+      'should rebuild on imported step dependency change',
+      { timeout: 60_000 },
+      async () => {
+        const importedStepFile = path.join(
+          appPath,
+          workflowsDir,
+          '_imported_step_only.ts'
+        );
+        const content = await fs.readFile(importedStepFile, 'utf8');
+        const marker = 'importedStepOnlyHotReloadMarker';
+
+        await fs.writeFile(
+          importedStepFile,
+          `${content}
+
+export async function ${marker}() {
+  'use step'
+  return 'updated'
+}
+`
+        );
+        restoreFiles.push({ path: importedStepFile, content });
+
+        const copiedStepDir = path.join(
+          path.dirname(generatedStep),
+          '__workflow_step_files__'
+        );
+
+        await pollUntil({
+          description:
+            'copied deferred step files to include imported step hot-reload marker',
+          timeoutMs: 50_000,
+          check: async () => {
+            await triggerWorkflowRun('importedStepOnlyWorkflow');
+            const copiedStepFileNames = await fs.readdir(copiedStepDir);
+            const copiedStepContents = await Promise.all(
+              copiedStepFileNames.map(async (copiedStepFileName) => {
+                const copiedStepFilePath = path.join(
+                  copiedStepDir,
+                  copiedStepFileName
+                );
+                const copiedStepStats = await fs.stat(copiedStepFilePath);
+                if (!copiedStepStats.isFile()) {
+                  return '';
+                }
+                return await fs.readFile(copiedStepFilePath, 'utf8');
+              })
+            );
+            expect(
+              copiedStepContents.some((copiedStepContent) =>
+                copiedStepContent.includes(marker)
+              )
+            ).toBe(true);
+          },
+        });
+      }
+    );
 
     test(
       'should rebuild on adding workflow file',
-      { timeout: 30_000 },
+      { timeout: 60_000 },
       async () => {
         const workflowFile = path.join(
           appPath,
@@ -143,18 +315,101 @@ export async function myNewStep() {
 ${apiFileContent}`
         );
 
-        while (true) {
-          try {
+        await pollUntil({
+          description: 'generated workflow to include newWorkflowFile',
+          timeoutMs: 50_000,
+          check: async () => {
+            await fetchWithTimeout('/api/chat');
             const workflowContent = await fs.readFile(
               generatedWorkflow,
               'utf8'
             );
             expect(workflowContent).toContain('newWorkflowFile');
-            break;
-          } catch (_) {
-            await new Promise((res) => setTimeout(res, 1_000));
-          }
-        }
+          },
+        });
+      }
+    );
+
+    test.skipIf(!supportsDeferredStepCopies)(
+      'should include steps discovered from workflow imports',
+      { timeout: 30_000 },
+      async () => {
+        const workflowFile = path.join(
+          appPath,
+          workflowsDir,
+          'discovered-via-workflow.ts'
+        );
+        const stepFile = path.join(
+          appPath,
+          workflowsDir,
+          'discovered-via-workflow-step.ts'
+        );
+
+        await fs.writeFile(
+          workflowFile,
+          `'use workflow';
+import { discoveredViaWorkflowStep } from './discovered-via-workflow-step';
+
+export async function discoveredViaWorkflow() {
+  await discoveredViaWorkflowStep();
+  return 'ok';
+}
+`
+        );
+        await fs.writeFile(
+          stepFile,
+          `'use step';
+
+export async function discoveredViaWorkflowStep() {
+  return 'ok';
+}
+`
+        );
+        restoreFiles.push({ path: workflowFile, content: '' });
+        restoreFiles.push({ path: stepFile, content: '' });
+
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
+        const apiFileContent = await fs.readFile(apiFile, 'utf8');
+        restoreFiles.push({ path: apiFile, content: apiFileContent });
+
+        await fs.writeFile(
+          apiFile,
+          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/discovered-via-workflow';
+${apiFileContent}`
+        );
+
+        const copiedStepDir = path.join(
+          path.dirname(generatedStep),
+          '__workflow_step_files__'
+        );
+
+        await pollUntil({
+          description:
+            'copied deferred step files to include discoveredViaWorkflowStep',
+          timeoutMs: 25_000,
+          check: async () => {
+            await fetchWithTimeout('/api/chat');
+            const copiedStepFileNames = await fs.readdir(copiedStepDir);
+            const copiedStepContents = await Promise.all(
+              copiedStepFileNames.map(async (copiedStepFileName) => {
+                const copiedStepFilePath = path.join(
+                  copiedStepDir,
+                  copiedStepFileName
+                );
+                const copiedStepStats = await fs.stat(copiedStepFilePath);
+                if (!copiedStepStats.isFile()) {
+                  return '';
+                }
+                return await fs.readFile(copiedStepFilePath, 'utf8');
+              })
+            );
+            expect(
+              copiedStepContents.some((content) =>
+                content.includes('discoveredViaWorkflowStep')
+              )
+            ).toBe(true);
+          },
+        });
       }
     );
   });

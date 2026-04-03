@@ -1,16 +1,17 @@
 {
   "name": "@workflow/web-shared",
   "description": "Shared components for Workflow Observability UI",
-  "version": "4.1.0-beta.47",
+  "version": "4.1.0-beta.71",
   "private": false,
   "files": [
     "dist",
-    "server"
+    "src"
   ],
   "publishConfig": {
     "access": "public"
   },
   "license": "Apache-2.0",
+  "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -18,9 +19,17 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
-    "./server": {
-      "types": "./dist/api/workflow-server-actions.d.ts",
-      "default": "./dist/api/workflow-server-actions.js"
+    "./components": {
+      "types": "./dist/components/index.d.ts",
+      "default": "./dist/components/index.js"
+    },
+    "./styles.css": "./dist/styles.css"
+  },
+  "typesVersions": {
+    "*": {
+      "components": [
+        "dist/components/index.d.ts"
+      ]
     }
   },
   "repository": {
@@ -29,9 +38,10 @@
     "directory": "packages/web-shared"
   },
   "scripts": {
-    "build": "tsc && cp -r src/trace-viewer/*.css dist/trace-viewer/",
+    "build": "tsc && cp -r src/components/trace-viewer/*.css dist/components/trace-viewer/ && cp src/styles.css dist/styles.css",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -r dist ||:",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "biome check",
     "format": "biome format --write"
@@ -39,32 +49,30 @@
   "dependencies": {
     "@tailwindcss/postcss": "4",
     "@workflow/core": "workspace:*",
-    "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
-    "@workflow/world-vercel": "workspace:*",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "color-hash": "2.0.2",
     "date-fns": "4.1.0",
-    "lucide-react": "0.469.0",
+    "lucide-react": "0.575.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
-    "shiki": "3.13.0",
+    "react-inspector": "9.0.0",
+    "react-virtuoso": "4.18.1",
+    "shiki": "4.0.0",
     "sonner": "2.0.7",
-    "streamdown": "1.6.11",
-    "swr": "2.3.6",
-    "tailwind-merge": "2.5.5",
+    "streamdown": "2.3.0",
+    "tailwind-merge": "3.5.0",
     "tailwindcss": "4"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
-    "@types/color-hash": "2.0.0",
     "@types/node": "catalog:",
     "@types/react": "19",
     "@types/react-dom": "19",
     "@workflow/tsconfig": "workspace:*",
     "ai": "catalog:",
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

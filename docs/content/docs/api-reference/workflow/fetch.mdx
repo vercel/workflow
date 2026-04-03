@@ -1,6 +1,12 @@
 ---
 title: fetch
 description: Make HTTP requests from workflows with automatic serialization and retry semantics.
+type: reference
+summary: Use the workflow-aware fetch to make HTTP requests with automatic serialization and retry semantics.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/errors/fetch-in-workflow
 ---
 
 Makes HTTP requests from within a workflow. This is a special step function that wraps the standard `fetch` API, automatically handling serialization and providing retry semantics.

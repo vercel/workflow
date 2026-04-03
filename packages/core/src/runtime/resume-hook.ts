@@ -1,20 +1,53 @@
 import { waitUntil } from '@vercel/functions';
-import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  ERROR_SLUGS,
+  HookNotFoundError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import {
   type Hook,
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
   type WorkflowInvokePayload,
+  type WorkflowRun,
 } from '@workflow/world';
+import { getRunCapabilities } from '../capabilities.js';
+import { type CryptoKey, importKey } from '../encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
+  SerializationFormat,
 } from '../serialization.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
+import { getWorkflowQueueName } from './helpers.js';
 import { getWorld } from './world.js';
+
+/**
+ * Internal helper that returns the hook, the associated workflow run,
+ * and the resolved encryption key.
+ */
+async function getHookByTokenWithKey(token: string): Promise<{
+  hook: Hook;
+  run: WorkflowRun;
+  encryptionKey: CryptoKey | undefined;
+}> {
+  const world = await getWorld();
+  const hook = await world.hooks.getByToken(token);
+  const run = await world.runs.get(hook.runId);
+  const rawKey = await world.getEncryptionKeyForRun?.(run);
+  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+  if (typeof hook.metadata !== 'undefined') {
+    hook.metadata = await hydrateStepArguments(
+      hook.metadata as any,
+      hook.runId,
+      encryptionKey
+    );
+  }
+  return { hook, run, encryptionKey };
+}
 
 /**
  * Get the hook by token to find the associated workflow run,
@@ -24,11 +57,7 @@ import { getWorld } from './world.js';
  * @param token - The unique token identifying the hook
  */
 export async function getHookByToken(token: string): Promise<Hook> {
-  const world = await getWorld();
-  const hook = await world.hooks.getByToken(token);
-  if (typeof hook.metadata !== 'undefined') {
-    hook.metadata = hydrateStepArguments(hook.metadata as any, [], hook.runId);
-  }
+  const { hook } = await getHookByTokenWithKey(token);
   return hook;
 }
 
@@ -63,17 +92,32 @@ export async function getHookByToken(token: string): Promise<Hook> {
  */
 export async function resumeHook<T = any>(
   tokenOrHook: string | Hook,
-  payload: T
+  payload: T,
+  encryptionKeyOverride?: CryptoKey
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
       const world = await getWorld();
 
       try {
-        const hook =
-          typeof tokenOrHook === 'string'
-            ? await getHookByToken(tokenOrHook)
-            : tokenOrHook;
+        let hook: Hook;
+        let workflowRun: WorkflowRun;
+        let encryptionKey: CryptoKey | undefined;
+        if (typeof tokenOrHook === 'string') {
+          const result = await getHookByTokenWithKey(tokenOrHook);
+          hook = result.hook;
+          workflowRun = result.run;
+          encryptionKey = encryptionKeyOverride ?? result.encryptionKey;
+        } else {
+          hook = tokenOrHook;
+          workflowRun = await world.runs.get(hook.runId);
+          if (encryptionKeyOverride) {
+            encryptionKey = encryptionKeyOverride;
+          } else {
+            const rawKey = await world.getEncryptionKeyForRun?.(workflowRun);
+            encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+          }
+        }
 
         span?.setAttributes({
           ...Attribute.HookToken(hook.token),
@@ -81,13 +125,26 @@ export async function resumeHook<T = any>(
           ...Attribute.WorkflowRunId(hook.runId),
         });
 
+        // Check the target run's capabilities to ensure we encode the
+        // payload in a format the run's deployment can decode. For example,
+        // runs created before encryption support was added cannot decode
+        // the 'encr' serialization format.
+        const rawVersion = workflowRun.executionContext?.workflowCoreVersion;
+        const { supportedFormats } = getRunCapabilities(
+          typeof rawVersion === 'string' ? rawVersion : undefined
+        );
+        if (!supportedFormats.has(SerializationFormat.ENCRYPTED)) {
+          encryptionKey = undefined;
+        }
+
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
         const v1Compat = isLegacySpecVersion(hook.specVersion);
-        const dehydratedPayload = dehydrateStepReturnValue(
+        const dehydratedPayload = await dehydrateStepReturnValue(
           payload,
-          ops,
           hook.runId,
+          encryptionKey,
+          ops,
           globalThis,
           v1Compat
         );
@@ -112,8 +169,6 @@ export async function resumeHook<T = any>(
           { v1Compat }
         );
 
-        const workflowRun = await world.runs.get(hook.runId);
-
         span?.setAttributes({
           ...Attribute.WorkflowName(workflowRun.workflowName),
         });
@@ -130,7 +185,7 @@ export async function resumeHook<T = any>(
         // Re-trigger the workflow against the deployment ID associated
         // with the workflow run that the hook belongs to
         await world.queue(
-          `__wkf_workflow_${workflowRun.workflowName}`,
+          getWorkflowQueueName(workflowRun.workflowName),
           {
             runId: hook.runId,
             // attach the trace carrier from the workflow run
@@ -195,7 +250,15 @@ export async function resumeWebhook(
   token: string,
   request: Request
 ): Promise<Response> {
-  const hook = await getHookByToken(token);
+  const { hook, encryptionKey } = await getHookByTokenWithKey(token);
+
+  // Only webhooks can be resumed via the public endpoint.
+  // If the hook was created via createHook() (isWebhook !== true),
+  // throw the same "not found" error the world would throw for a missing
+  // token. This prevents leaking that the token is valid.
+  if (hook.isWebhook === false) {
+    throw new HookNotFoundError(token);
+  }
 
   let response: Response | undefined;
   let responseReadable: ReadableStream<Response> | undefined;
@@ -224,7 +287,7 @@ export async function resumeWebhook(
     response = new Response(null, { status: 202 });
   }
 
-  await resumeHook(hook, request);
+  await resumeHook(hook, request, encryptionKey);
 
   if (responseReadable) {
     // Wait for the readable stream to emit one chunk,

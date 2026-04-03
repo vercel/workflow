@@ -1,6 +1,17 @@
 ---
 title: Chat Session Modeling
 description: Model chat sessions at different architectural layers to control state ownership and handle interruptions.
+type: guide
+summary: Choose between single-turn and multi-turn workflow patterns for managing chat session state.
+prerequisites:
+  - /docs/ai
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/ai/message-queueing
+  - /docs/ai/resumable-streams
+  - /docs/foundations/hooks
+  - /docs/api-reference/workflow-ai/durable-agent
+  - /docs/api-reference/workflow/define-hook
 ---
 
 Chat sessions in AI agents can be modeled at different layers of your architecture. The choice affects state ownership and how you handle interruptions and reconnections.
@@ -28,12 +39,12 @@ export async function chat(messages: UIMessage[]) {
 
   const agent = new DurableAgent({
     model: "bedrock/claude-haiku-4-5-20251001-v1",
-    system: FLIGHT_ASSISTANT_PROMPT,
+    instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
 
   await agent.stream({
-    messages: convertToModelMessages(messages), // [!code highlight] Full history from client
+    messages: await convertToModelMessages(messages), // [!code highlight] Full history from client
     writable,
   });
 }
@@ -160,7 +171,7 @@ export async function chat(initialMessages: UIMessage[]) {
 
   const { workflowRunId: runId } = getWorkflowMetadata();
   const writable = getWritable<UIMessageChunk>();
-  const messages: ModelMessage[] = convertToModelMessages(initialMessages);
+  const messages: ModelMessage[] = await convertToModelMessages(initialMessages);
 
   // Write markers for initial user messages (for replay) // [!code highlight]
   for (const msg of initialMessages) { // [!code highlight]
@@ -172,7 +183,7 @@ export async function chat(initialMessages: UIMessage[]) {
 
   const agent = new DurableAgent({
     model: "bedrock/claude-haiku-4-5-20251001-v1",
-    system: FLIGHT_ASSISTANT_PROMPT,
+    instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
 

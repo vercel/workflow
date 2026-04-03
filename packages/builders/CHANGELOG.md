@@ -1,5 +1,253 @@
 # @workflow/builders
 
+## 4.0.1-beta.67
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.2.0-beta.76
+
+## 4.0.1-beta.66
+
+### Patch Changes
+
+- [#1567](https://github.com/vercel/workflow/pull/1567) [`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Increase flow route limit to max fluid duration and fail run if a single replay takes too long
+
+- Updated dependencies [[`a98f8de`](https://github.com/vercel/workflow/commit/a98f8de53f1af222cccea6d091b68d544957b4e3), [`d38114b`](https://github.com/vercel/workflow/commit/d38114bff1c0a786e103b3da8c2d9afc93b41fbe), [`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff)]:
+  - @workflow/core@4.2.0-beta.75
+  - @workflow/errors@4.1.0-beta.20
+
+## 4.0.1-beta.65
+
+### Patch Changes
+
+- [#1560](https://github.com/vercel/workflow/pull/1560) [`a3b7c48`](https://github.com/vercel/workflow/commit/a3b7c480e058e9070d2ecb8b84b38bbf2081840a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Only rewrite .ts extensions to .js in externalized step imports when targeting Node's native ESM loader (vitest), preserving original extensions for framework bundlers (Next.js, SvelteKit, etc.)
+
+- [#1509](https://github.com/vercel/workflow/pull/1509) [`d119c74`](https://github.com/vercel/workflow/commit/d119c740d095ae601598bc2a62e6269e06f70f3e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix import.meta.url being undefined when using CJS builds
+
+- Updated dependencies [[`62ff600`](https://github.com/vercel/workflow/commit/62ff6004f6f5c1b7b93099470a0097d8a81a42ee), [`4f646e3`](https://github.com/vercel/workflow/commit/4f646e3d58d27a5777922519a72e352814a7ef12)]:
+  - @workflow/core@4.2.0-beta.74
+
+## 4.0.1-beta.64
+
+### Patch Changes
+
+- [#1524](https://github.com/vercel/workflow/pull/1524) [`52db376`](https://github.com/vercel/workflow/commit/52db376c39ef322e8e458c0f81ccc67c9ab2b301) Thanks [@matchai](https://github.com/matchai)! - Fix dependency resolution for step imports with .ts, .mts, and .cts extensions
+
+- Updated dependencies [[`8e7083b`](https://github.com/vercel/workflow/commit/8e7083b327cc727c9a4363030be8c375f9863016), [`d1391e1`](https://github.com/vercel/workflow/commit/d1391e1fd9a553d87ae467ba2babdc96545d5d36), [`c739b99`](https://github.com/vercel/workflow/commit/c739b995814cbc3c67092faa481e6d3d0cabfe50)]:
+  - @workflow/core@4.2.0-beta.73
+
+## 4.0.1-beta.63
+
+### Patch Changes
+
+- [#1344](https://github.com/vercel/workflow/pull/1344) [`beccbc4`](https://github.com/vercel/workflow/commit/beccbc4298f434a4ffb9563c4f832f2230016f40) Thanks [@pranaygp](https://github.com/pranaygp)! - Remove VQS maxDeliveries cap and enforce max delivery limit in workflow/step handlers with graceful failure
+
+- [#1468](https://github.com/vercel/workflow/pull/1468) [`5010ebe`](https://github.com/vercel/workflow/commit/5010ebe7c5f8e2f4921e99cc22c7360ae0d49097) Thanks [@ijjk](https://github.com/ijjk)! - Fix deferred Next.js discovery bootstrap and improve workflow alias path resolution for app/pages/workflows sources.
+
+- [#1455](https://github.com/vercel/workflow/pull/1455) [`6cce021`](https://github.com/vercel/workflow/commit/6cce021503b80db49fea1d0085ecb304678cfc8a) Thanks [@ijjk](https://github.com/ijjk)! - catch node builtin usage when entry fields diverge
+
+- [#1461](https://github.com/vercel/workflow/pull/1461) [`977b7e9`](https://github.com/vercel/workflow/commit/977b7e97edabd9b4fb800a5f6e1037dc78ca3c61) Thanks [@AndrewBarba](https://github.com/AndrewBarba)! - Add optional projectRoot to builder config to allow explicit resolution of workflow module specifiers without relying on process.cwd(). Threads the root through discovery, SWC transforms, and the Next.js deferred builder while preserving existing behavior when omitted.
+
+- Updated dependencies [[`73a851a`](https://github.com/vercel/workflow/commit/73a851ada6a4d46ae8f022ef243ebf4ee3de2ad8), [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7), [`2ef33d2`](https://github.com/vercel/workflow/commit/2ef33d2828ac06debf04ad9cc239d70fea6a8093), [`672d919`](https://github.com/vercel/workflow/commit/672d9195a475a110a64dbaa7c5c87a24f244c11a), [`beccbc4`](https://github.com/vercel/workflow/commit/beccbc4298f434a4ffb9563c4f832f2230016f40), [`77fd9ad`](https://github.com/vercel/workflow/commit/77fd9ad3556544a0efd7d6c4d00eedfc03dc10e5), [`78f1b0e`](https://github.com/vercel/workflow/commit/78f1b0e19f2ac1a621020bc9fa5dec778f3b0fd9), [`da6adf7`](https://github.com/vercel/workflow/commit/da6adf7798efa38cfbe7d30209102c11cc7643c4), [`aee035f`](https://github.com/vercel/workflow/commit/aee035f94483ef3b842bb557e8c5b167dd0536c4), [`992d768`](https://github.com/vercel/workflow/commit/992d768f8026846bc2587892fc06e998d8c1fd8e), [`01bbe66`](https://github.com/vercel/workflow/commit/01bbe66d5a60d50d71f5b1c82b002ca7fc6f8e0b), [`2b07294`](https://github.com/vercel/workflow/commit/2b072943134e8655afe8b3c2dfe535307b7a1a8b)]:
+  - @workflow/errors@4.1.0-beta.19
+  - @workflow/core@4.2.0-beta.72
+  - @workflow/swc-plugin@4.1.0-beta.21
+
+## 4.0.1-beta.62
+
+### Patch Changes
+
+- [#1420](https://github.com/vercel/workflow/pull/1420) [`3cc2943`](https://github.com/vercel/workflow/commit/3cc29431b266832dd3d9b735da455d2b11612ea7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Set `maxDuration` in generated `.vc-config.json` for workflow functions (`"max"` for step, `60` for flow)
+
+- Updated dependencies [[`97e4384`](https://github.com/vercel/workflow/commit/97e43846f000f8ef0ea2f237a5c4cc696423e0f0), [`5d95abf`](https://github.com/vercel/workflow/commit/5d95abf9413462e82759bf68ab985e794ce05756), [`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597), [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a), [`a2c0c7e`](https://github.com/vercel/workflow/commit/a2c0c7e6d9d7349bd49aac6e6ea072c68efb7620), [`2cc42cb`](https://github.com/vercel/workflow/commit/2cc42cb8a934532d9ce5b05185322a2f9ce76024), [`f52afe7`](https://github.com/vercel/workflow/commit/f52afe77fffb981dd8812b84b39c2ecab2288f43)]:
+  - @workflow/core@4.2.0-beta.71
+  - @workflow/swc-plugin@4.1.0-beta.20
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.0.1-beta.61
+
+### Patch Changes
+
+- Updated dependencies [[`7df1385`](https://github.com/vercel/workflow/commit/7df13854f85529929ff1187fe831f4dbc51b9121), [`58e67ce`](https://github.com/vercel/workflow/commit/58e67ce11bd69b982214e2734363fa7fd252f5f6)]:
+  - @workflow/core@4.2.0-beta.70
+
+## 4.0.1-beta.60
+
+### Patch Changes
+
+- [#1312](https://github.com/vercel/workflow/pull/1312) [`d72c822`](https://github.com/vercel/workflow/commit/d72c82220f0c56bb26edbc918e485b8bd14c959b) Thanks [@NathanColosimo](https://github.com/NathanColosimo)! - Fix bug where the SWC compiler bug prunes step-only imports in the client-mode transformation
+
+- Updated dependencies [[`825417a`](https://github.com/vercel/workflow/commit/825417acbaf7f721259427ecf4b7bc2a0e5cbef7), [`fb5a500`](https://github.com/vercel/workflow/commit/fb5a500eadba80efdef75e3ccf6e85e957820f38), [`d72c822`](https://github.com/vercel/workflow/commit/d72c82220f0c56bb26edbc918e485b8bd14c959b)]:
+  - @workflow/core@4.2.0-beta.69
+  - @workflow/swc-plugin@4.1.0-beta.19
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.0.1-beta.59
+
+### Patch Changes
+
+- Updated dependencies [[`83dbd46`](https://github.com/vercel/workflow/commit/83dbd46456a8dbfc89efd87895929cbb813feda3), [`854a25f`](https://github.com/vercel/workflow/commit/854a25f9103f5f3a5769dec6e3e5c6b98ed119b0)]:
+  - @workflow/core@4.2.0-beta.68
+
+## 4.0.1-beta.58
+
+### Patch Changes
+
+- Updated dependencies [[`c71befe`](https://github.com/vercel/workflow/commit/c71befe8ec73765e67b7f2e0627251643ab245d4), [`36a901d`](https://github.com/vercel/workflow/commit/36a901d2d2f2ba37ec024073a7dd39a094b9e9c0)]:
+  - @workflow/core@4.2.0-beta.67
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.0.1-beta.57
+
+### Patch Changes
+
+- Updated dependencies [[`8b5a388`](https://github.com/vercel/workflow/commit/8b5a388a9451d7c7460481f0889da5037bd90893), [`dff00c9`](https://github.com/vercel/workflow/commit/dff00c94008f60cbfb4a398f2b98101d80ee8377)]:
+  - @workflow/core@4.2.0-beta.66
+
+## 4.0.1-beta.56
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.2.0-beta.65
+  - @workflow/errors@4.1.0-beta.18
+
+## 4.0.1-beta.55
+
+### Patch Changes
+
+- Updated dependencies [[`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`adfe8b6`](https://github.com/vercel/workflow/commit/adfe8b6b1123ce581aa9572bae91b8d7f9cdc53d), [`7618ac3`](https://github.com/vercel/workflow/commit/7618ac36c203d04e39513953e3b22a13b0c70829), [`860531d`](https://github.com/vercel/workflow/commit/860531d182d74547acd12784cb825bb41c1a9342), [`60bc9d5`](https://github.com/vercel/workflow/commit/60bc9d5cb1022e169266884f4bcdd0fb99c45679), [`bbe40ff`](https://github.com/vercel/workflow/commit/bbe40ff00a5e372b040aec8fc7640c54d08c5636), [`30e24d4`](https://github.com/vercel/workflow/commit/30e24d441e735635ffa4522198e6905d0e51e175), [`a7ae7e9`](https://github.com/vercel/workflow/commit/a7ae7e9a612905c911a59b631d62856d31333aeb)]:
+  - @workflow/errors@4.1.0-beta.18
+  - @workflow/core@4.2.0-beta.64
+
+## 4.0.1-beta.54
+
+### Patch Changes
+
+- [#1228](https://github.com/vercel/workflow/pull/1228) [`809339b`](https://github.com/vercel/workflow/commit/809339ba1c8362529c9fc198f7921f19fe91f233) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Enable directive discovery in dot-prefixed files and directories (e.g. `.config/step.ts`, `.hidden-workflow.ts`)
+
+- [#1230](https://github.com/vercel/workflow/pull/1230) [`a9fea91`](https://github.com/vercel/workflow/commit/a9fea9132ef3797dbda7683c36cc86ff2bd82f1f) Thanks [@ijjk](https://github.com/ijjk)! - Fix deferred build mode for Next.js
+
+- Updated dependencies [[`4ab4412`](https://github.com/vercel/workflow/commit/4ab4412ae6f4a64eb29fcb0e445f0b3314aa3b9b), [`a9fea91`](https://github.com/vercel/workflow/commit/a9fea9132ef3797dbda7683c36cc86ff2bd82f1f)]:
+  - @workflow/core@4.1.0-beta.63
+
+## 4.0.1-beta.53
+
+### Patch Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- Updated dependencies [[`6f2cbcd`](https://github.com/vercel/workflow/commit/6f2cbcda9df55809f2dab15a05b0b72a78095439), [`02681dc`](https://github.com/vercel/workflow/commit/02681dce4a504ff236c81a1ee976d2b04d1a5774), [`028a828`](https://github.com/vercel/workflow/commit/028a828de113f8b07f9bb70d91f75e97162ab37d), [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - @workflow/core@4.1.0-beta.62
+  - @workflow/utils@4.1.0-beta.13
+  - @workflow/errors@4.1.0-beta.17
+
+## 4.0.1-beta.52
+
+### Patch Changes
+
+- Updated dependencies [[`f5ea16f`](https://github.com/vercel/workflow/commit/f5ea16fbf5ba046e0e7a6e7ef95d6305abfd1768), [`70223a9`](https://github.com/vercel/workflow/commit/70223a9091494ba1db56784e29e5bc92c78a89e0), [`d99ca9c`](https://github.com/vercel/workflow/commit/d99ca9cfed4fafd43853f89f8a4939ed3d240e20)]:
+  - @workflow/core@4.1.0-beta.61
+  - @workflow/errors@4.1.0-beta.16
+
+## 4.0.1-beta.51
+
+### Patch Changes
+
+- Updated dependencies [[`c1cd9a3`](https://github.com/vercel/workflow/commit/c1cd9a3bc7a0ef953d588c8fe4f21a32f80711b3)]:
+  - @workflow/core@4.1.0-beta.60
+
+## 4.0.1-beta.50
+
+### Patch Changes
+
+- Updated dependencies [[`c75de97`](https://github.com/vercel/workflow/commit/c75de973fd41d2a1d0391d965b61210a9fb7c86c), [`b65bb07`](https://github.com/vercel/workflow/commit/b65bb072b540e9e5fb6bc3f72c4132667cc60277)]:
+  - @workflow/core@4.1.0-beta.59
+  - @workflow/errors@4.1.0-beta.16
+
+## 4.0.1-beta.49
+
+### Patch Changes
+
+- [#1031](https://github.com/vercel/workflow/pull/1031) [`1c11573`](https://github.com/vercel/workflow/commit/1c1157340d88c60c7c80c0789c111050b809ab77) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Refactor and enhance web-shared observability UI components and update builders base behavior.
+
+- [#1096](https://github.com/vercel/workflow/pull/1096) [`29347b7`](https://github.com/vercel/workflow/commit/29347b79eae8181d02ed1e52183983adc56425fd) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use new Vercel queue client with v2 message format, simplified callback handling, etc.
+
+- Updated dependencies [[`0d5323c`](https://github.com/vercel/workflow/commit/0d5323c0a7e760f1fa3741cf249c19f59e9ddfbe), [`7046610`](https://github.com/vercel/workflow/commit/704661078f6d6065f9b5dcd28c0b98ae91034143), [`c2b4fe9`](https://github.com/vercel/workflow/commit/c2b4fe9906fd0845fef646669034cd203d97a18d), [`6e72b29`](https://github.com/vercel/workflow/commit/6e72b295e71c1a9e0a91dbe1137eca7b88227e1f), [`ea3254e`](https://github.com/vercel/workflow/commit/ea3254e7ce28cef6b9b829ac7ad379921dd41ed9), [`1c11573`](https://github.com/vercel/workflow/commit/1c1157340d88c60c7c80c0789c111050b809ab77), [`9f77380`](https://github.com/vercel/workflow/commit/9f773804937cf94fc65a2141c4a45b429771a5cb), [`852e3f1`](https://github.com/vercel/workflow/commit/852e3f1788f7a9aff638b322af4c8b1a7135c17e), [`5e06a7c`](https://github.com/vercel/workflow/commit/5e06a7c8332042a4835fa0e469e1031fec742668)]:
+  - @workflow/core@4.1.0-beta.58
+  - @workflow/errors@4.1.0-beta.16
+
+## 4.0.1-beta.48
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.1.0-beta.57
+
+## 4.0.1-beta.47
+
+### Patch Changes
+
+- [#1029](https://github.com/vercel/workflow/pull/1029) [`94760b4`](https://github.com/vercel/workflow/commit/94760b4640dde4ed84ff0932994ce9a47b1954ad) Thanks [@ijjk](https://github.com/ijjk)! - Track loader transform deps instead of clearing Next cache
+
+- Updated dependencies [[`c56dc38`](https://github.com/vercel/workflow/commit/c56dc3848ecf3e188f876dc4cb7861df185bd4fb), [`d7d005b`](https://github.com/vercel/workflow/commit/d7d005b54b621214720518a2a19aa2cadfa23d47), [`8d117cd`](https://github.com/vercel/workflow/commit/8d117cd219faac53ffa90db8628defd3d7a8160d), [`63caf93`](https://github.com/vercel/workflow/commit/63caf931380b8211f1948cf44eac7532f33e660d), [`dc2dc6a`](https://github.com/vercel/workflow/commit/dc2dc6ac7908e57be9ab34140addfe98a9246fc7)]:
+  - @workflow/core@4.1.0-beta.56
+
+## 4.0.1-beta.46
+
+### Patch Changes
+
+- [#998](https://github.com/vercel/workflow/pull/998) [`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee) Thanks [@ijjk](https://github.com/ijjk)! - Expose workflows manifest under diagnostics folder
+
+- [#976](https://github.com/vercel/workflow/pull/976) [`a5935ab`](https://github.com/vercel/workflow/commit/a5935abec7c7e57b2a89c629203d567cd7ac76a7) Thanks [@ijjk](https://github.com/ijjk)! - Add lazy workflow/step discovery via deferredEntries in next
+
+- [#908](https://github.com/vercel/workflow/pull/908) [`1adcc6a`](https://github.com/vercel/workflow/commit/1adcc6a618562e0b31ae53d10f9f6aa797107705) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix discovery of serde classes to detect `[WORKFLOW_SERIALIZE]` and `[WORKFLOW_DESERIALIZE]` computed property usage in bundled code
+
+- Updated dependencies [[`3d770d5`](https://github.com/vercel/workflow/commit/3d770d53855ce7c8522d4f0afbdbc123eae6c1ee), [`054e40c`](https://github.com/vercel/workflow/commit/054e40c91be615809c71d3ad29573c78c4491825), [`a5935ab`](https://github.com/vercel/workflow/commit/a5935abec7c7e57b2a89c629203d567cd7ac76a7), [`fc4cad6`](https://github.com/vercel/workflow/commit/fc4cad68088b0f4fa4e5eeb828e2af29e05d4fe1), [`56f2221`](https://github.com/vercel/workflow/commit/56f22219b338a5a2c29466798a5ad36a6a450498)]:
+  - @workflow/utils@4.1.0-beta.12
+  - @workflow/core@4.1.0-beta.55
+  - @workflow/swc-plugin@4.1.0-beta.18
+  - @workflow/errors@4.1.0-beta.15
+
+## 4.0.1-beta.45
+
+### Patch Changes
+
+- [#972](https://github.com/vercel/workflow/pull/972) [`2d1d69f`](https://github.com/vercel/workflow/commit/2d1d69f4ca7be9cf6d01aa2dfb9b031d74ba166c) Thanks [@ijjk](https://github.com/ijjk)! - Fix getImportPath package handling
+
+- Updated dependencies [[`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c), [`d9e9859`](https://github.com/vercel/workflow/commit/d9e98590fae17fd090e0be4f0b54bbaa80c7be69), [`ef23b0b`](https://github.com/vercel/workflow/commit/ef23b0be770bbb5ccca015fb2564953fe6a761d7), [`f7fd88e`](https://github.com/vercel/workflow/commit/f7fd88ea963e127e62c8d527dcfdb895ba646fc2), [`fcfaf8b`](https://github.com/vercel/workflow/commit/fcfaf8bbaa912b1767c646592e539d5f98cd1e9c)]:
+  - @workflow/core@4.1.0-beta.54
+  - @workflow/swc-plugin@4.1.0-beta.17
+  - @workflow/errors@4.1.0-beta.14
+
+## 4.0.1-beta.44
+
+### Patch Changes
+
+- [#901](https://github.com/vercel/workflow/pull/901) [`35a9f0c`](https://github.com/vercel/workflow/commit/35a9f0cb0360ffc48c8a8e7db3a299924ab48375) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix module specifier cache bug and add subpath export resolution for package IDs
+
+- [#931](https://github.com/vercel/workflow/pull/931) [`2453b29`](https://github.com/vercel/workflow/commit/2453b29426d79497076bc910c23cac887beefc0d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Make `wf build --manifest-file` include steps / classes metadata
+
+- [#874](https://github.com/vercel/workflow/pull/874) [`b5296a7`](https://github.com/vercel/workflow/commit/b5296a7a32b9037aa03c71d87e785fa2d5384a11) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add discovered serializable classes in all context modes
+
+- [#899](https://github.com/vercel/workflow/pull/899) [`73bf7be`](https://github.com/vercel/workflow/commit/73bf7be925a8ffc0c6fce0cc75b6092243882088) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Change compiler ID generation logic to use Node.js import specifiers
+
+  IDs for workflows, steps, and classes now use module specifiers:
+  - Local files use `./path/to/file` format instead of `path/to/file.ext`
+  - Package files use `packageName@version` format (e.g., `workflow@4.0.1`)
+
+  This enables stable IDs across different package.json export conditions.
+
+- [#963](https://github.com/vercel/workflow/pull/963) [`661724c`](https://github.com/vercel/workflow/commit/661724c01e78691abad26fa99bd44f254a70f2dd) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Expose workflow manifest via HTTP when `WORKFLOW_PUBLIC_MANIFEST=1`
+
+- [#859](https://github.com/vercel/workflow/pull/859) [`8114792`](https://github.com/vercel/workflow/commit/8114792600a851fbf14cf41f8340e646aef36368) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add discovery for custom classes with workflow serialization
+
+- Updated dependencies [[`0ce46b9`](https://github.com/vercel/workflow/commit/0ce46b91d9c8ca3349f43cdf3a5d75a948d6f5ad), [`35a9f0c`](https://github.com/vercel/workflow/commit/35a9f0cb0360ffc48c8a8e7db3a299924ab48375), [`f090de1`](https://github.com/vercel/workflow/commit/f090de1eb48ad8ec3fd776e9d084310d56a7ac29), [`79e988f`](https://github.com/vercel/workflow/commit/79e988fa85f0ebdd5c8913b8de84e01c55d020b9), [`b9c782d`](https://github.com/vercel/workflow/commit/b9c782d75f5452265764cd36d5e306060f8703c3), [`c54ba21`](https://github.com/vercel/workflow/commit/c54ba21c19040577ed95f6264a2670f190e1d1d3), [`b5296a7`](https://github.com/vercel/workflow/commit/b5296a7a32b9037aa03c71d87e785fa2d5384a11), [`c1d7c8d`](https://github.com/vercel/workflow/commit/c1d7c8dbb44afb7434acb07fee500ecaa1224fb0), [`e0061b8`](https://github.com/vercel/workflow/commit/e0061b861d0e3c3dc15853aed331fb1bbab71408), [`38e8d55`](https://github.com/vercel/workflow/commit/38e8d5571d2ee4b80387943f8f39a93b6e4bc751), [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6), [`73bf7be`](https://github.com/vercel/workflow/commit/73bf7be925a8ffc0c6fce0cc75b6092243882088), [`efb33b2`](https://github.com/vercel/workflow/commit/efb33b2b5edf6ccb1ec2f02f1d99f2a009333780), [`8114792`](https://github.com/vercel/workflow/commit/8114792600a851fbf14cf41f8340e646aef36368), [`088de0a`](https://github.com/vercel/workflow/commit/088de0ae422bb7c958109d689127691cea5753b6)]:
+  - @workflow/core@4.1.0-beta.53
+  - @workflow/swc-plugin@4.1.0-beta.16
+  - @workflow/errors@4.1.0-beta.14
+
 ## 4.0.1-beta.43
 
 ### Patch Changes
@@ -185,14 +433,12 @@
 
 - fc774e5: Fix esbuild node module plugin to show top level violation and preview file
 - 21cff15: Add support for `.mjs`, `.mts`, `.cjs`, and `.cts` file extensions in the SWC transform
-
   - Updated turbopack rules to include `*.mjs`, `*.mts`, `*.cjs`, `*.cts` in addition to existing extensions
   - Fixed TypeScript detection for `.mts` and `.cts` files across all transform plugins
   - Updated esbuild `resolveExtensions` to include `.mts` and `.cts`
   - Updated the file watcher's `watchableExtensions` to include `.cts`
 
 - 43f2dec: Improved workflow registration in workflow mode
-
   - SWC plugin now emits `globalThis.__private_workflows.set(workflowId, fn)` directly after setting `workflowId`
   - Non-exported workflow functions are now properly registered and can be invoked
   - Removed runtime iteration over exports in the workflow bundle - registration happens at transform time

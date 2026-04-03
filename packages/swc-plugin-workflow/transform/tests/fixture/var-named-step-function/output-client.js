@@ -2,6 +2,8 @@
 async function namedStep() {
     return 1;
 }
+namedStep.stepId = "step//./input//namedStep";
 export async function exportedNamedStep() {
     return 2;
 }
+exportedNamedStep.stepId = "step//./input//exportedNamedStep";

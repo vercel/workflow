@@ -1,6 +1,12 @@
 ---
 title: node-js-module-in-workflow
 description: Move Node.js core module usage to step functions instead of workflows.
+type: troubleshooting
+summary: Resolve the node-js-module-in-workflow error by moving Node.js modules to step functions.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/how-it-works/understanding-directives
 ---
 
 This error occurs when you try to import or use Node.js core modules (like `fs`, `http`, `crypto`, `path`, etc.) directly inside a workflow function.
@@ -70,5 +76,5 @@ These common Node.js core modules cannot be used in workflow functions:
 - Streams: `stream` (use Web Streams API instead)
 
 <Callout type="info">
-You can use Web Platform APIs in workflow functions (like `Headers`, `crypto.randomUUID()`, `Response`, etc.), since these are available in the sandboxed environment.
+You can use Web Platform APIs in workflow functions (like `Headers`, `crypto.randomUUID()`, `Response`, etc.), since these are available in the sandboxed environment. See [Workflow Globals](/docs/api-reference/workflow-globals) for the full list.
 </Callout>

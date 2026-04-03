@@ -1,11 +1,139 @@
 # @workflow/web
 
+## 4.1.0-beta.47
+
+### Patch Changes
+
+- [#1590](https://github.com/vercel/workflow/pull/1590) [`74c4cdb`](https://github.com/vercel/workflow/commit/74c4cdb6519802e3d56760e971507ffb93bc945b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix server crash on unmatched routes (e.g. /robots.txt, /favicon.ico)
+
+## 4.1.0-beta.46
+
+### Patch Changes
+
+- [#1542](https://github.com/vercel/workflow/pull/1542) [`c488877`](https://github.com/vercel/workflow/commit/c488877727d693e761ecbaae1e86bac4fb1f1e2c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - fix: switch web stream reader from readFromStream to getStreamChunks
+
+## 4.1.0-beta.45
+
+### Patch Changes
+
+- [#1492](https://github.com/vercel/workflow/pull/1492) [`dab106a`](https://github.com/vercel/workflow/commit/dab106acd3556f49db295108a3cdccc8058a7b92) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Hide the workflow graph viewer tab
+
+- [#1515](https://github.com/vercel/workflow/pull/1515) [`bb86b69`](https://github.com/vercel/workflow/commit/bb86b695c247980f3ac0fd916aad108d0c05d9be) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix Streams tab crash when decrypting large stream chunks
+
+## 4.1.0-beta.44
+
+### Patch Changes
+
+- [#1340](https://github.com/vercel/workflow/pull/1340) [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Add error code classification (`USER_ERROR`, `RUNTIME_ERROR`) to `run_failed` events, improve queue and schema validation error logging
+
+- [#1473](https://github.com/vercel/workflow/pull/1473) [`2b80e2d`](https://github.com/vercel/workflow/commit/2b80e2de35aac170e5dc7d83a1b3f26495a0bbc9) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix stream display for streams created before version `4.1.0-beta.56`
+
+## 4.1.0-beta.43
+
+### Patch Changes
+
+- [#1381](https://github.com/vercel/workflow/pull/1381) [`7b9b3c1`](https://github.com/vercel/workflow/commit/7b9b3c1a484a4effff2190ac9899a2608704f375) Thanks [@karthikscale3](https://github.com/karthikscale3)! - web-shared: Timestamp tooltips, toast adapter, improved skeletons, and encrypted data detection for lazy-loaded events
+  web: Add toast for decryption
+
+- [#1364](https://github.com/vercel/workflow/pull/1364) [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Strip only ref/payload fields from eventData when resolveData is 'none', preserving all other metadata
+
+## 4.1.0-beta.42
+
+### Patch Changes
+
+- [#1346](https://github.com/vercel/workflow/pull/1346) [`73c12f1`](https://github.com/vercel/workflow/commit/73c12f14dabb465e2074e2aebbcd231a4d91bc09) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `ERR_UNSUPPORTED_ESM_URL_SCHEME` on Windows by converting absolute file paths to `file://` URLs before passing them to dynamic `import()`
+
+- [#1358](https://github.com/vercel/workflow/pull/1358) [`5c6ae60`](https://github.com/vercel/workflow/commit/5c6ae607a58d200fbad673821728a1a39684dfd9) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Improve workflow observability UX with decoupled pagination, stream virtualization, and decrypt actions
+
+- [#1366](https://github.com/vercel/workflow/pull/1366) [`d6da7ec`](https://github.com/vercel/workflow/commit/d6da7ecca0fbf94d3331ce3bd7d28644a4f5cc3f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix stale encryptionKey closure in events list data hook in web
+
+## 4.1.0-beta.41
+
+### Patch Changes
+
+- [#1322](https://github.com/vercel/workflow/pull/1322) [`d5bc418`](https://github.com/vercel/workflow/commit/d5bc418816748ab2b5109ca7b082f3be427c326b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Update readme to call out self-hosting limitations
+
+- [#1327](https://github.com/vercel/workflow/pull/1327) [`d5ae817`](https://github.com/vercel/workflow/commit/d5ae81786303554bbee0e9fa939c92274a883d18) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve loading indicators for trace viewer and events list
+
+## 4.1.0-beta.40
+
+### Patch Changes
+
+- [#1261](https://github.com/vercel/workflow/pull/1261) [`887cc2b`](https://github.com/vercel/workflow/commit/887cc2bd55b904c696083d87ab32a9fc03d619a8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Refactor trace viewer to build spans entirely from events instead of fetching Steps and Hooks as separate resources.
+
+- [#1265](https://github.com/vercel/workflow/pull/1265) [`aa2f581`](https://github.com/vercel/workflow/commit/aa2f581b488baf929a784f289a81e21c39ccb5a6) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add custom `entry.server.tsx` and move `@react-router/node`, `isbot`, `react-router`, and `@react-router/express` to devDependencies since the build process bundles them entirely at build time
+
+- [#1308](https://github.com/vercel/workflow/pull/1308) [`33101a2`](https://github.com/vercel/workflow/commit/33101a229207bafe869fb73686c6bfcc59ab25b0) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Move decrypt operation to the entity panel inside web-shared and wire it up to web via component callback.
+
+## 4.1.0-beta.39
+
+### Patch Changes
+
+- [#1288](https://github.com/vercel/workflow/pull/1288) [`5e4ef65`](https://github.com/vercel/workflow/commit/5e4ef657cf34c04d6d12b9823fb7fca8885c2f90) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use `world.events.get(eventId)` instead of `listByCorrelationId` for loading individual event data in run detail view.
+
+## 4.1.0-beta.38
+
+### Patch Changes
+
+- [#1278](https://github.com/vercel/workflow/pull/1278) [`1eaff36`](https://github.com/vercel/workflow/commit/1eaff36f197bcaefacac2e89a08c90e735a67644) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Ensure data resolution failure does not prevent run from being inspected in UI
+
+- [#1277](https://github.com/vercel/workflow/pull/1277) [`97932d3`](https://github.com/vercel/workflow/commit/97932d3086b4b7c339e612fb6cac0ffda74545e3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix encrypted stream inspection: move deserialization/decryption client-side, add --decrypt support to CLI
+
+## 4.1.0-beta.37
+
+### Patch Changes
+
+- [#1256](https://github.com/vercel/workflow/pull/1256) [`bbe40ff`](https://github.com/vercel/workflow/commit/bbe40ff00a5e372b040aec8fc7640c54d08c5636) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add encryption-aware o11y for CLI and web UI
+
+## 4.1.0-beta.36
+
+### Patch Changes
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+## 4.1.0-beta.35
+
+### Patch Changes
+
+- [#1182](https://github.com/vercel/workflow/pull/1182) [`f0823dc`](https://github.com/vercel/workflow/commit/f0823dc79b74e76176974230cecaccd705a8da75) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix traceviewer pagination issues
+
+- [#1070](https://github.com/vercel/workflow/pull/1070) [`a0b99c8`](https://github.com/vercel/workflow/commit/a0b99c8ec83ef602947b671aa9aed91720c170ce) Thanks [@alizenhom](https://github.com/alizenhom)! - Decompose `workflow-api-client.ts` into focused modules with unit tests
+
+- [#1124](https://github.com/vercel/workflow/pull/1124) [`1f9a67c`](https://github.com/vercel/workflow/commit/1f9a67c759fa6444f6f652692871e8bc7e65ea71) Thanks [@kschmelter13](https://github.com/kschmelter13)! - Replace queue `pg-boss`-based implementation with `graphile-worker`
+
+## 4.1.0-beta.34
+
+### Patch Changes
+
+- [#999](https://github.com/vercel/workflow/pull/999) [`ea3254e`](https://github.com/vercel/workflow/commit/ea3254e7ce28cef6b9b829ac7ad379921dd41ed9) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Separate project ID and project name into distinct env vars (WORKFLOW_VERCEL_PROJECT and WORKFLOW_VERCEL_PROJECT_NAME)
+
+- [#1031](https://github.com/vercel/workflow/pull/1031) [`1c11573`](https://github.com/vercel/workflow/commit/1c1157340d88c60c7c80c0789c111050b809ab77) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Refactor and enhance web-shared observability UI components and update builders base behavior.
+
+- [#1039](https://github.com/vercel/workflow/pull/1039) [`5213309`](https://github.com/vercel/workflow/commit/5213309073440515de5212c61538e73d267461e7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix "dev" mode
+
+- [#1096](https://github.com/vercel/workflow/pull/1096) [`29347b7`](https://github.com/vercel/workflow/commit/29347b79eae8181d02ed1e52183983adc56425fd) Thanks [@ctgowrie](https://github.com/ctgowrie)! - Use new Vercel queue client with v2 message format, simplified callback handling, etc.
+
+## 4.1.0-beta.33
+
+### Patch Changes
+
+- [#1005](https://github.com/vercel/workflow/pull/1005) [`7653e6b`](https://github.com/vercel/workflow/commit/7653e6bfdbfe29624a5cbc1477b299f6aca3a0f0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Migrate `@workflow/web` from Next.js to React Router v7 framework mode. Replace child process spawning in the CLI with in-process Express server. Switch RPC transport from JSON to CBOR.
+
+- [#1015](https://github.com/vercel/workflow/pull/1015) [`c56dc38`](https://github.com/vercel/workflow/commit/c56dc3848ecf3e188f876dc4cb7861df185bd4fb) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Extract browser-safe serialization format from `@workflow/core` and split o11y hydration by environment. Data hydration now happens client-side in the browser, enabling future e2e encryption support.
+
+- [#992](https://github.com/vercel/workflow/pull/992) [`dc2dc6a`](https://github.com/vercel/workflow/commit/dc2dc6ac7908e57be9ab34140addfe98a9246fc7) Thanks [@ijjk](https://github.com/ijjk)! - stop esbuild bundling for deferred step route in Next.js
+
+## 4.1.0-beta.32
+
+### Patch Changes
+
+- [#927](https://github.com/vercel/workflow/pull/927) [`f090de1`](https://github.com/vercel/workflow/commit/f090de1eb48ad8ec3fd776e9d084310d56a7ac29) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Added subpatch exports for runtime modules to allow direct imports in core. Refactored web-shared to be a thin package that exported UI components and world-actions. Updated web package to consume the UI components and world-actions from web-shared.
+
 ## 4.1.0-beta.31
 
 ### Minor Changes
 
 - [#621](https://github.com/vercel/workflow/pull/621) [`4966b72`](https://github.com/vercel/workflow/commit/4966b728a8c8ac339fd98ed91af222f406479fae) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING**: Storage interface is now read-only; all mutations go through `events.create()`
-
   - Remove `cancel`, `pause`, `resume` from `runs`
   - Remove `create`, `update` from `runs`, `steps`, `hooks`
   - Add run lifecycle events: `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled`
@@ -56,7 +184,6 @@
 ### Patch Changes
 
 - [#751](https://github.com/vercel/workflow/pull/751) [`dd3db13`](https://github.com/vercel/workflow/commit/dd3db13d5498622284ed97c1a273d2942478b167) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Remove the unused paused/resumed run events and states
-
   - Remove `run_paused` and `run_resumed` event types
   - Remove `paused` status from `WorkflowRunStatus`
   - Remove `PauseWorkflowRunParams` and `ResumeWorkflowRunParams` types

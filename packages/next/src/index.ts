@@ -1,14 +1,28 @@
 import type { NextConfig } from 'next';
-import path from 'path';
 import semver from 'semver';
-import { getNextBuilder } from './builder.js';
-import { maybeInvalidateCacheOnSwcChange } from './swc-cache.js';
+import {
+  getNextBuilder,
+  shouldUseDeferredBuilder,
+  WORKFLOW_DEFERRED_ENTRIES,
+} from './builder.js';
 
-/**
- * Default directories to scan for workflows and steps.
- * These are the standard Next.js app directories.
- */
-const DEFAULT_WORKFLOW_DIRS = ['pages', 'app', 'src/pages', 'src/app'];
+function resolveNextVersion(workingDir: string): string {
+  const fallbackVersion = require('next/package.json').version as string;
+
+  try {
+    const packageJsonPath = require.resolve('next/package.json', {
+      paths: [workingDir],
+    });
+    const resolvedPackageJson = require(packageJsonPath) as {
+      version?: unknown;
+    };
+    return typeof resolvedPackageJson.version === 'string'
+      ? resolvedPackageJson.version
+      : fallbackVersion;
+  } catch {
+    return fallbackVersion;
+  }
+}
 
 export function withWorkflow(
   nextConfigOrFn:
@@ -21,20 +35,18 @@ export function withWorkflow(
     workflows,
   }: {
     workflows?: {
+      lazyDiscovery?: boolean;
       local?: {
         port?: number;
         dataDir?: string;
       };
-      /**
-       * Directories to scan for workflows and steps.
-       * If provided, this completely overrides the defaults.
-       *
-       * @default ['pages', 'app', 'src/pages', 'src/app']
-       */
-      dirs?: string[];
     };
   } = {}
 ) {
+  if (workflows?.lazyDiscovery) {
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
+  }
+
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     if (!process.env.WORKFLOW_TARGET_WORLD) {
       process.env.WORKFLOW_TARGET_WORLD = 'local';
@@ -55,6 +67,7 @@ export function withWorkflow(
     ctx: { defaultConfig: NextConfig }
   ) {
     const loaderPath = require.resolve('./loader');
+    let runDeferredBuildFromCallback: (() => Promise<void>) | undefined;
 
     let nextConfig: NextConfig;
 
@@ -74,8 +87,95 @@ export function withWorkflow(
       nextConfig.turbopack.rules = {};
     }
     const existingRules = nextConfig.turbopack.rules as any;
-    const nextVersion = require('next/package.json').version;
+    const nextVersion = resolveNextVersion(process.cwd());
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
+    const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
+
+    // Deferred builder discovers files via loader socket notifications, so
+    // turbopack content conditions are only needed with the eager builder.
+    const shouldApplyTurboCondition =
+      supportsTurboCondition && !useDeferredBuilder;
+    const shouldWatch = process.env.NODE_ENV === 'development';
+    let workflowBuilderPromise: Promise<any> | undefined;
+
+    const getWorkflowBuilder = async () => {
+      if (!workflowBuilderPromise) {
+        workflowBuilderPromise = (async () => {
+          const NextBuilder = await getNextBuilder(nextVersion);
+          return new NextBuilder({
+            watch: shouldWatch,
+            // discover workflows from pages/app entries
+            dirs: ['pages', 'app', 'src/pages', 'src/app'],
+            projectRoot: nextConfig.outputFileTracingRoot,
+            workingDir: process.cwd(),
+            distDir: nextConfig.distDir || '.next',
+            buildTarget: 'next',
+            workflowsBundlePath: '', // not used in base
+            stepsBundlePath: '', // not used in base
+            webhookBundlePath: '', // node used in base
+            suppressCreateWorkflowsBundleLogs: useDeferredBuilder,
+            suppressCreateWorkflowsBundleWarnings: useDeferredBuilder,
+            suppressCreateWebhookBundleLogs: useDeferredBuilder,
+            suppressCreateManifestLogs: useDeferredBuilder,
+            externalPackages: [
+              // server-only and client-only are pseudo-packages handled by Next.js
+              // during its build process. We mark them as external to prevent esbuild
+              // from failing when bundling code that imports them.
+              // See: https://nextjs.org/docs/app/getting-started/server-and-client-components
+              'server-only',
+              'client-only',
+              ...(nextConfig.serverExternalPackages || []),
+            ],
+          });
+        })();
+      }
+
+      return workflowBuilderPromise;
+    };
+
+    if (useDeferredBuilder) {
+      runDeferredBuildFromCallback = async () => {
+        const workflowBuilder = await getWorkflowBuilder();
+        if (typeof workflowBuilder.onBeforeDeferredEntries === 'function') {
+          await workflowBuilder.onBeforeDeferredEntries();
+        }
+      };
+
+      const existingExperimental = (nextConfig.experimental ?? {}) as Record<
+        string,
+        any
+      >;
+      const existingDeferredEntries = Array.isArray(
+        existingExperimental.deferredEntries
+      )
+        ? existingExperimental.deferredEntries
+        : [];
+      const existingOnBeforeDeferredEntries =
+        typeof existingExperimental.onBeforeDeferredEntries === 'function'
+          ? existingExperimental.onBeforeDeferredEntries
+          : undefined;
+
+      nextConfig.experimental = {
+        ...existingExperimental,
+
+        // biome-ignore lint/suspicious/noTsIgnore: expect-error is wrong as it will work on valid version
+        // @ts-ignore this is only available in canary Next.js
+        deferredEntries: [
+          ...new Set([
+            ...existingDeferredEntries,
+            ...WORKFLOW_DEFERRED_ENTRIES,
+          ]),
+        ],
+        onBeforeDeferredEntries: async (...args: unknown[]) => {
+          if (existingOnBeforeDeferredEntries) {
+            await existingOnBeforeDeferredEntries(...args);
+          }
+          if (runDeferredBuildFromCallback) {
+            await runDeferredBuildFromCallback();
+          }
+        },
+      };
+    }
 
     for (const key of [
       '*.tsx',
@@ -88,7 +188,7 @@ export function withWorkflow(
       '*.cts',
     ]) {
       nextConfig.turbopack.rules[key] = {
-        ...(supportsTurboCondition
+        ...(shouldApplyTurboCondition
           ? {
               condition: {
                 // Use 'all' to combine: must match content AND must NOT be in generated path
@@ -138,33 +238,7 @@ export function withWorkflow(
       !process.env.WORKFLOW_NEXT_PRIVATE_BUILT &&
       phase !== 'phase-production-server'
     ) {
-      // Check swc-plugin build hash and invalidate cache if changed
-      const distDir = path.resolve(
-        process.cwd(),
-        nextConfig.distDir || '.next'
-      );
-      maybeInvalidateCacheOnSwcChange(distDir);
-
-      const shouldWatch = process.env.NODE_ENV === 'development';
-      const NextBuilder = await getNextBuilder();
-      const workflowBuilder = new NextBuilder({
-        watch: shouldWatch,
-        dirs: workflows?.dirs ?? DEFAULT_WORKFLOW_DIRS,
-        workingDir: process.cwd(),
-        buildTarget: 'next',
-        workflowsBundlePath: '', // not used in base
-        stepsBundlePath: '', // not used in base
-        webhookBundlePath: '', // node used in base
-        externalPackages: [
-          // server-only and client-only are pseudo-packages handled by Next.js
-          // during its build process. We mark them as external to prevent esbuild
-          // from failing when bundling code that imports them.
-          // See: https://nextjs.org/docs/app/getting-started/server-and-client-components
-          'server-only',
-          'client-only',
-          ...(nextConfig.serverExternalPackages || []),
-        ],
-      });
+      const workflowBuilder = await getWorkflowBuilder();
 
       await workflowBuilder.build();
       process.env.WORKFLOW_NEXT_PRIVATE_BUILT = '1';

@@ -1,18 +1,29 @@
 ---
 title: createWebhook
 description: Create webhooks to suspend and resume workflows via HTTP requests.
+type: reference
+summary: Use createWebhook to suspend a workflow until an HTTP request is received at a generated URL.
+prerequisites:
+  - /docs/foundations/hooks
+related:
+  - /docs/api-reference/workflow/create-hook
 ---
 
 Creates a webhook that can be used to suspend and resume a workflow run upon receiving an HTTP request.
 
 Webhooks provide a way for external systems to send HTTP requests directly to your workflow. Unlike hooks which accept arbitrary payloads, webhooks work with standard HTTP `Request` objects and can return HTTP `Response` objects.
 
+<Callout type="warn">
+`createWebhook()` creates a public endpoint at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests resuming that webhook. This is convenient for prototypes and simple resume links because it avoids creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
+</Callout>
+
 ```ts lineNumbers
 import { createWebhook } from "workflow"
 
 export async function webhookWorkflow() {
   "use workflow";
-  const webhook = createWebhook();  // [!code highlight]
+  // `using` automatically disposes the webhook when it goes out of scope
+  using webhook = createWebhook();  // [!code highlight]
   console.log("Webhook URL:", webhook.url);
 
   const request = await webhook; // Suspends until HTTP request received
@@ -60,7 +71,7 @@ import { createWebhook } from "workflow"
 export async function basicWebhookWorkflow() {
   "use workflow";
 
-  const webhook = createWebhook(); // [!code highlight]
+  using webhook = createWebhook(); // [!code highlight]
   console.log("Send requests to:", webhook.url);
 
   const request = await webhook;
@@ -93,7 +104,7 @@ async function sendResponse(request: RequestWithResponse) { // [!code highlight]
 export async function respondingWebhookWorkflow() {
   "use workflow";
 
-  const webhook = createWebhook();
+  using webhook = createWebhook();
   console.log("Webhook URL:", webhook.url);
 
   const request = await webhook;
@@ -113,46 +124,6 @@ async function processData(data: any) {
 }
 ```
 
-### Customizing Tokens
-
-Tokens are used to identify a specific webhook. You can customize the token to be more specific to a use case.
-
-```typescript lineNumbers
-import { type RequestWithResponse } from "workflow"
-
-async function sendAck(request: RequestWithResponse) {
-  "use step";
-  await request.respondWith(
-    new Response(JSON.stringify({ received: true }), {
-      headers: { "Content-Type": "application/json" }
-    })
-  );
-}
-
-export async function githubWebhookWorkflow(repoName: string) {
-  "use workflow";
-
-  // Use a deterministic token based on the repository
-  const webhook = createWebhook({ // [!code highlight]
-    token: `github_webhook:${repoName}`, // [!code highlight]
-  }); // [!code highlight]
-
-  console.log("Configure GitHub webhook:", webhook.url);
-
-  const request = await webhook;
-  const event = await request.json();
-
-  await sendAck(request);
-
-  await deployCommit(event);
-}
-
-async function deployCommit(event: any) {
-  "use step";
-  // Deploy logic here
-}
-```
-
 ### Waiting for Multiple Requests
 
 You can also wait for multiple requests by using the `for await...of` syntax.
@@ -160,62 +131,35 @@ You can also wait for multiple requests by using the `for await...of` syntax.
 ```typescript lineNumbers
 import { createWebhook, type RequestWithResponse } from "workflow"
 
-async function sendSlackResponse(request: RequestWithResponse, message: string) {
+async function sendAck(request: RequestWithResponse, message: string) {
   "use step";
   await request.respondWith(
-    new Response(
-      JSON.stringify({
-        response_type: "in_channel",
-        text: message
-      }),
-      { headers: { "Content-Type": "application/json" } }
-    )
+    Response.json({ received: true, message })
   );
 }
 
-async function sendStopResponse(request: RequestWithResponse) {
+async function processEvent(data: any) {
   "use step";
-  await request.respondWith(
-    new Response("Stopping workflow...")
-  );
+  console.log("Processing event:", data);
 }
 
-export async function slackCommandWorkflow(channelId: string) {
+export async function eventCollectorWorkflow() {
   "use workflow";
 
-  const webhook = createWebhook({
-    token: `slack_command:${channelId}`,
-  });
+  using webhook = createWebhook({ respondWith: "manual" });
+  console.log("Send events to:", webhook.url);
 
   for await (const request of webhook) { // [!code highlight]
-    const formData = await request.formData();
-    const command = formData.get("command");
-    const text = formData.get("text");
+    const data = await request.json();
 
-    if (command === "/status") {
-      // Respond immediately to Slack
-      await sendSlackResponse(request, "Checking status...");
-
-      // Process the command
-      const status = await checkSystemStatus();
-      await postToSlack(channelId, `Status: ${status}`);
-    }
-
-    if (text === "stop") {
-      await sendStopResponse(request);
+    if (data.type === "done") {
+      await sendAck(request, "Workflow complete");
       break;
     }
+
+    await sendAck(request, "Event received");
+    await processEvent(data);
   }
-}
-
-async function checkSystemStatus() {
-  "use step";
-  return "All systems operational";
-}
-
-async function postToSlack(channelId: string, message: string) {
-  "use step";
-  // Post message to Slack
 }
 ```
 

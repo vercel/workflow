@@ -3,6 +3,7 @@ import type {
   CreateEventRequest,
   Event,
   EventResult,
+  GetEventParams,
   ListEventsByCorrelationIdParams,
   ListEventsParams,
   RunCreatedEventRequest,
@@ -15,7 +16,12 @@ import type {
   WorkflowRun,
   WorkflowRunWithoutData,
 } from './runs.js';
-import type { PaginatedResponse } from './shared.js';
+import type {
+  GetChunksOptions,
+  PaginatedResponse,
+  StreamChunksResponse,
+  StreamInfoResponse,
+} from './shared.js';
 import type {
   GetStepParams,
   ListWorkflowRunStepsParams,
@@ -26,7 +32,7 @@ import type {
 export interface Streamer {
   writeToStream(
     name: string,
-    runId: string | Promise<string>,
+    runId: string,
     chunk: string | Uint8Array
   ): Promise<void>;
 
@@ -38,21 +44,57 @@ export interface Streamer {
    * If not implemented, the caller should fall back to sequential writeToStream() calls.
    *
    * @param name - The stream name
-   * @param runId - The run ID (can be a promise)
+   * @param runId - The run ID
    * @param chunks - Array of chunks to write, in order
    */
   writeToStreamMulti?(
     name: string,
-    runId: string | Promise<string>,
+    runId: string,
     chunks: (string | Uint8Array)[]
   ): Promise<void>;
 
-  closeStream(name: string, runId: string | Promise<string>): Promise<void>;
+  closeStream(name: string, runId: string): Promise<void>;
+  /**
+   * Read from a stream starting at the given chunk index.
+   * Positive values skip that many chunks from the start (0-based).
+   * Negative values start that many chunks before the current end
+   * (e.g. -3 on a 10-chunk stream starts at chunk 7). Clamped to 0.
+   */
   readFromStream(
     name: string,
     startIndex?: number
   ): Promise<ReadableStream<Uint8Array>>;
   listStreamsByRunId(runId: string): Promise<string[]>;
+
+  /**
+   * Fetch stream chunks with cursor-based pagination.
+   *
+   * Unlike `readFromStream` (which returns a live `ReadableStream` that waits
+   * for new chunks in real-time), `getStreamChunks` returns a snapshot of currently
+   * available chunks in a standard paginated response.
+   *
+   * @param name - The stream name/ID
+   * @param runId - The workflow run ID that owns the stream
+   * @param options - Pagination options (limit defaults to 100, max 1000)
+   * @returns Paginated chunks with a `done` flag indicating stream completion
+   */
+  getStreamChunks(
+    name: string,
+    runId: string,
+    options?: GetChunksOptions
+  ): Promise<StreamChunksResponse>;
+
+  /**
+   * Retrieve lightweight metadata about a stream.
+   *
+   * Returns the tail index (index of the last known chunk, 0-based) and
+   * whether the stream is complete. This is useful for resolving a negative
+   * `startIndex` into an absolute position before connecting to a stream.
+   *
+   * @param name - The stream name/ID
+   * @param runId - The workflow run ID that owns the stream
+   */
+  getStreamInfo(name: string, runId: string): Promise<StreamInfoResponse>;
 }
 
 /**
@@ -127,15 +169,15 @@ export interface Storage {
   events: {
     /**
      * Create a run_created event to start a new workflow run.
-     * The runId parameter must be null - the server generates and returns the runId.
+     * The runId may be provided by the client or left as null for the server to generate.
      *
-     * @param runId - Must be null for run_created events
+     * @param runId - Client-generated runId, or null for server-generated
      * @param data - The run_created event data
      * @param params - Optional parameters for event creation
      * @returns Promise resolving to the created event and run entity
      */
     create(
-      runId: null,
+      runId: string | null,
       data: RunCreatedEventRequest,
       params?: CreateEventParams
     ): Promise<EventResult>;
@@ -154,6 +196,12 @@ export interface Storage {
       data: CreateEventRequest,
       params?: CreateEventParams
     ): Promise<EventResult>;
+
+    get(
+      runId: string,
+      eventId: string,
+      params?: GetEventParams
+    ): Promise<Event>;
 
     list(params: ListEventsParams): Promise<PaginatedResponse<Event>>;
     listByCorrelationId(
@@ -177,4 +225,54 @@ export interface World extends Queue, Storage, Streamer {
    * For example, in the case of a queue backed World, this would start the queue processing.
    */
   start?(): Promise<void>;
+
+  /**
+   * Release any resources held by the World implementation (connection pools, listeners, etc.).
+   * After calling `close()`, the World instance should not be used again.
+   *
+   * This is important for CLI commands and short-lived processes that need to exit cleanly
+   * without relying on `process.exit()`.
+   */
+  close?(): Promise<void>;
+
+  /**
+   * Resolve the most recent deployment ID for the current deployment's environment.
+   *
+   * Used when `deploymentId: 'latest'` is passed to `start()`. The implementation
+   * determines the latest deployment that shares the same environment (e.g., same
+   * "production" target or same git branch for "preview" deployments) as the
+   * current deployment.
+   *
+   * Not all World implementations support this — it is only implemented by
+   * world-vercel where deployment routing is meaningful.
+   */
+  resolveLatestDeploymentId?(): Promise<string>;
+
+  /**
+   * Retrieve the AES-256 encryption key for a specific workflow run.
+   *
+   * The returned key is a ready-to-use 32-byte AES-256 key. The World
+   * implementation handles all key retrieval and derivation internally
+   * (e.g., HKDF from a deployment key). The core encryption module uses
+   * this key directly for AES-GCM encrypt/decrypt operations.
+   *
+   * Two overloads:
+   *
+   * - `getEncryptionKeyForRun(run)` — Preferred. Pass a `WorkflowRun` when
+   *   the run entity already exists. The World reads any context it needs
+   *   (e.g., `deploymentId`) directly from the run.
+   *
+   * - `getEncryptionKeyForRun(runId, context?)` — Used only by `start()`
+   *   when the run entity has not yet been created. The `context` parameter
+   *   carries opaque world-specific data (e.g., `{ deploymentId }` for
+   *   world-vercel) that the World needs to resolve the correct key.
+   *   When `context` is omitted, the World assumes the current deployment.
+   *
+   * When not implemented, encryption is disabled — data is stored unencrypted.
+   */
+  getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
+  getEncryptionKeyForRun?(
+    runId: string,
+    context?: Record<string, unknown>
+  ): Promise<Uint8Array | undefined>;
 }

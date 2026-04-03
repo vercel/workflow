@@ -1,14 +1,107 @@
-import { withResolvers } from '@workflow/utils';
+import { createVercelWorld } from '@workflow/world-vercel';
 import fs from 'fs';
 import path from 'path';
 import { bench, describe } from 'vitest';
-import { dehydrateWorkflowArguments } from '../src/serialization';
-import { getProtectionBypassHeaders } from './utils';
+import type { Run } from '../src/runtime';
+import { setWorld, start } from '../src/runtime';
+import {
+  getProtectionBypassHeaders,
+  getWorkbenchAppPath,
+  isLocalDeployment,
+} from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
+
+// Configure the World for the bench runner process (same as e2e tests)
+if (isLocalDeployment()) {
+  process.env.WORKFLOW_LOCAL_BASE_URL = deploymentUrl;
+  const appPath = getWorkbenchAppPath();
+  const appName = process.env.APP_NAME!;
+  const isNextJs = appName.includes('nextjs') || appName.includes('next-');
+  const dataDirName = isNextJs ? '.next/workflow-data' : '.workflow-data';
+  process.env.WORKFLOW_LOCAL_DATA_DIR = path.join(appPath, dataDirName);
+} else if (process.env.WORKFLOW_VERCEL_ENV) {
+  if (!process.env.VERCEL_DEPLOYMENT_ID) {
+    throw new Error(
+      'VERCEL_DEPLOYMENT_ID is required for Vercel benchmarks but is not set'
+    );
+  }
+  // Build the Vercel world explicitly with CI-provided config
+  setWorld(
+    createVercelWorld({
+      token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN || undefined,
+      projectConfig: {
+        environment: process.env.WORKFLOW_VERCEL_ENV || undefined,
+        projectId: process.env.WORKFLOW_VERCEL_PROJECT || undefined,
+        projectName: process.env.WORKFLOW_VERCEL_PROJECT_NAME || undefined,
+        teamId: process.env.WORKFLOW_VERCEL_TEAM || undefined,
+      },
+    })
+  );
+}
+
+// Manifest type and helpers (same as e2e tests)
+interface WorkflowManifest {
+  version: string;
+  workflows: Record<
+    string,
+    Record<string, { workflowId: string; graph?: unknown }>
+  >;
+  steps: Record<string, Record<string, { stepId: string }>>;
+}
+
+let cachedManifest: WorkflowManifest | null = null;
+
+async function fetchManifest(): Promise<WorkflowManifest> {
+  if (cachedManifest) return cachedManifest;
+  const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
+  const res = await fetch(url, {
+    headers: getProtectionBypassHeaders(),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Failed to fetch manifest: ${res.status} ${text}`);
+  }
+  cachedManifest = (await res.json()) as WorkflowManifest;
+  return cachedManifest;
+}
+
+async function getWorkflowMetadata(
+  workflowFile: string,
+  workflowFn: string
+): Promise<{ workflowId: string }> {
+  const manifest = await fetchManifest();
+  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
+    if (
+      manifestFile.endsWith(workflowFile) ||
+      workflowFile.endsWith(manifestFile)
+    ) {
+      const entry = functions[workflowFn];
+      if (entry) return entry;
+    }
+  }
+  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  for (const [manifestFile, functions] of Object.entries(manifest.workflows)) {
+    const manifestFileWithoutExt = manifestFile.replace(/\.tsx?$/, '');
+    if (
+      manifestFileWithoutExt.endsWith(fileWithoutExt) ||
+      fileWithoutExt.endsWith(manifestFileWithoutExt)
+    ) {
+      const entry = functions[workflowFn];
+      if (entry) return entry;
+    }
+  }
+  throw new Error(
+    `Workflow "${workflowFn}" not found in manifest for file "${workflowFile}"`
+  );
+}
+
+const benchWf = (fn: string) =>
+  getWorkflowMetadata('workflows/97_bench.ts', fn);
 
 // Store workflow execution times for each benchmark
 const workflowTimings: Record<
@@ -30,106 +123,21 @@ const bufferedTimings: Map<
   { run: any; extra?: { firstByteTimeMs?: number; slurpTimeMs?: number } }[]
 > = new Map();
 
-async function triggerWorkflow(
-  workflow: string | { workflowFile: string; workflowFn: string },
-  args: any[]
-): Promise<{ runId: string }> {
-  const url = new URL('/api/trigger', deploymentUrl);
-  const workflowFn =
-    typeof workflow === 'string' ? workflow : workflow.workflowFn;
-  const workflowFile =
-    typeof workflow === 'string'
-      ? 'workflows/97_bench.ts'
-      : workflow.workflowFile;
-
-  url.searchParams.set('workflowFile', workflowFile);
-  url.searchParams.set('workflowFn', workflowFn);
-
-  const ops: Promise<void>[] = [];
-  const { promise: runIdPromise, resolve: resolveRunId } =
-    withResolvers<string>();
-  const dehydratedArgs = dehydrateWorkflowArguments(args, ops, runIdPromise);
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      ...getProtectionBypassHeaders(),
-      'Content-Type': 'application/octet-stream',
-    },
-    body: dehydratedArgs.buffer as BodyInit,
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Failed to trigger workflow: ${res.url} ${
-        res.status
-      }: ${await res.text()}`
-    );
-  }
-  const run = await res.json();
-  resolveRunId(run.runId);
-
-  // Resolve and wait for any stream operations
-  await Promise.all(ops);
-
-  return run;
-}
-
-async function getWorkflowReturnValue(
-  runId: string
-): Promise<{ run: any; value: any }> {
-  const MAX_UNEXPECTED_CONTENT_RETRIES = 3;
-  let unexpectedContentRetries = 0;
-
-  // We need to poll the GET endpoint until the workflow run is completed.
-  while (true) {
-    const url = new URL('/api/trigger', deploymentUrl);
-    url.searchParams.set('runId', runId);
-
-    const res = await fetch(url, { headers: getProtectionBypassHeaders() });
-
-    if (res.status === 202) {
-      // Workflow run is still running, so we need to wait and poll again
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      continue;
-    }
-
-    // Extract run metadata from headers
-    const run = {
-      runId,
-      createdAt: res.headers.get('X-Workflow-Run-Created-At'),
-      startedAt: res.headers.get('X-Workflow-Run-Started-At'),
-      completedAt: res.headers.get('X-Workflow-Run-Completed-At'),
-    };
-
-    const contentType = res.headers.get('Content-Type');
-
-    if (contentType?.includes('application/json')) {
-      return { run, value: await res.json() };
-    }
-
-    if (contentType?.includes('application/octet-stream')) {
-      return { run, value: res.body };
-    }
-
-    // Unexpected content type - log details and retry
-    unexpectedContentRetries++;
-    const responseText = await res.text().catch(() => '<failed to read body>');
-    console.warn(
-      `[bench] Unexpected content type for runId=${runId} (attempt ${unexpectedContentRetries}/${MAX_UNEXPECTED_CONTENT_RETRIES}):\n` +
-        `  Status: ${res.status}\n` +
-        `  Content-Type: ${contentType}\n` +
-        `  Response: ${responseText.slice(0, 500)}${responseText.length > 500 ? '...' : ''}`
-    );
-
-    if (unexpectedContentRetries >= MAX_UNEXPECTED_CONTENT_RETRIES) {
-      throw new Error(
-        `Unexpected content type after ${MAX_UNEXPECTED_CONTENT_RETRIES} retries: ${contentType} (status=${res.status})`
-      );
-    }
-
-    // Wait before retrying
-    await new Promise((resolve) => setTimeout(resolve, 500));
-  }
+/**
+ * Collect run timing metadata from a completed run.
+ */
+async function getRunTimings(run: Run<any>) {
+  const [createdAt, startedAt, completedAt] = await Promise.all([
+    run.createdAt,
+    run.startedAt,
+    run.completedAt,
+  ]);
+  return {
+    runId: run.runId,
+    createdAt: createdAt?.toISOString(),
+    startedAt: startedAt?.toISOString(),
+    completedAt: completedAt?.toISOString(),
+  };
 }
 
 function getTimingOutputPath() {
@@ -285,13 +293,52 @@ const teardown = (task: { name: string }, mode: 'warmup' | 'run') => {
   bufferedTimings.delete(task.name);
 };
 
+/**
+ * Consume a ReadableStream and measure TTFB and slurp time.
+ */
+async function consumeStreamWithMetrics(
+  value: unknown,
+  startedAt: string | undefined
+): Promise<{
+  firstByteTimeMs?: number;
+  slurpTimeMs?: number;
+  totalBytes: number;
+  chunks: Uint8Array[];
+}> {
+  let firstByteTimeMs: number | undefined;
+  let slurpTimeMs: number | undefined;
+  let totalBytes = 0;
+  const chunks: Uint8Array[] = [];
+  if (value instanceof ReadableStream) {
+    const reader = value.getReader();
+    let isFirstChunk = true;
+    let firstByteTimestamp: number | undefined;
+    while (true) {
+      const { done, value: chunk } = await reader.read();
+      if (isFirstChunk && !done && startedAt) {
+        firstByteTimestamp = Date.now();
+        firstByteTimeMs = firstByteTimestamp - new Date(startedAt).getTime();
+        isFirstChunk = false;
+      }
+      if (done) break;
+      chunks.push(chunk);
+      totalBytes += chunk.length;
+    }
+    if (firstByteTimestamp !== undefined) {
+      slurpTimeMs = Date.now() - firstByteTimestamp;
+    }
+  }
+  return { firstByteTimeMs, slurpTimeMs, totalBytes, chunks };
+}
+
 describe('Workflow Performance Benchmarks', () => {
   bench(
     'workflow with no steps',
     async () => {
-      const { runId } = await triggerWorkflow('noStepsWorkflow', [42]);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with no steps', run);
+      const run = await start(await benchWf('noStepsWorkflow'), [42]);
+      await run.returnValue;
+      const timings = await getRunTimings(run);
+      stageTiming('workflow with no steps', timings);
     },
     { time: 5000, warmupIterations: 1, teardown }
   );
@@ -299,36 +346,40 @@ describe('Workflow Performance Benchmarks', () => {
   bench(
     'workflow with 1 step',
     async () => {
-      const { runId } = await triggerWorkflow('oneStepWorkflow', [100]);
-      const { run } = await getWorkflowReturnValue(runId);
-      stageTiming('workflow with 1 step', run);
+      const run = await start(await benchWf('oneStepWorkflow'), [100]);
+      await run.returnValue;
+      const timings = await getRunTimings(run);
+      stageTiming('workflow with 1 step', timings);
     },
     { time: 5000, warmupIterations: 1, teardown }
   );
 
   // Sequential step benchmarks at various scales
-  // Set BENCHMARK_FULL_SUITE=true to run the long benchmarks (100+, 500+ steps)
+  // Set BENCHMARK_FULL_SUITE=true to run the long benchmarks (100+, 500+, 1000 steps)
   const fullSuite = process.env.BENCHMARK_FULL_SUITE === 'true';
   const sequentialStepCounts = [
-    { count: 10, skip: false, time: 30000 },
-    { count: 25, skip: false, time: 60000 },
-    { count: 50, skip: false, time: 90000 },
-    { count: 100, skip: !fullSuite, time: 150000 },
-    { count: 500, skip: !fullSuite, time: 600000 },
+    { count: 10, skip: false, time: 30000, sleepMs: 1000 },
+    { count: 25, skip: false, time: 60000, sleepMs: 500 },
+    { count: 50, skip: false, time: 90000, sleepMs: 200 },
+    { count: 100, skip: !fullSuite, time: 150000, sleepMs: 100 },
+    { count: 500, skip: !fullSuite, time: 300000, sleepMs: 50 },
+    { count: 1000, skip: !fullSuite, time: 300000, sleepMs: 10 },
   ] as const;
 
-  for (const { count, skip, time } of sequentialStepCounts) {
+  for (const { count, skip, time, sleepMs } of sequentialStepCounts) {
     const name = `workflow with ${count} sequential steps`;
     const benchFn = skip ? bench.skip : bench;
 
     benchFn(
       name,
       async () => {
-        const { runId } = await triggerWorkflow('sequentialStepsWorkflow', [
+        const run = await start(await benchWf('sequentialStepsWorkflow'), [
           count,
+          sleepMs,
         ]);
-        const { run } = await getWorkflowReturnValue(runId);
-        stageTiming(name, run);
+        await run.returnValue;
+        const timings = await getRunTimings(run);
+        stageTiming(name, timings);
       },
       { time, iterations: 1, warmupIterations: 0, teardown }
     );
@@ -337,34 +388,18 @@ describe('Workflow Performance Benchmarks', () => {
   bench(
     'workflow with stream',
     async () => {
-      const { runId } = await triggerWorkflow('streamWorkflow', []);
-      const { run, value } = await getWorkflowReturnValue(runId);
-      // Consume the entire stream and track:
-      // - firstByteTimeMs: time from workflow start to first byte
-      // - slurpTimeMs: time from first byte to stream completion
-      let firstByteTimeMs: number | undefined;
-      let slurpTimeMs: number | undefined;
-      if (value instanceof ReadableStream) {
-        const reader = value.getReader();
-        let isFirstChunk = true;
-        let firstByteTimestamp: number | undefined;
-        while (true) {
-          const { done } = await reader.read();
-          if (isFirstChunk && !done && run.startedAt) {
-            const startedAt = new Date(run.startedAt).getTime();
-            firstByteTimestamp = Date.now();
-            firstByteTimeMs = firstByteTimestamp - startedAt;
-            isFirstChunk = false;
-          }
-          if (done) {
-            if (firstByteTimestamp !== undefined) {
-              slurpTimeMs = Date.now() - firstByteTimestamp;
-            }
-            break;
-          }
-        }
+      const run = await start(await benchWf('streamWorkflow'), []);
+      const value = await run.returnValue;
+      const timings = await getRunTimings(run);
+      const { firstByteTimeMs, slurpTimeMs, totalBytes } =
+        await consumeStreamWithMetrics(value, timings.startedAt);
+      // Correctness: stream should produce ~5KB (50 chunks * ~100 bytes)
+      if (totalBytes === 0) {
+        throw new Error(
+          'Stream correctness failure: expected >0 bytes but got 0'
+        );
       }
-      stageTiming('workflow with stream', run, {
+      stageTiming('workflow with stream', timings, {
         firstByteTimeMs,
         slurpTimeMs,
       });
@@ -380,7 +415,7 @@ describe('Workflow Performance Benchmarks', () => {
     { count: 50, skip: false, time: 30000 },
     { count: 100, skip: !fullSuite, time: 60000 },
     { count: 500, skip: !fullSuite, time: 120000 },
-    { count: 1000, skip: true, time: 180000 }, // Always skip 1000 - too slow
+    { count: 1000, skip: !fullSuite, time: 180000 },
   ] as const;
 
   const concurrentStepTypes = [
@@ -396,12 +431,184 @@ describe('Workflow Performance Benchmarks', () => {
       benchFn(
         name,
         async () => {
-          const { runId } = await triggerWorkflow(workflow, [count]);
-          const { run } = await getWorkflowReturnValue(runId);
-          stageTiming(name, run);
+          const run = await start(await benchWf(workflow), [count]);
+          await run.returnValue;
+          const timings = await getRunTimings(run);
+          stageTiming(name, timings);
         },
         { time, iterations: 1, warmupIterations: 0, teardown }
       );
     }
+  }
+
+  // Data payload benchmarks (10KB through steps)
+  const dataPayloadStepCounts = [
+    { count: 10, skip: false, time: 60000 },
+    { count: 25, skip: false, time: 90000 },
+    { count: 50, skip: false, time: 120000 },
+    { count: 100, skip: !fullSuite, time: 300000 },
+    { count: 500, skip: !fullSuite, time: 600000 },
+  ] as const;
+  const DATA_PAYLOAD_SIZE = 10 * 1024; // 10KB
+
+  for (const { count, skip, time } of dataPayloadStepCounts) {
+    const name = `workflow with ${count} sequential data payload steps (10KB)`;
+    const benchFn = skip ? bench.skip : bench;
+
+    benchFn(
+      name,
+      async () => {
+        const run = await start(
+          await benchWf('sequentialDataPayloadWorkflow'),
+          [count, DATA_PAYLOAD_SIZE]
+        );
+        const returnValue = await run.returnValue;
+        if (returnValue !== DATA_PAYLOAD_SIZE) {
+          throw new Error(
+            `Data payload correctness failure: expected length ${DATA_PAYLOAD_SIZE}, got ${returnValue}`
+          );
+        }
+        const timings = await getRunTimings(run);
+        stageTiming(name, timings);
+      },
+      { time, iterations: 1, warmupIterations: 0, teardown }
+    );
+  }
+
+  for (const { count, skip, time } of dataPayloadStepCounts) {
+    const name = `workflow with ${count} concurrent data payload steps (10KB)`;
+    const benchFn = skip ? bench.skip : bench;
+
+    benchFn(
+      name,
+      async () => {
+        const run = await start(
+          await benchWf('concurrentDataPayloadWorkflow'),
+          [count, DATA_PAYLOAD_SIZE]
+        );
+        const returnValue = await run.returnValue;
+        if (returnValue !== count) {
+          throw new Error(
+            `Data payload correctness failure: expected count ${count}, got ${returnValue}`
+          );
+        }
+        const timings = await getRunTimings(run);
+        stageTiming(name, timings);
+      },
+      { time, iterations: 1, warmupIterations: 0, teardown }
+    );
+  }
+
+  // Stream stress benchmarks
+  const streamStressBenchmarks = [
+    {
+      name: 'stream pipeline with 5 transform steps (1MB)',
+      workflow: 'streamPipelineWorkflow',
+      args: [5, 1024 * 1024],
+      skip: false,
+      time: 60000,
+      expectedTotalBytes: 1024 * 1024,
+      // Pipeline returns the actual data stream
+      summaryStream: false,
+    },
+    {
+      name: 'stream pipeline with 10 transform steps (1MB)',
+      workflow: 'streamPipelineWorkflow',
+      args: [10, 1024 * 1024],
+      skip: !fullSuite,
+      time: 120000,
+      expectedTotalBytes: 1024 * 1024,
+      summaryStream: false,
+    },
+    {
+      name: '10 parallel streams (1MB each)',
+      workflow: 'parallelStreamsWorkflow',
+      args: [10, 1024 * 1024],
+      skip: false,
+      time: 60000,
+      expectedTotalBytes: 10 * 1024 * 1024,
+      // Parallel/fan-out workflows return a JSON summary stream
+      summaryStream: true,
+    },
+    {
+      name: '50 parallel streams (1MB each)',
+      workflow: 'parallelStreamsWorkflow',
+      args: [50, 1024 * 1024],
+      skip: !fullSuite,
+      time: 180000,
+      expectedTotalBytes: 50 * 1024 * 1024,
+      summaryStream: true,
+    },
+    {
+      name: 'fan-out fan-in 10 streams (1MB each)',
+      workflow: 'fanOutFanInStreamWorkflow',
+      args: [10, 1024 * 1024],
+      skip: false,
+      time: 60000,
+      expectedTotalBytes: 10 * 1024 * 1024,
+      summaryStream: true,
+    },
+    {
+      name: 'fan-out fan-in 50 streams (1MB each)',
+      workflow: 'fanOutFanInStreamWorkflow',
+      args: [50, 1024 * 1024],
+      skip: !fullSuite,
+      time: 180000,
+      expectedTotalBytes: 50 * 1024 * 1024,
+      summaryStream: true,
+    },
+  ] as const;
+
+  for (const {
+    name,
+    workflow,
+    args,
+    skip,
+    time,
+    expectedTotalBytes,
+    summaryStream,
+  } of streamStressBenchmarks) {
+    const benchFn = skip ? bench.skip : bench;
+    benchFn(
+      name,
+      async () => {
+        const run = await start(await benchWf(workflow), args);
+        const value = await run.returnValue;
+        const timings = await getRunTimings(run);
+        const { firstByteTimeMs, slurpTimeMs, totalBytes, chunks } =
+          await consumeStreamWithMetrics(value, timings.startedAt);
+
+        if (summaryStream) {
+          // Parallel/fan-out workflows return a JSON summary stream;
+          // parse it and verify the reported totalBytes
+          const text = new TextDecoder().decode(
+            chunks.length === 1
+              ? chunks[0]
+              : chunks.reduce((acc, c) => {
+                  const merged = new Uint8Array(acc.length + c.length);
+                  merged.set(acc);
+                  merged.set(c, acc.length);
+                  return merged;
+                }, new Uint8Array(0))
+          );
+          const summary = JSON.parse(text) as { totalBytes: number };
+          if (summary.totalBytes !== expectedTotalBytes) {
+            throw new Error(
+              `Stream correctness failure: summary reports ${summary.totalBytes} bytes but expected ${expectedTotalBytes}`
+            );
+          }
+        } else {
+          // Pipeline workflows return the actual data stream
+          if (totalBytes !== expectedTotalBytes) {
+            throw new Error(
+              `Stream correctness failure: expected ${expectedTotalBytes} bytes but got ${totalBytes}`
+            );
+          }
+        }
+
+        stageTiming(name, timings, { firstByteTimeMs, slurpTimeMs });
+      },
+      { time, iterations: 1, warmupIterations: 0, teardown }
+    );
   }
 });

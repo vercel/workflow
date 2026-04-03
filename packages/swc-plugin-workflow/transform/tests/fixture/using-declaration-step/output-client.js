@@ -23,3 +23,4 @@ export async function testStep() {
         env.stack.pop();
     }
 }
+testStep.stepId = "step//./input//testStep";

@@ -1,4 +1,5 @@
 import { WorkflowRuntimeError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -17,16 +18,31 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   });
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
-  return {
+  const ctx: WorkflowOrchestratorContext = {
+    runId: 'wrun_test',
+    encryptionKey: undefined,
     globalThis: context.globalThis,
-    eventsConsumer: new EventsConsumer(events),
+    // ctx.onWorkflowError is accessed via closure — it's defined below on the same object
+    eventsConsumer: new EventsConsumer(events, {
+      onUnconsumedEvent: (event) => {
+        ctx.onWorkflowError(
+          new WorkflowRuntimeError(
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`
+          )
+        );
+      },
+      getPromiseQueue: () => Promise.resolve(),
+    }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
     onWorkflowError: vi.fn(),
+    promiseQueue: Promise.resolve(),
+    pendingDeliveries: 0,
   };
+  return ctx;
 }
 
 describe('createSleep', () => {
@@ -62,19 +78,15 @@ describe('createSleep', () => {
   it('should throw WorkflowSuspension when no events are available', async () => {
     const ctx = setupWorkflowContext([]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const sleep = createSleep(ctx);
 
     // Start the sleep - it will process events asynchronously
     const sleepPromise = sleep('1s');
 
-    // Wait for the error handler to be called
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
   });
 
@@ -94,19 +106,15 @@ describe('createSleep', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const sleep = createSleep(ctx);
 
     // Start the sleep - it will process events asynchronously
     const sleepPromise = sleep('1s');
 
-    // Wait for the error handler to be called
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
     expect(workflowError?.message).toContain('Unexpected event type for wait');
     expect(workflowError?.message).toContain('wait_01K11TFZ62YS0YYFDQ3E8B9YCV');
@@ -127,18 +135,15 @@ describe('createSleep', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const sleep = createSleep(ctx);
 
     // Start the sleep - it will process events asynchronously
     const sleepPromise = sleep('5s');
 
-    // Wait for event processing
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const workflowError = await errorReceived.promise;
 
     // Check that the wait item has been updated with hasCreatedEvent
     const waitItem = ctx.invocationsQueue.get(
@@ -169,17 +174,13 @@ describe('createSleep', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const sleep = createSleep(ctx);
     const sleepPromise = sleep('1s');
 
-    // Wait for the error handler to be called
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
     expect(workflowError?.message).toContain('Unexpected event type for wait');
     expect(workflowError?.message).toContain('hook_received');
@@ -199,16 +200,13 @@ describe('createSleep', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const sleep = createSleep(ctx);
     const sleepPromise = sleep('5s');
 
-    // Wait for event processing
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const workflowError = await errorReceived.promise;
 
     // Queue item should still exist (wait_created is not terminal)
     expect(ctx.invocationsQueue.size).toBe(1);
@@ -254,6 +252,52 @@ describe('createSleep', () => {
     // Queue should be empty after completion (terminal state)
     expect(ctx.invocationsQueue.size).toBe(0);
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
+  });
+
+  it('should raise WorkflowRuntimeError when duplicate wait_completed events exist in the event log', async () => {
+    // When the event log has 2 wait_completed for a single wait_created,
+    // the first wait_completed removes the callback (Finished), but the second
+    // wait_completed has no consumer. The onUnconsumedEvent callback should
+    // trigger a WorkflowRuntimeError via onWorkflowError.
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'wait_created',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          resumeAt: new Date('2024-01-01T00:00:01.000Z'),
+        },
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_1',
+        runId: 'wrun_123',
+        eventType: 'wait_completed',
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+      {
+        eventId: 'evnt_2',
+        runId: 'wrun_123',
+        eventType: 'wait_completed', // Duplicate!
+        correlationId: 'wait_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {},
+        createdAt: new Date(),
+      },
+    ]);
+
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
+
+    const sleep = createSleep(ctx);
+    await sleep('1s');
+
+    // The duplicate wait_completed at index 2 is orphaned and triggers the error
+    const workflowError = await errorReceived.promise;
+    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError?.message).toContain('evnt_2');
   });
 
   it('should resolve with void when wait_completed', async () => {

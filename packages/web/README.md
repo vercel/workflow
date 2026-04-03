@@ -1,8 +1,13 @@
 # @workflow/web
 
-Observability Web UI Package bundled in the [Workflow DevKit](https://useworkflow.dev/docs/observability).
+Observability Web UI Package bundled in the [Workflow SDK](https://useworkflow.dev/docs/observability).
 
 ## Self-hosting
+
+> **Security notice:** The `@workflow/web` package does not include authentication or authorization.
+> All users who can reach the deployment share the same backend credentials configured via environment variables.
+> If you self-host this UI, you **must** place it behind your own authentication layer (e.g. VPN, reverse proxy with auth, OAuth).
+> Exposing it to untrusted users without authentication is at your own risk and may allow unauthorized access to your workflow data.
 
 While this UI is bundled with the Workflow CLI, you can also self-host it.
 

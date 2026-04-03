@@ -2,3 +2,4 @@
 export async function add(a, b) {
     return a + b;
 }
+add.stepId = "step//./input//add";

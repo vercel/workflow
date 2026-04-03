@@ -5,7 +5,6 @@ import { CheckIcon, CopyIcon } from 'lucide-react';
 import Link from 'next/link';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
 type HeroProps = {
@@ -39,10 +38,6 @@ export const Hero = ({ title, description }: HeroProps) => {
   return (
     <section className="mt-[var(--fd-nav-height)] space-y-6 px-4 pt-16 sm:pt-24 pb-16 text-center">
       <div className="mx-auto w-full max-w-4xl space-y-5">
-        <Badge variant="secondary" className="rounded-full">
-          <div className="size-2 rounded-full bg-muted-foreground" />
-          <p>Workflow DevKit is in beta</p>
-        </Badge>
         <h1 className="text-center font-semibold text-4xl leading-[1.1] tracking-tight lg:font-semibold sm:text-5xl! xl:text-6xl! text-balance">
           {title}
         </h1>

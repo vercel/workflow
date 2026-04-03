@@ -13,6 +13,17 @@ const enhancedResolve = promisify(enhancedResolveOriginal);
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
 
+function isGeneratedBuildArtifactPath(filePath: string): boolean {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  return (
+    normalizedPath.includes('/.output/') ||
+    normalizedPath.includes('/.next/') ||
+    normalizedPath.includes('/.nuxt/') ||
+    normalizedPath.includes('/.svelte-kit/') ||
+    normalizedPath.includes('/.vercel/')
+  );
+}
+
 // parent -> children relationship (a file can import multiple files)
 export const importParents = new Map<string, Set<string>>();
 
@@ -47,11 +58,14 @@ export function parentHasChild(parent: string, childToFind: string): boolean {
   return false;
 }
 
-export function createDiscoverEntriesPlugin(state: {
-  discoveredSteps: string[];
-  discoveredWorkflows: string[];
-  discoveredSerdeFiles: string[];
-}): Plugin {
+export function createDiscoverEntriesPlugin(
+  state: {
+    discoveredSteps: string[];
+    discoveredWorkflows: string[];
+    discoveredSerdeFiles: string[];
+  },
+  projectRoot?: string
+): Plugin {
   return {
     name: 'discover-entries-esbuild-plugin',
     setup(build) {
@@ -78,6 +92,13 @@ export function createDiscoverEntriesPlugin(state: {
       // Handle TypeScript and JavaScript files
       build.onLoad({ filter: jsTsRegex }, async (args) => {
         try {
+          if (isGeneratedBuildArtifactPath(args.path)) {
+            return {
+              contents: '',
+              loader: 'js',
+            };
+          }
+
           // Skip generated workflow route files to avoid re-processing them
           if (isGeneratedWorkflowFile(args.path)) {
             const source = await readFile(args.path, 'utf8');
@@ -127,9 +148,11 @@ export function createDiscoverEntriesPlugin(state: {
           }
 
           const { code: transformedCode } = await applySwcTransform(
-            args.path,
+            normalizedPath,
             source,
-            false
+            false,
+            normalizedPath,
+            projectRoot || build.initialOptions.absWorkingDir || process.cwd()
           );
 
           return {

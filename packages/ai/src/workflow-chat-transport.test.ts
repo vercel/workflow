@@ -206,7 +206,307 @@ describe('WorkflowChatTransport', () => {
       expect(mockFetch).toHaveBeenCalledWith('/custom/reconnect?startIndex=0', {
         headers: { 'X-Custom': 'header' },
         credentials: undefined,
+        signal: undefined,
       });
+    });
+  });
+
+  describe('abort signal propagation', () => {
+    it('should pass abortSignal to reconnect fetch calls', async () => {
+      const controller = new AbortController();
+
+      transport = new WorkflowChatTransport({ fetch: mockFetch });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        body: new ReadableStream({
+          start(streamController) {
+            streamController.enqueue(
+              new TextEncoder().encode('data: {"type":"finish"}\n\n')
+            );
+            streamController.close();
+          },
+        }),
+      });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+        abortSignal: controller.signal,
+      });
+
+      const reader = stream!.getReader();
+      try {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/chat/test-chat/stream?startIndex=0',
+        {
+          headers: undefined,
+          credentials: undefined,
+          signal: controller.signal,
+        }
+      );
+    });
+
+    it('should reuse abortSignal for reconnect fetch after sendMessages interruption', async () => {
+      const controller = new AbortController();
+
+      transport = new WorkflowChatTransport({ fetch: mockFetch });
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers({
+            'x-workflow-run-id': 'test-workflow-reconnect',
+          }),
+          body: new ReadableStream({
+            start(streamController) {
+              streamController.close();
+            },
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          body: new ReadableStream({
+            start(streamController) {
+              streamController.enqueue(
+                new TextEncoder().encode('data: {"type":"finish"}\n\n')
+              );
+              streamController.close();
+            },
+          }),
+        });
+
+      const stream = await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'test-chat',
+        messages: [],
+        abortSignal: controller.signal,
+      });
+
+      const reader = stream.getReader();
+      try {
+        while (true) {
+          const { done } = await reader.read();
+          if (done) break;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(mockFetch).toHaveBeenNthCalledWith(1, '/api/chat', {
+        method: 'POST',
+        body: JSON.stringify({ messages: [] }),
+        headers: undefined,
+        credentials: undefined,
+        signal: controller.signal,
+      });
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/chat/test-workflow-reconnect/stream?startIndex=0',
+        {
+          headers: undefined,
+          credentials: undefined,
+          signal: controller.signal,
+        }
+      );
+    });
+  });
+
+  describe('negative initialStartIndex', () => {
+    function makeSSEStream(...events: string[]) {
+      return new ReadableStream({
+        start(controller) {
+          for (const event of events) {
+            controller.enqueue(new TextEncoder().encode(`data: ${event}\n\n`));
+          }
+          controller.close();
+        },
+      });
+    }
+
+    it('should resolve absolute chunkIndex from x-workflow-stream-tail-index header', async () => {
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -20,
+      });
+
+      // First call: stream with tail-index header, closes immediately (simulating
+      // a timeout with no data) → triggers retry at the resolved absolute position
+      // Second call: retry completes with finish
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers({
+            'x-workflow-stream-tail-index': '499',
+          }),
+          body: makeSSEStream(), // empty — simulates immediate disconnect
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          body: makeSSEStream('{"type":"finish"}'),
+        });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      while (!(await reader.read()).done) {}
+
+      // First call: negative startIndex
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        '/api/chat/test-chat/stream?startIndex=-20',
+        expect.any(Object)
+      );
+      // Second call: resolved absolute position = max(0, 499 + 1 + (-20)) = 480
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/chat/test-chat/stream?startIndex=480',
+        expect.any(Object)
+      );
+    });
+
+    it('should fall back to startIndex=0 when header is missing', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -10,
+      });
+
+      // First call: no tail-index header, closes immediately → triggers retry
+      // Second call: retry should use startIndex=0
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          body: makeSSEStream(), // empty — simulates immediate disconnect
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          body: makeSSEStream('{"type":"finish"}'),
+        });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      while (!(await reader.read()).done) {}
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Negative initialStartIndex is configured')
+      );
+
+      // First call: negative startIndex
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        '/api/chat/test-chat/stream?startIndex=-10',
+        expect.any(Object)
+      );
+      // Second call: falls back to 0
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/chat/test-chat/stream?startIndex=0',
+        expect.any(Object)
+      );
+
+      warnSpy.mockRestore();
+    });
+
+    it('should fall back to startIndex=0 when header value is not a number', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        initialStartIndex: -5,
+      });
+
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers({
+            'x-workflow-stream-tail-index': 'not-a-number',
+          }),
+          body: makeSSEStream(),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          headers: new Headers(),
+          body: makeSSEStream('{"type":"finish"}'),
+        });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      while (!(await reader.read()).done) {}
+
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('valid "x-workflow-stream-tail-index"')
+      );
+
+      // Retry falls back to 0
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/chat/test-chat/stream?startIndex=0',
+        expect.any(Object)
+      );
+
+      warnSpy.mockRestore();
+    });
+  });
+
+  describe('reconnection error formatting', () => {
+    it('should format object errors with JSON instead of [object Object]', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        maxConsecutiveErrors: 1,
+      });
+
+      // Return a stream that throws a plain-object error on parse
+      mockFetch.mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        body: new ReadableStream({
+          start(controller) {
+            // Send malformed data to trigger a parse error
+            controller.enqueue(
+              new TextEncoder().encode('data: INVALID_JSON\n\n')
+            );
+            controller.close();
+          },
+        }),
+      });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      await expect(reader.read()).rejects.toThrow(
+        /Failed to reconnect after 1 consecutive errors/
+      );
+      // Crucially, the error message should never contain [object Object]
+      await expect(
+        reader.read().catch((e: Error) => e.message)
+      ).resolves.not.toContain?.('[object Object]');
+
+      errorSpy.mockRestore();
     });
   });
 

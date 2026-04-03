@@ -184,9 +184,123 @@ example.workflowId = "workflow//./input//example";
 registerStepFunction("step//./input//example/innerStep", example$innerStep);
 ```
 
+### Steps in Nested Object Properties
+
+Step functions can be defined inside deeply nested object properties, including function call arguments. The plugin recursively processes nested objects to find step functions, generating compound paths for the step IDs.
+
+Input:
+```javascript
+import { agent } from "experimental-agent";
+
+export const vade = agent({
+  tools: {
+    VercelRequest: {
+      execute: async (input, ctx) => {
+        "use step";
+        return 1 + 1;
+      },
+    },
+  },
+});
+```
+
+Output (Step Mode):
+```javascript
+import { registerStepFunction } from "workflow/internal/private";
+import { agent } from "experimental-agent";
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
+var vade$tools$VercelRequest$execute = async function(input, ctx) {
+    return 1 + 1;
+};
+export const vade = agent({
+    tools: {
+        VercelRequest: {
+            execute: vade$tools$VercelRequest$execute
+        }
+    }
+});
+registerStepFunction("step//./input//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
+```
+
+Note: Step functions are hoisted as regular function expressions (not arrow functions) to preserve `this` binding when called with `.call()` or `.apply()`. This applies even when the original step function was defined as an arrow function.
+
+Output (Workflow Mode):
+```javascript
+import { agent } from "experimental-agent";
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
+export const vade = agent({
+    tools: {
+        VercelRequest: {
+            execute: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//vade/tools/VercelRequest/execute")
+        }
+    }
+});
+```
+
+Output (Client Mode):
+```javascript
+import { agent } from "experimental-agent";
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
+var vade$tools$VercelRequest$execute = async function(input, ctx) {
+    return 1 + 1;
+};
+export const vade = agent({
+    tools: {
+        VercelRequest: {
+            execute: vade$tools$VercelRequest$execute
+        }
+    }
+});
+vade$tools$VercelRequest$execute.stepId = "step//./input//vade/tools/VercelRequest/execute";
+```
+
+Note: In client mode, nested object property step functions are hoisted and have `stepId` set directly (no `registerStepFunction` call). The original call site is replaced with a reference to the hoisted variable, same as step mode.
+
+Note: The step ID includes the full path through nested objects (`vade/tools/VercelRequest/execute`), while the hoisted variable name uses `$` as the separator (`vade$tools$VercelRequest$execute`) to create a valid JavaScript identifier.
+
+#### Shorthand Method Syntax
+
+Shorthand method syntax (non-arrow functions) is also supported in nested object properties:
+
+Input:
+```javascript
+import { agent } from "experimental-agent";
+
+export const vade = agent({
+  tools: {
+    VercelRequest: {
+      async execute(input, { experimental_context }) {
+        "use step";
+        return 1 + 1;
+      },
+    },
+  },
+});
+```
+
+Output (Step Mode):
+```javascript
+import { registerStepFunction } from "workflow/internal/private";
+import { agent } from "experimental-agent";
+/**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
+var vade$tools$VercelRequest$execute = async function(input, { experimental_context }) {
+    return 1 + 1;
+};
+export const vade = agent({
+    tools: {
+        VercelRequest: {
+            execute: vade$tools$VercelRequest$execute
+        }
+    }
+});
+registerStepFunction("step//./input//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
+```
+
+Note: Shorthand methods are hoisted as regular function expressions (not arrow functions) to preserve `this` binding when called with `.call()` or `.apply()`. Closure variables are handled the same way as other step functions.
+
 ### Closure Variables
 
-When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`:
+When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`. Closure variable detection recursively walks the step function body — including nested function, arrow, method, getter/setter, and class bodies — and collects identifiers that are not parameters, local declarations, known globals, module-level imports, or module-level declarations. TypeScript expression wrappers (`as`, `satisfies`, `!`, type assertions, `const` assertions, instantiation expressions) are traversed to reach the inner expression. Module-level imports and declarations (functions, variables, classes) are excluded since they are available directly in the step bundle and should not be serialized as closure values:
 
 Input:
 ```javascript
@@ -207,10 +321,14 @@ var wrapper$_anonymousStep0 = async () => {
     return 10 * multiplier;
 };
 function wrapper(multiplier) {
-    return wrapper$_anonymousStep0;
+    return async () => {
+        return 10 * multiplier;
+    };
 }
 registerStepFunction("step//./input//wrapper/_anonymousStep0", wrapper$_anonymousStep0);
 ```
+
+Note: The hoisted copy (`wrapper$_anonymousStep0`) uses `__private_getClosureVars()` for workflow-driven execution, while the original function body is preserved in `wrapper()` with the directive stripped. This allows the enclosing function to work correctly when called directly (non-workflow), since JavaScript's normal closure semantics naturally capture `multiplier`.
 
 ### Instance Method Step
 
@@ -240,7 +358,6 @@ export class Counter {
 Output:
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
 /**__internal_workflows{"steps":{"input.js":{"Counter#add":{"stepId":"step//./input//Counter#add"}}},"classes":{"input.js":{"Counter":{"classId":"class//./input//Counter"}}}}*/;
 export class Counter {
@@ -258,7 +375,11 @@ export class Counter {
     }
 }
 registerStepFunction("step//./input//Counter#add", Counter.prototype["add"]);
-registerSerializationClass("class//./input//Counter", Counter);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Counter, "class//./input//Counter");
 ```
 
 Note: Instance methods use `#` in the step ID (e.g., `Counter#add`) and are registered via `ClassName.prototype["methodName"]`.
@@ -297,6 +418,8 @@ registerStepFunction("step//./input//subtract", subtract);
 ## Workflow Mode
 
 In workflow mode, step function bodies are replaced with a `globalThis[Symbol.for("WORKFLOW_USE_STEP")]` call. Workflow functions keep their bodies and are registered with `globalThis.__private_workflows.set()`.
+
+After the workflow-mode rewrite, the transform also runs a dead code elimination (DCE) pass. This pruning only affects the emitted workflow/client outputs, not step-mode output. In workflow mode, because step bodies are replaced with step proxies, imports, helper functions, nested steps, and other pure statements that were only referenced from those original step bodies become eligible for removal. Exports and any identifiers still referenced by the transformed workflow code are preserved.
 
 ### Step Functions
 
@@ -373,7 +496,13 @@ globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);
 
 ## Client Mode
 
-In client mode, step function bodies are preserved as-is (allowing local testing/execution). Workflow functions throw an error and have `workflowId` attached for use with `start()`.
+In client mode, step function bodies are preserved as-is (allowing local testing/execution), and step functions have their `stepId` property set so they can be properly serialized when passed across boundaries (e.g., as arguments to `start()` or returned from other step functions). Workflow functions throw an error and have `workflowId` attached for use with `start()`.
+
+Unlike step mode, client mode does **not** import `registerStepFunction` from `workflow/internal/private` because that module contains server-side dependencies. Instead, the `stepId` property is set directly on the function, similar to how `workflowId` is set on workflow functions.
+
+Client mode also runs the same DCE pass after transform. The key difference from workflow mode is that module-level step bodies are still preserved and executable, so any imports, local helpers, or other declarations that are referenced only from those step bodies must also be preserved. By contrast, code that is reachable only from workflow bodies that were replaced with throwing stubs can still be removed.
+
+Note: Step functions nested inside other functions (whether workflow functions or regular functions) do NOT get `stepId` assignments in client mode because they are not accessible at module level. In practice, nested steps and helpers that are only reachable from a workflow body are often pruned by the client-mode DCE pass once that workflow body has been replaced.
 
 ### Step Functions
 
@@ -391,6 +520,7 @@ Output:
 export async function add(a, b) {
     return a + b;
 }
+add.stepId = "step//./input//add";
 ```
 
 ### Workflow Functions
@@ -436,7 +566,6 @@ export class Point {
 
 Output (Client Mode):
 ```javascript
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//./input//Point"}}}}*/;
 export class Point {
     constructor(x, y) {
@@ -450,7 +579,11 @@ export class Point {
         return new Point(data.x, data.y);
     }
 }
-registerSerializationClass("class//./input//Point", Point);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Point, "class//./input//Point");
 ```
 
 ---
@@ -474,7 +607,6 @@ export class MyService {
 Output (Step Mode):
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//./input//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//./input//MyService"}}}}*/;
 export class MyService {
     static async process(data) {
@@ -482,17 +614,24 @@ export class MyService {
     }
 }
 registerStepFunction("step//./input//MyService.process", MyService.process);
-registerSerializationClass("class//./input//MyService", MyService);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(MyService, "class//./input//MyService");
 ```
 
 Output (Workflow Mode):
 ```javascript
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//./input//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//./input//MyService"}}}}*/;
 export class MyService {
 }
 MyService.process = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//MyService.process");
-registerSerializationClass("class//./input//MyService", MyService);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(MyService, "class//./input//MyService");
 ```
 
 ### Static Workflow Method
@@ -545,7 +684,6 @@ export class Point {
 
 Output:
 ```javascript
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 /**__internal_workflows{"classes":{"input.js":{"Point":{"classId":"class//./input//Point"}}}}*/;
 export class Point {
     constructor(x, y) {
@@ -559,8 +697,14 @@ export class Point {
         return new Point(data.x, data.y);
     }
 }
-registerSerializationClass("class//./input//Point", Point);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Point, "class//./input//Point");
 ```
+
+The registration is **inlined as a self-contained IIFE** that uses `Symbol.for("workflow-class-registry")` on `globalThis`. This ensures it works for 3rd-party packages that don't depend on the `workflow` package directly — no module imports are needed.
 
 You can also use imported symbols from `@workflow/serde`:
 
@@ -571,6 +715,52 @@ export class Vector {
   static [WORKFLOW_SERIALIZE](instance) { ... }
   static [WORKFLOW_DESERIALIZE](data) { ... }
 }
+```
+
+### CommonJS `require()` Patterns
+
+The plugin also detects serialization symbols obtained via CommonJS `require()` calls. This handles code that has been pre-compiled from ESM to CommonJS by tools like TypeScript (`tsc`), esbuild, or tsup.
+
+**Namespace require** — when the entire module is assigned to a variable and symbols are accessed as properties:
+
+```javascript
+const serde_1 = require("@workflow/serde");
+
+class Sandbox {
+  static [serde_1.WORKFLOW_SERIALIZE](instance) {
+    return { sandbox: instance.sandbox };
+  }
+  static [serde_1.WORKFLOW_DESERIALIZE](data) {
+    const instance = Object.create(Sandbox.prototype);
+    instance.sandbox = data.sandbox;
+    return instance;
+  }
+}
+```
+
+**Destructured require** — when symbols are destructured directly from the `require()` call:
+
+```javascript
+const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("@workflow/serde");
+
+class Sandbox {
+  static [WORKFLOW_SERIALIZE](instance) {
+    return { sandbox: instance.sandbox };
+  }
+  static [WORKFLOW_DESERIALIZE](data) {
+    const instance = Object.create(Sandbox.prototype);
+    instance.sandbox = data.sandbox;
+    return instance;
+  }
+}
+```
+
+Both patterns produce the same output as the ESM import version — a `registerSerializationClass()` call is appended and the class is included in the manifest.
+
+Destructured require also supports renaming (analogous to `import { WORKFLOW_SERIALIZE as WS }`):
+
+```javascript
+const { WORKFLOW_SERIALIZE: WS, WORKFLOW_DESERIALIZE: WD } = require("@workflow/serde");
 ```
 
 ### Class Expressions with Binding Names
@@ -598,7 +788,6 @@ var Bash = class _Bash {
 
 Output:
 ```javascript
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
 /**__internal_workflows{"classes":{"input.js":{"Bash":{"classId":"class//./input//Bash"}}}}*/;
 var Bash = class _Bash {
@@ -612,7 +801,11 @@ var Bash = class _Bash {
         return new Bash(data.command);
     }
 };
-registerSerializationClass("class//./input//Bash", Bash);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Bash, "class//./input//Bash");
 ```
 
 Note that:
@@ -620,12 +813,92 @@ Note that:
 - The `classId` in the manifest also uses `Bash`
 - This ensures the registration call references a symbol that's actually in scope at module level
 
+This binding-name preference applies to **all** generated code that references the class at module scope, including:
+- Class serialization registration IIFEs
+- Step method registrations (`registerStepFunction` calls)
+- Workflow method stub assignments
+
+For example, a class expression with step methods:
+
+Input:
+```javascript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+var LanguageModel = class _LanguageModel {
+  constructor(modelId) { this.modelId = modelId; }
+  static [WORKFLOW_SERIALIZE](inst) { return { modelId: inst.modelId }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new _LanguageModel(data.modelId); }
+  async doStream(prompt) { "use step"; return { stream: prompt }; }
+  static async generate(input) { "use step"; return { result: input }; }
+};
+```
+
+Output (step mode):
+```javascript
+registerStepFunction("step//./input//LanguageModel.generate", LanguageModel.generate);
+registerStepFunction("step//./input//LanguageModel#doStream", LanguageModel.prototype["doStream"]);
+(function(__wf_cls, __wf_id) { /* ... */ })(LanguageModel, "class//./input//LanguageModel");
+```
+
+All references use `LanguageModel` (the binding name), not `_LanguageModel` (the internal class expression name). Only a single class registration IIFE is emitted. The step IDs also use the binding name.
+
+### Anonymous Class Expression Name Re-insertion
+
+When a serializable class expression has no internal name (anonymous) but has a binding name from a variable declaration, the plugin re-inserts the binding name as the class expression's identifier. This handles the common case where upstream bundlers like esbuild/tsup transform `class Foo { ... }` into `var Foo = class { ... }` (stripping the class name).
+
+Without this fix, the anonymous class would have an empty `.name` property, which can break downstream bundlers that rely on the class name for serialization registration.
+
+Input (e.g., after tsup pre-bundling):
+```javascript
+var Shell = class {
+  constructor(cmd) {
+    this.cmd = cmd;
+  }
+
+  static [Symbol.for('workflow-serialize')](instance) {
+    return { cmd: instance.cmd };
+  }
+
+  static [Symbol.for('workflow-deserialize')](data) {
+    return new Shell(data.cmd);
+  }
+};
+```
+
+Output:
+```javascript
+/**__internal_workflows{"classes":{"input.js":{"Shell":{"classId":"class//./input//Shell"}}}}*/;
+var Shell = class Shell {
+    constructor(cmd) {
+        this.cmd = cmd;
+    }
+    static [Symbol.for('workflow-serialize')](instance) {
+        return { cmd: instance.cmd };
+    }
+    static [Symbol.for('workflow-deserialize')](data) {
+        return new Shell(data.cmd);
+    }
+};
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+})(Shell, "class//./input//Shell");
+```
+
+Note that:
+- The class expression `class { ... }` becomes `class Shell { ... }` — the binding name is inserted
+- For typical usage, behavior is preserved while ensuring the `.name` property survives subsequent bundling (an inner class name binding is introduced, which can differ in edge cases that depend on assigning to or shadowing that name inside the class body)
+- Classes that already have an internal name (e.g., `class _Bash { ... }`) are not modified
+- Only classes with serialization methods (`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`) are affected
+
 ### File Discovery for Custom Serialization
 
 Files containing classes with custom serialization are automatically discovered for transformation, even if they don't contain `"use step"` or `"use workflow"` directives. The discovery mechanism looks for:
 
 1. **Imports from `@workflow/serde`**: Files that import `WORKFLOW_SERIALIZE` or `WORKFLOW_DESERIALIZE` from `@workflow/serde`
 2. **Direct Symbol.for usage**: Files containing `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
+3. **CommonJS `require()` calls**: Files that use `require("@workflow/serde")` (or any module) and access `WORKFLOW_SERIALIZE` or `WORKFLOW_DESERIALIZE` via destructuring or namespace property access
 
 This allows serialization classes to be defined in separate files (such as Next.js API routes or utility modules) and still be registered in the serialization system when the application is built.
 
@@ -701,6 +974,7 @@ The plugin supports various function declaration styles:
 - `var name = async () => { "use step"; }` - Arrow function with var
 - `const name = async function() { "use step"; }` - Function expression
 - `{ async method() { "use step"; } }` - Object method
+- `{ nested: { execute: async () => { "use step"; } } }` - Nested object property
 - `static async method() { "use step"; }` - Static class method
 - `async method() { "use step"; }` - Instance class method (requires custom serialization)
 
@@ -762,4 +1036,6 @@ The plugin detects this pattern and correctly identifies the directive inside th
 - The `this` keyword and `arguments` object are not allowed in step functions
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection
+- Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available directly in the step bundle and should not be serialized as closure values
+- `new` expressions are analyzed for closure variables in the same way as regular function calls (both the callee and arguments are checked)
 - Workflow functions always throw when called directly; use `start(workflow)` from `workflow/api` instead

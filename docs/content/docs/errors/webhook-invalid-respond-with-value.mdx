@@ -1,6 +1,12 @@
 ---
 title: webhook-invalid-respond-with-value
 description: The respondWith option must be "manual" or a Response object.
+type: troubleshooting
+summary: Resolve the webhook-invalid-respond-with-value error by using a valid respondWith option.
+prerequisites:
+  - /docs/foundations/hooks
+related:
+  - /docs/api-reference/workflow/create-webhook
 ---
 
 This error occurs when you provide an invalid value for the `respondWith` option when creating a webhook. The `respondWith` option must be either `"manual"` or a `Response` object.
@@ -37,6 +43,8 @@ export async function webhookWorkflow() {
 **Solution:** Use `"manual"` or provide a `Response` object.
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Fixed - use "manual"
 export async function webhookWorkflow() {
   "use workflow";
@@ -68,6 +76,8 @@ export async function webhookWorkflow() {
 **Solution:** Create a proper `Response` object.
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Fixed - use Response constructor
 export async function webhookWorkflow() {
   "use workflow";
@@ -83,6 +93,8 @@ export async function webhookWorkflow() {
 ### Default Behavior (202 Response)
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Returns 202 Accepted automatically
 const webhook = await createWebhook();
 const request = await webhook;
@@ -92,6 +104,8 @@ const request = await webhook;
 ### Manual Response
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Manual response control
 const webhook = await createWebhook({
   respondWith: "manual",
@@ -114,6 +128,8 @@ await request.respondWith(
 ### Pre-defined Response
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Immediate response
 const webhook = await createWebhook({
   respondWith: new Response("Request received", { status: 200 }),

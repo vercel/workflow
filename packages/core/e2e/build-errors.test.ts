@@ -21,7 +21,9 @@ describe('build error messages', () => {
     // Restore files in reverse order to handle dependencies
     for (const item of restoreFiles.reverse()) {
       if (item.content === null) {
-        await fs.unlink(item.path).catch(() => {});
+        await fs
+          .rm(item.path, { recursive: true, force: true })
+          .catch(() => {});
       } else {
         await fs.writeFile(item.path, item.content);
       }
@@ -141,16 +143,52 @@ export async function nodeModuleViolationWorkflow() {
     { timeout: 120_000 },
     async () => {
       const appPath = getWorkbenchAppPath('nextjs-turbopack');
+      const packageName = 'workflow-test-dual-entry-package';
+      const packageDir = path.join(appPath, 'node_modules', packageName);
+      const esmDir = path.join(packageDir, 'esm');
+      const cjsDir = path.join(packageDir, 'cjs');
 
-      // @vercel/blob internally uses Node.js modules (via undici)
-      // The error should show "@vercel/blob" not the internal Node.js module
+      await fs.mkdir(esmDir, { recursive: true });
+      await fs.mkdir(cjsDir, { recursive: true });
+      restoreFiles.push({ path: packageDir, content: null });
+
+      // "module" entry uses Node.js built-ins while "main" does not.
+      // This reproduces entry-field divergence between esbuild and enhanced-resolve
+      // and verifies we still attribute the violation to the top-level package.
+      await fs.writeFile(
+        path.join(esmDir, 'index.js'),
+        `
+import os from 'os';
+export function getPlatform() {
+  return os.platform();
+}
+`
+      );
+      await fs.writeFile(
+        path.join(cjsDir, 'index.cjs'),
+        `
+module.exports = {
+  getPlatform() {
+    return 'cjs';
+  },
+};
+`
+      );
+      await fs.writeFile(
+        path.join(packageDir, 'package.json'),
+        JSON.stringify({
+          name: packageName,
+          main: 'cjs/index.cjs',
+          module: 'esm/index.js',
+        })
+      );
+
       const badWorkflowContent = `
-import { put } from '@vercel/blob';
+import { getPlatform } from '${packageName}';
 
 export async function blobViolationWorkflow() {
   'use workflow';
-  const result = await put('test.txt', 'hello', { access: 'public' });
-  return result.url;
+  return getPlatform();
 }
 `;
 
@@ -165,7 +203,7 @@ export async function blobViolationWorkflow() {
 
       // Verify error shows the top-level package name, not internal Node.js module
       expect(output).toContain(
-        'You are attempting to use "@vercel/blob" which depends on Node.js modules.'
+        `You are attempting to use "${packageName}" which depends on Node.js modules.`
       );
 
       // Verify the location points to our test file

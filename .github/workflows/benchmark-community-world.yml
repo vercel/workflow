@@ -49,11 +49,12 @@ jobs:
   benchmark:
     name: Benchmark ${{ inputs.world-name }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
 
     steps:
       - name: Checkout Repo

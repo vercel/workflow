@@ -59,9 +59,42 @@ export class LocalBuilder extends BaseBuilder {
     };
 
     // Generate the three Astro route handlers
-    await this.buildStepsRoute(options);
-    await this.buildWorkflowsRoute(options);
+    const stepsManifest = await this.buildStepsRoute(options);
+    const workflowsManifest = await this.buildWorkflowsRoute(options);
     await this.buildWebhookRoute({ workflowGeneratedDir });
+
+    // Merge manifests from both bundles
+    const manifest = {
+      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
+      workflows: {
+        ...stepsManifest.workflows,
+        ...workflowsManifest.workflows,
+      },
+      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
+    };
+
+    // Generate unified manifest
+    const workflowBundlePath = join(workflowGeneratedDir, 'flow.js');
+    const manifestJson = await this.createManifest({
+      workflowBundlePath,
+      manifestDir: workflowGeneratedDir,
+      manifest,
+    });
+
+    // Expose manifest as a public HTTP route when WORKFLOW_PUBLIC_MANIFEST=1
+    // Astro maps `foo.json.js` to the URL `/foo.json`
+    if (this.shouldExposePublicManifest && manifestJson) {
+      await writeFile(
+        join(workflowGeneratedDir, 'manifest.json.js'),
+        `export function GET() {
+  return new Response(${JSON.stringify(manifestJson)}, {
+    headers: { "content-type": "application/json" },
+  });
+}
+
+export const prerender = false;\n`
+      );
+    }
   }
 
   private async buildStepsRoute({
@@ -75,7 +108,7 @@ export class LocalBuilder extends BaseBuilder {
   }) {
     // Create steps route: .well-known/workflow/v1/step.js
     const stepsRouteFile = join(workflowGeneratedDir, 'step.js');
-    await this.createStepsBundle({
+    const { manifest } = await this.createStepsBundle({
       format: 'esm',
       inputFiles,
       outfile: stepsRouteFile,
@@ -97,6 +130,8 @@ export const POST = async ({request}) => {
 export const prerender = false;`
     );
     await writeFile(stepsRouteFile, stepsRouteContent);
+
+    return manifest;
   }
 
   private async buildWorkflowsRoute({
@@ -110,7 +145,7 @@ export const prerender = false;`
   }) {
     // Create workflows route: .well-known/workflow/v1/flow.js
     const workflowsRouteFile = join(workflowGeneratedDir, 'flow.js');
-    await this.createWorkflowsBundle({
+    const { manifest } = await this.createWorkflowsBundle({
       format: 'esm',
       outfile: workflowsRouteFile,
       bundleFinalOutput: false,
@@ -132,6 +167,8 @@ export const POST = async ({request}) => {
 export const prerender = false;`
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
+
+    return manifest;
   }
 
   private async buildWebhookRoute({

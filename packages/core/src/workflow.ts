@@ -1,13 +1,20 @@
 import { runInContext } from 'node:vm';
-import { ERROR_SLUGS, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  ERROR_SLUGS,
+  WorkflowNotRegisteredError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
+import type { CryptoKey } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
-import { ENOTSUP } from './global.js';
+import type { QueueItem } from './global.js';
+import { ENOTSUP, WorkflowSuspension } from './global.js';
+import { runtimeLogger } from './logger.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -31,10 +38,49 @@ import { WORKFLOW_CONTEXT_SYMBOL } from './workflow/get-workflow-metadata.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
+/**
+ * Logs a warning when a workflow run completes or fails with uncommitted
+ * operations still in the invocations queue. This typically indicates the
+ * user forgot to `await` a step, hook, or sleep call.
+ */
+function warnPendingQueueItems(
+  runId: string,
+  pendingQueue: Map<string, QueueItem>,
+  outcome: 'completed' | 'failed'
+): void {
+  // Filter out hooks that are either already created (alive, waiting for payloads)
+  // or explicitly disposed — both are benign since the backend auto-disposes
+  // all hooks when a run reaches a terminal state
+  const items = [...pendingQueue.values()].filter(
+    (item) => !(item.type === 'hook' && (item.hasCreatedEvent || item.disposed))
+  );
+  if (items.length === 0) return;
+
+  const details = items.map((item) => {
+    switch (item.type) {
+      case 'step':
+        return `step "${item.stepName}"`;
+      case 'hook':
+        return `hook "${item.token}"`;
+      case 'wait':
+        return 'sleep';
+      default:
+        return `unknown (${(item as { type: string }).type})`;
+    }
+  });
+
+  runtimeLogger.warn(
+    `Workflow run ${outcome} with ${items.length} uncommitted operation(s): ${details.join(', ')}. ` +
+      'Did you forget to `await` a step, hook, or sleep call?',
+    { workflowRunId: runId }
+  );
+}
+
 export async function runWorkflow(
   workflowCode: string,
   workflowRun: WorkflowRun,
-  events: Event[]
+  events: Event[],
+  encryptionKey: CryptoKey | undefined
 ): Promise<Uint8Array | unknown> {
   return trace(`workflow.run ${workflowRun.workflowName}`, async (span) => {
     span?.setAttributes({
@@ -53,14 +99,15 @@ export async function runWorkflow(
 
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
-    const port = await getPort();
+    const isVercel = process.env.VERCEL_URL !== undefined;
+    const port = isVercel ? undefined : await getPort();
 
     const {
       context,
       globalThis: vmGlobalThis,
       updateTimestamp,
     } = createContext({
-      seed: workflowRun.runId,
+      seed: `${workflowRun.runId}:${workflowRun.workflowName}:${+startedAt}`,
       fixedTimestamp: +startedAt,
     });
 
@@ -71,13 +118,41 @@ export async function runWorkflow(
       new Uint8Array(size).map(() => 256 * vmGlobalThis.Math.random())
     );
 
+    // Create a mutable holder for the promise queue so the EventsConsumer
+    // can access the current queue state via a getter. The queue is mutated
+    // by step/hook/sleep callbacks as events are processed.
+    const promiseQueueHolder = { current: Promise.resolve() };
+
+    const eventsConsumer = new EventsConsumer(events, {
+      onUnconsumedEvent: (event) => {
+        workflowDiscontinuation.reject(
+          new WorkflowRuntimeError(
+            `Unconsumed event in event log: eventType=${event.eventType}, correlationId=${event.correlationId}, eventId=${event.eventId}. This indicates a corrupted or invalid event log.`,
+            { slug: ERROR_SLUGS.CORRUPTED_EVENT_LOG }
+          )
+        );
+      },
+      getPromiseQueue: () => promiseQueueHolder.current,
+    });
+
     const workflowContext: WorkflowOrchestratorContext = {
+      runId: workflowRun.runId,
+      encryptionKey,
       globalThis: vmGlobalThis,
       onWorkflowError: workflowDiscontinuation.reject,
-      eventsConsumer: new EventsConsumer(events),
+      eventsConsumer,
       generateUlid: () => ulid(+startedAt),
       generateNanoid,
       invocationsQueue: new Map(),
+      // Use getter/setter so the EventsConsumer's getPromiseQueue() always
+      // sees the latest queue state as it's mutated by step/hook/sleep callbacks.
+      get promiseQueue() {
+        return promiseQueueHolder.current;
+      },
+      set promiseQueue(value: Promise<void>) {
+        promiseQueueHolder.current = value;
+      },
+      pendingDeliveries: 0,
     };
 
     // Subscribe to the events log to update the timestamp in the vm context
@@ -127,12 +202,13 @@ export async function runWorkflow(
 
     // TODO: there should be a getUrl method on the world interface itself. This
     // solution only works for vercel + local worlds.
-    const url = process.env.VERCEL_URL
+    const url = isVercel
       ? `https://${process.env.VERCEL_URL}`
       : `http://localhost:${port ?? 3000}`;
 
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {
+      workflowName: workflowRun.workflowName,
       workflowRunId: workflowRun.runId,
       workflowStartedAt: new vmGlobalThis.Date(+startedAt),
       url,
@@ -382,29 +458,34 @@ export async function runWorkflow(
       blob!: () => Promise<Blob>;
       formData!: () => Promise<FormData>;
 
-      async arrayBuffer() {
-        return resArrayBuffer(this);
-      }
+      arrayBuffer!: () => Promise<ArrayBuffer>;
+      json!: () => Promise<any>;
+      text!: () => Promise<string>;
 
       async bytes() {
-        return new Uint8Array(await resArrayBuffer(this));
-      }
-
-      async json() {
-        return resJson(this);
-      }
-
-      async text() {
-        return resText(this);
+        return new Uint8Array(await this.arrayBuffer());
       }
     }
     vmGlobalThis.Request = Request;
 
-    const resJson = useStep<[any], any>('__builtin_response_json');
-    const resText = useStep<[any], string>('__builtin_response_text');
-    const resArrayBuffer = useStep<[any], ArrayBuffer>(
-      '__builtin_response_array_buffer'
-    );
+    Object.defineProperties(Request.prototype, {
+      arrayBuffer: {
+        value: useStep<[], ArrayBuffer>('__builtin_response_array_buffer'),
+        writable: true,
+        configurable: true,
+      },
+      json: {
+        value: useStep<[], any>('__builtin_response_json'),
+        writable: true,
+        configurable: true,
+      },
+      text: {
+        value: useStep<[], string>('__builtin_response_text'),
+        writable: true,
+        configurable: true,
+      },
+    });
+
     class Response implements globalThis.Response {
       type!: globalThis.Response['type'];
       url!: string;
@@ -462,16 +543,12 @@ export async function runWorkflow(
         return false;
       }
 
-      async arrayBuffer() {
-        return resArrayBuffer(this);
-      }
+      arrayBuffer!: () => Promise<ArrayBuffer>;
+      json!: () => Promise<any>;
+      text!: () => Promise<string>;
 
       async bytes() {
-        return new Uint8Array(await resArrayBuffer(this));
-      }
-
-      async json() {
-        return resJson(this);
+        return new Uint8Array(await this.arrayBuffer());
       }
 
       static json(data: any, init?: ResponseInit): Response {
@@ -481,10 +558,6 @@ export async function runWorkflow(
           headers.set('content-type', 'application/json');
         }
         return new Response(body, { ...init, headers });
-      }
-
-      async text() {
-        return resText(this);
       }
 
       static error(): Response {
@@ -516,6 +589,24 @@ export async function runWorkflow(
       }
     }
     vmGlobalThis.Response = Response;
+
+    Object.defineProperties(Response.prototype, {
+      arrayBuffer: {
+        value: useStep<[], ArrayBuffer>('__builtin_response_array_buffer'),
+        writable: true,
+        configurable: true,
+      },
+      json: {
+        value: useStep<[], any>('__builtin_response_json'),
+        writable: true,
+        configurable: true,
+      },
+      text: {
+        value: useStep<[], string>('__builtin_response_text'),
+        writable: true,
+        configurable: true,
+      },
+    });
 
     class ReadableStream<T> implements globalThis.ReadableStream<T> {
       constructor() {
@@ -617,31 +708,68 @@ export async function runWorkflow(
     );
 
     if (typeof workflowFn !== 'function') {
-      throw new ReferenceError(
-        `Workflow ${JSON.stringify(
-          workflowRun.workflowName
-        )} must be a function, but got "${typeof workflowFn}" instead`
-      );
+      throw new WorkflowNotRegisteredError(workflowRun.workflowName);
     }
 
-    const args = hydrateWorkflowArguments(workflowRun.input, vmGlobalThis);
+    // Chain workflow argument hydration onto the promiseQueue so that the
+    // unconsumed event check (which waits for the queue to drain) doesn't
+    // fire during the async gap between run_started consumption and the
+    // workflow function subscribing its first step callbacks.
+    let args: unknown[] = [];
+    workflowContext.promiseQueue = workflowContext.promiseQueue.then(
+      async () => {
+        args = await hydrateWorkflowArguments(
+          workflowRun.input,
+          workflowRun.runId,
+          encryptionKey,
+          vmGlobalThis
+        );
+      }
+    );
+    await workflowContext.promiseQueue;
 
     span?.setAttributes({
       ...Attribute.WorkflowArgumentsCount(args.length),
     });
 
     // Invoke user workflow
-    const result = await Promise.race([
-      workflowFn(...args),
-      workflowDiscontinuation.promise,
-    ]);
+    try {
+      const result = await Promise.race([
+        workflowFn(...args),
+        workflowDiscontinuation.promise,
+      ]);
 
-    const dehydrated = dehydrateWorkflowReturnValue(result, vmGlobalThis);
+      const dehydrated = await dehydrateWorkflowReturnValue(
+        result,
+        workflowRun.runId,
+        encryptionKey,
+        vmGlobalThis
+      );
 
-    span?.setAttributes({
-      ...Attribute.WorkflowResultType(typeof result),
-    });
+      span?.setAttributes({
+        ...Attribute.WorkflowResultType(typeof result),
+      });
 
-    return dehydrated;
+      warnPendingQueueItems(
+        workflowRun.runId,
+        workflowContext.invocationsQueue,
+        'completed'
+      );
+
+      return dehydrated;
+    } catch (err) {
+      // Let WorkflowSuspension propagate — handled separately by the runtime
+      if (WorkflowSuspension.is(err)) {
+        throw err;
+      }
+
+      warnPendingQueueItems(
+        workflowRun.runId,
+        workflowContext.invocationsQueue,
+        'failed'
+      );
+
+      throw err;
+    }
   });
 }

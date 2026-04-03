@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { pluralize } from '@workflow/utils';
+import { pluralize, usesVercelWorld } from '@workflow/utils';
 import chalk from 'chalk';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
@@ -13,6 +13,7 @@ import {
   type WorkflowManifest,
 } from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
+import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
 import { getImportPath } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
@@ -26,6 +27,31 @@ const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
 
 /**
+ * Normalize an array of file paths by appending the `realpath()` of each entry
+ * (to handle symlinks, e.g. pnpm/workspace layouts) and deduplicating.
+ */
+async function withRealpaths(entries: string[]): Promise<string[]> {
+  return Array.from(
+    new Set(
+      (
+        await Promise.all(
+          entries.map(async (entry) => {
+            const resolved = await realpath(entry).catch(() => undefined);
+            return resolved ? [entry, resolved] : [entry];
+          })
+        )
+      ).flat()
+    )
+  );
+}
+
+export interface DiscoveredEntries {
+  discoveredSteps: string[];
+  discoveredWorkflows: string[];
+  discoveredSerdeFiles: string[];
+}
+
+/**
  * Base class for workflow builders. Provides common build logic for transforming
  * workflow source files into deployable bundles using esbuild and SWC.
  *
@@ -36,6 +62,66 @@ export abstract class BaseBuilder {
 
   constructor(config: WorkflowConfig) {
     this.config = config;
+  }
+
+  protected get transformProjectRoot(): string {
+    return this.config.projectRoot || this.config.workingDir;
+  }
+
+  /**
+   * Whether informational BaseBuilder logs should be printed.
+   * Subclasses can override this to silence progress logs while keeping warnings/errors.
+   */
+  protected get shouldLogBaseBuilderInfo(): boolean {
+    return true;
+  }
+
+  protected logBaseBuilderInfo(...args: unknown[]): void {
+    if (this.shouldLogBaseBuilderInfo) {
+      console.log(...args);
+    }
+  }
+
+  private logCreateWorkflowsBundleInfo(...args: unknown[]): void {
+    if (!this.config.suppressCreateWorkflowsBundleLogs) {
+      this.logBaseBuilderInfo(...args);
+    }
+  }
+
+  private logCreateWebhookBundleInfo(...args: unknown[]): void {
+    if (!this.config.suppressCreateWebhookBundleLogs) {
+      this.logBaseBuilderInfo(...args);
+    }
+  }
+
+  private logCreateManifestInfo(...args: unknown[]): void {
+    if (!this.config.suppressCreateManifestLogs) {
+      this.logBaseBuilderInfo(...args);
+    }
+  }
+
+  /**
+   * When outputting CJS, esbuild replaces `import.meta` with an empty object,
+   * making `import.meta.url` (and `import.meta.resolve`) undefined. This method
+   * returns banner code and `define` entries that polyfill them using CJS
+   * equivalents (`__filename`, `require.resolve`) so user code (e.g. Prisma)
+   * that relies on `import.meta.url` works correctly in bundled CJS output.
+   */
+  private getCjsImportMetaPolyfill(format: string): {
+    banner: string;
+    define: Record<string, string>;
+  } {
+    if (format !== 'cjs') return { banner: '', define: {} };
+    return {
+      banner:
+        'var __import_meta_url = typeof __filename !== "undefined" ? require("url").pathToFileURL(__filename).href : undefined;\n' +
+        'var __import_meta_resolve = typeof require !== "undefined" && typeof __filename !== "undefined" ' +
+        '? (s) => require("url").pathToFileURL(require.resolve(s)).href : undefined;\n',
+      define: {
+        'import.meta.url': '__import_meta_url',
+        'import.meta.resolve': '__import_meta_resolve',
+      },
+    };
   }
 
   /**
@@ -59,27 +145,40 @@ export abstract class BaseBuilder {
    * and dependency directories.
    */
   protected async getInputFiles(): Promise<string[]> {
-    const patterns = this.config.dirs.map((dir) => {
-      const resolvedDir = resolve(this.config.workingDir, dir);
-      // Normalize path separators to forward slashes for glob compatibility
-      const normalizedDir = resolvedDir.replace(/\\/g, '/');
-      return `${normalizedDir}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}`;
-    });
+    const ignore = [
+      '**/node_modules/**',
+      '**/.git/**',
+      '**/.next/**',
+      '**/.nuxt/**',
+      '**/.output/**',
+      '**/.vercel/**',
+      '**/.workflow-data/**',
+      '**/.workflow-vitest/**',
+      '**/.well-known/workflow/**',
+      '**/.svelte-kit/**',
+      '**/.turbo/**',
+      '**/.cache/**',
+      '**/.yarn/**',
+      '**/.pnpm-store/**',
+    ];
 
-    const result = await glob(patterns, {
-      ignore: [
-        '**/node_modules/**',
-        '**/.git/**',
-        '**/.next/**',
-        '**/.vercel/**',
-        '**/.workflow-data/**',
-        '**/.well-known/workflow/**',
-        '**/.svelte-kit/**',
-      ],
-      absolute: true,
-    });
+    // Use relative patterns with `cwd` per directory so that `dot: true`
+    // applies consistently to both the search pattern *and* the ignore
+    // patterns. When absolute patterns are used with tinyglobby, the `**`
+    // in ignore patterns does not match dot-prefixed path segments.
+    const results = await Promise.all(
+      this.config.dirs.map((dir) => {
+        const cwd = resolve(this.config.workingDir, dir);
+        return glob(['**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}'], {
+          cwd,
+          ignore,
+          absolute: true,
+          dot: true,
+        });
+      })
+    );
 
-    return result;
+    return results.flat();
   }
 
   /**
@@ -99,12 +198,9 @@ export abstract class BaseBuilder {
 
   protected async discoverEntries(
     inputs: string[],
-    outdir: string
-  ): Promise<{
-    discoveredSteps: string[];
-    discoveredWorkflows: string[];
-    discoveredSerdeFiles: string[];
-  }> {
+    outdir: string,
+    tsconfigPath?: string
+  ): Promise<DiscoveredEntries> {
     const previousResult = this.discoveredEntries.get(inputs);
 
     if (previousResult) {
@@ -121,11 +217,18 @@ export abstract class BaseBuilder {
     };
 
     const discoverStart = Date.now();
+    const effectiveTsconfigPath =
+      tsconfigPath ?? (await this.findTsConfigPath());
+    const esbuildTsconfigOptions = await getEsbuildTsconfigOptions(
+      effectiveTsconfigPath
+    );
     try {
       await esbuild.build({
         treeShaking: true,
         entryPoints: inputs,
-        plugins: [createDiscoverEntriesPlugin(state)],
+        plugins: [
+          createDiscoverEntriesPlugin(state, this.transformProjectRoot),
+        ],
         platform: 'node',
         write: false,
         outdir,
@@ -133,12 +236,13 @@ export abstract class BaseBuilder {
         sourcemap: false,
         absWorkingDir: this.config.workingDir,
         logLevel: 'silent',
+        ...esbuildTsconfigOptions,
         // External packages that should not be bundled during discovery
         external: this.config.externalPackages || [],
       });
     } catch (_) {}
 
-    console.log(
+    this.logBaseBuilderInfo(
       `Discovering workflow directives`,
       `${Date.now() - discoverStart}ms`
     );
@@ -202,7 +306,10 @@ export abstract class BaseBuilder {
   private logEsbuildMessages(
     result: { errors?: any[]; warnings?: any[] },
     phase: string,
-    throwOnError = true
+    throwOnError = true,
+    options?: {
+      suppressWarnings?: boolean;
+    }
   ): void {
     if (result.errors && result.errors.length > 0) {
       console.error(`❌ esbuild errors in ${phase}:`);
@@ -224,7 +331,11 @@ export abstract class BaseBuilder {
       }
     }
 
-    if (result.warnings && result.warnings.length > 0) {
+    if (
+      !options?.suppressWarnings &&
+      result.warnings &&
+      result.warnings.length > 0
+    ) {
       console.warn(`!  esbuild warnings in ${phase}:`);
       for (const warning of result.warnings) {
         console.warn(`  ${warning.text}`);
@@ -269,24 +380,29 @@ export abstract class BaseBuilder {
     format = 'cjs',
     outfile,
     externalizeNonSteps,
+    rewriteTsExtensions,
     tsconfigPath,
+    discoveredEntries,
   }: {
     tsconfigPath?: string;
     inputFiles: string[];
     outfile: string;
     format?: 'cjs' | 'esm';
     externalizeNonSteps?: boolean;
+    rewriteTsExtensions?: boolean;
+    discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     context: esbuild.BuildContext | undefined;
     manifest: WorkflowManifest;
   }> {
     // These need to handle watching for dev to scan for
     // new entries and changes to existing ones
-    const {
-      discoveredSteps: stepFiles,
-      discoveredWorkflows: workflowFiles,
-      discoveredSerdeFiles: serdeFiles,
-    } = await this.discoverEntries(inputFiles, dirname(outfile));
+    const discovered =
+      discoveredEntries ??
+      (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
+    const stepFiles = [...discovered.discoveredSteps].sort();
+    const workflowFiles = [...discovered.discoveredWorkflows].sort();
+    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
 
     // Include serde files that aren't already step files for cross-context class registration.
     // Classes need to be registered in the step bundle so they can be deserialized
@@ -343,8 +459,10 @@ export abstract class BaseBuilder {
         /\\/g,
         '/'
       );
-      // Ensure relative paths start with ./ so esbuild resolves them correctly
-      if (!relativePath.startsWith('.')) {
+      // Ensure relative paths start with ./ so esbuild resolves them correctly.
+      // Paths like ".output/..." are not valid relative specifiers and must
+      // become "./.output/...".
+      if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
         relativePath = `./${relativePath}`;
       }
       return `import '${relativePath}';`;
@@ -368,9 +486,29 @@ export abstract class BaseBuilder {
     export { stepEntrypoint as POST } from 'workflow/runtime';`;
 
     // Bundle with esbuild and our custom SWC plugin
+    const entriesToBundle = externalizeNonSteps
+      ? [
+          ...stepFiles,
+          ...serdeFiles,
+          ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
+        ]
+      : undefined;
+    const normalizedEntriesToBundle = entriesToBundle
+      ? await withRealpaths(entriesToBundle)
+      : undefined;
+    const normalizedSideEffectEntries = await withRealpaths([
+      ...stepFiles,
+      ...serdeOnlyFiles,
+      ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
+    ]);
+    const esbuildTsconfigOptions =
+      await getEsbuildTsconfigOptions(tsconfigPath);
+    const { banner: importMetaBanner, define: importMetaDefine } =
+      this.getCjsImportMetaPolyfill(format);
+
     const esbuildCtx = await esbuild.context({
       banner: {
-        js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}`,
       },
       stdin: {
         contents: entryContent,
@@ -391,8 +529,10 @@ export abstract class BaseBuilder {
       minify: false,
       jsx: 'preserve',
       logLevel: 'error',
-      // Use tsconfig for path alias resolution
-      tsconfig: tsconfigPath,
+      // Use tsconfig for path alias resolution.
+      // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
+      ...esbuildTsconfigOptions,
+      define: importMetaDefine,
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -414,14 +554,12 @@ export abstract class BaseBuilder {
         createPseudoPackagePlugin(),
         createSwcPlugin({
           mode: 'step',
-          entriesToBundle: externalizeNonSteps
-            ? [
-                ...stepFiles,
-                ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
-              ]
-            : undefined,
+          entriesToBundle: normalizedEntriesToBundle,
           outdir: outfile ? dirname(outfile) : undefined,
+          projectRoot: this.transformProjectRoot,
           workflowManifest,
+          rewriteTsExtensions,
+          sideEffectEntries: normalizedSideEffectEntries,
         }),
       ],
       // Plugin should catch most things, but this lets users hard override
@@ -432,7 +570,10 @@ export abstract class BaseBuilder {
     const stepsResult = await esbuildCtx.rebuild();
 
     this.logEsbuildMessages(stepsResult, 'steps bundle creation');
-    console.log('Created steps bundle', `${Date.now() - stepsBundleStart}ms`);
+    this.logBaseBuilderInfo(
+      'Created steps bundle',
+      `${Date.now() - stepsBundleStart}ms`
+    );
 
     // Handle workflow-only files that may have been tree-shaken from the bundle.
     // These files have no steps, so esbuild removes them, but we still need their
@@ -448,7 +589,9 @@ export abstract class BaseBuilder {
           const { workflowManifest: fileManifest } = await applySwcTransform(
             relativeFilepath,
             source,
-            'workflow'
+            'workflow',
+            workflowFile,
+            this.transformProjectRoot
           );
           if (fileManifest.workflows) {
             workflowManifest.workflows = Object.assign(
@@ -464,7 +607,7 @@ export abstract class BaseBuilder {
           }
         } catch (error) {
           // Log warning but continue - don't fail build for workflow-only file issues
-          console.log(
+          console.warn(
             `Warning: Failed to extract workflow metadata from ${workflowFile}:`,
             error instanceof Error ? error.message : String(error)
           );
@@ -493,22 +636,27 @@ export abstract class BaseBuilder {
     format = 'cjs',
     outfile,
     bundleFinalOutput = true,
+    keepInterimBundleContext = this.config.watch,
     tsconfigPath,
+    discoveredEntries,
   }: {
     tsconfigPath?: string;
     inputFiles: string[];
     outfile: string;
     format?: 'cjs' | 'esm';
     bundleFinalOutput?: boolean;
+    keepInterimBundleContext?: boolean;
+    discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     manifest: WorkflowManifest;
     interimBundleCtx?: esbuild.BuildContext;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
   }> {
-    const {
-      discoveredWorkflows: workflowFiles,
-      discoveredSerdeFiles: serdeFiles,
-    } = await this.discoverEntries(inputFiles, dirname(outfile));
+    const discovered =
+      discoveredEntries ??
+      (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
+    const workflowFiles = [...discovered.discoveredWorkflows].sort();
+    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
 
     // Include serde files that aren't already workflow files for cross-context class registration.
     // Classes need to be registered in the workflow bundle so they can be deserialized
@@ -520,8 +668,8 @@ export abstract class BaseBuilder {
     await this.writeDebugFile(outfile, { workflowFiles, serdeOnlyFiles });
 
     // Helper to create import statement from file path
-    // For workspace/node_modules packages, uses the package name so esbuild
-    // will resolve through package.json exports with conditions: ['workflow']
+    // For packages, uses the package name so esbuild will resolve through
+    // package.json exports with conditions: ['workflow']
     const createImport = (file: string) => {
       const { importPath, isPackage } = getImportPath(
         file,
@@ -544,8 +692,10 @@ export abstract class BaseBuilder {
         /\\/g,
         '/'
       );
-      // Ensure relative paths start with ./ so esbuild resolves them correctly
-      if (!relativePath.startsWith('.')) {
+      // Ensure relative paths start with ./ so esbuild resolves them correctly.
+      // Paths like ".output/..." are not valid relative specifiers and must
+      // become "./.output/...".
+      if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
         relativePath = `./${relativePath}`;
       }
       return `import '${relativePath}';`;
@@ -565,6 +715,12 @@ export abstract class BaseBuilder {
 
     const bundleStartTime = Date.now();
     const workflowManifest: WorkflowManifest = {};
+    const esbuildTsconfigOptions =
+      await getEsbuildTsconfigOptions(tsconfigPath);
+    const normalizedWorkflowSideEffectEntries = await withRealpaths([
+      ...workflowFiles,
+      ...serdeOnlyFiles,
+    ]);
 
     // Bundle with esbuild and our custom SWC plugin in workflow mode.
     // this bundle will be run inside a vm isolate
@@ -596,8 +752,9 @@ export abstract class BaseBuilder {
       // This intermediate bundle is executed via runInContext() in a VM, so we need
       // inline source maps to get meaningful stack traces instead of "evalmachine.<anonymous>".
       sourcemap: 'inline',
-      // Use tsconfig for path alias resolution
-      tsconfig: tsconfigPath,
+      // Use tsconfig for path alias resolution.
+      // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
+      ...esbuildTsconfigOptions,
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -614,7 +771,9 @@ export abstract class BaseBuilder {
         createPseudoPackagePlugin(),
         createSwcPlugin({
           mode: 'workflow',
+          projectRoot: this.transformProjectRoot,
           workflowManifest,
+          sideEffectEntries: normalizedWorkflowSideEffectEntries,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths
@@ -629,48 +788,60 @@ export abstract class BaseBuilder {
       // - createPseudoPackagePlugin() to handle server-only/client-only with empty modules
       // - createNodeModuleErrorPlugin() to catch Node.js builtin imports at build time
     });
-    const interimBundle = await interimBundleCtx.rebuild();
+    let shouldDisposeInterimBundleCtx = !keepInterimBundleContext;
+    try {
+      const interimBundle = await interimBundleCtx.rebuild();
 
-    this.logEsbuildMessages(interimBundle, 'intermediate workflow bundle');
-    console.log(
-      'Created intermediate workflow bundle',
-      `${Date.now() - bundleStartTime}ms`
-    );
-
-    if (this.config.workflowManifestPath) {
-      const resolvedPath = resolve(
-        process.cwd(),
-        this.config.workflowManifestPath
+      this.logEsbuildMessages(
+        interimBundle,
+        'intermediate workflow bundle',
+        true,
+        {
+          suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
+        }
       );
-      let prefix = '';
+      this.logCreateWorkflowsBundleInfo(
+        'Created intermediate workflow bundle',
+        `${Date.now() - bundleStartTime}ms`
+      );
 
-      if (resolvedPath.endsWith('.cjs')) {
-        prefix = 'module.exports = ';
-      } else if (
-        resolvedPath.endsWith('.js') ||
-        resolvedPath.endsWith('.mjs')
-      ) {
-        prefix = 'export default ';
+      if (this.config.workflowManifestPath) {
+        const resolvedPath = resolve(
+          process.cwd(),
+          this.config.workflowManifestPath
+        );
+        let prefix = '';
+
+        if (resolvedPath.endsWith('.cjs')) {
+          prefix = 'module.exports = ';
+        } else if (
+          resolvedPath.endsWith('.js') ||
+          resolvedPath.endsWith('.mjs')
+        ) {
+          prefix = 'export default ';
+        }
+
+        await mkdir(dirname(resolvedPath), { recursive: true });
+        await writeFile(
+          resolvedPath,
+          prefix + JSON.stringify(workflowManifest, null, 2)
+        );
       }
 
-      await mkdir(dirname(resolvedPath), { recursive: true });
-      await writeFile(
-        resolvedPath,
-        prefix + JSON.stringify(workflowManifest, null, 2)
-      );
-    }
+      // Create .gitignore in .swc directory
+      await this.createSwcGitignore();
 
-    // Create .gitignore in .swc directory
-    await this.createSwcGitignore();
+      if (
+        !interimBundle.outputFiles ||
+        interimBundle.outputFiles.length === 0
+      ) {
+        throw new Error('No output files generated from esbuild');
+      }
 
-    if (!interimBundle.outputFiles || interimBundle.outputFiles.length === 0) {
-      throw new Error('No output files generated from esbuild');
-    }
+      const bundleFinal = async (interimBundle: string) => {
+        const workflowBundleCode = interimBundle;
 
-    const bundleFinal = async (interimBundle: string) => {
-      const workflowBundleCode = interimBundle;
-
-      const workflowFunctionCode = `// biome-ignore-all lint: generated file
+        const workflowFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { workflowEntrypoint } from 'workflow/runtime';
 
@@ -678,69 +849,91 @@ const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
 export const POST = workflowEntrypoint(workflowCode);`;
 
-      // we skip the final bundling step for Next.js so it can bundle itself
-      if (!bundleFinalOutput) {
-        if (!outfile) {
-          throw new Error(`Invariant: missing outfile for workflow bundle`);
+        // we skip the final bundling step for Next.js so it can bundle itself
+        if (!bundleFinalOutput) {
+          if (!outfile) {
+            throw new Error(`Invariant: missing outfile for workflow bundle`);
+          }
+          // Ensure the output directory exists
+          const outputDir = dirname(outfile);
+          await mkdir(outputDir, { recursive: true });
+
+          // Atomic write: write to temp file then rename to prevent
+          // file watchers from reading partial file during write
+          const tempPath = `${outfile}.${randomUUID()}.tmp`;
+          await writeFile(tempPath, workflowFunctionCode);
+          await rename(tempPath, outfile);
+          return;
         }
-        // Ensure the output directory exists
-        const outputDir = dirname(outfile);
-        await mkdir(outputDir, { recursive: true });
 
-        // Atomic write: write to temp file then rename to prevent
-        // file watchers from reading partial file during write
-        const tempPath = `${outfile}.${randomUUID()}.tmp`;
-        await writeFile(tempPath, workflowFunctionCode);
-        await rename(tempPath, outfile);
-        return;
-      }
+        const bundleStartTime = Date.now();
 
-      const bundleStartTime = Date.now();
+        // Now bundle this so we can resolve the @workflow/core dependency
+        // we could remove this if we do nft tracing or similar instead
+        const finalWorkflowResult = await esbuild.build({
+          banner: {
+            js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+          },
+          stdin: {
+            contents: workflowFunctionCode,
+            resolveDir: this.config.workingDir,
+            sourcefile: 'virtual-entry.js',
+            loader: 'js',
+          },
+          outfile,
+          // Source maps for the final workflow bundle wrapper (not important since this code
+          // doesn't run in the VM - only the intermediate bundle sourcemap is relevant)
+          sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+          absWorkingDir: this.config.workingDir,
+          bundle: true,
+          format,
+          platform: 'node',
+          target: 'es2022',
+          write: true,
+          keepNames: true,
+          minify: false,
+          external: ['@aws-sdk/credential-provider-web-identity'],
+        });
 
-      // Now bundle this so we can resolve the @workflow/core dependency
-      // we could remove this if we do nft tracing or similar instead
-      const finalWorkflowResult = await esbuild.build({
-        banner: {
-          js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
-        },
-        stdin: {
-          contents: workflowFunctionCode,
-          resolveDir: this.config.workingDir,
-          sourcefile: 'virtual-entry.js',
-          loader: 'js',
-        },
-        outfile,
-        // Source maps for the final workflow bundle wrapper (not important since this code
-        // doesn't run in the VM - only the intermediate bundle sourcemap is relevant)
-        sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
-        absWorkingDir: this.config.workingDir,
-        bundle: true,
-        format,
-        platform: 'node',
-        target: 'es2022',
-        write: true,
-        keepNames: true,
-        minify: false,
-        external: ['@aws-sdk/credential-provider-web-identity'],
-      });
-
-      this.logEsbuildMessages(finalWorkflowResult, 'final workflow bundle');
-      console.log(
-        'Created final workflow bundle',
-        `${Date.now() - bundleStartTime}ms`
-      );
-    };
-    await bundleFinal(interimBundle.outputFiles[0].text);
-
-    if (this.config.watch) {
-      return {
-        manifest: workflowManifest,
-        interimBundleCtx,
-        bundleFinal,
+        this.logEsbuildMessages(
+          finalWorkflowResult,
+          'final workflow bundle',
+          true,
+          {
+            suppressWarnings: this.config.suppressCreateWorkflowsBundleWarnings,
+          }
+        );
+        this.logCreateWorkflowsBundleInfo(
+          'Created final workflow bundle',
+          `${Date.now() - bundleStartTime}ms`
+        );
       };
+      await bundleFinal(interimBundle.outputFiles[0].text);
+
+      if (keepInterimBundleContext) {
+        shouldDisposeInterimBundleCtx = false;
+        return {
+          manifest: workflowManifest,
+          interimBundleCtx,
+          bundleFinal,
+        };
+      }
+      return { manifest: workflowManifest };
+    } catch (error) {
+      shouldDisposeInterimBundleCtx = true;
+      throw error;
+    } finally {
+      if (shouldDisposeInterimBundleCtx) {
+        try {
+          await interimBundleCtx.dispose();
+        } catch (disposeError) {
+          console.warn(
+            'Warning: Failed to dispose workflow bundle context',
+            disposeError
+          );
+        }
+      }
     }
-    await interimBundleCtx.dispose();
-    return { manifest: workflowManifest };
   }
 
   /**
@@ -754,8 +947,11 @@ export const POST = workflowEntrypoint(workflowCode);`;
       return;
     }
 
-    console.log('Generating a client library at', this.config.clientBundlePath);
-    console.log(
+    this.logBaseBuilderInfo(
+      'Generating a client library at',
+      this.config.clientBundlePath
+    );
+    this.logBaseBuilderInfo(
       'NOTE: The recommended way to use workflow with a framework like NextJS is using the loader/plugin with webpack/turbobpack/rollup'
     );
 
@@ -781,9 +977,21 @@ export const POST = workflowEntrypoint(workflowCode);`;
       (f) => !inputFilesNormalized.has(f)
     );
 
-    // Re-exports for input files (user's workflow/step definitions)
+    // Re-exports for input files (user's workflow/step definitions).
+    // These must use valid relative specifiers because some frameworks pass
+    // generated files like ".output/server/index.mjs" as input files.
     const reexports = inputFiles
-      .map((file) => `export * from '${file}';`)
+      .map((file) => {
+        const normalizedWorkingDir = this.config.workingDir.replace(/\\/g, '/');
+        let relativePath = relative(normalizedWorkingDir, file).replace(
+          /\\/g,
+          '/'
+        );
+        if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
+          relativePath = `./${relativePath}`;
+        }
+        return `export * from '${relativePath}';`;
+      })
       .join('\n');
 
     // Side-effect imports for serde files not in inputFiles (for class registration)
@@ -794,7 +1002,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
           /\\/g,
           '/'
         );
-        if (!relativePath.startsWith('.')) {
+        if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
           relativePath = `./${relativePath}`;
         }
         return `import '${relativePath}';`;
@@ -807,6 +1015,10 @@ export const POST = workflowEntrypoint(workflowCode);`;
       : reexports;
 
     // Bundle with esbuild and our custom SWC plugin
+    const normalizedClientSideEffectEntries = await withRealpaths([
+      ...inputFiles,
+      ...serdeOnlyFiles,
+    ]);
     const clientResult = await esbuild.build({
       banner: {
         js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
@@ -836,7 +1048,13 @@ export const POST = workflowEntrypoint(workflowCode);`;
         '.mjs',
         '.cjs',
       ],
-      plugins: [createSwcPlugin({ mode: 'client' })],
+      plugins: [
+        createSwcPlugin({
+          mode: 'client',
+          projectRoot: this.transformProjectRoot,
+          sideEffectEntries: normalizedClientSideEffectEntries,
+        }),
+      ],
     });
 
     this.logEsbuildMessages(clientResult, 'client library bundle');
@@ -857,7 +1075,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     outfile: string;
     bundle?: boolean;
   }): Promise<void> {
-    console.log('Creating webhook route');
+    this.logCreateWebhookBundleInfo('Creating webhook route');
     await mkdir(dirname(outfile), { recursive: true });
 
     // Create a static route that calls resumeWebhook
@@ -900,10 +1118,14 @@ export const OPTIONS = handler;`;
 
     // For Build Output API, bundle with esbuild to resolve imports
 
+    const webhookFormat = 'cjs' as const;
+    const { banner: webhookImportMetaBanner, define: webhookImportMetaDefine } =
+      this.getCjsImportMetaPolyfill(webhookFormat);
+
     const webhookBundleStart = Date.now();
     const result = await esbuild.build({
       banner: {
-        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */`,
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${webhookImportMetaBanner}`,
       },
       stdin: {
         contents: routeContent,
@@ -915,7 +1137,7 @@ export const OPTIONS = handler;`;
       absWorkingDir: this.config.workingDir,
       bundle: true,
       jsx: 'preserve',
-      format: 'cjs',
+      format: webhookFormat,
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],
       target: 'es2022',
@@ -923,6 +1145,7 @@ export const OPTIONS = handler;`;
       treeShaking: true,
       keepNames: true,
       minify: false,
+      define: webhookImportMetaDefine,
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -940,7 +1163,7 @@ export const OPTIONS = handler;`;
     });
 
     this.logEsbuildMessages(result, 'webhook bundle creation');
-    console.log(
+    this.logCreateWebhookBundleInfo(
       'Created webhook bundle',
       `${Date.now() - webhookBundleStart}ms`
     );
@@ -972,8 +1195,9 @@ export const OPTIONS = handler;`;
       architecture?: string;
       shouldAddHelpers?: boolean;
       shouldAddSourcemapSupport?: boolean;
+      maxDuration?: number | 'max';
       experimentalTriggers?: Array<{
-        type: string;
+        type: 'queue/v2beta';
         topic: string;
         consumer: string;
         maxDeliveries?: number;
@@ -988,6 +1212,9 @@ export const OPTIONS = handler;`;
       launcherType: config.launcherType ?? 'Nodejs',
       architecture: config.architecture ?? 'arm64',
       shouldAddHelpers: config.shouldAddHelpers ?? true,
+      ...(config.maxDuration !== undefined && {
+        maxDuration: config.maxDuration,
+      }),
       ...(config.shouldAddSourcemapSupport !== undefined && {
         shouldAddSourcemapSupport: config.shouldAddSourcemapSupport,
       }),
@@ -1028,8 +1255,28 @@ export const OPTIONS = handler;`;
   }
 
   /**
+   * Whether the manifest should be exposed as a public HTTP route.
+   * Controlled by the `WORKFLOW_PUBLIC_MANIFEST` environment variable.
+   */
+  protected get shouldExposePublicManifest(): boolean {
+    return process.env.WORKFLOW_PUBLIC_MANIFEST === '1';
+  }
+
+  /**
+   * Whether diagnostics artifacts should be emitted to Vercel output.
+   * This is enabled when the resolved world target is Vercel.
+   */
+  protected get shouldEmitVercelDiagnostics(): boolean {
+    return (
+      usesVercelWorld() || this.config.buildTarget === 'vercel-build-output-api'
+    );
+  }
+
+  /**
    * Creates a manifest JSON file containing step/workflow/class metadata
    * and graph data for visualization.
+   *
+   * @returns The manifest JSON string, or undefined if manifest creation failed.
    */
   protected async createManifest({
     workflowBundlePath,
@@ -1039,9 +1286,9 @@ export const OPTIONS = handler;`;
     workflowBundlePath: string;
     manifestDir: string;
     manifest: WorkflowManifest;
-  }): Promise<void> {
+  }): Promise<string | undefined> {
     const buildStart = Date.now();
-    console.log('Creating manifest...');
+    this.logCreateManifestInfo('Creating manifest...');
 
     try {
       const workflowGraphs = await extractWorkflowGraphs(workflowBundlePath);
@@ -1054,12 +1301,17 @@ export const OPTIONS = handler;`;
       const classes = this.convertClassesManifest(manifest.classes);
 
       const output = { version: '1.0.0', steps, workflows, classes };
+      const manifestJson = JSON.stringify(output, null, 2);
 
       await mkdir(manifestDir, { recursive: true });
-      await writeFile(
-        join(manifestDir, 'manifest.json'),
-        JSON.stringify(output, null, 2)
-      );
+      await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
+      if (this.shouldEmitVercelDiagnostics) {
+        const diagnosticsManifestPath = this.resolvePath(
+          '.vercel/output/diagnostics/workflows-manifest.json'
+        );
+        await this.ensureDirectory(diagnosticsManifestPath);
+        await writeFile(diagnosticsManifestPath, manifestJson);
+      }
 
       const stepCount = Object.values(steps).reduce(
         (acc, s) => acc + Object.keys(s).length,
@@ -1074,15 +1326,18 @@ export const OPTIONS = handler;`;
         0
       );
 
-      console.log(
+      this.logCreateManifestInfo(
         `Created manifest with ${stepCount} ${pluralize('step', 'steps', stepCount)}, ${workflowCount} ${pluralize('workflow', 'workflows', workflowCount)}, and ${classCount} ${pluralize('class', 'classes', classCount)}`,
         `${Date.now() - buildStart}ms`
       );
+
+      return manifestJson;
     } catch (error) {
       console.warn(
         'Failed to create manifest:',
         error instanceof Error ? error.message : String(error)
       );
+      return undefined;
     }
   }
 
@@ -1123,12 +1378,35 @@ export const OPTIONS = handler;`;
     > = {};
     if (!workflows) return result;
 
+    // Build a normalized lookup for graphs since the graph extractor uses
+    // paths from workflowId (e.g. "./workflows/hello-agent") while the
+    // manifest uses source file paths (e.g. "workflows/hello-agent.ts").
+    // Normalize by stripping leading "./" and file extensions.
+    const normalizedGraphs = new Map<
+      string,
+      Record<string, { graph: { nodes: any[]; edges: any[] } }>
+    >();
+    for (const [graphPath, graphEntries] of Object.entries(graphs)) {
+      const normalized = graphPath
+        .replace(/^\.\//, '')
+        .replace(/\.[^/.]+$/, '');
+      normalizedGraphs.set(normalized, graphEntries);
+    }
+
     for (const [filePath, entries] of Object.entries(workflows)) {
       result[filePath] = {};
+      // Normalize the manifest file path for lookup
+      const normalizedFilePath = filePath
+        .replace(/^\.\//, '')
+        .replace(/\.[^/.]+$/, '');
+
+      const graphEntries =
+        graphs[filePath] || normalizedGraphs.get(normalizedFilePath);
+
       for (const [name, data] of Object.entries(entries)) {
         result[filePath][name] = {
           workflowId: data.workflowId,
-          graph: graphs[filePath]?.[name]?.graph || { nodes: [], edges: [] },
+          graph: graphEntries?.[name]?.graph || { nodes: [], edges: [] },
         };
       }
     }

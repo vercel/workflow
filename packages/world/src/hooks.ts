@@ -22,6 +22,7 @@ export const HookSchema = z.object({
   createdAt: z.coerce.date(),
   // Optional in database for backwards compatibility, defaults to 1 (legacy) when reading
   specVersion: z.number().optional(),
+  isWebhook: z.boolean().optional(),
 });
 
 /**
@@ -50,6 +51,8 @@ export type Hook = z.infer<typeof HookSchema> & {
   createdAt: Date;
   /** The spec version when this hook was created. */
   specVersion?: number;
+  /** Whether this hook is resumable via the public webhook endpoint. undefined = legacy (treated as true for backwards compat). */
+  isWebhook?: boolean;
 };
 
 // Request types
@@ -57,6 +60,7 @@ export interface CreateHookRequest {
   hookId: string;
   token: string;
   metadata?: SerializedData;
+  isWebhook?: boolean;
 }
 
 export interface GetHookByTokenParams {

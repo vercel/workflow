@@ -1,5 +1,6 @@
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
 import seedrandom from 'seedrandom';
+import { installUint8ArrayBase64 } from './uint8array-base64.js';
 import { createRandomUUID } from './uuid.js';
 
 export interface CreateContextOptions {
@@ -97,6 +98,15 @@ export function createContext(options: CreateContextOptions) {
   g.URL = globalThis.URL;
   g.URLSearchParams = globalThis.URLSearchParams;
   g.structuredClone = globalThis.structuredClone;
+  g.atob = globalThis.atob;
+  g.btoa = globalThis.btoa;
+
+  // TC39 Uint8Array base64/hex polyfill (proposal-arraybuffer-base64)
+  installUint8ArrayBase64(g.Uint8Array);
+
+  // TC39 Explicit Resource Management polyfill for `using` keyword
+  (g.Symbol as any).dispose ??= Symbol.for('Symbol.dispose');
+  (g.Symbol as any).asyncDispose ??= Symbol.for('Symbol.asyncDispose');
 
   // HACK: Shim `exports` for the bundle
   g.exports = {};

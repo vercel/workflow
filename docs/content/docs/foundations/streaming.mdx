@@ -1,6 +1,13 @@
 ---
 title: Streaming
 description: Stream data in real-time to clients for progress updates and incremental content delivery.
+type: conceptual
+summary: Stream real-time data to clients without waiting for workflow completion.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/api-reference/workflow/get-writable
+  - /docs/ai/resumable-streams
 ---
 
 Workflows can stream data in real-time to clients without waiting for the entire workflow to complete. This enables progress updates, AI-generated content, log messages, and other incremental data to be delivered as workflows execute.
@@ -80,9 +87,25 @@ export async function GET(
 
 This allows clients to reconnect and continue receiving data from where they left off, rather than restarting from the beginning.
 
+`startIndex` also supports **negative values** to read relative to the end of the stream. For example, `startIndex: -5` starts 5 chunks before the current end. This is useful when you want to show the most recent output without reading the entire stream history.
+
+On an active (not-yet-closed) stream, the negative index resolves relative to the chunk count at connection time; any chunks written afterward are still delivered normally.
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript
+// Read only the last 10 chunks
+const stream = run.getReadable({ startIndex: -10 });
+```
+
+If the absolute value exceeds the total number of chunks, reading starts from the beginning (the value is clamped to 0).
+
+<Callout type="warn">
+Because streams are live and continue receiving chunks, negative `startIndex` values resolve to different absolute positions on each call. Accurate pagination over a live stream requires cursor-based access, which is not yet supported. Keep this in mind when building clients that paginate over stream data.
+</Callout>
+
 ## Streams as Data Types
 
-[`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow DevKit makes serializable. These are not custom types - they follow the web standard - but Workflow DevKit adds the ability to pass them between functions while maintaining their streaming capabilities.
+[`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow SDK makes serializable. These are not custom types - they follow the web standard - but Workflow SDK adds the ability to pass them between functions while maintaining their streaming capabilities.
 
 Unlike regular values that are fully serialized to the [event log](/docs/how-it-works/event-sourcing), streams maintain their streaming capabilities when passed between functions.
 
@@ -94,7 +117,7 @@ Unlike regular values that are fully serialized to the [event log](/docs/how-it-
 <Callout type="info">
 **How Streams Persist Across Workflow Suspensions**
 
-Streams in Workflow DevKit are backed by persistent, resumable storage provided by the "world" implementation. This is what enables streams to maintain their state even when workflows suspend and resume:
+Streams in Workflow SDK are backed by persistent, resumable storage provided by the "world" implementation. This is what enables streams to maintain their state even when workflows suspend and resume:
 
 - **Vercel deployments**: Streams are backed by a performant Redis-based stream
 - **Local development**: Stream chunks are stored in the filesystem
@@ -113,7 +136,7 @@ import { streamProcessingWorkflow } from "./workflows/streaming";
 export async function POST(request: Request) {
   // Streams can be passed as workflow arguments
   const run = await start(streamProcessingWorkflow, [request.body]); // [!code highlight]
-  await run.result();
+  await run.returnValue;
 
   return Response.json({ status: "complete" });
 }
@@ -157,6 +180,8 @@ Workflow functions must be deterministic to support replay. Since streams bypass
 For more on determinism and replay, see [Workflows and Steps](/docs/foundations/workflows-and-steps).
 
 ```typescript title="workflows/bad-example.ts" lineNumbers
+import { getWritable } from "workflow";
+
 export async function badWorkflow() {
   "use workflow";
 
@@ -169,6 +194,8 @@ export async function badWorkflow() {
 ```
 
 ```typescript title="workflows/good-example.ts" lineNumbers
+import { getWritable } from "workflow";
+
 export async function goodWorkflow() {
   "use workflow";
 
@@ -494,6 +521,8 @@ If a lock is not released, the step function's HTTP request cannot terminate. Ev
 **Close streams when done:**
 
 ```typescript lineNumbers
+import { getWritable } from "workflow";
+
 async function finalizeStream() {
   "use step";
 
@@ -564,6 +593,7 @@ Stream errors don't trigger automatic retries for the producer step. Design your
 - [`sleep()` API Reference](/docs/api-reference/workflow/sleep) - Pause workflow execution for a duration
 - [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows and access the `Run` object
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Retrieve runs and their streams later
+- [world.streams](/docs/api-reference/workflow-api/world/streams) - Low-level stream read/write/close via World SDK
 - [DurableAgent](/docs/api-reference/workflow-ai/durable-agent) - AI agents with built-in streaming support
 - [Errors and Retries](/docs/foundations/errors-and-retries) - Understanding error handling and retry behavior
 - [Serialization](/docs/foundations/serialization) - Understanding what data types can be passed in workflows

@@ -2,9 +2,12 @@
 let stepArrow = async ()=>{
     return 1;
 };
+stepArrow.stepId = "step//./input//stepArrow";
 export let exportedStepArrow = async ()=>{
     return 2;
 };
+exportedStepArrow.stepId = "step//./input//exportedStepArrow";
 export async function normalStep() {
     return 3;
 }
+normalStep.stepId = "step//./input//normalStep";

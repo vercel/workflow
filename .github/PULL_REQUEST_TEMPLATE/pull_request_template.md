@@ -20,3 +20,4 @@
   - During beta, we only use "patch" mode for changes. Don't tag minor/major versions.
   - Use `pnpm changeset --empty` if you are changing documentation or workbench apps
 - [ ] 🔒 DCO sign-off passes (run `git commit --signoff` on your commits)
+- [ ] 📝 Ping `@vercel/workflow` in a comment once the PR is ready, and the above checklist is complete

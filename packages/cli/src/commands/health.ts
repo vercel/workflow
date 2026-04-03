@@ -12,13 +12,14 @@ type HealthCheckEndpoint = 'workflow' | 'step';
 interface HealthCheckResult {
   healthy: boolean;
   error?: string;
+  latencyMs?: number;
 }
 
 interface EndpointHealthResult {
   endpoint: HealthCheckEndpoint;
   healthy: boolean;
   error?: string;
-  latencyMs: number;
+  latencyMs?: number;
 }
 
 function formatHealthyResult(endpoint: string, latencyMs: number): string {
@@ -222,12 +223,11 @@ export default class Health extends BaseCommand {
 
   static flags = {
     endpoint: Flags.string({
-      char: 'e',
       description: 'Which endpoint(s) to check',
       options: ['workflow', 'step', 'both'],
       default: 'both',
       helpGroup: 'Health Check',
-      helpLabel: '-e, --endpoint',
+      helpLabel: '--endpoint',
       helpValue: ['workflow', 'step', 'both'],
     }),
     timeout: Flags.integer({
@@ -388,8 +388,6 @@ export default class Health extends BaseCommand {
     world: any,
     flags: { timeout: number; json: boolean; verbose: boolean }
   ): Promise<EndpointHealthResult> {
-    const startTime = Date.now();
-
     if (!flags.json) {
       logger.log(`Checking ${endpoint} endpoint...`);
     }
@@ -402,11 +400,9 @@ export default class Health extends BaseCommand {
       flags.verbose
     );
 
-    const latencyMs = Date.now() - startTime;
-
     if (!flags.json) {
       const message = result.healthy
-        ? formatHealthyResult(endpoint, latencyMs)
+        ? formatHealthyResult(endpoint, result.latencyMs ?? 0)
         : formatUnhealthyResult(endpoint, result.error);
       logger.log(message);
     }
@@ -415,7 +411,7 @@ export default class Health extends BaseCommand {
       endpoint,
       healthy: result.healthy,
       error: result.error,
-      latencyMs,
+      latencyMs: result.latencyMs,
     };
   }
 

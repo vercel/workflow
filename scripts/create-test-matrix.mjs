@@ -34,7 +34,7 @@ const DEV_TEST_CONFIGS = {
   vite: {
     generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
     generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
-    apiFilePath: 'routes/api/trigger.post.ts',
+    apiFilePath: 'routes/api/chat.post.ts',
     apiFileImportPath: '../..',
   },
   hono: {
@@ -86,14 +86,12 @@ const matrix = {
   ],
 };
 
-if (process.env.GITHUB_REF === 'refs/heads/main') {
-  const newItems = [];
+const newItems = [];
 
-  for (const item of matrix.app) {
-    newItems.push({ ...item, canary: true });
-  }
-  matrix.app.push(...newItems);
+for (const item of matrix.app) {
+  newItems.push({ ...item, canary: true });
 }
+matrix.app.push(...newItems);
 
 // Manually add nitro
 matrix.app.push({

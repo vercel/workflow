@@ -1,6 +1,13 @@
 ---
 title: Next.js
-description: This guide will walk through setting up your first workflow in a Next.js app. Along the way, you'll learn more about the concepts that are fundamental to using the development kit in your own projects.
+description: This guide will walk through setting up your first workflow in a Next.js app. Along the way, you'll learn more about the concepts that are fundamental to using the Workflow SDK in your own projects.
+type: guide
+summary: Set up Workflow SDK in a Next.js app.
+prerequisites:
+  - /docs/getting-started
+related:
+  - /docs/api-reference/workflow-next
+  - /docs/deploying/world/vercel-world
 ---
 
 <Steps>
@@ -134,7 +141,7 @@ export async function handleUserSignup(email: string) {
 We'll fill in those functions next, but let's take a look at this code:
 
 * We define a **workflow** function with the directive `"use workflow"`. Think of the workflow function as the _orchestrator_ of individual **steps**.
-* The Workflow DevKit's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
+* The Workflow SDK's `sleep` function allows us to suspend execution of the workflow without using up any resources. A sleep can be a few seconds, hours, days, or even months long.
 
 ## Create Your Workflow Steps
 
@@ -238,7 +245,7 @@ curl -X POST --json '{"email":"hello@example.com"}' http://localhost:3000/api/si
 
 Check the Next.js development server logs to see your workflow execute, as well as the steps that are being processed.
 
-Additionally, you can use the [Workflow DevKit CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
+Additionally, you can use the [Workflow SDK CLI or Web UI](/docs/observability) to inspect your workflow runs and steps in detail.
 
 ```bash
 # Open the observability Web UI
@@ -247,54 +254,17 @@ npx workflow web
 npx workflow inspect runs
 ```
 
-![Workflow DevKit Web UI](/o11y-ui.png)
+![Workflow SDK Web UI](/o11y-ui.png)
 
 ## Deploying to production
 
-Workflow DevKit apps currently work best when deployed to [Vercel](https://vercel.com/home) and need no special configuration.
+Workflow SDK apps currently work best when deployed to [Vercel](https://vercel.com/home) and need no special configuration.
+
+<FluidComputeCallout />
 
 Check the [Deploying](/docs/deploying) section to learn how your workflows can be deployed elsewhere.
 
 ## Troubleshooting
-
-### Out of Memory (OOM) during build
-
-When using `withWorkflow()` in a large Next.js application, the "Discovering workflow directives" phase may consume excessive memory, causing builds to fail with OOM errors on standard build machines (e.g., 16 GB RAM).
-
-**Solution:** Use the `workflows.dirs` option to limit the directories scanned for workflow directives. By default, `withWorkflow` scans `['pages', 'app', 'src/pages', 'src/app']`, which in large applications can include thousands of files.
-
-If your workflows are located in a specific directory, configure `dirs` to only scan that directory:
-
-```typescript title="next.config.ts" lineNumbers
-import { withWorkflow } from "workflow/next";
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {};
-
-export default withWorkflow(nextConfig, {
-  workflows: {
-    // Only scan the workflows directory instead of the entire app
-    dirs: ['workflows'], // [!code highlight]
-  },
-});
-```
-
-If you need workflows in both app routes and a dedicated directory:
-
-```typescript title="next.config.ts" lineNumbers
-import { withWorkflow } from "workflow/next";
-import type { NextConfig } from "next";
-
-const nextConfig: NextConfig = {};
-
-export default withWorkflow(nextConfig, {
-  workflows: {
-    dirs: ['app/api', 'workflows'], // [!code highlight]
-  },
-});
-```
-
-This significantly reduces memory usage and build times by avoiding scanning unrelated application code.
 
 ### Next.js 16.1+ compatibility
 

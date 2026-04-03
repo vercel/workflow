@@ -14,7 +14,8 @@ import {
   sleep,
 } from 'workflow';
 import { getRun, start } from 'workflow/api';
-import { callThrower, stepThatThrowsFromHelper } from './helpers.js';
+import { importedStepOnly } from './_imported_step_only';
+import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
 //////////////////////////////////////////////////////////
 
@@ -78,10 +79,17 @@ export async function promiseAnyWorkflow() {
   'use workflow';
   const winner = await Promise.any([
     stepThatFails(),
-    specificDelay(1000, 'b'), // "b" should always win
-    specificDelay(3000, 'c'),
+    specificDelay(100, 'b'), // "b" should always win
+    specificDelay(6000, 'c'),
   ]);
   return winner;
+}
+
+//////////////////////////////////////////////////////////
+
+export async function importedStepOnlyWorkflow() {
+  'use workflow';
+  return await importedStepOnly();
 }
 
 //////////////////////////////////////////////////////////
@@ -119,7 +127,7 @@ export async function hookWorkflow(token: string, customData: string) {
 
   type Payload = { message: string; customData: string; done?: boolean };
 
-  const hook = createHook<Payload>({
+  using hook = createHook<Payload>({
     token,
     metadata: { customData },
   });
@@ -145,26 +153,21 @@ async function sendWebhookResponse(req: RequestWithResponse) {
   return body;
 }
 
-export async function webhookWorkflow(
-  token: string,
-  token2: string,
-  token3: string
-) {
+export async function webhookWorkflow() {
   'use workflow';
 
   type Payload = { url: string; method: string; body: string };
   const payloads: Payload[] = [];
 
-  const webhookWithDefaultResponse = createWebhook({ token });
+  // All webhooks must be created upfront so they're all registered
+  // before the test sends HTTP requests to them
+  const webhookWithDefaultResponse = createWebhook();
 
   const res = new Response('Hello from static response!', { status: 402 });
-  console.log('res', res);
   const webhookWithStaticResponse = createWebhook({
-    token: token2,
     respondWith: res,
   });
   const webhookWithManualResponse = createWebhook({
-    token: token3,
     respondWith: 'manual',
   });
 
@@ -194,10 +197,18 @@ export async function webhookWorkflow(
 
 //////////////////////////////////////////////////////////
 
-export async function sleepingWorkflow() {
+export async function sleepingWorkflow(durationMs = 10_000) {
   'use workflow';
   const startTime = Date.now();
-  await sleep('10s');
+  await sleep(durationMs);
+  const endTime = Date.now();
+  return { startTime, endTime };
+}
+
+export async function parallelSleepWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  await Promise.all(Array.from({ length: 10 }, () => sleep('1s')));
   const endTime = Date.now();
   return { startTime, endTime };
 }
@@ -231,6 +242,7 @@ export async function workflowAndStepMetadataWorkflow() {
     await stepWithMetadata();
   return {
     workflowMetadata: {
+      workflowName: workflowMetadata.workflowName,
       workflowRunId: workflowMetadata.workflowRunId,
       workflowStartedAt: workflowMetadata.workflowStartedAt,
       url: workflowMetadata.url,
@@ -514,18 +526,60 @@ export async function hookCleanupTestWorkflow(
 
   type Payload = { message: string; customData: string };
 
-  const hook = createHook<Payload>({
+  using hook = createHook<Payload>({
     token,
     metadata: { customData },
   });
 
-  // Wait for exactly one payload
   const payload = await hook;
 
   return {
     message: payload.message,
     customData: payload.customData,
     hookCleanupTestData: 'workflow_completed',
+  };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Workflow for testing early hook disposal - allows another workflow to reuse
+ * the token while this workflow is still running.
+ *
+ * The block scope with `using` releases the token before the sleep, so another
+ * workflow can claim the token while this one continues.
+ */
+export async function hookDisposeTestWorkflow(
+  token: string,
+  customData: string
+) {
+  'use workflow';
+
+  type Payload = { message: string; customData: string };
+
+  let message: string;
+  let customDataResult: string;
+
+  {
+    // Block scope releases the hook token when exited
+    using hook = createHook<Payload>({
+      token,
+      metadata: { customData },
+    });
+
+    const payload = await hook;
+    message = payload.message;
+    customDataResult = payload.customData;
+  }
+
+  // Token is now available for another workflow while we continue
+  await sleep('5s');
+
+  return {
+    message,
+    customData: customDataResult,
+    disposed: true,
+    hookDisposeTestData: 'workflow_completed',
   };
 }
 
@@ -839,6 +893,47 @@ export async function errorFatalCatchable() {
   }
 }
 
+// ------------------------------------------------------------
+// SECTION 4: NOT REGISTERED ERRORS
+// Tests for step/workflow not registered in the current deployment
+// ------------------------------------------------------------
+
+/**
+ * Test: step not registered causes the step to fail (like FatalError),
+ * and the workflow can catch the error gracefully.
+ *
+ * This manually invokes useStep with a step ID that doesn't exist in the
+ * deployment bundle, simulating what would happen if a build/bundling issue
+ * caused a step to be missing.
+ */
+export async function stepNotRegisteredCatchable() {
+  'use workflow';
+  // Manually invoke a step that doesn't exist in the deployment.
+  // The SWC transform generates exactly this pattern for real step calls,
+  // so this is equivalent to calling a step that wasn't bundled.
+  const ghost = (globalThis as any)[Symbol.for('WORKFLOW_USE_STEP')](
+    'step//./workflows/99_e2e//nonExistentStep'
+  );
+  try {
+    await ghost();
+    return { caught: false, error: null };
+  } catch (e: any) {
+    return { caught: true, error: e.message };
+  }
+}
+
+/**
+ * Test: step not registered causes the run to fail when not caught.
+ */
+export async function stepNotRegisteredUncaught() {
+  'use workflow';
+  const ghost = (globalThis as any)[Symbol.for('WORKFLOW_USE_STEP')](
+    'step//./workflows/99_e2e//anotherNonExistentStep'
+  );
+  // Don't catch — the step failure should propagate and fail the run
+  return await ghost();
+}
+
 // ============================================================
 // STATIC METHOD STEP/WORKFLOW TESTS
 // ============================================================
@@ -957,6 +1052,10 @@ export class ChainableService {
     };
   }
 }
+
+//////////////////////////////////////////////////////////
+// E2E test for `this` serialization with .call() and .apply()
+//////////////////////////////////////////////////////////
 
 //////////////////////////////////////////////////////////
 // E2E test for `this` serialization with .call() and .apply()
@@ -1092,7 +1191,7 @@ import {
   createVector,
   scaleVector,
   sumVectors,
-} from './serde-steps.js';
+} from './serde-steps';
 
 /**
  * Workflow that tests cross-context class registration.
@@ -1227,4 +1326,179 @@ export async function instanceMethodStepWorkflow(initialValue: number) {
     description, // { label: 'test counter', value: initialValue }
     added2, // 100 + 50 = 150
   };
+}
+
+//////////////////////////////////////////////////////////
+// Step Function Reference as start() Argument E2E Test
+//////////////////////////////////////////////////////////
+
+/**
+ * A step function that invokes a step function reference passed to it.
+ * This is called from within the workflow to execute the passed step function.
+ */
+async function invokeStepFn(
+  stepFn: (a: number, b: number) => Promise<number>,
+  x: number,
+  y: number
+): Promise<number> {
+  'use step';
+  // Call the step function reference that was passed in
+  return await stepFn(x, y);
+}
+
+/**
+ * Workflow that receives a step function reference as an argument from start().
+ * This tests that:
+ * 1. Step function references can be serialized in the client bundle (via stepId property)
+ * 2. The serialized step function can be deserialized in the workflow bundle
+ * 3. The deserialized step function can be invoked DIRECTLY from workflow code
+ * 4. The deserialized step function can also be invoked from within another step
+ */
+export async function stepFunctionAsStartArgWorkflow(
+  stepFn: (a: number, b: number) => Promise<number>,
+  x: number,
+  y: number
+): Promise<{ directResult: number; viaStepResult: number; doubled: number }> {
+  'use workflow';
+
+  // CRITICAL TEST: Call the passed step function DIRECTLY from workflow code
+  // This tests that the deserialized step function has the useStep wrapper,
+  // allowing it to be scheduled as a proper step (not executed inline)
+  const directResult = await stepFn(x, y);
+
+  // Also test invoking via another step (this already worked before)
+  const viaStepResult = await invokeStepFn(stepFn, x, y);
+
+  // Do another operation to verify the workflow continues normally
+  const doubled = await stepFn(directResult, directResult);
+
+  return { directResult, viaStepResult, doubled };
+}
+
+//////////////////////////////////////////////////////////
+
+async function processPayload(payload: { type: string; id?: number }) {
+  'use step';
+  return { processed: true, type: payload.type, id: payload.id };
+}
+
+/**
+ * Workflow that uses a hook with concurrent sleep — tests that multiple
+ * hook payloads are delivered correctly even when a sleep has no wait_completed.
+ *
+ * This is a regression test for a bug where the sleep's WorkflowSuspension
+ * would terminate the workflow before all hook payloads were processed.
+ */
+export async function hookWithSleepWorkflow(token: string) {
+  'use workflow';
+
+  type Payload = { type: string; id?: number; done?: boolean };
+
+  using hook = createHook<Payload>({ token });
+
+  // Concurrent sleep that won't complete during the test
+  void sleep('1d');
+
+  const results: any[] = [];
+
+  for await (const payload of hook) {
+    // Process each payload through a step to prove we reached it
+    const result = await processPayload(payload);
+    results.push(result);
+
+    if (payload.done) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+//////////////////////////////////////////////////////////
+
+async function addNumbers(a: number, b: number) {
+  'use step';
+  return a + b;
+}
+
+/**
+ * Validates that sleep() inside a loop with step calls actually delays
+ * execution on each iteration (i.e., sleeps are honored on replay, not skipped).
+ *
+ * Reproduces the scenario from a user report claiming that:
+ *   for (let i = 0; i < N; i++) {
+ *     await someStep();
+ *     await sleep(duration);
+ *   }
+ * ...fires all iterations instantly with zero delay.
+ */
+async function noopStep(iteration: number) {
+  'use step';
+  return { iteration, ts: Date.now() };
+}
+
+export async function sleepInLoopWorkflow() {
+  'use workflow';
+  const iterations = 3;
+  const sleepMs = 3_000; // 3s between iterations (2 sleeps total)
+  const timestamps: number[] = [];
+
+  for (let i = 0; i < iterations; i++) {
+    const result = await noopStep(i);
+    timestamps.push(result.ts);
+    if (i < iterations - 1) {
+      await sleep(sleepMs);
+    }
+  }
+
+  const totalElapsed = timestamps[timestamps.length - 1] - timestamps[0];
+  return { timestamps, totalElapsed };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Control workflow: sleep + sequential steps (no hooks).
+ * Proves that void sleep().then() does NOT interfere with sequential steps
+ * whose events all exist in the log. This is a control test to show
+ * the promiseQueue regression is specific to hooks.
+ */
+export async function sleepWithSequentialStepsWorkflow() {
+  'use workflow';
+
+  // Fire-and-forget sleep (same pattern as agent-stop)
+  let shouldCancel = false;
+  void sleep('1d').then(() => {
+    shouldCancel = true;
+  });
+
+  const a = await addNumbers(1, 2);
+  const b = await addNumbers(a, 3);
+  const c = await addNumbers(b, 4);
+  return { a, b, c, shouldCancel };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Validates that import.meta.url is correctly polyfilled in CJS step bundles
+ * and natively available in ESM step bundles.
+ */
+async function checkImportMetaUrl(): Promise<{
+  isDefined: boolean;
+  type: string;
+  isFileUrl: boolean;
+}> {
+  'use step';
+  const url = import.meta.url;
+  return {
+    isDefined: typeof url === 'string' && url.length > 0,
+    type: typeof url,
+    isFileUrl: typeof url === 'string' && url.startsWith('file://'),
+  };
+}
+
+export async function importMetaUrlWorkflow() {
+  'use workflow';
+  return await checkImportMetaUrl();
 }

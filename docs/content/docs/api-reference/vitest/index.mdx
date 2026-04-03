@@ -1,0 +1,150 @@
+---
+title: "@workflow/vitest"
+description: Vitest plugin and test helpers for integration testing workflows in-process.
+---
+
+The `@workflow/vitest` package provides a Vitest plugin and test helpers for running full workflow integration tests in-process — no server required.
+
+## Plugin
+
+### `workflow()`
+
+Returns a Vite plugin array that handles SWC transforms, bundle building, and in-process handler registration automatically.
+
+{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
+
+```typescript
+import { defineConfig } from "vitest/config";
+import { workflow } from "@workflow/vitest"; // [!code highlight]
+
+export default defineConfig({
+  plugins: [workflow()], // [!code highlight]
+});
+```
+
+**Returns:** `Plugin[]`
+
+## Setup Functions
+
+### `buildWorkflowTests()`
+
+Builds workflow and step bundles to disk. Called automatically by the `workflow()` plugin in `globalSetup`. Use directly only for [manual setup](/docs/testing#manual-setup).
+
+{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
+
+```typescript
+import { buildWorkflowTests } from "@workflow/vitest";
+
+export async function setup() {
+  await buildWorkflowTests();
+}
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `options?` | `WorkflowTestOptions` | Optional configuration |
+
+### `setupWorkflowTests()`
+
+Sets up an in-process workflow runtime in each test worker. Imports pre-built bundles, creates a [Local World](/docs/worlds/local) instance with direct handlers, and sets it as the global world. Clears all workflow data on each invocation for full test isolation.
+
+Called automatically by the `workflow()` plugin in `setupFiles`. Use directly only for [manual setup](/docs/testing#manual-setup).
+
+{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
+
+```typescript
+import { beforeAll, afterAll } from "vitest";
+import { setupWorkflowTests, teardownWorkflowTests } from "@workflow/vitest";
+
+beforeAll(async () => {
+  await setupWorkflowTests();
+});
+
+afterAll(async () => {
+  await teardownWorkflowTests();
+});
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `options?` | `WorkflowTestOptions` | Optional configuration |
+
+### `teardownWorkflowTests()`
+
+Tears down the workflow test world. Clears the global world and closes the Local World instance. Called automatically by the `workflow()` plugin.
+
+**Returns:** `Promise<void>`
+
+### `WorkflowTestOptions`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `cwd` | `string` | `process.cwd()` | The working directory of the project (where `workflows/` lives) |
+
+## Test Helpers
+
+### `waitForSleep()`
+
+Polls the event log until the workflow has a pending `sleep()` call — one with a `wait_created` event but no corresponding `wait_completed` event. Returns the correlation ID of the pending sleep, which can be passed to [`wakeUp()`](/docs/api-reference/workflow-api/get-run) to target a specific sleep.
+
+{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
+
+```typescript
+import { waitForSleep } from "@workflow/vitest"; // [!code highlight]
+import { start, getRun } from "workflow/api";
+
+const run = await start(myWorkflow, []);
+const sleepId = await waitForSleep(run); // [!code highlight]
+await getRun(run.runId).wakeUp({ correlationIds: [sleepId] }); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `run` | `Run<any>` | The workflow run to monitor |
+| `options?` | `WaitOptions` | Polling and timeout configuration |
+
+**Returns:** `Promise<string>` — The correlation ID of the first pending sleep. Pass this to `wakeUp({ correlationIds: [id] })` to target a specific sleep.
+
+#### Behavior with Multiple Sleeps
+
+- **Sequential sleeps**: `waitForSleep()` returns each sleep as the workflow reaches it. After waking one, call `waitForSleep()` again for the next.
+- **Parallel sleeps**: `waitForSleep()` returns whichever pending sleep is found first. After waking it, call `waitForSleep()` again to get the next one.
+
+### `waitForHook()`
+
+Polls the hook list and event log until a hook matching the optional `token` filter exists that hasn't been received yet. Returns the matching hook object.
+
+{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
+
+```typescript
+import { waitForHook } from "@workflow/vitest"; // [!code highlight]
+import { start, resumeHook } from "workflow/api";
+
+const run = await start(myWorkflow, ["doc-1"]);
+const hook = await waitForHook(run, { token: "approval:doc-1" }); // [!code highlight]
+await resumeHook(hook.token, { approved: true }); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `run` | `Run<any>` | The workflow run to monitor |
+| `options?` | `WaitOptions & { token?: string }` | Polling, timeout, and optional token filter |
+
+**Returns:** `Promise<Hook>` — The first pending hook matching the filter. The hook object includes `token`, `hookId`, and `runId`.
+
+### `WaitOptions`
+
+Both `waitForSleep()` and `waitForHook()` accept options for controlling polling behavior:
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `timeout` | `number` | `30000` | Maximum time to wait in milliseconds |
+| `pollInterval` | `number` | `100` | Polling interval in milliseconds |

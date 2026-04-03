@@ -1,6 +1,11 @@
 ---
 title: Getting Started
 description: Start by choosing your framework. Each guide will walk you through the steps to install the dependencies and start running your first workflow.
+type: overview
+summary: Choose a framework and start building your first workflow.
+related:
+  - /docs/foundations
+  - /docs/foundations/workflows-and-steps
 ---
 
 import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStack, Vite, Express, Nest, Fastify } from "@/app/[lang]/(home)/components/frameworks";
@@ -58,11 +63,11 @@ import { Next, Nitro, SvelteKit, Nuxt, Hono, Bun, AstroDark, AstroLight, TanStac
         <span className="font-medium">SvelteKit</span>
      </div>
     </Card>
-    <Card href="/docs/getting-started/nestjs">
+    <Card className="opacity-50">
       <div className="flex flex-col items-center justify-center gap-2">
-        <Nest className="size-16" />
+        <Nest className="size-16 dark:invert grayscale" />
         <span className="font-medium">NestJS</span>
-        <Badge variant="secondary">Experimental</Badge>
+        <Badge variant="secondary">Coming soon</Badge>
       </div>
     </Card>
     <Card className="opacity-50">

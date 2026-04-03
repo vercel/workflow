@@ -2,6 +2,56 @@ import { z } from 'zod';
 import { SerializedDataSchema } from './serialization.js';
 import type { PaginationOptions, ResolveData } from './shared.js';
 
+/**
+ * Fields within eventData that hold ref/payload data per event type.
+ * When resolveData is 'none', only these fields are stripped — all other
+ * metadata (stepName, workflowName, etc.) is preserved.
+ */
+export const EVENT_DATA_REF_FIELDS: Record<string, string[]> = {
+  run_created: ['input'],
+  run_completed: ['output'],
+  run_failed: ['error'],
+  step_created: ['input'],
+  step_completed: ['result'],
+  step_failed: ['error'],
+  step_retrying: ['error'],
+  hook_created: ['metadata'],
+  hook_received: ['payload'],
+};
+
+/**
+ * Strip ref/payload fields from eventData based on resolveData setting.
+ * When resolveData is 'none', removes only large data fields (refs) from
+ * eventData while preserving metadata like stepName, workflowName, etc.
+ */
+export function stripEventDataRefs(
+  event: Event,
+  resolveData: ResolveData
+): Event {
+  if (resolveData !== 'none') return event;
+  if (!('eventData' in event)) return event;
+
+  const eventData = (event as any).eventData;
+  if (!eventData || typeof eventData !== 'object') {
+    const { eventData: _, ...rest } = event as any;
+    return rest;
+  }
+
+  const refFields = EVENT_DATA_REF_FIELDS[event.eventType];
+  if (!refFields || refFields.length === 0) return event;
+
+  const stripped = { ...eventData };
+  for (const field of refFields) {
+    delete stripped[field];
+  }
+
+  const { eventData: _, ...rest } = event as any;
+  return {
+    ...rest,
+    ...(Object.keys(stripped).length > 0 ? { eventData: stripped } : {}),
+  };
+}
+
 // Event type enum
 export const EventTypeSchema = z.enum([
   // Run lifecycle events
@@ -282,7 +332,7 @@ export type AnyEventRequest = z.infer<typeof CreateEventSchema>;
 
 /**
  * Event request for creating a new workflow run.
- * Must be used with runId: null since the server generates the runId.
+ * Can be used with a client-generated runId or null for server-generated.
  */
 export type RunCreatedEventRequest = z.infer<typeof RunCreatedEventSchema>;
 
@@ -298,6 +348,8 @@ export type CreateEventRequest = Exclude<
 export interface CreateEventParams {
   v1Compat?: boolean;
   resolveData?: ResolveData;
+  /** Request ID (x-vercel-id when on Vercel) for correlating request logs with workflow events. */
+  requestId?: string;
 }
 
 /**
@@ -315,6 +367,18 @@ export interface EventResult {
   step?: import('./steps.js').Step;
   /** The hook entity (for hook_created events) */
   hook?: import('./hooks.js').Hook;
+  /** The wait entity (for wait_created/wait_completed events) */
+  wait?: import('./waits.js').Wait;
+  /**
+   * All events up to this point, with data resolved. When populated
+   * on a run_started response, the runtime uses these to skip the
+   * initial events.list call and reduce TTFB.
+   */
+  events?: Event[];
+}
+
+export interface GetEventParams {
+  resolveData?: ResolveData;
 }
 
 export interface ListEventsParams {

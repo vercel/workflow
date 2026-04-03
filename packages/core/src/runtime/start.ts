@@ -1,27 +1,23 @@
 import { waitUntil } from '@vercel/functions';
 import { WorkflowRuntimeError } from '@workflow/errors';
-import { withResolvers } from '@workflow/utils';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
 import { isLegacySpecVersion, SPEC_VERSION_CURRENT } from '@workflow/world';
+import { monotonicFactory } from 'ulid';
+import { importKey } from '../encryption.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
 import { version as workflowCoreVersion } from '../version.js';
+import { getWorkflowQueueName } from './helpers.js';
 import { Run } from './run.js';
 import { getWorld } from './world.js';
 
-export interface StartOptions {
-  /**
-   * The deployment ID to use for the workflow run.
-   *
-   * @deprecated This property should not be set in user code under normal circumstances.
-   * It is automatically inferred from environment variables when deploying to Vercel.
-   * Only set this if you are doing something advanced and know what you are doing.
-   */
-  deploymentId?: string;
+/** ULID generator for client-side runId generation */
+const ulid = monotonicFactory();
 
+export interface StartOptionsBase {
   /**
    * The world to use for the workflow run creation,
    * by default the world is inferred from the environment variables.
@@ -33,6 +29,34 @@ export interface StartOptions {
    */
   specVersion?: number;
 }
+
+export interface StartOptionsWithDeploymentId extends StartOptionsBase {
+  /**
+   * The deployment ID to use for the workflow run.
+   *
+   * By default, this is automatically inferred from environment variables
+   * when deploying to Vercel.
+   *
+   * Set to `'latest'` to automatically resolve the most recent deployment
+   * for the current environment (same production target or git branch).
+   * This is currently a Vercel-specific feature.
+   *
+   * **Note:** When `deploymentId` is provided, the argument and return types become `unknown`
+   * since there is no guarantee the types will be consistent across deployments.
+   */
+  deploymentId: 'latest' | (string & {});
+}
+
+export interface StartOptionsWithoutDeploymentId extends StartOptionsBase {
+  deploymentId?: undefined;
+}
+
+/**
+ * Options for starting a workflow run.
+ */
+export type StartOptions =
+  | StartOptionsWithDeploymentId
+  | StartOptionsWithoutDeploymentId;
 
 /**
  * Represents an imported workflow function.
@@ -54,15 +78,30 @@ export type WorkflowMetadata = { workflowId: string };
  * @param options - The options for the workflow run (optional).
  * @returns The unique run ID for the newly started workflow invocation.
  */
+// Overloads with deploymentId - args and return type become unknown
+// Uses generics so typed workflows are assignable (avoids contravariance issues),
+// but the return type and args are still unknown since the deployed version may differ.
+export function start<TArgs extends unknown[], TResult>(
+  workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata,
+  args: unknown[],
+  options: StartOptionsWithDeploymentId
+): Promise<Run<unknown>>;
+
+export function start<TResult>(
+  workflow: WorkflowFunction<[], TResult> | WorkflowMetadata,
+  options: StartOptionsWithDeploymentId
+): Promise<Run<unknown>>;
+
+// Overloads without deploymentId - preserve type inference
 export function start<TArgs extends unknown[], TResult>(
   workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata,
   args: TArgs,
-  options?: StartOptions
+  options?: StartOptionsWithoutDeploymentId
 ): Promise<Run<TResult>>;
 
 export function start<TResult>(
   workflow: WorkflowFunction<[], TResult> | WorkflowMetadata,
-  options?: StartOptions
+  options?: StartOptionsWithoutDeploymentId
 ): Promise<Run<TResult>>;
 
 export async function start<TArgs extends unknown[], TResult>(
@@ -76,7 +115,7 @@ export async function start<TArgs extends unknown[], TResult>(
 
     if (!workflowName) {
       throw new WorkflowRuntimeError(
-        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`,
+        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`,
         { slug: 'start-invalid-workflow-function' }
       );
     }
@@ -100,10 +139,25 @@ export async function start<TArgs extends unknown[], TResult>(
       });
 
       const world = opts?.world ?? (await getWorld());
-      const deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+      let deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
+
+      // When 'latest' is requested, resolve the actual latest deployment ID
+      // for the current deployment's environment (same production target or
+      // same git branch for preview deployments).
+      if (deploymentId === 'latest') {
+        if (!world.resolveLatestDeploymentId) {
+          throw new WorkflowRuntimeError(
+            "deploymentId 'latest' requires a World that implements resolveLatestDeploymentId()"
+          );
+        }
+        deploymentId = await world.resolveLatestDeploymentId();
+      }
+
       const ops: Promise<void>[] = [];
-      const { promise: runIdPromise, resolve: resolveRunId } =
-        withResolvers<string>();
+
+      // Generate runId client-side so we have it before serialization
+      // (required for future E2E encryption where runId is part of the encryption context)
+      const runId = `wrun_${ulid()}`;
 
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
@@ -111,17 +165,31 @@ export async function start<TArgs extends unknown[], TResult>(
       const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
       const v1Compat = isLegacySpecVersion(specVersion);
 
+      // Resolve encryption key for the new run. The runId has already been
+      // generated above (client-generated ULID) and will be used for both
+      // key derivation and the run_created event. The World implementation
+      // uses the runId for per-run HKDF key derivation. We pass the resolved
+      // deploymentId (not just the raw opts) so the World can use it for
+      // key resolution even when deploymentId was inferred from the environment
+      // rather than explicitly provided in opts (e.g., in e2e test runners).
+      const rawKey = await world.getEncryptionKeyForRun?.(runId, {
+        ...opts,
+        deploymentId,
+      });
+      const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+
       // Create run via run_created event (event-sourced architecture)
-      // Pass null for runId - the server generates it and returns it in the response
-      const workflowArguments = dehydrateWorkflowArguments(
+      // Pass client-generated runId - server will accept and use it
+      const workflowArguments = await dehydrateWorkflowArguments(
         args,
+        runId,
+        encryptionKey,
         ops,
-        runIdPromise,
         globalThis,
         v1Compat
       );
       const result = await world.events.create(
-        null,
+        runId,
         {
           eventType: 'run_created',
           specVersion,
@@ -142,8 +210,12 @@ export async function start<TArgs extends unknown[], TResult>(
         );
       }
 
-      const runId = result.run.runId;
-      resolveRunId(runId);
+      // Verify server accepted our runId
+      if (!v1Compat && result.run.runId !== runId) {
+        throw new WorkflowRuntimeError(
+          `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
+        );
+      }
 
       waitUntil(
         Promise.all(ops).catch((err) => {
@@ -161,7 +233,7 @@ export async function start<TArgs extends unknown[], TResult>(
       });
 
       await world.queue(
-        `__wkf_workflow_${workflowName}`,
+        getWorkflowQueueName(workflowName),
         {
           runId,
           traceCarrier,

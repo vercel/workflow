@@ -15,6 +15,11 @@ interface BaseWorkflowConfig {
   watch?: boolean;
   dirs: string[];
   workingDir: string;
+  /**
+   * Project root used for package and workspace module-specifier resolution
+   * during SWC transforms. Defaults to `workingDir`.
+   */
+  projectRoot?: string;
 
   // Optionally generate a client library for workflow execution. The preferred
   // method of using workflow is to use a loader within a framework (like
@@ -27,6 +32,19 @@ interface BaseWorkflowConfig {
 
   // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
   debugFilePrefix?: string;
+
+  // Suppress informational logs emitted by createWorkflowsBundle()
+  // (e.g. intermediate/final workflow bundle timing logs).
+  suppressCreateWorkflowsBundleLogs?: boolean;
+
+  // Suppress esbuild warnings emitted by createWorkflowsBundle().
+  suppressCreateWorkflowsBundleWarnings?: boolean;
+
+  // Suppress informational logs emitted by createWebhookBundle().
+  suppressCreateWebhookBundleLogs?: boolean;
+
+  // Suppress informational logs emitted by createManifest().
+  suppressCreateManifestLogs?: boolean;
 
   // Node.js runtime version for Vercel Functions (e.g., "nodejs22.x", "nodejs24.x")
   runtime?: string;

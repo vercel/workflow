@@ -1,11 +1,12 @@
 import type {
-  Event,
   Hook,
   Step,
   StepWithoutData,
   WorkflowRun,
   WorkflowRunWithoutData,
 } from '@workflow/world';
+
+export { stripEventDataRefs } from '@workflow/world';
 
 /**
  * Filter run data based on resolveData setting.
@@ -62,21 +63,6 @@ export function filterStepData(
     } as StepWithoutData;
   }
   return step;
-}
-
-/**
- * Filter event data based on resolveData setting.
- * When resolveData is 'none', strips eventData to reduce payload size.
- */
-export function filterEventData(
-  event: Event,
-  resolveData: 'none' | 'all'
-): Event {
-  if (resolveData === 'none') {
-    const { eventData: _eventData, ...rest } = event as any;
-    return rest;
-  }
-  return event;
 }
 
 /**

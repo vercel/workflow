@@ -1,4 +1,5 @@
 import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
@@ -19,14 +20,21 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
+    runId: 'wrun_test',
+    encryptionKey: undefined,
     globalThis: context.globalThis,
-    eventsConsumer: new EventsConsumer(events),
+    eventsConsumer: new EventsConsumer(events, {
+      onUnconsumedEvent: () => {},
+      getPromiseQueue: () => Promise.resolve(),
+    }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt), // All generated ulids use the workflow's started at time
     generateNanoid: nanoid.customRandom(nanoid.urlAlphabet, 21, (size) =>
       new Uint8Array(size).map(() => 256 * context.globalThis.Math.random())
     ),
     onWorkflowError: vi.fn(),
+    promiseQueue: Promise.resolve(),
+    pendingDeliveries: 0,
   };
 }
 
@@ -39,7 +47,7 @@ describe('createUseStep', () => {
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          result: dehydrateStepReturnValue(3),
+          result: await dehydrateStepReturnValue(3, 'wrun_test', undefined),
         },
         createdAt: new Date(),
       },
@@ -190,7 +198,11 @@ describe('createUseStep', () => {
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          result: dehydrateStepReturnValue(undefined),
+          result: await dehydrateStepReturnValue(
+            undefined,
+            'wrun_test',
+            undefined
+          ),
         },
         createdAt: new Date(),
       },
@@ -409,7 +421,7 @@ describe('createUseStep', () => {
         eventType: 'step_completed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          result: dehydrateStepReturnValue(42),
+          result: await dehydrateStepReturnValue(42, 'wrun_test', undefined),
         },
         createdAt: new Date(),
       },
@@ -535,10 +547,8 @@ describe('createUseStep', () => {
       },
     ]);
 
-    let workflowError: Error | undefined;
-    ctx.onWorkflowError = (err) => {
-      workflowError = err;
-    };
+    const errorReceived = withResolvers<Error>();
+    ctx.onWorkflowError = errorReceived.resolve;
 
     const useStep = createUseStep(ctx);
     const add = useStep('add');
@@ -546,9 +556,7 @@ describe('createUseStep', () => {
     // Start the step - it will process the event asynchronously
     const stepPromise = add(1, 2);
 
-    // Wait for the error handler to be called
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
+    const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
     expect(workflowError?.message).toContain('Unexpected event type for step');
     expect(workflowError?.message).toContain('step_01K11TFZ62YS0YYFDQ3E8B9YCV');

@@ -18,8 +18,11 @@ export type InspectCLIOptions = {
   sort?: 'asc' | 'desc';
   limit?: number;
   workflowName?: string;
+  status?: string;
   withData?: boolean;
   backend?: string;
   disableRelativeDates?: boolean;
   interactive?: boolean;
+  /** When true, decrypt encrypted values (triggers audit-logged key retrieval) */
+  decrypt?: boolean;
 };

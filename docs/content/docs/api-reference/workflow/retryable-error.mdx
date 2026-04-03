@@ -1,6 +1,12 @@
 ---
 title: RetryableError
 description: Throw to retry a step, optionally after a specified duration.
+type: reference
+summary: Throw RetryableError in a step to trigger a retry with an optional delay.
+prerequisites:
+  - /docs/foundations/errors-and-retries
+related:
+  - /docs/api-reference/workflow/fatal-error
 ---
 
 When a `RetryableError` is thrown in a step, it indicates that the workflow should retry a step. Additionally, it contains a parameter `retryAfter` indicating when the step should be retried after.

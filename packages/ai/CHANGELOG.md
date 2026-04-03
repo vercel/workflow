@@ -1,5 +1,104 @@
 # @workflow/ai
 
+## 4.1.0-beta.60
+
+### Patch Changes
+
+- [#1589](https://github.com/vercel/workflow/pull/1589) [`c0f07a9`](https://github.com/vercel/workflow/commit/c0f07a985cbbc5e122ca9e0a6c73de87ddf356b9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix fatal stream errors surfacing as `[object Object]` instead of real error messages
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.76
+
+## 4.1.0-beta.59
+
+### Patch Changes
+
+- [#1529](https://github.com/vercel/workflow/pull/1529) [`a0a7195`](https://github.com/vercel/workflow/commit/a0a71957efe83a6e6223dd7c7c64a1bb65b9dabe) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `WorkflowChatTransport` blocking browser paint during stream reconnect by yielding to the macrotask queue between chunks
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.74
+
+## 4.1.0-beta.58
+
+### Patch Changes
+
+- [#1489](https://github.com/vercel/workflow/pull/1489) [`90ea870`](https://github.com/vercel/workflow/commit/90ea870adda801c3649add7a5816712e51a129b2) Thanks [@openharness](https://github.com/apps/openharness)! - Allow `experimental_context` to be configured on `DurableAgentOptions` and used as the default context for `stream()` calls.
+
+- [#1488](https://github.com/vercel/workflow/pull/1488) [`e4e0140`](https://github.com/vercel/workflow/commit/e4e0140482c8cdb12fcb24bbed8be8fa907def4f) Thanks [@openharness](https://github.com/apps/openharness)! - Expose configured tools on `DurableAgent` instances via `agent.tools`
+
+- [#1470](https://github.com/vercel/workflow/pull/1470) [`01bbe66`](https://github.com/vercel/workflow/commit/01bbe66d5a60d50d71f5b1c82b002ca7fc6f8e0b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `getStreamChunks()` and `getStreamInfo()` to the Streamer interface, and `getTailIndex()` to the readable stream returned by `run.getReadable()`. `WorkflowChatTransport` now reads the `x-workflow-stream-tail-index` response header to resolve negative `initialStartIndex` values into absolute positions, fixing reconnection retries after a disconnect.
+
+- Updated dependencies [[`2ef33d2`](https://github.com/vercel/workflow/commit/2ef33d2828ac06debf04ad9cc239d70fea6a8093), [`aee035f`](https://github.com/vercel/workflow/commit/aee035f94483ef3b842bb557e8c5b167dd0536c4)]:
+  - workflow@4.2.0-beta.72
+
+## 4.1.0-beta.57
+
+### Minor Changes
+
+- [#1362](https://github.com/vercel/workflow/pull/1362) [`74aea7b`](https://github.com/vercel/workflow/commit/74aea7b0af51a959b3e6efcc3c8e082ad14e86d4) Thanks [@pranaygp](https://github.com/pranaygp)! - **BREAKING CHANGE**: Migrate to AI SDK v6. Drop AI SDK v5 support.
+  - Migrate all types from V2 to V3 (`LanguageModelV2*` → `LanguageModelV3*`)
+  - Update peer dependency: `ai` `^5 || ^6` → `^6`, `@ai-sdk/provider` `^2 || ^3` → `^3`
+  - Simplify `CompatibleLanguageModel` from V2|V3 union to `LanguageModelV3`
+  - Remove `providerExecuted` guard on tool-result stream parts (V3: all tool-results are provider-executed)
+  - Add `instructions` constructor option (replaces deprecated `system`)
+  - Add `onStepFinish` and `onFinish` on constructor (merged with stream callbacks)
+  - Add `timeout` stream option
+  - Enrich `onFinish` event with `text`, `finishReason`, `totalUsage`
+  - Add `@workflow/ai/test` export with `mockTextModel` and `mockSequenceModel` for workflow e2e testing
+  - Update `OutputSpecification` to match AI SDK v6 Output interface
+  - Fix `WorkflowChatTransport` to forward `body` and `headers` from `ChatRequestOptions` to `prepareSendMessagesRequest` and the default request body
+
+### Patch Changes
+
+- [#1385](https://github.com/vercel/workflow/pull/1385) [`2c80ec7`](https://github.com/vercel/workflow/commit/2c80ec721765e84592ca92ae12ff015f37179bfd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add type helpers (`InferDurableAgentTools`, `InferDurableAgentUIMessage`), support `prepareStep` on `DurableAgent` constructor, fix `supportedUrls` causing `AI_DownloadError` for image URLs, and add telemetry span support for `experimental_telemetry`. Fix `LanguageModelV3ToolResultOutput` breaking response when not json compatible.
+
+- [#1389](https://github.com/vercel/workflow/pull/1389) [`4a298b5`](https://github.com/vercel/workflow/commit/4a298b506891ef90bca3fe12a118d7d0891eec66) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `prepareStep` system message being discarded when `messages` is also returned
+
+- Updated dependencies [[`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597)]:
+  - workflow@4.2.0-beta.71
+
+## 4.0.1-beta.56
+
+### Patch Changes
+
+- [#1329](https://github.com/vercel/workflow/pull/1329) [`6d45c8e`](https://github.com/vercel/workflow/commit/6d45c8ec36990be55f5a8435992bf7efd01cb0c9) Thanks [@pranaygp](https://github.com/pranaygp)! - Support client-side tools in DurableAgent. Tools without an `execute` function now pause the agent loop and return `clientToolCalls` in the result instead of throwing an error.
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.69
+
+## 4.0.1-beta.55
+
+### Patch Changes
+
+- [#1320](https://github.com/vercel/workflow/pull/1320) [`b28a5fd`](https://github.com/vercel/workflow/commit/b28a5fd0be591d88a38e8f9556d8bd44f927ff2f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use `workspace:^` for the `workflow` peer dependency so that pnpm resolves the correct version range at publish time, fixing `changeset version` warnings about mismatched dependency versions.
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.68
+
+## 4.0.1-beta.54
+
+### Patch Changes
+
+- [#1212](https://github.com/vercel/workflow/pull/1212) [`eea4a02`](https://github.com/vercel/workflow/commit/eea4a02f77a85307545d059c2ced57983303a63f) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Convert tool call errors to error-text results, allowing the agent to recover from tool call failures
+
+- [#1217](https://github.com/vercel/workflow/pull/1217) [`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3) Thanks [@pranaygp](https://github.com/pranaygp)! - Upgrade dependencies across all packages
+
+- [#1199](https://github.com/vercel/workflow/pull/1199) [`905b94a`](https://github.com/vercel/workflow/commit/905b94ac12bdedbeebc44b941c23e25a5ed02968) Thanks [@gsathya](https://github.com/gsathya)! - Pass AbortSignal option into WorkflowChatTransport reconnect handler, allowing it to prevent reconnection.
+
+- Updated dependencies [[`e55c636`](https://github.com/vercel/workflow/commit/e55c63678b15b6687cc77efca705ee9fb40fabc3)]:
+  - workflow@4.1.0-beta.62
+
+## 4.0.1-beta.53
+
+### Patch Changes
+
+- [#1023](https://github.com/vercel/workflow/pull/1023) [`c8c98fe`](https://github.com/vercel/workflow/commit/c8c98fe463f4c8622988a2a9ff06a0234cb46a16) Thanks [@rovo89](https://github.com/rovo89)! - Pass optional request metadata through `WorkflowChatTransport`
+
+- [#889](https://github.com/vercel/workflow/pull/889) [`71d09c5`](https://github.com/vercel/workflow/commit/71d09c57f2d6deca847d8f8c19fb73b065e96093) Thanks [@michael-han-dev](https://github.com/michael-han-dev)! - strip OpenAI itemId from providerMetadata to fix Responses API tool call errors
+
+- Updated dependencies []:
+  - workflow@4.1.0-beta.61
+
 ## 4.0.1-beta.52
 
 ### Patch Changes

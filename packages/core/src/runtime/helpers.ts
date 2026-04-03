@@ -6,12 +6,35 @@ import type {
 } from '@workflow/world';
 import { HealthCheckPayloadSchema } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
+
+import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { getWorld } from './world.js';
 
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
+
+/**
+ * Pattern for safe workflow names. Only allows alphanumeric characters,
+ * underscores, hyphens, dots, forward slashes (for namespaced workflows),
+ * and at signs (for scoped packages).
+ */
+const SAFE_WORKFLOW_NAME_PATTERN = /^[a-zA-Z0-9_\-./@]+$/;
+
+/**
+ * Validates a workflow name and returns the corresponding queue name.
+ * Ensures the workflow name only contains safe characters before
+ * interpolating it into the queue name string.
+ */
+export function getWorkflowQueueName(workflowName: string): ValidQueueName {
+  if (!SAFE_WORKFLOW_NAME_PATTERN.test(workflowName)) {
+    throw new Error(
+      `Invalid workflow name "${workflowName}": must only contain alphanumeric characters, underscores, hyphens, dots, forward slashes, or at signs`
+    );
+  }
+  return `__wkf_workflow_${workflowName}` as ValidQueueName;
+}
 
 const generateId = monotonicFactory();
 
@@ -29,6 +52,8 @@ export interface HealthCheckResult {
   healthy: boolean;
   /** Error message if health check failed */
   error?: string;
+  /** Latency if the health check was successful */
+  latencyMs?: number;
 }
 
 /**
@@ -218,7 +243,10 @@ export async function healthCheck(
 
         const response = parseHealthCheckResponse(chunks);
         if (response) {
-          return response;
+          return {
+            ...response,
+            latencyMs: Date.now() - startTime,
+          };
         }
 
         await new Promise((resolve) =>
@@ -230,7 +258,6 @@ export async function healthCheck(
         );
       }
     }
-
     return {
       healthy: false,
       error: `Health check timed out after ${timeout}ms`,
@@ -260,10 +287,12 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
     let pagesLoaded = 0;
 
     const world = await getWorld();
+    const loadStart = Date.now();
     while (hasMore) {
       // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
       // to lazyload the data from the world instead so that we can optimize and make the event log loading
       // much faster and memory efficient
+      const pageStart = Date.now();
       const response = await world.events.list({
         runId,
         pagination: {
@@ -276,7 +305,23 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
       hasMore = response.hasMore;
       cursor = response.cursor;
       pagesLoaded++;
+
+      runtimeLogger.debug('Loaded event page', {
+        workflowRunId: runId,
+        page: pagesLoaded,
+        pageEvents: response.data.length,
+        totalEvents: allEvents.length,
+        hasMore,
+        pageMs: Date.now() - pageStart,
+      });
     }
+
+    runtimeLogger.debug('Event loading complete', {
+      workflowRunId: runId,
+      totalEvents: allEvents.length,
+      pagesLoaded,
+      totalMs: Date.now() - loadStart,
+    });
 
     span?.setAttributes({
       ...Attribute.WorkflowEventsCount(allEvents.length),
@@ -316,7 +361,7 @@ export function withHealthCheck(
         });
       }
       return new Response(
-        `Workflow DevKit "${url.pathname}" endpoint is healthy`,
+        `Workflow SDK "${url.pathname}" endpoint is healthy`,
         {
           status: 200,
           headers: {
@@ -339,19 +384,26 @@ export async function queueMessage(
 ) {
   const queueName = args[0];
   await trace(
-    'queueMessage',
+    'queue.publish',
     {
       // Standard OTEL messaging conventions
       attributes: {
         ...Attribute.MessagingSystem('vercel-queue'),
         ...Attribute.MessagingDestinationName(queueName),
         ...Attribute.MessagingOperationType('publish'),
+        // Peer service for Datadog service maps
+        ...Attribute.PeerService('vercel-queue'),
+        ...Attribute.RpcSystem('vercel-queue'),
+        ...Attribute.RpcService('vqs'),
+        ...Attribute.RpcMethod('publish'),
       },
       kind: await getSpanKind('PRODUCER'),
     },
     async (span) => {
       const { messageId } = await world.queue(...args);
-      span?.setAttributes(Attribute.MessagingMessageId(messageId));
+      if (messageId) {
+        span?.setAttributes(Attribute.MessagingMessageId(messageId));
+      }
     }
   );
 }

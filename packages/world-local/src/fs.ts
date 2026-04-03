@@ -1,13 +1,11 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { WorkflowAPIError } from '@workflow/errors';
+import { EntityConflictError } from '@workflow/errors';
 import type { PaginatedResponse } from '@workflow/world';
-import { decodeTime, monotonicFactory } from 'ulid';
+import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 
 const ulid = monotonicFactory(() => Math.random());
-
-const Ulid = z.string().ulid();
 
 const isWindows = process.platform === 'win32';
 
@@ -34,8 +32,7 @@ async function withWindowsRetry<T>(
         attempt < maxRetries && retryableErrors.includes(error.code);
       if (!isRetryable) throw error;
       // Exponential backoff with jitter
-      const delay =
-        baseDelayMs * Math.pow(2, attempt) + Math.random() * baseDelayMs;
+      const delay = baseDelayMs * 2 ** attempt + Math.random() * baseDelayMs;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
@@ -54,13 +51,98 @@ export function clearCreatedFilesCache(): void {
   createdFilesCache.clear();
 }
 
-export function ulidToDate(maybeUlid: string): Date | null {
-  const ulid = Ulid.safeParse(maybeUlid);
-  if (!ulid.success) {
-    return null;
-  }
+export { ulidToDate } from '@workflow/world';
 
-  return new Date(decodeTime(ulid.data));
+/**
+ * Regex matching a tag suffix on a fileId (after `.json` has been stripped).
+ * E.g., `wrun_ABC.vitest-0` → the `.vitest-0` part.
+ * Tags start with a letter and contain alphanumeric chars and hyphens.
+ * Entity IDs (ULIDs, step_N, etc.) never contain dots, so the first dot
+ * always marks the tag boundary.
+ */
+const TAG_PATTERN = /\.[a-zA-Z][a-zA-Z0-9-]*$/;
+
+/**
+ * Strip a tag suffix from a fileId.
+ * `wrun_ABC.vitest-0` → `wrun_ABC`
+ * `wrun_ABC` → `wrun_ABC` (no-op if no tag)
+ */
+export function stripTag(fileId: string): string {
+  return fileId.replace(TAG_PATTERN, '');
+}
+
+/**
+ * Build the file path for an entity, with optional tag embedded in the filename.
+ * `taggedPath('runs', 'wrun_ABC', 'vitest-0')` → `runs/wrun_ABC.vitest-0.json`
+ * `taggedPath('runs', 'wrun_ABC')` → `runs/wrun_ABC.json`
+ */
+export function taggedPath(
+  basedir: string,
+  entityDir: string,
+  fileId: string,
+  tag?: string
+): string {
+  const filename = tag ? `${fileId}.${tag}.json` : `${fileId}.json`;
+  return path.join(basedir, entityDir, filename);
+}
+
+/**
+ * Read a JSON entity with tagged fallback.
+ * When a tag is set, tries the tagged path first, then falls back to the
+ * untagged path (so a tagged world can read entities written without a tag).
+ */
+export async function readJSONWithFallback<T>(
+  basedir: string,
+  entityDir: string,
+  fileId: string,
+  schema: z.ZodType<T>,
+  tag?: string
+): Promise<T | null> {
+  if (tag) {
+    const result = await readJSON(
+      path.join(basedir, entityDir, `${fileId}.${tag}.json`),
+      schema
+    );
+    if (result !== null) return result;
+  }
+  return readJSON(path.join(basedir, entityDir, `${fileId}.json`), schema);
+}
+
+/**
+ * List all filenames in a directory that have a specific tag.
+ * Returns full filenames (e.g., `wrun_ABC.vitest-0.json`).
+ */
+export async function listTaggedFiles(
+  dirPath: string,
+  tag: string
+): Promise<string[]> {
+  const suffix = `.${tag}.json`;
+  try {
+    const files = await fs.readdir(dirPath);
+    return files.filter((f) => f.endsWith(suffix));
+  } catch (error) {
+    if ((error as any).code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+/**
+ * List all filenames in a directory that have a specific tag and extension.
+ * Returns full filenames (e.g., `stream-chnk_ABC.vitest-0.bin`).
+ */
+export async function listTaggedFilesByExtension(
+  dirPath: string,
+  tag: string,
+  extension: string
+): Promise<string[]> {
+  const suffix = `.${tag}${extension}`;
+  try {
+    const files = await fs.readdir(dirPath);
+    return files.filter((f) => f.endsWith(suffix));
+  } catch (error) {
+    if ((error as any).code === 'ENOENT') return [];
+    throw error;
+  }
 }
 
 export async function ensureDir(dirPath: string): Promise<void> {
@@ -130,9 +212,8 @@ export async function write(
     // Fast path: check in-memory cache first to avoid expensive fs.access() calls
     // This provides significant performance improvement when creating many files
     if (createdFilesCache.has(filePath)) {
-      throw new WorkflowAPIError(
-        `File ${filePath} already exists and 'overwrite' is false`,
-        { status: 409 }
+      throw new EntityConflictError(
+        `File ${filePath} already exists and 'overwrite' is false`
       );
     }
 
@@ -141,9 +222,8 @@ export async function write(
       await fs.access(filePath);
       // File exists on disk, add to cache for future checks
       createdFilesCache.add(filePath);
-      throw new WorkflowAPIError(
-        `File ${filePath} already exists and 'overwrite' is false`,
-        { status: 409 }
+      throw new EntityConflictError(
+        `File ${filePath} already exists and 'overwrite' is false`
       );
     } catch (error: any) {
       // If file doesn't exist (ENOENT), continue with write
@@ -197,12 +277,40 @@ export async function deleteJSON(filePath: string): Promise<void> {
   }
 }
 
+/**
+ * Atomically create a file using O_CREAT | O_EXCL flags.
+ * Returns true if the file was created, false if it already exists.
+ * This is atomic at the OS level, safe for concurrent access.
+ */
+export async function writeExclusive(
+  filePath: string,
+  data: string
+): Promise<boolean> {
+  await ensureDir(path.dirname(filePath));
+  try {
+    await fs.writeFile(filePath, data, { flag: 'wx' });
+    return true;
+  } catch (error: any) {
+    if (error.code === 'EEXIST') {
+      return false;
+    }
+    throw error;
+  }
+}
+
 export async function listJSONFiles(dirPath: string): Promise<string[]> {
+  return listFilesByExtension(dirPath, '.json');
+}
+
+export async function listFilesByExtension(
+  dirPath: string,
+  extension: string
+): Promise<string[]> {
   try {
     const files = await fs.readdir(dirPath);
     return files
-      .filter((f) => f.endsWith('.json'))
-      .map((f) => f.replace('.json', ''));
+      .filter((f) => f.endsWith(extension))
+      .map((f) => f.slice(0, -extension.length));
   } catch (error) {
     if ((error as any).code === 'ENOENT') return [];
     throw error;

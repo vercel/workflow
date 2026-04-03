@@ -1,6 +1,10 @@
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import {
+  isVercelWorldTarget,
+  resolveWorkflowTargetWorld,
+} from '@workflow/utils';
 import type { World } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
@@ -18,14 +22,6 @@ const globalSymbols: typeof globalThis & {
   [WorldCachePromise]?: Promise<World>;
   [StubbedWorldCachePromise]?: Promise<World>;
 } = globalThis;
-
-function defaultWorld(): 'vercel' | 'local' {
-  if (process.env.VERCEL_DEPLOYMENT_ID) {
-    return 'vercel';
-  }
-
-  return 'local';
-}
 
 /**
  * This hides the dynamic import behind a function to prevent the bundler from
@@ -63,20 +59,39 @@ function resolveModulePath(specifier: string): string {
 /**
  * Create a new world instance based on environment variables.
  * WORKFLOW_TARGET_WORLD is used to determine the target world.
- * All other environment variables are specific to the target world
+ *
+ * Note: WORKFLOW_VERCEL_* env vars (PROJECT, TEAM, AUTH_TOKEN, etc.) are
+ * intentionally NOT read here. Those are for CLI/observability tooling only
+ * and should not affect runtime behavior. The Vercel runtime provides
+ * authentication via OIDC tokens and project context via system env vars
+ * (VERCEL_DEPLOYMENT_ID, VERCEL_PROJECT_ID). Tooling that needs these env
+ * vars should call createVercelWorld() directly with an explicit config and
+ * use setWorld() to inject the instance.
  */
 export const createWorld = async (): Promise<World> => {
-  const targetWorld = process.env.WORKFLOW_TARGET_WORLD || defaultWorld();
+  const targetWorld = resolveWorkflowTargetWorld();
 
-  if (targetWorld === 'vercel') {
-    return createVercelWorld({
-      token: process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
-      projectConfig: {
-        environment: process.env.WORKFLOW_VERCEL_ENV,
-        projectId: process.env.WORKFLOW_VERCEL_PROJECT,
-        teamId: process.env.WORKFLOW_VERCEL_TEAM,
-      },
-    });
+  if (isVercelWorldTarget(targetWorld)) {
+    // Warn if WORKFLOW_VERCEL_* env vars are set inside a Vercel serverless
+    // function (VERCEL=1) — they have no effect at runtime and likely indicate
+    // a misconfiguration (user manually added them as Vercel project env vars,
+    // which is not needed). We gate on VERCEL=1 so the warning does not fire
+    // when the CLI or web observability app sets these env vars intentionally.
+    const staleEnvVars = [
+      'WORKFLOW_VERCEL_PROJECT',
+      'WORKFLOW_VERCEL_TEAM',
+      'WORKFLOW_VERCEL_AUTH_TOKEN',
+      'WORKFLOW_VERCEL_ENV',
+    ].filter((key) => process.env[key]);
+    if (staleEnvVars.length > 0 && process.env.VERCEL === '1') {
+      console.warn(
+        `[workflow] Warning: ${staleEnvVars.join(', ')} env var(s) ` +
+          'are set but have no effect at runtime. These are only used by the Workflow CLI. ' +
+          'Remove them from your Vercel project environment variables.'
+      );
+    }
+
+    return createVercelWorld();
   }
 
   if (targetWorld === 'local') {

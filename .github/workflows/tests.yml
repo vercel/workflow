@@ -7,11 +7,15 @@ on:
     tags:
       - "!*"
   pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
 
 concurrency:
   # Unique group for this workflow and branch
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Phase 0: Update PR comment to show tests are running
@@ -116,6 +120,8 @@ jobs:
   unit:
     name: Unit Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     strategy:
       fail-fast: false
       matrix:
@@ -126,6 +132,8 @@ jobs:
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -135,17 +143,21 @@ jobs:
           build-packages: 'false'
 
       - name: Run Unit Tests
-        run: pnpm test --filter='!./docs'
+        run: pnpm test --filter='!./docs' --filter='!./workbench/vitest'
 
   build-error-messages:
     name: Node.js Module Build Errors Test
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v3
@@ -172,9 +184,34 @@ jobs:
         env:
           APP_NAME: "nextjs-turbopack"
 
+  vitest-plugin:
+    name: Vitest Plugin Tests
+    runs-on: ubuntu-latest
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          setup-rust: 'true'
+          install-args: '--ignore-scripts'
+          build-packages: 'false'
+
+      - name: Build packages
+        run: pnpm turbo run build --filter='!./workbench/*'
+
+      - name: Run Vitest Plugin Tests
+        run: pnpm test
+        working-directory: workbench/vitest
+
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -215,9 +252,12 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -239,7 +279,7 @@ jobs:
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
       - name: Run E2E Tests
-        run: pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-vercel-prod-${{ matrix.app.name }}.json
+        run: pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-vercel-prod-${{ matrix.app.name }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           DEPLOYMENT_URL: ${{ steps.waitForDeployment.outputs.deployment-url }}
@@ -264,18 +304,23 @@ jobs:
           path: |
             e2e-vercel-prod-${{ matrix.app.name }}.json
             e2e-metadata-${{ matrix.app.name }}-vercel.json
+            e2e-failures-${{ matrix.app.name }}-vercel.json
+            e2e-diagnostics-${{ matrix.app.name }}-vercel.json
           retention-days: 7
           if-no-files-found: ignore
 
   getTestMatrix:
     name: Get Test Matrix
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -289,6 +334,8 @@ jobs:
   e2e-local-dev:
     name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
       fail-fast: false
@@ -297,10 +344,13 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -321,20 +371,25 @@ jobs:
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
 
-      - name: Resolve symlinks
-        run: ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
+      - name: Prepare workbench path
+        id: prepare-workbench
+        uses: ./.github/actions/prepare-workbench-path
+        with:
+          app-name: ${{ matrix.app.name }}
 
       - name: Run E2E Tests
         run: |
-          cd workbench/${{ matrix.app.name }} && pnpm dev &
+          cd "${{ steps.prepare-workbench.outputs.workbench_app_path }}" && pnpm dev &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '5173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
           DEV_TEST_CONFIG: ${{ toJSON(matrix.app) }}
+          NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -352,6 +407,8 @@ jobs:
   e2e-local-prod:
     name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
       fail-fast: false
@@ -360,10 +417,13 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -384,23 +444,29 @@ jobs:
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
 
-      - name: Resolve symlinks
-        run: ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
+      - name: Prepare workbench path
+        id: prepare-workbench
+        uses: ./.github/actions/prepare-workbench-path
+        with:
+          app-name: ${{ matrix.app.name }}
 
       - name: Run Build Tests
         run: pnpm vitest run packages/core/e2e/local-build.test.ts
         env:
           APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
 
       - name: Run E2E Tests
         run: |
-          cd workbench/${{ matrix.app.name }} && pnpm start &
+          cd "${{ steps.prepare-workbench.outputs.workbench_app_path }}" && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
+          NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -418,6 +484,8 @@ jobs:
   e2e-local-postgres:
     name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getTestMatrix
     strategy:
       fail-fast: false
@@ -441,12 +509,15 @@ jobs:
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -470,23 +541,29 @@ jobs:
       - name: Setup PostgreSQL Database
         run: ./packages/world-postgres/bin/setup.js
 
-      - name: Resolve symlinks
-        run: ./scripts/resolve-symlinks.sh workbench/${{ matrix.app.name }}
+      - name: Prepare workbench path
+        id: prepare-workbench
+        uses: ./.github/actions/prepare-workbench-path
+        with:
+          app-name: ${{ matrix.app.name }}
 
       - name: Run Build Tests
         run: pnpm vitest run packages/core/e2e/local-build.test.ts
         env:
           APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
 
       - name: Run E2E Tests
         run: |
-          cd workbench/${{ matrix.app.name }} && pnpm start &
+          cd "${{ steps.prepare-workbench.outputs.workbench_app_path }}" && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
+          WORKBENCH_APP_PATH: ${{ steps.prepare-workbench.outputs.workbench_app_path }}
           DEPLOYMENT_URL: "http://localhost:${{ matrix.app.name == 'sveltekit' && '4173' || (matrix.app.name == 'astro' && '4321' || '3000') }}"
+          NEXT_CANARY: ${{ matrix.app.canary && '1' || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -504,13 +581,18 @@ jobs:
   e2e-windows:
     name: E2E Windows Tests
     runs-on: windows-latest
+    timeout-minutes: 30
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+      WORKFLOW_PUBLIC_MANIFEST: '1'
 
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -543,7 +625,7 @@ jobs:
           Start-Sleep -Seconds 15
           cd ../..
           pnpm vitest run packages/core/e2e/dev.test.ts
-          pnpm run test:e2e --reporter=default --reporter=json --outputFile=e2e-windows-nextjs-turbopack.json
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-windows-nextjs-turbopack.json
           Stop-Job $job
         shell: powershell
         env:
@@ -592,10 +674,13 @@ jobs:
   getCommunityWorldsMatrix:
     name: Get Community Worlds Matrix
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
@@ -608,6 +693,7 @@ jobs:
 
   e2e-community:
     name: E2E Community World (${{ matrix.world.name }})
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     needs: getCommunityWorldsMatrix
     strategy:
       fail-fast: false
@@ -632,6 +718,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
         uses: actions/download-artifact@v4
@@ -717,6 +805,60 @@ jobs:
 
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
+  # Final required check: passes only when unit + all E2E jobs succeed
+  e2e-required-check:
+    name: E2E Required Check
+    runs-on: ubuntu-latest
+    needs: [unit, e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows, e2e-community]
+    if: always()
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate E2E job statuses
+        env:
+          UNIT_STATUS: ${{ needs.unit.result }}
+          VERCEL_STATUS: ${{ needs.e2e-vercel-prod.result }}
+          LOCAL_DEV_STATUS: ${{ needs.e2e-local-dev.result }}
+          LOCAL_PROD_STATUS: ${{ needs.e2e-local-prod.result }}
+          POSTGRES_STATUS: ${{ needs.e2e-local-postgres.result }}
+          WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
+          COMMUNITY_STATUS: ${{ needs.e2e-community.result }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+        run: |
+          FAILED_JOBS=()
+
+          # When workflow-server-test label is present, only check vercel-prod (others should be skipped)
+          # Otherwise, all jobs must succeed
+          if [[ "$HAS_LABEL" == "true" ]]; then
+            echo "workflow-server-test label detected - only checking required jobs"
+            [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+
+            # Verify other jobs were actually skipped
+            [[ "$UNIT_STATUS" == "skipped" ]] || echo "Warning: unit was not skipped ($UNIT_STATUS)"
+            [[ "$LOCAL_DEV_STATUS" == "skipped" ]] || echo "Warning: e2e-local-dev was not skipped ($LOCAL_DEV_STATUS)"
+            [[ "$LOCAL_PROD_STATUS" == "skipped" ]] || echo "Warning: e2e-local-prod was not skipped ($LOCAL_PROD_STATUS)"
+            [[ "$POSTGRES_STATUS" == "skipped" ]] || echo "Warning: e2e-local-postgres was not skipped ($POSTGRES_STATUS)"
+            [[ "$WINDOWS_STATUS" == "skipped" ]] || echo "Warning: e2e-windows was not skipped ($WINDOWS_STATUS)"
+            [[ "$COMMUNITY_STATUS" == "skipped" ]] || echo "Warning: e2e-community was not skipped ($COMMUNITY_STATUS)"
+          else
+            echo "Standard PR - checking all jobs"
+            [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
+            [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+            [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
+            [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
+            [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")
+            [[ "$WINDOWS_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-windows ($WINDOWS_STATUS)")
+            [[ "$COMMUNITY_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-community ($COMMUNITY_STATUS)")
+          fi
+
+          if [[ ${#FAILED_JOBS[@]} -gt 0 ]]; then
+            echo "The following E2E jobs did not succeed:"
+            printf '%s\n' "${FAILED_JOBS[@]}"
+            exit 1
+          fi
+
+          echo "All required E2E jobs succeeded."
+
   # Publish E2E results to GitHub Pages (main branch only)
   publish-results:
     name: Publish E2E Results
@@ -731,6 +873,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Download all E2E artifacts
         uses: actions/download-artifact@v4

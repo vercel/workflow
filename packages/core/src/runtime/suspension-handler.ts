@@ -1,12 +1,18 @@
 import type { Span } from '@opentelemetry/api';
 import { waitUntil } from '@vercel/functions';
-import { WorkflowAPIError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  HookNotFoundError,
+  RunExpiredError,
+} from '@workflow/errors';
 import {
   type CreateEventRequest,
   type SerializedData,
   SPEC_VERSION_CURRENT,
+  type WorkflowRun,
   type World,
 } from '@workflow/world';
+import { importKey } from '../encryption.js';
 import type {
   HookInvocationQueueItem,
   StepInvocationQueueItem,
@@ -19,13 +25,29 @@ import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
 import { queueMessage } from './helpers.js';
 
+/**
+ * Extracts W3C trace context headers from a trace carrier for HTTP propagation.
+ * Returns an object with `traceparent` and optionally `tracestate` headers.
+ */
+function extractTraceHeaders(
+  traceCarrier: Record<string, string>
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  if (traceCarrier.traceparent) {
+    headers.traceparent = traceCarrier.traceparent;
+  }
+  if (traceCarrier.tracestate) {
+    headers.tracestate = traceCarrier.tracestate;
+  }
+  return headers;
+}
+
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
   world: World;
-  runId: string;
-  workflowName: string;
-  workflowStartedAt: number;
+  run: WorkflowRun;
   span?: Span;
+  requestId?: string;
 }
 
 export interface SuspensionHandlerResult {
@@ -44,41 +66,60 @@ export interface SuspensionHandlerResult {
 export async function handleSuspension({
   suspension,
   world,
-  runId,
-  workflowName,
-  workflowStartedAt,
+  run,
   span,
+  requestId,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
+  const runId = run.runId;
+  const workflowName = run.workflowName;
+  const workflowStartedAt = run.startedAt ? +run.startedAt : Date.now();
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
   );
-  const hookItems = suspension.steps.filter(
+  const allHookItems = suspension.steps.filter(
     (item): item is HookInvocationQueueItem => item.type === 'hook'
   );
   const waitItems = suspension.steps.filter(
     (item): item is WaitInvocationQueueItem => item.type === 'wait'
   );
 
+  // Split hooks by what actions they need
+  const hooksNeedingCreation = allHookItems.filter(
+    (item) => !item.hasCreatedEvent
+  );
+  // Hooks needing disposal: any disposed hook (including those needing creation first)
+  // Hooks are created before disposal in the processing order below
+  const hooksNeedingDisposal = allHookItems.filter((item) => item.disposed);
+
+  // Resolve encryption key for this run
+  const rawKey = await world.getEncryptionKeyForRun?.(run);
+  const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+
   // Build hook_created events (World will atomically create hook entities)
-  const hookEvents: CreateEventRequest[] = hookItems.map((queueItem) => {
-    const hookMetadata: SerializedData | undefined =
-      typeof queueItem.metadata === 'undefined'
-        ? undefined
-        : (dehydrateStepArguments(
-            queueItem.metadata,
-            suspension.globalThis
-          ) as SerializedData);
-    return {
-      eventType: 'hook_created' as const,
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: queueItem.correlationId,
-      eventData: {
-        token: queueItem.token,
-        metadata: hookMetadata,
-      },
-    };
-  });
+  const hookEvents: CreateEventRequest[] = await Promise.all(
+    hooksNeedingCreation.map(async (queueItem) => {
+      const hookMetadata: SerializedData | undefined =
+        typeof queueItem.metadata === 'undefined'
+          ? undefined
+          : ((await dehydrateStepArguments(
+              queueItem.metadata,
+              runId,
+              encryptionKey,
+              suspension.globalThis
+            )) as SerializedData);
+      return {
+        eventType: 'hook_created' as const,
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: queueItem.correlationId,
+        eventData: {
+          token: queueItem.token,
+          metadata: hookMetadata,
+          isWebhook: queueItem.isWebhook ?? false,
+        },
+      };
+    })
+  );
 
   // Process hooks first to prevent race conditions with webhook receivers
   // All hook creations run in parallel
@@ -89,7 +130,9 @@ export async function handleSuspension({
     await Promise.all(
       hookEvents.map(async (hookEvent) => {
         try {
-          const result = await world.events.create(runId, hookEvent);
+          const result = await world.events.create(runId, hookEvent, {
+            requestId,
+          });
           // Check if the world returned a hook_conflict event instead of hook_created
           // The hook_conflict event is stored in the event log and will be replayed
           // on the next workflow invocation, causing the hook's promise to reject
@@ -98,18 +141,60 @@ export async function handleSuspension({
             hasHookConflict = true;
           }
         } catch (err) {
-          if (WorkflowAPIError.is(err)) {
-            if (err.status === 410) {
-              runtimeLogger.info(
-                'Workflow run already completed, skipping hook',
-                {
-                  workflowRunId: runId,
-                  message: err.message,
-                }
-              );
-            } else {
-              throw err;
-            }
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+            runtimeLogger.info(
+              'Workflow run already completed, skipping hook',
+              {
+                workflowRunId: runId,
+                message: err.message,
+              }
+            );
+          } else {
+            throw err;
+          }
+        }
+      })
+    );
+  }
+
+  // Process hook disposals - these release hook tokens for reuse by other workflows
+  if (hooksNeedingDisposal.length > 0) {
+    await Promise.all(
+      hooksNeedingDisposal.map(async (queueItem) => {
+        const hookDisposedEvent: CreateEventRequest = {
+          eventType: 'hook_disposed' as const,
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: queueItem.correlationId,
+        };
+        try {
+          await world.events.create(runId, hookDisposedEvent, { requestId });
+        } catch (err) {
+          if (EntityConflictError.is(err)) {
+            // Hook was already disposed by a concurrent invocation — safe to skip
+            runtimeLogger.info(
+              'Hook already disposed, skipping duplicate disposal',
+              {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              }
+            );
+          } else if (RunExpiredError.is(err)) {
+            runtimeLogger.info(
+              'Workflow run already completed, skipping hook disposal',
+              {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              }
+            );
+          } else if (HookNotFoundError.is(err)) {
+            // Hook may have already been disposed or never created
+            runtimeLogger.info('Hook not found for disposal, continuing', {
+              workflowRunId: runId,
+              correlationId: queueItem.correlationId,
+              message: err.message,
+            });
           } else {
             throw err;
           }
@@ -136,12 +221,14 @@ export async function handleSuspension({
       (async () => {
         // Create step event if not already created
         if (stepsNeedingCreation.has(queueItem.correlationId)) {
-          const dehydratedInput = dehydrateStepArguments(
+          const dehydratedInput = await dehydrateStepArguments(
             {
               args: queueItem.args,
               closureVars: queueItem.closureVars,
               thisVal: queueItem.thisVal,
             },
+            runId,
+            encryptionKey,
             suspension.globalThis
           );
           const stepEvent: CreateEventRequest = {
@@ -154,9 +241,9 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, stepEvent);
+            await world.events.create(runId, stepEvent, { requestId });
           } catch (err) {
-            if (WorkflowAPIError.is(err) && err.status === 409) {
+            if (EntityConflictError.is(err)) {
               runtimeLogger.info('Step already exists, continuing', {
                 workflowRunId: runId,
                 correlationId: queueItem.correlationId,
@@ -169,6 +256,10 @@ export async function handleSuspension({
         }
 
         // Queue step execution message
+        // Serialize trace context once and include in both payload and headers
+        // Payload: for manual context restoration in step handler
+        // Headers: for automatic trace propagation by Vercel's infrastructure
+        const traceCarrier = await serializeTraceCarrier();
         await queueMessage(
           world,
           `__wkf_step_${queueItem.stepName}`,
@@ -177,12 +268,14 @@ export async function handleSuspension({
             workflowRunId: runId,
             workflowStartedAt,
             stepId: queueItem.correlationId,
-            traceCarrier: await serializeTraceCarrier(),
+            traceCarrier,
             requestedAt: new Date(),
           },
           {
             idempotencyKey: queueItem.correlationId,
-            headers: { 'x-workflow-run-id': runId },
+            headers: {
+              ...extractTraceHeaders(traceCarrier),
+            },
           }
         );
       })()
@@ -203,9 +296,9 @@ export async function handleSuspension({
             },
           };
           try {
-            await world.events.create(runId, waitEvent);
+            await world.events.create(runId, waitEvent, { requestId });
           } catch (err) {
-            if (WorkflowAPIError.is(err) && err.status === 409) {
+            if (EntityConflictError.is(err)) {
               runtimeLogger.info('Wait already exists, continuing', {
                 workflowRunId: runId,
                 correlationId: queueItem.correlationId,
@@ -246,7 +339,7 @@ export async function handleSuspension({
   span?.setAttributes({
     ...Attribute.WorkflowRunStatus('workflow_suspended'),
     ...Attribute.WorkflowStepsCreated(stepItems.length),
-    ...Attribute.WorkflowHooksCreated(hookItems.length),
+    ...Attribute.WorkflowHooksCreated(hooksNeedingCreation.length),
     ...Attribute.WorkflowWaitsCreated(waitItems.length),
   });
 
@@ -256,7 +349,7 @@ export async function handleSuspension({
   // We do this after processing all other operations (steps, waits) to ensure
   // they are recorded in the event log before the re-execution
   if (hasHookConflict) {
-    return { timeoutSeconds: 1 };
+    return { timeoutSeconds: 0 };
   }
 
   if (minTimeoutSeconds !== null) {
