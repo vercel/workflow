@@ -1,5 +1,6 @@
 ---
 "@workflow/core": patch
+"@workflow/cli": patch
 ---
 
-Make `getWorld` asynchronous so it can use dynamic imports
+**BREAKING CHANGE**: Make `getWorld` and `createWorld` asynchronous to support ESM dynamic imports for custom world modules. All callers must now `await getWorld()`.

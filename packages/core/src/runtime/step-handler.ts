@@ -877,7 +877,11 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
  * appropriate step function. We may eventually want to create different bundles
  * for each step, this is temporary.
  */
+let cachedStepHandler: ((req: Request) => Promise<Response>) | undefined;
 export const stepEntrypoint: (req: Request) => Promise<Response> =
-  /* @__PURE__ */ withHealthCheck(async (req) =>
-    stepHandler(await getWorldHandlers())(req)
-  );
+  /* @__PURE__ */ withHealthCheck(async (req) => {
+    if (!cachedStepHandler) {
+      cachedStepHandler = stepHandler(await getWorldHandlers());
+    }
+    return cachedStepHandler(req);
+  });

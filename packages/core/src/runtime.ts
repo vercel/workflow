@@ -607,7 +607,13 @@ export function workflowEntrypoint(
       }
     );
 
-  return withHealthCheck(async (req) => handler(await getWorldHandlers())(req));
+  let cachedHandler: ((req: Request) => Promise<Response>) | undefined;
+  return withHealthCheck(async (req) => {
+    if (!cachedHandler) {
+      cachedHandler = handler(await getWorldHandlers());
+    }
+    return cachedHandler(req);
+  });
 }
 
 // this is a no-op placeholder as the client is
