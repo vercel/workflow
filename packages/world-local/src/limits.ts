@@ -10,7 +10,7 @@ import {
   createLockCorrelationId,
   createLockId,
   createLockWakeCorrelationId,
-  type LimitDefinition,
+  getBlockedReason,
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
   LimitDefinitionSchema,
@@ -18,7 +18,6 @@ import {
   type LimitLease,
   LimitLeaseSchema,
   type LimitPromotedWaiter,
-  type LimitReleaseRequest,
   type LimitReleaseResult,
   LimitReleaseRequestSchema,
   type Limits,
@@ -46,69 +45,27 @@ const LimitWaiterSchema = z.object({
 
 const KeyStateSchema = z.object({
   key: z.string(),
-  definition: LimitDefinitionSchema.optional(),
+  definition: LimitDefinitionSchema,
   leases: z.array(LimitLeaseSchema),
   tokens: z.array(LimitTokenSchema),
   waiters: z.array(LimitWaiterSchema),
 });
 
-const CurrentLimitsStateSchema = z.object({
-  version: z.literal(3),
+const LimitsStateSchema = z.object({
   keys: z.record(z.string(), KeyStateSchema),
 });
 
-const LegacyLimitsStateSchema = z.object({
-  version: z.literal(2),
-  keys: z.record(z.string(), KeyStateSchema),
-});
-
-type LimitToken = z.infer<typeof LimitTokenSchema>;
 type LimitWaiter = z.infer<typeof LimitWaiterSchema>;
 type KeyState = z.infer<typeof KeyStateSchema>;
-type LimitsState = z.infer<typeof CurrentLimitsStateSchema>;
+type LimitsState = z.infer<typeof LimitsStateSchema>;
 
 export interface LocalLimitsOptions {
   tag?: string;
   storage?: Pick<Storage, 'runs'>;
 }
 
-const EMPTY_STATE: LimitsState = {
-  version: 3,
-  keys: {},
-};
-
 function getStatePath(dataDir: string, tag?: string): string {
   return path.join(dataDir, 'limits', tag ? `state.${tag}.json` : 'state.json');
-}
-
-function cloneToken(token: LimitToken): LimitToken {
-  return { ...token };
-}
-
-function cloneWaiter(waiter: LimitWaiter): LimitWaiter {
-  return { ...waiter };
-}
-
-function normalizeKeyState(keyState: KeyState): KeyState {
-  return {
-    key: keyState.key,
-    definition: keyState.definition,
-    leases: keyState.leases.map((lease) => ({ ...lease })),
-    tokens: keyState.tokens.map(cloneToken),
-    waiters: keyState.waiters.map(cloneWaiter),
-  };
-}
-
-function cloneState(state: LimitsState): LimitsState {
-  return {
-    version: 3,
-    keys: Object.fromEntries(
-      Object.entries(state.keys).map(([key, keyState]) => [
-        key,
-        normalizeKeyState(keyState),
-      ])
-    ),
-  };
 }
 
 function pruneKeyState(keyState: KeyState, now = Date.now()): KeyState {
@@ -120,45 +77,8 @@ function pruneKeyState(keyState: KeyState, now = Date.now()): KeyState {
         lease.expiresAt === undefined || lease.expiresAt.getTime() > now
     ),
     tokens: keyState.tokens.filter((token) => token.expiresAt.getTime() > now),
-    waiters: keyState.waiters.map(cloneWaiter),
+    waiters: [...keyState.waiters],
   };
-}
-
-function assertCanonicalDefinition(
-  key: string,
-  keyState: KeyState,
-  requested: LimitDefinition
-) {
-  if (!keyState.definition) {
-    keyState.definition = requested;
-    return;
-  }
-
-  if (!areLimitDefinitionsEqual(keyState.definition, requested)) {
-    throw new LimitDefinitionConflictError(key, keyState.definition, requested);
-  }
-}
-
-function getBlockedReason(
-  queuedBlocked: boolean,
-  concurrencyBlocked: boolean,
-  rateBlocked: boolean
-): 'queued' | 'concurrency' | 'rate' | 'concurrency_and_rate' {
-  if (queuedBlocked) return 'queued';
-  if (concurrencyBlocked && rateBlocked) return 'concurrency_and_rate';
-  if (concurrencyBlocked) return 'concurrency';
-  if (rateBlocked) return 'rate';
-  throw new Error('Blocked reason requires a blocked state');
-}
-
-function getKeyDefinition(key: string, keyState: KeyState): LimitDefinition {
-  if (!keyState.definition) {
-    throw new WorkflowWorldError(
-      `Missing canonical definition for key "${key}"`
-    );
-  }
-
-  return keyState.definition;
 }
 
 function getRetryAfterMs(
@@ -194,15 +114,13 @@ function getWaiterRetryAfterMs(
   keyState: KeyState,
   now: number
 ): number | undefined {
-  const definition = getKeyDefinition(keyState.key, keyState);
-
   return getRetryAfterMs(
     keyState,
     now,
-    definition.concurrency !== undefined &&
-      keyState.leases.length >= definition.concurrency.max,
-    definition.rate !== undefined &&
-      keyState.tokens.length >= definition.rate.count
+    keyState.definition.concurrency !== undefined &&
+      keyState.leases.length >= keyState.definition.concurrency.max,
+    keyState.definition.rate !== undefined &&
+      keyState.tokens.length >= keyState.definition.rate.count
   );
 }
 
@@ -303,41 +221,6 @@ function deleteEmptyKey(state: LimitsState, key: string) {
   }
 }
 
-function createEmptyKeyState(key: string): KeyState {
-  return {
-    key,
-    definition: undefined,
-    leases: [],
-    tokens: [],
-    waiters: [],
-  };
-}
-
-function resetKeyDefinition(keyState: KeyState): KeyState {
-  if (
-    keyState.leases.length === 0 &&
-    keyState.tokens.length === 0 &&
-    keyState.waiters.length === 0
-  ) {
-    keyState.definition = undefined;
-  }
-
-  return keyState;
-}
-
-function resolveReleaseKey(
-  state: LimitsState,
-  request: LimitReleaseRequest
-): string | undefined {
-  if ('key' in request) {
-    return request.key;
-  }
-
-  return Object.entries(state.keys).find(([, keyState]) =>
-    keyState.leases.some((lease) => lease.leaseId === request.leaseId)
-  )?.[0];
-}
-
 export function createLimits(
   dataDir: string,
   tagOrOptions?: string | LocalLimitsOptions
@@ -360,16 +243,7 @@ export function createLimits(
   };
 
   const readState = async (): Promise<LimitsState> => {
-    const raw =
-      (await readJSON(
-        statePath,
-        z.union([CurrentLimitsStateSchema, LegacyLimitsStateSchema])
-      )) ?? EMPTY_STATE;
-
-    return cloneState({
-      version: 3,
-      keys: raw.keys,
-    });
+    return (await readJSON(statePath, LimitsStateSchema)) ?? { keys: {} };
   };
 
   const writeState = async (state: LimitsState): Promise<void> => {
@@ -427,7 +301,6 @@ export function createLimits(
   };
 
   const promoteWaiter = (
-    key: string,
     keyState: KeyState,
     waiter: LimitWaiter
   ): {
@@ -436,10 +309,10 @@ export function createLimits(
     promotedWaiter: LimitPromotedWaiter;
   } => {
     const acquiredAt = new Date();
-    const definition = getKeyDefinition(key, keyState);
+    const definition = keyState.definition;
 
     const lease = createLease(
-      key,
+      keyState.key,
       waiter.runId,
       waiter.lockIndex,
       definition,
@@ -469,7 +342,6 @@ export function createLimits(
   };
 
   const promoteEligibleWaiters = (
-    key: string,
     keyState: KeyState
   ): {
     keyState: KeyState;
@@ -483,19 +355,18 @@ export function createLimits(
         break;
       }
 
-      const definition = getKeyDefinition(key, keyState);
       const concurrencyBlocked =
-        definition.concurrency !== undefined &&
-        keyState.leases.length >= definition.concurrency.max;
+        keyState.definition.concurrency !== undefined &&
+        keyState.leases.length >= keyState.definition.concurrency.max;
       const rateBlocked =
-        definition.rate !== undefined &&
-        keyState.tokens.length >= definition.rate.count;
+        keyState.definition.rate !== undefined &&
+        keyState.tokens.length >= keyState.definition.rate.count;
 
       if (concurrencyBlocked || rateBlocked) {
         break;
       }
 
-      const promoted = promoteWaiter(key, keyState, headWaiter);
+      const promoted = promoteWaiter(keyState, headWaiter);
       keyState = promoted.keyState;
       promotedWaiters.push(promoted.promotedWaiter);
     }
@@ -510,12 +381,36 @@ export function createLimits(
 
       return withStateLock(async (): Promise<LimitAcquireResult> => {
         const state = await readState();
-        const keyState = resetKeyDefinition(
-          await pruneDeadHoldersAndWaiters(
-            state.keys[parsed.key] ?? createEmptyKeyState(parsed.key)
-          )
+        let keyState = await pruneDeadHoldersAndWaiters(
+          state.keys[parsed.key] ?? {
+            key: parsed.key,
+            definition: parsed.definition,
+            leases: [],
+            tokens: [],
+            waiters: [],
+          }
         );
-        assertCanonicalDefinition(parsed.key, keyState, parsed.definition);
+        if (
+          keyState.leases.length === 0 &&
+          keyState.tokens.length === 0 &&
+          keyState.waiters.length === 0
+        ) {
+          keyState = {
+            key: parsed.key,
+            definition: parsed.definition,
+            leases: [],
+            tokens: [],
+            waiters: [],
+          };
+        } else if (
+          !areLimitDefinitionsEqual(keyState.definition, parsed.definition)
+        ) {
+          throw new LimitDefinitionConflictError(
+            parsed.key,
+            keyState.definition,
+            parsed.definition
+          );
+        }
         state.keys[parsed.key] = keyState;
 
         const existingLease = keyState.leases.find(
@@ -530,11 +425,11 @@ export function createLimits(
         }
 
         const concurrencyBlocked =
-          parsed.definition.concurrency !== undefined &&
-          keyState.leases.length >= parsed.definition.concurrency.max;
+          keyState.definition.concurrency !== undefined &&
+          keyState.leases.length >= keyState.definition.concurrency.max;
         const rateBlocked =
-          parsed.definition.rate !== undefined &&
-          keyState.tokens.length >= parsed.definition.rate.count;
+          keyState.definition.rate !== undefined &&
+          keyState.tokens.length >= keyState.definition.rate.count;
         const existingWaiter = keyState.waiters.find(
           (waiter) => waiter.lockId === lockId
         );
@@ -547,11 +442,7 @@ export function createLimits(
           keyState.waiters[0]?.waiterId === existingWaiter.waiterId
         ) {
           if (!concurrencyBlocked && !rateBlocked) {
-            const promoted = promoteWaiter(
-              parsed.key,
-              keyState,
-              existingWaiter
-            );
+            const promoted = promoteWaiter(keyState, existingWaiter);
             state.keys[parsed.key] = promoted.keyState;
             await writeState(state);
             return {
@@ -601,19 +492,19 @@ export function createLimits(
           parsed.key,
           parsed.runId,
           parsed.lockIndex,
-          parsed.definition,
+          keyState.definition,
           acquiredAt,
           parsed.leaseTtlMs
         );
 
         keyState.leases.push(lease);
 
-        if (parsed.definition.rate) {
+        if (keyState.definition.rate) {
           insertToken(
             keyState,
             lockId,
             acquiredAt,
-            parsed.definition.rate.periodMs
+            keyState.definition.rate.periodMs
           );
         }
 
@@ -632,13 +523,7 @@ export function createLimits(
 
       return withStateLock(async (): Promise<LimitReleaseResult> => {
         const state = await readState();
-        const key = resolveReleaseKey(state, parsed);
-
-        if (!key) {
-          return { promotedWaiters: [] };
-        }
-
-        const keyStateValue = state.keys[key];
+        const keyStateValue = state.keys[parsed.key];
         if (!keyStateValue) {
           return { promotedWaiters: [] };
         }
@@ -649,8 +534,7 @@ export function createLimits(
         const beforeExplicitRelease = keyState.leases.length;
         keyState.leases = keyState.leases.filter((lease) => {
           if (lease.leaseId !== parsed.leaseId) return true;
-          if ('key' in parsed && lease.key !== parsed.key) return true;
-          if ('lockId' in parsed && lease.lockId !== parsed.lockId) {
+          if (lease.lockId !== parsed.lockId) {
             return true;
           }
           return false;
@@ -658,10 +542,10 @@ export function createLimits(
         capacityFreed ||= keyState.leases.length !== beforeExplicitRelease;
 
         const promoted = capacityFreed
-          ? promoteEligibleWaiters(key, keyState)
+          ? promoteEligibleWaiters(keyState)
           : { keyState, promotedWaiters: [] };
-        state.keys[key] = promoted.keyState;
-        deleteEmptyKey(state, key);
+        state.keys[parsed.key] = promoted.keyState;
+        deleteEmptyKey(state, parsed.key);
 
         await writeState(state);
         return { promotedWaiters: promoted.promotedWaiters };

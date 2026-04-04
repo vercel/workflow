@@ -209,49 +209,51 @@ const WaitCompletedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
 });
 
-const LockCreatedEventSchema = BaseEventSchema.extend({
+const LockCreatedEventDataSchema = z.object({
+  key: z.string(),
+  definition: LimitDefinitionSchema,
+  leaseTtlMs: z.number().int().positive().optional(),
+  acquireAt: z.coerce.date().optional(),
+});
+
+const LockAcquiredEventDataSchema = z.object({
+  lease: LimitLeaseSchema,
+});
+
+const LockReleaseEventDataSchema = z.object({
+  leaseId: z.string().min(1),
+  key: z.string(),
+  lockId: z.string(),
+  promotedWaiters: z.array(LimitPromotedWaiterSchema).optional(),
+});
+
+const BaseLockEventSchema = BaseEventSchema.extend({
+  correlationId: z.string(),
+});
+
+const LockCreatedEventSchema = BaseLockEventSchema.extend({
   eventType: z.literal('lock_created'),
-  correlationId: z.string(),
-  eventData: z.object({
-    key: z.string(),
-    definition: LimitDefinitionSchema,
-    leaseTtlMs: z.number().int().positive().optional(),
-    acquireAt: z.coerce.date().optional(),
-  }),
+  eventData: LockCreatedEventDataSchema,
 });
 
-const LockAcquiredEventSchema = BaseEventSchema.extend({
+const LockAcquiredEventSchema = BaseLockEventSchema.extend({
   eventType: z.literal('lock_acquired'),
-  correlationId: z.string(),
-  eventData: z.object({
-    lease: LimitLeaseSchema,
-  }),
 });
 
-const LockReleaseEventSchema = BaseEventSchema.extend({
+const LockAcquiredStoredEventSchema = LockAcquiredEventSchema.extend({
+  eventData: LockAcquiredEventDataSchema,
+});
+
+const LockReleaseEventSchema = BaseLockEventSchema.extend({
   eventType: z.literal('lock_release'),
-  correlationId: z.string(),
-  eventData: z.object({
-    leaseId: z.string().min(1),
-    key: z.string(),
-    lockId: z.string(),
-    promotedWaiters: z.array(LimitPromotedWaiterSchema).optional(),
-  }),
 });
 
-const LockWaiterQueuedEventSchema = BaseEventSchema.extend({
+const LockReleaseStoredEventSchema = LockReleaseEventSchema.extend({
+  eventData: LockReleaseEventDataSchema,
+});
+
+const LockWaiterQueuedEventSchema = BaseLockEventSchema.extend({
   eventType: z.literal('lock_waiter_queued'),
-  correlationId: z.string(),
-});
-
-const LockAcquiredCreateEventSchema = BaseEventSchema.extend({
-  eventType: z.literal('lock_acquired'),
-  correlationId: z.string(),
-});
-
-const LockReleaseCreateEventSchema = BaseEventSchema.extend({
-  eventType: z.literal('lock_release'),
-  correlationId: z.string(),
 });
 
 // =============================================================================
@@ -335,8 +337,8 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   WaitCompletedEventSchema,
   // Lock lifecycle events
   LockCreatedEventSchema,
-  LockAcquiredCreateEventSchema,
-  LockReleaseCreateEventSchema,
+  LockAcquiredEventSchema,
+  LockReleaseEventSchema,
   LockWaiterQueuedEventSchema,
 ]);
 
@@ -365,8 +367,8 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   WaitCompletedEventSchema,
   // Lock lifecycle events
   LockCreatedEventSchema,
-  LockAcquiredEventSchema,
-  LockReleaseEventSchema,
+  LockAcquiredStoredEventSchema,
+  LockReleaseStoredEventSchema,
   LockWaiterQueuedEventSchema,
 ]);
 

@@ -256,176 +256,179 @@ describe('e2e', () => {
   if (isLocalWorld || isPostgresWorld) {
     createLimitsRuntimeSuite(
       `limits runtime (${isPostgresWorld ? 'postgres' : 'local'})`,
-      async () => ({
-        async runWorkflowWithScopedLocks(userId) {
-          const run = await start(await e2e('workflowWithScopedLocks'), [
-            userId,
-          ]);
+      async () => {
+        const runWorkflow = async (fn: string, args: unknown[]) => {
+          const run = await start(await e2e(fn), args);
           return await run.returnValue;
-        },
-        async runWorkflowLockContention(userId, holdMs) {
-          const workflow = await e2e('workflowLockContentionWorkflow');
-          const runA = await start(workflow, [userId, holdMs]);
-          await sleep(100);
-          const runB = await start(workflow, [userId, holdMs]);
-          return await Promise.all([runA.returnValue, runB.returnValue]);
-        },
-        async runLockedStepCallContention(key, holdMs) {
-          const workflow = await e2e('lockedStepCallContentionWorkflow');
-          const runA = await start(workflow, [key, holdMs, 'A']);
-          await sleep(100);
-          const runB = await start(workflow, [key, holdMs, 'B']);
-          return await Promise.all([runA.returnValue, runB.returnValue]);
-        },
-        async runWorkflowLockAcrossSuspension(userId, holdMs) {
-          const workflow = await e2e('workflowOnlyLockContentionWorkflow');
-          const runA = await start(workflow, [userId, holdMs, 'A']);
-          await sleep(100);
-          const runB = await start(workflow, [userId, holdMs, 'B']);
-          return await Promise.all([runA.returnValue, runB.returnValue]);
-        },
-        async runWorkflowExpiredLeaseRecovery(userId, leaseTtlMs) {
-          const leakedWorkflow = await e2e('workflowLeakedLockWorkflow');
-          const waiterWorkflow = await e2e(
-            'workflowOnlyLockContentionWorkflow'
-          );
-          const leakedRun = await start(leakedWorkflow, [
-            userId,
-            leaseTtlMs,
-            'A',
-          ]);
-          const leakedResult = await leakedRun.returnValue;
-          const waiterRun = await start(waiterWorkflow, [userId, 0, 'B']);
-          const waiterResult = await waiterRun.returnValue;
-          return [leakedResult, waiterResult];
-        },
-        async runWorkflowTerminalHolderRecovery(userId, leaseTtlMs) {
-          const leakedWorkflow = await e2e('workflowLeakedLockWorkflow');
-          const waiterWorkflow = await e2e(
-            'workflowOnlyLockContentionWorkflow'
-          );
-          const leakedRun = await start(leakedWorkflow, [
-            userId,
-            leaseTtlMs,
-            'A',
-          ]);
-          const leakedResult = await leakedRun.returnValue;
-          const waiterRun = await start(waiterWorkflow, [userId, 0, 'B']);
-          const waiterResult = await waiterRun.returnValue;
-          return [leakedResult, waiterResult];
-        },
-        async runLeakedKeyExpiredLeaseRecovery(userId, leaseTtlMs) {
-          const leakedWorkflow = await e2e('leakedKeyLockWorkflow');
-          const waiterWorkflow = await e2e('lockedStepCallContentionWorkflow');
-          const leakedRun = await start(leakedWorkflow, [
-            userId,
-            leaseTtlMs,
-            'A',
-          ]);
-          const leakedResult = await leakedRun.returnValue;
-          const waiterRun = await start(waiterWorkflow, [
-            leakedResult.key,
-            0,
-            'B',
-          ]);
-          const waiterResult = await waiterRun.returnValue;
-          return [leakedResult, waiterResult];
-        },
-        async runWorkflowMixedLimitContention(userId, holdMs, periodMs) {
-          const workflow = await e2e('workflowMixedLimitContentionWorkflow');
-          const runA = await start(workflow, [userId, holdMs, periodMs, 'A']);
-          await sleep(100);
-          const runB = await start(workflow, [userId, holdMs, periodMs, 'B']);
-          return await Promise.all([runA.returnValue, runB.returnValue]);
-        },
-        async runReleasedRateLimitReplay(userId, periodMs, sleepMs) {
-          const workflow = await e2e('releasedRateLimitReplayWorkflow');
-          const run = await start(workflow, [userId, periodMs, sleepMs]);
-          return await run.returnValue;
-        },
-        async runWorkflowFifoThreeWaiters(userId, holdMs) {
-          const workflow = await e2e('workflowOnlyLockContentionWorkflow');
-          const runA = await start(workflow, [userId, holdMs, 'A']);
-          await sleep(100);
-          const runB = await start(workflow, [userId, holdMs, 'B']);
-          await waitForRunLockAttempt(runB.runId);
-          const runC = await start(workflow, [userId, holdMs, 'C']);
-          return await Promise.all([
-            runA.returnValue,
-            runB.returnValue,
-            runC.returnValue,
-          ]);
-        },
-        async runCancelledWorkflowWaiter(userId, holdMs) {
-          const workflow = await e2e('workflowOnlyLockContentionWorkflow');
-          const runA = await start(workflow, [userId, holdMs, 'A']);
-          await sleep(100);
-          const runB = await start(workflow, [userId, holdMs, 'B']);
-          await waitForRunLockAttempt(runB.runId);
-          await cancelRun(getWorld(), runB.runId);
-          const runC = await start(workflow, [userId, holdMs, 'C']);
-          const [cancelledError, resultA, resultC] = await Promise.all([
-            runB.returnValue.catch((error) => error),
-            runA.returnValue,
-            runC.returnValue,
-          ]);
-          return { cancelledError, resultA, resultC };
-        },
-        async runIndependentWorkflowKeys(holdMs) {
-          const workflow = await e2e('workflowOnlyLockContentionWorkflow');
-          const runA = await start(workflow, ['user-a', holdMs]);
-          await sleep(100);
-          const runB = await start(workflow, ['user-b', holdMs]);
-          return await Promise.all([runA.returnValue, runB.returnValue]);
-        },
-        async runIndependentStepKeys(holdMs) {
-          const workflow = await e2e('lockedStepCallContentionWorkflow');
-          const runA = await start(workflow, [
-            'step:db:isolation:a',
-            holdMs,
-            'A',
-          ]);
-          await sleep(100);
-          const runB = await start(workflow, [
-            'step:db:isolation:b',
-            holdMs,
-            'B',
-          ]);
-          return await Promise.all([runA.returnValue, runB.returnValue]);
-        },
-        async runBlockedWaiterWithUnrelatedWorkflow(holdMs) {
-          const workflow = await e2e('workflowOnlyLockContentionWorkflow');
-          const runA = await start(workflow, [
-            'worker-slot-shared',
-            holdMs,
-            'A',
-          ]);
-          await sleep(100);
-          const runB = await start(workflow, [
-            'worker-slot-shared',
-            holdMs,
-            'B',
-          ]);
-          await sleep(100);
-          const runC = await start(workflow, [
-            'worker-slot-unrelated',
-            Math.max(100, Math.floor(holdMs / 4)),
-            'C',
-          ]);
+        };
 
-          const [holder, waiter, unrelated] = await Promise.all([
-            runA.returnValue,
-            runB.returnValue,
-            runC.returnValue,
-          ]);
-          return { holder, waiter, unrelated };
-        },
-        async runWorkflowSingleLockAcrossMultipleSteps(holdMs) {
-          const workflow = await e2e('singleLockAcrossMultipleStepsWorkflow');
-          const run = await start(workflow, ['step:db:batch', holdMs]);
-          return await run.returnValue;
-        },
-      })
+        const runPair = async (
+          fn: string,
+          argsA: unknown[],
+          argsB: unknown[],
+          delayMs = 100
+        ) => {
+          const workflow = await e2e(fn);
+          const runA = await start(workflow, argsA);
+          await sleep(delayMs);
+          const runB = await start(workflow, argsB);
+          return await Promise.all([runA.returnValue, runB.returnValue]);
+        };
+
+        const runRecoveryPair = async (
+          leakedFn: string,
+          leakedArgs: unknown[],
+          waiterFn: string,
+          waiterArgs: (leakedResult: any) => unknown[]
+        ) => {
+          const leakedResult = await runWorkflow(leakedFn, leakedArgs);
+          const waiterResult = await runWorkflow(
+            waiterFn,
+            waiterArgs(leakedResult)
+          );
+          return [leakedResult, waiterResult];
+        };
+
+        return {
+          runWorkflowWithScopedLocks(userId) {
+            return runWorkflow('workflowWithScopedLocks', [userId]);
+          },
+          runWorkflowLockContention(userId, holdMs) {
+            return runPair(
+              'workflowLockContentionWorkflow',
+              [userId, holdMs],
+              [userId, holdMs]
+            );
+          },
+          runLockedStepCallContention(key, holdMs) {
+            return runPair(
+              'lockedStepCallContentionWorkflow',
+              [key, holdMs, 'A'],
+              [key, holdMs, 'B']
+            );
+          },
+          runWorkflowLockAcrossSuspension(userId, holdMs) {
+            return runPair(
+              'workflowOnlyLockContentionWorkflow',
+              [userId, holdMs, 'A'],
+              [userId, holdMs, 'B']
+            );
+          },
+          runWorkflowExpiredLeaseRecovery(userId, leaseTtlMs) {
+            return runRecoveryPair(
+              'workflowLeakedLockWorkflow',
+              [userId, leaseTtlMs, 'A'],
+              'workflowOnlyLockContentionWorkflow',
+              () => [userId, 0, 'B']
+            );
+          },
+          runWorkflowTerminalHolderRecovery(userId, leaseTtlMs) {
+            return runRecoveryPair(
+              'workflowLeakedLockWorkflow',
+              [userId, leaseTtlMs, 'A'],
+              'workflowOnlyLockContentionWorkflow',
+              () => [userId, 0, 'B']
+            );
+          },
+          runLeakedKeyExpiredLeaseRecovery(userId, leaseTtlMs) {
+            return runRecoveryPair(
+              'leakedKeyLockWorkflow',
+              [userId, leaseTtlMs, 'A'],
+              'lockedStepCallContentionWorkflow',
+              (leakedResult) => [leakedResult.key, 0, 'B']
+            );
+          },
+          runWorkflowMixedLimitContention(userId, holdMs, periodMs) {
+            return runPair(
+              'workflowMixedLimitContentionWorkflow',
+              [userId, holdMs, periodMs, 'A'],
+              [userId, holdMs, periodMs, 'B']
+            );
+          },
+          runReleasedRateLimitReplay(userId, periodMs, sleepMs) {
+            return runWorkflow('releasedRateLimitReplayWorkflow', [
+              userId,
+              periodMs,
+              sleepMs,
+            ]);
+          },
+          async runWorkflowFifoThreeWaiters(userId, holdMs) {
+            const workflow = await e2e('workflowOnlyLockContentionWorkflow');
+            const runA = await start(workflow, [userId, holdMs, 'A']);
+            await sleep(100);
+            const runB = await start(workflow, [userId, holdMs, 'B']);
+            await waitForRunLockAttempt(runB.runId);
+            const runC = await start(workflow, [userId, holdMs, 'C']);
+            return await Promise.all([
+              runA.returnValue,
+              runB.returnValue,
+              runC.returnValue,
+            ]);
+          },
+          async runCancelledWorkflowWaiter(userId, holdMs) {
+            const workflow = await e2e('workflowOnlyLockContentionWorkflow');
+            const runA = await start(workflow, [userId, holdMs, 'A']);
+            await sleep(100);
+            const runB = await start(workflow, [userId, holdMs, 'B']);
+            await waitForRunLockAttempt(runB.runId);
+            await cancelRun(getWorld(), runB.runId);
+            const runC = await start(workflow, [userId, holdMs, 'C']);
+            const [cancelledError, resultA, resultC] = await Promise.all([
+              runB.returnValue.catch((error) => error),
+              runA.returnValue,
+              runC.returnValue,
+            ]);
+            return { cancelledError, resultA, resultC };
+          },
+          runIndependentWorkflowKeys(holdMs) {
+            return runPair(
+              'workflowOnlyLockContentionWorkflow',
+              ['user-a', holdMs],
+              ['user-b', holdMs]
+            );
+          },
+          runIndependentStepKeys(holdMs) {
+            return runPair(
+              'lockedStepCallContentionWorkflow',
+              ['step:db:isolation:a', holdMs, 'A'],
+              ['step:db:isolation:b', holdMs, 'B']
+            );
+          },
+          async runBlockedWaiterWithUnrelatedWorkflow(holdMs) {
+            const workflow = await e2e('workflowOnlyLockContentionWorkflow');
+            const runA = await start(workflow, [
+              'worker-slot-shared',
+              holdMs,
+              'A',
+            ]);
+            await sleep(100);
+            const runB = await start(workflow, [
+              'worker-slot-shared',
+              holdMs,
+              'B',
+            ]);
+            await sleep(100);
+            const runC = await start(workflow, [
+              'worker-slot-unrelated',
+              Math.max(100, Math.floor(holdMs / 4)),
+              'C',
+            ]);
+
+            const [holder, waiter, unrelated] = await Promise.all([
+              runA.returnValue,
+              runB.returnValue,
+              runC.returnValue,
+            ]);
+            return { holder, waiter, unrelated };
+          },
+          runWorkflowSingleLockAcrossMultipleSteps(holdMs) {
+            return runWorkflow('singleLockAcrossMultipleStepsWorkflow', [
+              'step:db:batch',
+              holdMs,
+            ]);
+          },
+        };
+      }
     );
   }
 

@@ -3,6 +3,7 @@ import { errors } from './errors.mjs';
 import { hooks } from './hooks.mjs';
 import { idempotency } from './idempotency.mjs';
 export { createLimitsContractSuite } from './limits-contract.mjs';
+export { createLimitsEventsContractSuite } from './limits-events-contract.mjs';
 export { createLimitsRuntimeSuite } from './limits-runtime.mjs';
 import { nullByte } from './null-byte.mjs';
 

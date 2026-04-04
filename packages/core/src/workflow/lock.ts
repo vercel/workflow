@@ -9,6 +9,7 @@ import {
   type Event,
   createLockCorrelationId,
   createLockWakeCorrelationId,
+  type LockHistoryEvent,
   type LimitDefinition,
   type LimitLease,
   parseLockId,
@@ -111,6 +112,18 @@ function getReleasedLeaseView(
     lockIndex: parsed.lockIndex,
     expiresAt: undefined,
   };
+}
+
+function isRuntimeLockEvent(event: Event): event is LockHistoryEvent {
+  switch (event.eventType) {
+    case 'lock_created':
+    case 'lock_acquired':
+    case 'lock_release':
+    case 'lock_waiter_queued':
+      return true;
+    default:
+      return false;
+  }
 }
 
 function createLockHandle(
@@ -272,6 +285,17 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
       suspendWorkflow();
     };
 
+    const setWaitingPhase = (acquireAt?: Date) => {
+      state.phase = acquireAt
+        ? {
+            type: 'waiting_for_time',
+            acquireAt,
+          }
+        : {
+            type: 'waiting_for_turn',
+          };
+    };
+
     const shouldAttemptAcquire = () => {
       if (ctx.lockPreApproval === state.correlationId) {
         return true;
@@ -287,6 +311,68 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
       return state.phase.acquireAt.getTime() <= Date.now();
     };
 
+    const applyLockEvent = (
+      event: LockHistoryEvent,
+      advanceTimestamp: boolean
+    ) => {
+      if (advanceTimestamp) {
+        ctx.advanceTimestamp(+event.createdAt);
+      }
+
+      switch (event.eventType) {
+        case 'lock_created':
+          setWaitingPhase(event.eventData.acquireAt);
+          return;
+
+        case 'lock_acquired':
+          if (!isLeaseLive(event.eventData.lease, ctx.globalThis.Date.now())) {
+            setWaitingPhase();
+            return;
+          }
+          state.phase = {
+            type: 'acquired',
+            lease: event.eventData.lease,
+          };
+          resolveHandle();
+          return;
+
+        case 'lock_release':
+          state.phase = {
+            type: 'released',
+            lease: getReleasedLeaseView(event),
+          };
+          resolveHandle();
+          return;
+
+        case 'lock_waiter_queued':
+          return;
+      }
+    };
+
+    const syncWaitingState = () => {
+      switch (state.phase.type) {
+        case 'waiting_for_turn':
+          suspendWorkflow();
+          return;
+
+        case 'waiting_for_time':
+          if (shouldAttemptAcquire()) {
+            return;
+          }
+          scheduleRateRetry(state.phase.acquireAt);
+          return;
+
+        case 'acquired':
+        case 'released':
+          return;
+
+        case 'creating':
+          throw new WorkflowRuntimeError(
+            `Lock ${state.correlationId} did not leave the creating phase`
+          );
+      }
+    };
+
     const requestLockCreated = async () => {
       try {
         const result = await getWorld().events.create(
@@ -299,58 +385,13 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
             `World did not return an event for lock ${state.correlationId}`
           );
         }
-
-        switch (event.eventType) {
-          case 'lock_acquired':
-            if (
-              !isLeaseLive(event.eventData.lease, ctx.globalThis.Date.now())
-            ) {
-              state.phase = {
-                type: 'waiting_for_turn',
-              };
-              suspendWorkflow();
-              return;
-            }
-            state.phase = {
-              type: 'acquired',
-              lease: event.eventData.lease,
-            };
-            ctx.advanceTimestamp(+event.createdAt);
-            resolveHandle();
-            return;
-
-          case 'lock_release':
-            state.phase = {
-              type: 'released',
-              lease: getReleasedLeaseView(event),
-            };
-            ctx.advanceTimestamp(+event.createdAt);
-            resolveHandle();
-            return;
-
-          case 'lock_created': {
-            ctx.advanceTimestamp(+event.createdAt);
-            if (event.eventData.acquireAt) {
-              state.phase = {
-                type: 'waiting_for_time',
-                acquireAt: event.eventData.acquireAt,
-              };
-              scheduleRateRetry(event.eventData.acquireAt);
-              return;
-            }
-
-            state.phase = {
-              type: 'waiting_for_turn',
-            };
-            suspendWorkflow();
-            return;
-          }
-
-          default:
-            throw new WorkflowRuntimeError(
-              `Unexpected event type for lock ${state.correlationId}: ${event.eventType}`
-            );
+        if (!isRuntimeLockEvent(event)) {
+          throw new WorkflowRuntimeError(
+            `Unexpected event type for lock ${state.correlationId}: ${event.eventType}`
+          );
         }
+        applyLockEvent(event, true);
+        syncWaitingState();
       } catch (error) {
         reject(error);
       }
@@ -368,53 +409,21 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
             `World did not acquire lock ${state.correlationId}`
           );
         }
-
-        switch (event.eventType) {
-          case 'lock_release':
-            state.phase = {
-              type: 'released',
-              lease: getReleasedLeaseView(event),
-            };
-            ctx.advanceTimestamp(+event.createdAt);
-            resolveHandle();
-            return;
-
-          case 'lock_acquired':
-            if (
-              !isLeaseLive(event.eventData.lease, ctx.globalThis.Date.now())
-            ) {
-              state.phase = {
-                type: 'waiting_for_turn',
-              };
-              suspendWorkflow();
-              return;
-            }
-            state.phase = {
-              type: 'acquired',
-              lease: event.eventData.lease,
-            };
-            ctx.advanceTimestamp(+event.createdAt);
-            resolveHandle();
-            return;
-
-          default:
-            throw new WorkflowRuntimeError(
-              `World did not acquire lock ${state.correlationId}`
-            );
+        if (!isRuntimeLockEvent(event)) {
+          throw new WorkflowRuntimeError(
+            `Unexpected event type for lock ${state.correlationId}: ${event.eventType}`
+          );
         }
+        applyLockEvent(event, true);
+        syncWaitingState();
       } catch (error) {
         if (TooEarlyError.is(error)) {
           if (error.retryAfter) {
             const acquireAt = new Date(Date.now() + error.retryAfter * 1000);
-            state.phase = {
-              type: 'waiting_for_time',
-              acquireAt,
-            };
+            setWaitingPhase(acquireAt);
             scheduleRateRetry(acquireAt);
           } else {
-            state.phase = {
-              type: 'waiting_for_turn',
-            };
+            setWaitingPhase();
             suspendWorkflow();
           }
           return;
@@ -470,53 +479,27 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
       if (event.correlationId !== state.correlationId) {
         return EventConsumerResult.NotConsumed;
       }
+      if (!isRuntimeLockEvent(event)) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          ctx.onWorkflowError(
+            new WorkflowRuntimeError(
+              `Unexpected event type for lock ${state.correlationId} "${event.eventType}"`
+            )
+          );
+        });
+        return EventConsumerResult.Finished;
+      }
 
-      switch (event.eventType) {
-        case 'lock_created':
-          state.phase = event.eventData.acquireAt
-            ? {
-                type: 'waiting_for_time',
-                acquireAt: event.eventData.acquireAt,
-              }
-            : {
-                type: 'waiting_for_turn',
-              };
-          return EventConsumerResult.Consumed;
-
-        case 'lock_acquired':
-          if (!isLeaseLive(event.eventData.lease, ctx.globalThis.Date.now())) {
-            state.phase = {
-              type: 'waiting_for_turn',
-            };
-            return EventConsumerResult.Consumed;
-          }
-          state.phase = {
-            type: 'acquired',
-            lease: event.eventData.lease,
-          };
-          resolveHandle();
-          return EventConsumerResult.Consumed;
-
-        case 'lock_release':
-          state.phase = {
-            type: 'released',
-            lease: getReleasedLeaseView(event),
-          };
-          resolveHandle();
-          return EventConsumerResult.Finished;
-
-        case 'lock_waiter_queued':
-          return EventConsumerResult.Consumed;
-
-        default:
-          ctx.promiseQueue = ctx.promiseQueue.then(() => {
-            ctx.onWorkflowError(
-              new WorkflowRuntimeError(
-                `Unexpected event type for lock ${state.correlationId} "${event.eventType}"`
-              )
-            );
-          });
-          return EventConsumerResult.Finished;
+      try {
+        applyLockEvent(event, false);
+        return event.eventType === 'lock_release'
+          ? EventConsumerResult.Finished
+          : EventConsumerResult.Consumed;
+      } catch (error) {
+        ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          ctx.onWorkflowError(error as Error);
+        });
+        return EventConsumerResult.Finished;
       }
     });
 

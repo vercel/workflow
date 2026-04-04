@@ -10,6 +10,12 @@ export {
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
+export type * from './lock-events.js';
+export {
+  getLiveAcquiredEvent,
+  getLockHistory,
+  resolveLockEvent,
+} from './lock-events.js';
 export type * from './limits.js';
 export {
   areLimitDefinitionsEqual,

@@ -21,17 +21,17 @@ export const LimitRateSchema = z.object({
 });
 export type LimitRate = z.infer<typeof LimitRateSchema>;
 
-const LimitConcurrencyOnlySchema = z.object({
+const LimitConcurrencyOnlySchema = z.strictObject({
   concurrency: LimitConcurrencySchema,
   rate: z.undefined().optional(),
 });
 
-const LimitRateOnlySchema = z.object({
+const LimitRateOnlySchema = z.strictObject({
   concurrency: z.undefined().optional(),
   rate: LimitRateSchema,
 });
 
-const LimitConcurrencyAndRateSchema = z.object({
+const LimitConcurrencyAndRateSchema = z.strictObject({
   concurrency: LimitConcurrencySchema,
   rate: LimitRateSchema,
 });
@@ -161,36 +161,21 @@ export const LimitAcquireResultSchema = z.discriminatedUnion('status', [
 export type LimitAcquireResult = z.infer<typeof LimitAcquireResultSchema>;
 
 export function areLimitDefinitionsEqual(
-  left: LimitDefinition | undefined,
+  left: LimitDefinition,
   right: LimitDefinition
 ): boolean {
   return (
-    left?.concurrency?.max === right.concurrency?.max &&
-    left?.rate?.count === right.rate?.count &&
-    left?.rate?.periodMs === right.rate?.periodMs
+    left.concurrency?.max === right.concurrency?.max &&
+    left.rate?.count === right.rate?.count &&
+    left.rate?.periodMs === right.rate?.periodMs
   );
 }
 
-const LimitReleaseByLeaseIdSchema = z.object({
-  leaseId: z.string().min(1),
-});
-
-const LimitReleaseByKeySchema = z.object({
-  leaseId: z.string().min(1),
-  key: LimitKeySchema,
-});
-
-const LimitReleaseByLockSchema = z.object({
+export const LimitReleaseRequestSchema = z.strictObject({
   leaseId: z.string().min(1),
   key: LimitKeySchema,
   lockId: LimitLockIdSchema,
 });
-
-export const LimitReleaseRequestSchema = z.union([
-  LimitReleaseByLeaseIdSchema,
-  LimitReleaseByKeySchema,
-  LimitReleaseByLockSchema,
-]);
 export type LimitReleaseRequest = z.infer<typeof LimitReleaseRequestSchema>;
 
 export const LimitNextWaiterSchema = z.object({

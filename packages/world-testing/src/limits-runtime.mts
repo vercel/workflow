@@ -10,11 +10,8 @@ type WorkflowLockResult = {
   lock: LockWindow;
 };
 
-type StepLockResult = {
-  label: string;
+type StepLockResult = WorkflowLockResult & {
   key: string;
-  attempt: number;
-  lock: LockWindow;
 };
 
 type WorkflowLockContentionResult = {
@@ -22,10 +19,8 @@ type WorkflowLockContentionResult = {
   step: LockWindow;
 };
 
-type WorkflowRateResult = {
-  label: string;
+type WorkflowRateResult = WorkflowLockResult & {
   periodMs: number;
-  lock: LockWindow;
 };
 
 type ReleasedRateLimitReplayResult = {
