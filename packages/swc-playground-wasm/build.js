@@ -1,16 +1,10 @@
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-function execCommand(command, options = {}) {
-  return execSync(command, { stdio: 'inherit', shell: true, ...options });
-}
-
-function runCommand(command, options = {}) {
+function runCommand(command) {
   try {
-    execCommand(command, options);
+    execSync(command, { stdio: 'inherit', shell: true });
   } catch (error) {
     console.error(`Command failed: ${command}: ${error}`);
     process.exit(1);
@@ -58,94 +52,30 @@ function ensureRustup() {
   }
 }
 
-function sleepMs(ms) {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-function isRustTargetInstalled(target) {
-  const installedTargets = execSync('rustup target list --installed', {
-    stdio: 'pipe',
-    shell: true,
-  }).toString();
-  return installedTargets.includes(target);
-}
-
-function withTargetInstallLock(target, callback) {
-  const lockDir = path.join(
-    tmpdir(),
-    `workflow-rustup-target-${target.replaceAll(/[^a-z0-9_-]/gi, '-')}.lock`
-  );
-  const timeoutMs = 2 * 60 * 1000;
-  const startedAt = Date.now();
-
-  while (true) {
-    try {
-      mkdirSync(lockDir);
-      break;
-    } catch (error) {
-      if (error?.code !== 'EEXIST') {
-        throw error;
-      }
-
-      if (Date.now() - startedAt > timeoutMs) {
-        throw new Error(
-          `Timed out waiting for rustup target install lock for ${target}`
-        );
-      }
-
-      console.log(
-        `Another process is installing ${target}; waiting for the lock...`
-      );
-      sleepMs(1000);
-    }
-  }
-
-  try {
-    return callback();
-  } finally {
-    rmSync(lockDir, { recursive: true, force: true });
-  }
-}
-
-function ensureRustTarget(target) {
-  console.log(`Checking ${target} target...`);
-
-  try {
-    if (isRustTargetInstalled(target)) {
-      console.log(`${target} target already installed`);
-      return;
-    }
-
-    withTargetInstallLock(target, () => {
-      if (isRustTargetInstalled(target)) {
-        console.log(`${target} target was installed by another process`);
-        return;
-      }
-
-      console.log(`${target} target not found, installing...`);
-      try {
-        execCommand(`rustup target add ${target}`);
-      } catch (error) {
-        if (isRustTargetInstalled(target)) {
-          console.warn(
-            `${target} target appears installed after a rustup error; continuing`
-          );
-          return;
-        }
-        throw error;
-      }
-    });
-  } catch (error) {
-    console.error(`Failed to check/install ${target} target:`, error.message);
-    process.exit(1);
-  }
-}
-
 console.log('Building swc-playground-wasm...');
 
 ensureRustup();
 
-ensureRustTarget('wasm32-unknown-unknown');
+// Check if wasm32-unknown-unknown target exists and install if needed
+console.log('Checking wasm32-unknown-unknown target...');
+try {
+  const installedTargets = execSync('rustup target list --installed', {
+    stdio: 'pipe',
+    shell: true,
+  }).toString();
+  if (!installedTargets.includes('wasm32-unknown-unknown')) {
+    console.log('wasm32-unknown-unknown target not found, installing...');
+    runCommand('rustup target add wasm32-unknown-unknown');
+  } else {
+    console.log('wasm32-unknown-unknown target already installed');
+  }
+} catch (error) {
+  console.error(
+    'Failed to check/install wasm32-unknown-unknown target:',
+    error.message
+  );
+  process.exit(1);
+}
 
 // Check if wasm-pack is installed
 if (!commandExists('wasm-pack')) {

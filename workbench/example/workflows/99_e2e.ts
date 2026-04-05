@@ -432,28 +432,6 @@ export async function leakedKeyLockWorkflow(
   return leakWorkflowLock(workflowKey('expired', userId), leaseTtlMs, label);
 }
 
-export async function workflowRateLimitContentionWorkflow(
-  userId = DEFAULT_USER_ID,
-  holdMs = 250,
-  periodMs = 1_500,
-  label = userId
-) {
-  'use workflow';
-
-  return {
-    label,
-    periodMs,
-    lock: await holdWorkflowLock(
-      {
-        key: workflowKey('rate', userId),
-        rate: { count: 1, periodMs },
-        leaseTtlMs: leaseTtlMs(periodMs),
-      },
-      holdMs
-    ),
-  };
-}
-
 export async function releasedRateLimitReplayWorkflow(
   userId = DEFAULT_USER_ID,
   periodMs = 6_000,

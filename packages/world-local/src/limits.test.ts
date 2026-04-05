@@ -1,8 +1,8 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
+import { vi } from 'vitest';
 import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.mts';
 import { createLimitsEventsContractSuite } from '../../world-testing/src/limits-events-contract.mts';
 import { createLocalWorld } from './index.js';
@@ -148,62 +148,4 @@ createLimitsEventsContractSuite('local world limit events', async () => {
       return (await events.listByCorrelationId({ correlationId })).data;
     },
   };
-});
-
-describe('local world limit retry timing', () => {
-  it('uses the head waiter retryAfter for backlog-only waiters', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'workflow-limits-'));
-    const limits = createLimits(dir);
-
-    try {
-      const key = 'shared-key';
-      const periodMs = 5_000;
-
-      const acquired = await limits.acquire({
-        key,
-        runId: 'run-a',
-        lockIndex: 0,
-        definition: {
-          rate: { count: 1, periodMs },
-        },
-        leaseTtlMs: 10,
-      });
-      expect(acquired.status).toBe('acquired');
-
-      await new Promise((resolve) => setTimeout(resolve, 25));
-
-      const headWaiter = await limits.acquire({
-        key,
-        runId: 'run-b',
-        lockIndex: 0,
-        definition: {
-          rate: { count: 1, periodMs },
-        },
-        leaseTtlMs: 10,
-      });
-      expect(headWaiter.status).toBe('blocked');
-      if (headWaiter.status !== 'blocked') {
-        throw new Error('expected blocked');
-      }
-      expect(headWaiter.retryAfterMs).toBeGreaterThan(0);
-
-      const backlogOnlyWaiter = await limits.acquire({
-        key,
-        runId: 'run-c',
-        lockIndex: 0,
-        definition: {
-          rate: { count: 1, periodMs },
-        },
-        leaseTtlMs: 10,
-      });
-      expect(backlogOnlyWaiter.status).toBe('blocked');
-      if (backlogOnlyWaiter.status !== 'blocked') {
-        throw new Error('expected blocked');
-      }
-      expect(backlogOnlyWaiter.reason).toBe('queued');
-      expect(backlogOnlyWaiter.retryAfterMs).toBeGreaterThan(0);
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
-  });
 });

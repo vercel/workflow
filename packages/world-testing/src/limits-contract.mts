@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  createLockId,
   type LimitDefinition,
   type LimitLease,
   type Limits,
@@ -29,10 +30,6 @@ type AcquireResult = Awaited<ReturnType<Limits['acquire']>>;
 type AcquiredResult = Extract<AcquireResult, { status: 'acquired' }>;
 type BlockedResult = Extract<AcquireResult, { status: 'blocked' }>;
 
-function createTestLockId(runId: string, lockIndex: number) {
-  return `${runId}:${lockIndex}`;
-}
-
 async function createRun(
   storage: Pick<Storage, 'events'>,
   workflowName: string
@@ -59,7 +56,7 @@ async function createLockOwner(
 ): Promise<LockOwner> {
   const run = await createRun(storage, workflowName);
   return {
-    lockId: createTestLockId(run.runId, lockIndex),
+    lockId: createLockId(run.runId, lockIndex),
     runId: run.runId,
     lockIndex,
   };
@@ -486,50 +483,6 @@ export function createLimitsContractSuite(
       }
     });
 
-    it('restores capacity immediately when a lease is released', async () => {
-      const harness = await createHarness();
-      try {
-        const ownerA = await createLockOwner(harness.storage, 'holder-a');
-        const ownerB = await createLockOwner(harness.storage, 'holder-b');
-        const key = 'workflow:user:123';
-        const definition = { concurrency: { max: 1 } } as const;
-        const first = expectAcquired(
-          await harness.limits.acquire(
-            acquireRequest({
-              owner: ownerA,
-              key,
-              definition,
-              leaseTtlMs: 1_000,
-            })
-          )
-        );
-
-        const second = await harness.limits.acquire(
-          acquireRequest({
-            owner: ownerB,
-            key,
-            definition,
-            leaseTtlMs: 1_000,
-          })
-        );
-        expectBlocked(second, 'concurrency');
-
-        await harness.limits.release(releaseRequest(first.lease));
-
-        const third = await harness.limits.acquire(
-          acquireRequest({
-            owner: ownerB,
-            key,
-            definition,
-            leaseTtlMs: 1_000,
-          })
-        );
-        expectAcquired(third);
-      } finally {
-        await harness.close?.();
-      }
-    });
-
     it('extends lease expiry when heartbeated', async () => {
       const harness = await createHarness();
       try {
@@ -568,6 +521,36 @@ export function createLimitsContractSuite(
           ),
           'concurrency'
         );
+      } finally {
+        await harness.close?.();
+      }
+    });
+
+    it('does not resurrect an expired lease when heartbeating after expiry', async () => {
+      const harness = await createHarness();
+      try {
+        const owner = await createLockOwner(harness.storage, 'holder-a');
+        const result = expectAcquired(
+          await harness.limits.acquire(
+            acquireRequest({
+              owner,
+              key: 'workflow:user:heartbeat-expired',
+              definition: { concurrency: { max: 1 } },
+              leaseTtlMs: 50,
+            })
+          )
+        );
+
+        await sleep(75);
+
+        await expect(
+          harness.limits.heartbeat({
+            leaseId: result.lease.leaseId,
+          })
+        ).rejects.toMatchObject({
+          name: 'WorkflowWorldError',
+          message: expect.stringContaining('not found'),
+        });
       } finally {
         await harness.close?.();
       }
@@ -762,12 +745,12 @@ export function createLimitsContractSuite(
           specVersion: SPEC_VERSION_CURRENT,
         });
         const liveOwner = {
-          lockId: createTestLockId(liveRun.runId, 0),
+          lockId: createLockId(liveRun.runId, 0),
           runId: liveRun.runId,
           lockIndex: 0,
         };
         const deadOwner = {
-          lockId: createTestLockId(deadRun.runId, 0),
+          lockId: createLockId(deadRun.runId, 0),
           runId: deadRun.runId,
           lockIndex: 0,
         };

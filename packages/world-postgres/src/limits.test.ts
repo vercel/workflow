@@ -1,5 +1,5 @@
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { afterAll, beforeAll, beforeEach, expect, test, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, test, vi } from 'vitest';
 import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.mts';
 import { createLimitsEventsContractSuite } from '../../world-testing/src/limits-events-contract.mts';
 import { createLimits } from './limits.js';
@@ -169,33 +169,5 @@ if (process.platform === 'win32') {
         return (await events.listByCorrelationId({ correlationId })).data;
       },
     };
-  });
-
-  test('does not resurrect an expired lease when heartbeating after the key lock', async () => {
-    const limits = createLimits(
-      { connectionString: db.connectionString, queueConcurrency: 1 },
-      db.drizzle
-    );
-
-    const first = await limits.acquire({
-      key: 'workflow:user:heartbeat-expired',
-      runId: 'run-a',
-      lockIndex: 0,
-      definition: { concurrency: { max: 1 } },
-      leaseTtlMs: 50,
-    });
-    expect(first.status).toBe('acquired');
-    if (first.status !== 'acquired') throw new Error('expected acquisition');
-
-    await new Promise((resolve) => setTimeout(resolve, 75));
-
-    await expect(
-      limits.heartbeat({
-        leaseId: first.lease.leaseId,
-      })
-    ).rejects.toMatchObject({
-      name: 'WorkflowWorldError',
-      message: expect.stringContaining('not found'),
-    });
   });
 }

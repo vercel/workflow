@@ -1,6 +1,5 @@
-import type { World } from '@workflow/world';
+import { createLimitsNotImplementedError, type World } from '@workflow/world';
 import { createGetEncryptionKeyForRun } from './encryption.js';
-import { createLimits } from './limits.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
 import { createResolveLatestDeploymentId } from './resolve-latest-deployment.js';
@@ -25,7 +24,17 @@ export function createVercelWorld(config?: APIConfig): World {
     config?.projectConfig?.projectId || process.env.VERCEL_PROJECT_ID;
 
   return {
-    limits: createLimits(),
+    limits: {
+      async acquire() {
+        throw createLimitsNotImplementedError();
+      },
+      async release() {
+        throw createLimitsNotImplementedError();
+      },
+      async heartbeat() {
+        throw createLimitsNotImplementedError();
+      },
+    },
     ...createQueue(config),
     ...createStorage(config),
     ...instrumentObject('world.streams', createStreamer(config)),
