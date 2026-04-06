@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { WorkflowBuildError } from '@workflow/errors';
@@ -24,6 +25,7 @@ import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
+const require = createRequire(import.meta.url);
 
 /**
  * Legacy opt-in for source maps on the final workflow wrapper + webhook
@@ -271,7 +273,16 @@ export abstract class BaseBuilder {
     for (const pkg of externalPackages) {
       if (BaseBuilder.PSEUDO_PACKAGES.has(pkg)) continue;
       if (this.warnedExternalPackages.has(pkg)) continue;
-      this.warnedExternalPackages.add(pkg);
+
+      if (
+        pkg.startsWith('.') ||
+        pkg.startsWith('/') ||
+        pkg.startsWith('$') ||
+        pkg.includes('*') ||
+        pkg.includes(':')
+      ) {
+        continue;
+      }
 
       try {
         // Check package.json dependencies for @workflow/serde (fast path)
@@ -281,12 +292,25 @@ export abstract class BaseBuilder {
             paths: [this.config.workingDir],
           });
           const pkgJsonSource = await readFile(pkgJsonPath, 'utf-8');
-          const pkgJson = JSON.parse(pkgJsonSource);
-          const deps = {
-            ...pkgJson.dependencies,
-            ...pkgJson.peerDependencies,
+          const pkgJson = JSON.parse(pkgJsonSource) as {
+            dependencies?: unknown;
+            peerDependencies?: unknown;
           };
-          hasWorkflowSerdeDep = '@workflow/serde' in deps;
+          const dependencies =
+            typeof pkgJson.dependencies === 'object' &&
+            pkgJson.dependencies !== null &&
+            !Array.isArray(pkgJson.dependencies)
+              ? (pkgJson.dependencies as Record<string, unknown>)
+              : {};
+          const peerDependencies =
+            typeof pkgJson.peerDependencies === 'object' &&
+            pkgJson.peerDependencies !== null &&
+            !Array.isArray(pkgJson.peerDependencies)
+              ? (pkgJson.peerDependencies as Record<string, unknown>)
+              : {};
+          hasWorkflowSerdeDep =
+            Object.hasOwn(dependencies, '@workflow/serde') ||
+            Object.hasOwn(peerDependencies, '@workflow/serde');
         } catch {
           // package.json not resolvable - continue to source check
         }
@@ -318,10 +342,12 @@ export abstract class BaseBuilder {
         if (hasUseStep) issues.push('"use step" functions');
         if (hasSerde) issues.push('serialization classes');
 
+        this.warnedExternalPackages.add(pkg);
+
         console.warn(
-          `\n${chalk.yellow('⚠')} Warning: ${chalk.bold(`"${pkg}"`)} is listed in ${chalk.bold('serverExternalPackages')} but contains workflow code (${issues.join(', ')}).` +
-            `\n  This code will ${chalk.bold('not')} be transformed by the workflow compiler, which will cause runtime failures.` +
-            `\n  Remove ${chalk.bold(`"${pkg}"`)} from ${chalk.bold('serverExternalPackages')} to fix this.\n`
+          `\n${chalk.yellow('⚠')} Warning: ${chalk.bold(`"${pkg}"`)} is listed in ${chalk.bold('externalPackages')} (${chalk.bold('serverExternalPackages')} in Next.js) but contains workflow code (${issues.join(', ')}).` +
+            `\n  This code will ${chalk.bold('not')} be transformed by the workflow compiler, which can cause runtime failures.` +
+            `\n  Remove ${chalk.bold(`"${pkg}"`)} from ${chalk.bold('externalPackages')} (${chalk.bold('serverExternalPackages')} in Next.js) to fix this.\n`
         );
       } catch {
         // Best-effort: if anything goes wrong, skip this package silently
