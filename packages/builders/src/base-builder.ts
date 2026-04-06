@@ -26,6 +26,25 @@ const enhancedResolve = promisify(enhancedResolveOriginal);
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
 
+/**
+ * Normalize an array of file paths by appending the `realpath()` of each entry
+ * (to handle symlinks, e.g. pnpm/workspace layouts) and deduplicating.
+ */
+async function withRealpaths(entries: string[]): Promise<string[]> {
+  return Array.from(
+    new Set(
+      (
+        await Promise.all(
+          entries.map(async (entry) => {
+            const resolved = await realpath(entry).catch(() => undefined);
+            return resolved ? [entry, resolved] : [entry];
+          })
+        )
+      ).flat()
+    )
+  );
+}
+
 export interface DiscoveredEntries {
   discoveredSteps: string[];
   discoveredWorkflows: string[];
@@ -475,23 +494,13 @@ export abstract class BaseBuilder {
         ]
       : undefined;
     const normalizedEntriesToBundle = entriesToBundle
-      ? Array.from(
-          new Set(
-            (
-              await Promise.all(
-                entriesToBundle.map(async (entryToBundle) => {
-                  const resolvedEntry = await realpath(entryToBundle).catch(
-                    () => undefined
-                  );
-                  return resolvedEntry
-                    ? [entryToBundle, resolvedEntry]
-                    : [entryToBundle];
-                })
-              )
-            ).flat()
-          )
-        )
+      ? await withRealpaths(entriesToBundle)
       : undefined;
+    const normalizedSideEffectEntries = await withRealpaths([
+      ...stepFiles,
+      ...serdeOnlyFiles,
+      ...(resolvedBuiltInSteps ? [resolvedBuiltInSteps] : []),
+    ]);
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
     const { banner: importMetaBanner, define: importMetaDefine } =
@@ -550,6 +559,7 @@ export abstract class BaseBuilder {
           projectRoot: this.transformProjectRoot,
           workflowManifest,
           rewriteTsExtensions,
+          sideEffectEntries: normalizedSideEffectEntries,
         }),
       ],
       // Plugin should catch most things, but this lets users hard override
@@ -707,6 +717,10 @@ export abstract class BaseBuilder {
     const workflowManifest: WorkflowManifest = {};
     const esbuildTsconfigOptions =
       await getEsbuildTsconfigOptions(tsconfigPath);
+    const normalizedWorkflowSideEffectEntries = await withRealpaths([
+      ...workflowFiles,
+      ...serdeOnlyFiles,
+    ]);
 
     // Bundle with esbuild and our custom SWC plugin in workflow mode.
     // this bundle will be run inside a vm isolate
@@ -759,6 +773,7 @@ export abstract class BaseBuilder {
           mode: 'workflow',
           projectRoot: this.transformProjectRoot,
           workflowManifest,
+          sideEffectEntries: normalizedWorkflowSideEffectEntries,
         }),
         // This plugin must run after the swc plugin to ensure dead code elimination
         // happens first, preventing false positives on Node.js imports in unused code paths
@@ -821,6 +836,45 @@ export abstract class BaseBuilder {
         interimBundle.outputFiles.length === 0
       ) {
         throw new Error('No output files generated from esbuild');
+      }
+
+      // Serde compliance warnings: check if workflow bundle has Node.js imports
+      // alongside serde-registered classes (these will fail at runtime in the sandbox)
+      if (
+        workflowManifest.classes &&
+        Object.keys(workflowManifest.classes).length > 0
+      ) {
+        const { analyzeSerdeCompliance } = await import('./serde-checker.js');
+        const bundleText = interimBundle.outputFiles[0].text;
+        const serdeResult = analyzeSerdeCompliance({
+          sourceCode: '',
+          workflowCode: bundleText,
+          manifest: workflowManifest,
+        });
+        // De-dupe warnings: group identical issues across classes
+        const issuesToClasses = new Map<string, Set<string>>();
+        for (const cls of serdeResult.classes) {
+          if (!cls.compliant) {
+            for (const issue of cls.issues) {
+              let affectedClasses = issuesToClasses.get(issue);
+              if (!affectedClasses) {
+                affectedClasses = new Set<string>();
+                issuesToClasses.set(issue, affectedClasses);
+              }
+              affectedClasses.add(cls.className);
+            }
+          }
+        }
+        for (const [issue, affectedClasses] of issuesToClasses) {
+          const classNames = [...affectedClasses];
+          const classLabel =
+            classNames.length === 1
+              ? `class "${classNames[0]}"`
+              : `classes ${classNames.map((name) => `"${name}"`).join(', ')}`;
+          console.warn(
+            chalk.yellow(`⚠ Serde warning for ${classLabel}: `) + issue
+          );
+        }
       }
 
       const bundleFinal = async (interimBundle: string) => {
@@ -1000,6 +1054,10 @@ export const POST = workflowEntrypoint(workflowCode);`;
       : reexports;
 
     // Bundle with esbuild and our custom SWC plugin
+    const normalizedClientSideEffectEntries = await withRealpaths([
+      ...inputFiles,
+      ...serdeOnlyFiles,
+    ]);
     const clientResult = await esbuild.build({
       banner: {
         js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
@@ -1033,6 +1091,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
         createSwcPlugin({
           mode: 'client',
           projectRoot: this.transformProjectRoot,
+          sideEffectEntries: normalizedClientSideEffectEntries,
         }),
       ],
     });

@@ -1,5 +1,22 @@
 # workflow
 
+## 4.2.0-beta.77
+
+### Patch Changes
+
+- Updated dependencies [[`4429078`](https://github.com/vercel/workflow/commit/44290785e1f6768ccf360572bf558f582b382ab7), [`d8aaf27`](https://github.com/vercel/workflow/commit/d8aaf27c7913a1a44561325c9a08f50b4340100d), [`047c01b`](https://github.com/vercel/workflow/commit/047c01bc1545845b4251a58a380e627ef164e6d5)]:
+  - @workflow/next@4.0.1-beta.73
+  - @workflow/core@4.2.0-beta.77
+  - @workflow/cli@4.2.0-beta.77
+  - @workflow/errors@4.1.0-beta.20
+  - @workflow/astro@4.0.0-beta.51
+  - @workflow/nest@0.0.0-beta.26
+  - @workflow/nitro@4.0.1-beta.72
+  - @workflow/rollup@4.0.0-beta.34
+  - @workflow/sveltekit@4.0.0-beta.66
+  - @workflow/typescript-plugin@4.0.1-beta.5
+  - @workflow/nuxt@4.0.1-beta.61
+
 ## 4.2.0-beta.76
 
 ### Patch Changes

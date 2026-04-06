@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 4.2.0-beta.77
+
+### Patch Changes
+
+- [#1591](https://github.com/vercel/workflow/pull/1591) [`d8aaf27`](https://github.com/vercel/workflow/commit/d8aaf27c7913a1a44561325c9a08f50b4340100d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix step `contextStorage` global _potentially_ seeing dual-instance issues when bundlers create multiple copies of the module.
+
+- [#1367](https://github.com/vercel/workflow/pull/1367) [`047c01b`](https://github.com/vercel/workflow/commit/047c01bc1545845b4251a58a380e627ef164e6d5) Thanks [@pranaygp](https://github.com/pranaygp)! - Make `start()` return `Run<unknown>` with `unknown[]` args when `deploymentId` is provided, since the deployed workflow version may have different types
+
+- Updated dependencies [[`b30b0dc`](https://github.com/vercel/workflow/commit/b30b0dcab68a8cc37735ea6c1fb8cb4f06efbe8b), [`760ebf1`](https://github.com/vercel/workflow/commit/760ebf161b0382cd430657cd1d172e8861660c30)]:
+  - @workflow/world@4.1.0-beta.16
+  - @workflow/world-local@4.1.0-beta.50
+  - @workflow/world-vercel@4.1.0-beta.48
+  - @workflow/errors@4.1.0-beta.20
+
 ## 4.2.0-beta.76
 
 ### Patch Changes
