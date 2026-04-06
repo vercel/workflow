@@ -23,8 +23,11 @@ jobs:
   pr-comment-start:
     name: Create PR Comment
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test')
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && !contains(github.event.pull_request.labels.*.name, 'workflow-server-test')
     timeout-minutes: 2
+    permissions:
+      issues: write
+      pull-requests: write
 
     steps:
       - name: Find existing benchmark comment
@@ -333,7 +336,7 @@ jobs:
     name: Benchmark Vercel (${{ matrix.app.name }})
     runs-on: ubuntu-latest
     needs: build
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+    if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
@@ -467,6 +470,9 @@ jobs:
     needs: [benchmark-local, benchmark-postgres, benchmark-vercel, benchmark-community]
     if: always() && !cancelled()
     timeout-minutes: 10
+    permissions:
+      issues: write
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
@@ -535,14 +541,14 @@ jobs:
           fi
 
       - name: Update PR comment with results
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: benchmark-results
           path: benchmark-summary.md
 
       - name: Append failure notice to PR comment
-        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.check-status.outputs.has_failures == 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: benchmark-results
@@ -558,7 +564,7 @@ jobs:
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
       - name: Append community warning to PR comment
-        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_warnings == 'true'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.check-status.outputs.has_warnings == 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: benchmark-results

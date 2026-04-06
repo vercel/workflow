@@ -22,8 +22,11 @@ jobs:
   pr-comment-start:
     name: Create PR Comment
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     timeout-minutes: 2
+    permissions:
+      issues: write
+      pull-requests: write
 
     steps:
       - name: Find existing test comment
@@ -203,6 +206,7 @@ jobs:
   e2e-vercel-prod:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -517,6 +521,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
+          setup-rust: 'true'
           install-dependencies: 'false'
           build-packages: 'false'
 
@@ -723,6 +728,9 @@ jobs:
     needs: [e2e-vercel-prod, e2e-local-dev, e2e-local-prod, e2e-local-postgres, e2e-windows, e2e-community]
     if: always() && !cancelled()
     timeout-minutes: 10
+    permissions:
+      issues: write
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
@@ -775,14 +783,14 @@ jobs:
           fi
 
       - name: Update PR comment with results
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: e2e-test-results
           path: e2e-summary.md
 
       - name: Append failure notice to PR comment
-        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_failures == 'true'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.check-status.outputs.has_failures == 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: e2e-test-results
@@ -800,7 +808,7 @@ jobs:
             Check the [workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.
 
       - name: Append community warning to PR comment
-        if: github.event_name == 'pull_request' && steps.check-status.outputs.has_warnings == 'true'
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.check-status.outputs.has_warnings == 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: e2e-test-results
@@ -832,6 +840,7 @@ jobs:
           WINDOWS_STATUS: ${{ needs.e2e-windows.result }}
           COMMUNITY_STATUS: ${{ needs.e2e-community.result }}
           HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
+          IS_CROSS_REPO: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
         run: |
           FAILED_JOBS=()
 
@@ -851,7 +860,11 @@ jobs:
           else
             echo "Standard PR - checking all jobs"
             [[ "$UNIT_STATUS" == "success" ]] || FAILED_JOBS+=("unit ($UNIT_STATUS)")
-            [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+            if [[ "$IS_CROSS_REPO" == "true" ]]; then
+              [[ "$VERCEL_STATUS" == "skipped" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+            else
+              [[ "$VERCEL_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-vercel-prod ($VERCEL_STATUS)")
+            fi
             [[ "$LOCAL_DEV_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-dev ($LOCAL_DEV_STATUS)")
             [[ "$LOCAL_PROD_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-prod ($LOCAL_PROD_STATUS)")
             [[ "$POSTGRES_STATUS" == "success" ]] || FAILED_JOBS+=("e2e-local-postgres ($POSTGRES_STATUS)")

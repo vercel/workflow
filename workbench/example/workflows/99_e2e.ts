@@ -237,6 +237,7 @@ const STEP_LOCK_KEYS = {
   contention: 'step:db:key-contention',
   multi: 'step:db:batch',
 } as const;
+type StepLockKey = (typeof STEP_LOCK_KEYS)[keyof typeof STEP_LOCK_KEYS];
 
 function workflowKey(
   type: 'user' | 'rate' | 'mixed' | 'expired',
@@ -323,7 +324,7 @@ export async function workflowWithScopedLocks(userId = DEFAULT_USER_ID) {
 async function serializedLimitStep(
   label: string,
   holdMs: number,
-  key = STEP_LOCK_KEYS.serialized
+  key: StepLockKey = STEP_LOCK_KEYS.serialized
 ) {
   'use step';
 
