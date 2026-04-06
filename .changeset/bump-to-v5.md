@@ -27,4 +27,4 @@
 "@workflow/world-vercel": major
 ---
 
-**BREAKING CHANGE**: Bump all packages to v5 for next development cycle
+Bump all packages to `5.0.0-beta.1` for next development cycle. Beta versions may be breaking even on patch changes. Upgrade only if you want to test experimental features.
