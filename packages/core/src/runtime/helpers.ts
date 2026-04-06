@@ -198,14 +198,12 @@ function parseHealthCheckResponse(
     return null;
   }
 
+  const r = response as Record<string, unknown>;
   const parsed: { healthy: boolean; specVersion?: number } = {
-    healthy: (response as { healthy: boolean }).healthy,
+    healthy: r.healthy as boolean,
   };
-  if (
-    'specVersion' in (response as object) &&
-    typeof (response as { specVersion: unknown }).specVersion === 'number'
-  ) {
-    parsed.specVersion = (response as { specVersion: number }).specVersion;
+  if (typeof r.specVersion === 'number') {
+    parsed.specVersion = r.specVersion;
   }
   return parsed;
 }
