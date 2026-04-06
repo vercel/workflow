@@ -24,7 +24,12 @@ import type {
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
-import { createSpan, endSpan, runInContext } from './telemetry.js';
+import {
+  createSpan,
+  endSpan,
+  runInContext,
+  type SpanHandle,
+} from './telemetry.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 import type { CompatibleLanguageModel } from './types.js';
 
@@ -48,6 +53,13 @@ export interface StreamTextIteratorYieldValue {
   uiChunks?: UIMessageChunk[];
   /** Provider-executed tool results (keyed by tool call ID) */
   providerExecutedToolResults?: Map<string, ProviderExecutedToolResult>;
+  /**
+   * The outer `ai.streamText` span handle. Callers should wrap tool execution
+   * in `runInContext(spanHandle, ...)` so that `ai.toolCall` spans parent
+   * correctly under the `ai.streamText` span. OTel context does not propagate
+   * across generator yield boundaries, so we pass it explicitly.
+   */
+  spanHandle?: SpanHandle;
 }
 
 // This runs in the workflow context
@@ -366,6 +378,7 @@ export async function* streamTextIterator({
             context: currentContext,
             uiChunks: allStepUIChunks,
             providerExecutedToolResults,
+            spanHandle: outerSpanHandle,
           };
 
           const toolOutputChunks = await writeToolOutputToUI(
@@ -457,6 +470,7 @@ export async function* streamTextIterator({
         step: lastStep,
         context: currentContext,
         uiChunks: finalUIChunks,
+        spanHandle: outerSpanHandle,
       };
     }
   } catch (error) {

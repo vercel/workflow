@@ -501,6 +501,80 @@ describe('executeTool telemetry', () => {
   });
 });
 
+describe('executeTool span context propagation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSpanForRecordSpan.rawCalls.length = 0;
+  });
+
+  it('should wrap executeTool calls in the outer ai.streamText span context', async () => {
+    const model = createMockModel([]);
+    const spanHandle = {
+      span: mockSpanForCreateSpan.span,
+      context: { traceId: 'test-trace' },
+    };
+
+    const agent = new DurableAgent({
+      model: async () => model,
+      tools: {
+        readFile: {
+          description: 'Read a file',
+          inputSchema: z.object({ path: z.string() }),
+          execute: async () => 'file contents',
+        },
+      },
+      experimental_telemetry: {
+        isEnabled: true,
+        functionId: 'test-agent',
+      },
+    });
+
+    const toolCall = {
+      toolCallId: 'tc-1',
+      toolName: 'readFile',
+      toolCallType: 'function' as const,
+      input: '{"path":"test.txt"}',
+    };
+
+    // Mock iterator yields a spanHandle alongside tool calls
+    const mockIterator = {
+      next: vi
+        .fn()
+        .mockResolvedValueOnce({
+          done: false,
+          value: {
+            toolCalls: [toolCall],
+            messages: [
+              { role: 'user', content: [{ type: 'text', text: 'read file' }] },
+            ],
+            spanHandle,
+          },
+        })
+        .mockResolvedValueOnce({ done: true, value: [] }),
+    };
+
+    vi.mocked(streamTextIteratorFn).mockReturnValue(
+      mockIterator as unknown as ReturnType<typeof streamTextIteratorFn>
+    );
+
+    const { runInContext: runInContextMock } = await import('./telemetry.js');
+
+    await agent.stream({
+      messages: [{ role: 'user', content: 'read file' }],
+      writable: new WritableStream({ write() {}, close() {} }),
+    });
+
+    // Verify runInContext was called with the spanHandle from the iterator
+    // (the first arg should be the span handle, the second a function)
+    const runInContextCalls = (runInContextMock as Mock).mock.calls;
+    const toolExecCall = runInContextCalls.find(
+      (call) => call[0] === spanHandle
+    );
+    expect(toolExecCall).toBeDefined();
+    expect(typeof toolExecCall![1]).toBe('function');
+  });
+});
+
 describe('streamTextIterator outer span', () => {
   beforeEach(() => {
     vi.clearAllMocks();
