@@ -8,6 +8,7 @@ import {
   type Hook,
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
@@ -194,6 +195,7 @@ export async function resumeHook<T = any>(
           } satisfies WorkflowInvokePayload,
           {
             deploymentId: workflowRun.deploymentId,
+            specVersion: workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
           }
         );
 

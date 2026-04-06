@@ -220,16 +220,21 @@ export async function start<TArgs extends unknown[], TResult>(
           {
             runId,
             traceCarrier,
-            runInput: {
-              input: workflowArguments,
-              deploymentId,
-              workflowName,
-              specVersion,
-              executionContext,
-            },
+            ...(specVersion >= SPEC_VERSION_CURRENT
+              ? {
+                  runInput: {
+                    input: workflowArguments,
+                    deploymentId,
+                    workflowName,
+                    specVersion,
+                    executionContext,
+                  },
+                }
+              : {}),
           } satisfies WorkflowInvokePayload,
           {
             deploymentId,
+            specVersion,
           }
         ),
       ]);
