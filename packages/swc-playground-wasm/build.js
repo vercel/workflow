@@ -20,6 +20,20 @@ function commandExists(command) {
   }
 }
 
+function hasRustTarget(target) {
+  try {
+    const libDir = execSync(`rustc --print target-libdir --target ${target}`, {
+      stdio: 'pipe',
+      shell: true,
+    })
+      .toString()
+      .trim();
+    return libDir.length > 0 && existsSync(libDir);
+  } catch {
+    return false;
+  }
+}
+
 function ensureRustup() {
   if (commandExists('rustup')) return;
 
@@ -56,25 +70,13 @@ console.log('Building swc-playground-wasm...');
 
 ensureRustup();
 
-// Check if wasm32-unknown-unknown target exists and install if needed
-console.log('Checking wasm32-unknown-unknown target...');
-try {
-  const installedTargets = execSync('rustup target list --installed', {
-    stdio: 'pipe',
-    shell: true,
-  }).toString();
-  if (!installedTargets.includes('wasm32-unknown-unknown')) {
-    console.log('wasm32-unknown-unknown target not found, installing...');
-    runCommand('rustup target add wasm32-unknown-unknown');
-  } else {
-    console.log('wasm32-unknown-unknown target already installed');
-  }
-} catch (error) {
-  console.error(
-    'Failed to check/install wasm32-unknown-unknown target:',
-    error.message
-  );
-  process.exit(1);
+const wasmTarget = 'wasm32-unknown-unknown';
+console.log(`Checking ${wasmTarget} target...`);
+if (!hasRustTarget(wasmTarget)) {
+  console.log(`${wasmTarget} target not found, installing...`);
+  runCommand(`rustup target add ${wasmTarget}`);
+} else {
+  console.log(`${wasmTarget} target already available`);
 }
 
 // Check if wasm-pack is installed
