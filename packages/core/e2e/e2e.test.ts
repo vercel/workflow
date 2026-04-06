@@ -1548,6 +1548,7 @@ describe('e2e', () => {
       const flowBody = await flowRes.json();
       expect(flowBody).toEqual({
         healthy: true,
+        endpoint: '/.well-known/workflow/v1/flow',
         specVersion: SPEC_VERSION_CURRENT,
       });
 
@@ -1565,6 +1566,7 @@ describe('e2e', () => {
       const stepBody = await stepRes.json();
       expect(stepBody).toEqual({
         healthy: true,
+        endpoint: '/.well-known/workflow/v1/step',
         specVersion: SPEC_VERSION_CURRENT,
       });
     }
