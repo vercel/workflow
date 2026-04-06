@@ -1,8 +1,8 @@
 ---
 title: Migrating from Inngest
-description: Move an Inngest TypeScript app to Vercel Workflow by replacing createFunction, step.run(), step.sleep(), step.waitForEvent(), and step.invoke() with Workflows, Steps, Hooks, and start()/getRun().
+description: Move an Inngest TypeScript app to the Workflow SDK by replacing createFunction, step.run(), step.sleep(), step.waitForEvent(), and step.invoke() with Workflows, Steps, Hooks, and start()/getRun().
 type: guide
-summary: Translate an Inngest app into Vercel Workflow with side-by-side code and a realistic order-processing saga.
+summary: Translate an Inngest app into the Workflow SDK with side-by-side code and a realistic order-processing saga.
 prerequisites:
   - /docs/getting-started/next
   - /docs/foundations/workflows-and-steps
@@ -18,13 +18,13 @@ related:
 
 With Inngest, you define functions using `inngest.createFunction()`, register them through a `serve()` handler, and break work into steps with `step.run()`, `step.sleep()`, and `step.waitForEvent()`. The Inngest platform manages event routing, step execution, and retries on its infrastructure.
 
-With Vercel Workflow, you write `"use workflow"` functions that orchestrate `"use step"` functions — all in the same file, all plain TypeScript. There is no separate function registry, no event-driven dispatch layer, and no SDK client to configure. Durable replay, automatic retries, and step-level persistence still exist — they are built into the Vercel runtime.
+With the Workflow SDK, you write `"use workflow"` functions that orchestrate `"use step"` functions — all in the same file, all plain TypeScript. There is no separate function registry, no event-driven dispatch layer, and no SDK client to configure. Durable replay, automatic retries, and step-level persistence still exist — they are built into the runtime.
 
 The migration path is mostly about **collapsing the SDK abstraction** and **writing plain async functions**, not rewriting business logic.
 
 ## Concept mapping
 
-| Inngest | Vercel Workflow | Migration note |
+| Inngest | Workflow SDK | Migration note |
 | --- | --- | --- |
 | `inngest.createFunction()` | `"use workflow"` function started with `start()` | The workflow function itself is the entry point — no wrapper needed. |
 | `step.run()` | `"use step"` function | Each step is a standalone async function with full Node.js access. |
@@ -72,7 +72,7 @@ export const processOrder = inngest.createFunction(
 );
 ```
 
-### Vercel Workflow
+### Workflow SDK
 
 ```typescript
 // workflow/workflows/order.ts
@@ -141,7 +141,7 @@ export const refundWorkflow = inngest.createFunction(
 );
 ```
 
-### Vercel Workflow
+### Workflow SDK
 
 ```typescript
 // workflow/workflows/refund.ts
@@ -377,7 +377,7 @@ export const processOrderSaga = inngest.createFunction(
 }
 ```
 
-### Vercel Workflow version
+### Workflow SDK version
 
 ```typescript
 import { FatalError, getStepMetadata, getWritable } from 'workflow';
@@ -515,15 +515,15 @@ async function emitProgress(update: { stage: string; orderId: string }) {
 
 ## Why teams usually simplify infrastructure in this move
 
-Inngest adds an event-driven orchestration layer between your app and your durable logic. You configure an Inngest client, register functions through a `serve()` handler, route work through events, and manage step execution through the Inngest platform. This is a clean model when you want event-driven fan-out across many loosely coupled functions — but for TypeScript teams shipping on Vercel, the indirection often outweighs the benefit.
+Inngest adds an event-driven orchestration layer between your app and your durable logic. You configure an Inngest client, register functions through a `serve()` handler, route work through events, and manage step execution through the Inngest platform. This is a clean model when you want event-driven fan-out across many loosely coupled functions — but for TypeScript teams, the indirection often outweighs the benefit.
 
-With Vercel Workflow:
+With the Workflow SDK:
 
 - **No SDK client or serve handler.** Workflow functions are regular TypeScript files with directive annotations. There is no client to configure, no function registry to maintain, and no serve endpoint to wire up.
 - **No event bus.** Start workflows directly with `start()` from your API routes, server actions, or app boundary. You do not need to define event schemas or route through a dispatch layer.
 - **TypeScript all the way down.** Steps are named async functions, not inline closures passed to `step.run()`. They are easier to test, type, and reuse.
 - **Durable streaming built in.** `getWritable()` lets you push progress updates from steps without adding Inngest Realtime or a separate WebSocket/SSE transport.
-- **Usage-based pricing with active-CPU compute.** Workflow bills for Workflow Steps and Workflow Storage, and the functions that execute those steps continue to use standard Vercel compute pricing. If you use Fluid Compute, CPU billing pauses while code waits on I/O. When a workflow is suspended on `sleep()` or a hook, it pauses cleanly instead of keeping a worker process alive.
+- **Efficient resource usage.** When a workflow is suspended on `sleep()` or a hook, it pauses cleanly instead of keeping a worker process alive.
 
 This is not about replacing every Inngest feature. It is about recognizing that most TypeScript teams use a fraction of Inngest's event-routing surface and pay for the rest in SDK complexity and platform coupling.
 
@@ -540,4 +540,4 @@ This is not about replacing every Inngest feature. It is about recognizing that 
 - Move retry configuration down to step boundaries using default retries, `maxRetries`, `RetryableError`, and `FatalError`.
 - Add idempotency keys to external side effects using `getStepMetadata().stepId`.
 - Replace `step.realtime.publish()` with `getWritable()` for streaming progress to clients.
-- Deploy to Vercel first so the guide can truthfully lean on zero-config infrastructure and built-in observability.
+- Deploy your app and verify workflows run end-to-end with built-in observability.

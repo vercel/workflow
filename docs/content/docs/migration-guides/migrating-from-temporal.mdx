@@ -1,8 +1,8 @@
 ---
 title: Migrating from Temporal
-description: Move a Temporal TypeScript workflow to Vercel Workflow by replacing Activities, Workers, Signals, and Child Workflows with Workflows, Steps, Hooks, and start()/getRun().
+description: Move a Temporal TypeScript workflow to the Workflow SDK by replacing Activities, Workers, Signals, and Child Workflows with Workflows, Steps, Hooks, and start()/getRun().
 type: guide
-summary: Translate a Temporal app into Vercel Workflow with side-by-side code and a realistic order-processing saga.
+summary: Translate a Temporal app into the Workflow SDK with side-by-side code and a realistic order-processing saga.
 prerequisites:
   - /docs/getting-started/next
   - /docs/foundations/workflows-and-steps
@@ -18,17 +18,17 @@ related:
 
 With Temporal, you operate a control plane (Temporal Server or Cloud), deploy and maintain a Worker fleet, define Activities in a separate module, wire them through `proxyActivities`, and manage Task Queues. Your workflow code is durable, but the infrastructure around it is not trivial.
 
-With Vercel Workflow, the runtime is managed for you. You write `"use workflow"` functions that orchestrate `"use step"` functions — all in the same file, all plain TypeScript. There are no Workers to poll, no Task Queues to configure, and no separate Activity modules to maintain. Durable replay, automatic retries, and event history still exist — they just happen behind the scenes on Vercel's infrastructure.
+With the Workflow SDK, the runtime is managed for you. You write `"use workflow"` functions that orchestrate `"use step"` functions — all in the same file, all plain TypeScript. There are no Workers to poll, no Task Queues to configure, and no separate Activity modules to maintain. Durable replay, automatic retries, and event history still exist — they just happen behind the scenes.
 
 The migration path is mostly about **removing infrastructure** and **collapsing indirection**, not rewriting business logic.
 
 ## Concept mapping
 
-| Temporal | Vercel Workflow | Migration note |
+| Temporal | Workflow SDK | Migration note |
 | --- | --- | --- |
 | Workflow Definition / Workflow Execution | `"use workflow"` function / run started with `start()` | Keep orchestration code in the workflow function. |
 | Activity | `"use step"` function | Put side effects and Node.js access in steps. |
-| Worker + Task Queue | Vercel-managed execution on Vercel World | No worker fleet or polling loop to operate on Vercel. |
+| Worker + Task Queue | Managed execution | No worker fleet or polling loop to operate. |
 | Signal | `createHook()` or `createWebhook()` | Use hooks for typed resume signals; webhooks for HTTP callbacks. |
 | Query / Update | `getRun()` + app API, or hook-driven mutation + returned state | Usually model reads through your app and writes through hooks/webhooks. |
 | Child Workflow | `"use step"` wrappers around `start()` / `getRun()` | Spawn children from a step, return serializable `runId` values, then poll or await child results from another step. |
@@ -57,7 +57,7 @@ export async function processOrder(orderId: string) {
 }
 ```
 
-### Vercel Workflow
+### Workflow SDK
 
 ```typescript
 // workflow/workflows/order.ts
@@ -120,7 +120,7 @@ export async function refundWorkflow(refundId: string) {
 }
 ```
 
-### Vercel Workflow
+### Workflow SDK
 
 ```typescript
 // workflow/workflows/refund.ts
@@ -267,7 +267,7 @@ export async function processOrderSaga(orderId: string) {
 
 Each compensation step must be wired explicitly — and as the saga grows, the nested try/catch blocks multiply. There is no built-in streaming primitive; progress reporting requires a separate Activity that writes to an external store.
 
-### Vercel Workflow version
+### Workflow SDK version
 
 ```typescript
 import { FatalError, getStepMetadata, getWritable } from 'workflow';
@@ -405,15 +405,15 @@ async function emitProgress(update: { stage: string; orderId: string }) {
 
 ## Why teams usually simplify infrastructure in this move
 
-Temporal requires you to operate (or pay for) a Temporal Server, deploy and scale a Worker fleet, and manage Task Queue routing. These are powerful abstractions when you need cross-language orchestration or custom search attributes — but for TypeScript-first teams shipping on Vercel, they are overhead without a corresponding benefit.
+Temporal requires you to operate (or pay for) a Temporal Server, deploy and scale a Worker fleet, and manage Task Queue routing. These are powerful abstractions when you need cross-language orchestration or custom search attributes — but for TypeScript-first teams, they are overhead without a corresponding benefit.
 
-With Vercel Workflow:
+With the Workflow SDK:
 
 - **No workers to operate.** The runtime manages execution scheduling. You deploy your app; workflows run where your app runs.
-- **No separate server.** Durable state lives in the Vercel-managed event log. There is no cluster to provision, monitor, or upgrade.
+- **No separate server.** Durable state lives in the managed event log. There is no cluster to provision, monitor, or upgrade.
 - **TypeScript all the way down.** Workflow and step functions are regular TypeScript with directive annotations. No code generation, no separate SDK for activities, no `proxyActivities` indirection.
 - **Durable streaming built in.** `getWritable()` lets you push progress updates from steps without bolting on a separate WebSocket or SSE transport.
-- **Usage-based pricing with active-CPU compute.** Workflow bills for Workflow Steps and Workflow Storage, and the functions that execute those steps continue to use standard Vercel compute pricing. If you use Fluid Compute, CPU billing pauses while code waits on I/O. When a workflow is suspended on `sleep()` or a hook, it pauses cleanly instead of keeping a worker process alive.
+- **Efficient resource usage.** When a workflow is suspended on `sleep()` or a hook, it pauses cleanly instead of keeping a worker process alive.
 
 This is not about replacing every Temporal feature. It is about recognizing that most TypeScript teams use a fraction of Temporal's surface and pay for the rest in operational complexity.
 
@@ -427,4 +427,4 @@ This is not about replacing every Temporal feature. It is about recognizing that
 - Move retry policy down to step boundaries using default retries, `maxRetries`, `RetryableError`, and `FatalError`.
 - Add idempotency keys to external side effects using `getStepMetadata().stepId`.
 - Stream user-visible progress from steps with `getWritable()` when you previously used custom progress plumbing.
-- Deploy to Vercel first so the guide can truthfully lean on zero-config infrastructure and built-in observability.
+- Deploy your app and verify workflows run end-to-end with built-in observability.

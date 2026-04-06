@@ -1,8 +1,8 @@
 # Runtime targets
 
-## Use Vercel-managed execution when
+## Use managed execution when
 
-- The app is deploying on Vercel.
+- The app is deploying to a managed platform.
 - The user wants zero-config workflow storage, queueing, and streaming.
 
 Guidance:
@@ -14,7 +14,7 @@ Guidance:
 ## Use a custom World when
 
 - The app is self-hosted.
-- The app is not deploying on Vercel.
+- The app is not deploying to a managed platform.
 - The task explicitly asks for custom infrastructure.
 
 State this explicitly in the migration output:
@@ -47,9 +47,9 @@ export async function startWorkflowWorld(): Promise<void> {
 - **Queueing** for workflow and step invocations.
 - **Streaming** for readable/writable workflow streams.
 
-## Non-Vercel output block
+## Self-hosted output block
 
-When the target is self-hosted or otherwise non-Vercel, include this explanation almost verbatim:
+When the target is self-hosted, include this explanation almost verbatim:
 
 > The workflow and step code can stay the same. Because this target is self-hosted, the app still needs a `World` implementation for storage, queueing, and streaming, plus a startup path that calls `await getWorld().start?.()` when the selected world runs background workers.
 
@@ -94,7 +94,7 @@ export async function startWorkflowWorld(): Promise<void> {
 }
 ```
 
-**Sample input:** `We are migrating a Temporal workflow to Vercel Workflow, but the app runs on Hono with self-hosted Postgres. Keep the migration examples framework-agnostic and do not assume Vercel-managed execution.`
+**Sample input:** `We are migrating a Temporal workflow to the Workflow SDK, but the app runs on Hono with self-hosted Postgres. Keep the migration examples framework-agnostic and do not assume managed execution.`
 
 **Expected output:** The migration explicitly says the workflow/step code can stay the same, includes `World extends Storage, Queue, Streamer`, shows `startWorkflowWorld(): Promise<void>`, and keeps the route example on plain `Request` / `Response` because the prompt explicitly asks for framework-agnostic app-boundary code.
 

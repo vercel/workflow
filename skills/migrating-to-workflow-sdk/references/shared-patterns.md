@@ -63,7 +63,7 @@ export default app;
 **Sample input**
 
 ```md
-Migrate an Inngest approval workflow to Vercel Workflow for Hono.
+Migrate an Inngest approval workflow to the Workflow SDK for Hono.
 The app resumes approvals from server-side code with a deterministic token.
 ```
 

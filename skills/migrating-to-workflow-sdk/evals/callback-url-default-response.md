@@ -2,7 +2,7 @@
 
 ## Prompt
 
-Migrate the following Step Functions workflow to Vercel Workflow.
+Migrate the following Step Functions workflow to the Workflow SDK.
 
 ```json
 {

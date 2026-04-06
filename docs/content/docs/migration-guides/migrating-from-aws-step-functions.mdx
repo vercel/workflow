@@ -1,8 +1,8 @@
 ---
 title: Migrating from AWS Step Functions
-description: Move an AWS Step Functions state machine to Vercel Workflow by replacing JSON state definitions, Task states, Choice/Wait/Parallel states, Retry/Catch blocks, and .waitForTaskToken callbacks with Workflows, Steps, Hooks, and idiomatic TypeScript control flow.
+description: Move an AWS Step Functions state machine to the Workflow SDK by replacing JSON state definitions, Task states, Choice/Wait/Parallel states, Retry/Catch blocks, and .waitForTaskToken callbacks with Workflows, Steps, Hooks, and idiomatic TypeScript control flow.
 type: guide
-summary: Translate an AWS Step Functions state machine into Vercel Workflow with side-by-side code and a realistic order-processing saga.
+summary: Translate an AWS Step Functions state machine into the Workflow SDK with side-by-side code and a realistic order-processing saga.
 prerequisites:
   - /docs/getting-started/next
   - /docs/foundations/workflows-and-steps
@@ -18,13 +18,13 @@ related:
 
 With AWS Step Functions, you define workflows as JSON state machines using Amazon States Language (ASL). Each state — Task, Choice, Wait, Parallel, Map — is a node in a declarative graph. You wire Lambda functions as task handlers, configure Retry/Catch blocks per state, and manage callback patterns through `.waitForTaskToken`. The execution engine is powerful, but the authoring experience is configuration-heavy and detached from your application code.
 
-With Vercel Workflow, you write `"use workflow"` functions that orchestrate `"use step"` functions — all in the same file, all plain TypeScript. Branching is `if`/`else`, waiting is `sleep()`, parallelism is `Promise.all()`, and retries are step-level configuration. There is no state-machine JSON to maintain, no Lambda function wiring, and no IAM roles to configure between orchestrator and compute.
+With the Workflow SDK, you write `"use workflow"` functions that orchestrate `"use step"` functions — all in the same file, all plain TypeScript. Branching is `if`/`else`, waiting is `sleep()`, parallelism is `Promise.all()`, and retries are step-level configuration. There is no state-machine JSON to maintain, no Lambda function wiring, and no IAM roles to configure between orchestrator and compute.
 
 The migration path is mostly about **replacing declarative configuration with idiomatic TypeScript** and **collapsing the orchestrator/compute split**, not rewriting business logic.
 
 ## Concept mapping
 
-| AWS Step Functions | Vercel Workflow | Migration note |
+| AWS Step Functions | Workflow SDK | Migration note |
 | --- | --- | --- |
 | State machine (ASL JSON) | `"use workflow"` function | The workflow function _is_ the state machine — expressed as async TypeScript. |
 | Task state / Lambda | `"use step"` function | Put side effects and Node.js access in steps. No separate Lambda deployment. |
@@ -94,7 +94,7 @@ export const handler = async (event: { id: string }) => {
 };
 ```
 
-### Vercel Workflow
+### Workflow SDK
 
 ```typescript
 // workflow/workflows/order.ts
@@ -196,7 +196,7 @@ export const handler = async (event: {
 };
 ```
 
-### Vercel Workflow
+### Workflow SDK
 
 ```typescript
 // workflow/workflows/refund.ts
@@ -348,7 +348,7 @@ A Step Functions saga requires explicit Catch blocks on each state to trigger co
 
 Each Task state maps to a separate Lambda function, and the compensation chain (CancelShipment → RefundPayment → ReleaseInventory → Fail) must be wired explicitly in the state machine.
 
-### Vercel Workflow version
+### Workflow SDK version
 
 ```typescript
 import { FatalError, getStepMetadata, getWritable } from 'workflow';
@@ -486,16 +486,16 @@ async function emitProgress(update: { stage: string; orderId: string }) {
 
 ## Why teams usually simplify infrastructure in this move
 
-Step Functions requires you to define state machines in JSON (Amazon States Language), deploy each task as a separate Lambda function, manage IAM roles between the orchestrator and every Lambda, and configure CloudWatch, X-Ray, or third-party tooling for observability. These are powerful primitives when you need visual workflow editing or cross-service AWS orchestration — but for TypeScript-first teams shipping on Vercel, they are overhead without a corresponding benefit.
+Step Functions requires you to define state machines in JSON (Amazon States Language), deploy each task as a separate Lambda function, manage IAM roles between the orchestrator and every Lambda, and configure CloudWatch, X-Ray, or third-party tooling for observability. These are powerful primitives when you need visual workflow editing or cross-service AWS orchestration — but for TypeScript-first teams, they are overhead without a corresponding benefit.
 
-With Vercel Workflow:
+With the Workflow SDK:
 
 - **No state machine JSON.** The workflow function _is_ the state machine. Branching, looping, and error handling are TypeScript — not a JSON DSL with its own type system and reference syntax.
 - **No Lambda function wiring.** Steps run in the same deployment as your app. There are no separate functions to deploy, version, or connect with IAM policies.
-- **No infrastructure to provision.** There is no CloudFormation/CDK stack for the orchestrator, no Lambda concurrency limits to tune, and no Step Functions pricing tiers to navigate.
+- **No infrastructure to provision.** There is no CloudFormation/CDK stack for the orchestrator, no Lambda concurrency limits to tune, and no pricing tiers to navigate.
 - **TypeScript all the way down.** Workflow and step functions are regular TypeScript with directive annotations. State transitions are `await` calls, not `"Next"` pointers.
 - **Durable streaming built in.** `getWritable()` lets you push progress updates from steps without adding DynamoDB, SNS, or a WebSocket API Gateway.
-- **Usage-based pricing with active-CPU compute.** Workflow bills for Workflow Steps and Workflow Storage, and the functions that execute those steps continue to use standard Vercel compute pricing. If you use Fluid Compute, CPU billing pauses while code waits on I/O. When a workflow is suspended on `sleep()` or a hook, it pauses cleanly instead of keeping a worker process alive.
+- **Efficient resource usage.** When a workflow is suspended on `sleep()` or a hook, it pauses cleanly instead of keeping a worker process alive.
 
 This is not about replacing every Step Functions feature. It is about recognizing that most TypeScript teams use a fraction of Step Functions' state-language surface and pay for the rest in configuration complexity and AWS service sprawl.
 
@@ -512,4 +512,4 @@ This is not about replacing every Step Functions feature. It is about recognizin
 - Move Retry/Catch configuration down to step boundaries using default retries, `maxRetries`, `RetryableError`, and `FatalError`, with standard `try`/`catch` for error handling.
 - Add idempotency keys to external side effects using `getStepMetadata().stepId`.
 - Stream user-visible progress from steps with `getWritable()` when you previously polled DynamoDB or used SNS notifications.
-- Deploy to Vercel first so the guide can truthfully lean on zero-config infrastructure and built-in observability.
+- Deploy your app and verify workflows run end-to-end with built-in observability.

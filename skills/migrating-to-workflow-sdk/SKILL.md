@@ -1,14 +1,14 @@
 ---
-name: migrating-to-vercel-workflow
-description: Migrates Temporal, Inngest, and AWS Step Functions workflows to Vercel Workflow. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows.
+name: migrating-to-workflow-sdk
+description: Migrates Temporal, Inngest, and AWS Step Functions workflows to the Workflow SDK. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows.
 metadata:
   author: Vercel Inc.
   version: '0.1.9'
 ---
 
-# Migrating to Vercel Workflow
+# Migrating to the Workflow SDK
 
-Use this skill when converting an existing orchestration system to Vercel Workflow.
+Use this skill when converting an existing orchestration system to the Workflow SDK.
 
 ## Intake
 
@@ -17,8 +17,8 @@ Use this skill when converting an existing orchestration system to Vercel Workfl
    - Inngest
    - AWS Step Functions
 2. Identify the target runtime:
-   - Deploying on Vercel -> keep examples focused on `start()`, `getRun()`, hooks/webhooks, and route handlers.
-   - Non-Vercel or self-hosted -> also read `references/runtime-targets.md` and explicitly say the workflow/step code can stay the same, but deployment still needs a `World` implementation and startup bootstrap.
+   - Managed hosting -> keep examples focused on `start()`, `getRun()`, hooks/webhooks, and route handlers.
+   - Self-hosted -> also read `references/runtime-targets.md` and explicitly say the workflow/step code can stay the same, but deployment still needs a `World` implementation and startup bootstrap.
 3. Extract the source constructs:
    - entrypoint
    - waits / timers
@@ -62,7 +62,7 @@ Fast defaults:
 - callback URL only -> `resume/url/default`
 - callback URL + explicit custom response -> `resume/url/manual`
 - deterministic server-side resume -> `resume/internal`
-- self-hosted/non-Vercel -> add `runtime/self-hosted`
+- self-hosted -> add `runtime/self-hosted`
 - named framework -> add `boundary/named-framework`
 - explicit framework-agnostic request -> add `boundary/framework-agnostic`
 
@@ -77,7 +77,7 @@ Before drafting `## Migrated Code`, write the selected route keys in `## Migrati
 ## Shared references
 
 - `references/shared-patterns.md` — reusable code templates for hooks, child workflows, idempotency, streaming, and rollback.
-- `references/runtime-targets.md` — Vercel-managed vs custom `World` guidance.
+- `references/runtime-targets.md` — Managed vs custom `World` guidance.
 - `references/resume-routing.md` — route-key selection, obligations, and exact `## Migration Plan` shape.
 
 ## Required output shape
@@ -136,13 +136,13 @@ For concrete passing code, load:
 
 - `references/shared-patterns.md` -> `## Generated callback URL (default response)`
 - `references/shared-patterns.md` -> `## Generated callback URL (manual response)`
-- `references/runtime-targets.md` -> `## Non-Vercel output block`
+- `references/runtime-targets.md` -> `## Self-hosted output block`
 - `references/aws-step-functions.md` -> `## Combined recipe: callback URL on self-hosted Hono`
 
 ## Sample prompt
 
 ```
-Migrate this Inngest workflow to Vercel Workflow.
+Migrate this Inngest workflow to the Workflow SDK.
 It uses step.waitForEvent() with a timeout and step.realtime.publish().
 ```
 
@@ -164,7 +164,7 @@ Load a worked example only when the prompt needs concrete code:
 - `references/shared-patterns.md` -> `## Named-framework internal resume example (Hono)`
 - `references/shared-patterns.md` -> `## Generated callback URL (default response)`
 - `references/shared-patterns.md` -> `## Generated callback URL (manual response)`
-- `references/runtime-targets.md` -> `## Non-Vercel output block`
+- `references/runtime-targets.md` -> `## Self-hosted output block`
 - `references/aws-step-functions.md` -> `## Combined recipe: callback URL on self-hosted Hono`
 
 Reject these counterexamples:

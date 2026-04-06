@@ -2,7 +2,7 @@
 
 ## Prompt
 
-Migrate the following Inngest workflow to Vercel Workflow.
+Migrate the following Inngest workflow to the Workflow SDK.
 
 ```ts
 import { inngest } from '../client';

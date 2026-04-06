@@ -2,7 +2,7 @@
 
 ## Prompt
 
-Migrate the following Temporal workflow to Vercel Workflow. Keep the business behavior the same.
+Migrate the following Temporal workflow to the Workflow SDK. Keep the business behavior the same.
 
 ```ts
 import * as wf from '@temporalio/workflow';

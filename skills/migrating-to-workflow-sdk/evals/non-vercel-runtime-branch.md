@@ -2,7 +2,7 @@
 
 ## Prompt
 
-We are migrating a Temporal workflow to Vercel Workflow, but the app runs on Hono with self-hosted Postgres. Keep the migration examples framework-agnostic and do not assume Vercel-managed execution.
+We are migrating a Temporal workflow to the Workflow SDK, but the app runs on Hono with self-hosted Postgres. Keep the migration examples framework-agnostic and do not assume managed execution.
 
 ## Must include
 
@@ -26,7 +26,7 @@ export async function startWorkflowWorld(): Promise<void> {
 
 - claims that no infrastructure work is needed
 - Next.js-only handler signatures
-- claims that Vercel-managed execution is automatic in this target environment
+- claims that managed execution is automatic in this target environment
 
 ## Expected excerpt
 

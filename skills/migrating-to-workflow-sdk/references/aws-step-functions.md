@@ -1,8 +1,8 @@
-# AWS Step Functions -> Vercel Workflow
+# AWS Step Functions -> Workflow SDK
 
 ## Map these constructs
 
-| AWS Step Functions | Vercel Workflow |
+| AWS Step Functions | Workflow SDK |
 | --- | --- |
 | ASL JSON state machine | `"use workflow"` function |
 | Task / Lambda | `"use step"` |
@@ -160,7 +160,7 @@ Use this when all of the following are true:
 
 - the Step Functions source used `.waitForTaskToken`
 - the external system needs a callback URL
-- the target is self-hosted or otherwise non-Vercel
+- the target is self-hosted
 - the prompt names Hono
 - the prompt does not require a custom callback response
 
@@ -242,5 +242,5 @@ RequestWithResponse
 
 Sample prompt and expected shape:
 
-- Input: `Migrate this Step Functions flow to Vercel Workflow for Hono on self-hosted Postgres. The vendor needs a callback URL. Default 202 is fine.`
+- Input: `Migrate this Step Functions flow to the Workflow SDK for Hono on self-hosted Postgres. The vendor needs a callback URL. Default 202 is fine.`
 - Expected route keys: `resume/url/default`, `runtime/self-hosted`, `boundary/named-framework`

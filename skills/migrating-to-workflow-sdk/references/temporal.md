@@ -1,8 +1,8 @@
-# Temporal -> Vercel Workflow
+# Temporal -> Workflow SDK
 
 ## Map these constructs
 
-| Temporal | Vercel Workflow |
+| Temporal | Workflow SDK |
 | --- | --- |
 | Workflow Definition / Execution | `"use workflow"` + `start()` |
 | Activity | `"use step"` |

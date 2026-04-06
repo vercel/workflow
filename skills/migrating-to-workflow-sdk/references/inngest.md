@@ -1,8 +1,8 @@
-# Inngest -> Vercel Workflow
+# Inngest -> Workflow SDK
 
 ## Map these constructs
 
-| Inngest | Vercel Workflow |
+| Inngest | Workflow SDK |
 | --- | --- |
 | `inngest.createFunction()` | `"use workflow"` + `start()` |
 | `step.run()` | `"use step"` |

@@ -11,12 +11,12 @@ A response passes only if it:
 7. adds `getStepMetadata().stepId` for external idempotent writes
 8. adds hooks/webhooks when the source used signals, wait-for-event, or task tokens
 9. stays framework-agnostic when the target framework is unspecified
-10. does not claim Vercel-managed execution when the prompt says the target is self-hosted or non-Vercel
+10. does not claim managed execution when the prompt says the target is self-hosted
 11. chooses plain `createWebhook()` for generated callback-URL flows unless the prompt explicitly requires a custom HTTP response; when manual mode is chosen, `request.respondWith()` stays in step context
 
 ## Sample input for manual check
 
-> Migrate this Inngest workflow to Vercel Workflow. It publishes progress and waits for approval with a 7d timeout.
+> Migrate this Inngest workflow to the Workflow SDK. It publishes progress and waits for approval with a 7d timeout.
 
 Expected passing excerpt:
 
