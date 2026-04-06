@@ -106,9 +106,7 @@ describe('createLock', () => {
           eventType: 'lock_release',
           correlationId: createLockCorrelationId('wrun_test', 0),
           eventData: {
-            leaseId: lease.leaseId,
-            key: lease.key,
-            lockId: lease.lockId,
+            lease,
           },
           createdAt: new Date(),
         })
@@ -282,9 +280,7 @@ describe('createLock', () => {
         eventType: 'lock_release',
         correlationId,
         eventData: {
-          leaseId: lease.leaseId,
-          key: lease.key,
-          lockId: lease.lockId,
+          lease,
         },
         createdAt: new Date(),
       },

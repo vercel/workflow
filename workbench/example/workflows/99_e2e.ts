@@ -487,10 +487,7 @@ async function scopedMultiStepStep(holdMs: number) {
   return Date.now();
 }
 
-export async function singleLockAcrossMultipleStepsWorkflow(
-  key = STEP_LOCK_KEYS.multi,
-  holdMs = 400
-) {
+export async function singleLockAcrossMultipleStepsWorkflow(holdMs = 400) {
   'use workflow';
 
   let workflowLockAcquiredAt: number;
@@ -498,7 +495,7 @@ export async function singleLockAcrossMultipleStepsWorkflow(
   let secondStepCompletedAt: number;
   {
     await using _lock = await lock({
-      key,
+      key: STEP_LOCK_KEYS.multi,
       concurrency: { max: 1 },
       leaseTtlMs: holdMs * 2 + 5_000,
     });
@@ -509,7 +506,7 @@ export async function singleLockAcrossMultipleStepsWorkflow(
   }
 
   return {
-    key,
+    key: STEP_LOCK_KEYS.multi,
     lock: lockWindow(workflowLockAcquiredAt, Date.now()),
     firstStepCompletedAt,
     secondStepCompletedAt,

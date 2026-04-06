@@ -182,43 +182,8 @@ function parseRequiredLockId(lockId: string) {
   return parsedLockId;
 }
 
-function toPromotedWaiter(
-  holderId: string,
-  lease: Pick<LimitLease, 'leaseId' | 'key' | 'lockId'>
-): LimitPromotedWaiter {
-  const parsedLockId = parseRequiredLockId(holderId);
-
-  return {
-    leaseId: lease.leaseId,
-    key: lease.key,
-    lockId: lease.lockId,
-    runId: parsedLockId.runId,
-    lockIndex: parsedLockId.lockIndex,
-    wakeCorrelationId: createLockWakeCorrelationId(
-      parsedLockId.runId,
-      parsedLockId.lockIndex
-    ),
-    lockCorrelationId: createLockCorrelationId(
-      parsedLockId.runId,
-      parsedLockId.lockIndex
-    ),
-  };
-}
-
 function isTerminalRun(run: WorkflowRunWithoutData | undefined) {
   return !!run && ['completed', 'failed', 'cancelled'].includes(run.status);
-}
-
-function deleteEmptyKey(state: LimitsState, key: string) {
-  const keyState = state.keys[key];
-  if (!keyState) return;
-  if (
-    keyState.leases.length === 0 &&
-    keyState.tokens.length === 0 &&
-    keyState.waiters.length === 0
-  ) {
-    delete state.keys[key];
-  }
 }
 
 export function createLimits(
@@ -310,6 +275,7 @@ export function createLimits(
   } => {
     const acquiredAt = new Date();
     const definition = keyState.definition;
+    const parsedLockId = parseRequiredLockId(waiter.lockId);
 
     const lease = createLease(
       keyState.key,
@@ -337,7 +303,21 @@ export function createLimits(
     return {
       keyState,
       lease,
-      promotedWaiter: toPromotedWaiter(waiter.lockId, lease),
+      promotedWaiter: {
+        leaseId: lease.leaseId,
+        key: lease.key,
+        lockId: lease.lockId,
+        runId: parsedLockId.runId,
+        lockIndex: parsedLockId.lockIndex,
+        wakeCorrelationId: createLockWakeCorrelationId(
+          parsedLockId.runId,
+          parsedLockId.lockIndex
+        ),
+        lockCorrelationId: createLockCorrelationId(
+          parsedLockId.runId,
+          parsedLockId.lockIndex
+        ),
+      } satisfies LimitPromotedWaiter,
     };
   };
 
@@ -545,7 +525,13 @@ export function createLimits(
           ? promoteEligibleWaiters(keyState)
           : { keyState, promotedWaiters: [] };
         state.keys[parsed.key] = promoted.keyState;
-        deleteEmptyKey(state, parsed.key);
+        if (
+          promoted.keyState.leases.length === 0 &&
+          promoted.keyState.tokens.length === 0 &&
+          promoted.keyState.waiters.length === 0
+        ) {
+          delete state.keys[parsed.key];
+        }
 
         await writeState(state);
         return { promotedWaiters: promoted.promotedWaiters };

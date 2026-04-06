@@ -19,11 +19,7 @@ export type LockOptions = LimitDefinition & {
 /**
  * Reserved handle shape for future lock acquisition.
  */
-export interface LockHandle
-  extends Pick<
-    LimitLease,
-    'leaseId' | 'key' | 'lockId' | 'runId' | 'lockIndex' | 'expiresAt'
-  > {
+export interface LockHandle extends LimitLease {
   dispose(): Promise<void>;
   heartbeat(): Promise<void>;
   [Symbol.asyncDispose](): Promise<void>;

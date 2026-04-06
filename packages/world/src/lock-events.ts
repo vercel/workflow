@@ -70,10 +70,7 @@ export type LockEventResolution =
       request: LimitReleaseRequest;
     };
 
-function isLeaseLive(
-  lease: Pick<LimitLease, 'expiresAt'>,
-  now: number
-): boolean {
+function isLeaseLive(lease: LimitLease, now: number): boolean {
   return lease.expiresAt === undefined || lease.expiresAt.getTime() > now;
 }
 

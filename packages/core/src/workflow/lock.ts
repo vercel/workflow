@@ -5,14 +5,12 @@ import {
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import {
-  type CreateEventRequest,
   type Event,
   createLockCorrelationId,
   createLockWakeCorrelationId,
   type LockHistoryEvent,
-  type LimitDefinition,
   type LimitLease,
-  parseLockId,
+  type LimitDefinition,
   SPEC_VERSION_CURRENT,
 } from '@workflow/world';
 import { EventConsumerResult } from '../events-consumer.js';
@@ -28,11 +26,6 @@ const DEFAULT_LOCK_LEASE_TTL_MS = 24 * 60 * 60 * 1000;
 const LOCK_HEARTBEAT_UNSUPPORTED_MESSAGE =
   'Lock heartbeat is not supported in workflow functions yet because it cannot be replayed deterministically.';
 
-type LockLeaseView = Pick<
-  LimitLease,
-  'leaseId' | 'key' | 'lockId' | 'runId' | 'lockIndex' | 'expiresAt'
->;
-
 type LockPhase =
   | {
       type: 'creating';
@@ -46,11 +39,11 @@ type LockPhase =
     }
   | {
       type: 'acquired';
-      lease: LockLeaseView;
+      event: Extract<LockHistoryEvent, { eventType: 'lock_acquired' }>;
     }
   | {
       type: 'released';
-      lease: LockLeaseView;
+      event: Extract<LockHistoryEvent, { eventType: 'lock_release' }>;
     };
 
 interface LockState {
@@ -87,31 +80,8 @@ function createSuspension(ctx: WorkflowOrchestratorContext) {
   });
 }
 
-function isLeaseLive(
-  lease: Pick<LimitLease, 'expiresAt'>,
-  now: number
-): boolean {
+function isLeaseLive(lease: LimitLease, now: number): boolean {
   return lease.expiresAt === undefined || lease.expiresAt.getTime() > now;
-}
-
-function getReleasedLeaseView(
-  event: Extract<Event, { eventType: 'lock_release' }>
-): LockLeaseView {
-  const parsed = parseLockId(event.eventData.lockId);
-  if (!parsed) {
-    throw new WorkflowRuntimeError(
-      `Corrupted event log: lock ${event.correlationId} release has invalid lockId "${event.eventData.lockId}"`
-    );
-  }
-
-  return {
-    leaseId: event.eventData.leaseId,
-    key: event.eventData.key,
-    lockId: event.eventData.lockId,
-    runId: parsed.runId,
-    lockIndex: parsed.lockIndex,
-    expiresAt: undefined,
-  };
 }
 
 function isRuntimeLockEvent(event: Event): event is LockHistoryEvent {
@@ -131,21 +101,30 @@ function createLockHandle(
   ctx: WorkflowOrchestratorContext
 ): LockHandle {
   let disposed = false;
-
-  const getLease = () => {
-    if (state.phase.type === 'acquired' || state.phase.type === 'released') {
-      return state.phase.lease;
-    }
-
+  if (state.phase.type !== 'acquired' && state.phase.type !== 'released') {
     throw new WorkflowRuntimeError(
       `Corrupted event log: lock ${state.correlationId} is missing lease metadata`
     );
-  };
+  }
+
+  const lease = state.phase.event.eventData.lease;
 
   const markReleased = () => {
+    if (state.phase.type !== 'acquired') {
+      throw new WorkflowRuntimeError(
+        `Corrupted event log: lock ${state.correlationId} cannot be released from phase "${state.phase.type}"`
+      );
+    }
+
     state.phase = {
       type: 'released',
-      lease: getLease(),
+      event: {
+        ...state.phase.event,
+        eventType: 'lock_release',
+        eventData: {
+          lease: state.phase.event.eventData.lease,
+        },
+      },
     };
   };
 
@@ -179,29 +158,11 @@ function createLockHandle(
 
   const heartbeat = async () => {
     if (state.phase.type === 'released') return;
-    getLease();
     throw new WorkflowRuntimeError(LOCK_HEARTBEAT_UNSUPPORTED_MESSAGE);
   };
 
   const handle: LockHandle = {
-    get leaseId() {
-      return getLease().leaseId;
-    },
-    get key() {
-      return getLease().key;
-    },
-    get lockId() {
-      return getLease().lockId;
-    },
-    get runId() {
-      return getLease().runId;
-    },
-    get lockIndex() {
-      return getLease().lockIndex;
-    },
-    get expiresAt() {
-      return getLease().expiresAt;
-    },
+    ...lease,
     dispose,
     heartbeat,
     [Symbol.asyncDispose]: dispose,
@@ -213,31 +174,6 @@ function createLockHandle(
   }
 
   return handle;
-}
-
-function createLockCreatedEvent(
-  state: LockState
-): Extract<CreateEventRequest, { eventType: 'lock_created' }> {
-  return {
-    eventType: 'lock_created',
-    specVersion: SPEC_VERSION_CURRENT,
-    correlationId: state.correlationId,
-    eventData: {
-      key: state.key,
-      definition: state.definition,
-      leaseTtlMs: state.leaseTtlMs,
-    },
-  };
-}
-
-function createLockAcquiredEvent(
-  state: LockState
-): Extract<CreateEventRequest, { eventType: 'lock_acquired' }> {
-  return {
-    eventType: 'lock_acquired',
-    specVersion: SPEC_VERSION_CURRENT,
-    correlationId: state.correlationId,
-  };
 }
 
 export function createLock(ctx: WorkflowOrchestratorContext) {
@@ -331,7 +267,7 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
           }
           state.phase = {
             type: 'acquired',
-            lease: event.eventData.lease,
+            event,
           };
           resolveHandle();
           return;
@@ -339,7 +275,7 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
         case 'lock_release':
           state.phase = {
             type: 'released',
-            lease: getReleasedLeaseView(event),
+            event,
           };
           resolveHandle();
           return;
@@ -375,10 +311,16 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
 
     const requestLockCreated = async () => {
       try {
-        const result = await getWorld().events.create(
-          ctx.runId,
-          createLockCreatedEvent(state)
-        );
+        const result = await getWorld().events.create(ctx.runId, {
+          eventType: 'lock_created',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: state.correlationId,
+          eventData: {
+            key: state.key,
+            definition: state.definition,
+            leaseTtlMs: state.leaseTtlMs,
+          },
+        });
         const event = result.event;
         if (!event) {
           throw new WorkflowRuntimeError(
@@ -399,10 +341,11 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
 
     const requestLockAcquired = async () => {
       try {
-        const result = await getWorld().events.create(
-          ctx.runId,
-          createLockAcquiredEvent(state)
-        );
+        const result = await getWorld().events.create(ctx.runId, {
+          eventType: 'lock_acquired',
+          specVersion: SPEC_VERSION_CURRENT,
+          correlationId: state.correlationId,
+        });
         const event = result.event;
         if (!event) {
           throw new WorkflowRuntimeError(

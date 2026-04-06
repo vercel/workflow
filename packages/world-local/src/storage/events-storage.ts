@@ -485,9 +485,7 @@ export function createEventsStorage(
             eventType: 'lock_release',
             correlationId: data.correlationId,
             eventData: {
-              leaseId: resolution.lease.leaseId,
-              key: resolution.lease.key,
-              lockId: resolution.lease.lockId,
+              lease: resolution.lease,
               promotedWaiters: releaseResult.promotedWaiters,
             },
             runId: effectiveRunId,

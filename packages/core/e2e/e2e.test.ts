@@ -423,7 +423,6 @@ describe('e2e', () => {
           },
           runWorkflowSingleLockAcrossMultipleSteps(holdMs) {
             return runWorkflow('singleLockAcrossMultipleStepsWorkflow', [
-              'step:db:batch',
               holdMs,
             ]);
           },

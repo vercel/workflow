@@ -76,9 +76,7 @@ function toLease(row: LeaseRow, definition: LimitDefinition): LimitLease {
   };
 }
 
-function definitionFromRow(
-  row: Pick<LimitKeyRow, 'concurrencyMax' | 'rateCount' | 'ratePeriodMs'>
-): LimitDefinition {
+function definitionFromRow(row: LimitKeyRow): LimitDefinition {
   const concurrency =
     row.concurrencyMax !== null ? { max: row.concurrencyMax } : undefined;
   const rate =
@@ -97,29 +95,6 @@ function definitionFromRow(
   }
 
   throw new WorkflowWorldError('Missing limit definition');
-}
-
-function toPromotedWaiter(
-  holderId: string,
-  lease: Pick<LimitLease, 'leaseId' | 'key' | 'lockId'>
-): LimitPromotedWaiter {
-  const parsedLockId = parseRequiredLockId(holderId);
-
-  return {
-    leaseId: lease.leaseId,
-    key: lease.key,
-    lockId: lease.lockId,
-    runId: parsedLockId.runId,
-    lockIndex: parsedLockId.lockIndex,
-    wakeCorrelationId: createLockWakeCorrelationId(
-      parsedLockId.runId,
-      parsedLockId.lockIndex
-    ),
-    lockCorrelationId: createLockCorrelationId(
-      parsedLockId.runId,
-      parsedLockId.lockIndex
-    ),
-  };
 }
 
 /*
@@ -382,9 +357,24 @@ async function promoteWaiter(
     .where(eq(Schema.limitWaiters.waiterId, waiter.waiterId));
 
   const promotedLease = toLease(acquiredLease, definition);
+  const parsedLockId = parseRequiredLockId(waiter.holderId);
   return {
     lease: promotedLease,
-    promotedWaiter: toPromotedWaiter(waiter.holderId, promotedLease),
+    promotedWaiter: {
+      leaseId: promotedLease.leaseId,
+      key: promotedLease.key,
+      lockId: promotedLease.lockId,
+      runId: parsedLockId.runId,
+      lockIndex: parsedLockId.lockIndex,
+      wakeCorrelationId: createLockWakeCorrelationId(
+        parsedLockId.runId,
+        parsedLockId.lockIndex
+      ),
+      lockCorrelationId: createLockCorrelationId(
+        parsedLockId.runId,
+        parsedLockId.lockIndex
+      ),
+    } satisfies LimitPromotedWaiter,
   };
 }
 

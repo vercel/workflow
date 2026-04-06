@@ -221,9 +221,7 @@ const LockAcquiredEventDataSchema = z.object({
 });
 
 const LockReleaseEventDataSchema = z.object({
-  leaseId: z.string().min(1),
-  key: z.string(),
-  lockId: z.string(),
+  lease: LimitLeaseSchema,
   promotedWaiters: z.array(LimitPromotedWaiterSchema).optional(),
 });
 
