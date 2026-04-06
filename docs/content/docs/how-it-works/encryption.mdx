@@ -84,6 +84,7 @@ Without `--decrypt`, encrypted fields display as `🔒 Encrypted` placeholders.
 
 The core runtime encrypts data automatically when the `World` implementation provides a `getEncryptionKeyForRun()` method. The core runtime can call this method in two forms:
 
+{/* @skip-typecheck - interface signature, not runnable code */}
 ```typescript
 getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
 getEncryptionKeyForRun?(
