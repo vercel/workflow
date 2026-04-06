@@ -105,6 +105,11 @@ export function getWebRevivers(): Revivers {
         method: value.method,
         url: value.url,
         headers: new Headers(value.headers),
+        body: value.body,
+        duplex: value.duplex,
+        ...(value.responseWritable
+          ? { responseWritable: value.responseWritable }
+          : {}),
       });
       return obj;
     },
@@ -117,6 +122,7 @@ export function getWebRevivers(): Revivers {
         statusText: value.statusText,
         url: value.url,
         headers: new Headers(value.headers),
+        body: value.body,
         redirected: value.redirected,
         type: value.type,
       });
