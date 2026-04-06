@@ -364,6 +364,7 @@ export function withHealthCheck(
       return new Response(
         JSON.stringify({
           healthy: true,
+          endpoint: url.pathname,
           specVersion: SPEC_VERSION_CURRENT,
         }),
         {
