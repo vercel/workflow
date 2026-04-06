@@ -844,7 +844,7 @@ The `uiMessages` property is only available when `collectUIMessages` is set to `
 
 ### Machine-Readable Tool Results
 
-`stream()` returns structured tool activity you can inspect programmatically. Compare `toolCalls` with `toolResults` to find unresolved tool calls that need client-side handling:
+`stream()` returns tool call information you can inspect programmatically. Compare `toolCalls` with `toolResults` to find unresolved tool calls that need client-side handling:
 
 ```typescript lineNumbers
 import { DurableAgent } from "@workflow/ai/agent";
