@@ -49,28 +49,5 @@
     "@workflow/vitest-workbench": "0.0.1",
     "@workflow/swc-playground-wasm": "0.0.0"
   },
-  "changesets": [
-    "add-cli-transform-validate",
-    "add-cli-validate-serde",
-    "add-serde-compliance-checker",
-    "asymmetric-ulid-thresholds",
-    "configurable-stream-flush-interval",
-    "dark-olives-fix",
-    "domexception-serialization",
-    "fix-multiline-comment-skip",
-    "fix-object-object-error",
-    "fix-public-manifest-dev",
-    "fix-step-context-singleton",
-    "fix-zod-v4-import-mismatch",
-    "four-donuts-glow",
-    "preserve-reasoning-content",
-    "puny-oranges-speak",
-    "quiet-plums-speak",
-    "six-peas-make",
-    "smooth-pens-beam",
-    "start-deploymentid-unknown-types",
-    "tall-owls-glow",
-    "wicked-actors-cheer",
-    "wise-inks-ripe"
-  ]
+  "changesets": []
 }
