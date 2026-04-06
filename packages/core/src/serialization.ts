@@ -455,6 +455,13 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
  */
 const STREAM_FLUSH_INTERVAL_MS = 10;
 
+/**
+ * Maximum number of chunks to buffer before forcing an early flush.
+ * Matches the server-side MAX_CHUNKS_PER_BATCH limit — exceeding this
+ * causes the server to reject the batch with a 400 error.
+ */
+export const MAX_CHUNKS_PER_FLUSH = 1000;
+
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
   constructor(name: string, runId: string) {
     if (typeof runId !== 'string') {
@@ -489,7 +496,15 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         typeof world.writeToStreamMulti === 'function' &&
         chunksToFlush.length > 1
       ) {
-        await world.writeToStreamMulti(name, runId, chunksToFlush);
+        // Split into sub-batches of MAX_CHUNKS_PER_FLUSH to stay within
+        // the server's per-request chunk limit.
+        for (let i = 0; i < chunksToFlush.length; i += MAX_CHUNKS_PER_FLUSH) {
+          await world.writeToStreamMulti(
+            name,
+            runId,
+            chunksToFlush.slice(i, i + MAX_CHUNKS_PER_FLUSH)
+          );
+        }
       } else {
         // Fall back to sequential writes
         for (const chunk of chunksToFlush) {
@@ -507,22 +522,38 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       reject: (err: unknown) => void;
     }> = [];
 
+    /** Flush immediately: capture waiters, start the flush, set flushPromise. */
+    const flushNow = (): void => {
+      if (flushTimer) {
+        clearTimeout(flushTimer);
+        flushTimer = null;
+      }
+      const currentWaiters = flushWaiters;
+      flushWaiters = [];
+      flushPromise = flush().then(
+        () => {
+          for (const w of currentWaiters) w.resolve();
+        },
+        (err) => {
+          for (const w of currentWaiters) w.reject(err);
+        }
+      );
+    };
+
     const scheduleFlush = (): void => {
+      // Buffer is at capacity — flush now to stay within the
+      // server's per-batch chunk limit.
+      if (buffer.length >= MAX_CHUNKS_PER_FLUSH) {
+        flushNow();
+        return;
+      }
+
       if (flushTimer) return; // Already scheduled
 
-      flushTimer = setTimeout(() => {
-        flushTimer = null;
-        const currentWaiters = flushWaiters;
-        flushWaiters = [];
-        flushPromise = flush().then(
-          () => {
-            for (const w of currentWaiters) w.resolve();
-          },
-          (err) => {
-            for (const w of currentWaiters) w.reject(err);
-          }
-        );
-      }, world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
+      flushTimer = setTimeout(
+        flushNow,
+        world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS
+      );
     };
 
     super({
@@ -534,16 +565,22 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         }
 
         buffer.push(chunk);
+
+        // Register this write's waiter BEFORE scheduleFlush so that an
+        // immediate flush (triggered when buffer hits MAX_CHUNKS_PER_FLUSH)
+        // captures this waiter and resolves it correctly.
+        const promise = new Promise<void>((resolve, reject) => {
+          flushWaiters.push({ resolve, reject });
+        });
+
         scheduleFlush();
 
         // Wait for the scheduled flush to complete so that callers
         // (like flushablePipe) know data has reached the server
         // before decrementing pendingOps. Without this, pendingOps
         // reaches 0 when the buffered write returns (instant), but
-        // the 10ms flush timer hasn't fired yet.
-        await new Promise<void>((resolve, reject) => {
-          flushWaiters.push({ resolve, reject });
-        });
+        // the flush timer hasn't fired yet.
+        await promise;
       },
       async close() {
         // Wait for any in-progress flush to complete
