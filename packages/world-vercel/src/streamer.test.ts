@@ -1,5 +1,16 @@
-import { describe, expect, it } from 'vitest';
-import { encodeMultiChunks } from './streamer.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  createStreamer,
+  encodeMultiChunks,
+  MAX_CHUNKS_PER_REQUEST,
+} from './streamer.js';
+
+vi.mock('./utils.js', () => ({
+  getHttpConfig: vi.fn().mockResolvedValue({
+    baseUrl: 'https://test.example.com',
+    headers: new Headers(),
+  }),
+}));
 
 describe('encodeMultiChunks', () => {
   /**
@@ -166,5 +177,67 @@ describe('encodeMultiChunks', () => {
     expect(new TextDecoder().decode(decoded[0])).toBe('hello');
     expect(new TextDecoder().decode(decoded[1])).toBe('世界');
     expect(new TextDecoder().decode(decoded[2])).toBe('🚀');
+  });
+});
+
+describe('writeToStreamMulti pagination', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('sends a single request when chunks <= MAX_CHUNKS_PER_REQUEST', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response('ok'));
+
+    const streamer = createStreamer();
+    const chunks = Array.from(
+      { length: MAX_CHUNKS_PER_REQUEST },
+      (_, i) => new Uint8Array([i & 0xff])
+    );
+
+    await streamer.writeToStreamMulti?.('s', 'run-1', chunks);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('paginates into multiple requests when chunks > MAX_CHUNKS_PER_REQUEST', async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation(async () => new Response('ok'));
+
+    const streamer = createStreamer();
+    const totalChunks = MAX_CHUNKS_PER_REQUEST + 1;
+    const chunks = Array.from(
+      { length: totalChunks },
+      (_, i) => new Uint8Array([i & 0xff])
+    );
+
+    await streamer.writeToStreamMulti?.('s', 'run-1', chunks);
+
+    // Should split into 2 requests: one with MAX_CHUNKS_PER_REQUEST, one with 1
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('splits evenly across pages for large batches', async () => {
+    const bodies: Uint8Array[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+      if (init?.body instanceof Uint8Array) {
+        bodies.push(init.body);
+      }
+      return new Response('ok');
+    });
+
+    const streamer = createStreamer();
+    const totalChunks = MAX_CHUNKS_PER_REQUEST * 2 + 5;
+    const chunks = Array.from(
+      { length: totalChunks },
+      (_, i) => new Uint8Array([i & 0xff])
+    );
+
+    await streamer.writeToStreamMulti?.('s', 'run-1', chunks);
+
+    // 3 requests: MAX, MAX, 5
+    expect(bodies).toHaveLength(3);
   });
 });

@@ -12,6 +12,12 @@ import {
   makeRequest,
 } from './utils.js';
 
+/**
+ * Maximum number of chunks per request, matching the server-side
+ * MAX_CHUNKS_PER_BATCH. Larger batches are split into multiple requests.
+ */
+export const MAX_CHUNKS_PER_REQUEST = 1000;
+
 // Streaming calls use plain fetch() without the undici dispatcher.
 // The dispatcher's retry logic doesn't apply well to streaming operations
 // (partial writes, long-lived reads), and duplex streams are incompatible
@@ -127,16 +133,21 @@ export function createStreamer(config?: APIConfig): Streamer {
       // Signal to server that this is a multi-chunk batch
       httpConfig.headers.set('X-Stream-Multi', 'true');
 
-      const body = encodeMultiChunks(chunks);
-      const response = await fetch(
-        getStreamUrl(name, resolvedRunId, httpConfig),
-        {
-          method: 'PUT',
-          body,
-          headers: httpConfig.headers,
-        }
-      );
-      await response.text();
+      // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
+      // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
+      for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
+        const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
+        const body = encodeMultiChunks(batch);
+        const response = await fetch(
+          getStreamUrl(name, resolvedRunId, httpConfig),
+          {
+            method: 'PUT',
+            body,
+            headers: httpConfig.headers,
+          }
+        );
+        await response.text();
+      }
     },
 
     async closeStream(name: string, runId: string | Promise<string>) {

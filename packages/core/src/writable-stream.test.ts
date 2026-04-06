@@ -1,14 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, test, vi } from 'vitest';
-import {
-  MAX_CHUNKS_PER_FLUSH,
-  WorkflowServerWritableStream,
-} from './serialization.js';
-
-// Ensure the constant matches the server-side MAX_CHUNKS_PER_BATCH.
-// If the server limit changes, update MAX_CHUNKS_PER_FLUSH to match.
-test('MAX_CHUNKS_PER_FLUSH matches server limit', () => {
-  expect(MAX_CHUNKS_PER_FLUSH).toBe(1000);
-});
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WorkflowServerWritableStream } from './serialization.js';
 
 // Mock the world module for WorkflowServerWritableStream tests
 vi.mock('./runtime/world.js', () => ({

@@ -1,5 +1,5 @@
 ---
-'@workflow/core': patch
+'@workflow/world-vercel': patch
 ---
 
-Cap stream flush batches to server's MAX_CHUNKS_PER_BATCH limit (1000) to prevent 400 errors
+Paginate `writeToStreamMulti` to stay within the server's 1000 chunks per batch limit
