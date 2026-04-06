@@ -6,7 +6,7 @@ import {
   WorkflowRunFailedError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import type { World } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import {
   afterAll,
   assert,
@@ -1544,11 +1544,12 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(flowRes.status).toBe(200);
-      expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
-      const flowBody = await flowRes.text();
-      expect(flowBody).toBe(
-        'Workflow SDK "/.well-known/workflow/v1/flow" endpoint is healthy'
-      );
+      expect(flowRes.headers.get('Content-Type')).toBe('application/json');
+      const flowBody = await flowRes.json();
+      expect(flowBody).toEqual({
+        healthy: true,
+        specVersion: SPEC_VERSION_CURRENT,
+      });
 
       // Test the step endpoint health check
       const stepHealthUrl = new URL(
@@ -1560,11 +1561,12 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(stepRes.status).toBe(200);
-      expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
-      const stepBody = await stepRes.text();
-      expect(stepBody).toBe(
-        'Workflow SDK "/.well-known/workflow/v1/step" endpoint is healthy'
-      );
+      expect(stepRes.headers.get('Content-Type')).toBe('application/json');
+      const stepBody = await stepRes.json();
+      expect(stepBody).toEqual({
+        healthy: true,
+        specVersion: SPEC_VERSION_CURRENT,
+      });
     }
   );
 
