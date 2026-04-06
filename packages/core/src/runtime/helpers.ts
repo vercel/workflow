@@ -54,6 +54,8 @@ export interface HealthCheckResult {
   error?: string;
   /** Latency if the health check was successful */
   latencyMs?: number;
+  /** Spec version of the responding deployment */
+  specVersion?: number;
 }
 
 /**
@@ -196,7 +198,16 @@ function parseHealthCheckResponse(
     return null;
   }
 
-  return { healthy: (response as { healthy: boolean }).healthy };
+  const parsed: { healthy: boolean; specVersion?: number } = {
+    healthy: (response as { healthy: boolean }).healthy,
+  };
+  if (
+    'specVersion' in (response as object) &&
+    typeof (response as { specVersion: unknown }).specVersion === 'number'
+  ) {
+    parsed.specVersion = (response as { specVersion: number }).specVersion;
+  }
+  return parsed;
 }
 
 export async function healthCheck(
