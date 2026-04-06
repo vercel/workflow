@@ -334,4 +334,38 @@ export class Foo {
     expect(warnMessage).toContain('"use step" functions');
     expect(warnMessage).toContain('serialization classes');
   });
+
+  it('warns via entry-file detection when package.json has no serde dep', async () => {
+    const projectDir = join(testRoot, 'project');
+
+    writeFile(join(projectDir, 'index.ts'), 'export const x = 1;');
+
+    // Package without @workflow/serde in deps, but entry has "use step"
+    writeFile(
+      join(projectDir, 'node_modules', 'no-serde-dep-pkg', 'package.json'),
+      JSON.stringify({
+        name: 'no-serde-dep-pkg',
+        version: '1.0.0',
+        main: 'index.js',
+      })
+    );
+    writeFile(
+      join(projectDir, 'node_modules', 'no-serde-dep-pkg', 'index.js'),
+      `export async function doWork() {
+  "use step";
+  return 42;
+}`
+    );
+
+    const builder = createBuilder(projectDir, ['no-serde-dep-pkg']);
+    await builder.discoverEntriesPublic(
+      [join(projectDir, 'index.ts')],
+      join(projectDir, 'out')
+    );
+
+    expect(warnSpy).toHaveBeenCalled();
+    const warnMessage = warnSpy.mock.calls[0]?.[0] as string;
+    expect(warnMessage).toContain('no-serde-dep-pkg');
+    expect(warnMessage).toContain('"use step" functions');
+  });
 });

@@ -315,7 +315,12 @@ export abstract class BaseBuilder {
           // package.json not resolvable - continue to source check
         }
 
-        // Check source patterns (thorough path)
+        // Check source patterns (thorough path).
+        // Note: require.resolve only inspects the package's main entry point.
+        // If workflow constructs live in sub-paths (e.g. `my-pkg/workflows`),
+        // they won't be detected here. The @workflow/serde dep check above
+        // partially covers serde cases. This is acceptable as a best-effort
+        // heuristic — the primary fix is auto-removal in withWorkflow().
         let hasUseStep = false;
         let hasUseWorkflow = false;
         let hasSerde = hasWorkflowSerdeDep;
