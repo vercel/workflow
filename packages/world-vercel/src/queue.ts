@@ -8,6 +8,7 @@ import {
   type QueuePayload,
   QueuePayloadSchema,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   ValidQueueName,
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
@@ -200,8 +201,10 @@ export function createQueue(config?: APIConfig): Queue {
     }
 
     // Select transport based on the target run's specVersion:
-    // CBOR for new runs (specVersion >= SPEC_VERSION_CURRENT), JSON for older ones.
-    const useCbor = (opts?.specVersion ?? SPEC_VERSION_CURRENT) >= SPEC_VERSION_CURRENT;
+    // CBOR for specVersion >= 3 (CBOR transport), JSON for older ones.
+    const useCbor =
+      (opts?.specVersion ?? SPEC_VERSION_CURRENT) >=
+      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
     const transport = useCbor ? cborTransport : jsonTransport;
 
     const client = new QueueClient({
