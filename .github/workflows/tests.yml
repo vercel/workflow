@@ -159,19 +159,11 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v3
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
         with:
-          version: 10.14.0
-
-      - name: Setup Node.js 22.x
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
+          setup-rust: 'true'
+          build-packages: 'false'
 
       - name: Run Initial Build
         run: pnpm turbo run build --filter='!./workbench/*'
@@ -325,6 +317,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
+          setup-rust: 'true'
           install-dependencies: 'false'
           build-packages: 'false'
 
@@ -355,6 +348,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
+          setup-rust: 'true'
           install-dependencies: 'false'
           build-packages: 'false'
 
@@ -428,6 +422,7 @@ jobs:
       - name: Setup environment
         uses: ./.github/actions/setup-workflow-dev
         with:
+          setup-rust: 'true'
           install-dependencies: 'false'
           build-packages: 'false'
 

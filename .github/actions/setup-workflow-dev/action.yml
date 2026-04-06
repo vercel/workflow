@@ -31,10 +31,11 @@ runs:
   using: 'composite'
   steps:
     - name: Setup Rust
-      if: ${{ inputs.setup-rust == 'true' }}
+      if: ${{ inputs.setup-rust == 'true' || inputs.build-packages == 'true' }}
       uses: actions-rust-lang/setup-rust-toolchain@v1
       with:
         toolchain: stable
+        target: wasm32-unknown-unknown
 
     - name: Setup pnpm
       uses: pnpm/action-setup@v3
