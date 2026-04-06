@@ -1,16 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  createStreamer,
-  encodeMultiChunks,
-  MAX_CHUNKS_PER_REQUEST,
-} from './streamer.js';
-
-vi.mock('./utils.js', () => ({
-  getHttpConfig: vi.fn().mockResolvedValue({
-    baseUrl: 'https://test.example.com',
-    headers: new Headers(),
-  }),
-}));
+import { encodeMultiChunks, MAX_CHUNKS_PER_REQUEST } from './streamer.js';
 
 describe('encodeMultiChunks', () => {
   /**
@@ -180,7 +169,43 @@ describe('encodeMultiChunks', () => {
   });
 });
 
+// vi.mock is hoisted by vitest, so it cannot be truly scoped to a
+// describe block. Keeping it here (next to the tests that need it)
+// makes the intent clear. The encodeMultiChunks tests above are pure
+// functions and are unaffected.
+vi.mock('./utils.js', () => ({
+  getHttpConfig: vi.fn().mockResolvedValue({
+    baseUrl: 'https://test.example.com',
+    headers: new Headers(),
+  }),
+}));
+
 describe('writeToStreamMulti pagination', () => {
+  /**
+   * Decode length-prefixed multi-chunk body to count chunks per request.
+   */
+  function countChunksInBody(encoded: Uint8Array): number {
+    const view = new DataView(
+      encoded.buffer,
+      encoded.byteOffset,
+      encoded.byteLength
+    );
+    let offset = 0;
+    let count = 0;
+    while (offset < encoded.length) {
+      const length = view.getUint32(offset, false);
+      offset += 4 + length;
+      count++;
+    }
+    return count;
+  }
+
+  // Dynamic import so the mock is resolved at call time
+  async function getStreamer() {
+    const { createStreamer } = await import('./streamer.js');
+    return createStreamer();
+  }
+
   afterEach(() => {
     vi.restoreAllMocks();
   });
@@ -188,9 +213,9 @@ describe('writeToStreamMulti pagination', () => {
   it('sends a single request when chunks <= MAX_CHUNKS_PER_REQUEST', async () => {
     const fetchSpy = vi
       .spyOn(globalThis, 'fetch')
-      .mockResolvedValue(new Response('ok'));
+      .mockImplementation(async () => new Response('ok'));
 
-    const streamer = createStreamer();
+    const streamer = await getStreamer();
     const chunks = Array.from(
       { length: MAX_CHUNKS_PER_REQUEST },
       (_, i) => new Uint8Array([i & 0xff])
@@ -206,7 +231,7 @@ describe('writeToStreamMulti pagination', () => {
       .spyOn(globalThis, 'fetch')
       .mockImplementation(async () => new Response('ok'));
 
-    const streamer = createStreamer();
+    const streamer = await getStreamer();
     const totalChunks = MAX_CHUNKS_PER_REQUEST + 1;
     const chunks = Array.from(
       { length: totalChunks },
@@ -219,16 +244,16 @@ describe('writeToStreamMulti pagination', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('splits evenly across pages for large batches', async () => {
-    const bodies: Uint8Array[] = [];
+  it('splits into correct chunk counts per page', async () => {
+    const chunkCounts: number[] = [];
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
       if (init?.body instanceof Uint8Array) {
-        bodies.push(init.body);
+        chunkCounts.push(countChunksInBody(init.body));
       }
       return new Response('ok');
     });
 
-    const streamer = createStreamer();
+    const streamer = await getStreamer();
     const totalChunks = MAX_CHUNKS_PER_REQUEST * 2 + 5;
     const chunks = Array.from(
       { length: totalChunks },
@@ -237,7 +262,10 @@ describe('writeToStreamMulti pagination', () => {
 
     await streamer.writeToStreamMulti?.('s', 'run-1', chunks);
 
-    // 3 requests: MAX, MAX, 5
-    expect(bodies).toHaveLength(3);
+    expect(chunkCounts).toEqual([
+      MAX_CHUNKS_PER_REQUEST,
+      MAX_CHUNKS_PER_REQUEST,
+      5,
+    ]);
   });
 });
