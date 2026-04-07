@@ -100,9 +100,9 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     const fixture = setupFixture();
     const normalizedWorkflowFile = normalizeSlashes(fixture.workflowFile);
     const state = {
-      discoveredSteps: [],
-      discoveredWorkflows: [],
-      discoveredSerdeFiles: [],
+      discoveredSteps: new Set<string>(),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
     };
 
     const result = await esbuild.build({
@@ -116,7 +116,9 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     });
 
     expect(result.errors).toHaveLength(0);
-    expect(state.discoveredWorkflows).toEqual([normalizedWorkflowFile]);
+    expect(state.discoveredWorkflows).toEqual(
+      new Set([normalizedWorkflowFile])
+    );
     // Single 'detect' mode call for AST-level manifest validation
     expect(applySwcTransformMock).toHaveBeenCalledWith(
       normalizedWorkflowFile,
@@ -131,9 +133,9 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     const fixture = setupFixture();
     const normalizedWorkflowFile = normalizeSlashes(fixture.workflowFile);
     const state = {
-      discoveredSteps: [],
-      discoveredWorkflows: [],
-      discoveredSerdeFiles: [],
+      discoveredSteps: new Set<string>(),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
     };
 
     const result = await esbuild.build({
@@ -147,7 +149,9 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     });
 
     expect(result.errors).toHaveLength(0);
-    expect(state.discoveredWorkflows).toEqual([normalizedWorkflowFile]);
+    expect(state.discoveredWorkflows).toEqual(
+      new Set([normalizedWorkflowFile])
+    );
     // Single 'detect' mode call for AST-level manifest validation
     expect(applySwcTransformMock).toHaveBeenCalledWith(
       normalizedWorkflowFile,

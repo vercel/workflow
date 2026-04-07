@@ -71,9 +71,9 @@ export function parentHasChild(parent: string, childToFind: string): boolean {
 
 export function createDiscoverEntriesPlugin(
   state: {
-    discoveredSteps: string[];
-    discoveredWorkflows: string[];
-    discoveredSerdeFiles: string[];
+    discoveredSteps: Set<string>;
+    discoveredWorkflows: Set<string>;
+    discoveredSerdeFiles: Set<string>;
   },
   projectRoot?: string
 ): Plugin {
@@ -166,10 +166,10 @@ export function createDiscoverEntriesPlugin(
             transformedCode = code;
 
             if (hasManifestEntries(workflowManifest.workflows)) {
-              state.discoveredWorkflows.push(normalizedPath);
+              state.discoveredWorkflows.add(normalizedPath);
             }
             if (hasManifestEntries(workflowManifest.steps)) {
-              state.discoveredSteps.push(normalizedPath);
+              state.discoveredSteps.add(normalizedPath);
             }
 
             // For @workflow SDK packages, only discover files with actual
@@ -177,9 +177,7 @@ export function createDiscoverEntriesPlugin(
             // SDK implementation files).
             const isSdkFile = isWorkflowSdkFile(args.path);
             if (hasManifestEntries(workflowManifest.classes) && !isSdkFile) {
-              if (!state.discoveredSerdeFiles.includes(normalizedPath)) {
-                state.discoveredSerdeFiles.push(normalizedPath);
-              }
+              state.discoveredSerdeFiles.add(normalizedPath);
             }
           } else {
             const { code } = await applySwcTransform(
