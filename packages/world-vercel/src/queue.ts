@@ -1,16 +1,98 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { QueueClient, DuplicateMessageError } from '@vercel/queue';
+import type { Transport } from '@vercel/queue';
+import { DuplicateMessageError, QueueClient } from '@vercel/queue';
 import {
   MessageId,
   type Queue,
   type QueueOptions,
   type QueuePayload,
   QueuePayloadSchema,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   ValidQueueName,
 } from '@workflow/world';
-import * as z from 'zod';
+import { decode, encode } from 'cbor-x';
+import { z } from 'zod/v4';
 import { getDispatcher } from './http-client.js';
 import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
+
+/**
+ * CBOR-based queue transport. Encodes values with cbor-x on send and
+ * decodes on receive, preserving Uint8Array values natively (workflow
+ * input is a Uint8Array in specVersion >= 2).
+ *
+ * Used for specVersion >= SPEC_VERSION_CURRENT (3).
+ */
+class CborTransport implements Transport<unknown> {
+  readonly contentType = 'application/cbor';
+
+  serialize(value: unknown): Buffer {
+    return Buffer.from(encode(value));
+  }
+
+  async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+    const chunks: Uint8Array[] = [];
+    const reader = stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    return decode(Buffer.concat(chunks));
+  }
+}
+
+/**
+ * JSON-based queue transport. Used for specVersion < SPEC_VERSION_CURRENT
+ * to maintain compatibility with older deployments that expect JSON messages.
+ */
+class JsonTransport implements Transport<unknown> {
+  readonly contentType = 'application/json';
+
+  serialize(value: unknown): Buffer {
+    return Buffer.from(JSON.stringify(value));
+  }
+
+  async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+    const chunks: Uint8Array[] = [];
+    const reader = stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString());
+  }
+}
+
+/**
+ * Dual transport for the queue handler. Serializes with CBOR (handler
+ * re-enqueues target the same new deployment) but deserializes with
+ * CBOR-first, falling back to JSON for messages from older deployments.
+ */
+class DualTransport implements Transport<unknown> {
+  readonly contentType = 'application/cbor';
+
+  serialize(value: unknown): Buffer {
+    return Buffer.from(encode(value));
+  }
+
+  async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+    const chunks: Uint8Array[] = [];
+    const reader = stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    const buffer = Buffer.concat(chunks);
+    try {
+      return decode(buffer);
+    } catch {
+      return JSON.parse(buffer.toString());
+    }
+  }
+}
 
 const requestIdStorage = new AsyncLocalStorage<string | undefined>();
 
@@ -62,13 +144,13 @@ function getHeadersFromPayload(
   const headers: Record<string, string> = {};
 
   if ('runId' in payload && typeof payload.runId === 'string') {
-    headers['x-workflow-run-id'] = payload.runId;
+    headers['x-vercel-workflow-run-id'] = payload.runId;
   }
   if ('workflowRunId' in payload && typeof payload.workflowRunId === 'string') {
-    headers['x-workflow-run-id'] = payload.workflowRunId;
+    headers['x-vercel-workflow-run-id'] = payload.workflowRunId;
   }
   if ('stepId' in payload && typeof payload.stepId === 'string') {
-    headers['x-workflow-step-id'] = payload.stepId;
+    headers['x-vercel-workflow-step-id'] = payload.stepId;
   }
 
   return Object.keys(headers).length > 0 ? headers : undefined;
@@ -86,9 +168,14 @@ export function createQueue(config?: APIConfig): Queue {
 
   const region = 'iad1';
 
+  const cborTransport = new CborTransport();
+  const jsonTransport = new JsonTransport();
+  const dualTransport = new DualTransport();
+
   const clientOptions = {
     region,
     dispatcher: getDispatcher(),
+    transport: dualTransport,
     ...(usingProxy && {
       // final path will be /queues-proxy/api/v3/topic/...
       // and the proxy will strip the /queues-proxy prefix before forwarding to VQS
@@ -113,32 +200,30 @@ export function createQueue(config?: APIConfig): Queue {
       );
     }
 
+    // Select transport based on the target run's specVersion:
+    // CBOR for specVersion >= 3 (CBOR transport), JSON for older ones.
+    const useCbor =
+      (opts?.specVersion ?? SPEC_VERSION_CURRENT) >=
+      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
+    const transport = useCbor ? cborTransport : jsonTransport;
+
     const client = new QueueClient({
       ...clientOptions,
       deploymentId,
+      transport,
     });
 
-    // zod v3 doesn't have the `encode` method. We only support zod v4 officially,
-    // but codebases that pin zod v3 are still common.
-    const hasEncoder = typeof MessageWrapper.encode === 'function';
-    if (!hasEncoder) {
-      console.warn(
-        'Using zod v3 compatibility mode for queue() calls - this may not work as expected'
-      );
-    }
-    const encoder = hasEncoder
-      ? MessageWrapper.encode
-      : (data: z.infer<typeof MessageWrapper>) => data;
-
-    const encoded = encoder({
+    // The CborTransport handles CBOR encoding inside serialize(),
+    // preserving Uint8Array values (workflow input in specVersion >= 2).
+    const wrapper = {
       payload,
       queueName,
       // Store deploymentId in the message so it can be preserved when re-enqueueing
       deploymentId: opts?.deploymentId,
-    });
+    };
     const sanitizedQueueName = queueName.replace(/[^A-Za-z0-9-_]/g, '-');
     try {
-      const { messageId } = await client.send(sanitizedQueueName, encoded, {
+      const { messageId } = await client.send(sanitizedQueueName, wrapper, {
         idempotencyKey: opts?.idempotencyKey,
         delaySeconds: opts?.delaySeconds,
         headers: {
@@ -179,6 +264,8 @@ export function createQueue(config?: APIConfig): Queue {
         }
 
         const requestId = requestIdStorage.getStore();
+        // The CborTransport handles CBOR decoding inside deserialize(),
+        // so message is already a plain object with Uint8Array values intact.
         const { payload, queueName, deploymentId } =
           MessageWrapper.parse(message);
 

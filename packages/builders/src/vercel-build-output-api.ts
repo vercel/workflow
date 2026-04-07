@@ -115,7 +115,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createPackageJson(workflowsFuncDir, 'module');
     await this.createVcConfig(workflowsFuncDir, {
       handler: 'index.mjs',
-      maxDuration: 60,
+      maxDuration: 'max',
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       runtime: this.config.runtime,
     });

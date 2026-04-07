@@ -166,12 +166,86 @@ declare global {
     respondWith(response: Response): Promise<void>;
   }
 
+  // Observability utilities (workflow/observability)
+  function getEncryptionKeyForRun(runId: string): Promise<any>;
+  function hydrateResourceIOWithKey(resource: any, key: any): any;
+
   // Constants used in examples
   const FLIGHT_ASSISTANT_PROMPT: string;
   const flightBookingTools: any;
   const MAX_STEPS: number;
   const reportId: string;
   const userId: string;
+  const runId: string;
+  const stepId: string;
+  const world: {
+    runs: {
+      get: (...args: any[]) => Promise<any>;
+      list: (...args: any[]) => Promise<any>;
+    };
+    steps: {
+      get: (...args: any[]) => Promise<any>;
+      list: (...args: any[]) => Promise<any>;
+    };
+    hooks: {
+      get: (...args: any[]) => Promise<any>;
+      getByToken: (...args: any[]) => Promise<any>;
+      list: (...args: any[]) => Promise<any>;
+    };
+    events: {
+      create: (...args: any[]) => Promise<any>;
+      get: (...args: any[]) => Promise<any>;
+      list: (...args: any[]) => Promise<any>;
+      listByCorrelationId: (...args: any[]) => Promise<any>;
+    };
+    // Stream methods live directly on world (Streamer interface)
+    writeToStream: (
+      name: string,
+      runId: string,
+      chunk: string | Uint8Array
+    ) => Promise<void>;
+    writeToStreamMulti?: (
+      name: string,
+      runId: string,
+      chunks: (string | Uint8Array)[]
+    ) => Promise<void>;
+    readFromStream: (
+      name: string,
+      startIndex?: number
+    ) => Promise<ReadableStream<Uint8Array>>;
+    closeStream: (name: string, runId: string) => Promise<void>;
+    listStreamsByRunId: (runId: string) => Promise<string[]>;
+    getStreamChunks: (
+      name: string,
+      runId: string,
+      options?: { limit?: number; cursor?: string }
+    ) => Promise<any>;
+    getStreamInfo: (
+      name: string,
+      runId: string
+    ) => Promise<{ tailIndex: number; done: boolean }>;
+    // Queue methods live directly on world (Queue interface)
+    getDeploymentId: (...args: any[]) => Promise<any>;
+    queue: (...args: any[]) => Promise<any>;
+    createQueueHandler: (...args: any[]) => any;
+  };
+  const streamId: string;
+  const streamName: string;
+  const hookId: string;
+  const eventId: string;
+  const cursor: string | undefined;
+  const name: string;
+  const chunk: any;
+  const chunk1: any;
+  const chunk2: any;
+  const step: any;
+  const message: any;
+  const opts: any;
+  const prefix: string;
+  const callback: (...args: any[]) => any;
+  const token: string;
+  const queueName: any;
+  const payload: any;
 
   // Workflow placeholders used in examples
   const myWorkflow: (...args: any[]) => Promise<any>;

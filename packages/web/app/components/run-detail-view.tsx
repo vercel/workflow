@@ -243,8 +243,9 @@ export function RunDetailView({
 
   const setActiveTab = useCallback(
     (tab: Tab) => {
-      // When switching to trace or graph tab, clear streamId
-      if (tab === 'trace' || tab === 'graph') {
+      // When switching away from streams tab, clear streamId so
+      // useStreamReader stops fetching/polling in the background.
+      if (tab !== 'streams') {
         updateSearchParams({ tab, streamId: null });
       } else {
         updateSearchParams({ tab });
@@ -428,7 +429,7 @@ export function RunDetailView({
     chunks: streamChunks,
     isLive: streamIsLive,
     error: streamError,
-  } = useStreamReader(env, selectedStreamId, runId, encryptionKey);
+  } = useStreamReader(env, selectedStreamId, runId, encryptionKey, run.status);
 
   const handleCancelClick = () => {
     setShowCancelDialog(true);

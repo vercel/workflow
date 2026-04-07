@@ -1,5 +1,13 @@
 # @workflow/swc-plugin
 
+## 4.1.0-beta.22
+
+### Patch Changes
+
+- [#1599](https://github.com/vercel/workflow/pull/1599) [`5d22e61`](https://github.com/vercel/workflow/commit/5d22e61446d5146887f8c268d305ea42e3f67b09) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix class expression method registrations to use binding name instead of internal class name, preventing `ReferenceError` at runtime for pre-bundled packages
+
+- [#1601](https://github.com/vercel/workflow/pull/1601) [`7c996a7`](https://github.com/vercel/workflow/commit/7c996a76c59cb88fa58d15942218b308d1cd100f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rewrite anonymous `export default class` to a `const` declaration so the class has an accessible binding name for serde/step registration code
+
 ## 4.1.0-beta.21
 
 ### Patch Changes

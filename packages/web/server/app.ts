@@ -14,3 +14,19 @@ app.all(
     build: () => import('virtual:react-router/server-build'),
   })
 );
+
+// Safety-net error handler — prevents unhandled errors from crashing the
+// server when the React Router error boundary cannot render (e.g. during SSR).
+app.use(
+  (
+    err: unknown,
+    _req: express.Request,
+    res: express.Response,
+    _next: express.NextFunction
+  ) => {
+    console.error('Unhandled request error:', err);
+    if (!res.headersSent) {
+      res.status(500).send('Internal Server Error');
+    }
+  }
+);

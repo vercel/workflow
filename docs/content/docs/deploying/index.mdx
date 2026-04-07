@@ -73,7 +73,7 @@ For self-hosting or deploying to other cloud providers, you can use community-ma
 To use a different World implementation, set the `WORKFLOW_TARGET_WORLD` environment variable:
 
 ```bash
-export WORKFLOW_TARGET_WORLD=@workflow-worlds/postgres
+export WORKFLOW_TARGET_WORLD=@workflow/world-postgres
 # Plus any world-specific configuration
 export DATABASE_URL=postgres://...
 ```
@@ -89,7 +89,7 @@ The [Observability tools](/docs/observability) work with any World backend. By d
 npx workflow inspect runs
 
 # Inspect remote workflows
-npx workflow inspect runs --backend @workflow-worlds/postgres
+npx workflow inspect runs --backend @workflow/world-postgres
 ```
 
 Learn more about [Observability](/docs/observability) tools.

@@ -813,6 +813,35 @@ Note that:
 - The `classId` in the manifest also uses `Bash`
 - This ensures the registration call references a symbol that's actually in scope at module level
 
+This binding-name preference applies to **all** generated code that references the class at module scope, including:
+- Class serialization registration IIFEs
+- Step method registrations (`registerStepFunction` calls)
+- Workflow method stub assignments
+
+For example, a class expression with step methods:
+
+Input:
+```javascript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+var LanguageModel = class _LanguageModel {
+  constructor(modelId) { this.modelId = modelId; }
+  static [WORKFLOW_SERIALIZE](inst) { return { modelId: inst.modelId }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new _LanguageModel(data.modelId); }
+  async doStream(prompt) { "use step"; return { stream: prompt }; }
+  static async generate(input) { "use step"; return { result: input }; }
+};
+```
+
+Output (step mode):
+```javascript
+registerStepFunction("step//./input//LanguageModel.generate", LanguageModel.generate);
+registerStepFunction("step//./input//LanguageModel#doStream", LanguageModel.prototype["doStream"]);
+(function(__wf_cls, __wf_id) { /* ... */ })(LanguageModel, "class//./input//LanguageModel");
+```
+
+All references use `LanguageModel` (the binding name), not `_LanguageModel` (the internal class expression name). Only a single class registration IIFE is emitted. The step IDs also use the binding name.
+
 ### Anonymous Class Expression Name Re-insertion
 
 When a serializable class expression has no internal name (anonymous) but has a binding name from a variable declaration, the plugin re-inserts the binding name as the class expression's identifier. This handles the common case where upstream bundlers like esbuild/tsup transform `class Foo { ... }` into `var Foo = class { ... }` (stripping the class name).
@@ -862,6 +891,41 @@ Note that:
 - For typical usage, behavior is preserved while ensuring the `.name` property survives subsequent bundling (an inner class name binding is introduced, which can differ in edge cases that depend on assigning to or shadowing that name inside the class body)
 - Classes that already have an internal name (e.g., `class _Bash { ... }`) are not modified
 - Only classes with serialization methods (`WORKFLOW_SERIALIZE` and `WORKFLOW_DESERIALIZE`) are affected
+
+### Anonymous Default Class Export Rewriting
+
+When an anonymous class with serialization methods or step methods is exported as the default export, the plugin rewrites it into a `const` declaration + re-export so that the class has a binding name accessible at module scope. Without this, the generated registration code would reference an undefined variable.
+
+Input:
+```javascript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+export default class {
+  constructor(id) { this.id = id; }
+  static [WORKFLOW_SERIALIZE](inst) { return { id: inst.id }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new this(data.id); }
+  async process(input) { "use step"; return { result: input }; }
+}
+```
+
+Output (step mode):
+```javascript
+const __DefaultClass = class __DefaultClass {
+    constructor(id) { this.id = id; }
+    // ... serde methods preserved ...
+    async process(input) { return { result: input }; }
+};
+export default __DefaultClass;
+registerStepFunction("step//./input//__DefaultClass#process", __DefaultClass.prototype["process"]);
+(function(__wf_cls, __wf_id) { /* ... */ })(__DefaultClass, "class//./input//__DefaultClass");
+```
+
+Note that:
+- The anonymous class `export default class { ... }` is rewritten to `const __DefaultClass = class __DefaultClass { ... }; export default __DefaultClass;`
+- When the class has serialization methods, the class expression also gets the binding name re-inserted (e.g., `class __DefaultClass { ... }`). For step-only classes without serde, the class expression remains anonymous (e.g., `class { ... }`) — but the `const` binding name is what matters for module-scope registration code
+- The generated name `__DefaultClass` is used for all registrations (step, class, serde)
+- If `__DefaultClass` is already declared in scope, the name is suffixed (`__DefaultClass$1`, etc.)
+- Named default exports (e.g., `export default class MyService { ... }`) are NOT rewritten — the class name `MyService` is already in scope
 
 ### File Discovery for Custom Serialization
 

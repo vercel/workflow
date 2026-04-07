@@ -16,6 +16,7 @@ catalog:
   ai: 6.0.116
   esbuild: ^0.27.3
   nitro: 3.0.1-alpha.1
+  semver: 7.7.4
   typescript: ^5.9.3
   ulid: ~3.0.1
   undici: 7.22.0
