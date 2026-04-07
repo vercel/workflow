@@ -154,6 +154,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                 !!esbuildResult.path && !esbuildResult.errors.length;
               const isProjectLocalFile =
                 didResolve &&
+                !esbuildResult.external &&
                 !esbuildResult.path
                   .replace(/\\/g, '/')
                   .includes('/node_modules/');
