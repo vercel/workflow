@@ -6,7 +6,11 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
-import { isLegacySpecVersion, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  isLegacySpecVersion,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
@@ -220,16 +224,21 @@ export async function start<TArgs extends unknown[], TResult>(
           {
             runId,
             traceCarrier,
-            runInput: {
-              input: workflowArguments,
-              deploymentId,
-              workflowName,
-              specVersion,
-              executionContext,
-            },
+            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+              ? {
+                  runInput: {
+                    input: workflowArguments,
+                    deploymentId,
+                    workflowName,
+                    specVersion,
+                    executionContext,
+                  },
+                }
+              : {}),
           } satisfies WorkflowInvokePayload,
           {
             deploymentId,
+            specVersion,
           }
         ),
       ]);

@@ -249,6 +249,23 @@ Workflow SDK apps currently work best when deployed to [Vercel](https://vercel.c
 
 Check the [Deploying](/docs/deploying) section to learn how your workflows can be deployed elsewhere.
 
+## Troubleshooting
+
+### `start()` says it received an invalid workflow function
+
+If you see this error:
+
+```
+'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.
+```
+
+Check both of these first:
+
+1. The workflow function includes `"use workflow"`.
+2. Your Nitro config includes the `workflow/nitro` module.
+
+See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function) for full examples and fixes.
+
 ## Next Steps
 
 - Learn more about the [Foundations](/docs/foundations).

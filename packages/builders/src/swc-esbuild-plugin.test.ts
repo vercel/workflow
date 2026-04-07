@@ -85,6 +85,77 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     expect(output).not.toContain(`/dep${inputExt}`);
   });
 
+  it('rewrites path-aliased imports to relative paths', async () => {
+    const outdir = join(testRoot, 'out');
+    const srcDir = join(testRoot, 'src');
+    const libDir = join(srcDir, 'lib');
+    const stepFile = join(srcDir, 'step.ts');
+
+    writeFile(join(libDir, 'config.ts'), 'export const config = {};');
+    writeFile(
+      stepFile,
+      `import { config } from '@/lib/config';\nconsole.log(config);`
+    );
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      alias: { '@': srcDir },
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+          rewriteTsExtensions: true,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).toContain('/lib/config.js');
+    expect(output).not.toContain('@/lib/config');
+  });
+
+  it('does not externalize aliased imports that resolve into node_modules', async () => {
+    const outdir = join(testRoot, 'out');
+    const srcDir = join(testRoot, 'src');
+    const stepFile = join(srcDir, 'step.ts');
+    const nodeModulesDir = join(testRoot, 'node_modules', 'some-pkg');
+
+    writeFile(join(nodeModulesDir, 'index.js'), 'export const pkg = "hello";');
+    writeFile(stepFile, `import { pkg } from '@pkg';\nconsole.log(pkg);`);
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      alias: { '@pkg': join(nodeModulesDir, 'index.js') },
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    // Should be bundled (inlined), not externalized as a relative node_modules path
+    expect(output).toContain('hello');
+    expect(output).not.toMatch(/from\s+["'].*node_modules/);
+  });
+
   it.each([
     '.ts',
     '.tsx',

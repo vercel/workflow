@@ -66,6 +66,57 @@ const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highl
 
 See [Observability Utilities](/docs/api-reference/workflow-api/world/observability) for the full hydration, parsing, and encryption API.
 
+### List Workflow Runs (Display Names)
+
+List workflow runs and derive human-readable names from the `workflowName` field:
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { parseWorkflowName } from "@workflow/utils/parse-name"; // [!code highlight]
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const cursor = url.searchParams.get("cursor") ?? undefined;
+
+  try {
+    const world = getWorld(); // [!code highlight]
+    const runs = await world.runs.list({
+      pagination: { cursor },
+      resolveData: "none",
+    });
+
+    return Response.json({
+      data: runs.data.map((run) => {
+        const parsed = parseWorkflowName(run.workflowName); // [!code highlight]
+
+        return {
+          runId: run.runId,
+          // Use shortName for UI display (e.g., "processOrder") // [!code highlight]
+          displayName: parsed?.shortName ?? run.workflowName, // [!code highlight]
+          // Module info available for debugging // [!code highlight]
+          module: parsed?.moduleSpecifier, // [!code highlight]
+          status: run.status,
+          startedAt: run.startedAt,
+          completedAt: run.completedAt,
+        };
+      }),
+      cursor: runs.cursor,
+    });
+  } catch (error) {
+    return Response.json(
+      { error: "Failed to list workflow runs" },
+      { status: 500 }
+    );
+  }
+}
+```
+
+<Callout type="info">
+  The `workflowName` field contains a machine-readable identifier like `workflow//./src/workflows/order//processOrder`.
+  Use `parseWorkflowName()` from `@workflow/utils/parse-name` to extract the `shortName` (e.g., `"processOrder"`)
+  and `moduleSpecifier` for display in your UI.
+</Callout>
+
 ## Related Functions
 
 - [`getRun()`](/docs/api-reference/workflow-api/get-run) - Higher-level API for working with individual runs by ID.

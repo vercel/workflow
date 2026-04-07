@@ -81,6 +81,8 @@ export interface QueueOptions {
   headers?: Record<string, string>;
   /** Delay message delivery by this many seconds */
   delaySeconds?: number;
+  /** Spec version of the target run. Used to select the queue transport format. */
+  specVersion?: number;
 }
 
 export interface Queue {

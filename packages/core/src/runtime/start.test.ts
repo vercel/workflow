@@ -280,7 +280,7 @@ describe('start', () => {
       expect(mockQueue).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Object),
-        { deploymentId: 'dpl_resolved_abc123' }
+        expect.objectContaining({ deploymentId: 'dpl_resolved_abc123' })
       );
     });
 
