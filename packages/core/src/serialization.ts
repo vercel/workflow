@@ -823,11 +823,11 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       if (responseWritable) {
         data.responseWritable = responseWritable;
       }
-      // Include signal if present and not the default stub
-      if (
-        value.signal &&
-        (value.signal.aborted || (value.signal as any)[ABORT_STREAM_NAME])
-      ) {
+      // Only include the signal if it's a workflow-managed AbortSignal.
+      // Native signals from user-created AbortControllers (e.g., fetch
+      // timeouts) should not be serialized — they'd create unnecessary
+      // stream infrastructure and dangling readers.
+      if (value.signal && (value.signal as any)[ABORT_STREAM_NAME]) {
         data.signal = value.signal;
       }
       return data;
