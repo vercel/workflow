@@ -1,0 +1,29 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "changelog": [
+    "@changesets/changelog-github",
+    {
+      "repo": "vercel/workflow"
+    }
+  ],
+  "commit": false,
+  "fixed": [
+    [
+      "workflow",
+      "@workflow/core"
+    ]
+  ],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "ignore": [
+    "docs",
+    "nextjs-turbopack",
+    "nextjs-webpack",
+    "workflow-sdk-compiler-playground",
+    "@workflow/docs-typecheck",
+    "@workflow/example-*",
+    "@workflow/vitest-workbench"
+  ]
+}
