@@ -33,6 +33,7 @@ import { getWorld } from './runtime/world.js';
 import { contextStorage } from './step/context-storage.js';
 import {
   ABORT_HOOK_TOKEN,
+  ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
@@ -1293,6 +1294,44 @@ function getStepReducers(
 }
 
 /**
+ * Cancel dangling abort-stream readers on any AbortController instances found
+ * in the hydrated step arguments. Called after the step function returns
+ * (success or failure) to prevent reader promises from keeping the serverless
+ * function alive indefinitely.
+ */
+export function cancelAbortReaders(...values: unknown[]): void {
+  const visited = new WeakSet();
+  function walk(val: unknown): void {
+    if (val == null || typeof val !== 'object') return;
+    if (visited.has(val as object)) return;
+    visited.add(val as object);
+    if (val instanceof AbortController) {
+      const cancel = (val as any)[ABORT_READER_CANCEL] as
+        | AbortController
+        | undefined;
+      if (cancel && !cancel.signal.aborted) {
+        cancel.abort();
+      }
+      return;
+    }
+    if (Array.isArray(val)) {
+      for (const item of val) walk(item);
+      return;
+    }
+    if (val instanceof Map) {
+      for (const v of val.values()) walk(v);
+      return;
+    }
+    if (val instanceof Set) {
+      for (const v of val) walk(v);
+      return;
+    }
+    for (const v of Object.values(val as Record<string, unknown>)) walk(v);
+  }
+  for (const v of values) walk(v);
+}
+
+/**
  * Creates an AbortController with stream-backed abort propagation.
  * Used by step and external revivers where real abort signal behavior is needed.
  *
@@ -1317,7 +1356,11 @@ function reviveAbortController(
   if (value.aborted) {
     controller.abort(value.reason);
   } else if (value.streamName) {
-    // Set up stream reader for real-time abort propagation
+    // Internal controller for the step handler to cancel the reader when the
+    // step completes without an abort, preventing it from hanging indefinitely.
+    const readerCancel = new AbortController();
+    (controller as any)[ABORT_READER_CANCEL] = readerCancel;
+
     ops.push(
       (async () => {
         try {
@@ -1326,7 +1369,20 @@ function reviveAbortController(
             value.streamName
           );
           const reader = readable.getReader();
-          const result = await reader.read();
+          const result = await Promise.race([
+            reader.read(),
+            new Promise<{ value: undefined; done: true }>((resolve) => {
+              if (readerCancel.signal.aborted) {
+                resolve({ value: undefined, done: true });
+                return;
+              }
+              readerCancel.signal.addEventListener(
+                'abort',
+                () => resolve({ value: undefined, done: true }),
+                { once: true }
+              );
+            }),
+          ]);
           reader.releaseLock();
           if (result.value && !result.done) {
             try {

@@ -17,6 +17,7 @@ import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
+  cancelAbortReaders,
   dehydrateStepReturnValue,
   hydrateStepArguments,
 } from '../serialization.js';
@@ -532,6 +533,8 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               userCodeFailed = true;
             }
             const executionTimeMs = Date.now() - executionStartTime;
+
+            cancelAbortReaders(...args, thisVal, hydratedInput.closureVars);
 
             span?.setAttributes({
               ...Attribute.QueueExecutionTimeMs(executionTimeMs),
