@@ -1550,6 +1550,7 @@ describe('e2e', () => {
         healthy: true,
         endpoint: '/.well-known/workflow/v1/flow',
         specVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion: expect.any(String),
       });
 
       // Test the step endpoint health check
@@ -1568,6 +1569,7 @@ describe('e2e', () => {
         healthy: true,
         endpoint: '/.well-known/workflow/v1/step',
         specVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion: expect.any(String),
       });
     }
   );

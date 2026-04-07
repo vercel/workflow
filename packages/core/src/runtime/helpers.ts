@@ -14,6 +14,7 @@ import { monotonicFactory } from 'ulid';
 import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { getWorld } from './world.js';
 
 /** Default timeout for health checks in milliseconds */
@@ -103,6 +104,7 @@ export async function handleHealthCheckMessage(
     endpoint,
     correlationId: healthCheck.correlationId,
     specVersion: SPEC_VERSION_CURRENT,
+    workflowCoreVersion,
     timestamp: Date.now(),
   });
   // Use a fake runId that passes validation.
@@ -393,6 +395,7 @@ export function withHealthCheck(
           healthy: true,
           endpoint: url.pathname,
           specVersion: SPEC_VERSION_CURRENT,
+          workflowCoreVersion,
         }),
         {
           status: 200,
