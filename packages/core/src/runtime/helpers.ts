@@ -4,7 +4,11 @@ import type {
   ValidQueueName,
   World,
 } from '@workflow/world';
-import { HealthCheckPayloadSchema, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  HealthCheckPayloadSchema,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
 import { runtimeLogger } from '../logger.js';
@@ -114,6 +118,8 @@ export type HealthCheckEndpoint = 'workflow' | 'step';
 export interface HealthCheckOptions {
   /** Timeout in milliseconds to wait for health check response. Default: 30000 (30s) */
   timeout?: number;
+  /** Deployment ID to send the health check to. Falls back to process.env.VERCEL_DEPLOYMENT_ID. */
+  deploymentId?: string;
 }
 
 /**
@@ -225,10 +231,16 @@ export async function healthCheck(
   const startTime = Date.now();
 
   try {
-    await world.queue(queueName, {
-      __healthCheck: true,
-      correlationId,
-    });
+    await world.queue(
+      queueName,
+      { __healthCheck: true, correlationId },
+      {
+        // Use JSON transport so the health check works against both
+        // old (JSON-only) and new (dual) deployments.
+        specVersion: SPEC_VERSION_LEGACY,
+        deploymentId: options?.deploymentId,
+      }
+    );
 
     while (Date.now() - startTime < timeout) {
       try {
