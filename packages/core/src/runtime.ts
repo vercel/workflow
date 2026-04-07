@@ -281,13 +281,6 @@ export function workflowEntrypoint(
                     }
                     // Step completed/failed/skipped/gone — queue workflow
                     // continuation so it can replay with the new events.
-                    // Use the step's correlationId as idempotency key so
-                    // that concurrent background step completions from the
-                    // same batch don't each queue a separate continuation.
-                    // Each step completion still queues its own continuation
-                    // (different idempotency keys), but the event-sourced
-                    // replay is convergence-safe — multiple replays produce
-                    // the same result.
                     if (
                       stepResult.type === 'completed' ||
                       stepResult.type === 'failed' ||
@@ -306,18 +299,20 @@ export function workflowEntrypoint(
                     return;
                   }
                   // stepName not found — fall through to replay
-                  // (the workflow will handle the missing step)
                 }
 
-                // Fetch run state once before the loop. The run_started
-                // transition and status check only matter on the first
-                // iteration; subsequent iterations reuse the cached state.
+                // Fetch run state once before the loop.
                 let workflowRun: WorkflowRun | undefined;
                 let workflowStartedAt = -1;
-                // Pre-loaded events from the run_started response.
-                // When present, we skip the initial events.list call.
                 let preloadedEvents: Event[] | undefined;
 
+                // --- Infrastructure: prepare the run state ---
+                // Always call run_started directly — this both transitions
+                // the run to 'running' AND returns the run entity, saving
+                // a separate runs.get round-trip.
+                // Contract: events.create('run_started') must be idempotent
+                // for runs already in 'running' status (return the run
+                // without error), not just for pending → running transitions.
                 try {
                   const result = await world.events.create(
                     runId,
@@ -364,7 +359,12 @@ export function workflowEntrypoint(
                     );
                   }
                 } catch (err) {
+                  // Run was concurrently completed/failed/cancelled
                   if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+                    // EntityConflictError: run was concurrently
+                    // completed/failed/cancelled during setup.
+                    // RunExpiredError: run already in terminal state.
+                    // In both cases, skip processing this message.
                     runtimeLogger.info(
                       'Run already finished during setup, skipping',
                       { workflowRunId: runId, message: err.message }
