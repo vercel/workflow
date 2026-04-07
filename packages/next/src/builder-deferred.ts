@@ -122,6 +122,7 @@ export async function getNextBuilderDeferred() {
     private cjsSyncResolver?: ReturnType<
       typeof enhancedResolveOrig.create.sync
     >;
+    private manifestStepResolveBaseDirs: string[] | null = null;
 
     async build() {
       const outputDir = await this.findAppDirectory();
@@ -754,6 +755,43 @@ export async function getNextBuilderDeferred() {
       } catch {
         return resolvedPath;
       }
+    }
+
+    private getManifestStepResolveBaseDirs(): string[] {
+      if (this.manifestStepResolveBaseDirs) {
+        return this.manifestStepResolveBaseDirs;
+      }
+
+      const resolveBaseDirs = new Set<string>();
+      if (this.config.projectRoot) {
+        resolveBaseDirs.add(
+          this.normalizeDiscoveredFilePath(this.config.projectRoot)
+        );
+      }
+      const normalizedWorkingDir = this.normalizeDiscoveredFilePath(
+        this.config.workingDir
+      );
+      resolveBaseDirs.add(normalizedWorkingDir);
+
+      let currentResolveDir = normalizedWorkingDir;
+      while (true) {
+        if (
+          existsSync(join(currentResolveDir, 'pnpm-workspace.yaml')) ||
+          existsSync(join(currentResolveDir, 'turbo.json')) ||
+          existsSync(join(currentResolveDir, '.git'))
+        ) {
+          resolveBaseDirs.add(currentResolveDir);
+          break;
+        }
+        const parentResolveDir = dirname(currentResolveDir);
+        if (parentResolveDir === currentResolveDir) {
+          break;
+        }
+        currentResolveDir = parentResolveDir;
+      }
+
+      this.manifestStepResolveBaseDirs = Array.from(resolveBaseDirs);
+      return this.manifestStepResolveBaseDirs;
     }
 
     private async filterExistingFiles(filePaths: string[]): Promise<string[]> {
@@ -1969,25 +2007,13 @@ export async function getNextBuilderDeferred() {
         return [];
       }
 
+      const resolveBaseDirs = this.getManifestStepResolveBaseDirs();
       const candidateFiles = manifestStepEntries
         .flatMap((stepEntry) => {
           if (isAbsolute(stepEntry)) {
             return [this.normalizeDiscoveredFilePath(stepEntry)];
           }
-          const resolveBaseDirs = new Set<string>();
-          if (this.config.projectRoot) {
-            resolveBaseDirs.add(this.config.projectRoot);
-          }
-          let currentResolveDir = this.config.workingDir;
-          while (currentResolveDir) {
-            resolveBaseDirs.add(currentResolveDir);
-            const parentResolveDir = dirname(currentResolveDir);
-            if (parentResolveDir === currentResolveDir) {
-              break;
-            }
-            currentResolveDir = parentResolveDir;
-          }
-          return Array.from(resolveBaseDirs).map((baseDir) =>
+          return resolveBaseDirs.map((baseDir) =>
             this.normalizeDiscoveredFilePath(resolve(baseDir, stepEntry))
           );
         })
@@ -1995,25 +2021,7 @@ export async function getNextBuilderDeferred() {
           (candidateFile) => !this.isGeneratedWorkflowArtifact(candidateFile)
         );
       const existingCandidates = await this.filterExistingFiles(candidateFiles);
-      const manifestStepFiles = await Promise.all(
-        existingCandidates.map(async (candidateFile) => {
-          try {
-            const source = await readFile(candidateFile, 'utf-8');
-            const patterns = detectWorkflowPatterns(source);
-            return patterns.hasUseStep ? candidateFile : null;
-          } catch {
-            return null;
-          }
-        })
-      );
-
-      return Array.from(
-        new Set(
-          manifestStepFiles.filter((candidate): candidate is string =>
-            Boolean(candidate)
-          )
-        )
-      ).sort();
+      return Array.from(new Set(existingCandidates)).sort();
     }
 
     private async buildStepsFunction({
