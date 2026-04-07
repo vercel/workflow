@@ -1,11 +1,11 @@
-  x Only async functions can be exported from a "use step" file
+  x Only functions can be exported from a "use step" file
    ,-[input.js:4:1]
  3 | // These should all error - not functions
  4 | export const value = 42;
    : ^^^^^^^^^^^^^^^^^^^^^^^^
  5 | export class MyClass {
    `----
-  x Only async functions can be exported from a "use step" file
+  x Only functions can be exported from a "use step" file
    ,-[input.js:5:1]
  4 |     export const value = 42;
  5 | ,-> export class MyClass {
@@ -13,7 +13,7 @@
  7 | `-> }
  8 |     export * from './other';
    `----
-  x Only async functions can be exported from a "use step" file
+  x Only functions can be exported from a "use step" file
    ,-[input.js:8:1]
  7 | }
  8 | export * from './other';
