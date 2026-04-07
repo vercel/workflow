@@ -208,6 +208,7 @@ Here's a more complex example showing how you might stream AI chat responses:
 ```typescript lineNumbers
 import { getWritable } from "workflow";
 import { generateId, streamText, type UIMessageChunk } from "ai";
+import type { ModelMessage } from "ai";
 
 export async function chat(messages: ModelMessage[]) {
   "use workflow";

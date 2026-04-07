@@ -1,5 +1,82 @@
 # @workflow/web-shared
 
+## 4.1.0-beta.72
+
+### Patch Changes
+
+- Updated dependencies [[`b30b0dc`](https://github.com/vercel/workflow/commit/b30b0dcab68a8cc37735ea6c1fb8cb4f06efbe8b), [`d8aaf27`](https://github.com/vercel/workflow/commit/d8aaf27c7913a1a44561325c9a08f50b4340100d), [`047c01b`](https://github.com/vercel/workflow/commit/047c01bc1545845b4251a58a380e627ef164e6d5)]:
+  - @workflow/world@4.1.0-beta.16
+  - @workflow/core@4.2.0-beta.77
+
+## 4.1.0-beta.71
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.2.0-beta.76
+
+## 4.1.0-beta.70
+
+### Patch Changes
+
+- Updated dependencies [[`a98f8de`](https://github.com/vercel/workflow/commit/a98f8de53f1af222cccea6d091b68d544957b4e3), [`d38114b`](https://github.com/vercel/workflow/commit/d38114bff1c0a786e103b3da8c2d9afc93b41fbe), [`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff), [`329cdb3`](https://github.com/vercel/workflow/commit/329cdb3e1b55e3a2e8eb6b5befff598d7184bd78)]:
+  - @workflow/world@4.1.0-beta.15
+  - @workflow/core@4.2.0-beta.75
+
+## 4.1.0-beta.69
+
+### Patch Changes
+
+- Updated dependencies [[`62ff600`](https://github.com/vercel/workflow/commit/62ff6004f6f5c1b7b93099470a0097d8a81a42ee), [`4f646e3`](https://github.com/vercel/workflow/commit/4f646e3d58d27a5777922519a72e352814a7ef12)]:
+  - @workflow/core@4.2.0-beta.74
+
+## 4.1.0-beta.68
+
+### Patch Changes
+
+- Updated dependencies [[`8e7083b`](https://github.com/vercel/workflow/commit/8e7083b327cc727c9a4363030be8c375f9863016), [`d1391e1`](https://github.com/vercel/workflow/commit/d1391e1fd9a553d87ae467ba2babdc96545d5d36), [`c739b99`](https://github.com/vercel/workflow/commit/c739b995814cbc3c67092faa481e6d3d0cabfe50)]:
+  - @workflow/core@4.2.0-beta.73
+
+## 4.1.0-beta.67
+
+### Patch Changes
+
+- [#1482](https://github.com/vercel/workflow/pull/1482) [`a89f35a`](https://github.com/vercel/workflow/commit/a89f35adbb5ab07a9a821b6c0f536a4d2d91d7e4) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix traceviewer timeline precision
+
+- [#1437](https://github.com/vercel/workflow/pull/1437) [`58830ca`](https://github.com/vercel/workflow/commit/58830caa85b6dd948bd2d497be17e676a0577944) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Prevent re-renders to detail panel inputs and outputs when they are decrypted and while the run is in "running" state
+
+- [#1438](https://github.com/vercel/workflow/pull/1438) [`da6adf7`](https://github.com/vercel/workflow/commit/da6adf7798efa38cfbe7d30209102c11cc7643c4) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Improve display when run data has expired
+
+- Updated dependencies [[`73a851a`](https://github.com/vercel/workflow/commit/73a851ada6a4d46ae8f022ef243ebf4ee3de2ad8), [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7), [`672d919`](https://github.com/vercel/workflow/commit/672d9195a475a110a64dbaa7c5c87a24f244c11a), [`beccbc4`](https://github.com/vercel/workflow/commit/beccbc4298f434a4ffb9563c4f832f2230016f40), [`78f1b0e`](https://github.com/vercel/workflow/commit/78f1b0e19f2ac1a621020bc9fa5dec778f3b0fd9), [`da6adf7`](https://github.com/vercel/workflow/commit/da6adf7798efa38cfbe7d30209102c11cc7643c4), [`aee035f`](https://github.com/vercel/workflow/commit/aee035f94483ef3b842bb557e8c5b167dd0536c4), [`01bbe66`](https://github.com/vercel/workflow/commit/01bbe66d5a60d50d71f5b1c82b002ca7fc6f8e0b), [`2b07294`](https://github.com/vercel/workflow/commit/2b072943134e8655afe8b3c2dfe535307b7a1a8b)]:
+  - @workflow/core@4.2.0-beta.72
+  - @workflow/world@4.1.0-beta.14
+
+## 4.1.0-beta.66
+
+### Patch Changes
+
+- [#1404](https://github.com/vercel/workflow/pull/1404) [`0e2eb5c`](https://github.com/vercel/workflow/commit/0e2eb5c7758901af869e829ac24b399e08ae542e) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix trace viewer construction of traces for v1 runs
+
+- [#1406](https://github.com/vercel/workflow/pull/1406) [`29eb8bb`](https://github.com/vercel/workflow/commit/29eb8bbea8d8a92a246612483c2053c69e0c8676) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix trace construction for v1 runs
+
+- [#1381](https://github.com/vercel/workflow/pull/1381) [`7b9b3c1`](https://github.com/vercel/workflow/commit/7b9b3c1a484a4effff2190ac9899a2608704f375) Thanks [@karthikscale3](https://github.com/karthikscale3)! - web-shared: Timestamp tooltips, toast adapter, improved skeletons, and encrypted data detection for lazy-loaded events
+  web: Add toast for decryption
+
+- [#1427](https://github.com/vercel/workflow/pull/1427) [`11f45b2`](https://github.com/vercel/workflow/commit/11f45b2eb706a6a9e33fbc329bd21e8483a5b434) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix re-rendering of side panel inputs during live poll, sanitize error messages and add loading state for side panel.
+
+- Updated dependencies [[`97e4384`](https://github.com/vercel/workflow/commit/97e43846f000f8ef0ea2f237a5c4cc696423e0f0), [`dcb0761`](https://github.com/vercel/workflow/commit/dcb07617be46b83ce74a4932bf121b20cd3de597), [`2f0772d`](https://github.com/vercel/workflow/commit/2f0772d3df4983de2f6618054379a496ade4ec5a), [`a2c0c7e`](https://github.com/vercel/workflow/commit/a2c0c7e6d9d7349bd49aac6e6ea072c68efb7620), [`2cc42cb`](https://github.com/vercel/workflow/commit/2cc42cb8a934532d9ce5b05185322a2f9ce76024), [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08), [`f52afe7`](https://github.com/vercel/workflow/commit/f52afe77fffb981dd8812b84b39c2ecab2288f43)]:
+  - @workflow/core@4.2.0-beta.71
+  - @workflow/world@4.1.0-beta.13
+
+## 4.1.0-beta.65
+
+### Patch Changes
+
+- [#1358](https://github.com/vercel/workflow/pull/1358) [`5c6ae60`](https://github.com/vercel/workflow/commit/5c6ae607a58d200fbad673821728a1a39684dfd9) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Improve workflow observability UX with decoupled pagination, stream virtualization, and decrypt actions
+
+- Updated dependencies [[`7df1385`](https://github.com/vercel/workflow/commit/7df13854f85529929ff1187fe831f4dbc51b9121), [`58e67ce`](https://github.com/vercel/workflow/commit/58e67ce11bd69b982214e2734363fa7fd252f5f6)]:
+  - @workflow/core@4.2.0-beta.70
+
 ## 4.1.0-beta.64
 
 ### Patch Changes

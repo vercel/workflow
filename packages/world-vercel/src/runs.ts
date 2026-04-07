@@ -1,4 +1,4 @@
-import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
 import {
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
@@ -33,6 +33,9 @@ export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
 }).extend({
   // Backend returns error as either a JSON string or structured object
   error: z.union([z.string(), StructuredErrorSchema]).optional(),
+  // errorCode is stored inline on the run entity (not inside errorRef).
+  // It's merged into StructuredError.code by deserializeError().
+  errorCode: z.string().optional(),
   // Not part of the World interface, but passed through for direct consumers and debugging
   blobStorageBytes: z.number().optional(),
   streamStorageBytes: z.number().optional(),
@@ -197,7 +200,7 @@ export async function getWorkflowRun(
 
     return filterRunData(run, resolveData);
   } catch (error) {
-    if (error instanceof WorkflowAPIError && error.status === 404) {
+    if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
     }
     throw error;
@@ -245,7 +248,7 @@ export async function cancelWorkflowRunV1(
 
     return filterRunData(run, resolveData);
   } catch (error) {
-    if (error instanceof WorkflowAPIError && error.status === 404) {
+    if (error instanceof WorkflowWorldError && error.status === 404) {
       throw new WorkflowRunNotFoundError(id);
     }
     throw error;

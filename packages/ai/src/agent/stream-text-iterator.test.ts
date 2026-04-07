@@ -7,12 +7,13 @@
  * across multi-turn tool calls.
  */
 import type {
-  LanguageModelV2Prompt,
-  LanguageModelV2ToolCall,
-  LanguageModelV2ToolResultPart,
+  LanguageModelV3Prompt,
+  LanguageModelV3ToolCall,
+  LanguageModelV3ToolResult,
+  LanguageModelV3ToolResultPart,
 } from '@ai-sdk/provider';
 import type { StepResult, ToolSet, UIMessageChunk } from 'ai';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Mock doStreamStep
 vi.mock('./do-stream-step.js', () => ({
@@ -78,9 +79,9 @@ describe('streamTextIterator', () => {
       const mockModel = vi.fn();
 
       // Capture the conversation prompt passed to subsequent doStreamStep calls
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      const toolCallWithMetadata: LanguageModelV2ToolCall = {
+      const toolCallWithMetadata: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -128,7 +129,7 @@ describe('streamTextIterator', () => {
       expect(firstResult.value.toolCalls).toHaveLength(1);
 
       // Provide tool results and continue
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -165,9 +166,9 @@ describe('streamTextIterator', () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      const toolCallWithoutMetadata: LanguageModelV2ToolCall = {
+      const toolCallWithoutMetadata: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -205,7 +206,7 @@ describe('streamTextIterator', () => {
       const firstResult = await iterator.next();
       expect(firstResult.done).toBe(false);
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -231,9 +232,9 @@ describe('streamTextIterator', () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      const toolCalls: LanguageModelV2ToolCall[] = [
+      const toolCalls: LanguageModelV3ToolCall[] = [
         {
           type: 'tool-call',
           toolCallId: 'call-1',
@@ -289,7 +290,7 @@ describe('streamTextIterator', () => {
       expect(firstResult.done).toBe(false);
       expect(firstResult.value.toolCalls).toHaveLength(2);
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -335,9 +336,9 @@ describe('streamTextIterator', () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      const toolCalls: LanguageModelV2ToolCall[] = [
+      const toolCalls: LanguageModelV3ToolCall[] = [
         {
           type: 'tool-call',
           toolCallId: 'call-1',
@@ -389,7 +390,7 @@ describe('streamTextIterator', () => {
 
       await iterator.next();
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -426,14 +427,15 @@ describe('streamTextIterator', () => {
       expect(toolWithoutMeta?.providerOptions).toBeUndefined();
     });
 
-    it('should strip OpenAI itemId from providerMetadata to avoid reasoning item errors', async () => {
+    it('should preserve OpenAI providerMetadata including itemId now that reasoning is preserved', async () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      // OpenAI Responses API returns itemId which requires reasoning items we don't preserve
-      const toolCallWithOpenAIMetadata: LanguageModelV2ToolCall = {
+      // OpenAI Responses API returns itemId which references reasoning items.
+      // Now that reasoning is preserved in conversation, itemId is valid.
+      const toolCallWithOpenAIMetadata: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -474,7 +476,7 @@ describe('streamTextIterator', () => {
 
       await iterator.next();
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -492,19 +494,22 @@ describe('streamTextIterator', () => {
         (part) => part.type === 'tool-call'
       );
 
-      // itemId should be stripped, leaving no providerOptions
+      // itemId should now be preserved since reasoning items are in the conversation
       expect(toolCallPart).toBeDefined();
-      expect(toolCallPart.providerOptions).toBeUndefined();
+      expect(toolCallPart.providerOptions).toEqual({
+        openai: {
+          itemId: 'fc_0402bf2d292dd7ed00697a35fb10e0819ab0098545c4d0d7f5',
+        },
+      });
     });
 
-    it('should preserve other OpenAI metadata while stripping itemId', async () => {
+    it('should preserve all OpenAI metadata fields including itemId', async () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      // OpenAI metadata with both itemId (should be stripped) and other fields (should be preserved)
-      const toolCallWithMixedOpenAIMetadata: LanguageModelV2ToolCall = {
+      const toolCallWithMixedOpenAIMetadata: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -546,7 +551,7 @@ describe('streamTextIterator', () => {
 
       await iterator.next();
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -564,23 +569,22 @@ describe('streamTextIterator', () => {
         (part) => part.type === 'tool-call'
       );
 
-      // itemId should be stripped, but other fields preserved
       expect(toolCallPart).toBeDefined();
       expect(toolCallPart.providerOptions).toEqual({
         openai: {
+          itemId: 'fc_0402bf2d292dd7ed00697a35fb10e0819ab0098545c4d0d7f5',
           someOtherField: 'should-be-preserved',
         },
       });
     });
 
-    it('should preserve Gemini metadata while stripping OpenAI itemId in mixed provider metadata', async () => {
+    it('should preserve both Gemini and OpenAI metadata in mixed provider metadata', async () => {
       const mockWritable = createMockWritable();
       const mockModel = vi.fn();
 
-      let capturedPrompt: LanguageModelV2Prompt | undefined;
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
 
-      // Mixed provider metadata - Gemini should be fully preserved, OpenAI itemId stripped
-      const toolCallWithMixedProviders: LanguageModelV2ToolCall = {
+      const toolCallWithMixedProviders: LanguageModelV3ToolCall = {
         type: 'tool-call',
         toolCallId: 'call-1',
         toolName: 'testTool',
@@ -590,7 +594,7 @@ describe('streamTextIterator', () => {
             thoughtSignature: 'sig_gemini_preserved',
           },
           openai: {
-            itemId: 'fc_should_be_stripped',
+            itemId: 'fc_should_also_be_preserved',
           },
         },
       };
@@ -624,7 +628,7 @@ describe('streamTextIterator', () => {
 
       await iterator.next();
 
-      const toolResults: LanguageModelV2ToolResultPart[] = [
+      const toolResults: LanguageModelV3ToolResult[] = [
         {
           type: 'tool-result',
           toolCallId: 'call-1',
@@ -642,12 +646,452 @@ describe('streamTextIterator', () => {
         (part) => part.type === 'tool-call'
       );
 
-      // Gemini metadata should be preserved, OpenAI itemId stripped
       expect(toolCallPart).toBeDefined();
       expect(toolCallPart.providerOptions).toEqual({
         google: {
           thoughtSignature: 'sig_gemini_preserved',
         },
+        openai: {
+          itemId: 'fc_should_also_be_preserved',
+        },
+      });
+    });
+  });
+
+  describe('reasoning content preservation', () => {
+    it('should include reasoning parts in assistant message before tool-call parts', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      const toolCall: LanguageModelV3ToolCall = {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'testTool',
+        input: '{"query":"test"}',
+      };
+
+      vi.mocked(doStreamStep)
+        .mockResolvedValueOnce({
+          toolCalls: [toolCall],
+          finish: { finishReason: 'tool-calls' },
+          step: createMockStepResult({
+            finishReason: 'tool-calls',
+            reasoning: [
+              { type: 'reasoning', text: 'Let me think about this...' },
+              { type: 'reasoning', text: 'I should use the test tool.' },
+            ],
+          }),
+        })
+        .mockImplementationOnce(async (prompt) => {
+          capturedPrompt = prompt;
+          return {
+            toolCalls: [],
+            finish: { finishReason: 'stop' },
+            step: createMockStepResult({ finishReason: 'stop' }),
+          };
+        });
+
+      const iterator = streamTextIterator({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'test' }] }],
+        tools: {
+          testTool: {
+            description: 'A test tool',
+            execute: async () => ({ result: 'success' }),
+          },
+        } as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+      });
+
+      await iterator.next();
+
+      const toolResults: LanguageModelV3ToolResult[] = [
+        {
+          type: 'tool-result',
+          toolCallId: 'call-1',
+          toolName: 'testTool',
+          output: { type: 'text', value: '{"result":"success"}' },
+        },
+      ];
+
+      await iterator.next(toolResults);
+
+      const assistantMessage = capturedPrompt?.find(
+        (msg) => msg.role === 'assistant'
+      );
+      const content = assistantMessage?.content as any[];
+
+      // Reasoning parts should come before tool-call parts
+      expect(content).toHaveLength(3);
+      expect(content[0]).toEqual({
+        type: 'reasoning',
+        text: 'Let me think about this...',
+      });
+      expect(content[1]).toEqual({
+        type: 'reasoning',
+        text: 'I should use the test tool.',
+      });
+      expect(content[2].type).toBe('tool-call');
+      expect(content[2].toolCallId).toBe('call-1');
+    });
+
+    it('should preserve reasoning providerOptions', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      const toolCall: LanguageModelV3ToolCall = {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'testTool',
+        input: '{}',
+      };
+
+      vi.mocked(doStreamStep)
+        .mockResolvedValueOnce({
+          toolCalls: [toolCall],
+          finish: { finishReason: 'tool-calls' },
+          step: createMockStepResult({
+            finishReason: 'tool-calls',
+            reasoning: [
+              {
+                type: 'reasoning',
+                text: 'thinking...',
+                providerOptions: {
+                  anthropic: { cacheControl: { type: 'ephemeral' } },
+                },
+              },
+            ],
+          }),
+        })
+        .mockImplementationOnce(async (prompt) => {
+          capturedPrompt = prompt;
+          return {
+            toolCalls: [],
+            finish: { finishReason: 'stop' },
+            step: createMockStepResult({ finishReason: 'stop' }),
+          };
+        });
+
+      const iterator = streamTextIterator({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'test' }] }],
+        tools: {
+          testTool: {
+            description: 'A test tool',
+            execute: async () => ({ ok: true }),
+          },
+        } as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+      });
+
+      await iterator.next();
+
+      const toolResults: LanguageModelV3ToolResult[] = [
+        {
+          type: 'tool-result',
+          toolCallId: 'call-1',
+          toolName: 'testTool',
+          output: { type: 'text', value: '{"ok":true}' },
+        },
+      ];
+
+      await iterator.next(toolResults);
+
+      const assistantMessage = capturedPrompt?.find(
+        (msg) => msg.role === 'assistant'
+      );
+      const reasoningPart = (assistantMessage?.content as any[])?.[0];
+
+      expect(reasoningPart).toEqual({
+        type: 'reasoning',
+        text: 'thinking...',
+        providerOptions: {
+          anthropic: { cacheControl: { type: 'ephemeral' } },
+        },
+      });
+    });
+
+    it('should not add reasoning parts when step has no reasoning', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      const toolCall: LanguageModelV3ToolCall = {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'testTool',
+        input: '{}',
+      };
+
+      vi.mocked(doStreamStep)
+        .mockResolvedValueOnce({
+          toolCalls: [toolCall],
+          finish: { finishReason: 'tool-calls' },
+          step: createMockStepResult({
+            finishReason: 'tool-calls',
+            reasoning: [],
+          }),
+        })
+        .mockImplementationOnce(async (prompt) => {
+          capturedPrompt = prompt;
+          return {
+            toolCalls: [],
+            finish: { finishReason: 'stop' },
+            step: createMockStepResult({ finishReason: 'stop' }),
+          };
+        });
+
+      const iterator = streamTextIterator({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'test' }] }],
+        tools: {
+          testTool: {
+            description: 'A test tool',
+            execute: async () => ({ ok: true }),
+          },
+        } as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+      });
+
+      await iterator.next();
+
+      const toolResults: LanguageModelV3ToolResult[] = [
+        {
+          type: 'tool-result',
+          toolCallId: 'call-1',
+          toolName: 'testTool',
+          output: { type: 'text', value: '{"ok":true}' },
+        },
+      ];
+
+      await iterator.next(toolResults);
+
+      const assistantMessage = capturedPrompt?.find(
+        (msg) => msg.role === 'assistant'
+      );
+      const content = assistantMessage?.content as any[];
+
+      // Only tool-call parts, no reasoning
+      expect(content).toHaveLength(1);
+      expect(content[0].type).toBe('tool-call');
+    });
+  });
+
+  describe('prepareStep system and messages ordering', () => {
+    it('should apply system message when prepareStep returns only system', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      vi.mocked(doStreamStep).mockImplementationOnce(async (prompt) => {
+        capturedPrompt = prompt;
+        return {
+          toolCalls: [],
+          finish: { finishReason: 'stop' },
+          step: createMockStepResult({ finishReason: 'stop' }),
+        };
+      });
+
+      const iterator = streamTextIterator({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+        tools: {} as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+        prepareStep: () => ({
+          system: 'You are a helpful assistant.',
+        }),
+      });
+
+      await iterator.next();
+
+      expect(capturedPrompt).toBeDefined();
+      expect(capturedPrompt![0]).toEqual({
+        role: 'system',
+        content: 'You are a helpful assistant.',
+      });
+      expect(capturedPrompt![1]).toEqual({
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }],
+      });
+    });
+
+    it('should preserve system message when prepareStep returns both system and messages', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      vi.mocked(doStreamStep).mockImplementationOnce(async (prompt) => {
+        capturedPrompt = prompt;
+        return {
+          toolCalls: [],
+          finish: { finishReason: 'stop' },
+          step: createMockStepResult({ finishReason: 'stop' }),
+        };
+      });
+
+      // prepareStep returns both system and messages — system should NOT be lost
+      const customMessages: LanguageModelV3Prompt = [
+        {
+          role: 'user',
+          content: [{ type: 'text', text: 'modified message' }],
+        },
+      ];
+
+      const iterator = streamTextIterator({
+        prompt: [
+          { role: 'user', content: [{ type: 'text', text: 'original' }] },
+        ],
+        tools: {} as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+        prepareStep: () => ({
+          system: 'Dynamic system prompt.',
+          messages: customMessages,
+        }),
+      });
+
+      await iterator.next();
+
+      expect(capturedPrompt).toBeDefined();
+      // System message should be prepended to the replaced messages
+      expect(capturedPrompt!).toHaveLength(2);
+      expect(capturedPrompt![0]).toEqual({
+        role: 'system',
+        content: 'Dynamic system prompt.',
+      });
+      expect(capturedPrompt![1]).toEqual({
+        role: 'user',
+        content: [{ type: 'text', text: 'modified message' }],
+      });
+    });
+
+    it('should replace existing system message when messages already contains one', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      vi.mocked(doStreamStep).mockImplementationOnce(async (prompt) => {
+        capturedPrompt = prompt;
+        return {
+          toolCalls: [],
+          finish: { finishReason: 'stop' },
+          step: createMockStepResult({ finishReason: 'stop' }),
+        };
+      });
+
+      // Messages already include a system message — prepareStep's system should replace it
+      const customMessages: LanguageModelV3Prompt = [
+        { role: 'system', content: 'Old system prompt.' },
+        { role: 'user', content: [{ type: 'text', text: 'hello' }] },
+      ];
+
+      const iterator = streamTextIterator({
+        prompt: [
+          { role: 'user', content: [{ type: 'text', text: 'original' }] },
+        ],
+        tools: {} as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+        prepareStep: () => ({
+          system: 'New system prompt.',
+          messages: customMessages,
+        }),
+      });
+
+      await iterator.next();
+
+      expect(capturedPrompt).toBeDefined();
+      expect(capturedPrompt!).toHaveLength(2);
+      expect(capturedPrompt![0]).toEqual({
+        role: 'system',
+        content: 'New system prompt.',
+      });
+      expect(capturedPrompt![1]).toEqual({
+        role: 'user',
+        content: [{ type: 'text', text: 'hello' }],
+      });
+    });
+
+    it('should update system message on subsequent steps', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      const capturedPrompts: LanguageModelV3Prompt[] = [];
+
+      const toolCall: LanguageModelV3ToolCall = {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'testTool',
+        input: '{}',
+      };
+
+      vi.mocked(doStreamStep)
+        .mockImplementationOnce(async (prompt) => {
+          capturedPrompts.push([...prompt]);
+          return {
+            toolCalls: [toolCall],
+            finish: { finishReason: 'tool-calls' },
+            step: createMockStepResult({ finishReason: 'tool-calls' }),
+          };
+        })
+        .mockImplementationOnce(async (prompt) => {
+          capturedPrompts.push([...prompt]);
+          return {
+            toolCalls: [],
+            finish: { finishReason: 'stop' },
+            step: createMockStepResult({ finishReason: 'stop' }),
+          };
+        });
+
+      const iterator = streamTextIterator({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+        tools: {
+          testTool: {
+            description: 'Test',
+            execute: async () => ({ ok: true }),
+          },
+        } as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+        prepareStep: ({ stepNumber: sn }) => ({
+          system: `System prompt v${sn}`,
+        }),
+      });
+
+      // First step
+      await iterator.next();
+
+      // Provide tool results
+      const toolResults: LanguageModelV3ToolResultPart[] = [
+        {
+          type: 'tool-result',
+          toolCallId: 'call-1',
+          toolName: 'testTool',
+          output: { type: 'text', value: '{"ok":true}' },
+        },
+      ];
+
+      // Second step
+      await iterator.next(toolResults);
+
+      expect(capturedPrompts).toHaveLength(2);
+      // First step should have system v0
+      expect(capturedPrompts[0][0]).toEqual({
+        role: 'system',
+        content: 'System prompt v0',
+      });
+      // Second step should have system v1
+      expect(capturedPrompts[1][0]).toEqual({
+        role: 'system',
+        content: 'System prompt v1',
       });
     });
   });

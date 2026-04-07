@@ -1,21 +1,137 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { WorkflowAPIError } from '@workflow/errors';
-import type { Storage } from '@workflow/world';
-import { DEFAULT_TIMESTAMP_THRESHOLD_MS } from '@workflow/world';
+import { WorkflowWorldError } from '@workflow/errors';
+import type { Event, Storage } from '@workflow/world';
+import { stripEventDataRefs } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { writeJSON } from './fs.js';
 import { createStorage } from './storage.js';
 import {
+  completeWait,
   createHook,
   createRun,
   createStep,
+  createWait,
   disposeHook,
   updateRun,
   updateStep,
 } from './test-helpers.js';
+
+describe('stripEventDataRefs', () => {
+  const baseEvent = {
+    runId: 'wrun_test',
+    eventId: 'evnt_test',
+    createdAt: new Date(),
+    specVersion: 2,
+  };
+
+  it('should strip input ref from step_created, keep stepName', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_created' as const,
+      correlationId: 'step_1',
+      eventData: { stepName: 'my-step', input: new Uint8Array([1, 2, 3]) },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ stepName: 'my-step' });
+    expect(result.eventData).not.toHaveProperty('input');
+  });
+
+  it('should strip input ref from run_created, keep workflowName and deploymentId', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'run_created' as const,
+      eventData: {
+        deploymentId: 'dpl_123',
+        workflowName: 'my-workflow',
+        input: new Uint8Array([1, 2, 3]),
+      },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({
+      deploymentId: 'dpl_123',
+      workflowName: 'my-workflow',
+    });
+    expect(result.eventData).not.toHaveProperty('input');
+  });
+
+  it('should strip result ref from step_completed entirely', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_completed' as const,
+      correlationId: 'step_1',
+      eventData: { result: new Uint8Array([4, 5]) },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toBeUndefined();
+  });
+
+  it('should strip error from run_failed, keep errorCode', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'run_failed' as const,
+      eventData: { error: 'something broke', errorCode: 'TIMEOUT' },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ errorCode: 'TIMEOUT' });
+    expect(result.eventData).not.toHaveProperty('error');
+  });
+
+  it('should strip error from step_failed, keep stack', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_failed' as const,
+      correlationId: 'step_1',
+      eventData: { error: 'failed', stack: 'Error: failed\n  at ...' },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ stack: 'Error: failed\n  at ...' });
+    expect(result.eventData).not.toHaveProperty('error');
+  });
+
+  it('should not strip anything when resolveData is "all"', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'step_created' as const,
+      correlationId: 'step_1',
+      eventData: { stepName: 'my-step', input: new Uint8Array([1, 2, 3]) },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'all') as any;
+    expect(result.eventData.stepName).toBe('my-step');
+    expect(result.eventData.input).toBeDefined();
+  });
+
+  it('should pass through events with no ref fields (e.g. run_started)', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'run_started' as const,
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none');
+    expect(result).toEqual(event);
+  });
+
+  it('should strip metadata from hook_created, keep token', () => {
+    const event = {
+      ...baseEvent,
+      eventType: 'hook_created' as const,
+      correlationId: 'hook_1',
+      eventData: { token: 'tok_abc', metadata: { some: 'data' } },
+    } as Event;
+
+    const result = stripEventDataRefs(event, 'none') as any;
+    expect(result.eventData).toEqual({ token: 'tok_abc' });
+    expect(result.eventData).not.toHaveProperty('metadata');
+  });
+});
 
 describe('Storage', () => {
   let testDir: string;
@@ -1024,7 +1140,12 @@ describe('Storage', () => {
 
         // step_created + step_completed = 2 events
         expect(result.data).toHaveLength(2);
-        expect((result.data[0] as any).eventData).toBeUndefined();
+        // step_created: ref field 'input' stripped, metadata like stepName preserved
+        expect((result.data[0] as any).eventData).toEqual({
+          stepName: 'test-step',
+        });
+        expect((result.data[0] as any).eventData).not.toHaveProperty('input');
+        // step_completed: only ref field 'result' exists, so eventData is removed entirely
         expect((result.data[1] as any).eventData).toBeUndefined();
         expect(result.data[0].correlationId).toBe(correlationId);
       });
@@ -1721,6 +1842,148 @@ describe('Storage', () => {
           )
         ).rejects.toThrow(/terminal/i);
       });
+    });
+  });
+
+  describe('concurrent terminal state races', () => {
+    let testRunId: string;
+
+    beforeEach(async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+      await updateRun(storage, testRunId, 'run_started');
+    });
+
+    it('should reject concurrent step_completed for the same step', async () => {
+      await createStep(storage, testRunId, {
+        stepId: 'step_race_1',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(storage, testRunId, 'step_race_1', 'step_started');
+
+      const results = await Promise.allSettled([
+        updateStep(storage, testRunId, 'step_race_1', 'step_completed', {
+          result: new Uint8Array([1]),
+        }),
+        updateStep(storage, testRunId, 'step_race_1', 'step_completed', {
+          result: new Uint8Array([2]),
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+    });
+
+    it('should reject concurrent step_failed for the same step', async () => {
+      await createStep(storage, testRunId, {
+        stepId: 'step_race_2',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(storage, testRunId, 'step_race_2', 'step_started');
+
+      const results = await Promise.allSettled([
+        updateStep(storage, testRunId, 'step_race_2', 'step_failed', {
+          error: 'err1',
+        }),
+        updateStep(storage, testRunId, 'step_race_2', 'step_failed', {
+          error: 'err2',
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+    });
+
+    it('should reject step_started after concurrent step_completed', async () => {
+      await createStep(storage, testRunId, {
+        stepId: 'step_race_3',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await updateStep(storage, testRunId, 'step_race_3', 'step_started');
+      await updateStep(storage, testRunId, 'step_race_3', 'step_completed', {
+        result: new Uint8Array([1]),
+      });
+
+      // step_started on a completed step should be rejected
+      await expect(
+        updateStep(storage, testRunId, 'step_race_3', 'step_started')
+      ).rejects.toThrow(/terminal/i);
+    });
+
+    it('should reject concurrent wait_completed for the same wait', async () => {
+      await createWait(storage, testRunId, {
+        waitId: 'wait_race_1',
+        resumeAt: new Date('2099-01-01'),
+      });
+
+      const results = await Promise.allSettled([
+        completeWait(storage, testRunId, 'wait_race_1'),
+        completeWait(storage, testRunId, 'wait_race_1'),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+    });
+
+    it('should reject concurrent hook_disposed for the same hook', async () => {
+      await createHook(storage, testRunId, {
+        hookId: 'hook_race_1',
+        token: 'hook-race-token-1',
+      });
+
+      const results = await Promise.allSettled([
+        disposeHook(storage, testRunId, 'hook_race_1'),
+        disposeHook(storage, testRunId, 'hook_race_1'),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      // Depending on timing, the loser may hit the lock file (EntityConflictError)
+      // or find the hook entity already deleted (HookNotFoundError).
+      const reason = (rejected[0] as PromiseRejectedResult).reason as {
+        name?: string;
+      };
+      expect(['EntityConflictError', 'HookNotFoundError']).toContain(
+        reason.name
+      );
+
+      // Verify only one hook_disposed event was written to the log
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const hookDisposedEvents = events.data.filter(
+        (e) => e.eventType === 'hook_disposed'
+      );
+      expect(hookDisposedEvents).toHaveLength(1);
     });
   });
 
@@ -2582,7 +2845,7 @@ describe('Storage', () => {
     });
 
     it('should accept a runId within the threshold', async () => {
-      // 4 minutes ago — within the 5-minute default
+      // 4 minutes ago — within the 24-hour past threshold
       const runId = makeRunId(Date.now() - 4 * 60 * 1000);
       const result = await storage.events.create(runId, runCreatedEvent);
 
@@ -2590,26 +2853,42 @@ describe('Storage', () => {
       expect(result.run!.runId).toBe(runId);
     });
 
-    it('should reject a runId with a timestamp too far in the past', async () => {
-      // 10 minutes ago — exceeds the 5-minute threshold
+    it('should accept a runId with a timestamp 10 minutes in the past', async () => {
+      // 10 minutes ago — within the 24-hour past threshold
       const runId = makeRunId(Date.now() - 10 * 60 * 1000);
+      const result = await storage.events.create(runId, runCreatedEvent);
+      expect(result.run).toBeDefined();
+      expect(result.run!.runId).toBe(runId);
+    });
+
+    it('should reject a runId with a timestamp too far in the past', async () => {
+      // 25 hours ago — exceeds the 24-hour past threshold
+      const runId = makeRunId(Date.now() - 25 * 60 * 60 * 1000);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
       ).rejects.toThrow(/Invalid runId timestamp/);
     });
 
+    it('should accept a runId with a timestamp 10 minutes in the past', async () => {
+      // 10 minutes ago — within the 24-hour past threshold
+      const runId = makeRunId(Date.now() - 10 * 60 * 1000);
+      const result = await storage.events.create(runId, runCreatedEvent);
+      expect(result.run).toBeDefined();
+      expect(result.run!.runId).toBe(runId);
+    });
+
     it('should reject a runId with a timestamp too far in the future', async () => {
-      // 10 minutes from now
+      // 10 minutes from now — exceeds the 5-minute future threshold
       const runId = makeRunId(Date.now() + 10 * 60 * 1000);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create(runId, runCreatedEvent)
@@ -2619,7 +2898,7 @@ describe('Storage', () => {
     it('should reject a runId that is not a valid ULID', async () => {
       await expect(
         storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)
-      ).rejects.toThrow(WorkflowAPIError);
+      ).rejects.toThrow(WorkflowWorldError);
 
       await expect(
         storage.events.create('wrun_not-a-valid-ulid!!!!!!!!', runCreatedEvent)

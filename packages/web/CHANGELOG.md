@@ -1,5 +1,52 @@
 # @workflow/web
 
+## 4.1.0-beta.47
+
+### Patch Changes
+
+- [#1590](https://github.com/vercel/workflow/pull/1590) [`74c4cdb`](https://github.com/vercel/workflow/commit/74c4cdb6519802e3d56760e971507ffb93bc945b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix server crash on unmatched routes (e.g. /robots.txt, /favicon.ico)
+
+## 4.1.0-beta.46
+
+### Patch Changes
+
+- [#1542](https://github.com/vercel/workflow/pull/1542) [`c488877`](https://github.com/vercel/workflow/commit/c488877727d693e761ecbaae1e86bac4fb1f1e2c) Thanks [@karthikscale3](https://github.com/karthikscale3)! - fix: switch web stream reader from readFromStream to getStreamChunks
+
+## 4.1.0-beta.45
+
+### Patch Changes
+
+- [#1492](https://github.com/vercel/workflow/pull/1492) [`dab106a`](https://github.com/vercel/workflow/commit/dab106acd3556f49db295108a3cdccc8058a7b92) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Hide the workflow graph viewer tab
+
+- [#1515](https://github.com/vercel/workflow/pull/1515) [`bb86b69`](https://github.com/vercel/workflow/commit/bb86b695c247980f3ac0fd916aad108d0c05d9be) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix Streams tab crash when decrypting large stream chunks
+
+## 4.1.0-beta.44
+
+### Patch Changes
+
+- [#1340](https://github.com/vercel/workflow/pull/1340) [`84599b7`](https://github.com/vercel/workflow/commit/84599b7ec5c19207082523609f1b3508a1a18bd7) Thanks [@pranaygp](https://github.com/pranaygp)! - Add error code classification (`USER_ERROR`, `RUNTIME_ERROR`) to `run_failed` events, improve queue and schema validation error logging
+
+- [#1473](https://github.com/vercel/workflow/pull/1473) [`2b80e2d`](https://github.com/vercel/workflow/commit/2b80e2de35aac170e5dc7d83a1b3f26495a0bbc9) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix stream display for streams created before version `4.1.0-beta.56`
+
+## 4.1.0-beta.43
+
+### Patch Changes
+
+- [#1381](https://github.com/vercel/workflow/pull/1381) [`7b9b3c1`](https://github.com/vercel/workflow/commit/7b9b3c1a484a4effff2190ac9899a2608704f375) Thanks [@karthikscale3](https://github.com/karthikscale3)! - web-shared: Timestamp tooltips, toast adapter, improved skeletons, and encrypted data detection for lazy-loaded events
+  web: Add toast for decryption
+
+- [#1364](https://github.com/vercel/workflow/pull/1364) [`94c14c7`](https://github.com/vercel/workflow/commit/94c14c746b3218d13a5e2a7936c8cef505e7be08) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Strip only ref/payload fields from eventData when resolveData is 'none', preserving all other metadata
+
+## 4.1.0-beta.42
+
+### Patch Changes
+
+- [#1346](https://github.com/vercel/workflow/pull/1346) [`73c12f1`](https://github.com/vercel/workflow/commit/73c12f14dabb465e2074e2aebbcd231a4d91bc09) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `ERR_UNSUPPORTED_ESM_URL_SCHEME` on Windows by converting absolute file paths to `file://` URLs before passing them to dynamic `import()`
+
+- [#1358](https://github.com/vercel/workflow/pull/1358) [`5c6ae60`](https://github.com/vercel/workflow/commit/5c6ae607a58d200fbad673821728a1a39684dfd9) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Improve workflow observability UX with decoupled pagination, stream virtualization, and decrypt actions
+
+- [#1366](https://github.com/vercel/workflow/pull/1366) [`d6da7ec`](https://github.com/vercel/workflow/commit/d6da7ecca0fbf94d3331ce3bd7d28644a4f5cc3f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix stale encryptionKey closure in events list data hook in web
+
 ## 4.1.0-beta.41
 
 ### Patch Changes

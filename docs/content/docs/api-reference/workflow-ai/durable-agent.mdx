@@ -34,7 +34,7 @@ async function myAgent() {
 
   const agent = new DurableAgent({
     model: "anthropic/claude-haiku-4.5",
-    system: "You are a helpful weather assistant.",
+    instructions: "You are a helpful weather assistant.",
     temperature: 0.7,
     tools: {
       getWeather: {
@@ -204,7 +204,7 @@ export default OutputSpecification;`}
 - **Durable Execution**: Agents can be interrupted and resumed without losing state
 - **Flexible Tool Implementation**: Tools can be implemented as workflow steps for automatic retries, or as regular workflow-level logic
 - **Stream Processing**: Handles streaming responses and tool calls in a structured way
-- **Workflow Native**: Fully integrated with Workflow DevKit for production-grade reliability
+- **Workflow Native**: Fully integrated with Workflow SDK for production-grade reliability
 - **AI SDK Parity**: Supports the same options as AI SDK's `streamText` including generation settings, callbacks, and structured output
 
 ## Good to Know
@@ -249,7 +249,7 @@ async function weatherAgentWorkflow(userQuery: string) {
         execute: getWeather,
       },
     },
-    system: "You are a helpful weather assistant. Always provide accurate weather information.",
+    instructions: "You are a helpful weather assistant. Always provide accurate weather information.",
   });
 
   await agent.stream({
@@ -317,6 +317,8 @@ async function multiToolAgentWorkflow(userQuery: string) {
 
 ```typescript
 import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import type { UIMessageChunk } from "ai";
 import { z } from "zod";
 
 async function searchProducts({ query }: { query: string }) {
@@ -446,7 +448,7 @@ async function agentWithPrepareStep(userMessage: string) {
 
   const agent = new DurableAgent({
     model: "openai/gpt-4.1-mini", // Default model
-    system: "You are a helpful assistant.",
+    instructions: "You are a helpful assistant.",
   });
 
   await agent.stream({
@@ -500,7 +502,7 @@ async function agentWithMessageQueue(initialMessage: string) {
 
   const agent = new DurableAgent({
     model: "anthropic/claude-haiku-4.5",
-    system: "You are a helpful assistant.",
+    instructions: "You are a helpful assistant.",
   });
 
   await agent.stream({
@@ -812,7 +814,7 @@ async function agentWithUIMessages(userMessage: string) {
 
   const agent = new DurableAgent({
     model: "anthropic/claude-haiku-4.5",
-    system: "You are a helpful assistant.",
+    instructions: "You are a helpful assistant.",
   });
 
   const result = await agent.stream({

@@ -1,8 +1,8 @@
 import type {
-  LanguageModelV2CallOptions,
-  LanguageModelV2Prompt,
-  LanguageModelV2ToolCall,
-  LanguageModelV2ToolResultPart,
+  LanguageModelV3CallOptions,
+  LanguageModelV3Prompt,
+  LanguageModelV3ToolCall,
+  LanguageModelV3ToolResultPart,
 } from '@ai-sdk/provider';
 import type {
   FinishReason,
@@ -36,9 +36,9 @@ export type { ProviderExecutedToolResult } from './do-stream-step.js';
  */
 export interface StreamTextIteratorYieldValue {
   /** The tool calls requested by the model */
-  toolCalls: LanguageModelV2ToolCall[];
+  toolCalls: LanguageModelV3ToolCall[];
   /** The conversation messages up to (and including) the tool call request */
-  messages: LanguageModelV2Prompt;
+  messages: LanguageModelV3Prompt;
   /** The step result from the current step */
   step?: StepResult<ToolSet>;
   /** The current experimental context */
@@ -70,7 +70,7 @@ export async function* streamTextIterator({
   responseFormat,
   collectUIChunks = false,
 }: {
-  prompt: LanguageModelV2Prompt;
+  prompt: LanguageModelV3Prompt;
   tools: ToolSet;
   writable: WritableStream<UIMessageChunk>;
   model: string | (() => Promise<CompatibleLanguageModel>);
@@ -88,13 +88,13 @@ export async function* streamTextIterator({
   experimental_transform?:
     | StreamTextTransform<ToolSet>
     | Array<StreamTextTransform<ToolSet>>;
-  responseFormat?: LanguageModelV2CallOptions['responseFormat'];
+  responseFormat?: LanguageModelV3CallOptions['responseFormat'];
   /** If true, collects UIMessageChunks for later conversion to UIMessage[] */
   collectUIChunks?: boolean;
 }): AsyncGenerator<
   StreamTextIteratorYieldValue,
-  LanguageModelV2Prompt,
-  LanguageModelV2ToolResultPart[]
+  LanguageModelV3Prompt,
+  LanguageModelV3ToolResultPart[]
 > {
   let conversationPrompt = [...prompt]; // Create a mutable copy
   let currentModel: string | (() => Promise<CompatibleLanguageModel>) = model;
@@ -148,8 +148,13 @@ export async function* streamTextIterator({
       if (prepareResult.model !== undefined) {
         currentModel = prepareResult.model;
       }
+      if (prepareResult.messages !== undefined) {
+        conversationPrompt = [...prepareResult.messages];
+      }
       if (prepareResult.system !== undefined) {
-        // Update or prepend system message in the conversation prompt
+        // Update or prepend system message in the conversation prompt.
+        // Applied AFTER messages override so the system message isn't
+        // lost when messages replaces the prompt.
         if (
           conversationPrompt.length > 0 &&
           conversationPrompt[0].role === 'system'
@@ -166,9 +171,6 @@ export async function* streamTextIterator({
             content: prepareResult.system,
           });
         }
-      }
-      if (prepareResult.messages !== undefined) {
-        conversationPrompt = [...prepareResult.messages];
       }
       if (prepareResult.experimental_context !== undefined) {
         currentContext = prepareResult.experimental_context;
@@ -265,7 +267,7 @@ export async function* streamTextIterator({
         conversationPrompt,
         currentModel,
         writable,
-        toolsToModelTools(effectiveTools),
+        await toolsToModelTools(effectiveTools),
         {
           sendStart: sendStart && isFirstIteration,
           ...currentGenerationSettings,
@@ -296,27 +298,43 @@ export async function* streamTextIterator({
       if (finishReason === 'tool-calls') {
         lastStepWasToolCalls = true;
 
-        // Add assistant message with tool calls to the conversation
-        // Note: providerMetadata from the tool call is mapped to providerOptions
-        // in the prompt format, following the AI SDK convention. This is critical
+        // Build reasoning content parts from the step result.
+        // Preserving reasoning in the conversation prompt mirrors what the
+        // AI SDK's toResponseMessages() does, so reasoning models retain
+        // access to their prior reasoning across multi-step tool loops.
+        const reasoningParts = (step.reasoning ?? []).map((r) => ({
+          type: 'reasoning' as const,
+          text: r.text,
+          ...(r.providerOptions != null
+            ? { providerOptions: r.providerOptions }
+            : {}),
+        }));
+
+        // Add assistant message with reasoning + tool calls to the conversation.
+        // providerMetadata from each tool call is mapped to providerOptions in
+        // the prompt format, following the AI SDK convention. This is critical
         // for providers like Gemini that require thoughtSignature to be preserved
-        // across multi-turn tool calls. Some fields are sanitized before mapping.
+        // across multi-turn tool calls.
         conversationPrompt.push({
           role: 'assistant',
-          content: toolCalls.map((toolCall) => {
-            const sanitizedMetadata = sanitizeProviderMetadataForToolCall(
-              toolCall.providerMetadata
-            );
-            return {
-              type: 'tool-call',
-              toolCallId: toolCall.toolCallId,
-              toolName: toolCall.toolName,
-              input: JSON.parse(toolCall.input),
-              ...(sanitizedMetadata != null
-                ? { providerOptions: sanitizedMetadata }
-                : {}),
-            };
-          }) as typeof toolCalls,
+          content: [
+            ...reasoningParts,
+            ...toolCalls.map((toolCall) => {
+              const meta = toolCall.providerMetadata as
+                | Record<string, unknown>
+                | undefined;
+              return {
+                type: 'tool-call' as const,
+                toolCallId: toolCall.toolCallId,
+                toolName: toolCall.toolName,
+                input: JSON.parse(toolCall.input),
+                ...(meta != null ? { providerOptions: meta } : {}),
+              };
+            }),
+          ] as Extract<
+            LanguageModelV3Prompt[number],
+            { role: 'assistant' }
+          >['content'],
         });
 
         // Yield the tool calls along with the current conversation messages
@@ -428,7 +446,7 @@ export async function* streamTextIterator({
 
 async function writeToolOutputToUI(
   writable: WritableStream<UIMessageChunk>,
-  toolResults: LanguageModelV2ToolResultPart[],
+  toolResults: LanguageModelV3ToolResultPart[],
   collectUIChunks?: boolean
 ): Promise<UIMessageChunk[]> {
   'use step';
@@ -439,7 +457,7 @@ async function writeToolOutputToUI(
       const chunk: UIMessageChunk = {
         type: 'tool-output-available' as const,
         toolCallId: result.toolCallId,
-        output: result.output.value,
+        output: 'value' in result.output ? result.output.value : undefined,
       };
       if (collectUIChunks) {
         chunks.push(chunk);
@@ -475,43 +493,7 @@ function normalizeFinishReason(raw: unknown): FinishReason | undefined {
   if (typeof raw === 'string') return raw as FinishReason;
   if (typeof raw === 'object') {
     const obj = raw as { unified?: FinishReason; type?: FinishReason };
-    return obj.unified ?? obj.type ?? 'unknown';
+    return obj.unified ?? obj.type ?? 'other';
   }
   return undefined;
-}
-
-/**
- * Strip OpenAI's itemId from providerMetadata (requires reasoning items we don't preserve).
- * Preserves all other provider metadata (e.g., Gemini's thoughtSignature).
- */
-function sanitizeProviderMetadataForToolCall(
-  metadata: unknown
-): Record<string, unknown> | undefined {
-  if (metadata == null) return undefined;
-
-  const meta = metadata as Record<string, unknown>;
-
-  // Check if OpenAI metadata exists and needs sanitization
-  if ('openai' in meta && meta.openai != null) {
-    const { openai, ...restProviders } = meta;
-    const openaiMeta = openai as Record<string, unknown>;
-
-    // Remove itemId from OpenAI metadata - it requires reasoning items we don't preserve
-    const { itemId: _itemId, ...restOpenai } = openaiMeta;
-
-    // Reconstruct metadata without itemId
-    const hasOtherOpenaiFields = Object.keys(restOpenai).length > 0;
-    const hasOtherProviders = Object.keys(restProviders).length > 0;
-
-    if (hasOtherOpenaiFields && hasOtherProviders) {
-      return { ...restProviders, openai: restOpenai };
-    } else if (hasOtherOpenaiFields) {
-      return { openai: restOpenai };
-    } else if (hasOtherProviders) {
-      return restProviders;
-    }
-    return undefined;
-  }
-
-  return meta;
 }

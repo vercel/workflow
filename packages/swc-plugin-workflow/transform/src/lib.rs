@@ -3,10 +3,10 @@ mod naming;
 use serde::Deserialize;
 use std::collections::{HashMap, HashSet};
 use swc_core::{
-    common::{DUMMY_SP, SyntaxContext, errors::HANDLER},
+    common::{errors::HANDLER, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
-        visit::{VisitMut, VisitMutWith, noop_visit_mut_type},
+        visit::{noop_visit_mut_type, VisitMut, VisitMutWith},
     },
 };
 
@@ -331,6 +331,9 @@ pub struct StepTransform {
     default_exports_to_replace: Vec<(String, Expr)>, // (export_name, replacement_expr)
     // Track default workflow exports that need const declarations in workflow mode
     default_workflow_exports: Vec<(String, Expr, swc_core::common::Span)>, // (const_name, expr, span)
+    // Track default class exports that need const declarations so the class has an
+    // accessible binding name at module scope for registration code (serde / step IIFEs).
+    default_class_exports: Vec<(String, ClassExpr)>, // (const_name, class_expr)
     // Track all declared identifiers in module scope to avoid collisions
     declared_identifiers: HashSet<String>,
     // Track object property step functions for hoisting in step mode
@@ -385,6 +388,9 @@ pub struct StepTransform {
     // Track identifiers that are known to be WORKFLOW_SERIALIZE symbols
     // (local name -> "workflow-serialize" or "workflow-deserialize")
     serialization_symbol_identifiers: HashMap<String, String>,
+    // Track identifiers that are bound to require() calls (CommonJS namespace pattern)
+    // e.g., `const serde_1 = require("@workflow/serde")` -> {"serde_1"}
+    require_namespace_identifiers: HashSet<String>,
     // Track class names for the manifest (preserved copy before drain)
     classes_for_manifest: HashSet<String>,
 }
@@ -466,11 +472,18 @@ impl ClosureVariableCollector {
         }
     }
 
-    fn collect_from_function(function: &Function, module_imports: &HashSet<String>) -> Vec<String> {
+    fn collect_from_function(
+        function: &Function,
+        module_imports: &HashSet<String>,
+        module_declarations: &HashSet<String>,
+    ) -> Vec<String> {
         let mut collector = Self::new();
 
-        // Add module-level imports to local_vars so they're not considered closure vars
+        // Add module-level imports and declarations to local_vars so they're not considered closure vars
         collector.local_vars.extend(module_imports.iter().cloned());
+        collector
+            .local_vars
+            .extend(module_declarations.iter().cloned());
 
         // Collect parameters
         for param in &function.params {
@@ -488,11 +501,18 @@ impl ClosureVariableCollector {
         vars
     }
 
-    fn collect_from_arrow_expr(arrow: &ArrowExpr, module_imports: &HashSet<String>) -> Vec<String> {
+    fn collect_from_arrow_expr(
+        arrow: &ArrowExpr,
+        module_imports: &HashSet<String>,
+        module_declarations: &HashSet<String>,
+    ) -> Vec<String> {
         let mut collector = Self::new();
 
-        // Add module-level imports to local_vars so they're not considered closure vars
+        // Add module-level imports and declarations to local_vars so they're not considered closure vars
         collector.local_vars.extend(module_imports.iter().cloned());
+        collector
+            .local_vars
+            .extend(module_declarations.iter().cloned());
 
         // Collect parameters
         for param in &arrow.params {
@@ -572,7 +592,70 @@ impl ClosureVariableCollector {
                     }
                     Decl::Fn(fn_decl) => {
                         self.local_vars.insert(fn_decl.ident.sym.to_string());
-                        // Don't visit nested function bodies for closure detection
+                        // Walk into nested function bodies to find closure vars from the outer scope.
+                        for param in &fn_decl.function.params {
+                            self.collect_param_names(&param.pat);
+                        }
+                        if let Some(body) = &fn_decl.function.body {
+                            self.collect_from_block_stmt(body);
+                        }
+                    }
+                    Decl::Class(class_decl) => {
+                        self.local_vars.insert(class_decl.ident.sym.to_string());
+                        // Walk class body — reuse the same logic as Expr::Class
+                        if let Some(super_class) = &class_decl.class.super_class {
+                            self.collect_from_expr(super_class);
+                        }
+                        for member in &class_decl.class.body {
+                            match member {
+                                ClassMember::Method(method) => {
+                                    for param in &method.function.params {
+                                        self.collect_param_names(&param.pat);
+                                    }
+                                    if let Some(body) = &method.function.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                ClassMember::ClassProp(prop) => {
+                                    if let Some(value) = &prop.value {
+                                        self.collect_from_expr(value);
+                                    }
+                                }
+                                ClassMember::PrivateProp(prop) => {
+                                    if let Some(value) = &prop.value {
+                                        self.collect_from_expr(value);
+                                    }
+                                }
+                                ClassMember::Constructor(ctor) => {
+                                    for param in &ctor.params {
+                                        match param {
+                                            ParamOrTsParamProp::Param(p) => {
+                                                self.collect_param_names(&p.pat);
+                                            }
+                                            ParamOrTsParamProp::TsParamProp(ts_param) => {
+                                                match &ts_param.param {
+                                                    TsParamPropParam::Ident(i) => {
+                                                        self.local_vars
+                                                            .insert(i.id.sym.to_string());
+                                                    }
+                                                    TsParamPropParam::Assign(a) => {
+                                                        self.collect_declared_names(&a.left);
+                                                        self.collect_from_expr(&a.right);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if let Some(body) = &ctor.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                ClassMember::StaticBlock(block) => {
+                                    self.collect_from_block_stmt(&block.body);
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                     _ => {}
                 }
@@ -622,6 +705,75 @@ impl ClosureVariableCollector {
             Stmt::While(while_stmt) => {
                 self.collect_from_expr(&while_stmt.test);
                 self.collect_from_stmt(&while_stmt.body);
+            }
+            Stmt::DoWhile(do_while) => {
+                self.collect_from_stmt(&do_while.body);
+                self.collect_from_expr(&do_while.test);
+            }
+            Stmt::Throw(throw_stmt) => {
+                self.collect_from_expr(&throw_stmt.arg);
+            }
+            Stmt::Try(try_stmt) => {
+                self.collect_from_block_stmt(&try_stmt.block);
+                if let Some(catch_clause) = &try_stmt.handler {
+                    // The catch parameter introduces a local binding
+                    if let Some(param) = &catch_clause.param {
+                        self.collect_declared_names(param);
+                    }
+                    self.collect_from_block_stmt(&catch_clause.body);
+                }
+                if let Some(finalizer) = &try_stmt.finalizer {
+                    self.collect_from_block_stmt(finalizer);
+                }
+            }
+            Stmt::Switch(switch_stmt) => {
+                self.collect_from_expr(&switch_stmt.discriminant);
+                for case in &switch_stmt.cases {
+                    if let Some(test) = &case.test {
+                        self.collect_from_expr(test);
+                    }
+                    for stmt in &case.cons {
+                        self.collect_from_stmt(stmt);
+                    }
+                }
+            }
+            Stmt::ForIn(for_in) => {
+                match &for_in.left {
+                    ForHead::VarDecl(var_decl) => {
+                        for declarator in &var_decl.decls {
+                            self.collect_declared_names(&declarator.name);
+                        }
+                    }
+                    ForHead::Pat(pat) => {
+                        // Pattern used as assignment target (e.g., `for (x in obj)`)
+                        if let Pat::Ident(ident) = &**pat {
+                            self.collect_from_ident_binding(&ident.id);
+                        }
+                    }
+                    _ => {}
+                }
+                self.collect_from_expr(&for_in.right);
+                self.collect_from_stmt(&for_in.body);
+            }
+            Stmt::ForOf(for_of) => {
+                match &for_of.left {
+                    ForHead::VarDecl(var_decl) => {
+                        for declarator in &var_decl.decls {
+                            self.collect_declared_names(&declarator.name);
+                        }
+                    }
+                    ForHead::Pat(pat) => {
+                        if let Pat::Ident(ident) = &**pat {
+                            self.collect_from_ident_binding(&ident.id);
+                        }
+                    }
+                    _ => {}
+                }
+                self.collect_from_expr(&for_of.right);
+                self.collect_from_stmt(&for_of.body);
+            }
+            Stmt::Labeled(labeled) => {
+                self.collect_from_stmt(&labeled.body);
             }
             _ => {}
         }
@@ -707,13 +859,48 @@ impl ClosureVariableCollector {
                     match prop {
                         PropOrSpread::Prop(prop) => {
                             match &**prop {
+                                Prop::Shorthand(ident) => {
+                                    // { foo } is shorthand for { foo: foo }
+                                    let name = ident.sym.to_string();
+                                    if !self.params.contains(&name)
+                                        && !self.local_vars.contains(&name)
+                                    {
+                                        if !is_global_identifier(&name) {
+                                            self.closure_vars.insert(name);
+                                        }
+                                    }
+                                }
                                 Prop::KeyValue(kv) => {
+                                    // Check computed key expressions (e.g., { [expr]: value })
+                                    if let PropName::Computed(computed) = &kv.key {
+                                        self.collect_from_expr(&computed.expr);
+                                    }
                                     self.collect_from_expr(&kv.value);
                                 }
-                                Prop::Method(_method) => {
-                                    // Don't visit nested method bodies
+                                Prop::Assign(assign) => {
+                                    // { key = default } — collect the default value expression
+                                    self.collect_from_expr(&assign.value);
                                 }
-                                _ => {}
+                                Prop::Method(method) => {
+                                    // Walk into method bodies to find closure vars from the outer scope.
+                                    for param in &method.function.params {
+                                        self.collect_param_names(&param.pat);
+                                    }
+                                    if let Some(body) = &method.function.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                Prop::Getter(getter) => {
+                                    if let Some(body) = &getter.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
+                                Prop::Setter(setter) => {
+                                    self.collect_declared_names(&setter.param);
+                                    if let Some(body) = &setter.body {
+                                        self.collect_from_block_stmt(body);
+                                    }
+                                }
                             }
                         }
                         PropOrSpread::Spread(spread) => {
@@ -736,11 +923,33 @@ impl ClosureVariableCollector {
                     self.collect_from_expr(expr);
                 }
             }
-            Expr::Arrow(_arrow) => {
-                // Don't visit nested arrow function bodies for closure detection
+            Expr::Arrow(arrow) => {
+                // Walk into nested arrow bodies to find closure vars from the outer scope.
+                // Add the arrow's own params to local_vars so they don't get captured.
+                for param in &arrow.params {
+                    self.collect_declared_names(param);
+                }
+                match &*arrow.body {
+                    BlockStmtOrExpr::BlockStmt(block) => {
+                        self.collect_from_block_stmt(block);
+                    }
+                    BlockStmtOrExpr::Expr(expr) => {
+                        self.collect_from_expr(expr);
+                    }
+                }
             }
-            Expr::Fn(_) => {
-                // Don't visit nested function bodies for closure detection
+            Expr::Fn(fn_expr) => {
+                // Walk into nested function bodies to find closure vars from the outer scope.
+                // Add the function's own params and name to local_vars so they don't get captured.
+                if let Some(ident) = &fn_expr.ident {
+                    self.local_vars.insert(ident.sym.to_string());
+                }
+                for param in &fn_expr.function.params {
+                    self.collect_param_names(&param.pat);
+                }
+                if let Some(body) = &fn_expr.function.body {
+                    self.collect_from_block_stmt(body);
+                }
             }
             Expr::Assign(assign) => {
                 self.collect_from_expr(&assign.right);
@@ -767,7 +976,107 @@ impl ClosureVariableCollector {
             Expr::Await(await_expr) => {
                 self.collect_from_expr(&await_expr.arg);
             }
-            _ => {}
+            Expr::New(new_expr) => {
+                self.collect_from_expr(&new_expr.callee);
+                if let Some(args) = &new_expr.args {
+                    for arg in args {
+                        self.collect_from_expr(&arg.expr);
+                    }
+                }
+            }
+            Expr::Seq(seq) => {
+                for expr in &seq.exprs {
+                    self.collect_from_expr(expr);
+                }
+            }
+            Expr::Yield(yield_expr) => {
+                if let Some(arg) = &yield_expr.arg {
+                    self.collect_from_expr(arg);
+                }
+            }
+            Expr::OptChain(opt_chain) => match &*opt_chain.base {
+                OptChainBase::Member(member) => {
+                    self.collect_from_expr(&member.obj);
+                }
+                OptChainBase::Call(call) => {
+                    self.collect_from_expr(&call.callee);
+                    for arg in &call.args {
+                        self.collect_from_expr(&arg.expr);
+                    }
+                }
+            },
+            Expr::Class(class_expr) => {
+                // Walk into class body to find closure vars from the outer scope.
+                if let Some(super_class) = &class_expr.class.super_class {
+                    self.collect_from_expr(super_class);
+                }
+                for member in &class_expr.class.body {
+                    match member {
+                        ClassMember::Method(method) => {
+                            for param in &method.function.params {
+                                self.collect_param_names(&param.pat);
+                            }
+                            if let Some(body) = &method.function.body {
+                                self.collect_from_block_stmt(body);
+                            }
+                        }
+                        ClassMember::ClassProp(prop) => {
+                            if let Some(value) = &prop.value {
+                                self.collect_from_expr(value);
+                            }
+                        }
+                        ClassMember::Constructor(ctor) => {
+                            for param in &ctor.params {
+                                match param {
+                                    ParamOrTsParamProp::Param(p) => {
+                                        self.collect_param_names(&p.pat);
+                                    }
+                                    ParamOrTsParamProp::TsParamProp(ts_param) => {
+                                        match &ts_param.param {
+                                            TsParamPropParam::Ident(i) => {
+                                                self.local_vars.insert(i.id.sym.to_string());
+                                            }
+                                            TsParamPropParam::Assign(a) => {
+                                                self.collect_declared_names(&a.left);
+                                                self.collect_from_expr(&a.right);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(body) = &ctor.body {
+                                self.collect_from_block_stmt(body);
+                            }
+                        }
+                        ClassMember::PrivateProp(prop) => {
+                            if let Some(value) = &prop.value {
+                                self.collect_from_expr(value);
+                            }
+                        }
+                        ClassMember::StaticBlock(block) => {
+                            self.collect_from_block_stmt(&block.body);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            // TypeScript expression wrappers — visit the inner expression
+            Expr::TsAs(e) => self.collect_from_expr(&e.expr),
+            Expr::TsNonNull(e) => self.collect_from_expr(&e.expr),
+            Expr::TsTypeAssertion(e) => self.collect_from_expr(&e.expr),
+            Expr::TsConstAssertion(e) => self.collect_from_expr(&e.expr),
+            Expr::TsInstantiation(e) => self.collect_from_expr(&e.expr),
+            Expr::TsSatisfies(e) => self.collect_from_expr(&e.expr),
+            _ => {
+                // Remaining variants that are safe to skip:
+                // - Expr::This (keyword)
+                // - Expr::Lit (literal values)
+                // - Expr::SuperProp (super keyword)
+                // - Expr::MetaProp (new.target, import.meta)
+                // - Expr::PrivateName (#foo)
+                // - Expr::Invalid (error recovery)
+                // - Expr::JSX* (JSX — stripped before this plugin runs)
+            }
         }
     }
 
@@ -850,11 +1159,30 @@ fn is_global_identifier(name: &str) -> bool {
             | "DataView"
             | "ArrayBuffer"
             | "SharedArrayBuffer"
+            | "ReadableStream"
+            | "WritableStream"
+            | "TransformStream"
+            | "Blob"
+            | "File"
+            | "FormData"
+            | "AbortController"
+            | "AbortSignal"
+            | "EventTarget"
+            | "Event"
+            | "MessageChannel"
+            | "MessagePort"
             | "Atomics"
             | "Proxy"
             | "Reflect"
             | "Intl"
             | "WebAssembly"
+            | "queueMicrotask"
+            | "structuredClone"
+            | "atob"
+            | "btoa"
+            | "crypto"
+            | "performance"
+            | "navigator"
             | "require"
             | "module"
             | "exports"
@@ -930,6 +1258,7 @@ impl StepTransform {
                                         ClosureVariableCollector::collect_from_function(
                                             &cloned_function,
                                             &self.module_imports,
+                                            &self.declared_identifiers,
                                         );
 
                                     let fn_expr = FnExpr {
@@ -947,42 +1276,10 @@ impl StepTransform {
                                             .unwrap_or_default(),
                                     ));
 
-                                    // Replace with const declaration referencing the hoisted function
-                                    let hoisted_name =
-                                        if let Some(parent) = &self.current_parent_function_name {
-                                            if !parent.is_empty() {
-                                                format!("{}${}", parent, fn_name)
-                                            } else {
-                                                fn_name.clone()
-                                            }
-                                        } else {
-                                            fn_name.clone()
-                                        };
-
-                                    let var_decl = Decl::Var(Box::new(VarDecl {
-                                        span: DUMMY_SP,
-                                        ctxt: SyntaxContext::empty(),
-                                        kind: VarDeclKind::Const,
-                                        decls: vec![VarDeclarator {
-                                            span: DUMMY_SP,
-                                            name: Pat::Ident(BindingIdent {
-                                                id: Ident::new(
-                                                    fn_name.clone().into(),
-                                                    DUMMY_SP,
-                                                    SyntaxContext::empty(),
-                                                ),
-                                                type_ann: None,
-                                            }),
-                                            init: Some(Box::new(Expr::Ident(Ident::new(
-                                                hoisted_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            )))),
-                                            definite: false,
-                                        }],
-                                        declare: false,
-                                    }));
-                                    *stmt = Stmt::Decl(var_decl);
+                                    // Keep the original function declaration with the directive stripped,
+                                    // so that direct (non-workflow) calls work with normal closure semantics.
+                                    // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                    self.remove_use_step_directive(&mut fn_decl.function.body);
                                     return;
                                 }
                                 TransformMode::Workflow => {
@@ -1005,6 +1302,7 @@ impl StepTransform {
                                         ClosureVariableCollector::collect_from_function(
                                             &fn_decl.function,
                                             &self.module_imports,
+                                            &self.declared_identifiers,
                                         );
                                     let proxy_ref =
                                         self.create_step_proxy_reference(&step_id, &closure_vars);
@@ -1247,6 +1545,7 @@ impl StepTransform {
             step_exports_to_convert: Vec::new(),
             default_exports_to_replace: Vec::new(),
             default_workflow_exports: Vec::new(),
+            default_class_exports: Vec::new(),
             declared_identifiers: HashSet::new(),
             object_property_step_functions: Vec::new(),
             nested_step_functions: Vec::new(),
@@ -1263,6 +1562,7 @@ impl StepTransform {
             instance_step_methods_to_strip: Vec::new(),
             classes_needing_serialization: HashSet::new(),
             serialization_symbol_identifiers: HashMap::new(),
+            require_namespace_identifiers: HashSet::new(),
             classes_for_manifest: HashSet::new(),
         }
     }
@@ -1314,6 +1614,74 @@ impl StepTransform {
     }
 
     // Collect all declared identifiers in the module to avoid naming collisions
+    /// Inspect a single `VarDeclarator` for serialization-related bindings:
+    /// - `Symbol.for('workflow-serialize')` / `Symbol.for('workflow-deserialize')` assignments
+    /// - CommonJS namespace require: `const serde_1 = require("...")`
+    /// - CommonJS destructured require: `const { WORKFLOW_SERIALIZE } = require("...")`
+    fn track_serialization_bindings(&mut self, declarator: &VarDeclarator) {
+        let Some(init) = &declarator.init else {
+            return;
+        };
+
+        // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
+        if let Pat::Ident(ident) = &declarator.name {
+            if let Some(symbol_name) = self.extract_symbol_for_name(init) {
+                if symbol_name == "workflow-serialize" || symbol_name == "workflow-deserialize" {
+                    self.serialization_symbol_identifiers
+                        .insert(ident.id.sym.to_string(), symbol_name);
+                }
+            }
+            // Track CommonJS namespace require: const serde_1 = require("...")
+            if self.is_require_call(init) {
+                self.require_namespace_identifiers
+                    .insert(ident.id.sym.to_string());
+            }
+        }
+
+        // Track CommonJS destructured require:
+        // const { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } = require("...")
+        if let Pat::Object(obj_pat) = &declarator.name {
+            if self.is_require_call(init) {
+                for prop in &obj_pat.props {
+                    match prop {
+                        ObjectPatProp::Assign(assign) => {
+                            // const { WORKFLOW_SERIALIZE } = require("...")
+                            let name = assign.key.sym.to_string();
+                            if name == "WORKFLOW_SERIALIZE" {
+                                self.serialization_symbol_identifiers
+                                    .insert(name, "workflow-serialize".to_string());
+                            } else if name == "WORKFLOW_DESERIALIZE" {
+                                self.serialization_symbol_identifiers
+                                    .insert(name, "workflow-deserialize".to_string());
+                            }
+                        }
+                        ObjectPatProp::KeyValue(kv) => {
+                            // const { WORKFLOW_SERIALIZE: ws } = require("...")
+                            let key_name = match &kv.key {
+                                PropName::Ident(id) => Some(id.sym.to_string()),
+                                PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                                _ => None,
+                            };
+                            if let Some(key) = key_name {
+                                if let Pat::Ident(local) = &*kv.value {
+                                    let local_name = local.id.sym.to_string();
+                                    if key == "WORKFLOW_SERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-serialize".to_string());
+                                    } else if key == "WORKFLOW_DESERIALIZE" {
+                                        self.serialization_symbol_identifiers
+                                            .insert(local_name, "workflow-deserialize".to_string());
+                                    }
+                                }
+                            }
+                        }
+                        ObjectPatProp::Rest(_) => {}
+                    }
+                }
+            }
+        }
+    }
+
     fn collect_declared_identifiers(&mut self, items: &[ModuleItem]) {
         for item in items {
             match item {
@@ -1325,19 +1693,7 @@ impl StepTransform {
                     Decl::Var(var_decl) => {
                         for declarator in &var_decl.decls {
                             self.collect_idents_from_pat(&declarator.name);
-                            // Track const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-                            if let Pat::Ident(ident) = &declarator.name {
-                                if let Some(init) = &declarator.init {
-                                    if let Some(symbol_name) = self.extract_symbol_for_name(init) {
-                                        if symbol_name == "workflow-serialize"
-                                            || symbol_name == "workflow-deserialize"
-                                        {
-                                            self.serialization_symbol_identifiers
-                                                .insert(ident.id.sym.to_string(), symbol_name);
-                                        }
-                                    }
-                                }
-                            }
+                            self.track_serialization_bindings(declarator);
                         }
                     }
                     Decl::Class(class_decl) => {
@@ -1355,21 +1711,7 @@ impl StepTransform {
                         Decl::Var(var_decl) => {
                             for declarator in &var_decl.decls {
                                 self.collect_idents_from_pat(&declarator.name);
-                                // Track exported const declarations that assign Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
-                                if let Pat::Ident(ident) = &declarator.name {
-                                    if let Some(init) = &declarator.init {
-                                        if let Some(symbol_name) =
-                                            self.extract_symbol_for_name(init)
-                                        {
-                                            if symbol_name == "workflow-serialize"
-                                                || symbol_name == "workflow-deserialize"
-                                            {
-                                                self.serialization_symbol_identifiers
-                                                    .insert(ident.id.sym.to_string(), symbol_name);
-                                            }
-                                        }
-                                    }
-                                }
+                                self.track_serialization_bindings(declarator);
                             }
                         }
                         Decl::Class(class_decl) => {
@@ -1702,34 +2044,19 @@ impl StepTransform {
                                 // Now handle the transformation based on mode
                                 match self.mode {
                                     TransformMode::Step => {
-                                        // In step mode, replace method with key-value property referencing the hoisted variable
-                                        // Replace slashes with $ in parent_var_name to create valid JS identifier
-                                        let safe_parent_name = parent_var_name.replace('/', "$");
-                                        let hoist_var_name = if let Some(ref workflow_name) =
-                                            self.current_workflow_function_name
-                                        {
-                                            format!(
-                                                "{}${}${}",
-                                                workflow_name, safe_parent_name, prop_key
-                                            )
-                                        } else {
-                                            format!("{}${}", safe_parent_name, prop_key)
-                                        };
+                                        // Keep the original method with the directive stripped,
+                                        // so that direct (non-workflow) calls work with normal closure semantics.
+                                        // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                        self.remove_use_step_directive(
+                                            &mut method_prop.function.body,
+                                        );
+                                        // Track for metadata generation
                                         let step_id = self.create_object_property_id(
                                             parent_var_name,
                                             &prop_key,
                                             false,
                                             self.current_workflow_function_name.as_deref(),
                                         );
-                                        // Replace the method with a key-value property referencing the hoisted function
-                                        *boxed_prop = Box::new(Prop::KeyValue(KeyValueProp {
-                                            key: method_prop.key.clone(),
-                                            value: Box::new(Expr::Ident(Ident::new(
-                                                hoist_var_name.into(),
-                                                DUMMY_SP,
-                                                SyntaxContext::empty(),
-                                            ))),
-                                        }));
                                         self.object_property_workflow_conversions.push((
                                             parent_var_name.to_string(),
                                             prop_key,
@@ -1816,21 +2143,10 @@ impl StepTransform {
 
         match self.mode {
             TransformMode::Step => {
-                // In step mode, replace with reference to hoisted variable
-                // Replace slashes with $ in parent_var_name to create valid JS identifier
-                let safe_parent_name = parent_var_name.replace('/', "$");
-                let hoist_var_name =
-                    if let Some(ref workflow_name) = self.current_workflow_function_name {
-                        format!("{}${}${}", workflow_name, safe_parent_name, prop_key)
-                    } else {
-                        format!("{}${}", safe_parent_name, prop_key)
-                    };
-                *kv_prop.value = Expr::Ident(Ident::new(
-                    hoist_var_name.into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                ));
-                // Track for metadata
+                // Keep the original value (directive already stripped by caller),
+                // so that direct (non-workflow) calls work with normal closure semantics.
+                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                // Track for metadata generation
                 self.object_property_workflow_conversions.push((
                     parent_var_name.to_string(),
                     prop_key.to_string(),
@@ -2361,11 +2677,30 @@ impl StepTransform {
         None
     }
 
+    /// Check if an expression is a `require('...')` or `require("...")` call.
+    /// Returns true only when the callee is `require` with exactly one string literal argument.
+    fn is_require_call(&self, expr: &Expr) -> bool {
+        if let Expr::Call(call) = expr {
+            if let Callee::Expr(callee) = &call.callee {
+                if let Expr::Ident(ident) = &**callee {
+                    if ident.sym.as_str() == "require" && call.args.len() == 1 {
+                        // Ensure the single argument is a string literal
+                        if let Expr::Lit(Lit::Str(_)) = &*call.args[0].expr {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Check if an expression represents a workflow serialization symbol.
     /// Supports multiple patterns:
     /// 1. Direct: `Symbol.for('workflow-serialize')` or `Symbol.for('workflow-deserialize')`
     /// 2. Identifier reference to an imported symbol: `WORKFLOW_SERIALIZE` (imported from '@workflow/serde')
     /// 3. Identifier reference to a local const: `const MY_SYM = Symbol.for('workflow-serialize')`
+    /// 4. Member expression on a require() namespace: `serde_1.WORKFLOW_SERIALIZE`
     fn is_workflow_serialization_symbol(&self, expr: &Expr, symbol_name: &str) -> bool {
         // Pattern 1: Direct Symbol.for('workflow-serialize') or Symbol.for('workflow-deserialize')
         if let Some(extracted_name) = self.extract_symbol_for_name(expr) {
@@ -2379,6 +2714,26 @@ impl StepTransform {
                 .get(&ident.sym.to_string())
             {
                 return known_symbol == symbol_name;
+            }
+        }
+
+        // Pattern 4: Member expression on a require() namespace binding
+        // e.g., serde_1.WORKFLOW_SERIALIZE where serde_1 = require("@workflow/serde")
+        if let Expr::Member(member) = expr {
+            if let Expr::Ident(obj) = &*member.obj {
+                if self
+                    .require_namespace_identifiers
+                    .contains(&obj.sym.to_string())
+                {
+                    if let MemberProp::Ident(prop) = &member.prop {
+                        let prop_name = prop.sym.as_str();
+                        if prop_name == "WORKFLOW_SERIALIZE" {
+                            return symbol_name == "workflow-serialize";
+                        } else if prop_name == "WORKFLOW_DESERIALIZE" {
+                            return symbol_name == "workflow-deserialize";
+                        }
+                    }
+                }
             }
         }
 
@@ -2411,6 +2766,22 @@ impl StepTransform {
         }
 
         has_serialize && has_deserialize
+    }
+
+    /// Returns `true` if the class has any methods with `"use step"` or `"use workflow"`
+    /// directives, or has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE).
+    /// Used to determine whether an anonymous default class export needs a binding name rewrite.
+    fn class_needs_binding_rewrite(&self, class: &Class) -> bool {
+        if self.has_custom_serialization_methods(class) {
+            return true;
+        }
+        class.body.iter().any(|member| {
+            if let ClassMember::Method(method) = member {
+                return self.has_use_step_directive(&method.function.body)
+                    || self.has_use_workflow_directive(&method.function.body);
+            }
+            false
+        })
     }
 
     // Remove "use step" directive from arrow function body
@@ -2543,49 +2914,276 @@ impl StepTransform {
         }))
     }
 
-    // Generate the import for registerSerializationClass from a Node.js-free module (workflow mode)
-    // This is separate from create_private_imports to avoid pulling in Node.js dependencies
-    // (like async_hooks) in workflow bundles.
-    fn create_class_serialization_import(&self) -> ModuleItem {
-        ModuleItem::ModuleDecl(ModuleDecl::Import(ImportDecl {
-            span: DUMMY_SP,
-            specifiers: vec![ImportSpecifier::Named(ImportNamedSpecifier {
-                span: DUMMY_SP,
-                local: Ident::new(
-                    "registerSerializationClass".into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                ),
-                imported: None,
-                is_type_only: false,
-            })],
-            src: Box::new(Str {
-                span: DUMMY_SP,
-                value: "workflow/internal/class-serialization".into(),
-                raw: None,
-            }),
-            type_only: false,
-            with: None,
-            phase: ImportPhase::Evaluation,
-        }))
-    }
-
-    // Create a registration call statement: registerSerializationClass("class//...", ClassName)
-    // Used in workflow mode and client mode to register classes for serialization
+    // Create an inline class serialization registration statement.
+    // Instead of importing registerSerializationClass from "workflow/internal/class-serialization",
+    // we inline the registration logic as a self-contained IIFE that has zero module dependencies.
+    // This is critical for 3rd-party packages that define serializable classes but don't depend
+    // on the "workflow" package directly.
+    //
+    // Generates:
+    //   (function(__wf_cls, __wf_id) {
+    //     var __wf_sym = Symbol.for("workflow-class-registry");
+    //     var __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    //     __wf_reg.set(__wf_id, __wf_cls);
+    //     Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+    //   })(ClassName, "class//module_path//ClassName");
     fn create_class_serialization_registration(&self, class_name: &str) -> Stmt {
         let class_id = naming::format_name("class", &self.get_module_path(), class_name);
+
+        // Helper to create an identifier
+        let ident =
+            |name: &str| -> Ident { Ident::new(name.into(), DUMMY_SP, SyntaxContext::empty()) };
+
+        // Helper to create an identifier expression
+        let ident_expr = |name: &str| -> Box<Expr> { Box::new(Expr::Ident(ident(name))) };
+
+        // var __wf_sym = Symbol.for("workflow-class-registry");
+        let sym_decl = VarDeclarator {
+            span: DUMMY_SP,
+            name: Pat::Ident(BindingIdent {
+                id: ident("__wf_sym"),
+                type_ann: None,
+            }),
+            init: Some(Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("Symbol"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "for".into(),
+                    }),
+                }))),
+                args: vec![ExprOrSpread {
+                    spread: None,
+                    expr: Box::new(Expr::Lit(Lit::Str(Str {
+                        span: DUMMY_SP,
+                        value: "workflow-class-registry".into(),
+                        raw: None,
+                    }))),
+                }],
+                type_args: None,
+            }))),
+            definite: false,
+        };
+
+        // var __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+        let global_sym_access = Box::new(Expr::Member(MemberExpr {
+            span: DUMMY_SP,
+            obj: ident_expr("globalThis"),
+            prop: MemberProp::Computed(ComputedPropName {
+                span: DUMMY_SP,
+                expr: ident_expr("__wf_sym"),
+            }),
+        }));
+
+        let reg_decl = VarDeclarator {
+            span: DUMMY_SP,
+            name: Pat::Ident(BindingIdent {
+                id: ident("__wf_reg"),
+                type_ann: None,
+            }),
+            init: Some(Box::new(Expr::Bin(BinExpr {
+                span: DUMMY_SP,
+                op: BinaryOp::LogicalOr,
+                left: global_sym_access.clone(),
+                right: Box::new(Expr::Paren(ParenExpr {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Assign(AssignExpr {
+                        span: DUMMY_SP,
+                        op: AssignOp::Assign,
+                        left: AssignTarget::Simple(SimpleAssignTarget::Member(MemberExpr {
+                            span: DUMMY_SP,
+                            obj: ident_expr("globalThis"),
+                            prop: MemberProp::Computed(ComputedPropName {
+                                span: DUMMY_SP,
+                                expr: ident_expr("__wf_sym"),
+                            }),
+                        })),
+                        right: Box::new(Expr::New(NewExpr {
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            callee: ident_expr("Map"),
+                            args: Some(vec![]),
+                            type_args: None,
+                        })),
+                    })),
+                })),
+            }))),
+            definite: false,
+        };
+
+        // __wf_reg.set(__wf_id, __wf_cls);
+        let set_call = Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("__wf_reg"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "set".into(),
+                    }),
+                }))),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_id"),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_cls"),
+                    },
+                ],
+                type_args: None,
+            })),
+        });
+
+        // Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
+        let define_property_call = Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("Object"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "defineProperty".into(),
+                    }),
+                }))),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_cls"),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                            span: DUMMY_SP,
+                            value: "classId".into(),
+                            raw: None,
+                        }))),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Object(ObjectLit {
+                            span: DUMMY_SP,
+                            props: vec![
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "value".into(),
+                                    }),
+                                    value: ident_expr("__wf_id"),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "writable".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: false,
+                                    }))),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "enumerable".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: false,
+                                    }))),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "configurable".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: false,
+                                    }))),
+                                }))),
+                            ],
+                        })),
+                    },
+                ],
+                type_args: None,
+            })),
+        });
+
+        // The function body: var decls + set + defineProperty
+        let function_body = BlockStmt {
+            span: DUMMY_SP,
+            ctxt: SyntaxContext::empty(),
+            stmts: vec![
+                // var __wf_sym = ..., __wf_reg = ...;
+                Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                    span: DUMMY_SP,
+                    ctxt: SyntaxContext::empty(),
+                    kind: VarDeclKind::Var,
+                    declare: false,
+                    decls: vec![sym_decl, reg_decl],
+                }))),
+                set_call,
+                define_property_call,
+            ],
+        };
+
+        // The IIFE: (function(__wf_cls, __wf_id) { ... })(ClassName, /* generated class ID string */);
         Stmt::Expr(ExprStmt {
             span: DUMMY_SP,
             expr: Box::new(Expr::Call(CallExpr {
                 span: DUMMY_SP,
                 ctxt: SyntaxContext::empty(),
-                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-                    "registerSerializationClass".into(),
-                    DUMMY_SP,
-                    SyntaxContext::empty(),
-                )))),
+                callee: Callee::Expr(Box::new(Expr::Paren(ParenExpr {
+                    span: DUMMY_SP,
+                    expr: Box::new(Expr::Fn(FnExpr {
+                        ident: None,
+                        function: Box::new(Function {
+                            params: vec![
+                                Param {
+                                    span: DUMMY_SP,
+                                    decorators: vec![],
+                                    pat: Pat::Ident(BindingIdent {
+                                        id: ident("__wf_cls"),
+                                        type_ann: None,
+                                    }),
+                                },
+                                Param {
+                                    span: DUMMY_SP,
+                                    decorators: vec![],
+                                    pat: Pat::Ident(BindingIdent {
+                                        id: ident("__wf_id"),
+                                        type_ann: None,
+                                    }),
+                                },
+                            ],
+                            decorators: vec![],
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            body: Some(function_body),
+                            is_generator: false,
+                            is_async: false,
+                            type_params: None,
+                            return_type: None,
+                        }),
+                    })),
+                }))),
                 args: vec![
-                    // First argument: class ID
+                    // First argument: ClassName
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Ident(ident(class_name))),
+                    },
+                    // Second argument: class ID string
                     ExprOrSpread {
                         spread: None,
                         expr: Box::new(Expr::Lit(Lit::Str(Str {
@@ -2593,15 +3191,6 @@ impl StepTransform {
                             value: class_id.into(),
                             raw: None,
                         }))),
-                    },
-                    // Second argument: ClassName
-                    ExprOrSpread {
-                        spread: None,
-                        expr: Box::new(Expr::Ident(Ident::new(
-                            class_name.into(),
-                            DUMMY_SP,
-                            SyntaxContext::empty(),
-                        ))),
                     },
                 ],
                 type_args: None,
@@ -3644,12 +4233,7 @@ impl VisitMut for StepTransform {
 
                 match self.mode {
                     TransformMode::Workflow => {
-                        // In workflow mode, we need the import for class serialization
-                        let needs_class_serialization =
-                            !self.classes_needing_serialization.is_empty();
-                        if needs_class_serialization {
-                            imports_to_add.push(self.create_class_serialization_import());
-                        }
+                        // Class serialization registration is now inlined (no import needed)
                     }
                     TransformMode::Step => {
                         // Check what needs to be imported
@@ -3665,10 +4249,6 @@ impl VisitMut for StepTransform {
                             .iter()
                             .any(|(_, _, _, closure_vars, _, _)| !closure_vars.is_empty());
 
-                        // Check if we need to register classes for serialization
-                        let needs_class_serialization =
-                            !self.classes_needing_serialization.is_empty();
-
                         if needs_register_import || needs_closure_import {
                             imports_to_add.push(self.create_private_imports(
                                 needs_register_import,
@@ -3676,20 +4256,12 @@ impl VisitMut for StepTransform {
                             ));
                         }
 
-                        // Add separate import for class serialization
-                        if needs_class_serialization {
-                            imports_to_add.push(self.create_class_serialization_import());
-                        }
+                        // Class serialization registration is now inlined (no import needed)
                     }
                     TransformMode::Client => {
                         // In client mode, we use stepId property assignments instead of registerStepFunction
                         // for step functions, so no need to import registerStepFunction.
-                        // Class serialization registration is still needed.
-                        let needs_class_serialization =
-                            !self.classes_needing_serialization.is_empty();
-                        if needs_class_serialization {
-                            imports_to_add.push(self.create_class_serialization_import());
-                        }
+                        // Class serialization registration is now inlined (no import needed)
                     }
                 }
 
@@ -4094,52 +4666,14 @@ impl VisitMut for StepTransform {
                     }
 
                     // Add class serialization registrations for step mode
-                    // In step mode, we need:
-                    // 1. registerSerializationClass(classId, ClassName) - for deserialization
-                    // 2. ClassName.classId = "..." - for serialization (though not typically needed in step mode)
+                    // Uses inlined IIFE registration (no import needed)
                     // Sort for deterministic output ordering
                     let mut sorted_classes: Vec<_> =
                         self.classes_needing_serialization.drain().collect();
                     sorted_classes.sort();
-                    let module_path = self.get_module_path();
                     for class_name in sorted_classes {
-                        // Generate class ID: class//module_path//ClassName
-                        let class_id = naming::format_name("class", &module_path, &class_name);
-
-                        // Create: registerSerializationClass("class//...", ClassName)
-                        let registration_call = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Call(CallExpr {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-                                    "registerSerializationClass".into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                )))),
-                                args: vec![
-                                    // First argument: class ID
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                            span: DUMMY_SP,
-                                            value: class_id.into(),
-                                            raw: None,
-                                        }))),
-                                    },
-                                    // Second argument: ClassName
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Ident(Ident::new(
-                                            class_name.into(),
-                                            DUMMY_SP,
-                                            SyntaxContext::empty(),
-                                        ))),
-                                    },
-                                ],
-                                type_args: None,
-                            })),
-                        });
+                        let registration_call =
+                            self.create_class_serialization_registration(&class_name);
                         module.body.push(ModuleItem::Stmt(registration_call));
                     }
                 }
@@ -4519,25 +5053,18 @@ impl VisitMut for StepTransform {
                     match self.mode {
                         TransformMode::Workflow => {
                             // No imports needed for workflow mode
+                            // Class serialization registration is inlined (no import needed)
                         }
                         TransformMode::Step => {
-                            let needs_class_serialization =
-                                !self.classes_needing_serialization.is_empty();
                             if !self.registration_calls.is_empty() {
                                 module_items.push(self.create_private_imports(true, false));
                             }
-                            if needs_class_serialization {
-                                module_items.push(self.create_class_serialization_import());
-                            }
+                            // Class serialization registration is inlined (no import needed)
                         }
                         TransformMode::Client => {
-                            // In client mode, we still need class serialization registration
-                            // so that classes can be serialized when passed to start(workflow)
-                            let needs_class_serialization =
-                                !self.classes_needing_serialization.is_empty();
-                            if needs_class_serialization {
-                                module_items.push(self.create_class_serialization_import());
-                            }
+                            // In client mode, we use stepId property assignments instead of registerStepFunction
+                            // for step functions, so no need to import registerStepFunction.
+                            // Class serialization registration is inlined (no import needed)
                         }
                     }
 
@@ -5115,6 +5642,13 @@ impl VisitMut for StepTransform {
         // Clear workflow_exports_to_expand since workflowId is now added inline
         self.workflow_exports_to_expand.clear();
 
+        // A module can only have one default export, so default workflow exports and
+        // default class exports are mutually exclusive.
+        debug_assert!(
+            self.default_workflow_exports.is_empty() || self.default_class_exports.is_empty(),
+            "both default_workflow_exports and default_class_exports are populated"
+        );
+
         // Handle default workflow exports (all modes)
         // We need to: 1) find the export default position, 2) replace it with const declaration,
         // 3) add workflowId assignment, 4) add export default at the end
@@ -5226,6 +5760,77 @@ impl VisitMut for StepTransform {
                         }
                         _ => {}
                     }
+                }
+            }
+        }
+
+        // Handle default class exports that need a binding name.
+        // Rewrites `export default class { ... }` to:
+        //   const __DefaultClass = class __DefaultClass { ... };
+        //   export default __DefaultClass;
+        if !self.default_class_exports.is_empty() {
+            let class_exports: Vec<_> = self.default_class_exports.drain(..).collect();
+            // A module can only have one default export, so at most one rewrite is queued.
+            debug_assert!(
+                class_exports.len() <= 1,
+                "expected at most one default class export rewrite, got {}",
+                class_exports.len()
+            );
+
+            // Find the original export default position
+            let mut export_position = None;
+            for (i, item) in items.iter().enumerate() {
+                match item {
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(_))
+                    | ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(_)) => {
+                        export_position = Some(i);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(pos) = export_position {
+                // Remove the original export default
+                items.remove(pos);
+
+                for (const_name, class_expr) in class_exports {
+                    // Insert: const __DefaultClass = class __DefaultClass { ... };
+                    items.insert(
+                        pos,
+                        ModuleItem::Stmt(Stmt::Decl(Decl::Var(Box::new(VarDecl {
+                            span: DUMMY_SP,
+                            ctxt: SyntaxContext::empty(),
+                            kind: VarDeclKind::Const,
+                            declare: false,
+                            decls: vec![VarDeclarator {
+                                span: DUMMY_SP,
+                                name: Pat::Ident(BindingIdent {
+                                    id: Ident::new(
+                                        const_name.clone().into(),
+                                        DUMMY_SP,
+                                        SyntaxContext::empty(),
+                                    ),
+                                    type_ann: None,
+                                }),
+                                init: Some(Box::new(Expr::Class(class_expr))),
+                                definite: false,
+                            }],
+                        })))),
+                    );
+
+                    // Insert: export default __DefaultClass;
+                    items.insert(
+                        pos + 1,
+                        ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(ExportDefaultExpr {
+                            span: DUMMY_SP,
+                            expr: Box::new(Expr::Ident(Ident::new(
+                                const_name.into(),
+                                DUMMY_SP,
+                                SyntaxContext::empty(),
+                            ))),
+                        })),
+                    );
                 }
             }
         }
@@ -6408,7 +7013,7 @@ impl VisitMut for StepTransform {
                                                 );
 
                                                 // Collect closure variables before conversion
-                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports);
+                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports, &self.declared_identifiers);
 
                                                 // Create a function expression from the arrow function
                                                 // (We need to convert it to a regular function for hoisting)
@@ -6470,23 +7075,12 @@ impl VisitMut for StepTransform {
                                                         .unwrap_or_default(),
                                                 ));
 
-                                                // Replace with identifier reference to the hoisted function
-                                                let hoisted_name = if let Some(parent) =
-                                                    &self.current_parent_function_name
-                                                {
-                                                    if !parent.is_empty() {
-                                                        format!("{}${}", parent, name)
-                                                    } else {
-                                                        name
-                                                    }
-                                                } else {
-                                                    name
-                                                };
-                                                *init = Box::new(Expr::Ident(Ident::new(
-                                                    hoisted_name.into(),
-                                                    DUMMY_SP,
-                                                    SyntaxContext::empty(),
-                                                )));
+                                                // Keep the original arrow with the directive stripped,
+                                                // so that direct (non-workflow) calls work with normal closure semantics.
+                                                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                                self.remove_use_step_directive_arrow(
+                                                    &mut arrow_expr.body,
+                                                );
                                             }
                                             TransformMode::Workflow => {
                                                 // Replace with proxy reference (not a function call)
@@ -6505,7 +7099,7 @@ impl VisitMut for StepTransform {
                                                 );
 
                                                 // Collect closure variables
-                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports);
+                                                let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports, &self.declared_identifiers);
                                                 *init = Box::new(self.create_step_proxy_reference(
                                                     &step_id,
                                                     &closure_vars,
@@ -6831,28 +7425,34 @@ impl VisitMut for StepTransform {
         // Get the binding name set by visit_mut_var_decl (e.g., "Foo" from `var Foo = class { ... }`)
         let binding_name = self.current_class_binding_name.take();
 
-        // Get the internal class name (used for current_class_name tracking)
-        let mut internal_class_name = class_expr
+        // Get the internal class expression name (e.g. `_Foo` from `class _Foo { ... }`)
+        let expr_ident_name = class_expr
             .ident
             .as_ref()
             .map(|i| i.sym.to_string())
             .unwrap_or_else(|| "AnonymousClass".to_string());
 
-        // For serialization registration, use the binding name if available
-        // e.g., for `var Bash = class _Bash {}`, use "Bash" not "_Bash"
-        // because "_Bash" is not accessible at module scope
-        let registration_name = binding_name
+        // Compute the tracked class name: prefer the binding name (e.g. `Foo`
+        // from `var Foo = class _Foo {}`) over the internal class expression
+        // name (`_Foo`). The internal name is only scoped inside the class body
+        // and is not accessible at module level, so all generated code emitted
+        // outside the class — method step registrations, class serialization
+        // IIFEs, and method-stripping filters — must use the binding name.
+        // Without this, generated code like
+        // `registerStepFunction("...", _Foo.prototype["method"])` would
+        // produce a ReferenceError at runtime.
+        let tracked_class_name = binding_name
             .clone()
-            .unwrap_or_else(|| internal_class_name.clone());
+            .unwrap_or_else(|| expr_ident_name.clone());
 
         let old_class_name = self.current_class_name.take();
-        self.current_class_name = Some(internal_class_name.clone());
+        self.current_class_name = Some(tracked_class_name.clone());
 
         // Check if class has custom serialization methods (WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE)
         let has_serde = self.has_custom_serialization_methods(&class_expr.class);
         if has_serde {
             self.classes_needing_serialization
-                .insert(registration_name.clone());
+                .insert(tracked_class_name.clone());
         }
 
         // esbuild emits anonymous class expressions for classes that don't
@@ -6870,12 +7470,6 @@ impl VisitMut for StepTransform {
                     DUMMY_SP,
                     SyntaxContext::empty(),
                 ));
-                // Recompute internal_class_name and update current_class_name so
-                // that subsequent logic (e.g. step/workflow method naming and
-                // method-stripping filters) uses the actual class name rather
-                // than "AnonymousClass".
-                internal_class_name = name.clone();
-                self.current_class_name = Some(name.clone());
             }
         }
 
@@ -6887,14 +7481,14 @@ impl VisitMut for StepTransform {
             let static_methods_to_strip: Vec<_> = self
                 .static_step_methods_to_strip
                 .iter()
-                .filter(|(cn, _, _)| cn == &internal_class_name)
+                .filter(|(cn, _, _)| cn == &tracked_class_name)
                 .map(|(_, mn, _)| mn.clone())
                 .collect();
 
             let instance_methods_to_strip: Vec<_> = self
                 .instance_step_methods_to_strip
                 .iter()
-                .filter(|(cn, _, _)| cn == &internal_class_name)
+                .filter(|(cn, _, _)| cn == &tracked_class_name)
                 .map(|(_, mn, _)| mn.clone())
                 .collect();
 
@@ -7268,6 +7862,7 @@ impl VisitMut for StepTransform {
                                 let closure_vars = ClosureVariableCollector::collect_from_function(
                                     &cloned_function,
                                     &self.module_imports,
+                                    &self.declared_identifiers,
                                 );
 
                                 let hoisted_fn_expr = FnExpr {
@@ -7290,23 +7885,11 @@ impl VisitMut for StepTransform {
                                         .unwrap_or_default(),
                                 ));
 
-                                // Replace with identifier reference
-                                let hoisted_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}${}", parent, name)
-                                        } else {
-                                            name
-                                        }
-                                    } else {
-                                        name
-                                    };
-                                *expr = Expr::Ident(Ident::new(
-                                    hoisted_name.into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                ));
-                                return; // Don't visit children since we replaced the expr
+                                // Keep the original function with the directive stripped,
+                                // so that direct (non-workflow) calls work with normal closure semantics.
+                                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                self.remove_use_step_directive(&mut fn_expr.function.body);
+                                return; // Don't visit children since we already processed
                             }
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
@@ -7330,6 +7913,7 @@ impl VisitMut for StepTransform {
                                 let closure_vars = ClosureVariableCollector::collect_from_function(
                                     &fn_expr.function,
                                     &self.module_imports,
+                                    &self.declared_identifiers,
                                 );
                                 *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
                                 return; // Don't visit children since we replaced the expr
@@ -7365,6 +7949,7 @@ impl VisitMut for StepTransform {
                                     ClosureVariableCollector::collect_from_arrow_expr(
                                         &cloned_arrow,
                                         &self.module_imports,
+                                        &self.declared_identifiers,
                                     );
 
                                 // Convert to function expression for hoisting
@@ -7416,23 +8001,11 @@ impl VisitMut for StepTransform {
                                         .unwrap_or_default(),
                                 ));
 
-                                // Replace with identifier reference
-                                let hoisted_name =
-                                    if let Some(parent) = &self.current_parent_function_name {
-                                        if !parent.is_empty() {
-                                            format!("{}${}", parent, name)
-                                        } else {
-                                            name
-                                        }
-                                    } else {
-                                        name
-                                    };
-                                *expr = Expr::Ident(Ident::new(
-                                    hoisted_name.into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                ));
-                                return; // Don't visit children since we replaced the expr
+                                // Keep the original arrow with the directive stripped,
+                                // so that direct (non-workflow) calls work with normal closure semantics.
+                                // The hoisted copy (with __private_getClosureVars) is registered separately.
+                                self.remove_use_step_directive_arrow(&mut arrow_expr.body);
+                                return; // Don't visit children since we already processed
                             }
                             TransformMode::Workflow => {
                                 // Replace with proxy reference
@@ -7454,6 +8027,7 @@ impl VisitMut for StepTransform {
                                     ClosureVariableCollector::collect_from_arrow_expr(
                                         arrow_expr,
                                         &self.module_imports,
+                                        &self.declared_identifiers,
                                     );
                                 *expr = self.create_step_proxy_reference(&step_id, &closure_vars);
                                 return; // Don't visit children since we replaced the expr
@@ -7641,6 +8215,40 @@ impl VisitMut for StepTransform {
                 }
 
                 decl.visit_mut_children_with(self);
+            }
+            DefaultDecl::Class(class_expr) => {
+                // Handle `export default class { ... }` and `export default class Foo { ... }`
+                // When the class has serde methods or step methods, we need a binding name
+                // accessible at module scope for registration code. Named class exports
+                // already have their ident in scope; for anonymous class exports, generate
+                // a unique name and defer rewriting to visit_mut_module_items.
+                let needs_rewrite = class_expr.ident.is_none()
+                    && self.class_needs_binding_rewrite(&class_expr.class);
+
+                // Set the binding name before visiting children.
+                // Save const_name for use after visiting (current_class_binding_name
+                // will be consumed by visit_mut_class_expr).
+                let saved_const_name = if needs_rewrite {
+                    let const_name = self.generate_unique_name("__DefaultClass");
+                    self.current_class_binding_name = Some(const_name.clone());
+                    Some(const_name)
+                } else {
+                    if let Some(ident) = &class_expr.ident {
+                        self.current_class_binding_name = Some(ident.sym.to_string());
+                    }
+                    None
+                };
+
+                // Visit the class body so serde/step transforms run
+                decl.visit_mut_children_with(self);
+
+                // After visiting, defer the rewrite for anonymous classes
+                if let Some(const_name) = saved_const_name {
+                    if let DefaultDecl::Class(class_expr) = &decl.decl {
+                        self.default_class_exports
+                            .push((const_name, class_expr.clone()));
+                    }
+                }
             }
             _ => {
                 decl.visit_mut_children_with(self);
@@ -7851,6 +8459,11 @@ impl VisitMut for StepTransform {
                     }
                 }
             }
+            // Note: `export default (class { ... })` with parentheses is parsed by SWC
+            // as Expr::Paren(ParenExpr { expr: Class(...) }), NOT as Expr::Class directly.
+            // The declaration form `export default class { ... }` is handled in
+            // visit_mut_export_default_decl above. The parenthesized expression form is
+            // rare enough that we don't handle it here.
             _ => {}
         }
 
@@ -7920,7 +8533,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&cloned_arrow, &self.module_imports, &self.declared_identifiers);
 
                                                         // Convert to function expression
                                                         let fn_expr = FnExpr {
@@ -7988,12 +8601,10 @@ impl VisitMut for StepTransform {
                                                                 .unwrap_or_default(),
                                                         ));
 
-                                                        // Replace with identifier reference
-                                                        *kv_prop.value = Expr::Ident(Ident::new(
-                                                            generated_name.into(),
-                                                            DUMMY_SP,
-                                                            SyntaxContext::empty(),
-                                                        ));
+                                                        // Keep the original arrow with the directive stripped
+                                                        self.remove_use_step_directive_arrow(
+                                                            &mut arrow_expr.body,
+                                                        );
                                                     }
                                                     TransformMode::Workflow => {
                                                         // Replace with step proxy reference
@@ -8015,7 +8626,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_arrow_expr(&arrow_expr, &self.module_imports, &self.declared_identifiers);
                                                         *kv_prop.value = self
                                                             .create_step_proxy_reference(
                                                                 &step_id,
@@ -8058,7 +8669,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&*cloned_fn.function, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&*cloned_fn.function, &self.module_imports, &self.declared_identifiers);
 
                                                         let hoisted_fn_expr = FnExpr {
                                                             ident: Some(Ident::new(
@@ -8080,12 +8691,10 @@ impl VisitMut for StepTransform {
                                                                 .unwrap_or_default(),
                                                         ));
 
-                                                        // Replace with identifier reference
-                                                        *kv_prop.value = Expr::Ident(Ident::new(
-                                                            generated_name.into(),
-                                                            DUMMY_SP,
-                                                            SyntaxContext::empty(),
-                                                        ));
+                                                        // Keep the original function with the directive stripped
+                                                        self.remove_use_step_directive(
+                                                            &mut fn_expr.function.body,
+                                                        );
                                                     }
                                                     TransformMode::Workflow => {
                                                         // Replace with step proxy reference
@@ -8107,7 +8716,7 @@ impl VisitMut for StepTransform {
                                                         );
 
                                                         // Collect closure variables
-                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&fn_expr.function, &self.module_imports);
+                                                        let closure_vars = ClosureVariableCollector::collect_from_function(&fn_expr.function, &self.module_imports, &self.declared_identifiers);
                                                         *kv_prop.value = self
                                                             .create_step_proxy_reference(
                                                                 &step_id,
@@ -8157,6 +8766,7 @@ impl VisitMut for StepTransform {
                                                     ClosureVariableCollector::collect_from_function(
                                                         &cloned_function,
                                                         &self.module_imports,
+                                                        &self.declared_identifiers,
                                                     );
 
                                                 let fn_expr = FnExpr {
@@ -8179,16 +8789,10 @@ impl VisitMut for StepTransform {
                                                         .unwrap_or_default(),
                                                 ));
 
-                                                // Replace method with property pointing to identifier
-                                                *boxed_prop =
-                                                    Box::new(Prop::KeyValue(KeyValueProp {
-                                                        key: method_prop.key.clone(),
-                                                        value: Box::new(Expr::Ident(Ident::new(
-                                                            generated_name.into(),
-                                                            DUMMY_SP,
-                                                            SyntaxContext::empty(),
-                                                        ))),
-                                                    }));
+                                                // Keep the original method with the directive stripped
+                                                self.remove_use_step_directive(
+                                                    &mut method_prop.function.body,
+                                                );
                                             }
                                             TransformMode::Workflow => {
                                                 // Replace with step proxy reference
@@ -8214,6 +8818,7 @@ impl VisitMut for StepTransform {
                                                     ClosureVariableCollector::collect_from_function(
                                                         &method_prop.function,
                                                         &self.module_imports,
+                                                        &self.declared_identifiers,
                                                     );
 
                                                 // Replace method with property pointing to proxy

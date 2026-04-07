@@ -1,4 +1,8 @@
-import { WorkflowAPIError, WorkflowRunNotFoundError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  WorkflowWorldError,
+  WorkflowRunNotFoundError,
+} from '@workflow/errors';
 import type { Event, World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -64,9 +68,7 @@ describe('wakeUpRun', () => {
       },
     ];
 
-    const conflict = new WorkflowAPIError('Wait already completed', {
-      status: 409,
-    });
+    const conflict = new EntityConflictError('Wait already completed');
 
     const world = createMockWorld({ events, createError: conflict });
     const result = await wakeUpRun(world, 'wrun_123');
@@ -87,7 +89,7 @@ describe('wakeUpRun', () => {
       },
     ];
 
-    const serverError = new WorkflowAPIError('Internal server error', {
+    const serverError = new WorkflowWorldError('Internal server error', {
       status: 500,
     });
 

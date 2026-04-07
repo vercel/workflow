@@ -1,4 +1,4 @@
-import { FatalError, getStepMetadata, RetryableError } from 'workflow';
+import { FatalError, getStepMetadata, RetryableError } from '@workflow/core';
 
 export async function retryableAndFatalErrorWorkflow() {
   'use workflow';

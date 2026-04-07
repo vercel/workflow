@@ -316,11 +316,11 @@ export default function HomeClient({ workflowDefinitions }: HomeClientProps) {
 
   return (
     <TooltipProvider delayDuration={0}>
-      <div className="min-h-screen bg-background p-6">
+      <div className="p-6">
         <div className="max-w-[1800px] mx-auto space-y-6">
           <div className="space-y-1">
             <h1 className="text-3xl font-bold tracking-tight">
-              Workflow DevKit Examples
+              Workflow SDK Examples
             </h1>
             <p className="text-muted-foreground">
               Select a workflow to start a run and view its output

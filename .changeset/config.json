@@ -21,7 +21,7 @@
     "docs",
     "nextjs-turbopack",
     "nextjs-webpack",
-    "workflow-devkit-compiler-playground",
+    "workflow-sdk-compiler-playground",
     "@workflow/docs-typecheck",
     "@workflow/example-*",
     "@workflow/vitest-workbench"

@@ -16,7 +16,12 @@ import type {
   WorkflowRun,
   WorkflowRunWithoutData,
 } from './runs.js';
-import type { PaginatedResponse } from './shared.js';
+import type {
+  GetChunksOptions,
+  PaginatedResponse,
+  StreamChunksResponse,
+  StreamInfoResponse,
+} from './shared.js';
 import type {
   GetStepParams,
   ListWorkflowRunStepsParams,
@@ -25,6 +30,19 @@ import type {
 } from './steps.js';
 
 export interface Streamer {
+  /**
+   * Override the default flush interval (in milliseconds) for buffered stream writes.
+   * Chunks are accumulated in a buffer and flushed together on this interval.
+   *
+   * The default is 10ms, which is appropriate for HTTP-based backends where
+   * each flush is a network round-trip. For backends with sub-millisecond writes
+   * (e.g., Redis, local filesystem), a lower value (or 0 for immediate flushing) reduces
+   * end-to-end stream latency.
+   *
+   * Not supported by all worlds.
+   */
+  streamFlushIntervalMs?: number;
+
   writeToStream(
     name: string,
     runId: string,
@@ -49,11 +67,47 @@ export interface Streamer {
   ): Promise<void>;
 
   closeStream(name: string, runId: string): Promise<void>;
+  /**
+   * Read from a stream starting at the given chunk index.
+   * Positive values skip that many chunks from the start (0-based).
+   * Negative values start that many chunks before the current end
+   * (e.g. -3 on a 10-chunk stream starts at chunk 7). Clamped to 0.
+   */
   readFromStream(
     name: string,
     startIndex?: number
   ): Promise<ReadableStream<Uint8Array>>;
   listStreamsByRunId(runId: string): Promise<string[]>;
+
+  /**
+   * Fetch stream chunks with cursor-based pagination.
+   *
+   * Unlike `readFromStream` (which returns a live `ReadableStream` that waits
+   * for new chunks in real-time), `getStreamChunks` returns a snapshot of currently
+   * available chunks in a standard paginated response.
+   *
+   * @param name - The stream name/ID
+   * @param runId - The workflow run ID that owns the stream
+   * @param options - Pagination options (limit defaults to 100, max 1000)
+   * @returns Paginated chunks with a `done` flag indicating stream completion
+   */
+  getStreamChunks(
+    name: string,
+    runId: string,
+    options?: GetChunksOptions
+  ): Promise<StreamChunksResponse>;
+
+  /**
+   * Retrieve lightweight metadata about a stream.
+   *
+   * Returns the tail index (index of the last known chunk, 0-based) and
+   * whether the stream is complete. This is useful for resolving a negative
+   * `startIndex` into an absolute position before connecting to a stream.
+   *
+   * @param name - The stream name/ID
+   * @param runId - The workflow run ID that owns the stream
+   */
+  getStreamInfo(name: string, runId: string): Promise<StreamInfoResponse>;
 }
 
 /**

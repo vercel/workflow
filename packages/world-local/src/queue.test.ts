@@ -1,7 +1,8 @@
-import { JsonTransport } from '@vercel/queue';
-import { MessageId, type StepInvokePayload } from '@workflow/world';
+import type { StepInvokePayload } from '@workflow/world';
+import { MessageId, ValidQueueName } from '@workflow/world';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createQueue, createQueueExecutor } from './queue';
+import { z } from 'zod/v4';
+import { createQueue } from './queue';
 
 // Mock node:timers/promises so setTimeout resolves immediately
 vi.mock('node:timers/promises', () => ({
@@ -14,6 +15,29 @@ const stepPayload: StepInvokePayload = {
   workflowStartedAt: Date.now(),
   stepId: 'step_01ABC',
 };
+
+describe('zod v3/v4 schema compatibility (regression #1587)', () => {
+  it('ValidQueueName and MessageId from @workflow/world parse correctly in z.object()', () => {
+    const HeaderParser = z.object({
+      'x-vqs-queue-name': ValidQueueName,
+      'x-vqs-message-id': MessageId,
+      'x-vqs-message-attempt': z.coerce.number(),
+    });
+
+    const result = HeaderParser.safeParse({
+      'x-vqs-queue-name': '__wkf_workflow_test',
+      'x-vqs-message-id': 'msg_01ABC',
+      'x-vqs-message-attempt': '1',
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data['x-vqs-queue-name']).toBe('__wkf_workflow_test');
+      expect(result.data['x-vqs-message-id']).toBe('msg_01ABC');
+      expect(result.data['x-vqs-message-attempt']).toBe(1);
+    }
+  });
+});
 
 describe('queue timeout re-enqueue', () => {
   let localQueue: ReturnType<typeof createQueue>;
@@ -94,29 +118,6 @@ describe('queue timeout re-enqueue', () => {
 
     const body = await response.json();
     expect(body).toEqual({ timeoutSeconds: 0 });
-  });
-
-  it('executeMessage returns structured timeoutSeconds results', async () => {
-    const executor = createQueueExecutor({ baseUrl: 'http://localhost:3000' });
-    const transport = new JsonTransport();
-    const handler = localQueue.createQueueHandler('__wkf_step_', async () => ({
-      timeoutSeconds: 5,
-    }));
-
-    executor.registerHandler('__wkf_step_', handler);
-
-    try {
-      const result = await executor.executeMessage({
-        queueName: '__wkf_step_test' as const,
-        messageId: MessageId.parse('msg_01ABC'),
-        attempt: 2,
-        body: transport.serialize(stepPayload),
-      });
-
-      expect(result).toEqual({ type: 'reschedule', timeoutSeconds: 5 });
-    } finally {
-      await executor.close();
-    }
   });
 
   it('queue retries when handler returns timeoutSeconds > 0', async () => {

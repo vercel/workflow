@@ -4,9 +4,13 @@ import type {
   ValidQueueName,
   World,
 } from '@workflow/world';
-import { HealthCheckPayloadSchema } from '@workflow/world';
+import {
+  HealthCheckPayloadSchema,
+  SPEC_VERSION_CURRENT,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
+import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { getWorld } from './world.js';
@@ -53,6 +57,8 @@ export interface HealthCheckResult {
   error?: string;
   /** Latency if the health check was successful */
   latencyMs?: number;
+  /** Spec version of the responding deployment */
+  specVersion?: number;
 }
 
 /**
@@ -95,6 +101,7 @@ export async function handleHealthCheckMessage(
     healthy: true,
     endpoint,
     correlationId: healthCheck.correlationId,
+    specVersion: SPEC_VERSION_CURRENT,
     timestamp: Date.now(),
   });
   // Use a fake runId that passes validation.
@@ -194,7 +201,14 @@ function parseHealthCheckResponse(
     return null;
   }
 
-  return { healthy: (response as { healthy: boolean }).healthy };
+  const r = response as Record<string, unknown>;
+  const parsed: { healthy: boolean; specVersion?: number } = {
+    healthy: r.healthy as boolean,
+  };
+  if (typeof r.specVersion === 'number') {
+    parsed.specVersion = r.specVersion;
+  }
+  return parsed;
 }
 
 export async function healthCheck(
@@ -286,10 +300,12 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
     let pagesLoaded = 0;
 
     const world = getWorld();
+    const loadStart = Date.now();
     while (hasMore) {
       // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
       // to lazyload the data from the world instead so that we can optimize and make the event log loading
       // much faster and memory efficient
+      const pageStart = Date.now();
       const response = await world.events.list({
         runId,
         pagination: {
@@ -302,7 +318,23 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
       hasMore = response.hasMore;
       cursor = response.cursor;
       pagesLoaded++;
+
+      runtimeLogger.debug('Loaded event page', {
+        workflowRunId: runId,
+        page: pagesLoaded,
+        pageEvents: response.data.length,
+        totalEvents: allEvents.length,
+        hasMore,
+        pageMs: Date.now() - pageStart,
+      });
     }
+
+    runtimeLogger.debug('Event loading complete', {
+      workflowRunId: runId,
+      totalEvents: allEvents.length,
+      pagesLoaded,
+      totalMs: Date.now() - loadStart,
+    });
 
     span?.setAttributes({
       ...Attribute.WorkflowEventsCount(allEvents.length),
@@ -342,11 +374,15 @@ export function withHealthCheck(
         });
       }
       return new Response(
-        `Workflow DevKit "${url.pathname}" endpoint is healthy`,
+        JSON.stringify({
+          healthy: true,
+          endpoint: url.pathname,
+          specVersion: SPEC_VERSION_CURRENT,
+        }),
         {
           status: 200,
           headers: {
-            'Content-Type': 'text/plain',
+            'Content-Type': 'application/json',
             ...HEALTH_CHECK_CORS_HEADERS,
           },
         }

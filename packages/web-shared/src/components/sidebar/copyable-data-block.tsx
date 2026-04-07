@@ -1,7 +1,7 @@
 'use client';
 
 import { Copy } from 'lucide-react';
-import { toast } from 'sonner';
+import { useToast } from '../../lib/toast';
 import { DataInspector } from '../ui/data-inspector';
 
 const serializeForClipboard = (value: unknown): string => {
@@ -21,6 +21,7 @@ const serializeForClipboard = (value: unknown): string => {
 };
 
 export function CopyableDataBlock({ data }: { data: unknown }) {
+  const toast = useToast();
   return (
     <div
       className="relative overflow-x-auto rounded-md border p-3 pt-9"

@@ -25,6 +25,7 @@ export type Serializable =
   | BigInt64Array
   | BigUint64Array
   | Date
+  | DOMException
   | Float32Array
   | Float64Array
   | Headers

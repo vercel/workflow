@@ -49,6 +49,8 @@ export async function webhookWorkflow() {
 **Solution:** Always call `request.respondWith()` when using manual response mode.
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Fixed - response sent
 export async function webhookWorkflow() {
   "use workflow";
@@ -92,6 +94,8 @@ export async function webhookWorkflow() {
 **Solution:** Ensure all code paths send a response.
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Fixed - response sent in all branches
 export async function webhookWorkflow() {
   "use workflow";
@@ -135,6 +139,8 @@ export async function webhookWorkflow() {
 **Solution:** Use try-catch to handle errors and send appropriate responses.
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Fixed - error handling with response
 export async function webhookWorkflow() {
   "use workflow";
@@ -163,6 +169,8 @@ export async function webhookWorkflow() {
 If you don't need custom response control, consider using the default response mode which automatically returns a `202 Accepted` response:
 
 ```typescript lineNumbers
+import { createWebhook } from "workflow";
+
 // Automatic 202 response - no manual response needed
 export async function webhookWorkflow() {
   "use workflow";

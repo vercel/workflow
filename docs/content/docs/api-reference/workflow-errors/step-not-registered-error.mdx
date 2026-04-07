@@ -1,0 +1,56 @@
+---
+title: StepNotRegisteredError
+description: Thrown when a step function is not registered in the current deployment.
+type: reference
+summary: Catch StepNotRegisteredError when a step function cannot be found during execution.
+related:
+  - /docs/errors/step-not-registered
+  - /docs/api-reference/workflow-errors/workflow-not-registered-error
+---
+
+`StepNotRegisteredError` is thrown when the runtime tries to execute a step function that is not registered in the current deployment. This is an infrastructure error — not a user code error. It typically indicates a build or bundling issue that caused the step to not be included in the deployment.
+
+When this error occurs, the step fails (like a `FatalError`) and control is passed back to the workflow function, which can handle the failure gracefully.
+
+```typescript lineNumbers
+import { StepNotRegisteredError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (StepNotRegisteredError.is(error)) { // [!code highlight]
+  console.error("Step not registered:", error.stepName);
+}
+```
+
+## API Signature
+
+### Properties
+
+<TSDoc
+definition={`
+interface StepNotRegisteredError {
+  /** The name of the step function that was not found. */
+  stepName: string;
+  /** The error message. */
+  message: string;
+}
+export default StepNotRegisteredError;`}
+/>
+
+### Static Methods
+
+#### `StepNotRegisteredError.is(value)`
+
+Type-safe check for `StepNotRegisteredError` instances. Preferred over `instanceof` because it works across module boundaries and VM contexts.
+
+<Callout>
+The `.is()` method works in server-side Node.js code (API routes, middleware, hooks). Inside `"use workflow"` functions, step errors arrive deserialized from the event log and won't be actual `StepNotRegisteredError` instances — use `error.message` matching instead. See the [troubleshooting page](/docs/errors/step-not-registered) for workflow-side error handling examples.
+</Callout>
+
+```typescript
+import { StepNotRegisteredError } from "workflow/errors"
+declare const error: unknown; // @setup
+
+if (StepNotRegisteredError.is(error)) {
+  // error is typed as StepNotRegisteredError
+}
+```

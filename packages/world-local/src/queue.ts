@@ -1,13 +1,39 @@
 import { setTimeout } from 'node:timers/promises';
-import { JsonTransport } from '@vercel/queue';
+import type { Transport } from '@vercel/queue';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
-import z from 'zod';
+import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl } from './config.js';
+import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
+
+/**
+ * JSON transport that preserves Uint8Array values using the same
+ * replacer/reviver that world-local uses for filesystem storage.
+ * Uint8Array → { __type: 'Uint8Array', data: '<base64>' } in JSON.
+ */
+class TypedJsonTransport implements Transport<unknown> {
+  readonly contentType = 'application/json';
+
+  serialize(value: unknown): Buffer {
+    return Buffer.from(JSON.stringify(value, jsonReplacer));
+  }
+
+  async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+    const chunks: Uint8Array[] = [];
+    const reader = stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    const text = Buffer.concat(chunks).toString();
+    return JSON.parse(text, jsonReviver);
+  }
+}
 
 // For local queue, there is no technical limit on the message visibility lifespan,
 // but the environment variable can be used for testing purposes to set a max visibility limit.
@@ -29,36 +55,6 @@ const WORKFLOW_LOCAL_QUEUE_CONCURRENCY =
   DEFAULT_CONCURRENCY_LIMIT;
 
 export type DirectHandler = (req: Request) => Promise<Response>;
-
-export interface QueueExecutionRequest {
-  queueName: ValidQueueName;
-  messageId: MessageId;
-  attempt: number;
-  body: Uint8Array;
-  headers?: Record<string, string>;
-}
-
-export type QueueExecutionResult =
-  | { type: 'completed' }
-  | { type: 'reschedule'; timeoutSeconds: number }
-  | {
-      type: 'error';
-      status: number;
-      text: string;
-      headers: Record<string, string>;
-    };
-
-export type QueueExecutor = {
-  /** Execute a single queue message without enqueueing or sleeping. */
-  executeMessage(request: QueueExecutionRequest): Promise<QueueExecutionResult>;
-  /** Close the HTTP agent and release resources. */
-  close(): Promise<void>;
-  /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
-  registerHandler(
-    prefix: '__wkf_step_' | '__wkf_workflow_',
-    handler: DirectHandler
-  ): void;
-};
 
 export type LocalQueue = Queue & {
   /** Close the HTTP agent and release resources. */
@@ -83,7 +79,7 @@ function getQueueRoute(queueName: ValidQueueName): {
   throw new Error('Unknown queue name prefix');
 }
 
-export function createQueueExecutor(config: Partial<Config>): QueueExecutor {
+export function createQueue(config: Partial<Config>): LocalQueue {
   // Create a custom agent optimized for high-concurrency local workflows:
   // - headersTimeout: 0 allows long-running steps
   // - connections: 1000 allows many parallel connections to the same host
@@ -94,89 +90,7 @@ export function createQueueExecutor(config: Partial<Config>): QueueExecutor {
     connections: 1000,
     keepAliveTimeout: 30_000,
   });
-
-  /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
-  const directHandlers = new Map<string, DirectHandler>();
-
-  const executeMessage: QueueExecutor['executeMessage'] = async ({
-    queueName,
-    messageId,
-    attempt,
-    body,
-    headers: extraHeaders,
-  }) => {
-    const { pathname, prefix } = getQueueRoute(queueName);
-    const headers: Record<string, string> = {
-      ...extraHeaders,
-      'content-type': 'application/json',
-      'x-vqs-queue-name': queueName,
-      'x-vqs-message-id': messageId,
-      'x-vqs-message-attempt': String(attempt),
-    };
-
-    const directHandler = directHandlers.get(prefix);
-    let response: Response;
-    if (directHandler) {
-      // Wrap direct handlers in a Request so local execution and HTTP execution
-      // share the same contract and response parsing.
-      const req = new Request(
-        'http://localhost/.well-known/workflow/v1/' + pathname,
-        {
-          method: 'POST',
-          headers,
-          body,
-        }
-      );
-      response = await directHandler(req);
-    } else {
-      const baseUrl = await resolveBaseUrl(config);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-      response = await fetch(`${baseUrl}/.well-known/workflow/v1/${pathname}`, {
-        method: 'POST',
-        duplex: 'half',
-        dispatcher: httpAgent,
-        headers,
-        body,
-      } as any);
-    }
-
-    const text = await response.text();
-    if (!response.ok) {
-      return {
-        type: 'error',
-        status: response.status,
-        text,
-        headers: Object.fromEntries(response.headers.entries()),
-      };
-    }
-
-    try {
-      const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
-      if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
-        return { type: 'reschedule', timeoutSeconds };
-      }
-    } catch {}
-
-    return { type: 'completed' };
-  };
-
-  return {
-    executeMessage,
-    registerHandler(
-      prefix: '__wkf_step_' | '__wkf_workflow_',
-      handler: DirectHandler
-    ) {
-      directHandlers.set(prefix, handler);
-    },
-    async close() {
-      await httpAgent.close();
-    },
-  };
-}
-
-export function createQueue(config: Partial<Config>): LocalQueue {
-  const executor = createQueueExecutor(config);
-  const transport = new JsonTransport();
+  const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
 
@@ -185,6 +99,8 @@ export function createQueue(config: Partial<Config>): LocalQueue {
    * that we don't queue the same message multiple times
    */
   const inflightMessages = new Map<string, MessageId>();
+  /** Direct in-process handlers by queue prefix, bypassing HTTP when set. */
+  const directHandlers = new Map<string, DirectHandler>();
 
   const queue: Queue['queue'] = async (queueName, message, opts) => {
     const cleanup = [] as (() => void)[];
@@ -197,8 +113,16 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     }
 
     const body = transport.serialize(message);
-    getQueueRoute(queueName);
+    const { pathname, prefix } = getQueueRoute(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
+
+    // Extract identifiers from the message for structured logging.
+    // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
+    const msg = message as Record<string, unknown>;
+    const runId = (msg.runId ?? msg.workflowRunId ?? undefined) as
+      | string
+      | undefined;
+    const stepId = (msg.stepId ?? undefined) as string | undefined;
 
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
@@ -216,49 +140,95 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         );
         await semaphore.acquire();
       }
+      // Safety limit to prevent infinite loops in the local queue.
+      // The actual max delivery enforcement happens in the workflow/step handlers
+      // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
+      const MAX_LOCAL_SAFETY_LIMIT = 256;
       try {
-        let defaultRetriesLeft = 3;
-        for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
-          defaultRetriesLeft--;
+        for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
+          const headers: Record<string, string> = {
+            ...opts?.headers,
+            'content-type': 'application/json',
+            'x-vqs-queue-name': queueName,
+            'x-vqs-message-id': messageId,
+            'x-vqs-message-attempt': String(attempt + 1),
+          };
+          const directHandler = directHandlers.get(prefix);
+          let response: Response;
 
-          const result = await executor.executeMessage({
-            queueName,
-            messageId,
-            attempt: attempt + 1,
-            body,
-            headers: opts?.headers,
-          });
+          if (directHandler) {
+            const req = new Request(
+              `http://localhost/.well-known/workflow/v1/${pathname}`,
+              {
+                method: 'POST',
+                headers,
+                body,
+              }
+            );
+            response = await directHandler(req);
+          } else {
+            const baseUrl = await resolveBaseUrl(config);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+            response = await fetch(
+              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+              {
+                method: 'POST',
+                duplex: 'half',
+                dispatcher: httpAgent,
+                headers,
+                body,
+              } as any
+            );
+          }
 
-          if (result.type === 'completed') {
+          const text = await response.text();
+
+          if (response.ok) {
+            try {
+              const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
+              if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
+                // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
+                // When this fires early, the handler recalculates remaining time from
+                // persistent state and returns another timeoutSeconds if needed.
+                if (timeoutSeconds > 0) {
+                  const timeoutMs = Math.min(
+                    timeoutSeconds * 1000,
+                    MAX_SAFE_TIMEOUT_MS
+                  );
+                  await setTimeout(timeoutMs);
+                }
+                continue;
+              }
+            } catch {}
             return;
           }
 
-          if (result.type === 'reschedule') {
-            // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
-            // When this fires early, the handler recalculates remaining time from
-            // persistent state and returns another timeoutSeconds if needed.
-            if (result.timeoutSeconds > 0) {
-              const timeoutMs = Math.min(
-                result.timeoutSeconds * 1000,
-                MAX_SAFE_TIMEOUT_MS
-              );
-              await setTimeout(timeoutMs);
+          console.error(
+            `[world-local] Queue message failed (attempt ${attempt + 1}, HTTP ${response.status})`,
+            {
+              queueName,
+              messageId,
+              ...(runId && { runId }),
+              ...(stepId && { stepId }),
+              handlerError: text,
             }
-            defaultRetriesLeft++;
-            continue;
-          }
+          );
 
-          console.error(`[local world] Failed to queue message`, {
-            queueName,
-            text: result.text,
-            status: result.status,
-            headers: result.headers,
-            body: body.toString(),
-          });
+          // 5s linear backoff to approximate VQS retry timing in local dev.
+          // VQS uses 5s linear for attempts 1–32, then exponential, but for
+          // local dev linear 5s is sufficient — the handler enforces the real
+          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
+          await setTimeout(5000);
         }
 
         console.error(
-          `[local world] Reached max retries of local world queue implementation`
+          `[world-local] Queue message exhausted safety limit (${MAX_LOCAL_SAFETY_LIMIT} attempts)`,
+          {
+            queueName,
+            messageId,
+            ...(runId && { runId }),
+            ...(stepId && { stepId }),
+          }
         );
       } finally {
         semaphore.release();
@@ -311,7 +281,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         return Response.json({ error: 'Unhandled queue' }, { status: 400 });
       }
 
-      const body = await new JsonTransport().deserialize(req.body);
+      const body = await new TypedJsonTransport().deserialize(req.body);
       try {
         const result = await handler(body, { attempt, queueName, messageId });
 
@@ -343,9 +313,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     queue,
     createQueueHandler,
     getDeploymentId,
-    registerHandler: executor.registerHandler,
+    registerHandler(
+      prefix: '__wkf_step_' | '__wkf_workflow_',
+      handler: DirectHandler
+    ) {
+      directHandlers.set(prefix, handler);
+    },
     async close() {
-      await executor.close();
+      await httpAgent.close();
     },
   };
 }

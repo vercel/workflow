@@ -8,7 +8,9 @@ import {
   Outlet,
   Scripts,
   ScrollRestoration,
+  isRouteErrorResponse,
   useNavigate,
+  useRouteError,
   useSearchParams,
 } from 'react-router';
 import { ConnectionStatus } from '~/components/display-utils/connection-status';
@@ -217,5 +219,26 @@ export default function App({ loaderData }: Route.ComponentProps) {
         </LayoutContent>
       </ServerConfigProvider>
     </ThemeProvider>
+  );
+}
+
+export function ErrorBoundary() {
+  const error = useRouteError();
+  const isNotFound = isRouteErrorResponse(error) && error.status === 404;
+
+  return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="text-center">
+        <h1 className="text-4xl font-bold mb-4">
+          {isNotFound ? '404' : 'Error'}
+        </h1>
+        <p className="text-muted-foreground mb-6">
+          {isNotFound ? 'This page does not exist.' : 'Something went wrong.'}
+        </p>
+        <Link to="/" className="text-primary underline">
+          Go to dashboard
+        </Link>
+      </div>
+    </div>
   );
 }

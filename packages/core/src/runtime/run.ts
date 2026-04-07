@@ -23,6 +23,21 @@ import {
 import { getWorld } from './world.js';
 
 /**
+ * A `ReadableStream` extended with workflow-specific helpers.
+ */
+export type WorkflowReadableStream<R = any> = ReadableStream<R> & {
+  /**
+   * Returns the tail index (index of the last known chunk, 0-based) of the
+   * underlying workflow stream. Useful for resolving a negative `startIndex`
+   * into an absolute position — for example, when building reconnection
+   * endpoints that need to inform the client where the stream starts.
+   *
+   * Returns `-1` when no chunks have been written yet.
+   */
+  getTailIndex(): Promise<number>;
+};
+
+/**
  * Options for configuring a workflow's readable stream.
  */
 export interface WorkflowReadableStreamOptions {
@@ -33,6 +48,7 @@ export interface WorkflowReadableStreamOptions {
   namespace?: string;
   /**
    * The index number of the starting chunk to begin reading the stream from.
+   * Negative values start from the end (e.g. -3 reads the last 3 chunks).
    */
   startIndex?: number;
   /**
@@ -71,9 +87,19 @@ export class Run<TResult> {
    */
   private encryptionKeyPromise: Promise<CryptoKey | undefined> | null = null;
 
-  constructor(runId: string) {
+  /**
+   * When true, run_created failed and the run may not exist yet (the
+   * resilient start path will create it via run_started). pollReturnValue
+   * retries on WorkflowRunNotFoundError only when this flag is set so
+   * that normal runs fail fast on 404.
+   * @internal
+   */
+  private resilientStart = false;
+
+  constructor(runId: string, opts?: { resilientStart?: boolean }) {
     this.runId = runId;
     this.world = getWorld();
+    this.resilientStart = opts?.resilientStart ?? false;
   }
 
   /**
@@ -177,7 +203,7 @@ export class Run<TResult> {
   /**
    * The readable stream of the workflow run.
    */
-  get readable(): ReadableStream {
+  get readable(): WorkflowReadableStream {
     return this.getReadable();
   }
 
@@ -185,18 +211,23 @@ export class Run<TResult> {
    * Retrieves the workflow run's default readable stream, which reads chunks
    * written to the corresponding writable stream {@link getWritable}.
    *
+   * The returned stream has an additional {@link WorkflowReadableStream.getTailIndex | getTailIndex()}
+   * helper that returns the index of the last known chunk. This is useful when
+   * building reconnection endpoints that need to inform clients where the
+   * stream starts.
+   *
    * @param options - The options for the readable stream.
-   * @returns The `ReadableStream` for the workflow run.
+   * @returns A `WorkflowReadableStream` for the workflow run.
    */
   getReadable<R = any>(
     options: WorkflowReadableStreamOptions = {}
-  ): ReadableStream<R> {
+  ): WorkflowReadableStream<R> {
     const { ops = [], global = globalThis, startIndex, namespace } = options;
     const name = getWorkflowRunStreamId(this.runId, namespace);
     // Pass the key as a promise — it will be resolved lazily inside
     // the first async transform() call of the deserialize stream.
     const encryptionKey = this.getEncryptionKey();
-    return getExternalRevivers(
+    const stream = getExternalRevivers(
       global,
       ops,
       this.runId,
@@ -205,6 +236,15 @@ export class Run<TResult> {
       name,
       startIndex,
     }) as ReadableStream<R>;
+
+    const world = this.world;
+    const runId = this.runId;
+    return Object.assign(stream, {
+      getTailIndex: async (): Promise<number> => {
+        const info = await world.getStreamInfo(name, runId);
+        return info.tailIndex;
+      },
+    });
   }
 
   /**
@@ -213,6 +253,15 @@ export class Run<TResult> {
    * @returns The workflow return value.
    */
   private async pollReturnValue(): Promise<TResult> {
+    // When resilientStart is true, run_created failed and the run may
+    // not exist yet. Retry on WorkflowRunNotFoundError up to 3 times
+    // (1s + 3s + 6s = 10s total) to give the queue time to deliver
+    // and the runtime to create the run via run_started.
+    // When resilientStart is false, 404 is a real error — fail fast.
+    let notFoundRetries = 0;
+    const NOT_FOUND_MAX_RETRIES = this.resilientStart ? 3 : 0;
+    const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
+
     while (true) {
       try {
         const run = await this.world.runs.get(this.runId);
@@ -238,6 +287,15 @@ export class Run<TResult> {
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
           await new Promise((resolve) => setTimeout(resolve, 1_000));
+          continue;
+        }
+        if (
+          WorkflowRunNotFoundError.is(error) &&
+          notFoundRetries < NOT_FOUND_MAX_RETRIES
+        ) {
+          const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
+          notFoundRetries++;
+          await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
         throw error;

@@ -1,6 +1,6 @@
 ---
 title: Event Sourcing
-description: Learn how Workflow DevKit uses event sourcing internally for debugging and observability.
+description: Learn how Workflow SDK uses event sourcing internally for debugging and observability.
 type: conceptual
 summary: Understand the event log that powers workflow replay and debugging.
 prerequisites:
@@ -10,10 +10,10 @@ related:
 ---
 
 <Callout>
-This guide explores how the Workflow DevKit uses event sourcing internally. Understanding these concepts is helpful for debugging and building observability tools, but is not required to use workflows. For getting started with workflows, see the [getting started](/docs/getting-started) guides for your framework.
+This guide explores how the Workflow SDK uses event sourcing internally. Understanding these concepts is helpful for debugging and building observability tools, but is not required to use workflows. For getting started with workflows, see the [getting started](/docs/getting-started) guides for your framework.
 </Callout>
 
-The Workflow DevKit uses event sourcing to track all state changes in workflow executions. Every mutation creates an event that is persisted to the event log, and entity state is derived by replaying these events.
+The Workflow SDK uses event sourcing to track all state changes in workflow executions. Every mutation creates an event that is persisted to the event log, and entity state is derived by replaying these events.
 
 This page explains the event sourcing model and entity lifecycles.
 
@@ -28,7 +28,7 @@ Event sourcing is a persistence pattern where state changes are stored as a sequ
 - **Consistency**: Events provide a single source of truth for all entity state
 - **Recoverability**: State can be reconstructed from the event log after failures
 
-In the Workflow DevKit, the following entity types are managed through events:
+In the Workflow SDK, the following entity types are managed through events:
 
 - **Runs**: Workflow execution instances (materialized in storage)
 - **Steps**: Individual atomic operations within a workflow (materialized in storage)
@@ -243,7 +243,7 @@ This correlation enables:
 
 ## Entity IDs
 
-All entities in the Workflow DevKit use a consistent ID format: a 4-character prefix followed by an underscore and a [ULID](https://github.com/ulid/spec) (Universally Unique Lexicographically Sortable Identifier).
+All entities in the Workflow SDK use a consistent ID format: a 4-character prefix followed by an underscore and a [ULID](https://github.com/ulid/spec) (Universally Unique Lexicographically Sortable Identifier).
 
 | Entity | Prefix | Example |
 |--------|--------|---------|

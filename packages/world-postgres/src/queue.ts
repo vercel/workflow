@@ -1,13 +1,15 @@
 import * as Stream from 'node:stream';
-import { JsonTransport } from '@vercel/queue';
+import type { Transport } from '@vercel/queue';
+import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   MessageId,
   type Queue,
   QueuePayloadSchema,
   type QueuePrefix,
   type ValidQueueName,
+  WorkflowInvokePayloadSchema,
 } from '@workflow/world';
-import { createLocalWorld, createQueueExecutor } from '@workflow/world-local';
+import { createLocalWorld } from '@workflow/world-local';
 import {
   Logger,
   makeWorkerUtils,
@@ -15,9 +17,9 @@ import {
   run,
   type WorkerUtils,
 } from 'graphile-worker';
-import type Postgres from 'postgres';
+import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
-import z from 'zod';
+import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
 import { MessageData } from './message.js';
 
@@ -47,6 +49,16 @@ const GraphileHelpers = z.object({
   }),
 });
 
+type HttpExecutionResult =
+  | { type: 'completed' }
+  | { type: 'reschedule'; timeoutSeconds: number }
+  | {
+      type: 'error';
+      status: number;
+      text: string;
+      headers: Record<string, string>;
+    };
+
 /**
  * The Postgres queue works by creating two job types in graphile-worker:
  * - `workflow` for workflow jobs
@@ -64,13 +76,44 @@ export type PostgresQueue = Queue & {
 
 export function createQueue(
   config: PostgresWorldConfig,
-  postgres: Postgres.Sql
+  pool: Pool
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createLocalWorld({ dataDir: undefined, port });
-  const executor = createQueueExecutor({ port });
 
-  const transport = new JsonTransport();
+  // JSON transport that preserves Uint8Array values via a tagged
+  // envelope ({ __type: 'Uint8Array', data: '<base64>' }).  Required
+  // for the resilient start path where runInput.input (a Uint8Array)
+  // is sent through the queue.
+  const transport: Transport<unknown> = {
+    contentType: 'application/json',
+    serialize(value: unknown): Buffer {
+      return Buffer.from(
+        JSON.stringify(value, (_key, v) =>
+          v instanceof Uint8Array
+            ? { __type: 'Uint8Array', data: Buffer.from(v).toString('base64') }
+            : v
+        )
+      );
+    },
+    async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+      const chunks: Uint8Array[] = [];
+      const reader = stream.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
+      return JSON.parse(Buffer.concat(chunks).toString(), (_key, v) =>
+        v !== null &&
+        typeof v === 'object' &&
+        v.__type === 'Uint8Array' &&
+        typeof v.data === 'string'
+          ? new Uint8Array(Buffer.from(v.data, 'base64'))
+          : v
+      );
+    },
+  };
   const generateMessageId = monotonicFactory();
 
   const prefix = config.jobPrefix || 'workflow_';
@@ -79,13 +122,7 @@ export function createQueue(
     __wkf_step_: `${prefix}steps`,
   } as const satisfies Record<QueuePrefix, string>;
 
-  const createQueueHandler: Queue['createQueueHandler'] = (prefix, handler) => {
-    const wrappedHandler = localWorld.createQueueHandler(prefix, handler);
-    // Register the HTTP-compatible handler so Graphile workers can execute it
-    // directly in-process when the route module has been loaded.
-    executor.registerHandler(prefix, wrappedHandler);
-    return wrappedHandler;
-  };
+  const createQueueHandler = localWorld.createQueueHandler;
 
   const getDeploymentId: Queue['getDeploymentId'] = async () => {
     return 'postgres';
@@ -93,6 +130,10 @@ export function createQueue(
 
   const completedMessages = new Set<string>();
   const inflightMessages = new Map<string, Promise<void>>();
+  const inflightWorkflowRuns = new Map<
+    string,
+    Promise<'completed' | 'rescheduled'>
+  >();
   let workerUtils: WorkerUtils | null = null;
   let runner: Runner | null = null;
   let startPromise: Promise<void> | null = null;
@@ -157,50 +198,134 @@ export function createQueue(
     );
   }
 
+  async function resolveExecutionBaseUrl(): Promise<string> {
+    if (process.env.WORKFLOW_LOCAL_BASE_URL) {
+      return process.env.WORKFLOW_LOCAL_BASE_URL;
+    }
+
+    if (typeof port === 'number') {
+      return `http://localhost:${port}`;
+    }
+
+    if (process.env.PORT) {
+      return `http://localhost:${process.env.PORT}`;
+    }
+
+    const detectedPort = await getWorkflowPort();
+    if (typeof detectedPort === 'number') {
+      return `http://localhost:${detectedPort}`;
+    }
+
+    throw new Error('Unable to resolve base URL for workflow queue.');
+  }
+
+  function getQueueRoute(queueName: ValidQueueName): 'flow' | 'step' {
+    if (queueName.startsWith('__wkf_step_')) {
+      return 'step';
+    }
+    if (queueName.startsWith('__wkf_workflow_')) {
+      return 'flow';
+    }
+    throw new Error('Unknown queue name prefix');
+  }
+
+  async function executeMessageOverHttp({
+    queueName,
+    messageId,
+    attempt,
+    body,
+    headers: extraHeaders,
+  }: {
+    queueName: ValidQueueName;
+    messageId: MessageId;
+    attempt: number;
+    body: Uint8Array;
+    headers?: Record<string, string>;
+  }): Promise<HttpExecutionResult> {
+    const headers: Record<string, string> = {
+      ...extraHeaders,
+      'content-type': 'application/json',
+      'x-vqs-queue-name': queueName,
+      'x-vqs-message-id': messageId,
+      'x-vqs-message-attempt': String(attempt),
+    };
+    const baseUrl = await resolveExecutionBaseUrl();
+    const pathname = getQueueRoute(queueName);
+
+    const response = await fetch(
+      `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+      {
+        method: 'POST',
+        duplex: 'half',
+        headers,
+        body,
+      } as any
+    );
+    const text = await response.text();
+
+    if (!response.ok) {
+      return {
+        type: 'error',
+        status: response.status,
+        text,
+        headers: Object.fromEntries(response.headers.entries()),
+      };
+    }
+
+    try {
+      const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
+      if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
+        return { type: 'reschedule', timeoutSeconds };
+      }
+    } catch {}
+
+    return { type: 'completed' };
+  }
+
   async function migratePgBossJobs(utils: WorkerUtils): Promise<void> {
     // Scenario A: Drizzle migration already ran — staging table exists
-    const hasStaging = await postgres`
-      SELECT EXISTS (
+    const hasStaging = await pool.query(
+      `SELECT EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'workflow'
         AND table_name = '_pgboss_pending_jobs'
-      ) AS exists
-    `;
-    if (hasStaging[0].exists) {
-      const jobs = await postgres`
-        SELECT name, data, singleton_key, retry_limit
-        FROM "workflow"."_pgboss_pending_jobs"
-      `;
-      for (const job of jobs) {
+      ) AS exists`
+    );
+    if (hasStaging.rows[0]?.exists) {
+      const jobs = await pool.query(
+        `SELECT name, data, singleton_key, retry_limit
+        FROM "workflow"."_pgboss_pending_jobs"`
+      );
+      for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
           maxAttempts: job.retry_limit ?? 3,
         });
       }
-      await postgres`DROP TABLE "workflow"."_pgboss_pending_jobs"`;
+      await pool.query(`DROP TABLE "workflow"."_pgboss_pending_jobs"`);
       return;
     }
 
     // Scenario B: Drizzle migration didn't run — pgboss schema still exists
-    const hasPgBoss = await postgres`
-      SELECT EXISTS (
+    const hasPgBoss = await pool.query(
+      `SELECT EXISTS (
         SELECT 1 FROM information_schema.schemata
         WHERE schema_name = 'pgboss'
-      ) AS exists
-    `;
-    if (hasPgBoss[0].exists) {
-      const jobs = await postgres`
-        SELECT name, data, singleton_key, retry_limit
+      ) AS exists`
+    );
+    if (hasPgBoss.rows[0]?.exists) {
+      const jobs = await pool.query(
+        `SELECT name, data, singleton_key, retry_limit
         FROM pgboss.job
-        WHERE state IN ('created', 'retry')
-      `;
-      for (const job of jobs) {
+        WHERE state IN ('created', 'retry')`
+      );
+      for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
           maxAttempts: job.retry_limit ?? 3,
         });
       }
-      await postgres`DROP SCHEMA pgboss CASCADE`;
+      await pool.query(`DROP SCHEMA pgboss CASCADE`);
     }
   }
 
@@ -209,7 +334,7 @@ export function createQueue(
       startPromise = (async () => {
         try {
           workerUtils = await makeWorkerUtils({
-            connectionString: config.connectionString,
+            pgPool: pool,
             logger: graphileLogger,
           });
           await workerUtils.migrate();
@@ -227,7 +352,7 @@ export function createQueue(
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
     const [queuePrefix, queueId] = parseQueueName(queue);
-    const body = transport.serialize(message);
+    const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
     await addGraphileJob({
       queuePrefix,
@@ -250,16 +375,27 @@ export function createQueue(
       const attempt = graphileAttempt.success
         ? graphileAttempt.data.job.attempts
         : messageData.attempt;
+      const queueName = `${queue}${messageData.id}` as const;
+      const bodyStream = Stream.Readable.toWeb(
+        Stream.Readable.from([messageData.data])
+      );
+      const body = await transport.deserialize(
+        bodyStream as ReadableStream<Uint8Array>
+      );
+      QueuePayloadSchema.parse(body);
+      const workflowRunSerializationKey =
+        queue === '__wkf_workflow_'
+          ? (() => {
+              const workflowInvoke =
+                WorkflowInvokePayloadSchema.safeParse(body);
+              if (!workflowInvoke.success) {
+                return undefined;
+              }
+              return `workflow:${workflowInvoke.data.runId}`;
+            })()
+          : undefined;
       const executeTask = async (): Promise<'completed' | 'rescheduled'> => {
-        const bodyStream = Stream.Readable.toWeb(
-          Stream.Readable.from([messageData.data])
-        );
-        const body = await transport.deserialize(
-          bodyStream as ReadableStream<Uint8Array>
-        );
-        QueuePayloadSchema.parse(body);
-        const queueName = `${queue}${messageData.id}` as const;
-        const result = await executor.executeMessage({
+        const result = await executeMessageOverHttp({
           queueName,
           messageId: messageData.messageId,
           attempt,
@@ -295,6 +431,28 @@ export function createQueue(
 
       const idempotencyKey = messageData.idempotencyKey;
       if (!idempotencyKey) {
+        if (workflowRunSerializationKey) {
+          // Preserve step fan-out while preventing two workflow replays from
+          // mutating the same run's event log at the same time.
+          const previous = inflightWorkflowRuns.get(
+            workflowRunSerializationKey
+          );
+          const execution = (previous ?? Promise.resolve())
+            .catch(() => {})
+            .then(() => executeTask())
+            .finally(() => {
+              if (
+                inflightWorkflowRuns.get(workflowRunSerializationKey) ===
+                execution
+              ) {
+                inflightWorkflowRuns.delete(workflowRunSerializationKey);
+              }
+            });
+          inflightWorkflowRuns.set(workflowRunSerializationKey, execution);
+          await execution;
+          return;
+        }
+
         await executeTask();
         return;
       }
@@ -336,7 +494,7 @@ export function createQueue(
     }
 
     runner = await run({
-      connectionString: config.connectionString,
+      pgPool: pool,
       concurrency: config.queueConcurrency || 10,
       logger: graphileLogger,
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
@@ -359,7 +517,6 @@ export function createQueue(
         workerUtils = null;
       }
       startPromise = null;
-      await executor.close();
       await localWorld.close?.();
     },
   };

@@ -1,4 +1,4 @@
-import { WorkflowAPIError } from '@workflow/errors';
+import { HookNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type AnyEventRequest,
   type CreateEventParams,
@@ -12,6 +12,7 @@ import {
   type ListEventsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  stripEventDataRefs,
   validateUlidTimestamp,
   type WorkflowRun,
   WorkflowRunSchema,
@@ -37,19 +38,16 @@ import {
   makeRequest,
 } from './utils.js';
 
-// Helper to filter event data based on resolveData setting.
-// Strips both eventData and eventDataRef since the server always returns
-// lazy refs now, and callers with resolveData='none' should not see either.
-function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
-  if (resolveData === 'none') {
-    const {
-      eventData: _eventData,
-      eventDataRef: _eventDataRef,
-      ...rest
-    } = event;
-    return rest;
-  }
-  return event;
+// Wraps stripEventDataRefs to also strip the legacy eventDataRef field,
+// since the server always returns lazy refs and callers with
+// resolveData='none' should not see them.
+function stripEventAndLegacyRefs(
+  event: any,
+  resolveData: 'none' | 'all'
+): Event {
+  if (resolveData !== 'none') return event;
+  const { eventDataRef: _eventDataRef, ...withoutLegacyRef } = event;
+  return stripEventDataRefs(withoutLegacyRef, resolveData);
 }
 
 // Schema for EventResult wire format returned by events.create.
@@ -62,17 +60,19 @@ function filterEventData(event: any, resolveData: 'none' | 'all'): Event {
 //   undefined), so we use the looser WorkflowRunWireBaseSchema and normalize
 //   the error via deserializeError() afterward.
 const EventResultResolveWireSchema = z.object({
-  event: EventSchema,
+  event: EventSchema.optional(),
   run: WorkflowRunSchema.optional(),
   step: StepWireSchema.optional(),
   hook: HookSchema.optional(),
+  events: z.array(EventSchema).optional(),
 });
 
 const EventResultLazyWireSchema = z.object({
-  event: EventSchema,
+  event: EventSchema.optional(),
   run: WorkflowRunWireBaseSchema.optional(),
   step: StepWireSchema.optional(),
   hook: HookSchema.optional(),
+  events: z.array(EventSchema).optional(),
 });
 
 // Schema for events returned with `remoteRefBehavior=lazy`.
@@ -103,6 +103,7 @@ const eventDataRefFieldMap: Record<string, string> = {
   step_failed: 'error',
   step_retrying: 'error',
   hook_created: 'metadata',
+  hook_received: 'payload',
 };
 
 // Events where the client uses the response entity data need 'resolve' (default).
@@ -262,7 +263,7 @@ export async function getEvent(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v3/runs/${encodeURIComponent(runId)}/events/${encodeURIComponent(eventId)}${queryString ? `?${queryString}` : ''}`;
 
   const event = await makeRequest({
     endpoint,
@@ -271,7 +272,7 @@ export async function getEvent(
     schema: (resolveData === 'none' ? EventWithRefsSchema : EventSchema) as any,
   });
 
-  return filterEventData(event as any, resolveData);
+  return stripEventAndLegacyRefs(event as any, resolveData);
 }
 
 export async function getWorkflowRunEvents(
@@ -308,7 +309,7 @@ export async function getWorkflowRunEvents(
   const query = queryString ? `?${queryString}` : '';
   const endpoint = correlationId
     ? `/v2/events${query}`
-    : `/v2/runs/${encodeURIComponent(runId!)}/events${query}`;
+    : `/v3/runs/${encodeURIComponent(runId!)}/events${query}`;
 
   let refResolveConcurrency: number | undefined;
   const response = (await makeRequest({
@@ -361,12 +362,44 @@ export async function getWorkflowRunEvents(
   return {
     ...response,
     data: response.data.map((event: any) =>
-      filterEventData(event, resolveData)
+      stripEventAndLegacyRefs(event, resolveData)
     ),
   };
 }
 
+// Event types that require the hook to already exist — a 404 on these
+// means the hook was already disposed or never created.
+const hookEventsRequiringExistence = new Set([
+  'hook_disposed',
+  'hook_received',
+]);
+
 export async function createWorkflowRunEvent(
+  id: string | null,
+  data: AnyEventRequest,
+  params?: CreateEventParams,
+  config?: APIConfig
+): Promise<EventResult> {
+  try {
+    return await createWorkflowRunEventInner(id, data, params, config);
+  } catch (err) {
+    // Translate 404 to HookNotFoundError for hook-related events.
+    // makeRequest() throws a generic WorkflowWorldError for all 404s;
+    // on the hook_disposed / hook_received path a 404 means the hook
+    // was already disposed or never created.
+    if (
+      hookEventsRequiringExistence.has(data.eventType) &&
+      WorkflowWorldError.is(err) &&
+      err.status === 404 &&
+      data.correlationId
+    ) {
+      throw new HookNotFoundError(data.correlationId);
+    }
+    throw err;
+  }
+}
+
+async function createWorkflowRunEventInner(
   id: string | null,
   data: AnyEventRequest,
   params?: CreateEventParams,
@@ -398,7 +431,7 @@ export async function createWorkflowRunEvent(
   if (data.eventType === 'run_created' && id) {
     const validationError = validateUlidTimestamp(id, 'wrun_');
     if (validationError) {
-      throw new WorkflowAPIError(validationError, { status: 400 });
+      throw new WorkflowWorldError(validationError, { status: 400 });
     }
   }
 
@@ -414,25 +447,36 @@ export async function createWorkflowRunEvent(
   // the server returns lazy refs (error may be a string or undefined).
   if (remoteRefBehavior === 'resolve') {
     const wireResult = await makeRequest({
-      endpoint: `/v2/runs/${runIdPath}/events`,
+      endpoint: `/v3/runs/${runIdPath}/events`,
       options: { method: 'POST' },
-      data: { ...data, remoteRefBehavior },
+      data: {
+        ...data,
+        remoteRefBehavior,
+        ...(params?.requestId ? { vercelId: params.requestId } : {}),
+      },
       config,
       schema: EventResultResolveWireSchema,
     });
 
     return {
-      event: filterEventData(wireResult.event, resolveData),
+      event: wireResult.event
+        ? stripEventAndLegacyRefs(wireResult.event, resolveData)
+        : undefined,
       run: wireResult.run,
       step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
       hook: wireResult.hook,
+      events: wireResult.events,
     };
   }
 
   const wireResult = await makeRequest({
-    endpoint: `/v2/runs/${runIdPath}/events`,
+    endpoint: `/v3/runs/${runIdPath}/events`,
     options: { method: 'POST' },
-    data: { ...data, remoteRefBehavior },
+    data: {
+      ...data,
+      remoteRefBehavior,
+      ...(params?.requestId ? { vercelId: params.requestId } : {}),
+    },
     config,
     schema: EventResultLazyWireSchema,
   });
@@ -442,11 +486,14 @@ export async function createWorkflowRunEvent(
   // undefined (lazy ref mode), so deserializeError normalizes it into the
   // StructuredError shape expected by WorkflowRun consumers.
   return {
-    event: filterEventData(wireResult.event, resolveData),
+    event: wireResult.event
+      ? stripEventAndLegacyRefs(wireResult.event, resolveData)
+      : undefined,
     run: wireResult.run
       ? deserializeError<WorkflowRun>(wireResult.run)
       : undefined,
     step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
     hook: wireResult.hook,
+    events: wireResult.events,
   };
 }

@@ -6,6 +6,24 @@ import {
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
 
+function resolveNextVersion(workingDir: string): string {
+  const fallbackVersion = require('next/package.json').version as string;
+
+  try {
+    const packageJsonPath = require.resolve('next/package.json', {
+      paths: [workingDir],
+    });
+    const resolvedPackageJson = require(packageJsonPath) as {
+      version?: unknown;
+    };
+    return typeof resolvedPackageJson.version === 'string'
+      ? resolvedPackageJson.version
+      : fallbackVersion;
+  } catch {
+    return fallbackVersion;
+  }
+}
+
 export function withWorkflow(
   nextConfigOrFn:
     | NextConfig
@@ -69,7 +87,7 @@ export function withWorkflow(
       nextConfig.turbopack.rules = {};
     }
     const existingRules = nextConfig.turbopack.rules as any;
-    const nextVersion = require('next/package.json').version;
+    const nextVersion = resolveNextVersion(process.cwd());
     const supportsTurboCondition = semver.gte(nextVersion, 'v16.0.0');
     const useDeferredBuilder = shouldUseDeferredBuilder(nextVersion);
 
@@ -88,6 +106,7 @@ export function withWorkflow(
             watch: shouldWatch,
             // discover workflows from pages/app entries
             dirs: ['pages', 'app', 'src/pages', 'src/app'],
+            projectRoot: nextConfig.outputFileTracingRoot,
             workingDir: process.cwd(),
             distDir: nextConfig.distDir || '.next',
             buildTarget: 'next',

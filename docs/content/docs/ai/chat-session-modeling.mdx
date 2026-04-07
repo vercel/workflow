@@ -39,12 +39,12 @@ export async function chat(messages: UIMessage[]) {
 
   const agent = new DurableAgent({
     model: "bedrock/claude-haiku-4-5-20251001-v1",
-    system: FLIGHT_ASSISTANT_PROMPT,
+    instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
 
   await agent.stream({
-    messages: convertToModelMessages(messages), // [!code highlight] Full history from client
+    messages: await convertToModelMessages(messages), // [!code highlight] Full history from client
     writable,
   });
 }
@@ -171,7 +171,7 @@ export async function chat(initialMessages: UIMessage[]) {
 
   const { workflowRunId: runId } = getWorkflowMetadata();
   const writable = getWritable<UIMessageChunk>();
-  const messages: ModelMessage[] = convertToModelMessages(initialMessages);
+  const messages: ModelMessage[] = await convertToModelMessages(initialMessages);
 
   // Write markers for initial user messages (for replay) // [!code highlight]
   for (const msg of initialMessages) { // [!code highlight]
@@ -183,7 +183,7 @@ export async function chat(initialMessages: UIMessage[]) {
 
   const agent = new DurableAgent({
     model: "bedrock/claude-haiku-4-5-20251001-v1",
-    system: FLIGHT_ASSISTANT_PROMPT,
+    instructions: FLIGHT_ASSISTANT_PROMPT,
     tools: flightBookingTools,
   });
 

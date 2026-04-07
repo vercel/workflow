@@ -44,6 +44,7 @@ export const docs = defineDocs({
         )
         .optional(),
       summary: z.string().optional(),
+      keywords: z.array(z.string()).optional(),
     }),
     postprocess: {
       includeProcessedMarkdown: true,

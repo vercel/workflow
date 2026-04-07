@@ -79,8 +79,8 @@ export async function promiseAnyWorkflow() {
   'use workflow';
   const winner = await Promise.any([
     stepThatFails(),
-    specificDelay(1000, 'b'), // "b" should always win
-    specificDelay(3000, 'c'),
+    specificDelay(100, 'b'), // "b" should always win
+    specificDelay(6000, 'c'),
   ]);
   return winner;
 }
@@ -891,6 +891,47 @@ export async function errorFatalCatchable() {
   } catch (e: any) {
     return { caught: true, isFatal: FatalError.is(e) };
   }
+}
+
+// ------------------------------------------------------------
+// SECTION 4: NOT REGISTERED ERRORS
+// Tests for step/workflow not registered in the current deployment
+// ------------------------------------------------------------
+
+/**
+ * Test: step not registered causes the step to fail (like FatalError),
+ * and the workflow can catch the error gracefully.
+ *
+ * This manually invokes useStep with a step ID that doesn't exist in the
+ * deployment bundle, simulating what would happen if a build/bundling issue
+ * caused a step to be missing.
+ */
+export async function stepNotRegisteredCatchable() {
+  'use workflow';
+  // Manually invoke a step that doesn't exist in the deployment.
+  // The SWC transform generates exactly this pattern for real step calls,
+  // so this is equivalent to calling a step that wasn't bundled.
+  const ghost = (globalThis as any)[Symbol.for('WORKFLOW_USE_STEP')](
+    'step//./workflows/99_e2e//nonExistentStep'
+  );
+  try {
+    await ghost();
+    return { caught: false, error: null };
+  } catch (e: any) {
+    return { caught: true, error: e.message };
+  }
+}
+
+/**
+ * Test: step not registered causes the run to fail when not caught.
+ */
+export async function stepNotRegisteredUncaught() {
+  'use workflow';
+  const ghost = (globalThis as any)[Symbol.for('WORKFLOW_USE_STEP')](
+    'step//./workflows/99_e2e//anotherNonExistentStep'
+  );
+  // Don't catch — the step failure should propagate and fail the run
+  return await ghost();
 }
 
 // ============================================================
@@ -1838,6 +1879,42 @@ async function addNumbers(a: number, b: number) {
 }
 
 /**
+ * Validates that sleep() inside a loop with step calls actually delays
+ * execution on each iteration (i.e., sleeps are honored on replay, not skipped).
+ *
+ * Reproduces the scenario from a user report claiming that:
+ *   for (let i = 0; i < N; i++) {
+ *     await someStep();
+ *     await sleep(duration);
+ *   }
+ * ...fires all iterations instantly with zero delay.
+ */
+async function noopStep(iteration: number) {
+  'use step';
+  return { iteration, ts: Date.now() };
+}
+
+export async function sleepInLoopWorkflow() {
+  'use workflow';
+  const iterations = 3;
+  const sleepMs = 3_000; // 3s between iterations (2 sleeps total)
+  const timestamps: number[] = [];
+
+  for (let i = 0; i < iterations; i++) {
+    const result = await noopStep(i);
+    timestamps.push(result.ts);
+    if (i < iterations - 1) {
+      await sleep(sleepMs);
+    }
+  }
+
+  const totalElapsed = timestamps[timestamps.length - 1] - timestamps[0];
+  return { timestamps, totalElapsed };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
  * Control workflow: sleep + sequential steps (no hooks).
  * Proves that void sleep().then() does NOT interfere with sequential steps
  * whose events all exist in the log. This is a control test to show
@@ -1856,4 +1933,77 @@ export async function sleepWithSequentialStepsWorkflow() {
   const b = await addNumbers(a, 3);
   const c = await addNumbers(b, 4);
   return { a, b, c, shouldCancel };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Validates that import.meta.url is correctly polyfilled in CJS step bundles
+ * and natively available in ESM step bundles.
+ */
+async function checkImportMetaUrl(): Promise<{
+  isDefined: boolean;
+  type: string;
+  isFileUrl: boolean;
+}> {
+  'use step';
+  const url = import.meta.url;
+  return {
+    isDefined: typeof url === 'string' && url.length > 0,
+    type: typeof url,
+    isFileUrl: typeof url === 'string' && url.startsWith('file://'),
+  };
+}
+
+export async function importMetaUrlWorkflow() {
+  'use workflow';
+  return await checkImportMetaUrl();
+}
+
+//////////////////////////////////////////////////////////
+// Regression test for #1577:
+// getWorkflowMetadata()/getStepMetadata() called from a module-level helper
+// function (not directly inside the step body) must still have access to the
+// AsyncLocalStorage context.
+
+const withStrictMetadataCheck = async <T>(fn: () => Promise<T>) => {
+  const workflowMetadata = getWorkflowMetadata();
+  const stepMetadata = getStepMetadata();
+
+  return await fn().then((result) => ({
+    result,
+    workflowMetadata,
+    stepMetadata,
+  }));
+};
+
+async function metadataHelperStep(label: string): Promise<{
+  label: string;
+  workflowRunId: string;
+  stepId: string;
+  attempt: number;
+}> {
+  'use step';
+
+  const { workflowMetadata, stepMetadata } = await withStrictMetadataCheck(
+    async () => label
+  );
+
+  return {
+    label,
+    workflowRunId: workflowMetadata.workflowRunId,
+    stepId: stepMetadata.stepId,
+    attempt: stepMetadata.attempt,
+  };
+}
+
+export async function metadataFromHelperWorkflow(label: string): Promise<{
+  label: string;
+  workflowRunId: string;
+  stepId: string;
+  attempt: number;
+}> {
+  'use workflow';
+
+  return await metadataHelperStep(label);
 }
