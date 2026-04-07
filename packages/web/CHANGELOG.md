@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.0-beta.47
+
+### Patch Changes
+
+- [#1590](https://github.com/vercel/workflow/pull/1590) [`74c4cdb`](https://github.com/vercel/workflow/commit/74c4cdb6519802e3d56760e971507ffb93bc945b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix server crash on unmatched routes (e.g. /robots.txt, /favicon.ico)
+
 ## 4.1.0-beta.46
 
 ### Patch Changes

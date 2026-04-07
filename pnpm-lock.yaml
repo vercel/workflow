@@ -36,6 +36,9 @@ catalogs:
     nitro:
       specifier: 3.0.1-alpha.1
       version: 3.0.1-alpha.1
+    semver:
+      specifier: 7.7.4
+      version: 7.7.4
     typescript:
       specifier: ^5.9.3
       version: 5.9.3
@@ -588,6 +591,9 @@ importers:
       seedrandom:
         specifier: 3.0.5
         version: 3.0.5
+      semver:
+        specifier: 'catalog:'
+        version: 7.7.4
       ulid:
         specifier: 'catalog:'
         version: 3.0.1
@@ -607,6 +613,9 @@ importers:
       '@types/seedrandom':
         specifier: 3.0.8
         version: 3.0.8
+      '@types/semver':
+        specifier: 7.7.1
+        version: 7.7.1
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -737,7 +746,7 @@ importers:
         specifier: workspace:*
         version: link:../swc-plugin-workflow
       semver:
-        specifier: 7.7.4
+        specifier: 'catalog:'
         version: 7.7.4
       watchpack:
         specifier: 2.5.1
@@ -13619,11 +13628,6 @@ packages:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
     hasBin: true
 
-  semver@7.7.3:
-    resolution: {integrity: sha512-SdsKMrI9TdgjdweUSR9MweHA4EJ8YxHn8DFaDisvhVlUOe4BF1tLD7GAj0lIqWVl+dPb/rExr0Btby5loQm20Q==}
-    engines: {node: '>=10'}
-    hasBin: true
-
   semver@7.7.4:
     resolution: {integrity: sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==}
     engines: {node: '>=10'}
@@ -21881,7 +21885,7 @@ snapshots:
       fast-glob: 3.3.3
       minimatch: 9.0.5
       piscina: 4.9.2
-      semver: 7.7.3
+      semver: 7.7.4
       slash: 3.0.0
       source-map: 0.7.6
     optionalDependencies:
@@ -30218,8 +30222,6 @@ snapshots:
       semver: 7.7.4
 
   semver@6.3.1: {}
-
-  semver@7.7.3: {}
 
   semver@7.7.4: {}
 

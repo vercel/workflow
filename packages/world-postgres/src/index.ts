@@ -60,6 +60,9 @@ export function createWorld(
     ...storage,
     ...streamer,
     ...queue,
+    ...(config.streamFlushIntervalMs !== undefined && {
+      streamFlushIntervalMs: config.streamFlushIntervalMs,
+    }),
     async start() {
       await queue.start();
       await reenqueueActiveRuns(storage.runs, queue.queue, 'world-postgres');

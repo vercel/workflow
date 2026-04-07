@@ -4,7 +4,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
+  WorkflowWorldError,
 } from '@workflow/errors';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import {
   afterAll,
   assert,
@@ -2126,6 +2128,74 @@ describe('e2e', () => {
         type: 'string',
         isFileUrl: true,
       });
+    }
+  );
+
+  test(
+    'metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('metadataFromHelperWorkflow'), [
+        'smoke-test',
+      ]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue.label).toBe('smoke-test');
+      expect(typeof returnValue.workflowRunId).toBe('string');
+      expect(typeof returnValue.stepId).toBe('string');
+      expect(returnValue.attempt).toBeGreaterThanOrEqual(1);
+    }
+  );
+
+  // ============================================================
+  // Resilient start: run completes even when run_created fails
+  // ============================================================
+  // TODO: Switch this to a stream-based workflow (e.g. readableStreamWorkflow)
+  // to also verify that serialization, flushing, and binary data work correctly
+  // over the queue boundary. Currently using addTenWorkflow to avoid the
+  // skipIf(isLocalDeployment()) barrier that stream tests require.
+  test(
+    'resilient start: addTenWorkflow completes when run_created returns 500',
+    { timeout: 60_000 },
+    async () => {
+      // Get the real world and wrap it so the first events.create call
+      // (run_created) throws a 500 server error. The queue should still
+      // be dispatched with runInput, and the runtime should bootstrap
+      // the run via the run_started fallback path.
+      const realWorld = getWorld();
+      let createCallCount = 0;
+      const stubbedWorld: World = {
+        ...realWorld,
+        events: {
+          ...realWorld.events,
+          create: (async (...args: Parameters<World['events']['create']>) => {
+            createCallCount++;
+            if (createCallCount === 1) {
+              // Fail the very first call (run_created from start())
+              throw new WorkflowWorldError('Simulated storage outage', {
+                status: 500,
+              });
+            }
+            return realWorld.events.create(...args);
+          }) as World['events']['create'],
+        },
+      };
+
+      const run = await start(await e2e('addTenWorkflow'), [123], {
+        world: stubbedWorld,
+      });
+
+      // Verify the stub intercepted the run_created call (only call
+      // through the stubbed world — the server-side runtime uses its
+      // own world instance for run_started and subsequent events).
+      expect(createCallCount).toBe(1);
+
+      // The run should still complete despite run_created failing.
+      // The runtime's resilient start path creates the run from
+      // run_started, so returnValue polling may initially get
+      // WorkflowRunNotFoundError before the queue delivers.
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe(133);
     }
   );
 });

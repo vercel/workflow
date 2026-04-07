@@ -10,6 +10,8 @@ export const RUN_ERROR_CODES = {
   RUNTIME_ERROR: 'RUNTIME_ERROR',
   /** Run exceeded the maximum number of queue deliveries */
   MAX_DELIVERIES_EXCEEDED: 'MAX_DELIVERIES_EXCEEDED',
+  /** Workflow replay exceeded the maximum allowed duration */
+  REPLAY_TIMEOUT: 'REPLAY_TIMEOUT',
 } as const;
 
 export type RunErrorCode =

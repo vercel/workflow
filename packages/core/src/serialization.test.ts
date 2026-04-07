@@ -3180,6 +3180,131 @@ describe('custom Error subclass serialization', () => {
   });
 });
 
+describe('DOMException serialization', () => {
+  const { context, globalThis: vmGlobalThis } = createContext({
+    seed: 'test-domexception',
+    fixedTimestamp: 1714857600000,
+  });
+  vmGlobalThis.Request = globalThis.Request;
+  vmGlobalThis.Response = globalThis.Response;
+  vmGlobalThis.ReadableStream = globalThis.ReadableStream;
+  vmGlobalThis.WritableStream = globalThis.WritableStream;
+
+  async function roundTrip(value: unknown) {
+    const serialized = await dehydrateStepReturnValue(
+      value,
+      mockRunId,
+      noEncryptionKey
+    );
+    return hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+  }
+
+  it('should round-trip DOMException with AbortError name', async () => {
+    const error = new DOMException('operation aborted', 'AbortError');
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated).toBeInstanceOf(DOMException);
+    expect(hydrated.message).toBe('operation aborted');
+    expect(hydrated.name).toBe('AbortError');
+    // code is derived from name automatically
+    expect(hydrated.code).toBe(20);
+  });
+
+  it('should round-trip DOMException with NotFoundError name', async () => {
+    const error = new DOMException('resource not found', 'NotFoundError');
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated).toBeInstanceOf(DOMException);
+    expect(hydrated.message).toBe('resource not found');
+    expect(hydrated.name).toBe('NotFoundError');
+    expect(hydrated.code).toBe(8);
+  });
+
+  it('should round-trip DOMException with default name', async () => {
+    // When no name is provided, DOMException defaults to "Error"
+    const error = new DOMException('something failed');
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated).toBeInstanceOf(DOMException);
+    expect(hydrated.message).toBe('something failed');
+    expect(hydrated.name).toBe('Error');
+    expect(hydrated.code).toBe(0);
+  });
+
+  it('should preserve cause on DOMException when manually set', async () => {
+    const error = new DOMException('aborted', 'AbortError');
+    (error as any).cause = new TypeError('underlying cause');
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated).toBeInstanceOf(DOMException);
+    expect(hydrated.message).toBe('aborted');
+    expect(hydrated.name).toBe('AbortError');
+    expect((hydrated.cause as Error).message).toBe('underlying cause');
+  });
+
+  it('should not set cause on DOMException when original had none', async () => {
+    const error = new DOMException('no cause', 'AbortError');
+    expect('cause' in error).toBe(false);
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated.message).toBe('no cause');
+    expect('cause' in hydrated).toBe(false);
+  });
+
+  it('should use DOMException serialization key (not generic Error)', async () => {
+    const error = new DOMException('test', 'AbortError');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('DOMException');
+    expect(str).not.toMatch(/"Error"/);
+  });
+
+  it('should round-trip DOMException across VM boundaries', async () => {
+    const hostError = new DOMException('host abort', 'AbortError');
+    const serialized = await dehydrateStepReturnValue(
+      hostError,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+    runInContext('var __testVal = null', context);
+    (vmGlobalThis as any).__testVal = hydrated;
+    expect(runInContext('__testVal instanceof DOMException', context)).toBe(
+      true
+    );
+    expect(runInContext('__testVal.message', context)).toBe('host abort');
+    expect(runInContext('__testVal.name', context)).toBe('AbortError');
+  });
+
+  it('should have DOMException available in VM context by default', () => {
+    // DOMException is a standard Web API that is passed through to the VM
+    // context by createContext(), so it should always be available.
+    const { context: freshContext } = createContext({
+      seed: 'test-dom-available',
+      fixedTimestamp: 1714857600000,
+    });
+    expect(runInContext('typeof DOMException', freshContext)).toBe('function');
+    const result = runInContext(
+      'new DOMException("test", "AbortError")',
+      freshContext
+    );
+    expect(result).toBeInstanceOf(DOMException);
+    expect(result.name).toBe('AbortError');
+    expect(result.message).toBe('test');
+  });
+});
+
 describe('format prefix system', () => {
   const { globalThis: vmGlobalThis } = createContext({
     seed: 'test',

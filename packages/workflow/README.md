@@ -5,7 +5,7 @@
       <img alt="Workflow SDK logo" src="https://useworkflow.dev/workflow-circle-symbol-light.svg" height="128">
     </picture>
   </a>
-  <h1>Workflow Development Kit</h1>
+  <h1>Workflow SDK</h1>
 
 <a href="https://vercel.com"><img alt="Vercel logo" src="https://img.shields.io/badge/MADE%20BY%20Vercel-000000.svg?style=for-the-badge&logo=Vercel&labelColor=000"></a>
 <a href="https://www.npmjs.com/package/workflow"><img alt="NPM version" src="https://img.shields.io/npm/v/workflow?style=for-the-badge&labelColor=000000"></a>
@@ -16,7 +16,7 @@
 
 ## Getting Started
 
-The **Workflow Development Kit** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI agents that can suspend, resume, and maintain state with ease.
+The **Workflow SDK** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI agents that can suspend, resume, and maintain state with ease.
 
 Visit [https://useworkflow.dev](https://useworkflow.dev) to view the full documentation.
 

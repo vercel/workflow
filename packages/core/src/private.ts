@@ -15,21 +15,18 @@ export type StepFunction<
   stepId?: string;
 };
 
-// Use a globalThis singleton so that the step registry survives esbuild's
-// module scope duplication. When bundleFinalOutput: true, esbuild may create
-// multiple copies of this module (one from the step registrations bundle,
-// one from the runtime). Symbol.for ensures all copies share the same Map.
-const STEP_REGISTRY = Symbol.for('@workflow/core//step-registry');
+const RegisteredStepsKey = Symbol.for('@workflow/core//registeredSteps');
 
-const _global: typeof globalThis & {
-  [STEP_REGISTRY]?: Map<string, StepFunction>;
+const globalSymbols: typeof globalThis & {
+  [RegisteredStepsKey]?: Map<string, StepFunction>;
 } = globalThis;
 
-if (!_global[STEP_REGISTRY]) {
-  _global[STEP_REGISTRY] = new Map<string, StepFunction>();
-}
+// biome-ignore lint/suspicious/noAssignInExpressions: /
+const registeredSteps = (globalSymbols[RegisteredStepsKey] ??= new Map<
+  string,
+  StepFunction
+>());
 
-const registeredSteps = _global[STEP_REGISTRY];
 const BUILTIN_RESPONSE_STEP_NAMES = new Set([
   '__builtin_response_array_buffer',
   '__builtin_response_json',

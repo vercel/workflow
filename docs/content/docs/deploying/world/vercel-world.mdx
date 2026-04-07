@@ -139,12 +139,41 @@ On Vercel, workflow runs are pegged to the deployment that started them. This me
 
 This ensures long-running workflows complete reliably without being affected by subsequent deployments.
 
+## Security
+
+### Consumer function security
+
+Workflow handler functions on Vercel are not accessible through public endpoints. During the build step, the Workflow SDK registers each handler as only reachable by [Vercel Queue](https://vercel.com/docs/queues), by using the `experimentalTriggers` configuration in `.vc-config.json`:
+
+```json title=".vc-config.json (step handler)"
+{
+  "experimentalTriggers": [
+    {
+      "type": "queue/v2beta",
+      "topic": "__wkf_step_*",
+      "consumer": "default",
+    }
+  ]
+}
+```
+
+Practically, this means:
+
+- You don't need to add authentication or authorization logic to workflow handlers
+- Unauthorized requests can never reach the step or workflow functions
+- Only messages delivered through Vercel Queues can trigger execution
+- Handlers receive only a message ID that must be retrieved from Vercel's backend, making it impossible to craft custom payloads
+
+<Callout>
+  This configuration is managed entirely by the Workflow SDK build step. You should not need to write this yourself. If you are writing a custom integration, see [Framework Integrations — Security](/docs/how-it-works/framework-integrations#security) for more details.
+</Callout>
+
 ## How It Works
 
 The Vercel World uses Vercel's infrastructure for workflow execution:
 
 - **Storage** - Workflow data is stored in Vercel's cloud with automatic replication and [end-to-end encryption](/docs/how-it-works/encryption)
-- **Queuing** - Steps are distributed across serverless functions with automatic retries
+- **Queuing** - Steps are distributed across serverless functions via [Vercel Queues](https://vercel.com/docs/queues) with automatic retries and [consumer function security](#consumer-function-security)
 - **Authentication** - OIDC tokens provide secure, automatic authentication
 
 For more details, see the [Vercel Workflow documentation](https://vercel.com/docs/workflow).

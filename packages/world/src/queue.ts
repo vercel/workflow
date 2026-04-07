@@ -21,6 +21,21 @@ export type MessageId = z.infer<typeof MessageId>;
 export const TraceCarrierSchema = z.record(z.string(), z.string());
 export type TraceCarrier = z.infer<typeof TraceCarrierSchema>;
 
+/**
+ * Run creation data carried through the queue for resilient start.
+ * Only present on the first queue delivery — re-enqueues omit this.
+ * When the runtime processes the message, it passes this data to the
+ * run_started event so the server can create the run if it doesn't exist yet.
+ */
+export const RunInputSchema = z.object({
+  input: z.unknown(),
+  deploymentId: z.string(),
+  workflowName: z.string(),
+  specVersion: z.number(),
+  executionContext: z.record(z.string(), z.any()).optional(),
+});
+export type RunInput = z.infer<typeof RunInputSchema>;
+
 export const WorkflowInvokePayloadSchema = z.object({
   runId: z.string(),
   traceCarrier: TraceCarrierSchema.optional(),
@@ -30,6 +45,8 @@ export const WorkflowInvokePayloadSchema = z.object({
   /** Step ID for inline step execution in combined handler. If provided, the flow execution
    * will jump directly to execute the step with the given ID before doing an event replay. */
   stepId: z.string().optional(),
+  /** Run creation data, only present on the first queue delivery from start() */
+  runInput: RunInputSchema.optional(),
 });
 
 export const StepInvokePayloadSchema = z.object({
@@ -67,6 +84,8 @@ export interface QueueOptions {
   headers?: Record<string, string>;
   /** Delay message delivery by this many seconds */
   delaySeconds?: number;
+  /** Spec version of the target run. Used to select the queue transport format. */
+  specVersion?: number;
 }
 
 export interface Queue {

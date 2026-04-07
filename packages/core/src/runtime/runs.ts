@@ -117,6 +117,7 @@ export async function reenqueueRun(world: World, runId: string): Promise<void> {
       },
       {
         deploymentId: run.deploymentId,
+        specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
       }
     );
   } catch (err) {
@@ -209,6 +210,7 @@ export async function wakeUpRun(
         },
         {
           deploymentId: run.deploymentId,
+          specVersion: run.specVersion ?? SPEC_VERSION_LEGACY,
         }
       );
     }

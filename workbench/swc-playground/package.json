@@ -1,5 +1,5 @@
 {
-  "name": "workflow-devkit-compiler-playground",
+  "name": "workflow-sdk-compiler-playground",
   "version": "0.1.0",
   "private": true,
   "type": "module",

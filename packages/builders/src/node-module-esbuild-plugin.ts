@@ -159,28 +159,59 @@ function findIdentifierUsage(
   identifier: string
 ) {
   const usageRegex = new RegExp(`\\b${escapeRegExp(identifier)}\\b`);
+  let inBlockComment = false;
 
   for (let i = startIndex; i < lines.length; i += 1) {
-    const line = lines[i];
+    // Strip string literals first so that comment delimiters inside strings
+    // (e.g. `const s = "/*";`) don't confuse the comment scanner.
+    const stringsStripped = lines[i]
+      .replace(/'(?:[^'\\]|\\.)*'/g, (s) => ' '.repeat(s.length))
+      .replace(/"(?:[^"\\]|\\.)*"/g, (s) => ' '.repeat(s.length))
+      .replace(/`(?:[^`\\]|\\.)*`/g, (s) => ' '.repeat(s.length));
 
-    // Skip comments (both // and /* */ style)
-    const withoutComments = line
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/.*$/, '');
+    let line = stringsStripped;
 
-    // Remove (replace with spaces) string literals to avoid matching inside paths
-    // Use escaped quote handling to properly match strings with escaped quotes
-    const withoutStrings = withoutComments
-      .replace(/'(?:[^'\\]|\\.)*'/g, (segment) => ' '.repeat(segment.length))
-      .replace(/"(?:[^"\\]|\\.)*"/g, (segment) => ' '.repeat(segment.length))
-      .replace(/`(?:[^`\\]|\\.)*`/g, (segment) => ' '.repeat(segment.length));
+    // Handle multi-line block comments (including JSDoc)
+    if (inBlockComment) {
+      const endIdx = line.indexOf('*/');
+      if (endIdx === -1) {
+        continue;
+      }
+      line = ' '.repeat(endIdx + 2) + line.slice(endIdx + 2);
+      inBlockComment = false;
+    }
 
-    const match = withoutStrings.match(usageRegex);
+    // Scan for comments, replacing them with spaces
+    let processed = '';
+    let j = 0;
+    while (j < line.length) {
+      if (line[j] === '/' && line[j + 1] === '/') {
+        processed += ' '.repeat(line.length - j);
+        break;
+      }
+      if (line[j] === '/' && line[j + 1] === '*') {
+        const endIdx = line.indexOf('*/', j + 2);
+        if (endIdx !== -1) {
+          const len = endIdx + 2 - j;
+          processed += ' '.repeat(len);
+          j = endIdx + 2;
+        } else {
+          processed += ' '.repeat(line.length - j);
+          inBlockComment = true;
+          break;
+        }
+      } else {
+        processed += line[j];
+        j += 1;
+      }
+    }
+
+    const match = processed.match(usageRegex);
     if (match && match.index !== undefined) {
       return {
         line: i,
         column: match.index,
-        lineText: line,
+        lineText: lines[i],
       };
     }
   }

@@ -221,6 +221,10 @@ While hooks are powerful, they require you to manually handle HTTP requests and 
 
 When using Workflow SDK, webhooks are automatically wired up at `/.well-known/workflow/v1/webhook/:token` without any additional setup.
 
+<Callout type="warn">
+`createWebhook()` exposes a public route at `/.well-known/workflow/v1/webhook/:token`, and the token in that URL is the only authorization performed for incoming requests. This is convenient for prototypes and a simple developer experience because you can share the webhook URL (endpoint) without creating another route, but if you need stronger security, prefer [`createHook()`](/docs/api-reference/workflow/create-hook) behind your own route and authorize the request before calling [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) to avoid unauthenticated workflow resumptions.
+</Callout>
+
 <Callout type="info">
 See the full API reference for [`createWebhook()`](/docs/api-reference/workflow/create-webhook) for all available options.
 </Callout>
