@@ -77,6 +77,22 @@ export function getAbortStreamId(id: string) {
   return `strm_${id}_system_abort`;
 }
 
+const ABORT_TOKEN_PREFIX = 'abrt_';
+
+/**
+ * Derive the abort stream name from a hook token.
+ * Hook tokens use the format `abrt_{id}`, and the corresponding stream is
+ * `strm_{id}_system_abort`.
+ */
+export function getAbortStreamIdFromToken(hookToken: string): string {
+  if (!hookToken.startsWith(ABORT_TOKEN_PREFIX)) {
+    throw new Error(
+      `Invalid abort hook token format: expected "abrt_" prefix, got "${hookToken}"`
+    );
+  }
+  return getAbortStreamId(hookToken.slice(ABORT_TOKEN_PREFIX.length));
+}
+
 /**
  * A small wrapper around `waitUntil` that also returns
  * the result of the awaited promise.

@@ -21,6 +21,7 @@ import type {
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
+import { getAbortStreamIdFromToken } from '../util.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
 import { queueMessage } from './helpers.js';
@@ -233,10 +234,7 @@ export async function handleSuspension({
 
           // Write stream cancellation packet for real-time step propagation
           try {
-            // The stream name is derived from the hook token
-            // (abort hooks use token format `abrt_{id}`, stream is `strm_{id}_system_abort`)
-            const abortId = queueItem.token.replace('abrt_', '');
-            const streamName = `strm_${abortId}_system_abort`;
+            const streamName = getAbortStreamIdFromToken(queueItem.token);
             await world.streams.write(
               runId,
               streamName,
