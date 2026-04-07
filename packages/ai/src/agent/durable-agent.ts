@@ -860,24 +860,40 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     if (
       options.timeout !== undefined &&
-      typeof AbortController !== 'undefined' &&
-      typeof setTimeout === 'function'
+      typeof AbortController !== 'undefined'
     ) {
-      const timeoutController = new AbortController();
-      timeoutId = setTimeout(() => timeoutController.abort(), options.timeout);
-      const timeoutSignal = timeoutController.signal;
-      if (effectiveAbortSignal) {
-        // Combine: whichever fires first wins
-        const combined = new AbortController();
-        effectiveAbortSignal.addEventListener('abort', () => combined.abort(), {
-          once: true,
-        });
-        timeoutSignal.addEventListener('abort', () => combined.abort(), {
-          once: true,
-        });
-        effectiveAbortSignal = combined.signal;
-      } else {
-        effectiveAbortSignal = timeoutSignal;
+      // In the workflow VM, setTimeout is replaced with a throwing stub.
+      // Probe it with a no-op to detect whether real timers are available.
+      let hasTimers = false;
+      try {
+        const probe = setTimeout(() => {}, 0);
+        clearTimeout(probe);
+        hasTimers = true;
+      } catch {
+        // setTimeout not available (e.g. workflow VM) — skip timeout setup
+      }
+
+      if (hasTimers) {
+        const timeoutController = new AbortController();
+        timeoutId = setTimeout(
+          () => timeoutController.abort(),
+          options.timeout
+        );
+        const timeoutSignal = timeoutController.signal;
+        if (effectiveAbortSignal) {
+          const combined = new AbortController();
+          effectiveAbortSignal.addEventListener(
+            'abort',
+            () => combined.abort(),
+            { once: true }
+          );
+          timeoutSignal.addEventListener('abort', () => combined.abort(), {
+            once: true,
+          });
+          effectiveAbortSignal = combined.signal;
+        } else {
+          effectiveAbortSignal = timeoutSignal;
+        }
       }
     }
 
