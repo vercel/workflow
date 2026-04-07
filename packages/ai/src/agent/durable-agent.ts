@@ -860,7 +860,8 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     if (
       options.timeout !== undefined &&
-      typeof AbortController !== 'undefined'
+      typeof AbortController !== 'undefined' &&
+      typeof setTimeout === 'function'
     ) {
       const timeoutController = new AbortController();
       timeoutId = setTimeout(() => timeoutController.abort(), options.timeout);
