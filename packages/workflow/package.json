@@ -1,7 +1,7 @@
 {
   "name": "workflow",
-  "version": "4.2.0-beta.71",
-  "description": "Workflow DevKit - Build durable, resilient, and observable workflows",
+  "version": "4.2.0-beta.78",
+  "description": "Workflow SDK - Build durable, resilient, and observable workflows",
   "main": "dist/typescript-plugin.cjs",
   "type": "module",
   "bin": {
@@ -37,6 +37,7 @@
       "workflow": "./dist/api-workflow.js",
       "default": "./dist/api.js"
     },
+    "./errors": "./dist/internal/errors.js",
     "./internal/errors": "./dist/internal/errors.js",
     "./internal/builtins": "./dist/internal/builtins.js",
     "./internal/private": "./dist/internal/private.js",
@@ -48,7 +49,11 @@
     "./astro": "./dist/astro.js",
     "./vite": "./dist/vite.js",
     "./nest": "./dist/nest.js",
-    "./runtime": "./dist/runtime.js"
+    "./runtime": "./dist/runtime.js",
+    "./observability": {
+      "types": "./dist/observability.d.ts",
+      "default": "./dist/observability.js"
+    }
   },
   "scripts": {
     "build": "tsc && chmod +x bin/run.js",
@@ -65,6 +70,7 @@
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/typescript-plugin": "workspace:*",
+    "@workflow/utils": "workspace:*",
     "ms": "2.1.3",
     "@workflow/next": "workspace:*",
     "@workflow/nest": "workspace:*",

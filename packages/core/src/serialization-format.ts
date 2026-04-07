@@ -96,6 +96,44 @@ export function decodeFormatPrefix(data: Uint8Array | unknown): {
  */
 export const ENCRYPTED_PLACEHOLDER = '\u{1F512} Encrypted';
 
+// ---------------------------------------------------------------------------
+// Expired data detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a plain object is `{ expiredAt: "<ISO date>" }` — a single-key
+ * object with a string `expiredAt` value.
+ */
+function isExpiredObject(data: unknown): data is { expiredAt: string } {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return false;
+  }
+  const keys = Object.keys(data);
+  return (
+    keys.length === 1 &&
+    keys[0] === 'expiredAt' &&
+    typeof (data as Record<string, unknown>).expiredAt === 'string'
+  );
+}
+
+/**
+ * Check if a hydrated value is an expired data stub from the server.
+ *
+ * The server replaces expired ref fields with a devalue-encoded stub
+ * (`makeExpiredStub`) that deserializes to `[{ expiredAt: "<ISO date>" }]`
+ * after `unflatten` (array-wrapped due to backwards-compatible encoding).
+ * Also matches the unwrapped `{ expiredAt: "..." }` form for robustness.
+ */
+export function isExpiredStub(data: unknown): boolean {
+  // Direct object form: { expiredAt: "..." }
+  if (isExpiredObject(data)) return true;
+  // Array-wrapped form from devalue unflatten: [{ expiredAt: "..." }]
+  if (Array.isArray(data) && data.length === 1 && isExpiredObject(data[0])) {
+    return true;
+  }
+  return false;
+}
+
 /**
  * Check if a binary value has the 'encr' format prefix indicating encryption.
  * Browser-safe — does not depend on the full serialization module.
@@ -204,32 +242,6 @@ export interface StreamRef {
   __type: typeof STREAM_REF_TYPE;
   streamId: string;
 }
-
-/** Marker for Run reference objects rendered as links in the UI */
-export const RUN_REF_TYPE = '__workflow_run_ref__';
-
-/** A Run reference for UI display */
-export interface RunRef {
-  __type: typeof RUN_REF_TYPE;
-  runId: string;
-}
-
-/** Check if a value is a RunRef object */
-export const isRunRef = (value: unknown): value is RunRef => {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    '__type' in value &&
-    value.__type === RUN_REF_TYPE &&
-    'runId' in value &&
-    typeof value.runId === 'string'
-  );
-};
-
-/** Convert a serialized Run value to a RunRef for display */
-export const serializedRunToRunRef = (value: { runId: string }): RunRef => {
-  return { __type: RUN_REF_TYPE, runId: value.runId };
-};
 
 /** Marker for custom class instance references */
 export const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
@@ -360,7 +372,6 @@ export const observabilityRevivers: Revivers = {
   ReadableStream: streamToStreamRef,
   WritableStream: streamToStreamRef,
   TransformStream: streamToStreamRef,
-  Run: serializedRunToRunRef,
   StepFunction: serializedStepFunctionToString,
   Instance: serializedInstanceToRef,
   Class: serializedClassToString,

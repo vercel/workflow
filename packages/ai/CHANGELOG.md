@@ -1,5 +1,47 @@
 # @workflow/ai
 
+## 4.1.0-beta.61
+
+### Patch Changes
+
+- [#1444](https://github.com/vercel/workflow/pull/1444) [`e9ebe8f`](https://github.com/vercel/workflow/commit/e9ebe8faa3da673481a699d01c29a1726f15b042) Thanks [@gr2m](https://github.com/gr2m)! - Preserve reasoning content in DurableAgent conversation history across tool loop steps
+
+- [#1608](https://github.com/vercel/workflow/pull/1608) [`70e89bf`](https://github.com/vercel/workflow/commit/70e89bfc96ef96f88a2534c2eae0f93c3745188d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - DurableAgent telemetry: emit full AI SDK-compatible attributes on spans
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.78
+
+## 4.1.0-beta.60
+
+### Patch Changes
+
+- [#1589](https://github.com/vercel/workflow/pull/1589) [`c0f07a9`](https://github.com/vercel/workflow/commit/c0f07a985cbbc5e122ca9e0a6c73de87ddf356b9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix fatal stream errors surfacing as `[object Object]` instead of real error messages
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.76
+
+## 4.1.0-beta.59
+
+### Patch Changes
+
+- [#1529](https://github.com/vercel/workflow/pull/1529) [`a0a7195`](https://github.com/vercel/workflow/commit/a0a71957efe83a6e6223dd7c7c64a1bb65b9dabe) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `WorkflowChatTransport` blocking browser paint during stream reconnect by yielding to the macrotask queue between chunks
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.74
+
+## 4.1.0-beta.58
+
+### Patch Changes
+
+- [#1489](https://github.com/vercel/workflow/pull/1489) [`90ea870`](https://github.com/vercel/workflow/commit/90ea870adda801c3649add7a5816712e51a129b2) Thanks [@openharness](https://github.com/apps/openharness)! - Allow `experimental_context` to be configured on `DurableAgentOptions` and used as the default context for `stream()` calls.
+
+- [#1488](https://github.com/vercel/workflow/pull/1488) [`e4e0140`](https://github.com/vercel/workflow/commit/e4e0140482c8cdb12fcb24bbed8be8fa907def4f) Thanks [@openharness](https://github.com/apps/openharness)! - Expose configured tools on `DurableAgent` instances via `agent.tools`
+
+- [#1470](https://github.com/vercel/workflow/pull/1470) [`01bbe66`](https://github.com/vercel/workflow/commit/01bbe66d5a60d50d71f5b1c82b002ca7fc6f8e0b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `getStreamChunks()` and `getStreamInfo()` to the Streamer interface, and `getTailIndex()` to the readable stream returned by `run.getReadable()`. `WorkflowChatTransport` now reads the `x-workflow-stream-tail-index` response header to resolve negative `initialStartIndex` values into absolute positions, fixing reconnection retries after a disconnect.
+
+- Updated dependencies [[`2ef33d2`](https://github.com/vercel/workflow/commit/2ef33d2828ac06debf04ad9cc239d70fea6a8093), [`aee035f`](https://github.com/vercel/workflow/commit/aee035f94483ef3b842bb557e8c5b167dd0536c4)]:
+  - workflow@4.2.0-beta.72
+
 ## 4.1.0-beta.57
 
 ### Minor Changes

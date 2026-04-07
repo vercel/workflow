@@ -15,7 +15,23 @@ export type StepFunction<
   stepId?: string;
 };
 
-const registeredSteps = new Map<string, StepFunction>();
+const RegisteredStepsKey = Symbol.for('@workflow/core//registeredSteps');
+
+const globalSymbols: typeof globalThis & {
+  [RegisteredStepsKey]?: Map<string, StepFunction>;
+} = globalThis;
+
+// biome-ignore lint/suspicious/noAssignInExpressions: /
+const registeredSteps = (globalSymbols[RegisteredStepsKey] ??= new Map<
+  string,
+  StepFunction
+>());
+
+const BUILTIN_STEP_NAMES = new Set([
+  '__builtin_response_array_buffer',
+  '__builtin_response_json',
+  '__builtin_response_text',
+]);
 
 function getStepIdAliasCandidates(stepId: string): string[] {
   const parts = stepId.split('//');
@@ -53,6 +69,20 @@ function getStepIdAliasCandidates(stepId: string): string[] {
   );
 }
 
+function getBuiltinResponseStepAlias(stepId: string): StepFunction | undefined {
+  if (!BUILTIN_STEP_NAMES.has(stepId)) {
+    return undefined;
+  }
+
+  for (const [registeredStepId, stepFn] of registeredSteps.entries()) {
+    if (registeredStepId.endsWith(`//${stepId}`)) {
+      return stepFn;
+    }
+  }
+
+  return undefined;
+}
+
 /**
  * Register a step function to be served in the server bundle.
  * Also sets the stepId property on the function for serialization support.
@@ -77,6 +107,11 @@ export function getStepFunction(stepId: string): StepFunction | undefined {
     if (aliasMatch) {
       return aliasMatch;
     }
+  }
+
+  const builtinAliasMatch = getBuiltinResponseStepAlias(stepId);
+  if (builtinAliasMatch) {
+    return builtinAliasMatch;
   }
 
   return undefined;

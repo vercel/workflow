@@ -3,7 +3,7 @@ title: Testing
 description: Unit test individual steps and integration test entire workflows using Vitest.
 ---
 
-Testing is a critical part of building reliable workflows. Because steps are just functions annotated with directives, they can be unit tested like any other JavaScript function. Workflow DevKit also provides a Vitest plugin that runs full workflows in-process — no running server required.
+Testing is a critical part of building reliable workflows. Because steps are just functions annotated with directives, they can be unit tested like any other JavaScript function. Workflow SDK also provides a Vitest plugin that runs full workflows in-process — no running server required.
 
 This guide covers two approaches:
 
@@ -85,7 +85,7 @@ Unit testing works well for individual steps. A simple workflow that only calls 
 For workflows that rely on runtime features like [hooks](/docs/foundations/hooks), [webhooks](/docs/foundations/hooks#understanding-webhooks), [`sleep()`](/docs/api-reference/workflow/sleep), or error retries, you need to test against a real workflow setup. The `@workflow/vitest` plugin handles everything automatically — it compiles your workflow directives, builds the runtime bundles, and executes workflows entirely in-process. No server required.
 
 <Callout type="warn">
-Inside integration tests, which run the full workflow runtime, `vi.mock()` and related calls do not work — neither for your own modules nor for third-party npm packages. All step dependencies are inlined into the compiled bundle by esbuild, bypassing Vitest's module system entirely. To test steps with mocked dependencies, use [unit tests](#unit-testing-steps) instead. Consider dependency injection or environment variable-based conditional logic for controlling behavior in integration tests.
+`vi.mock()` and related calls do _not_ work inside workflow functions, only step functions. Your workflow functions cannot import third party code that needs to be mocked. Mocking works for npm packages imported in step functions. If something needs to be mocked, it likely belongs inside a step function either way.
 </Callout>
 
 ### Vitest Configuration
@@ -356,7 +356,7 @@ For advanced setups that require a running server (e.g. testing against your act
 
 ## Debugging Test Runs
 
-When integration tests fail, the [Workflow DevKit CLI and Web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state locally, you can use the same observability tools you would use in development.
+When integration tests fail, the [Workflow SDK CLI and Web UI](/docs/observability) can help you inspect what happened. Because integration tests persist workflow state locally, you can use the same observability tools you would use in development.
 
 Launch the Web UI to visually explore your test workflow runs:
 
@@ -371,12 +371,12 @@ Or use the CLI to inspect runs in the terminal:
 npx workflow inspect runs
 
 # Inspect a specific run
-npx workflow inspect runs <run-id>
+npx workflow inspect run <run-id>
 ```
 
 The Web UI shows each step, its inputs and outputs, retry attempts, hook state, and timing. This is especially useful for diagnosing issues with hooks that were not resumed, steps that failed unexpectedly, or workflows that timed out.
 
-![Workflow DevKit Web UI](/o11y-ui.png)
+![Workflow SDK Web UI](/o11y-ui.png)
 
 <Callout type="info">
 See the [Observability](/docs/observability) docs for the full set of CLI commands and Web UI features.
@@ -418,5 +418,5 @@ Integration tests are the right place to verify that your workflows handle error
 ---
 
 <Callout type="info">
-This guide was inspired by the testing approach described in Mux's article [*Launching durable AI workflows for video with @mux/ai*](https://www.mux.com/blog/launching-durable-ai-workflows-for-video-with-mux-ai#testing), which demonstrates how Mux uses the `workflow/vite` plugin with Vitest to integration test their durable AI video workflows built on Workflow DevKit.
+This guide was inspired by the testing approach described in Mux's article [*Launching durable AI workflows for video with @mux/ai*](https://www.mux.com/blog/launching-durable-ai-workflows-for-video-with-mux-ai#testing), which demonstrates how Mux uses the `workflow/vite` plugin with Vitest to integration test their durable AI video workflows built on Workflow SDK.
 </Callout>

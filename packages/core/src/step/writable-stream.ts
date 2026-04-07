@@ -1,4 +1,9 @@
 import {
+  createFlushableState,
+  flushablePipe,
+  pollWritableLock,
+} from '../flushable-stream.js';
+import {
   getExternalReducers,
   getSerializeStream,
   WorkflowServerWritableStream,
@@ -47,11 +52,19 @@ export function getWritable<W = any>(
     ctx.encryptionKey
   );
 
-  // Pipe the serialized data to the workflow server stream
-  // Register this async operation with the runtime's ops array so it's awaited via waitUntil
-  ctx.ops.push(
-    serialize.readable.pipeTo(new WorkflowServerWritableStream(name, runId))
-  );
+  // Use flushable pipe so the ops promise resolves when the user releases
+  // their writer lock, not only when the stream is explicitly closed.
+  // Without this, Vercel functions hang until the runtime timeout because
+  // .pipeTo() only resolves on stream close.
+  const serverWritable = new WorkflowServerWritableStream(name, runId);
+  const state = createFlushableState();
+  ctx.ops.push(state.promise);
+
+  flushablePipe(serialize.readable, serverWritable, state).catch(() => {
+    // Errors are handled via state.reject
+  });
+
+  pollWritableLock(serialize.writable, state);
 
   // Return the writable side of the transform stream
   return serialize.writable;

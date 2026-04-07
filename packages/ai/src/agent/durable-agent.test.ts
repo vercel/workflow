@@ -2114,7 +2114,7 @@ describe('DurableAgent', () => {
   });
 
   describe('experimental_context', () => {
-    it('should pass experimental_context to tool execute function', async () => {
+    it('should pass stream experimental_context to tool execute function', async () => {
       let receivedContext: unknown;
 
       const tools: ToolSet = {
@@ -2159,7 +2159,6 @@ describe('DurableAgent', () => {
                 } as LanguageModelV3ToolCall,
               ],
               messages: mockMessages,
-              context: { userId: '123', sessionId: 'abc' },
             },
           })
           .mockResolvedValueOnce({ done: true, value: [] }),
@@ -2175,6 +2174,131 @@ describe('DurableAgent', () => {
       });
 
       expect(receivedContext).toEqual({ userId: '123', sessionId: 'abc' });
+    });
+
+    it('should use constructor experimental_context as the default for stream calls', async () => {
+      let receivedContext: unknown;
+
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({}),
+          execute: async (_input, options) => {
+            receivedContext = options.experimental_context;
+            return { result: 'success' };
+          },
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+        experimental_context: { userId: '123', sessionId: 'abc' },
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const mockMessages: LanguageModelV3Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV3ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+      });
+
+      expect(receivedContext).toEqual({ userId: '123', sessionId: 'abc' });
+    });
+
+    it('should let stream experimental_context override the constructor default', async () => {
+      let receivedContext: unknown;
+
+      const tools: ToolSet = {
+        testTool: {
+          description: 'A test tool',
+          inputSchema: z.object({}),
+          execute: async (_input, options) => {
+            receivedContext = options.experimental_context;
+            return { result: 'success' };
+          },
+        },
+      };
+
+      const mockModel = createMockModel();
+
+      const agent = new DurableAgent({
+        model: async () => mockModel,
+        tools,
+        experimental_context: { userId: 'default-user' },
+      });
+
+      const mockWritable = new WritableStream({
+        write: vi.fn(),
+        close: vi.fn(),
+      });
+
+      const mockMessages: LanguageModelV3Prompt = [
+        { role: 'user', content: [{ type: 'text', text: 'test' }] },
+      ];
+
+      const { streamTextIterator } = await import('./stream-text-iterator.js');
+      const mockIterator = {
+        next: vi
+          .fn()
+          .mockResolvedValueOnce({
+            done: false,
+            value: {
+              toolCalls: [
+                {
+                  toolCallId: 'test-call-id',
+                  toolName: 'testTool',
+                  input: '{}',
+                } as LanguageModelV3ToolCall,
+              ],
+              messages: mockMessages,
+            },
+          })
+          .mockResolvedValueOnce({ done: true, value: [] }),
+      };
+      vi.mocked(streamTextIterator).mockReturnValue(
+        mockIterator as unknown as MockIterator
+      );
+
+      await agent.stream({
+        messages: [{ role: 'user', content: 'test' }],
+        writable: mockWritable,
+        experimental_context: { userId: 'override-user' },
+      });
+
+      expect(receivedContext).toEqual({ userId: 'override-user' });
     });
   });
 

@@ -1,7 +1,7 @@
 {
   "name": "@workflow/next",
-  "version": "4.0.1-beta.67",
-  "description": "Next.js integration for Workflow DevKit",
+  "version": "4.0.1-beta.74",
+  "description": "Next.js integration for Workflow SDK",
   "type": "commonjs",
   "main": "dist/index.js",
   "files": [
@@ -37,7 +37,7 @@
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
-    "semver": "7.7.4",
+    "semver": "catalog:",
     "watchpack": "2.5.1"
   },
   "devDependencies": {
@@ -45,7 +45,7 @@
     "@types/semver": "7.7.1",
     "@types/watchpack": "2.4.4",
     "@workflow/tsconfig": "workspace:*",
-    "next": "16.1.6"
+    "next": "16.2.1"
   },
   "peerDependencies": {
     "next": ">13"

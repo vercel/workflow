@@ -12,6 +12,7 @@ describe('WorkflowServerWritableStream', () => {
     writeMulti: ReturnType<typeof vi.fn>;
     close: ReturnType<typeof vi.fn>;
   };
+  let mockWorld: { streams: typeof mockStreams; streamFlushIntervalMs?: number };
 
   beforeEach(async () => {
     mockStreams = {
@@ -20,8 +21,10 @@ describe('WorkflowServerWritableStream', () => {
       close: vi.fn().mockResolvedValue(undefined),
     };
 
+    mockWorld = { streams: mockStreams };
+
     const { getWorld } = await import('./runtime/world.js');
-    vi.mocked(getWorld).mockReturnValue({ streams: mockStreams } as any);
+    vi.mocked(getWorld).mockReturnValue(mockWorld as any);
   });
 
   afterEach(() => {
@@ -242,6 +245,54 @@ describe('WorkflowServerWritableStream', () => {
       await expect(writer.write(new Uint8Array([4, 5, 6]))).rejects.toThrow(
         'flush error on close'
       );
+    });
+  });
+
+  describe('streamFlushIntervalMs', () => {
+    it('should use world.streamFlushIntervalMs when set to 0 (immediate flush)', async () => {
+      mockWorld.streamFlushIntervalMs = 0;
+
+      const stream = new WorkflowServerWritableStream('s', 'run-1');
+      const writer = stream.getWriter();
+
+      // With interval=0, the flush fires on the next microtask tick via setTimeout(fn, 0)
+      await writer.write(new Uint8Array([1]));
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+
+      await writer.close();
+    });
+
+    it('should fall back to default interval when streamFlushIntervalMs is undefined', async () => {
+      // mockWorld has no streamFlushIntervalMs set — uses default 10ms
+      delete mockWorld.streamFlushIntervalMs;
+
+      const stream = new WorkflowServerWritableStream('s', 'run-1');
+      const writer = stream.getWriter();
+
+      await writer.write(new Uint8Array([1]));
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+
+      await writer.close();
+    });
+
+    it('should respect a custom non-zero flush interval', async () => {
+      mockWorld.streamFlushIntervalMs = 50;
+
+      const stream = new WorkflowServerWritableStream('s', 'run-1');
+      const writer = stream.getWriter();
+
+      // Start a write — the flush is scheduled 50ms from now
+      const writePromise = writer.write(new Uint8Array([1]));
+
+      // After 10ms (the old default), data should NOT have flushed yet
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mockStreams.write).not.toHaveBeenCalled();
+
+      // Wait for the write to complete (will resolve after the 50ms timer fires)
+      await writePromise;
+      expect(mockStreams.write).toHaveBeenCalledTimes(1);
+
+      await writer.close();
     });
   });
 });

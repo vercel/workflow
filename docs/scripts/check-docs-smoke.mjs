@@ -226,7 +226,34 @@ const checks = [
     name: 'Sitemap',
     run: () => assertXmlResponse('/sitemap.xml'),
   },
+  {
+    name: 'Tarball - workflow',
+    run: () => assertTgzResponse('/workflow.tgz'),
+  },
+  {
+    name: 'Tarball - workflow-core',
+    run: () => assertTgzResponse('/workflow-core.tgz'),
+  },
+  {
+    name: 'Tarball - workflow-next',
+    run: () => assertTgzResponse('/workflow-next.tgz'),
+  },
 ];
+
+const GZIP_SIGNATURE = [0x1f, 0x8b];
+
+const assertTgzResponse = async (path) => {
+  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const buf = new Uint8Array(await res.arrayBuffer());
+  for (let i = 0; i < GZIP_SIGNATURE.length; i += 1) {
+    if (buf[i] !== GZIP_SIGNATURE[i]) {
+      throw new Error(`${path} did not start with gzip signature bytes`);
+    }
+  }
+};
 
 const assertXmlResponse = async (path) => {
   const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });

@@ -4,10 +4,11 @@ import {
   FatalError,
   RetryableError,
   RunExpiredError,
+  StepNotRegisteredError,
   ThrottleError,
   TooEarlyError,
-  WorkflowWorldError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
@@ -19,7 +20,6 @@ import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
 } from '../serialization.js';
-import { Run } from './run.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import {
@@ -42,28 +42,10 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
+import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
-
-// Register Run in the host class registry so the Run reviver can deserialize
-// Run/WorkflowRun instances in step context (e.g., when a workflow passes a
-// Run as a step argument). Uses Symbol.for directly to avoid importing
-// class-serialization which causes bundling issues with wf build.
-const WORKFLOW_CLASS_REGISTRY = Symbol.for('workflow-class-registry');
-const hostRegistry =
-  ((globalThis as any)[WORKFLOW_CLASS_REGISTRY] as Map<string, Function>) ??
-  new Map<string, Function>();
-if (!((globalThis as any)[WORKFLOW_CLASS_REGISTRY] as Map<string, Function>)) {
-  (globalThis as any)[WORKFLOW_CLASS_REGISTRY] = hostRegistry;
-}
-hostRegistry.set('Run', Run);
-Object.defineProperty(Run, 'classId', {
-  value: 'Run',
-  writable: false,
-  enumerable: false,
-  configurable: false,
-});
 
 const stepHandler = getWorldHandlers().createQueueHandler(
   '__wkf_step_',
@@ -87,6 +69,67 @@ const stepHandler = getWorldHandlers().createQueueHandler(
       requestedAt,
     } = StepInvokePayloadSchema.parse(message_);
     const { requestId } = metadata;
+
+    // --- Max delivery check ---
+    // Enforce max delivery limit before any infrastructure calls.
+    // This prevents runaway steps from consuming infinite queue deliveries.
+    // At this point, we want to do the minimal amount of work (no fetching
+    // of the step details, etc. We simply attempt to mark the step as failed
+    // and enqueue the workflow once, and if either of those fails, the message
+    // is still consumed but with adequate logging that an error occurred.
+    if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
+      runtimeLogger.error(
+        `Step handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+        {
+          workflowRunId,
+          stepId,
+          stepName: metadata.queueName.slice('__wkf_step_'.length),
+          attempt: metadata.attempt,
+        }
+      );
+      try {
+        const world = getWorld();
+        await world.events.create(
+          workflowRunId,
+          {
+            eventType: 'step_failed',
+            specVersion: SPEC_VERSION_CURRENT,
+            correlationId: stepId,
+            eventData: {
+              error: `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+            },
+          },
+          { requestId }
+        );
+        // Re-queue the workflow to handle the failed step
+        await queueMessage(world, getWorkflowQueueName(workflowName), {
+          runId: workflowRunId,
+          traceCarrier: await serializeTraceCarrier(),
+          requestedAt: new Date(),
+        });
+      } catch (err) {
+        if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+          return;
+        }
+        // Can't even mark the step as failed. Consume the message to stop
+        // further retries. The run will remain in its current state.
+        runtimeLogger.error(
+          `Failed to mark step as failed after ${metadata.attempt} delivery attempts. ` +
+            `A persistent error is preventing the step from being terminated. ` +
+            `The run will remain in its current state until manually resolved. ` +
+            `This is most likely due to a persistent outage of the workflow backend ` +
+            `or a bug in the workflow runtime and should be reported to the Workflow team.`,
+          {
+            workflowRunId,
+            stepId,
+            attempt: metadata.attempt,
+            error: err instanceof Error ? err.message : String(err),
+          }
+        );
+      }
+      return;
+    }
+
     const spanLinks = await linkToCurrentContext();
     // Execute step within the propagated trace context
     return await withTraceContext(traceContext, async () => {
@@ -116,23 +159,15 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             ...getQueueOverhead({ requestedAt }),
           });
 
+          // Note: Step function validation happens after step_started so we can
+          // properly fail the step (not the run) if the function is not registered.
+          // This allows the workflow to handle the step failure gracefully.
           const stepFn = getStepFunction(stepName);
-          if (!stepFn) {
-            throw new Error(`Step "${stepName}" not found`);
-          }
-          if (typeof stepFn !== 'function') {
-            throw new Error(
-              `Step "${stepName}" is not a function (got ${typeof stepFn})`
-            );
-          }
-
-          const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
 
           span?.setAttributes({
             ...Attribute.WorkflowName(workflowName),
             ...Attribute.WorkflowRunId(workflowRunId),
             ...Attribute.StepId(stepId),
-            ...Attribute.StepMaxRetries(maxRetries),
             ...Attribute.StepTracePropagated(!!traceContext),
           });
 
@@ -209,11 +244,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
             // Too early: retryAfter timestamp not reached yet
             // Return timeout to queue so it retries later
             if (TooEarlyError.is(err)) {
-              const retryAfter = err.retryAfter ?? new Date(Date.now() + 1000);
-              const timeoutSeconds = Math.max(
-                1,
-                Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
-              );
+              const timeoutSeconds = Math.max(1, err.retryAfter ?? 1);
               span?.setAttributes({
                 ...Attribute.StepRetryTimeoutSeconds(timeoutSeconds),
               });
@@ -221,12 +252,11 @@ const stepHandler = getWorldHandlers().createQueueHandler(
               span?.addEvent?.('step.delayed', {
                 'delay.reason': 'retry_after_not_reached',
                 'delay.timeout_seconds': timeoutSeconds,
-                'delay.retry_after': retryAfter.toISOString(),
               });
               runtimeLogger.debug('Step retryAfter timestamp not yet reached', {
                 stepName,
                 stepId,
-                retryAfter,
+                retryAfterSeconds: err.retryAfter,
                 timeoutSeconds,
               });
               return { timeoutSeconds };
@@ -244,6 +274,75 @@ const stepHandler = getWorldHandlers().createQueueHandler(
 
           span?.setAttributes({
             ...Attribute.StepStatus(step.status),
+          });
+
+          // Validate step function exists AFTER step_started so we can
+          // properly fail the step (not the run) if the function is missing.
+          // This allows the workflow to handle the step failure gracefully,
+          // similar to how FatalError is handled.
+          if (!stepFn || typeof stepFn !== 'function') {
+            const err = new StepNotRegisteredError(stepName);
+
+            runtimeLogger.error(
+              'Step function not registered, failing step (not run)',
+              {
+                workflowRunId,
+                stepName,
+                stepId,
+                error: err.message,
+              }
+            );
+
+            // Fail the step via event (event-sourced architecture)
+            // This matches the FatalError pattern - fail the step and re-queue workflow
+            try {
+              await world.events.create(
+                workflowRunId,
+                {
+                  eventType: 'step_failed',
+                  specVersion: SPEC_VERSION_CURRENT,
+                  correlationId: stepId,
+                  eventData: {
+                    error: err.message,
+                    stack: err.stack,
+                  },
+                },
+                { requestId }
+              );
+            } catch (stepFailErr) {
+              if (EntityConflictError.is(stepFailErr)) {
+                runtimeLogger.info(
+                  'Tried failing step for missing function, but step has already finished.',
+                  {
+                    workflowRunId,
+                    stepId,
+                    stepName,
+                    message: stepFailErr.message,
+                  }
+                );
+                return;
+              }
+              throw stepFailErr;
+            }
+
+            span?.setAttributes({
+              ...Attribute.StepStatus('failed'),
+              ...Attribute.StepFatalError(true),
+            });
+
+            // Re-invoke the workflow to handle the failed step
+            await queueMessage(world, getWorkflowQueueName(workflowName), {
+              runId: workflowRunId,
+              traceCarrier: await serializeTraceCarrier(),
+              requestedAt: new Date(),
+            });
+            return;
+          }
+
+          const maxRetries = stepFn.maxRetries ?? DEFAULT_STEP_MAX_RETRIES;
+
+          span?.setAttributes({
+            ...Attribute.StepMaxRetries(maxRetries),
           });
 
           let result: unknown;

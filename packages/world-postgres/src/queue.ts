@@ -1,5 +1,5 @@
 import * as Stream from 'node:stream';
-import { JsonTransport } from '@vercel/queue';
+import type { Transport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   MessageId,
@@ -17,9 +17,9 @@ import {
   run,
   type WorkerUtils,
 } from 'graphile-worker';
-import type Postgres from 'postgres';
+import type { Pool } from 'pg';
 import { monotonicFactory } from 'ulid';
-import z from 'zod';
+import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
 import { MessageData } from './message.js';
 
@@ -76,12 +76,44 @@ export type PostgresQueue = Queue & {
 
 export function createQueue(
   config: PostgresWorldConfig,
-  postgres: Postgres.Sql
+  pool: Pool
 ): PostgresQueue {
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createLocalWorld({ dataDir: undefined, port });
 
-  const transport = new JsonTransport();
+  // JSON transport that preserves Uint8Array values via a tagged
+  // envelope ({ __type: 'Uint8Array', data: '<base64>' }).  Required
+  // for the resilient start path where runInput.input (a Uint8Array)
+  // is sent through the queue.
+  const transport: Transport<unknown> = {
+    contentType: 'application/json',
+    serialize(value: unknown): Buffer {
+      return Buffer.from(
+        JSON.stringify(value, (_key, v) =>
+          v instanceof Uint8Array
+            ? { __type: 'Uint8Array', data: Buffer.from(v).toString('base64') }
+            : v
+        )
+      );
+    },
+    async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+      const chunks: Uint8Array[] = [];
+      const reader = stream.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
+      return JSON.parse(Buffer.concat(chunks).toString(), (_key, v) =>
+        v !== null &&
+        typeof v === 'object' &&
+        v.__type === 'Uint8Array' &&
+        typeof v.data === 'string'
+          ? new Uint8Array(Buffer.from(v.data, 'base64'))
+          : v
+      );
+    },
+  };
   const generateMessageId = monotonicFactory();
 
   const prefix = config.jobPrefix || 'workflow_';
@@ -252,48 +284,48 @@ export function createQueue(
 
   async function migratePgBossJobs(utils: WorkerUtils): Promise<void> {
     // Scenario A: Drizzle migration already ran — staging table exists
-    const hasStaging = await postgres`
-      SELECT EXISTS (
+    const hasStaging = await pool.query(
+      `SELECT EXISTS (
         SELECT 1 FROM information_schema.tables
         WHERE table_schema = 'workflow'
         AND table_name = '_pgboss_pending_jobs'
-      ) AS exists
-    `;
-    if (hasStaging[0].exists) {
-      const jobs = await postgres`
-        SELECT name, data, singleton_key, retry_limit
-        FROM "workflow"."_pgboss_pending_jobs"
-      `;
-      for (const job of jobs) {
+      ) AS exists`
+    );
+    if (hasStaging.rows[0]?.exists) {
+      const jobs = await pool.query(
+        `SELECT name, data, singleton_key, retry_limit
+        FROM "workflow"."_pgboss_pending_jobs"`
+      );
+      for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
           maxAttempts: job.retry_limit ?? 3,
         });
       }
-      await postgres`DROP TABLE "workflow"."_pgboss_pending_jobs"`;
+      await pool.query(`DROP TABLE "workflow"."_pgboss_pending_jobs"`);
       return;
     }
 
     // Scenario B: Drizzle migration didn't run — pgboss schema still exists
-    const hasPgBoss = await postgres`
-      SELECT EXISTS (
+    const hasPgBoss = await pool.query(
+      `SELECT EXISTS (
         SELECT 1 FROM information_schema.schemata
         WHERE schema_name = 'pgboss'
-      ) AS exists
-    `;
-    if (hasPgBoss[0].exists) {
-      const jobs = await postgres`
-        SELECT name, data, singleton_key, retry_limit
+      ) AS exists`
+    );
+    if (hasPgBoss.rows[0]?.exists) {
+      const jobs = await pool.query(
+        `SELECT name, data, singleton_key, retry_limit
         FROM pgboss.job
-        WHERE state IN ('created', 'retry')
-      `;
-      for (const job of jobs) {
+        WHERE state IN ('created', 'retry')`
+      );
+      for (const job of jobs.rows) {
         await utils.addJob(job.name, job.data as Record<string, unknown>, {
           jobKey: job.singleton_key ?? undefined,
           maxAttempts: job.retry_limit ?? 3,
         });
       }
-      await postgres`DROP SCHEMA pgboss CASCADE`;
+      await pool.query(`DROP SCHEMA pgboss CASCADE`);
     }
   }
 
@@ -302,7 +334,7 @@ export function createQueue(
       startPromise = (async () => {
         try {
           workerUtils = await makeWorkerUtils({
-            connectionString: config.connectionString,
+            pgPool: pool,
             logger: graphileLogger,
           });
           await workerUtils.migrate();
@@ -320,7 +352,7 @@ export function createQueue(
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
     const [queuePrefix, queueId] = parseQueueName(queue);
-    const body = transport.serialize(message);
+    const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
     await addGraphileJob({
       queuePrefix,
@@ -462,7 +494,7 @@ export function createQueue(
     }
 
     runner = await run({
-      connectionString: config.connectionString,
+      pgPool: pool,
       concurrency: config.queueConcurrency || 10,
       logger: graphileLogger,
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)

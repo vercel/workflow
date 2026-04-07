@@ -4,7 +4,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
+  WorkflowWorldError,
 } from '@workflow/errors';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import {
   afterAll,
   assert,
@@ -705,6 +707,87 @@ describe('e2e', () => {
     }
   });
 
+  describe.skipIf(isLocalDeployment())(
+    'outputStreamWorkflow - getTailIndex and getChunks',
+    () => {
+      test(
+        'getTailIndex returns correct index after stream completes',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+          await run.returnValue;
+
+          const readable = run.getReadable();
+          const tailIndex = await readable.getTailIndex();
+
+          // outputStreamWorkflow writes 2 chunks to the default stream
+          expect(tailIndex).toBe(1);
+        }
+      );
+
+      test(
+        'getTailIndex returns -1 before any chunks are written',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+
+          // Don't await returnValue — check immediately while stream is
+          // still being written (or hasn't started yet). The world should
+          // report tailIndex = -1 for streams with no data.
+          const readable = run.getReadable({ namespace: 'nonexistent' });
+          const tailIndex = await readable.getTailIndex();
+          expect(tailIndex).toBe(-1);
+        }
+      );
+
+      test(
+        'getChunks returns same content as reading the stream',
+        {
+          timeout: 60_000,
+        },
+        async () => {
+          const run = await start(await e2e('outputStreamWorkflow'), []);
+          await run.returnValue;
+
+          // Read all chunks via the stream
+          const reader = run.getReadable().getReader();
+          const streamChunks: unknown[] = [];
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            streamChunks.push(value);
+          }
+
+          // Read all chunks via getChunks pagination
+          const world = getWorld();
+          const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
+          const paginatedChunks: Uint8Array[] = [];
+          let cursor: string | null = null;
+          do {
+            const page = await world.streams.getChunks(run.runId, streamName, {
+              limit: 1, // small page size to exercise pagination
+              ...(cursor ? { cursor } : {}),
+            });
+            for (const chunk of page.data) {
+              paginatedChunks.push(chunk.data);
+            }
+            cursor = page.cursor;
+            if (!page.hasMore) {
+              expect(page.done).toBe(true);
+            }
+          } while (cursor);
+
+          // Both methods should return the same number of chunks
+          expect(paginatedChunks).toHaveLength(streamChunks.length);
+        }
+      );
+    }
+  );
+
   test.skipIf(isLocalDeployment())(
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
     { timeout: 60_000 },
@@ -1020,6 +1103,71 @@ describe('e2e', () => {
           // Verify workflow completed successfully (error was caught)
           const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
           expect(runData.status).toBe('completed');
+        }
+      );
+    });
+
+    describe('not registered', () => {
+      test(
+        'WorkflowNotRegisteredError fails the run when workflow does not exist',
+        { timeout: 60_000 },
+        async () => {
+          // Start a run with a workflowId that doesn't exist in the deployment bundle.
+          // This simulates starting a run against a deployment that doesn't have the workflow.
+          const run = await start(
+            {
+              workflowId: 'workflow//./workflows/99_e2e//nonExistentWorkflow',
+            } as any,
+            []
+          );
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.message).toContain('is not registered');
+          expect(error.cause.code).toBe('RUNTIME_ERROR');
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('failed');
+        }
+      );
+
+      test(
+        'StepNotRegisteredError fails the step but workflow can catch it',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(await e2e('stepNotRegisteredCatchable'), []);
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          expect(result.error).toContain('is not registered');
+
+          // Verify workflow completed successfully (error was caught)
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+
+          // Verify the step itself failed
+          const { json: steps } = await cliInspectJson(
+            `steps --runId ${run.runId}`
+          );
+          const ghostStep = steps.find((s: any) =>
+            s.stepName.includes('nonExistentStep')
+          );
+          expect(ghostStep).toBeDefined();
+          expect(ghostStep.status).toBe('failed');
+        }
+      );
+
+      test(
+        'StepNotRegisteredError fails the run when not caught in workflow',
+        { timeout: 60_000 },
+        async () => {
+          const run = await start(await e2e('stepNotRegisteredUncaught'), []);
+          const error = await run.returnValue.catch((e: unknown) => e);
+
+          expect(WorkflowRunFailedError.is(error)).toBe(true);
+          assert(WorkflowRunFailedError.is(error));
+          expect(error.cause.message).toContain('is not registered');
         }
       );
     });
@@ -1374,45 +1522,6 @@ describe('e2e', () => {
     }
   );
 
-  test(
-    'startFromWorkflow - calling start() directly inside a workflow function with hook communication',
-    { timeout: 120_000 },
-    async () => {
-      const inputValue = 42;
-      const run = await start(await e2e('startFromWorkflow'), [inputValue]);
-      const returnValue = await run.returnValue;
-
-      // Verify parent workflow completed with expected data
-      expect(returnValue.parentInput).toBe(inputValue);
-
-      // Verify child Run object was returned (serialized from workflow context)
-      expect(returnValue.childRun).toBeDefined();
-      expect(typeof returnValue.childRun.runId).toBe('string');
-      expect(returnValue.childRun.runId.startsWith('wrun_')).toBe(true);
-
-      // Verify hook signal was received from child
-      expect(returnValue.signalFromChild.processed).toBe(inputValue * 3);
-
-      // Verify the child workflow also completed independently
-      const childRun = getRun(returnValue.childRun.runId);
-      trackRun(childRun);
-      const childResult = await childRun.returnValue;
-      expect(childResult.processed).toBe(inputValue * 3);
-    }
-  );
-
-  test(
-    'fibonacciWorkflow - recursive workflow composition via start()',
-    { timeout: 180_000 },
-    async () => {
-      // fib(6) = 8, spawns a tree of child workflow runs
-      const run = await start(await e2e('fibonacciWorkflow'), [6]);
-      const returnValue = await run.returnValue;
-
-      expect(returnValue).toBe(8);
-    }
-  );
-
   // Skipped for Vercel since VQS doesn't support direct HTTP calls
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
@@ -1435,11 +1544,14 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(flowRes.status).toBe(200);
-      expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
-      const flowBody = await flowRes.text();
-      expect(flowBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/flow" endpoint is healthy'
-      );
+      expect(flowRes.headers.get('Content-Type')).toBe('application/json');
+      const flowBody = await flowRes.json();
+      expect(flowBody).toEqual({
+        healthy: true,
+        endpoint: '/.well-known/workflow/v1/flow',
+        specVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion: expect.any(String),
+      });
 
       // Test the step endpoint health check
       const stepHealthUrl = new URL(
@@ -1451,11 +1563,14 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(stepRes.status).toBe(200);
-      expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
-      const stepBody = await stepRes.text();
-      expect(stepBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/step" endpoint is healthy'
-      );
+      expect(stepRes.headers.get('Content-Type')).toBe('application/json');
+      const stepBody = await stepRes.json();
+      expect(stepBody).toEqual({
+        healthy: true,
+        endpoint: '/.well-known/workflow/v1/step',
+        specVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion: expect.any(String),
+      });
     }
   );
 
@@ -2033,6 +2148,88 @@ describe('e2e', () => {
 
       const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
       expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
+    'importMetaUrlWorkflow - import.meta.url is available in step bundles',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('importMetaUrlWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        isDefined: true,
+        type: 'string',
+        isFileUrl: true,
+      });
+    }
+  );
+
+  test(
+    'metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('metadataFromHelperWorkflow'), [
+        'smoke-test',
+      ]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue.label).toBe('smoke-test');
+      expect(typeof returnValue.workflowRunId).toBe('string');
+      expect(typeof returnValue.stepId).toBe('string');
+      expect(returnValue.attempt).toBeGreaterThanOrEqual(1);
+    }
+  );
+
+  // ============================================================
+  // Resilient start: run completes even when run_created fails
+  // ============================================================
+  // TODO: Switch this to a stream-based workflow (e.g. readableStreamWorkflow)
+  // to also verify that serialization, flushing, and binary data work correctly
+  // over the queue boundary. Currently using addTenWorkflow to avoid the
+  // skipIf(isLocalDeployment()) barrier that stream tests require.
+  test(
+    'resilient start: addTenWorkflow completes when run_created returns 500',
+    { timeout: 60_000 },
+    async () => {
+      // Get the real world and wrap it so the first events.create call
+      // (run_created) throws a 500 server error. The queue should still
+      // be dispatched with runInput, and the runtime should bootstrap
+      // the run via the run_started fallback path.
+      const realWorld = getWorld();
+      let createCallCount = 0;
+      const stubbedWorld: World = {
+        ...realWorld,
+        events: {
+          ...realWorld.events,
+          create: (async (...args: Parameters<World['events']['create']>) => {
+            createCallCount++;
+            if (createCallCount === 1) {
+              // Fail the very first call (run_created from start())
+              throw new WorkflowWorldError('Simulated storage outage', {
+                status: 500,
+              });
+            }
+            return realWorld.events.create(...args);
+          }) as World['events']['create'],
+        },
+      };
+
+      const run = await start(await e2e('addTenWorkflow'), [123], {
+        world: stubbedWorld,
+      });
+
+      // Verify the stub intercepted the run_created call (only call
+      // through the stubbed world — the server-side runtime uses its
+      // own world instance for run_started and subsequent events).
+      expect(createCallCount).toBe(1);
+
+      // The run should still complete despite run_created failing.
+      // The runtime's resilient start path creates the run from
+      // run_started, so returnValue polling may initially get
+      // WorkflowRunNotFoundError before the queue delivers.
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe(133);
     }
   );
 });

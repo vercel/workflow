@@ -1,13 +1,39 @@
 import { setTimeout } from 'node:timers/promises';
-import { JsonTransport } from '@vercel/queue';
+import type { Transport } from '@vercel/queue';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
 import { Agent } from 'undici';
-import z from 'zod';
+import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl } from './config.js';
+import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
+
+/**
+ * JSON transport that preserves Uint8Array values using the same
+ * replacer/reviver that world-local uses for filesystem storage.
+ * Uint8Array → { __type: 'Uint8Array', data: '<base64>' } in JSON.
+ */
+class TypedJsonTransport implements Transport<unknown> {
+  readonly contentType = 'application/json';
+
+  serialize(value: unknown): Buffer {
+    return Buffer.from(JSON.stringify(value, jsonReplacer));
+  }
+
+  async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+    const chunks: Uint8Array[] = [];
+    const reader = stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    const text = Buffer.concat(chunks).toString();
+    return JSON.parse(text, jsonReviver);
+  }
+}
 
 // For local queue, there is no technical limit on the message visibility lifespan,
 // but the environment variable can be used for testing purposes to set a max visibility limit.
@@ -64,7 +90,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     connections: 1000,
     keepAliveTimeout: 30_000,
   });
-  const transport = new JsonTransport();
+  const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
 
@@ -90,6 +116,14 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const { pathname, prefix } = getQueueRoute(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
 
+    // Extract identifiers from the message for structured logging.
+    // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
+    const msg = message as Record<string, unknown>;
+    const runId = (msg.runId ?? msg.workflowRunId ?? undefined) as
+      | string
+      | undefined;
+    const stepId = (msg.stepId ?? undefined) as string | undefined;
+
     if (opts?.idempotencyKey) {
       const key = opts.idempotencyKey;
       inflightMessages.set(key, messageId);
@@ -106,12 +140,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         );
         await semaphore.acquire();
       }
+      // Safety limit to prevent infinite loops in the local queue.
+      // The actual max delivery enforcement happens in the workflow/step handlers
+      // (at MAX_QUEUE_DELIVERIES = 48), so this just needs to be comfortably higher.
+      const MAX_LOCAL_SAFETY_LIMIT = 256;
       try {
-        const maxAttempts = 3;
-        let defaultRetriesLeft = maxAttempts;
-        for (let attempt = 0; defaultRetriesLeft > 0; attempt++) {
-          defaultRetriesLeft--;
-
+        for (let attempt = 0; attempt < MAX_LOCAL_SAFETY_LIMIT; attempt++) {
           const headers: Record<string, string> = {
             ...opts?.headers,
             'content-type': 'application/json',
@@ -163,7 +197,6 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                   );
                   await setTimeout(timeoutMs);
                 }
-                defaultRetriesLeft++;
                 continue;
               }
             } catch {}
@@ -171,15 +204,32 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
 
           console.error(
-            `[world-local] Queue message failed (attempt ${attempt + 1}/${maxAttempts}, status ${response.status}): ${text}`,
-            { queueName, messageId }
+            `[world-local] Queue message failed (attempt ${attempt + 1}, HTTP ${response.status})`,
+            {
+              queueName,
+              messageId,
+              ...(runId && { runId }),
+              ...(stepId && { stepId }),
+              handlerError: text,
+            }
           );
+
+          // 5s linear backoff to approximate VQS retry timing in local dev.
+          // VQS uses 5s linear for attempts 1–32, then exponential, but for
+          // local dev linear 5s is sufficient — the handler enforces the real
+          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
+          await setTimeout(5000);
         }
 
-        console.error(`[world-local] Queue message exhausted all retries`, {
-          queueName,
-          messageId,
-        });
+        console.error(
+          `[world-local] Queue message exhausted safety limit (${MAX_LOCAL_SAFETY_LIMIT} attempts)`,
+          {
+            queueName,
+            messageId,
+            ...(runId && { runId }),
+            ...(stepId && { stepId }),
+          }
+        );
       } finally {
         semaphore.release();
       }
@@ -231,7 +281,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         return Response.json({ error: 'Unhandled queue' }, { status: 400 });
       }
 
-      const body = await new JsonTransport().deserialize(req.body);
+      const body = await new TypedJsonTransport().deserialize(req.body);
       try {
         const result = await handler(body, { attempt, queueName, messageId });
 

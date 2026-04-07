@@ -44,11 +44,9 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
-    const supportsDeferredStepCopies =
-      finalConfig.canary === true &&
-      generatedStep.includes(
-        path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
-      );
+    const supportsDeferredStepCopies = generatedStep.includes(
+      path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
+    );
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     const fetchWithTimeout = (pathname: string) => {

@@ -8,6 +8,10 @@ export const RUN_ERROR_CODES = {
   USER_ERROR: 'USER_ERROR',
   /** Internal runtime error (corrupted event log, missing timestamps) */
   RUNTIME_ERROR: 'RUNTIME_ERROR',
+  /** Run exceeded the maximum number of queue deliveries */
+  MAX_DELIVERIES_EXCEEDED: 'MAX_DELIVERIES_EXCEEDED',
+  /** Workflow replay exceeded the maximum allowed duration */
+  REPLAY_TIMEOUT: 'REPLAY_TIMEOUT',
 } as const;
 
 export type RunErrorCode =

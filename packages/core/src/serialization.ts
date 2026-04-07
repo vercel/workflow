@@ -445,6 +445,12 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           controller.enqueue(result.value);
         }
       },
+      cancel: async (reason) => {
+        if (this.#reader) {
+          await this.#reader.cancel(reason).catch(() => {});
+          this.#reader = undefined;
+        }
+      },
     });
   }
 }
@@ -484,7 +490,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       // This prevents data loss if the write operation fails
       const chunksToFlush = buffer.slice();
 
-      // Use writeToStreamMulti if available for batch writes
+      // Use writeMulti if available for batch writes
       if (
         typeof world.streams.writeMulti === 'function' &&
         chunksToFlush.length > 1
@@ -522,7 +528,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
             for (const w of currentWaiters) w.reject(err);
           }
         );
-      }, STREAM_FLUSH_INTERVAL_MS);
+      }, world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
     };
 
     super({
@@ -585,6 +591,12 @@ export interface SerializableSpecial {
   BigInt64Array: string; // base64 string
   BigUint64Array: string; // base64 string
   Date: string; // ISO string
+  DOMException: {
+    message: string;
+    name: string;
+    stack?: string;
+    cause?: unknown;
+  };
   Float32Array: string; // base64 string
   Float64Array: string; // base64 string
   Error: Record<string, any>;
@@ -615,14 +627,6 @@ export interface SerializableSpecial {
     headers: Headers;
     body: Response['body'];
     redirected: boolean;
-  };
-  /**
-   * Serialized Run/WorkflowRun instance.
-   * Handled separately from Instance to avoid SWC plugin injecting
-   * class-serialization imports into the Run module.
-   */
-  Run: {
-    runId: string;
   };
   Class: {
     classId: string;
@@ -690,16 +694,6 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       value instanceof global.BigInt64Array && viewToBase64(value),
     BigUint64Array: (value) =>
       value instanceof global.BigUint64Array && viewToBase64(value),
-    // Run instances are serialized to { runId } so they can be deserialized
-    // as WorkflowRun in the workflow VM. Uses __serializable marker instead
-    // of WORKFLOW_SERIALIZE to avoid the SWC plugin injecting class-serialization
-    // imports into run.ts (which breaks the step bundle).
-    Run: (value) => {
-      if (value === null || typeof value !== 'object') return false;
-      const cls = value.constructor;
-      if (!cls || (cls as any).__serializable !== 'Run') return false;
-      return { runId: (value as any).runId };
-    },
     // Class and Instance are intentionally placed before Error so that
     // custom Error subclasses with WORKFLOW_SERIALIZE take precedence
     // over the generic Error serialization (devalue uses first-match-wins).
@@ -740,6 +734,21 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       const valid = !Number.isNaN(value.getDate());
       // Note: "." is to avoid returning a falsy value when the date is invalid
       return valid ? value.toISOString() : '.';
+    },
+    // DOMException is a special case: in Node.js it passes isNativeError()
+    // and instanceof Error, but has a unique constructor signature
+    // (message, name) and a read-only numeric `code` property derived from
+    // `name`. It must be checked before the generic Error reducer.
+    DOMException: (value) => {
+      if (!types.isNativeError(value)) return false;
+      if (value.constructor?.name !== 'DOMException') return false;
+      const reduced: SerializableSpecial['DOMException'] = {
+        message: value.message,
+        name: value.name,
+        stack: value.stack,
+      };
+      if ('cause' in value) reduced.cause = value.cause;
+      return reduced;
     },
     Error: (value) => {
       // Use types.isNativeError() instead of `instanceof global.Error`
@@ -1051,6 +1060,14 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
       return new global.BigUint64Array(ab);
     },
     Date: (value) => new global.Date(value),
+    DOMException: (value) => {
+      const error = new global.DOMException(value.message, value.name);
+      if (value.stack !== undefined) error.stack = value.stack;
+      // DOMException's constructor doesn't accept a cause option, so
+      // we set it manually when present in the serialized data.
+      if ('cause' in value) error.cause = value.cause;
+      return error;
+    },
     Error: (value) => {
       const error = new global.Error(value.message);
       error.name = value.name;
@@ -1080,17 +1097,6 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
     },
     Map: (value) => new global.Map(value),
     RegExp: (value) => new global.RegExp(value.source, value.flags),
-    Run: (value) => {
-      // In the VM, look up WorkflowRun from the class registry (registered under 'Run').
-      // In the step context, look up the real Run class.
-      const RunClass = getSerializationClass('Run', global);
-      if (!RunClass) {
-        throw new Error(
-          'Run class not found in the serialization registry. Make sure the Run class is registered.'
-        );
-      }
-      return new (RunClass as any)(value.runId);
-    },
     Class: (value) => {
       const classId = value.classId;
       // Pass the global object to support VM contexts where classes are registered

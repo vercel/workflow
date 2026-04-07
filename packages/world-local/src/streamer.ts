@@ -1,6 +1,11 @@
 import { EventEmitter } from 'node:events';
 import path from 'node:path';
-import type { Streamer } from '@workflow/world';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  Streamer,
+  StreamInfoResponse,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
@@ -38,11 +43,53 @@ export function serializeChunk(chunk: Chunk) {
   return Buffer.concat([eofByte, chunk.chunk]);
 }
 
+/** Check only the EOF flag byte without copying chunk payload. */
+export function isEofChunk(serialized: Buffer): boolean {
+  return serialized[0] === 1;
+}
+
 export function deserializeChunk(serialized: Buffer) {
   const eof = serialized[0] === 1;
   // Create a copy instead of a view to prevent ArrayBuffer detachment
   const chunk = Buffer.from(serialized.subarray(1));
   return { eof, chunk };
+}
+
+/**
+ * List chunk files for a stream, sorted chronologically (ULID order).
+ * Returns both the sorted file names and a map of file → extension for
+ * resolving the full path. Handles tagged and legacy (.json) formats.
+ */
+async function listChunkFilesForStream(
+  chunksDir: string,
+  name: string,
+  tag?: string
+): Promise<{ files: string[]; extMap: Map<string, string> }> {
+  const listPromises: Promise<string[]>[] = [
+    listFilesByExtension(chunksDir, '.bin'),
+    listFilesByExtension(chunksDir, '.json'),
+  ];
+  if (tag) {
+    listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
+  }
+  const [binFiles, jsonFiles, ...taggedResults] =
+    await Promise.all(listPromises);
+  const taggedBinFiles = taggedResults[0] ?? [];
+
+  const extMap = new Map<string, string>();
+  for (const f of jsonFiles) extMap.set(f, '.json');
+  const tagSfx = tag ? `.${tag}` : '';
+  for (const f of binFiles) {
+    if (tag && f.endsWith(tagSfx)) continue;
+    extMap.set(f, '.bin');
+  }
+  for (const f of taggedBinFiles) extMap.set(f, `.${tag}.bin`);
+
+  const files = [...extMap.keys()]
+    .filter((file) => file.startsWith(`${name}-`))
+    .sort();
+
+  return { files, extMap };
 }
 
 export function createStreamer(basedir: string, tag?: string): Streamer {
@@ -245,6 +292,115 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
         return data?.streams ?? [];
       },
 
+      async getChunks(
+        _runId: string,
+        name: string,
+        options?: GetChunksOptions
+      ): Promise<StreamChunksResponse> {
+        const limit = options?.limit ?? 100;
+        const chunksDir = path.join(basedir, 'streams', 'chunks');
+        const { files: chunkFiles, extMap: fileExtMap } =
+          await listChunkFilesForStream(chunksDir, name, tag);
+
+        // Decode cursor
+        let startIndex = 0;
+        if (options?.cursor) {
+          try {
+            const decoded = JSON.parse(
+              Buffer.from(options.cursor, 'base64').toString('utf-8')
+            );
+            startIndex = decoded.i;
+          } catch {
+            startIndex = 0;
+          }
+        }
+
+        // Walk from startIndex, reading only the files we need.
+        // Files before the cursor are skipped entirely.
+        let streamDone = false;
+        const resultChunks: { index: number; data: Uint8Array }[] = [];
+        let dataIndex = 0; // running count of data (non-EOF) files seen
+
+        for (const file of chunkFiles) {
+          const ext = fileExtMap.get(file) ?? '.bin';
+          const filePath = path.join(chunksDir, `${file}${ext}`);
+
+          // Before the cursor: only need to check EOF (1 byte), skip content
+          if (dataIndex < startIndex) {
+            if (isEofChunk(await readBuffer(filePath))) {
+              streamDone = true;
+              break;
+            }
+            dataIndex++;
+            continue;
+          }
+
+          // Collected enough data chunks — peek at the next file for EOF/hasMore
+          if (resultChunks.length >= limit) {
+            if (isEofChunk(await readBuffer(filePath))) {
+              streamDone = true;
+            } else {
+              // More data files exist beyond this page
+              dataIndex++;
+            }
+            break;
+          }
+
+          // In the page window: deserialize fully
+          const chunk = deserializeChunk(await readBuffer(filePath));
+          if (chunk.eof) {
+            streamDone = true;
+            break;
+          }
+          resultChunks.push({
+            index: dataIndex,
+            data: Uint8Array.from(chunk.chunk),
+          });
+          dataIndex++;
+        }
+
+        // hasMore = we know there are data files beyond this page
+        const hasMore =
+          !streamDone && dataIndex > startIndex + resultChunks.length;
+        const nextIndex = startIndex + resultChunks.length;
+        const nextCursor = hasMore
+          ? Buffer.from(JSON.stringify({ i: nextIndex })).toString('base64')
+          : null;
+
+        return {
+          data: resultChunks,
+          cursor: nextCursor,
+          hasMore,
+          done: streamDone,
+        };
+      },
+
+      async getInfo(
+        _runId: string,
+        name: string
+      ): Promise<StreamInfoResponse> {
+        const chunksDir = path.join(basedir, 'streams', 'chunks');
+        const { files: chunkFiles, extMap: fileExtMap } =
+          await listChunkFilesForStream(chunksDir, name, tag);
+
+        // Only read the first byte of each file to check EOF — no full
+        // deserialization needed since we just need a count.
+        let streamDone = false;
+        let dataCount = 0;
+        for (const file of chunkFiles) {
+          const ext = fileExtMap.get(file) ?? '.bin';
+          if (
+            isEofChunk(await readBuffer(path.join(chunksDir, `${file}${ext}`)))
+          ) {
+            streamDone = true;
+            break;
+          }
+          dataCount++;
+        }
+
+        return { tailIndex: dataCount - 1, done: streamDone };
+      },
+
       async get(_runId: string, name: string, startIndex = 0) {
         const chunksDir = path.join(basedir, 'streams', 'chunks');
         let removeListeners = () => {};
@@ -270,7 +426,6 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               deliveredChunkIds.add(event.chunkId);
 
               // Skip empty chunks to maintain consistency with disk reading behavior
-              // Empty chunks are not enqueued when read from disk (see line 184-186)
               if (event.chunkData.byteLength === 0) {
                 return;
               }
@@ -311,36 +466,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             streamEmitter.on(`close:${name}` as const, closeListener);
 
             // Now load existing chunks from disk.
-            // List both .bin (current) and .json (legacy) chunk files for
-            // backwards compatibility with streams written before this change.
-            // Also list tagged .bin files (e.g., `.vitest-0.bin`).
-            const listPromises: Promise<string[]>[] = [
-              listFilesByExtension(chunksDir, '.bin'),
-              listFilesByExtension(chunksDir, '.json'),
-            ];
-            if (tag) {
-              listPromises.push(listFilesByExtension(chunksDir, `.${tag}.bin`));
-            }
-            const [binFiles, jsonFiles, ...taggedResults] =
-              await Promise.all(listPromises);
-            const taggedBinFiles = taggedResults[0] ?? [];
-            const fileExtMap = new Map<string, string>();
-            for (const f of jsonFiles) fileExtMap.set(f, '.json');
-            // When a tag is set, skip .bin entries that end with the tag suffix
-            // because those same files will be properly handled by taggedBinFiles.
-            // Without this filter, a file like "stream-chnk_ABC.vitest-0.bin" would
-            // appear twice: once as "stream-chnk_ABC.vitest-0" (from .bin listing)
-            // and once as "stream-chnk_ABC" (from .vitest-0.bin listing), causing
-            // duplicate data in the stream.
-            const tagSuffix = tag ? `.${tag}` : '';
-            for (const f of binFiles) {
-              if (tag && f.endsWith(tagSuffix)) continue;
-              fileExtMap.set(f, '.bin'); // .bin takes precedence
-            }
-            for (const f of taggedBinFiles) fileExtMap.set(f, `.${tag}.bin`); // tagged .bin takes precedence
-            const chunkFiles = [...fileExtMap.keys()]
-              .filter((file) => file.startsWith(`${name}-`))
-              .sort(); // ULID lexicographic sort = chronological order
+            const { files: chunkFiles, extMap: fileExtMap } =
+              await listChunkFilesForStream(chunksDir, name, tag);
 
             // Resolve negative startIndex relative to the number of data chunks
             // (excluding the trailing EOF marker chunk, if present).

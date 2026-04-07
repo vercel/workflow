@@ -1,8 +1,8 @@
 ---
 title: Framework Integrations
-description: Guide for framework authors to integrate Workflow DevKit with custom frameworks or runtimes.
+description: Guide for framework authors to integrate Workflow SDK with custom frameworks or runtimes.
 type: guide
-summary: Build a custom framework integration using the Workflow DevKit compiler and runtime.
+summary: Build a custom framework integration using the Workflow SDK compiler and runtime.
 prerequisites:
   - /docs/foundations/workflows-and-steps
 related:
@@ -10,13 +10,13 @@ related:
 ---
 
 <Callout>
-  **For users:** If you just want to use Workflow DevKit with an existing framework, check out the [Getting Started](/docs/getting-started) guide instead. This page is for framework authors who want to integrate Workflow DevKit with their framework or runtime.
+  **For users:** If you just want to use Workflow SDK with an existing framework, check out the [Getting Started](/docs/getting-started) guide instead. This page is for framework authors who want to integrate Workflow SDK with their framework or runtime.
 </Callout>
 
-This guide walks you through building a framework integration for Workflow DevKit using Bun as a concrete example. The same principles apply to any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
+This guide walks you through building a framework integration for Workflow SDK using Bun as a concrete example. The same principles apply to any JavaScript runtime (Node.js, Deno, Cloudflare Workers, etc.).
 
 <Callout type="info">
-  **Prerequisites:** Before building a framework integration, we recommend reading [How the Directives Work](/docs/how-it-works/code-transform) to understand the transformation system that powers Workflow DevKit.
+  **Prerequisites:** Before building a framework integration, we recommend reading [How the Directives Work](/docs/how-it-works/code-transform) to understand the transformation system that powers Workflow SDK.
 </Callout>
 
 ## What You'll Build
@@ -46,7 +46,7 @@ flowchart TD
     style J fill:#a78bfa,stroke:#8b5cf6,color:#000
 ```
 
-The purple boxes are what you implement—everything else is provided by Workflow DevKit.
+The purple boxes are what you implement—everything else is provided by Workflow SDK.
 
 ## Example: Bun Integration
 
@@ -259,7 +259,36 @@ class MyFrameworkBuilder extends BaseBuilder {
 }
 ```
 
-If your framework supports virtual server routes and dev mode watching, make sure to adapt accordingly. Please open a PR to the Workflow DevKit if the base builder class is missing necessary functionality.
+If your framework supports virtual server routes and dev mode watching, make sure to adapt accordingly. Please open a PR to the Workflow SDK if the base builder class is missing necessary functionality.
+
+### Monorepos and Workspace Imports
+
+If your framework integration lives in a subdirectory and your workflows import code from sibling workspace packages, pass `projectRoot` to `BaseBuilder`. Use the smallest directory that contains every workspace package imported by your workflows.
+
+{/* @skip-typecheck: @workflow/cli internal module */}
+```typescript title="my-framework-builder.ts" lineNumbers
+import { BaseBuilder } from "@workflow/cli/dist/lib/builders/base-builder";
+
+class MyFrameworkBuilder extends BaseBuilder {
+  constructor(options: {
+    rootDir: string;
+    workspaceRoot?: string;
+    dev: boolean;
+  }) {
+    super({
+      dirs: ["workflows"],
+      workingDir: options.rootDir,
+      projectRoot: options.workspaceRoot ?? options.rootDir, // [!code highlight]
+      watch: options.dev,
+    });
+  }
+
+  override async build(): Promise<void> {
+    const inputFiles = await this.getInputFiles();
+    // ...
+  }
+}
+```
 
 Hook into your framework's build:
 
@@ -341,27 +370,55 @@ const server = Bun.serve({
 ```
 
 Production framework integrations should handle this routing in the plugin instead of leaving it to the user, and this depends on each framework's unique implementaiton.
-Check the Workflow DevKit source code for examples of production framework implementations.
-In the future, the Workflow DevKit will emit more routes under the `.well-known/workflow` namespace.
+Check the Workflow SDK source code for examples of production framework implementations.
+In the future, the Workflow SDK will emit more routes under the `.well-known/workflow` namespace.
 
 ## Security
 
-**How are these HTTP endpoints secured?**
+The workflow and step handler endpoints are invoked by the world's queuing infrastructure, not by end users. How they're secured depends on which world you're deploying to.
 
-Security is handled by the **world abstraction** you're using:
+### Vercel (`@workflow/world-vercel`)
 
-**Vercel (`@workflow/world-vercel`):**
+On Vercel, workflow handler functions are not accessible through public endpoints. Handlers use the same [consumer function security](https://vercel.com/docs/queues/concepts#consumer-function-security) mechanism that secures [Vercel Queues](https://vercel.com/docs/queues) consumers.
 
-- Vercel Queue will support private invoke, making routes inaccessible from the public internet
-- Handlers receive only a message ID that must be retrieved from Vercel's backend
-- Impossible to craft custom payloads without valid queue-issued message IDs
+During the build step, the Workflow SDK automatically configures each handler as a queue consumer by writing `experimentalTriggers` to the function's `.vc-config.json`:
 
-**Custom implementations:**
+```json title=".vc-config.json (generated by Workflow SDK)"
+{
+  "experimentalTriggers": [
+    {
+      "type": "queue/v2beta",
+      "topic": "__wkf_step_*",
+      "consumer": "default",
+      "retryAfterSeconds": 5,
+      "initialDelaySeconds": 0
+    }
+  ]
+}
+```
 
-- Implement authentication via framework middleware
-- Use API keys, JWT validation, or other auth schemes
-- Network-level security (VPCs, private networks, firewall rules)
-- Rate limiting and request validation
+
+Two queue topics are created per deployment:
+
+| Handler | Topic | Description |
+| --- | --- | --- |
+| `step.func` | `__wkf_step_*` | Step execution (long-running, `maxDuration: max`) |
+| `flow.func` | `__wkf_workflow_*` | Workflow orchestration (`maxDuration: 60`) |
+
+If you're building a framework integration that targets Vercel, you should write these triggers into the `.vc-config.json` for each generated function. The `STEP_QUEUE_TRIGGER` and `WORKFLOW_QUEUE_TRIGGER` constants are exported from `@workflow/builders` for this purpose:
+
+```typescript
+import { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from "@workflow/builders";
+```
+
+
+### Custom implementations
+
+For self-hosted or non-Vercel deployments, you are responsible for securing the handler endpoints:
+
+- **Framework middleware** — Add authentication (API keys, JWT, OIDC) in front of the `/.well-known/workflow/v1/*` routes
+- **Network-level security** — Deploy handlers behind a VPC, private network, or firewall rules so only your queue infrastructure can reach them
+- **Rate limiting** — Add request validation and rate limiting to prevent abuse
 
 Learn more about [building custom Worlds](/docs/deploying/building-a-world).
 

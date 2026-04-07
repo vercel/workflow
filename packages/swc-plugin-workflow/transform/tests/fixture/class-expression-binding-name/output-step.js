@@ -1,4 +1,3 @@
-import { registerSerializationClass } from "workflow/internal/class-serialization";
 // Test class expression where binding name differs from internal class name
 // e.g., `var Bash = class _Bash {}` - the registration should use "Bash", not "_Bash"
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
@@ -32,5 +31,23 @@ var Shell = class Shell {
     }
 };
 export { Bash, Shell };
-registerSerializationClass("class//./input//Bash", Bash);
-registerSerializationClass("class//./input//Shell", Shell);
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", {
+        value: __wf_id,
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+})(Bash, "class//./input//Bash");
+(function(__wf_cls, __wf_id) {
+    var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_cls);
+    Object.defineProperty(__wf_cls, "classId", {
+        value: __wf_id,
+        writable: false,
+        enumerable: false,
+        configurable: false
+    });
+})(Shell, "class//./input//Shell");

@@ -16,7 +16,12 @@ import type {
   WorkflowRun,
   WorkflowRunWithoutData,
 } from './runs.js';
-import type { PaginatedResponse } from './shared.js';
+import type {
+  GetChunksOptions,
+  PaginatedResponse,
+  StreamChunksResponse,
+  StreamInfoResponse,
+} from './shared.js';
 import type {
   GetStepParams,
   ListWorkflowRunStepsParams,
@@ -25,6 +30,19 @@ import type {
 } from './steps.js';
 
 export interface Streamer {
+  /**
+   * Override the default flush interval (in milliseconds) for buffered stream writes.
+   * Chunks are accumulated in a buffer and flushed together on this interval.
+   *
+   * The default is 10ms, which is appropriate for HTTP-based backends where
+   * each flush is a network round-trip. For backends with sub-millisecond writes
+   * (e.g., Redis, local filesystem), a lower value (or 0 for immediate flushing) reduces
+   * end-to-end stream latency.
+   *
+   * Not supported by all worlds.
+   */
+  streamFlushIntervalMs?: number;
+
   streams: {
     write(
       runId: string,
@@ -64,6 +82,36 @@ export interface Streamer {
     ): Promise<ReadableStream<Uint8Array>>;
 
     list(runId: string): Promise<string[]>;
+
+    /**
+     * Fetch stream chunks with cursor-based pagination.
+     *
+     * Unlike `get` (which returns a live `ReadableStream` that waits
+     * for new chunks in real-time), `getChunks` returns a snapshot of currently
+     * available chunks in a standard paginated response.
+     *
+     * @param runId - The workflow run ID that owns the stream
+     * @param name - The stream name/ID
+     * @param options - Pagination options (limit defaults to 100, max 1000)
+     * @returns Paginated chunks with a `done` flag indicating stream completion
+     */
+    getChunks(
+      runId: string,
+      name: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse>;
+
+    /**
+     * Retrieve lightweight metadata about a stream.
+     *
+     * Returns the tail index (index of the last known chunk, 0-based) and
+     * whether the stream is complete. This is useful for resolving a negative
+     * `startIndex` into an absolute position before connecting to a stream.
+     *
+     * @param runId - The workflow run ID that owns the stream
+     * @param name - The stream name/ID
+     */
+    getInfo(runId: string, name: string): Promise<StreamInfoResponse>;
   };
 }
 

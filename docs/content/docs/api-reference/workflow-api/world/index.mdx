@@ -1,0 +1,58 @@
+---
+title: World SDK
+description: Low-level API for inspecting and managing workflow runs, steps, events, hooks, streams, and queues.
+type: overview
+summary: Access workflow infrastructure directly via getWorld() for building observability dashboards, admin tools, and custom integrations.
+prerequisites:
+  - /docs/api-reference/workflow-api/get-world
+keywords:
+  - getWorld
+  - World SDK
+  - workflow runtime
+  - observability dashboard
+  - admin panel
+  - workflow management
+---
+
+The World SDK provides direct access to workflow infrastructure — runs, steps, events, hooks, streams, and queues. Use it to build observability dashboards, admin panels, debugging tools, and custom workflow management logic.
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld(); // [!code highlight]
+```
+
+## Interfaces
+
+<Cards>
+    <Card href="/docs/api-reference/workflow-api/world/storage" title="Storage">
+        Query runs, steps, hooks, and the underlying event log.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/streams" title="Streams">
+        Read, write, and manage real-time data streams for workflow runs.
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/queue" title="Queue">
+        Low-level queue dispatch (internal SDK infrastructure).
+    </Card>
+    <Card href="/docs/api-reference/workflow-api/world/observability" title="Observability Utilities">
+        Hydrate step I/O, parse display names, and decrypt workflow data.
+    </Card>
+</Cards>
+
+<Callout type="info">
+  The World SDK is the low-level foundation that higher-level functions like [`getRun()`](/docs/api-reference/workflow-api/get-run) and [`start()`](/docs/api-reference/workflow-api/start) are built on. Use it when you need capabilities beyond what those functions provide.
+</Callout>
+
+## Data Hydration
+
+Step input/output data is serialized using the [devalue](https://github.com/Rich-Harris/devalue) format. To display this data in your UI, use the hydration utilities from `workflow/observability`:
+
+```typescript lineNumbers
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]
+
+const step = await world.steps.get(runId, stepId);
+const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+console.log(hydrated.input, hydrated.output);
+```
+
+See [Observability Utilities](/docs/api-reference/workflow-api/world/observability) for the full API.

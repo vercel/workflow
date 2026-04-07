@@ -1,5 +1,22 @@
-import type { Streamer } from '@workflow/world';
-import { type APIConfig, getHttpConfig, type HttpConfig } from './utils.js';
+import type {
+  GetChunksOptions,
+  StreamChunksResponse,
+  Streamer,
+  StreamInfoResponse,
+} from '@workflow/world';
+import { z } from 'zod';
+import {
+  type APIConfig,
+  getHttpConfig,
+  type HttpConfig,
+  makeRequest,
+} from './utils.js';
+
+/**
+ * Maximum number of chunks per request, matching the server-side
+ * MAX_CHUNKS_PER_BATCH. Larger batches are split into multiple requests.
+ */
+export const MAX_CHUNKS_PER_REQUEST = 1000;
 
 // Streaming calls use plain fetch() without the undici dispatcher.
 // The dispatcher's retry logic doesn't apply well to streaming operations
@@ -56,6 +73,29 @@ export function encodeMultiChunks(chunks: (string | Uint8Array)[]): Uint8Array {
   return result;
 }
 
+const StreamInfoResponseSchema = z.object({
+  tailIndex: z.number(),
+  done: z.boolean(),
+});
+
+/**
+ * Zod schema for the paginated stream chunks response from the server.
+ * When using CBOR (the default for makeRequest), chunk data arrives as
+ * native Uint8Array byte strings — no base64 decoding required.
+ */
+const StreamChunksResponseSchema = z.object({
+  data: z.array(
+    z.object({
+      index: z.number(),
+      data: z.instanceof(Uint8Array),
+    })
+  ),
+  cursor: z.string().nullable(),
+  hasMore: z.boolean(),
+  done: z.boolean(),
+});
+
+/** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
     streams: {
@@ -76,7 +116,12 @@ export function createStreamer(config?: APIConfig): Streamer {
             headers: httpConfig.headers,
           }
         );
-        await response.text();
+        const text = await response.text();
+        if (!response.ok) {
+          throw new Error(
+            `Stream write failed: HTTP ${response.status}: ${text}`
+          );
+        }
       },
 
       async writeMulti(
@@ -94,16 +139,32 @@ export function createStreamer(config?: APIConfig): Streamer {
         // Signal to server that this is a multi-chunk batch
         httpConfig.headers.set('X-Stream-Multi', 'true');
 
-        const body = encodeMultiChunks(chunks);
-        const response = await fetch(
-          getStreamUrl(name, resolvedRunId, httpConfig),
-          {
-            method: 'PUT',
-            body,
-            headers: httpConfig.headers,
+        // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
+        // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
+        // Note: for batches spanning multiple pages, atomicity is relaxed —
+        // earlier pages may persist while a later page fails. The caller
+        // retains the full buffer on error, so chunks from successful pages
+        // will be re-sent on retry, producing duplicates. This is acceptable
+        // because the alternative (400 on all >1000 chunk flushes) is worse,
+        // and the scenario requires a network failure mid-batch.
+        for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
+          const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
+          const body = encodeMultiChunks(batch);
+          const response = await fetch(
+            getStreamUrl(name, resolvedRunId, httpConfig),
+            {
+              method: 'PUT',
+              body,
+              headers: httpConfig.headers,
+            }
+          );
+          const text = await response.text();
+          if (!response.ok) {
+            throw new Error(
+              `Stream write failed: HTTP ${response.status}: ${text}`
+            );
           }
-        );
-        await response.text();
+        }
       },
 
       async close(runId: string | Promise<string>, name: string) {
@@ -119,7 +180,12 @@ export function createStreamer(config?: APIConfig): Streamer {
             headers: httpConfig.headers,
           }
         );
-        await response.text();
+        const text = await response.text();
+        if (!response.ok) {
+          throw new Error(
+            `Stream close failed: HTTP ${response.status}: ${text}`
+          );
+        }
       },
 
       async get(_runId: string, name: string, startIndex?: number) {
@@ -138,6 +204,39 @@ export function createStreamer(config?: APIConfig): Streamer {
           throw new Error('No response body for stream');
         }
         return response.body as ReadableStream<Uint8Array>;
+      },
+
+      async getChunks(
+        runId: string,
+        name: string,
+        options?: GetChunksOptions
+      ): Promise<StreamChunksResponse> {
+        const params = new URLSearchParams();
+        if (options?.limit != null) {
+          params.set('limit', String(options.limit));
+        }
+        if (options?.cursor) {
+          params.set('cursor', options.cursor);
+        }
+        const qs = params.toString();
+        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
+        return makeRequest({
+          endpoint,
+          config,
+          schema: StreamChunksResponseSchema,
+        });
+      },
+
+      async getInfo(
+        runId: string,
+        name: string
+      ): Promise<StreamInfoResponse> {
+        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info`;
+        return makeRequest({
+          endpoint,
+          config,
+          schema: StreamInfoResponseSchema,
+        });
       },
 
       async list(runId: string) {
