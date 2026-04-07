@@ -1015,6 +1015,7 @@ The plugin supports various function declaration styles:
 - `async method() { "use step"; }` - Instance class method (requires custom serialization)
 - `get name() { "use step"; }` - Object literal getter
 - `get name() { "use step"; }` - Class instance getter (requires custom serialization)
+- `static get name() { "use step"; }` - Static class getter
 
 ---
 
@@ -1024,7 +1025,7 @@ Getters (property accessors) can be marked with `"use step"` to make property ac
 
 **Getters cannot be marked with `"use workflow"`** — only `"use step"` is supported.
 
-### Class getter transformation
+### Instance getter transformation
 
 **Step mode**: The getter is preserved on the class with the directive stripped. Registration uses `Object.getOwnPropertyDescriptor` to extract the getter function:
 ```javascript
@@ -1042,6 +1043,25 @@ Object.defineProperty(ClassName.prototype, "prop", {
 ```
 
 **Client mode**: The getter is preserved with the directive stripped (no registration).
+
+### Static getter transformation
+
+Same as instance getters but targets `ClassName` instead of `ClassName.prototype`, and uses `.` separator in the step ID (same as static methods).
+
+**Step mode**:
+```javascript
+registerStepFunction("step_id", Object.getOwnPropertyDescriptor(ClassName, "prop").get);
+```
+
+**Workflow mode**:
+```javascript
+var __step_ClassName$prop = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id");
+Object.defineProperty(ClassName, "prop", {
+  get() { return __step_ClassName$prop(); },
+  configurable: true,
+  enumerable: false
+});
+```
 
 ### Object literal getter transformation
 
