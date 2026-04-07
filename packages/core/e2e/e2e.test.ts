@@ -2196,7 +2196,7 @@ describe('e2e', () => {
       // (run_created) throws a 500 server error. The queue should still
       // be dispatched with runInput, and the runtime should bootstrap
       // the run via the run_started fallback path.
-      const realWorld = getWorld();
+      const realWorld = await getWorld();
       let createCallCount = 0;
       const stubbedWorld: World = {
         ...realWorld,
