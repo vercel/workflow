@@ -926,8 +926,8 @@ describe('e2e', () => {
             // Workflow catches the error and returns it
             expect(result.caught).toBe(true);
             expect(result.message).toContain('Step error message');
-            // Stack trace can show either the original step function or its transformed wrapper name
-            expect(result.stack).toMatch(/errorStepFn|registerStepFunction/);
+            // Stack trace should contain the original step function name
+            expect(result.stack).toContain('errorStepFn');
             expect(result.stack).not.toContain('evalmachine');
 
             // Source maps are not supported everyhwere. Check the definition
@@ -948,10 +948,8 @@ describe('e2e', () => {
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.message).toContain('Step error message');
 
-            // Step error stack can show either the original step function or its transformed wrapper name
-            expect(failedStep.error.stack).toMatch(
-              /errorStepFn|registerStepFunction/
-            );
+            // Step error stack should contain the original step function name
+            expect(failedStep.error.stack).toContain('errorStepFn');
             expect(failedStep.error.stack).not.toContain('evalmachine');
 
             // Source maps are not supported everyhwere. Check the definition
@@ -982,9 +980,7 @@ describe('e2e', () => {
             );
             // Stack trace propagates to caught error with function names and source file
             expect(result.stack).toContain('throwErrorFromStep');
-            expect(result.stack).toMatch(
-              /stepThatThrowsFromHelper|registerStepFunction/
-            );
+            expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
 
             // Source maps are not supported everyhwere. Check the definition
@@ -1004,8 +1000,8 @@ describe('e2e', () => {
             );
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.stack).toContain('throwErrorFromStep');
-            expect(failedStep.error.stack).toMatch(
-              /stepThatThrowsFromHelper|registerStepFunction/
+            expect(failedStep.error.stack).toContain(
+              'stepThatThrowsFromHelper'
             );
             expect(failedStep.error.stack).not.toContain('evalmachine');
             // Source maps are not supported everyhwere. Check the definition

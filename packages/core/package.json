@@ -44,10 +44,6 @@
       "types": "./dist/runtime/resume-hook.d.ts",
       "default": "./dist/runtime/resume-hook.js"
     },
-    "./private": {
-      "types": "./dist/private.d.ts",
-      "default": "./dist/private.js"
-    },
     "./class-serialization": {
       "types": "./dist/class-serialization.d.ts",
       "default": "./dist/class-serialization.js"
