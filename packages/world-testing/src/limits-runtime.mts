@@ -270,7 +270,7 @@ export function createLimitsRuntimeSuite(
         100
       );
 
-      expect(result.elapsedMs).toBeLessThan(4_000);
+      expect(result.elapsedMs).toBeLessThan(result.periodMs - 1_000);
     });
 
     it('promotes 3 workflow waiters in FIFO order', async () => {
