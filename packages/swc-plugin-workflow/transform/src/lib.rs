@@ -284,6 +284,10 @@ pub enum TransformMode {
     Step,
     Workflow,
     Client,
+    /// Detection-only mode: walks the AST to find directives and serde
+    /// patterns, populates the manifest, but does **not** transform any code.
+    /// Used by the discover-entries plugin to validate regexp pre-scan results.
+    Detect,
 }
 
 #[derive(Debug)]
@@ -1337,6 +1341,7 @@ impl StepTransform {
                                     self.remove_use_step_directive(&mut fn_decl.function.body);
                                     return;
                                 }
+                                TransformMode::Detect => {}
                             }
                         } else {
                             match self.mode {
@@ -1382,6 +1387,7 @@ impl StepTransform {
                                         })];
                                     }
                                 }
+                                TransformMode::Detect => {}
                             }
                         }
                     }
@@ -1470,6 +1476,7 @@ impl StepTransform {
                                 self.workflow_functions_needing_id
                                     .push((fn_name.clone(), fn_span));
                             }
+                            TransformMode::Detect => {}
                         }
                     }
                 } else {
@@ -2116,6 +2123,7 @@ impl StepTransform {
                                             step_id,
                                         ));
                                     }
+                                    TransformMode::Detect => {}
                                 }
                             }
                         }
@@ -2184,6 +2192,7 @@ impl StepTransform {
                     step_id,
                 ));
             }
+            TransformMode::Detect => {}
         }
     }
 
@@ -4263,6 +4272,7 @@ impl VisitMut for StepTransform {
                         // for step functions, so no need to import registerStepFunction.
                         // Class serialization registration is now inlined (no import needed)
                     }
+                    TransformMode::Detect => {}
                 }
 
                 // Add imports at the beginning
@@ -5066,6 +5076,7 @@ impl VisitMut for StepTransform {
                             // for step functions, so no need to import registerStepFunction.
                             // Class serialization registration is inlined (no import needed)
                         }
+                        TransformMode::Detect => {}
                     }
 
                     // Convert script statements to module items
@@ -5279,6 +5290,7 @@ impl VisitMut for StepTransform {
                         TransformMode::Step => value == "use step" || value == "use workflow",
                         TransformMode::Workflow => value == "use workflow",
                         TransformMode::Client => value == "use step" || value == "use workflow",
+                        TransformMode::Detect => false,
                     };
                     if should_remove {
                         items.remove(0);
@@ -6150,6 +6162,7 @@ impl VisitMut for StepTransform {
                         // For workflow mode, we need to replace the entire declaration
                         // This will be handled at a higher level
                     }
+                    TransformMode::Detect => {}
                 }
             }
         } else if self.has_workflow_directive(&fn_decl.function, false) {
@@ -6175,6 +6188,7 @@ impl VisitMut for StepTransform {
                         // Workflow functions are transformed in client mode
                         // This will be handled at a higher level
                     }
+                    TransformMode::Detect => {}
                 }
             }
         }
@@ -6266,6 +6280,7 @@ impl VisitMut for StepTransform {
                                     fn_decl.function.span,
                                 ));
                             }
+                            TransformMode::Detect => {}
                         }
                     }
                 } else if is_workflow_function {
@@ -6323,6 +6338,7 @@ impl VisitMut for StepTransform {
                                 self.workflow_functions_needing_id
                                     .push((fn_name.clone(), fn_decl.function.span));
                             }
+                            TransformMode::Detect => {}
                         }
                     }
                     // Visit children for workflow functions in Step and Workflow modes
@@ -6445,6 +6461,7 @@ impl VisitMut for StepTransform {
                                                         self.create_step_initializer(&step_id),
                                                     );
                                                 }
+                                                TransformMode::Detect => {}
                                             }
                                         }
                                     } else if self
@@ -6561,6 +6578,7 @@ impl VisitMut for StepTransform {
                                                         fn_expr.function.span,
                                                     ));
                                                 }
+                                                TransformMode::Detect => {}
                                             }
                                         }
                                     }
@@ -6610,6 +6628,7 @@ impl VisitMut for StepTransform {
                                                         self.create_step_initializer(&step_id),
                                                     );
                                                 }
+                                                TransformMode::Detect => {}
                                             }
                                         }
                                     } else if self.has_workflow_directive_arrow(arrow_expr, true) {
@@ -6729,6 +6748,7 @@ impl VisitMut for StepTransform {
                                                     self.workflow_functions_needing_id
                                                         .push((name.clone(), arrow_expr.span));
                                                 }
+                                                TransformMode::Detect => {}
                                             }
                                         }
                                     }
@@ -6879,6 +6899,7 @@ impl VisitMut for StepTransform {
                                                 })];
                                             }
                                         }
+                                        TransformMode::Detect => {}
                                     }
                                 }
                             } else if has_workflow {
@@ -6972,6 +6993,7 @@ impl VisitMut for StepTransform {
                                             self.workflow_functions_needing_id
                                                 .push((name.clone(), fn_expr.function.span));
                                         }
+                                        TransformMode::Detect => {}
                                     }
                                 }
                             } else {
@@ -7113,6 +7135,7 @@ impl VisitMut for StepTransform {
                                                     &mut arrow_expr.body,
                                                 );
                                             }
+                                            TransformMode::Detect => {}
                                         }
                                     } else {
                                         // At module level - handle normally
@@ -7171,6 +7194,7 @@ impl VisitMut for StepTransform {
                                                     Box::new(proxy_call),
                                                 ));
                                             }
+                                            TransformMode::Detect => {}
                                         }
                                     }
                                 }
@@ -7271,6 +7295,7 @@ impl VisitMut for StepTransform {
                                             self.workflow_functions_needing_id
                                                 .push((name.clone(), arrow_expr.span));
                                         }
+                                        TransformMode::Detect => {}
                                     }
                                 }
                             } else {
@@ -7630,6 +7655,7 @@ impl VisitMut for StepTransform {
                         // Restore parent function name
                         self.current_parent_function_name = old_parent;
                     }
+                    TransformMode::Detect => {}
                 }
             } else {
                 method.visit_mut_children_with(self);
@@ -7725,6 +7751,7 @@ impl VisitMut for StepTransform {
                             // Visit children to process nested step functions
                             method.visit_mut_children_with(self);
                         }
+                        TransformMode::Detect => {}
                     }
                 } else if has_workflow {
                     self.workflow_function_names.insert(full_name.clone());
@@ -7796,6 +7823,7 @@ impl VisitMut for StepTransform {
                                 method.function.span,
                             ));
                         }
+                        TransformMode::Detect => {}
                     }
                 }
             } else {
@@ -7922,6 +7950,7 @@ impl VisitMut for StepTransform {
                                 // In client mode, just remove the directive and keep the function
                                 self.remove_use_step_directive(&mut fn_expr.function.body);
                             }
+                            TransformMode::Detect => {}
                         }
                     }
                 }
@@ -8036,6 +8065,7 @@ impl VisitMut for StepTransform {
                                 // In client mode, just remove the directive and keep the function
                                 self.remove_use_step_directive_arrow(&mut arrow_expr.body);
                             }
+                            TransformMode::Detect => {}
                         }
                     }
                 }
@@ -8159,6 +8189,7 @@ impl VisitMut for StepTransform {
                                 }
                                 // Named default exports: workflowId is added inline in visit_mut_module_items
                             }
+                            TransformMode::Detect => {}
                         }
                     }
                 } else if self.should_transform_function(&fn_expr.function, true) {
@@ -8210,6 +8241,7 @@ impl VisitMut for StepTransform {
                                     })];
                                 }
                             }
+                            TransformMode::Detect => {}
                         }
                     }
                 }
@@ -8343,6 +8375,7 @@ impl VisitMut for StepTransform {
                                     )),
                                 ));
                             }
+                            TransformMode::Detect => {}
                         }
                     }
                 } else if self.should_transform_function(&fn_expr.function, true) {
@@ -8444,6 +8477,7 @@ impl VisitMut for StepTransform {
                                     )),
                                 ));
                             }
+                            TransformMode::Detect => {}
                         }
                     }
                 } else if self.has_step_directive_arrow(arrow_expr, true) {
@@ -8639,6 +8673,7 @@ impl VisitMut for StepTransform {
                                                             &mut arrow_expr.body,
                                                         );
                                                     }
+                                                    TransformMode::Detect => {}
                                                 }
                                             }
                                         }
@@ -8729,6 +8764,7 @@ impl VisitMut for StepTransform {
                                                             &mut fn_expr.function.body,
                                                         );
                                                     }
+                                                    TransformMode::Detect => {}
                                                 }
                                             }
                                         }
@@ -8839,6 +8875,7 @@ impl VisitMut for StepTransform {
                                                     &mut method_prop.function.body,
                                                 );
                                             }
+                                            TransformMode::Detect => {}
                                         }
                                     }
                                 }

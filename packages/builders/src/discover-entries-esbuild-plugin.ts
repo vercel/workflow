@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import type { Plugin } from 'esbuild';
+import type { WorkflowManifest } from './apply-swc-transform.js';
 import { applySwcTransform } from './apply-swc-transform.js';
 import {
   detectWorkflowPatterns,
@@ -12,6 +13,16 @@ import {
 const enhancedResolve = promisify(enhancedResolveOriginal);
 
 export const jsTsRegex = /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/;
+
+/** Returns true if a manifest section has at least one entry. */
+function hasManifestEntries(
+  section: WorkflowManifest[keyof WorkflowManifest]
+): boolean {
+  if (!section) return false;
+  return Object.values(section).some(
+    (entries) => Object.keys(entries).length > 0
+  );
+}
 
 function isGeneratedBuildArtifactPath(filePath: string): boolean {
   const normalizedPath = filePath.replace(/\\/g, '/');
@@ -108,55 +119,66 @@ export function createDiscoverEntriesPlugin(
             };
           }
 
-          // Determine the loader based on the output
-          let loader: 'js' | 'jsx' = 'js';
-          const isTypeScript =
+          // Determine the appropriate esbuild loader for this file.
+          // esbuild handles TypeScript natively, so we pass the raw source
+          // with the correct loader rather than pre-transforming with SWC.
+          let loader: 'ts' | 'tsx' | 'js' | 'jsx' = 'js';
+          if (args.path.endsWith('.tsx')) {
+            loader = 'tsx';
+          } else if (
             args.path.endsWith('.ts') ||
-            args.path.endsWith('.tsx') ||
             args.path.endsWith('.mts') ||
-            args.path.endsWith('.cts');
-          if (!isTypeScript && args.path.endsWith('.jsx')) {
+            args.path.endsWith('.cts')
+          ) {
+            loader = 'ts';
+          } else if (args.path.endsWith('.jsx')) {
             loader = 'jsx';
           }
+
           const source = await readFile(args.path, 'utf8');
-          const patterns = detectWorkflowPatterns(source);
 
           // Normalize path separators to forward slashes for cross-platform compatibility
           // This is critical for Windows where paths contain backslashes
           const normalizedPath = args.path.replace(/\\/g, '/');
 
-          // For @workflow SDK packages, only discover files with actual directives,
-          // not files that just match serde patterns (which are internal SDK implementation files)
-          const isSdkFile = isWorkflowSdkFile(args.path);
+          // Two-phase discovery:
+          //  1. Fast regexp pre-scan filters out the vast majority of files.
+          //  2. For the small number that match, run the SWC plugin in 'detect'
+          //     mode to get an AST-level manifest. Detect mode walks the AST to
+          //     find directives and serde patterns but does NOT transform any
+          //     code, eliminating false positives where directive-like strings
+          //     appear inside template literals, regular strings, or comments.
+          const patterns = detectWorkflowPatterns(source);
 
-          if (patterns.hasUseWorkflow) {
-            state.discoveredWorkflows.push(normalizedPath);
-          }
+          if (patterns.hasDirective || patterns.hasSerde) {
+            const { workflowManifest } = await applySwcTransform(
+              normalizedPath,
+              source,
+              'detect',
+              normalizedPath,
+              projectRoot || build.initialOptions.absWorkingDir || process.cwd()
+            );
 
-          if (patterns.hasUseStep) {
-            state.discoveredSteps.push(normalizedPath);
-          }
+            if (hasManifestEntries(workflowManifest.workflows)) {
+              state.discoveredWorkflows.push(normalizedPath);
+            }
+            if (hasManifestEntries(workflowManifest.steps)) {
+              state.discoveredSteps.push(normalizedPath);
+            }
 
-          // Track all serde files separately for cross-context class registration.
-          // Classes need to be registered in all bundle contexts (step, workflow, client)
-          // to support serialization across execution boundaries.
-          // Skip @workflow SDK packages since those are internal implementation files.
-          if (patterns.hasSerde && !isSdkFile) {
-            if (!state.discoveredSerdeFiles.includes(normalizedPath)) {
-              state.discoveredSerdeFiles.push(normalizedPath);
+            // For @workflow SDK packages, only discover files with actual
+            // directives, not files that just match serde patterns (internal
+            // SDK implementation files).
+            const isSdkFile = isWorkflowSdkFile(args.path);
+            if (hasManifestEntries(workflowManifest.classes) && !isSdkFile) {
+              if (!state.discoveredSerdeFiles.includes(normalizedPath)) {
+                state.discoveredSerdeFiles.push(normalizedPath);
+              }
             }
           }
 
-          const { code: transformedCode } = await applySwcTransform(
-            normalizedPath,
-            source,
-            false,
-            normalizedPath,
-            projectRoot || build.initialOptions.absWorkingDir || process.cwd()
-          );
-
           return {
-            contents: transformedCode,
+            contents: source,
             loader,
           };
         } catch (_) {

@@ -2,7 +2,7 @@
 
 The `"use step"` and `"use workflow"` directives work similarly to `"use server"` in React. A function marked with `"use step"` represents a durable step that executes on the server. A function marked with `"use workflow"` represents a durable workflow that orchestrates steps.
 
-The SWC plugin has 3 modes: **Step mode**, **Workflow mode**, and **Client mode**.
+The SWC plugin has 4 modes: **Step mode**, **Workflow mode**, **Client mode**, and **Detect mode**.
 
 ## Directive Placement
 
@@ -584,6 +584,29 @@ export class Point {
     __wf_reg.set(__wf_id, __wf_cls);
     Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false });
 })(Point, "class//./input//Point");
+```
+
+---
+
+## Detect Mode
+
+Detect mode is a lightweight, non-transforming mode used during the build discovery phase. It walks the AST to find `"use workflow"`, `"use step"` directives and custom serialization classes, then emits the JSON manifest comment — but does **not** modify any code.
+
+This allows the build system to perform a fast regexp pre-scan to identify candidate files, then run the SWC plugin in detect mode only on those candidates to validate at the AST level. False positives (e.g. directive-like strings inside template literals) are eliminated because the plugin only recognises genuine directive expression statements.
+
+**Plugin Config:**
+```json
+{
+  "mode": "detect",
+  "moduleSpecifier": null
+}
+```
+
+Given the same input as the other mode examples, detect mode produces:
+
+```javascript
+/**__internal_workflows{"steps":{"input.js":{"fetchInventory":{"stepId":"step//./input//fetchInventory"}}},"workflows":{"input.js":{"placeOrder":{"workflowId":"workflow//./input//placeOrder"}}}}*/
+// ... original source code unchanged ...
 ```
 
 ---

@@ -42,10 +42,23 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
     importParents.clear();
     applySwcTransformMock.mockReset();
     applySwcTransformMock.mockImplementation(
-      async (_filename: string, source: string) => ({
-        code: source,
-        workflowManifest: {},
-      })
+      async (filename: string, source: string) => {
+        // Simulate the SWC plugin producing a manifest in 'detect' mode
+        const hasWorkflow = /['"]use workflow['"]/.test(source);
+        const hasStep = /['"]use step['"]/.test(source);
+        const workflowManifest: Record<string, unknown> = {};
+        if (hasWorkflow) {
+          workflowManifest.workflows = {
+            [filename]: { handleMessageWorkflow: { workflowId: 'test' } },
+          };
+        }
+        if (hasStep) {
+          workflowManifest.steps = {
+            [filename]: { myStep: { stepId: 'test' } },
+          };
+        }
+        return { code: source, workflowManifest };
+      }
     );
   });
 
@@ -104,10 +117,11 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
 
     expect(result.errors).toHaveLength(0);
     expect(state.discoveredWorkflows).toEqual([normalizedWorkflowFile]);
+    // Single 'detect' mode call for AST-level manifest validation
     expect(applySwcTransformMock).toHaveBeenCalledWith(
       normalizedWorkflowFile,
       expect.stringContaining('"use workflow"'),
-      false,
+      'detect',
       normalizedWorkflowFile,
       fixture.appRoot
     );
@@ -134,10 +148,11 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
 
     expect(result.errors).toHaveLength(0);
     expect(state.discoveredWorkflows).toEqual([normalizedWorkflowFile]);
+    // Single 'detect' mode call for AST-level manifest validation
     expect(applySwcTransformMock).toHaveBeenCalledWith(
       normalizedWorkflowFile,
       expect.stringContaining('"use workflow"'),
-      false,
+      'detect',
       normalizedWorkflowFile,
       fixture.packageRoot
     );
