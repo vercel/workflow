@@ -305,8 +305,6 @@ pub struct StepTransform {
     workflow_export_to_const_name: std::collections::HashMap<String, String>,
     // Set of function names that have been registered (to avoid duplicates)
     registered_functions: HashSet<String>,
-    // Collect registration calls for step mode
-
     // Track closure variables
     names: Vec<Name>,
     should_track_names: bool,
@@ -3378,7 +3376,8 @@ impl StepTransform {
     //   (function() {
     //     var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")],
     //         __wf_store = __wf_ctx && __wf_ctx.getStore();
-    //     return __wf_store && __wf_store.closureVars || {};
+    //     if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+    //     return __wf_store.closureVars || {};
     //   })()
     fn create_inline_get_closure_vars(&self) -> Expr {
         let ident =
@@ -3452,24 +3451,48 @@ impl StepTransform {
             definite: false,
         };
 
-        // return __wf_store && __wf_store.closureVars || {};
+        // if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        // return __wf_store.closureVars || {};
+        let throw_if_missing = Stmt::If(IfStmt {
+            span: DUMMY_SP,
+            test: Box::new(Expr::Unary(UnaryExpr {
+                span: DUMMY_SP,
+                op: UnaryOp::Bang,
+                arg: ident_expr("__wf_store"),
+            })),
+            cons: Box::new(Stmt::Throw(ThrowStmt {
+                span: DUMMY_SP,
+                arg: Box::new(Expr::New(NewExpr {
+                    span: DUMMY_SP,
+                    ctxt: SyntaxContext::empty(),
+                    callee: ident_expr("Error"),
+                    args: Some(vec![ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                            span: DUMMY_SP,
+                            value: "Closure variables can only be accessed inside a step function"
+                                .into(),
+                            raw: None,
+                        }))),
+                    }]),
+                    type_args: None,
+                })),
+            })),
+            alt: None,
+        });
+
         let return_stmt = Stmt::Return(ReturnStmt {
             span: DUMMY_SP,
             arg: Some(Box::new(Expr::Bin(BinExpr {
                 span: DUMMY_SP,
                 op: BinaryOp::LogicalOr,
-                left: Box::new(Expr::Bin(BinExpr {
+                left: Box::new(Expr::Member(MemberExpr {
                     span: DUMMY_SP,
-                    op: BinaryOp::LogicalAnd,
-                    left: ident_expr("__wf_store"),
-                    right: Box::new(Expr::Member(MemberExpr {
+                    obj: ident_expr("__wf_store"),
+                    prop: MemberProp::Ident(IdentName {
                         span: DUMMY_SP,
-                        obj: ident_expr("__wf_store"),
-                        prop: MemberProp::Ident(IdentName {
-                            span: DUMMY_SP,
-                            sym: "closureVars".into(),
-                        }),
-                    })),
+                        sym: "closureVars".into(),
+                    }),
                 })),
                 right: Box::new(Expr::Object(ObjectLit {
                     span: DUMMY_SP,
@@ -3489,6 +3512,7 @@ impl StepTransform {
                     declare: false,
                     decls: vec![ctx_decl, store_decl],
                 }))),
+                throw_if_missing,
                 return_stmt,
             ],
         };

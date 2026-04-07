@@ -930,7 +930,7 @@ describe('e2e', () => {
             expect(result.stack).toContain('errorStepFn');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('99_e2e.ts');
@@ -952,7 +952,7 @@ describe('e2e', () => {
             expect(failedStep.error.stack).toContain('errorStepFn');
             expect(failedStep.error.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('99_e2e.ts');
@@ -983,7 +983,7 @@ describe('e2e', () => {
             expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('helpers.ts');
@@ -1004,7 +1004,7 @@ describe('e2e', () => {
               'stepThatThrowsFromHelper'
             );
             expect(failedStep.error.stack).not.toContain('evalmachine');
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('helpers.ts');

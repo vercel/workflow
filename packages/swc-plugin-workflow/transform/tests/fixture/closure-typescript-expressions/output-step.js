@@ -2,7 +2,8 @@
 var withTsAs$_anonymousStep0 = async ()=>{
     const { config } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return config as Config.timeout;
 };
@@ -14,7 +15,8 @@ var withTsAs$_anonymousStep0 = async ()=>{
 var withTsSatisfies$_anonymousStep1 = async ()=>{
     const { config } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return config satisfies Record<string, number>;
 };
@@ -26,7 +28,8 @@ var withTsSatisfies$_anonymousStep1 = async ()=>{
 var withTsNonNull$_anonymousStep2 = async ()=>{
     const { value } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return value!.length;
 };
@@ -38,7 +41,8 @@ var withTsNonNull$_anonymousStep2 = async ()=>{
 var withTsTypeAssertion$_anonymousStep3 = async ()=>{
     const { data } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return <Config>data.retries;
 };
@@ -50,7 +54,8 @@ var withTsTypeAssertion$_anonymousStep3 = async ()=>{
 var withTsConstAssertion$_anonymousStep4 = async ()=>{
     const { label } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return {
         label
@@ -64,7 +69,8 @@ var withTsConstAssertion$_anonymousStep4 = async ()=>{
 var withGenericCall$_anonymousStep5 = async ()=>{
     const { items, transform } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return items.map(transform);
 };

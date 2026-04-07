@@ -4,7 +4,8 @@ import { gateway } from 'ai';
 var stepWrapperReturnArrowFunctionVar$fn = async ()=>{
     const { a, b, c } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return a + b + c;
 };
@@ -16,7 +17,8 @@ var stepWrapperReturnArrowFunctionVar$fn = async ()=>{
 async function stepWrapperReturnNamedFunction$f() {
     const { a, b, c } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return a + b + c;
 }
@@ -28,7 +30,8 @@ async function stepWrapperReturnNamedFunction$f() {
 var stepWrapperReturnArrowFunction$_anonymousStep0 = async ()=>{
     const { a, b, c } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return a + b + c;
 };
@@ -40,7 +43,8 @@ var stepWrapperReturnArrowFunction$_anonymousStep0 = async ()=>{
 async function stepWrapperReturnNamedFunctionVar$fn() {
     const { a, b, c } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return a + b + c;
 }
@@ -52,7 +56,8 @@ async function stepWrapperReturnNamedFunctionVar$fn() {
 var arrowWrapperReturnArrowFunctionVar$fn = async ()=>{
     const { a, b, c } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return a + b + c;
 };
@@ -64,7 +69,8 @@ var arrowWrapperReturnArrowFunctionVar$fn = async ()=>{
 async function arrowWrapperReturnNamedFunction$f() {
     const { a, b, c } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return a + b + c;
 }
@@ -76,7 +82,8 @@ async function arrowWrapperReturnNamedFunction$f() {
 var arrowWrapperReturnArrowFunction$_anonymousStep1 = async ()=>{
     const { a, b, c } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return a + b + c;
 };
@@ -88,7 +95,8 @@ var arrowWrapperReturnArrowFunction$_anonymousStep1 = async ()=>{
 async function arrowWrapperReturnNamedFunctionVar$fn() {
     const { a, b, c } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return a + b + c;
 }
@@ -100,7 +108,8 @@ async function arrowWrapperReturnNamedFunctionVar$fn() {
 async function wflow$namedStepWithClosureVars() {
     const { count } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     console.log('count', count);
 }
@@ -112,7 +121,8 @@ async function wflow$namedStepWithClosureVars() {
 var wflow$_anonymousStep2 = async ()=>{
     const { count } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     console.log('count', count);
     return gateway('openai/gpt-5');
@@ -125,7 +135,8 @@ var wflow$_anonymousStep2 = async ()=>{
 async function wflow$_anonymousStep3() {
     const { count } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     console.log('count', count);
 }
@@ -137,7 +148,8 @@ async function wflow$_anonymousStep3() {
 async function wflow$_anonymousStep4() {
     const { count } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     console.log('count', count);
 }
