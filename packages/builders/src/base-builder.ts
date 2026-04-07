@@ -1150,7 +1150,7 @@ async function handler(request) {
   } catch (error) {
     // TODO: differentiate between invalid token and other errors
     console.error('Error during resumeWebhook', error);
-    return new Response(null, { status: 404 });
+    return new Response(JSON.stringify({ error: error?.message, stack: error?.stack }), { status: 404, headers: { 'Content-Type': 'application/json' } });
   }
 }
 
