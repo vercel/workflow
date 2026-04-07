@@ -1,5 +1,29 @@
 # @workflow/core
 
+## 4.2.0-beta.78
+
+### Patch Changes
+
+- [#1627](https://github.com/vercel/workflow/pull/1627) [`5f138f2`](https://github.com/vercel/workflow/commit/5f138f2ceedcc96c9d043fa36378c4de781ab55b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump specVersion to 3 and gate CBOR queue transport on spec version. Old deployments (specVersion < 3) receive JSON queue messages; new deployments receive CBOR. Handler uses dual transport to deserialize both formats. Fixes replay/reenqueue from dashboard to older deployments.
+
+- [#1629](https://github.com/vercel/workflow/pull/1629) [`a6bcea9`](https://github.com/vercel/workflow/commit/a6bcea9d2827731040cb20f1615c5127530fc310) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - CLI `start` command probes deployment specVersion via health check before choosing queue transport. Health check always uses JSON transport for compatibility with old deployments.
+
+- [#1533](https://github.com/vercel/workflow/pull/1533) [`7e70d18`](https://github.com/vercel/workflow/commit/7e70d1823add7930d6df7f84e1a6a77d888eb851) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `streamFlushIntervalMs` option to `Streamer` interface, optional for worlds to allow overwriting the default of 10ms in low-latency environments.
+
+- [#1512](https://github.com/vercel/workflow/pull/1512) [`ba916e1`](https://github.com/vercel/workflow/commit/ba916e1566acc56533e7f5fcebbb8466360e0581) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `DOMException` to the workflow VM context and add first-class serialization support, preserving `message`, `name`, and derived `code` across serialization boundaries
+
+- [#1618](https://github.com/vercel/workflow/pull/1618) [`c9b3038`](https://github.com/vercel/workflow/commit/c9b30381f4e219fdd67bb3ef358f41697ed8c3e5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - fix(core): properly propagate stream cancellation on disconnect
+
+- [#1537](https://github.com/vercel/workflow/pull/1537) [`c8dce52`](https://github.com/vercel/workflow/commit/c8dce5260627a2f349618976e8478ce03e656536) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow workflow invocation to create run if initial storage call in `start` did not succeed. Send run input through queue to enable this. Allow creating run_created and run_started events together in World, and skip first event list call by returning events directly.
+
+- [#1606](https://github.com/vercel/workflow/pull/1606) [`ab872cc`](https://github.com/vercel/workflow/commit/ab872cc9fb6c24091c8c0eeb0efa7d0cbbdf20d8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Make registeredSteps a global singleton to protect against module duplication and caching issues
+
+- Updated dependencies [[`5f138f2`](https://github.com/vercel/workflow/commit/5f138f2ceedcc96c9d043fa36378c4de781ab55b), [`7e70d18`](https://github.com/vercel/workflow/commit/7e70d1823add7930d6df7f84e1a6a77d888eb851), [`c8dce52`](https://github.com/vercel/workflow/commit/c8dce5260627a2f349618976e8478ce03e656536), [`5b9eb40`](https://github.com/vercel/workflow/commit/5b9eb406a8e5b778739fd4f49f5b017e0680fa6d)]:
+  - @workflow/world-vercel@4.1.0-beta.49
+  - @workflow/world@4.1.0-beta.17
+  - @workflow/world-local@4.1.0-beta.51
+  - @workflow/errors@4.1.0-beta.20
+
 ## 4.2.0-beta.77
 
 ### Patch Changes

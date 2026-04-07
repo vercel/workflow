@@ -1,6 +1,6 @@
 {
   "name": "@workflow/vitest",
-  "version": "4.0.1-beta.14",
+  "version": "4.0.1-beta.15",
   "description": "Vitest plugin for testing Workflow SDK workflows",
   "type": "module",
   "main": "./dist/index.js",

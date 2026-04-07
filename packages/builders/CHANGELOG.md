@@ -1,5 +1,17 @@
 # @workflow/builders
 
+## 4.0.1-beta.69
+
+### Patch Changes
+
+- [#1552](https://github.com/vercel/workflow/pull/1552) [`f5d2aef`](https://github.com/vercel/workflow/commit/f5d2aef58ff6d655989d00e4b9a8712d856bdca0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add serde compliance checker (`analyzeSerdeCompliance`) and build-time warnings for classes with Node.js imports in workflow bundle
+
+- [#1613](https://github.com/vercel/workflow/pull/1613) [`3308701`](https://github.com/vercel/workflow/commit/3308701b341f5b4d7007d5bca97cbbb6e4af222f) Thanks [@matchai](https://github.com/matchai)! - Resolve path aliases when externalizing non-step imports
+
+- Updated dependencies [[`5f138f2`](https://github.com/vercel/workflow/commit/5f138f2ceedcc96c9d043fa36378c4de781ab55b), [`a6bcea9`](https://github.com/vercel/workflow/commit/a6bcea9d2827731040cb20f1615c5127530fc310), [`7e70d18`](https://github.com/vercel/workflow/commit/7e70d1823add7930d6df7f84e1a6a77d888eb851), [`ba916e1`](https://github.com/vercel/workflow/commit/ba916e1566acc56533e7f5fcebbb8466360e0581), [`c9b3038`](https://github.com/vercel/workflow/commit/c9b30381f4e219fdd67bb3ef358f41697ed8c3e5), [`c8dce52`](https://github.com/vercel/workflow/commit/c8dce5260627a2f349618976e8478ce03e656536), [`ab872cc`](https://github.com/vercel/workflow/commit/ab872cc9fb6c24091c8c0eeb0efa7d0cbbdf20d8)]:
+  - @workflow/core@4.2.0-beta.78
+  - @workflow/errors@4.1.0-beta.20
+
 ## 4.0.1-beta.68
 
 ### Patch Changes
