@@ -119,27 +119,24 @@ export function createDiscoverEntriesPlugin(
             };
           }
 
-          // Determine the appropriate esbuild loader for this file.
-          // esbuild handles TypeScript natively, so we pass the raw source
-          // with the correct loader rather than pre-transforming with SWC.
-          let loader: 'ts' | 'tsx' | 'js' | 'jsx' = 'js';
-          if (args.path.endsWith('.tsx')) {
-            loader = 'tsx';
-          } else if (
+          // Determine the loader based on the output
+          let loader: 'js' | 'jsx' = 'js';
+          const isTypeScript =
             args.path.endsWith('.ts') ||
+            args.path.endsWith('.tsx') ||
             args.path.endsWith('.mts') ||
-            args.path.endsWith('.cts')
-          ) {
-            loader = 'ts';
-          } else if (args.path.endsWith('.jsx')) {
+            args.path.endsWith('.cts');
+          if (!isTypeScript && args.path.endsWith('.jsx')) {
             loader = 'jsx';
           }
-
           const source = await readFile(args.path, 'utf8');
 
           // Normalize path separators to forward slashes for cross-platform compatibility
           // This is critical for Windows where paths contain backslashes
           const normalizedPath = args.path.replace(/\\/g, '/');
+
+          const resolvedProjectRoot =
+            projectRoot || build.initialOptions.absWorkingDir || process.cwd();
 
           // Two-phase discovery:
           //  1. Fast regexp pre-scan filters out the vast majority of files.
@@ -148,16 +145,25 @@ export function createDiscoverEntriesPlugin(
           //     find directives and serde patterns but does NOT transform any
           //     code, eliminating false positives where directive-like strings
           //     appear inside template literals, regular strings, or comments.
+          //
+          // All files are transformed by SWC (TS→JS, decorators, etc.) since
+          // esbuild does not support all TypeScript syntax (e.g. legacy
+          // decorators, emitDecoratorMetadata). For regexp-matched files the
+          // 'detect' call handles both the syntax transform and the manifest
+          // in a single pass; for all other files a mode:false call is used.
           const patterns = detectWorkflowPatterns(source);
 
+          let transformedCode: string;
+
           if (patterns.hasDirective || patterns.hasSerde) {
-            const { workflowManifest } = await applySwcTransform(
+            const { code, workflowManifest } = await applySwcTransform(
               normalizedPath,
               source,
               'detect',
               normalizedPath,
-              projectRoot || build.initialOptions.absWorkingDir || process.cwd()
+              resolvedProjectRoot
             );
+            transformedCode = code;
 
             if (hasManifestEntries(workflowManifest.workflows)) {
               state.discoveredWorkflows.push(normalizedPath);
@@ -175,10 +181,19 @@ export function createDiscoverEntriesPlugin(
                 state.discoveredSerdeFiles.push(normalizedPath);
               }
             }
+          } else {
+            const { code } = await applySwcTransform(
+              normalizedPath,
+              source,
+              false,
+              normalizedPath,
+              resolvedProjectRoot
+            );
+            transformedCode = code;
           }
 
           return {
-            contents: source,
+            contents: transformedCode,
             loader,
           };
         } catch (_) {
