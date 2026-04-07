@@ -12,7 +12,6 @@
 "@workflow/rollup": major
 "@workflow/serde": major
 "@workflow/sveltekit": major
-"@workflow/swc-playground-wasm": major
 "@workflow/swc-plugin": major
 "@workflow/tsconfig": major
 "@workflow/typescript-plugin": major
