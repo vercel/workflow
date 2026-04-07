@@ -192,6 +192,12 @@ function parseHealthCheckResponse(
   try {
     response = JSON.parse(responseText);
   } catch {
+    // Old deployments (specVersion < 3) return plain text like
+    // 'Workflow SDK "..." endpoint is healthy'. Treat any non-empty
+    // text response as a healthy deployment with unknown specVersion.
+    if (responseText.length > 0) {
+      return { healthy: true };
+    }
     return null;
   }
 
