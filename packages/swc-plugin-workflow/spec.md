@@ -336,7 +336,7 @@ Instance methods can use `"use step"` if the class provides custom serialization
 
 Input:
 ```javascript
-import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 
 export class Counter {
   static [WORKFLOW_SERIALIZE](instance) {
@@ -358,7 +358,7 @@ export class Counter {
 Output:
 ```javascript
 import { registerStepFunction } from "workflow/internal/private";
-import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 /**__internal_workflows{"steps":{"input.js":{"Counter#add":{"stepId":"step//./input//Counter#add"}}},"classes":{"input.js":{"Counter":{"classId":"class//./input//Counter"}}}}*/;
 export class Counter {
     static [WORKFLOW_SERIALIZE](instance) {
@@ -992,6 +992,7 @@ The plugin emits errors for invalid usage:
 |-------|-------------|
 | Non-async function | Functions with `"use step"` or `"use workflow"` must be async |
 | Instance methods with `"use workflow"` | Only static methods can have `"use workflow"` (not instance methods) |
+| Getters with `"use workflow"` | Getters cannot be marked with `"use workflow"` |
 | Misplaced directive | Directive must be at top of file or start of function body |
 | Conflicting directives | Cannot have both `"use step"` and `"use workflow"` at module level |
 | Invalid exports | Module-level directive files can only export async functions |
@@ -1012,6 +1013,49 @@ The plugin supports various function declaration styles:
 - `{ nested: { execute: async () => { "use step"; } } }` - Nested object property
 - `static async method() { "use step"; }` - Static class method
 - `async method() { "use step"; }` - Instance class method (requires custom serialization)
+- `get name() { "use step"; }` - Object literal getter
+- `get name() { "use step"; }` - Class instance getter (requires custom serialization)
+
+---
+
+## Getter Step Functions
+
+Getters (property accessors) can be marked with `"use step"` to make property access trigger a step invocation. Unlike regular step functions, getters cannot be `async` syntactically, but the framework treats them as async steps. The pattern `await obj.prop` works when `prop` is a getter step.
+
+**Getters cannot be marked with `"use workflow"`** — only `"use step"` is supported.
+
+### Class getter transformation
+
+**Step mode**: The getter is preserved on the class with the directive stripped. Registration uses `Object.getOwnPropertyDescriptor` to extract the getter function:
+```javascript
+registerStepFunction("step_id", Object.getOwnPropertyDescriptor(ClassName.prototype, "prop").get);
+```
+
+**Workflow mode**: The getter is removed from the class body. A hoisted step proxy variable and `Object.defineProperty` call are emitted:
+```javascript
+var __step_ClassName$prop = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id");
+Object.defineProperty(ClassName.prototype, "prop", {
+  get() { return __step_ClassName$prop.call(this); },
+  configurable: true,
+  enumerable: false
+});
+```
+
+**Client mode**: The getter is preserved with the directive stripped (no registration).
+
+### Object literal getter transformation
+
+**Step mode**: The getter body is hoisted into an async function wrapper for registration. The original getter is preserved with the directive stripped.
+
+**Workflow mode**: A hoisted step proxy variable is created before the object literal. The getter body is replaced to call the proxy:
+```javascript
+var __step_varName$prop = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id");
+const obj = {
+  get prop() { return __step_varName$prop(); }
+};
+```
+
+**Client mode**: Same as step mode — the getter body is hoisted for `stepId` assignment, original getter preserved.
 
 ---
 
