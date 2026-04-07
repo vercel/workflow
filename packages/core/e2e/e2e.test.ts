@@ -1528,6 +1528,45 @@ describe('e2e', () => {
     }
   );
 
+  test(
+    'runClassSerializationWorkflow - Run instances serialize across workflow/step boundaries',
+    { timeout: 120_000 },
+    async () => {
+      const inputValue = 21;
+      const run = await start(await e2e('runClassSerializationWorkflow'), [
+        inputValue,
+      ]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toHaveProperty('isRunInWorkflow', true);
+      expect(returnValue).toHaveProperty('childRunId');
+      expect(returnValue).toHaveProperty('runIdFromStep');
+      expect(returnValue).toHaveProperty('childResult');
+
+      expect(typeof returnValue.childRunId).toBe('string');
+      expect(returnValue.childRunId.startsWith('wrun_')).toBe(true);
+      expect(returnValue.runIdFromStep).toBe(returnValue.childRunId);
+      expect(returnValue.childResult).toEqual({
+        childResult: inputValue * 2,
+        originalValue: inputValue,
+      });
+
+      const { json: parentRunData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(parentRunData.status).toBe('completed');
+
+      const { json: childRunData } = await cliInspectJson(
+        `runs ${returnValue.childRunId} --withData`
+      );
+      expect(childRunData.status).toBe('completed');
+      expect(childRunData.output).toEqual({
+        childResult: inputValue * 2,
+        originalValue: inputValue,
+      });
+    }
+  );
+
   // Skipped for Vercel since VQS doesn't support direct HTTP calls
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',

@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getRun, start } from 'workflow/api';
+import { getRun, Run, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -697,6 +697,40 @@ export async function spawnWorkflowFromStepWorkflow(inputValue: number) {
   return {
     parentInput: inputValue,
     childRunId,
+    childResult,
+  };
+}
+
+async function spawnChildWorkflowRun(value: number) {
+  'use step';
+  return await start(childWorkflow, [value]);
+}
+
+async function getRunIdFromRun(run: Run<unknown>) {
+  'use step';
+  return run.runId;
+}
+
+async function awaitRunFromRun<T>(run: Run<T>) {
+  'use step';
+  return await run.returnValue;
+}
+
+export async function runClassSerializationWorkflow(inputValue: number) {
+  'use workflow';
+
+  const childRun = await spawnChildWorkflowRun(inputValue);
+  const isRunInWorkflow = childRun instanceof Run;
+  const runIdFromStep = await getRunIdFromRun(childRun);
+  const childResult = await awaitRunFromRun<{
+    childResult: number;
+    originalValue: number;
+  }>(childRun);
+
+  return {
+    childRunId: childRun.runId,
+    runIdFromStep,
+    isRunInWorkflow,
     childResult,
   };
 }
