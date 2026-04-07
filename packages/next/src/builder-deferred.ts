@@ -716,7 +716,8 @@ export async function getNextBuilderDeferred() {
       }
 
       await this.loadWorkflowsCache();
-      await this.loadDiscoveredEntriesFromInputGraph();
+      // Deferred mode must not run eager input-graph discovery; entries are
+      // discovered via loader->socket notifications during Next's build.
       this.cacheInitialized = true;
     }
 
@@ -1025,47 +1026,6 @@ export async function getNextBuilderDeferred() {
       }
     }
 
-    private async loadDiscoveredEntriesFromInputGraph(): Promise<void> {
-      const inputFiles = await this.getInputFiles();
-      if (inputFiles.length === 0) {
-        return;
-      }
-
-      const { discoveredWorkflows, discoveredSteps, discoveredSerdeFiles } =
-        await this.discoverEntries(inputFiles, this.config.workingDir);
-      const { workflowFiles, stepFiles, serdeFiles } =
-        await this.reconcileDiscoveredEntries({
-          workflowCandidates: discoveredWorkflows,
-          stepCandidates: discoveredSteps,
-          serdeCandidates: discoveredSerdeFiles,
-          validatePatterns: true,
-        });
-
-      let hasChanges = false;
-      for (const filePath of workflowFiles) {
-        if (!this.discoveredWorkflowFiles.has(filePath)) {
-          this.discoveredWorkflowFiles.add(filePath);
-          hasChanges = true;
-        }
-      }
-      for (const filePath of stepFiles) {
-        if (!this.discoveredStepFiles.has(filePath)) {
-          this.discoveredStepFiles.add(filePath);
-          hasChanges = true;
-        }
-      }
-      for (const filePath of serdeFiles) {
-        if (!this.discoveredSerdeFiles.has(filePath)) {
-          this.discoveredSerdeFiles.add(filePath);
-          hasChanges = true;
-        }
-      }
-
-      if (hasChanges) {
-        this.scheduleWorkflowsCacheWrite();
-      }
-    }
-
     private async writeWorkflowsCache(): Promise<void> {
       const cacheFilePath = this.getWorkflowsCacheFilePath();
       const cacheDir = join(this.config.workingDir, this.getDistDir(), 'cache');
@@ -1120,26 +1080,6 @@ export async function getNextBuilderDeferred() {
         join(workflowGeneratedDir, 'webhook/[token]/route.js'),
         routeStubContent
       );
-    }
-
-    protected async getInputFiles(): Promise<string[]> {
-      const inputFiles = await super.getInputFiles();
-      return inputFiles.filter((item) => {
-        // Match App Router entrypoints: route.ts, page.ts, layout.ts in app/ or src/app/ directories
-        // Matches: /app/page.ts, /app/dashboard/page.ts, /src/app/route.ts, etc.
-        if (
-          item.match(
-            /(^|.*[/\\])(app|src[/\\]app)([/\\](route|page|layout)\.|[/\\].*[/\\](route|page|layout)\.)/
-          )
-        ) {
-          return true;
-        }
-        // Match Pages Router entrypoints: files in pages/ or src/pages/
-        if (item.match(/[/\\](pages|src[/\\]pages)[/\\]/)) {
-          return true;
-        }
-        return false;
-      });
     }
 
     private async writeFunctionsConfig(outputDir: string) {
