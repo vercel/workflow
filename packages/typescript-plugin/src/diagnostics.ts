@@ -223,20 +223,10 @@ export function getCustomDiagnostics(
     return httpMethods.includes(functionName);
   }
 
-  function checkStepFunction(node: FunctionLikeDeclaration) {
-    // Ensure it's async
-    if (!isAsyncFunction(node, typeChecker, ts)) {
-      const start = node.getStart(sourceFile);
-      const length = node.getWidth(sourceFile);
-      diagnostics.push({
-        file: sourceFile,
-        start,
-        length,
-        messageText: 'Step functions must be async or return a Promise',
-        category: ts.DiagnosticCategory.Error,
-        code: 9002,
-      });
-    }
+  function checkStepFunction(_node: FunctionLikeDeclaration) {
+    // Step functions may be synchronous. The "use step" directive can be used
+    // on sync functions to strip Node.js-dependent code from the workflow VM
+    // bundle. No async validation is performed here.
   }
 
   function checkDisallowedApiUsage(call: CallExpression) {

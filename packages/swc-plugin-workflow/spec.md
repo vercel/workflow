@@ -990,11 +990,11 @@ The plugin emits errors for invalid usage:
 
 | Error | Description |
 |-------|-------------|
-| Non-async function | Functions with `"use step"` or `"use workflow"` must be async |
+| Non-async workflow function | Functions with `"use workflow"` must be async (step functions may be sync) |
 | Instance methods with `"use workflow"` | Only static methods can have `"use workflow"` (not instance methods) |
 | Misplaced directive | Directive must be at top of file or start of function body |
 | Conflicting directives | Cannot have both `"use step"` and `"use workflow"` at module level |
-| Invalid exports | Module-level directive files can only export async functions |
+| Invalid exports | Module-level `"use workflow"` files can only export async functions; `"use step"` files can export any function |
 | Misspelled directive | Detects typos like `"use steps"` or `"use workflows"` |
 
 ---
