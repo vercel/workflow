@@ -116,6 +116,7 @@ export async function handleSuspension({
           token: queueItem.token,
           metadata: hookMetadata,
           isWebhook: queueItem.isWebhook ?? false,
+          ...(queueItem.isSystem && { isSystem: true }),
         },
       };
     })

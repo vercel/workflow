@@ -759,6 +759,7 @@ export function createEventsStorage(
           token: string;
           metadata?: any;
           isWebhook?: boolean;
+          isSystem?: boolean;
         };
 
         // Atomically claim the token using an exclusive-create constraint file.
@@ -825,6 +826,7 @@ export function createEventsStorage(
           // Propagate specVersion from the event to the hook entity
           specVersion: effectiveSpecVersion,
           isWebhook: hookData.isWebhook ?? false,
+          isSystem: hookData.isSystem ?? false,
         };
         await writeJSON(
           taggedPath(basedir, 'hooks', data.correlationId, tag),
