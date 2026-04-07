@@ -1970,13 +1970,27 @@ export async function getNextBuilderDeferred() {
       }
 
       const candidateFiles = manifestStepEntries
-        .map((stepEntry) =>
-          this.normalizeDiscoveredFilePath(
-            isAbsolute(stepEntry)
-              ? stepEntry
-              : resolve(this.config.workingDir, stepEntry)
-          )
-        )
+        .flatMap((stepEntry) => {
+          if (isAbsolute(stepEntry)) {
+            return [this.normalizeDiscoveredFilePath(stepEntry)];
+          }
+          const resolveBaseDirs = new Set<string>();
+          if (this.config.projectRoot) {
+            resolveBaseDirs.add(this.config.projectRoot);
+          }
+          let currentResolveDir = this.config.workingDir;
+          while (currentResolveDir) {
+            resolveBaseDirs.add(currentResolveDir);
+            const parentResolveDir = dirname(currentResolveDir);
+            if (parentResolveDir === currentResolveDir) {
+              break;
+            }
+            currentResolveDir = parentResolveDir;
+          }
+          return Array.from(resolveBaseDirs).map((baseDir) =>
+            this.normalizeDiscoveredFilePath(resolve(baseDir, stepEntry))
+          );
+        })
         .filter(
           (candidateFile) => !this.isGeneratedWorkflowArtifact(candidateFile)
         );
