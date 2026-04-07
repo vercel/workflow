@@ -1,5 +1,15 @@
 # @workflow/ai
 
+## 4.1.0
+
+### Patch Changes
+
+- [#1640](https://github.com/vercel/workflow/pull/1640) [`8890b33`](https://github.com/vercel/workflow/commit/8890b33b9b6497824309ced298a7b1acab73142c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stable release
+
+- Updated dependencies [[`8890b33`](https://github.com/vercel/workflow/commit/8890b33b9b6497824309ced298a7b1acab73142c)]:
+  - @workflow/serde@4.1.0
+  - workflow@4.2.0
+
 ## 4.1.0-beta.60
 
 ### Patch Changes

@@ -1,5 +1,19 @@
 # @workflow/builders
 
+## 4.0.1
+
+### Patch Changes
+
+- [#1640](https://github.com/vercel/workflow/pull/1640) [`8890b33`](https://github.com/vercel/workflow/commit/8890b33b9b6497824309ced298a7b1acab73142c) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Stable release
+
+- [`1ef83dc`](https://github.com/vercel/workflow/commit/1ef83dcc086f44a05b1801ed299de8e48cea9fa3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix Node.js builtin imports being relativized in step bundles
+
+- Updated dependencies [[`8890b33`](https://github.com/vercel/workflow/commit/8890b33b9b6497824309ced298a7b1acab73142c)]:
+  - @workflow/core@4.2.0
+  - @workflow/errors@4.1.0
+  - @workflow/swc-plugin@4.1.0
+  - @workflow/utils@4.1.0
+
 ## 4.0.1-beta.68
 
 ### Patch Changes
