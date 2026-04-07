@@ -32,6 +32,7 @@ import {
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   deleteJSON,
+  jsonReplacer,
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSONWithFallback,
@@ -124,6 +125,88 @@ export function createEventsStorage(
           WorkflowRunSchema,
           tag
         );
+
+        // Resilient start: run_started on non-existent run with eventData
+        // creates the run first, so the queue can bootstrap a run that
+        // failed to create during start().
+        if (
+          data.eventType === 'run_started' &&
+          !currentRun &&
+          'eventData' in data &&
+          data.eventData
+        ) {
+          const runInputData = data.eventData as {
+            deploymentId?: string;
+            workflowName?: string;
+            input?: any;
+            executionContext?: Record<string, any>;
+          };
+          if (
+            runInputData.deploymentId &&
+            runInputData.workflowName &&
+            runInputData.input !== undefined
+          ) {
+            // Atomically try to create the run entity. writeExclusive
+            // uses O_CREAT|O_EXCL so only the first writer wins,
+            // preventing a TOCTOU race where a concurrent run_created
+            // from start() could overwrite a run that was already
+            // transitioned to 'running'.
+            const createdRun: WorkflowRun = {
+              runId: effectiveRunId,
+              deploymentId: runInputData.deploymentId,
+              status: 'pending',
+              workflowName: runInputData.workflowName,
+              specVersion: effectiveSpecVersion,
+              executionContext: runInputData.executionContext,
+              input: runInputData.input,
+              output: undefined,
+              error: undefined,
+              startedAt: undefined,
+              completedAt: undefined,
+              createdAt: now,
+              updatedAt: now,
+            };
+            const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
+            const created = await writeExclusive(
+              runPath,
+              JSON.stringify(createdRun, jsonReplacer)
+            );
+
+            if (created) {
+              // We created the run — also write the run_created event.
+              const runCreatedEventId = `evnt_${monotonicUlid()}`;
+              const runCreatedEvent: Event = {
+                eventType: 'run_created',
+                runId: effectiveRunId,
+                eventId: runCreatedEventId,
+                createdAt: now,
+                specVersion: effectiveSpecVersion,
+                eventData: {
+                  deploymentId: runInputData.deploymentId,
+                  workflowName: runInputData.workflowName,
+                  input: runInputData.input,
+                  executionContext: runInputData.executionContext,
+                },
+              };
+              const createdCompositeKey = `${effectiveRunId}-${runCreatedEventId}`;
+              await writeJSON(
+                taggedPath(basedir, 'events', createdCompositeKey, tag),
+                runCreatedEvent
+              );
+              currentRun = createdRun;
+            } else {
+              // Run already exists (concurrent run_created won the
+              // race). Re-read it so downstream logic sees the real state.
+              currentRun = await readJSONWithFallback(
+                basedir,
+                'runs',
+                effectiveRunId,
+                WorkflowRunSchema,
+                tag
+              );
+            }
+          }
+        }
       }
 
       // ============================================================
@@ -324,7 +407,20 @@ export function createEventsStorage(
           createdAt: now,
           updatedAt: now,
         };
-        await writeJSON(taggedPath(basedir, 'runs', effectiveRunId, tag), run);
+        // Use writeExclusive (O_CREAT|O_EXCL) to atomically create the
+        // run entity file. This prevents a TOCTOU race with the resilient
+        // start path (run_started on non-existent run) that could result
+        // in duplicate run_created events in the event log.
+        const runPath = taggedPath(basedir, 'runs', effectiveRunId, tag);
+        const created = await writeExclusive(
+          runPath,
+          JSON.stringify(run, jsonReplacer, 2)
+        );
+        if (!created) {
+          throw new EntityConflictError(
+            `Workflow run "${effectiveRunId}" already exists`
+          );
+        }
       } else if (data.eventType === 'run_started') {
         // Reuse currentRun from validation (already read above)
         if (currentRun) {

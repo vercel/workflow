@@ -67,11 +67,12 @@ describe('createQueue', () => {
         await queue.queue('__wkf_workflow_test', { runId: 'run-123' });
 
         expect(mockSend).toHaveBeenCalledTimes(1);
-        // send(topicName, payload, options)
-        const payload = mockSend.mock.calls[0][1];
+        // send(topicName, wrapper, options) — CborTransport encodes
+        // inside serialize(), but the mock bypasses the transport.
+        const wrapper = mockSend.mock.calls[0][1];
 
-        expect(payload.payload).toEqual({ runId: 'run-123' });
-        expect(payload.queueName).toBe('__wkf_workflow_test');
+        expect(wrapper.payload).toEqual({ runId: 'run-123' });
+        expect(wrapper.queueName).toBe('__wkf_workflow_test');
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
@@ -721,10 +722,11 @@ describe('createQueue', () => {
         );
 
         expect(mockSend).toHaveBeenCalledTimes(1);
-        // send(topicName, payload, options)
-        const payload = mockSend.mock.calls[0][1];
-        expect(payload.payload).toEqual(stepPayload);
-        expect(payload.queueName).toBe('__wkf_step_myStep');
+        // send(topicName, wrapper, options) — CborTransport encodes
+        // inside serialize(), but the mock bypasses the transport.
+        const wrapper = mockSend.mock.calls[0][1];
+        expect(wrapper.payload).toEqual(stepPayload);
+        expect(wrapper.queueName).toBe('__wkf_step_myStep');
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;

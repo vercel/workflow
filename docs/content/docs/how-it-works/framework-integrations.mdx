@@ -261,6 +261,35 @@ class MyFrameworkBuilder extends BaseBuilder {
 
 If your framework supports virtual server routes and dev mode watching, make sure to adapt accordingly. Please open a PR to the Workflow SDK if the base builder class is missing necessary functionality.
 
+### Monorepos and Workspace Imports
+
+If your framework integration lives in a subdirectory and your workflows import code from sibling workspace packages, pass `projectRoot` to `BaseBuilder`. Use the smallest directory that contains every workspace package imported by your workflows.
+
+{/* @skip-typecheck: @workflow/cli internal module */}
+```typescript title="my-framework-builder.ts" lineNumbers
+import { BaseBuilder } from "@workflow/cli/dist/lib/builders/base-builder";
+
+class MyFrameworkBuilder extends BaseBuilder {
+  constructor(options: {
+    rootDir: string;
+    workspaceRoot?: string;
+    dev: boolean;
+  }) {
+    super({
+      dirs: ["workflows"],
+      workingDir: options.rootDir,
+      projectRoot: options.workspaceRoot ?? options.rootDir, // [!code highlight]
+      watch: options.dev,
+    });
+  }
+
+  override async build(): Promise<void> {
+    const inputFiles = await this.getInputFiles();
+    // ...
+  }
+}
+```
+
 Hook into your framework's build:
 
 {/* @skip-typecheck: incomplete code sample */}

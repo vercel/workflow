@@ -1,5 +1,16 @@
 # @workflow/ai
 
+## 4.1.0-beta.61
+
+### Patch Changes
+
+- [#1444](https://github.com/vercel/workflow/pull/1444) [`e9ebe8f`](https://github.com/vercel/workflow/commit/e9ebe8faa3da673481a699d01c29a1726f15b042) Thanks [@gr2m](https://github.com/gr2m)! - Preserve reasoning content in DurableAgent conversation history across tool loop steps
+
+- [#1608](https://github.com/vercel/workflow/pull/1608) [`70e89bf`](https://github.com/vercel/workflow/commit/70e89bfc96ef96f88a2534c2eae0f93c3745188d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - DurableAgent telemetry: emit full AI SDK-compatible attributes on spans
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.78
+
 ## 4.1.0-beta.60
 
 ### Patch Changes

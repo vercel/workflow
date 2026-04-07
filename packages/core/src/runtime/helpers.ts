@@ -4,12 +4,17 @@ import type {
   ValidQueueName,
   World,
 } from '@workflow/world';
-import { HealthCheckPayloadSchema } from '@workflow/world';
+import {
+  HealthCheckPayloadSchema,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
 import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { getWorld } from './world.js';
 
 /** Default timeout for health checks in milliseconds */
@@ -54,6 +59,8 @@ export interface HealthCheckResult {
   error?: string;
   /** Latency if the health check was successful */
   latencyMs?: number;
+  /** Spec version of the responding deployment */
+  specVersion?: number;
 }
 
 /**
@@ -96,6 +103,8 @@ export async function handleHealthCheckMessage(
     healthy: true,
     endpoint,
     correlationId: healthCheck.correlationId,
+    specVersion: SPEC_VERSION_CURRENT,
+    workflowCoreVersion,
     timestamp: Date.now(),
   });
   // Use a fake runId that passes validation.
@@ -111,6 +120,8 @@ export type HealthCheckEndpoint = 'workflow' | 'step';
 export interface HealthCheckOptions {
   /** Timeout in milliseconds to wait for health check response. Default: 30000 (30s) */
   timeout?: number;
+  /** Deployment ID to send the health check to. Falls back to process.env.VERCEL_DEPLOYMENT_ID. */
+  deploymentId?: string;
 }
 
 /**
@@ -183,6 +194,12 @@ function parseHealthCheckResponse(
   try {
     response = JSON.parse(responseText);
   } catch {
+    // Old deployments (specVersion < 3) return plain text like
+    // 'Workflow SDK "..." endpoint is healthy'. Treat any non-empty
+    // text response as a healthy deployment with unknown specVersion.
+    if (responseText.length > 0) {
+      return { healthy: true };
+    }
     return null;
   }
 
@@ -195,7 +212,14 @@ function parseHealthCheckResponse(
     return null;
   }
 
-  return { healthy: (response as { healthy: boolean }).healthy };
+  const r = response as Record<string, unknown>;
+  const parsed: { healthy: boolean; specVersion?: number } = {
+    healthy: r.healthy as boolean,
+  };
+  if (typeof r.specVersion === 'number') {
+    parsed.specVersion = r.specVersion;
+  }
+  return parsed;
 }
 
 export async function healthCheck(
@@ -215,10 +239,16 @@ export async function healthCheck(
   const startTime = Date.now();
 
   try {
-    await world.queue(queueName, {
-      __healthCheck: true,
-      correlationId,
-    });
+    await world.queue(
+      queueName,
+      { __healthCheck: true, correlationId },
+      {
+        // Use JSON transport so the health check works against both
+        // old (JSON-only) and new (dual) deployments.
+        specVersion: SPEC_VERSION_LEGACY,
+        deploymentId: options?.deploymentId,
+      }
+    );
 
     while (Date.now() - startTime < timeout) {
       try {
@@ -361,11 +391,16 @@ export function withHealthCheck(
         });
       }
       return new Response(
-        `Workflow SDK "${url.pathname}" endpoint is healthy`,
+        JSON.stringify({
+          healthy: true,
+          endpoint: url.pathname,
+          specVersion: SPEC_VERSION_CURRENT,
+          workflowCoreVersion,
+        }),
         {
           status: 200,
           headers: {
-            'Content-Type': 'text/plain',
+            'Content-Type': 'application/json',
             ...HEALTH_CHECK_CORS_HEADERS,
           },
         }

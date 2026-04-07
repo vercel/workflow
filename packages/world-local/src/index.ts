@@ -65,11 +65,13 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const storage = createStorage(mergedConfig.dataDir, tag);
   return {
     ...queue,
-    ...storage,
-    ...instrumentObject(
-      'world.streams',
-      createStreamer(mergedConfig.dataDir, tag)
-    ),
+    ...createStorage(mergedConfig.dataDir, tag),
+    ...instrumentObject('world.streams', {
+      ...createStreamer(mergedConfig.dataDir, tag),
+      ...(mergedConfig.streamFlushIntervalMs !== undefined && {
+        streamFlushIntervalMs: mergedConfig.streamFlushIntervalMs,
+      }),
+    }),
     async start() {
       await initDataDir(mergedConfig.dataDir);
       await reenqueueActiveRuns(storage.runs, queue.queue, 'world-local');

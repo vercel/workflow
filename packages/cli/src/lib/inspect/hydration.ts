@@ -165,6 +165,37 @@ export function getCLIRevivers(): Revivers {
     Float32Array: (value: string) => new Float32Array(reviveArrayBuffer(value)),
     Float64Array: (value: string) => new Float64Array(reviveArrayBuffer(value)),
     Headers: (value) => new Headers(value),
+    Request: (value) => {
+      // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+      const ctor = { Request: function () {} }.Request!;
+      const obj = Object.create(ctor.prototype);
+      Object.assign(obj, {
+        method: value.method,
+        url: value.url,
+        headers: new Headers(value.headers),
+        body: value.body,
+        duplex: value.duplex,
+        ...(value.responseWritable
+          ? { responseWritable: value.responseWritable }
+          : {}),
+      });
+      return obj;
+    },
+    Response: (value) => {
+      // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+      const ctor = { Response: function () {} }.Response!;
+      const obj = Object.create(ctor.prototype);
+      Object.assign(obj, {
+        status: value.status,
+        statusText: value.statusText,
+        url: value.url,
+        headers: new Headers(value.headers),
+        body: value.body,
+        redirected: value.redirected,
+        type: value.type,
+      });
+      return obj;
+    },
     Int8Array: (value: string) => new Int8Array(reviveArrayBuffer(value)),
     Int16Array: (value: string) => new Int16Array(reviveArrayBuffer(value)),
     Int32Array: (value: string) => new Int32Array(reviveArrayBuffer(value)),

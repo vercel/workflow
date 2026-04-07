@@ -1,4 +1,4 @@
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { WorkflowRuntimeError, WorkflowWorldError } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, SPEC_VERSION_LEGACY } from '@workflow/world';
 import {
   afterEach,
@@ -280,7 +280,7 @@ describe('start', () => {
       expect(mockQueue).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Object),
-        { deploymentId: 'dpl_resolved_abc123' }
+        expect.objectContaining({ deploymentId: 'dpl_resolved_abc123' })
       );
     });
 
@@ -388,6 +388,77 @@ describe('start', () => {
         }),
         expect.anything()
       );
+    });
+  });
+
+  describe('resilient start (run_created failure)', () => {
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    afterEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should succeed when events.create throws a 500 error (queue still dispatched)', async () => {
+      const mockQueue = vi.fn().mockResolvedValue({ messageId: null });
+      const serverError = new WorkflowWorldError('Internal Server Error', {
+        status: 500,
+      });
+      const mockEventsCreate = vi.fn().mockRejectedValue(serverError);
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      // start() should NOT throw — the queue was still dispatched
+      const run = await start(validWorkflow, [42]);
+      expect(run.runId).toMatch(/^wrun_/);
+
+      // Queue should have been called with runInput
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+      const [, queuePayload] = mockQueue.mock.calls[0];
+      expect(queuePayload.runInput).toBeDefined();
+      expect(queuePayload.runInput.deploymentId).toBe('deploy_123');
+      expect(queuePayload.runInput.workflowName).toBe('test-workflow');
+      expect(queuePayload.runInput.specVersion).toBe(SPEC_VERSION_CURRENT);
+    });
+
+    it('should throw when queue fails even if events.create succeeds', async () => {
+      const mockEventsCreate = vi.fn().mockResolvedValue({
+        run: { runId: 'wrun_test', status: 'pending' },
+      });
+      const mockQueue = vi
+        .fn()
+        .mockRejectedValue(new Error('Queue unavailable'));
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(start(validWorkflow, [])).rejects.toThrow(
+        'Queue unavailable'
+      );
+    });
+
+    it('should throw when events.create fails with a non-retryable error (e.g. 400)', async () => {
+      const badRequest = new WorkflowWorldError('Bad Request', {
+        status: 400,
+      });
+      const mockEventsCreate = vi.fn().mockRejectedValue(badRequest);
+      const mockQueue = vi.fn().mockResolvedValue({ messageId: null });
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(start(validWorkflow, [])).rejects.toThrow('Bad Request');
     });
   });
 

@@ -838,6 +838,45 @@ export abstract class BaseBuilder {
         throw new Error('No output files generated from esbuild');
       }
 
+      // Serde compliance warnings: check if workflow bundle has Node.js imports
+      // alongside serde-registered classes (these will fail at runtime in the sandbox)
+      if (
+        workflowManifest.classes &&
+        Object.keys(workflowManifest.classes).length > 0
+      ) {
+        const { analyzeSerdeCompliance } = await import('./serde-checker.js');
+        const bundleText = interimBundle.outputFiles[0].text;
+        const serdeResult = analyzeSerdeCompliance({
+          sourceCode: '',
+          workflowCode: bundleText,
+          manifest: workflowManifest,
+        });
+        // De-dupe warnings: group identical issues across classes
+        const issuesToClasses = new Map<string, Set<string>>();
+        for (const cls of serdeResult.classes) {
+          if (!cls.compliant) {
+            for (const issue of cls.issues) {
+              let affectedClasses = issuesToClasses.get(issue);
+              if (!affectedClasses) {
+                affectedClasses = new Set<string>();
+                issuesToClasses.set(issue, affectedClasses);
+              }
+              affectedClasses.add(cls.className);
+            }
+          }
+        }
+        for (const [issue, affectedClasses] of issuesToClasses) {
+          const classNames = [...affectedClasses];
+          const classLabel =
+            classNames.length === 1
+              ? `class "${classNames[0]}"`
+              : `classes ${classNames.map((name) => `"${name}"`).join(', ')}`;
+          console.warn(
+            chalk.yellow(`⚠ Serde warning for ${classLabel}: `) + issue
+          );
+        }
+      }
+
       const bundleFinal = async (interimBundle: string) => {
         const workflowBundleCode = interimBundle;
 

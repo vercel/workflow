@@ -4,9 +4,25 @@ import { z } from 'zod';
 const UlidSchema = z.string().ulid();
 
 /**
- * Default threshold for ULID timestamp validation (5 minutes in milliseconds).
+ * Default threshold for ULID timestamps in the past (24 hours).
+ *
+ * Set to 24 hours to support the resilient start path: when start() fails to
+ * create run_created, the queue carries the run input and the runtime creates
+ * the run on run_started. VQS supports delayed messages up to 24 hours.
  */
-export const DEFAULT_TIMESTAMP_THRESHOLD_MS = 5 * 60 * 1000;
+export const DEFAULT_TIMESTAMP_THRESHOLD_PAST_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Default threshold for ULID timestamps in the future (5 minutes).
+ *
+ * Kept tight to prevent abuse from client-generated ULIDs with manipulated
+ * future timestamps while still tolerating minor clock skew.
+ */
+export const DEFAULT_TIMESTAMP_THRESHOLD_FUTURE_MS = 5 * 60 * 1000;
+
+/** @deprecated Use DEFAULT_TIMESTAMP_THRESHOLD_PAST_MS instead */
+export const DEFAULT_TIMESTAMP_THRESHOLD_MS =
+  DEFAULT_TIMESTAMP_THRESHOLD_PAST_MS;
 
 /**
  * Extracts a Date from a ULID string, or null if the string is not a valid ULID.
@@ -21,18 +37,22 @@ export function ulidToDate(maybeUlid: string): Date | null {
 }
 
 /**
- * Validates that a prefixed ULID's embedded timestamp is within an acceptable threshold
- * of the current server time. This prevents client-generated ULIDs with manipulated timestamps.
+ * Validates that a prefixed ULID's embedded timestamp is within acceptable thresholds
+ * of the current server time. Uses asymmetric thresholds: 24h in the past (to support
+ * resilient start with queue delays) and 5min in the future (to prevent abuse while
+ * tolerating clock skew).
  *
  * @param prefixedUlid - The prefixed ULID to validate (e.g., "wrun_01ARYZ...")
  * @param prefix - The prefix to strip (e.g., "wrun_")
- * @param thresholdMs - Maximum allowed drift in milliseconds (default: 5 minutes)
+ * @param pastThresholdMs - Maximum allowed age in the past (default: 24 hours)
+ * @param futureThresholdMs - Maximum allowed distance in the future (default: 5 minutes)
  * @returns null if valid, or an error message string if invalid
  */
 export function validateUlidTimestamp(
   prefixedUlid: string,
   prefix: string,
-  thresholdMs: number = DEFAULT_TIMESTAMP_THRESHOLD_MS
+  pastThresholdMs: number = DEFAULT_TIMESTAMP_THRESHOLD_PAST_MS,
+  futureThresholdMs: number = DEFAULT_TIMESTAMP_THRESHOLD_FUTURE_MS
 ): string | null {
   const raw = prefixedUlid.startsWith(prefix)
     ? prefixedUlid.slice(prefix.length)
@@ -44,13 +64,20 @@ export function validateUlidTimestamp(
   }
 
   const serverTimestamp = new Date();
-  const driftMs = Math.abs(serverTimestamp.getTime() - ulidTimestamp.getTime());
+  const diffMs = serverTimestamp.getTime() - ulidTimestamp.getTime();
 
-  if (driftMs <= thresholdMs) {
-    return null;
+  // diffMs > 0 means the ULID is in the past; diffMs < 0 means it's in the future
+  if (diffMs > 0 && diffMs <= pastThresholdMs) {
+    return null; // Within past threshold
+  }
+  if (diffMs <= 0 && -diffMs <= futureThresholdMs) {
+    return null; // Within future threshold
   }
 
+  const driftMs = Math.abs(diffMs);
   const driftSeconds = Math.round(driftMs / 1000);
+  const direction = diffMs > 0 ? 'past' : 'future';
+  const thresholdMs = diffMs > 0 ? pastThresholdMs : futureThresholdMs;
   const thresholdSeconds = Math.round(thresholdMs / 1000);
-  return `Invalid runId timestamp: embedded timestamp differs from server time by ${driftSeconds}s (threshold: ${thresholdSeconds}s)`;
+  return `Invalid runId timestamp: embedded timestamp is ${driftSeconds}s in the ${direction} (threshold: ${thresholdSeconds}s)`;
 }

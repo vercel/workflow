@@ -1,107 +1,132 @@
 ---
 title: start-invalid-workflow-function
-description: Ensure you pass a valid workflow function to start() with proper configuration.
+description: The function passed to start() must be a transformed workflow function.
 type: troubleshooting
-summary: Resolve the start-invalid-workflow-function error by passing a properly configured workflow function.
+summary: Fix invalid workflow function errors by adding "use workflow" and enabling your framework integration.
 prerequisites:
   - /docs/foundations/starting-workflows
 related:
   - /docs/api-reference/workflow-api/start
+  - /docs/getting-started/next
+  - /docs/api-reference/workflow-next/with-workflow
 ---
 
-This error occurs when you try to call `start()` with a function that is not a valid workflow function or when the Workflow SDK is not configured correctly.
+This error occurs when `start()` receives a function that does not have Workflow SDK's generated workflow metadata. In practice, that usually means the function is missing `"use workflow"` or the file was never transformed by your framework integration.
 
 ## Error Message
 
 ```
-'start' received an invalid workflow function. Ensure the Workflow SDK
-is configured correctly and the function includes a 'use workflow' directive.
+'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.
 ```
 
 ## Why This Happens
 
-The `start()` function expects a workflow function that has been properly processed by Workflow SDK's build system. During the build process, workflow functions are transformed and marked with special metadata that `start()` uses to identify and execute them.
-
-This error typically happens when:
-
-* The function is missing the `"use workflow"` directive
-* The workflow isn't being built/transformed correctly
-* The function isn't exported from the workflow file
-* The wrong function is being imported
+`start()` expects an imported workflow function, not just any async function. During compilation, Workflow SDK transforms files that contain `"use workflow"` and attaches generated metadata such as the workflow ID. If that transform never runs, or if you pass a wrapper function instead of the transformed export, `start()` cannot identify what to enqueue and throws this error.
 
 ## Common Causes
 
-### Missing `"use workflow"` Directive
+### Missing `"use workflow"`
 
-```typescript lineNumbers title="workflows/order.ts"
-// Error - missing directive
-export async function processOrder(orderId: string) { // [!code highlight]
-  // workflow logic
-  return { status: "completed" };
+{/* @skip-typecheck: incomplete code sample */}
+```typescript lineNumbers
+import { start } from "workflow/api";
+
+export async function sendReminder(email: string) {
+  await sendEmail(email);
+}
+
+export async function POST() {
+  await start(sendReminder, ["hello@example.com"]);
+  return new Response("ok");
+}
+
+async function sendEmail(email: string) {
+  "use step";
+  console.log(`Sending email to ${email}`);
 }
 ```
 
-**Solution:** Add the `"use workflow"` directive.
+**Fix:** Add `"use workflow"` to the workflow function.
 
-```typescript lineNumbers title="workflows/order.ts"
-// Fixed - includes directive
-export async function processOrder(orderId: string) {
+{/* @skip-typecheck: incomplete code sample */}
+```typescript lineNumbers
+import { start } from "workflow/api";
+
+export async function sendReminder(email: string) {
   "use workflow"; // [!code highlight]
+  await sendEmail(email);
+}
 
-  // workflow logic
-  return { status: "completed" };
+export async function POST() {
+  await start(sendReminder, ["hello@example.com"]); // [!code highlight]
+  return new Response("ok");
+}
+
+async function sendEmail(email: string) {
+  "use step";
+  console.log(`Sending email to ${email}`);
 }
 ```
 
-### Incorrect Import
+### Missing `withWorkflow()` in `next.config.ts`
 
-```typescript lineNumbers title="app/api/route.ts"
-import { start } from "workflow/api";
-// Error - importing step function instead of workflow
-import { processStep } from "@/workflows/order"; // [!code highlight]
-
-export async function POST(request: Request) {
-  await start(processStep, ["order-123"]); // Error! // [!code highlight]
-  return Response.json({ started: true });
-}
-```
-
-**Solution:** Import the correct workflow function.
-
-```typescript lineNumbers title="app/api/route.ts"
-import { start } from "workflow/api";
-// Fixed - import workflow function
-import { processOrder } from "@/workflows/order"; // [!code highlight]
-
-export async function POST(request: Request) {
-  await start(processOrder, ["order-123"]); // [!code highlight]
-  return Response.json({ started: true });
-}
-```
-
-### Next.js Configuration Missing
-
-```typescript lineNumbers title="next.config.ts"
-// Error - missing withWorkflow wrapper
+{/* @skip-typecheck: incomplete code sample */}
+```typescript title="next.config.ts" lineNumbers
 import type { NextConfig } from "next";
 
-const nextConfig: NextConfig = {
-  // your config
-};
+const nextConfig: NextConfig = {};
 
 export default nextConfig;
 ```
 
-**Solution:** Wrap with `withWorkflow()`.
+**Fix:** Wrap the config with `withWorkflow()` so workflow files are transformed.
 
-```typescript lineNumbers title="next.config.ts"
-// Fixed - includes withWorkflow
-import { withWorkflow } from "workflow/next"; // [!code highlight}
+```typescript title="next.config.ts" lineNumbers
 import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next"; // [!code highlight]
 
-const nextConfig: NextConfig = {
-  // your config
-};
+const nextConfig: NextConfig = {};
 
 export default withWorkflow(nextConfig); // [!code highlight]
 ```
+
+### Passing a wrapper function instead of the imported workflow
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { sendReminder } from "./workflows/send-reminder";
+
+export async function POST() {
+  // Does NOT work
+  await start(async () => sendReminder("hello@example.com"));
+  return new Response("ok");
+}
+```
+
+**Fix:** Pass the imported workflow function directly and provide arguments in the second parameter.
+
+```typescript lineNumbers
+import { start } from "workflow/api";
+import { sendReminder } from "./workflows/send-reminder";
+
+export async function POST() {
+  await start(sendReminder, ["hello@example.com"]); // [!code highlight]
+  return new Response("ok");
+}
+```
+
+## Checklist
+
+Before calling `start()`:
+
+1. Confirm the function includes `"use workflow"` as its first statement.
+2. Confirm your framework integration is enabled (for Next.js, wrap `next.config.ts` with [`withWorkflow()`](/docs/api-reference/workflow-next/with-workflow)).
+3. Pass the imported workflow function directly to `start()`, not a wrapper callback.
+4. Keep the function in a file that goes through Workflow DevKit's transform step.
+
+## Related
+
+- [`start()`](/docs/api-reference/workflow-api/start)
+- [`withWorkflow()`](/docs/api-reference/workflow-next/with-workflow)
+- [Next.js Getting Started](/docs/getting-started/next)
