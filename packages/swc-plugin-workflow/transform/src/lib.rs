@@ -8053,22 +8053,8 @@ impl VisitMut for StepTransform {
                             });
                         }
                     }
-                    Prop::Getter(getter_prop) => {
-                        // Getters with "use workflow" are not supported
-                        let has_workflow =
-                            self.has_use_workflow_directive(&getter_prop.body.as_ref().cloned());
-                        if has_workflow {
-                            HANDLER.with(|handler| {
-                                handler
-                                    .struct_span_err(
-                                        getter_prop.span,
-                                        "Getters cannot be marked with \"use workflow\". Only static methods, functions, and object methods are supported.",
-                                    )
-                                    .emit()
-                            });
-                        }
-                        // Note: no async check for getters (they can't be async syntactically)
-                    }
+                    // Note: Prop::Getter validation is handled in process_object_properties_for_step_functions
+                    // to avoid emitting duplicate errors when the visitor recurses into the same node.
                     _ => {}
                 }
             }
