@@ -1544,11 +1544,14 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(flowRes.status).toBe(200);
-      expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
-      const flowBody = await flowRes.text();
-      expect(flowBody).toBe(
-        'Workflow SDK "/.well-known/workflow/v1/flow" endpoint is healthy'
-      );
+      expect(flowRes.headers.get('Content-Type')).toBe('application/json');
+      const flowBody = await flowRes.json();
+      expect(flowBody).toEqual({
+        healthy: true,
+        endpoint: '/.well-known/workflow/v1/flow',
+        specVersion: SPEC_VERSION_CURRENT,
+        workflowCoreVersion: expect.any(String),
+      });
     }
   );
 
