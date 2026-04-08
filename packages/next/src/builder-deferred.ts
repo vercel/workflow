@@ -176,7 +176,12 @@ export async function getNextBuilderDeferred() {
         const inputFiles = this.getCurrentInputFiles(implicitStepFiles);
         const buildSignature =
           await this.createDeferredBuildSignature(inputFiles);
-        if (buildSignature === this.lastDeferredBuildSignature) {
+        const shouldForceBuildForGeneratedRoutes =
+          await this.shouldForceBuildForGeneratedRoutes();
+        if (
+          buildSignature === this.lastDeferredBuildSignature &&
+          !shouldForceBuildForGeneratedRoutes
+        ) {
           return;
         }
 
@@ -223,6 +228,51 @@ export async function getNextBuilderDeferred() {
     private async resolveImplicitStepFiles(): Promise<string[]> {
       const workflowStdlibPath = this.resolveWorkflowStdlibStepFilePath();
       return workflowStdlibPath ? [workflowStdlibPath] : [];
+    }
+
+    private async shouldForceBuildForGeneratedRoutes(): Promise<boolean> {
+      const outputDir = await this.findAppDirectory();
+      const generatedRouteFiles = [
+        join(outputDir, '.well-known/workflow/v1/flow/route.js'),
+        join(outputDir, '.well-known/workflow/v1/step/route.js'),
+        join(outputDir, '.well-known/workflow/v1/webhook/[token]/route.js'),
+      ];
+
+      for (const routeFilePath of generatedRouteFiles) {
+        const routeState = await this.getGeneratedRouteState(routeFilePath);
+        if (routeState === 'missing') {
+          return true;
+        }
+        if (routeState === 'stub') {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    private async getGeneratedRouteState(
+      routeFilePath: string
+    ): Promise<'missing' | 'stub' | 'generated'> {
+      let routeStats;
+      try {
+        routeStats = await stat(routeFilePath);
+      } catch {
+        return 'missing';
+      }
+      if (!routeStats.isFile()) {
+        return 'missing';
+      }
+      if (routeStats.size > 1024) {
+        return 'generated';
+      }
+
+      try {
+        const source = await readFile(routeFilePath, 'utf-8');
+        return source.includes(ROUTE_STUB_FILE_MARKER) ? 'stub' : 'generated';
+      } catch {
+        return 'missing';
+      }
     }
 
     private resolveWorkflowStdlibStepFilePath(): string | null {
@@ -695,13 +745,7 @@ export async function getNextBuilderDeferred() {
             this.scheduleWorkflowsCacheWrite();
           }
 
-          if (
-            hasWorkflow ||
-            hasStep ||
-            hasSerde ||
-            hasCacheTrackingChange ||
-            wasTrackedDependency
-          ) {
+          if (hasCacheTrackingChange || wasTrackedDependency) {
             this.scheduleDeferredRebuild();
           }
         },
