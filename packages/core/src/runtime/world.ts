@@ -102,15 +102,15 @@ export const createWorld = async (): Promise<World> => {
     });
   }
 
-  // Try require() first — works for CJS-compatible packages and in test
-  // runners where `new Function`-based import() is unavailable.
-  // Fall back to dynamic import() for ESM-only modules.
+  // Try dynamic import() first — ESM-first since this PR's purpose is ESM support.
+  // Fall back to require() for environments where `new Function`-based import()
+  // is unavailable (e.g. CJS test runners).
   let mod: any;
   try {
-    mod = require(targetWorld);
-  } catch {
     const resolvedPath = resolveModulePath(targetWorld);
     mod = await dynamicImport(resolvedPath);
+  } catch {
+    mod = require(targetWorld);
   }
   if (typeof mod === 'function') {
     return mod() as World;
