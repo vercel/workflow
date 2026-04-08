@@ -115,7 +115,7 @@ if (process.platform === 'win32') {
     const runs = createRunsStorage(db.drizzle);
     const queue = { queue: vi.fn().mockResolvedValue(undefined) };
     const events = createEventsStorage(db.drizzle, {
-      getLimits: () => limits,
+      limits,
       queue,
       runs,
     });
@@ -153,7 +153,9 @@ if (process.platform === 'win32') {
           correlationId,
           eventData: {
             key,
-            definition: { concurrency: { max: concurrencyMax } },
+            definition: {
+              concurrency: { max: concurrencyMax },
+            },
             leaseTtlMs,
           },
         });

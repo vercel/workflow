@@ -1,8 +1,10 @@
-import type { CreateEventRequest, Event } from './events.js';
+import { type CreateEventRequest, EventSchema, type Event } from './events.js';
 import {
   type LimitAcquireRequest,
   type LimitLease,
+  type LimitPromotedWaiter,
   type LimitReleaseRequest,
+  type Limits,
   parseLockCorrelationId,
 } from './limits.js';
 
@@ -45,10 +47,28 @@ export type LockHistory =
       released?: undefined;
     };
 
-type LockEventRequest = Extract<
+export type LockEventRequest = Extract<
   CreateEventRequest,
   { eventType: 'lock_created' | 'lock_acquired' | 'lock_release' }
 >;
+
+export type PreparedLockEvent =
+  | {
+      type: 'invalid';
+      message: string;
+    }
+  | {
+      type: 'return_existing';
+      event: LockStoredEvent;
+    }
+  | {
+      type: 'too_early';
+      retryAfterMs: number | undefined;
+    }
+  | {
+      type: 'store';
+      event: LockStoredEvent;
+    };
 
 export type LockEventResolution =
   | {
@@ -95,6 +115,29 @@ function createAcquireRequest(
     definition: eventData.definition,
     leaseTtlMs: eventData.leaseTtlMs,
   };
+}
+
+export function parseLockHistoryEvent(event: unknown): LockHistoryEvent {
+  const parsed = EventSchema.parse(event);
+
+  switch (parsed.eventType) {
+    case 'lock_created':
+    case 'lock_acquired':
+    case 'lock_release':
+    case 'lock_waiter_queued':
+      return parsed;
+    default:
+      throw new Error(`Expected lock event, got "${parsed.eventType}"`);
+  }
+}
+
+export function parseLockStoredEvent(event: unknown): LockStoredEvent {
+  const parsed = parseLockHistoryEvent(event);
+  if (parsed.eventType === 'lock_waiter_queued') {
+    throw new Error('Expected stored lock event, got "lock_waiter_queued"');
+  }
+
+  return parsed;
 }
 
 export function getLockHistory(
@@ -222,5 +265,131 @@ export function resolveLockEvent(
         },
       };
     }
+  }
+}
+
+export async function prepareLockEvent(input: {
+  event: LockEventRequest;
+  runId: string;
+  eventId: string;
+  specVersion: number;
+  limits: Limits;
+  existingEvents: readonly unknown[];
+  createdAt?: Date;
+}): Promise<PreparedLockEvent> {
+  const history = getLockHistory(
+    input.existingEvents.map(parseLockHistoryEvent)
+  );
+  let resolution: LockEventResolution;
+
+  try {
+    resolution = resolveLockEvent(input.event, input.runId, history);
+  } catch (error) {
+    return {
+      type: 'invalid',
+      message: (error as Error).message,
+    };
+  }
+
+  if (resolution.type === 'return_existing') {
+    return resolution;
+  }
+
+  if (resolution.type === 'release') {
+    const releaseResult = await input.limits.release(resolution.request);
+    return {
+      type: 'store',
+      event: parseLockStoredEvent({
+        eventType: 'lock_release',
+        correlationId: input.event.correlationId,
+        eventData: {
+          lease: resolution.lease,
+          promotedWaiters: releaseResult.promotedWaiters,
+        },
+        runId: input.runId,
+        eventId: input.eventId,
+        createdAt: input.createdAt ?? new Date(),
+        specVersion: input.specVersion,
+      }),
+    };
+  }
+
+  const acquireResult = await input.limits.acquire(resolution.request);
+  if (
+    resolution.type === 'acquire_after_wait' &&
+    acquireResult.status !== 'acquired'
+  ) {
+    return {
+      type: 'too_early',
+      retryAfterMs: acquireResult.retryAfterMs,
+    };
+  }
+
+  const createdAt = input.createdAt ?? new Date();
+  if (acquireResult.status === 'blocked') {
+    if (resolution.type !== 'acquire_from_created') {
+      return {
+        type: 'invalid',
+        message: `Lock "${input.event.correlationId}" is not ready to acquire`,
+      };
+    }
+
+    return {
+      type: 'store',
+      event: parseLockStoredEvent({
+        eventType: 'lock_created',
+        correlationId: input.event.correlationId,
+        eventData: {
+          ...resolution.createdEventData,
+          acquireAt:
+            acquireResult.retryAfterMs === undefined
+              ? undefined
+              : new Date(createdAt.getTime() + acquireResult.retryAfterMs),
+        },
+        runId: input.runId,
+        eventId: input.eventId,
+        createdAt,
+        specVersion: input.specVersion,
+      }),
+    };
+  }
+
+  return {
+    type: 'store',
+    event: parseLockStoredEvent({
+      eventType: 'lock_acquired',
+      correlationId: input.event.correlationId,
+      eventData: { lease: acquireResult.lease },
+      runId: input.runId,
+      eventId: input.eventId,
+      createdAt,
+      specVersion: input.specVersion,
+    }),
+  };
+}
+
+export async function processPromotedWaiters(input: {
+  promotedWaiters: LimitPromotedWaiter[];
+  limits: Limits;
+  queueWaiter?: (waiter: LimitPromotedWaiter) => Promise<boolean>;
+}): Promise<void> {
+  const pending = [...input.promotedWaiters];
+
+  while (pending.length > 0) {
+    const promotedWaiter = pending.shift();
+    if (!promotedWaiter) {
+      continue;
+    }
+
+    if (input.queueWaiter && (await input.queueWaiter(promotedWaiter))) {
+      continue;
+    }
+
+    const releaseResult = await input.limits.release({
+      leaseId: promotedWaiter.leaseId,
+      key: promotedWaiter.key,
+      lockId: promotedWaiter.lockId,
+    });
+    pending.push(...releaseResult.promotedWaiters);
   }
 }

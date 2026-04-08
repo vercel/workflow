@@ -234,15 +234,11 @@ const STEP_LOCK_KEYS = {
   db: 'step:db:cheap',
   ai: 'step:provider:openai',
   serialized: 'step:db:serialized',
-  contention: 'step:db:key-contention',
   multi: 'step:db:batch',
 } as const;
 type StepLockKey = (typeof STEP_LOCK_KEYS)[keyof typeof STEP_LOCK_KEYS];
 
-function workflowKey(
-  type: 'user' | 'rate' | 'mixed' | 'expired',
-  userId: string
-) {
+function workflowKey(type: 'user' | 'mixed', userId: string) {
   return `workflow:${type}:${userId}`;
 }
 
@@ -262,26 +258,6 @@ async function holdWorkflowLock(
   const acquiredAt = Date.now();
   await sleep(holdMs);
   return lockWindow(acquiredAt, Date.now());
-}
-
-async function leakWorkflowLock(
-  key: string,
-  leaseTtlMs: number,
-  label: string
-) {
-  const leakedLock = await lock({
-    key,
-    concurrency: { max: 1 },
-    leaseTtlMs,
-  });
-
-  return {
-    label,
-    key: leakedLock.key,
-    leaseTtlMs,
-    lockAcquiredAt: Date.now(),
-    workflowCompletedAt: Date.now(),
-  };
 }
 
 export async function workflowWithScopedLocks(userId = DEFAULT_USER_ID) {
@@ -368,31 +344,6 @@ export async function workflowLockContentionWorkflow(
   };
 }
 
-export async function lockedStepCallContentionWorkflow(
-  key = STEP_LOCK_KEYS.contention,
-  holdMs = 750,
-  label = key
-) {
-  'use workflow';
-
-  let step: Awaited<ReturnType<typeof serializedLimitStep>>;
-  {
-    await using _lock = await lock({
-      key,
-      concurrency: { max: 1 },
-      leaseTtlMs: leaseTtlMs(holdMs),
-    });
-    step = await serializedLimitStep(label, holdMs, key);
-  }
-
-  return {
-    ...step,
-    lock: lockWindow(step.lock.acquiredAt, Date.now()),
-  };
-}
-
-//////////////////////////////////////////////////////////
-
 export async function workflowOnlyLockContentionWorkflow(
   userId = DEFAULT_USER_ID,
   holdMs = 750,
@@ -410,51 +361,6 @@ export async function workflowOnlyLockContentionWorkflow(
       },
       holdMs
     ),
-  };
-}
-
-export async function workflowLeakedLockWorkflow(
-  userId = DEFAULT_USER_ID,
-  leaseTtlMs = 1_250,
-  label = userId
-) {
-  'use workflow';
-
-  return leakWorkflowLock(workflowKey('user', userId), leaseTtlMs, label);
-}
-
-export async function leakedKeyLockWorkflow(
-  userId = DEFAULT_USER_ID,
-  leaseTtlMs = 1_250,
-  label = userId
-) {
-  'use workflow';
-
-  return leakWorkflowLock(workflowKey('expired', userId), leaseTtlMs, label);
-}
-
-export async function releasedRateLimitReplayWorkflow(
-  userId = DEFAULT_USER_ID,
-  periodMs = 6_000,
-  sleepMs = 100
-) {
-  'use workflow';
-
-  const startedAt = Date.now();
-  {
-    await using _releasedRateLimit = await lock({
-      key: `workflow:replay-rate:${userId}`,
-      rate: { count: 1, periodMs },
-      leaseTtlMs: leaseTtlMs(periodMs),
-    });
-  }
-
-  await sleep(sleepMs);
-
-  return {
-    elapsedMs: Date.now() - startedAt,
-    periodMs,
-    sleepMs,
   };
 }
 

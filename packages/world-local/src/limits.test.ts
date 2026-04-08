@@ -87,7 +87,7 @@ createLimitsEventsContractSuite('local world limit events', async () => {
   const queue = { queue: vi.fn().mockResolvedValue(undefined) };
   const limits = createLimits(dir, { storage: { runs } });
   const events = createEventsStorage(dir, undefined, {
-    getLimits: () => limits,
+    limits,
     queue,
     runs,
   });
@@ -132,7 +132,9 @@ createLimitsEventsContractSuite('local world limit events', async () => {
         correlationId,
         eventData: {
           key,
-          definition: { concurrency: { max: concurrencyMax } },
+          definition: {
+            concurrency: { max: concurrencyMax },
+          },
           leaseTtlMs,
         },
       });

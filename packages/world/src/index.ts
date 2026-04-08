@@ -10,8 +10,28 @@ export {
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
-export type { LockHistoryEvent, LockStoredEvent } from './lock-events.js';
-export { getLockHistory, resolveLockEvent } from './lock-events.js';
+export type * from './limits-state.js';
+export {
+  canAcquireFromState,
+  createPromotedWaiter,
+  getBlockedReasonFromState,
+  inspectLimitState,
+  isLimitStateEmpty,
+} from './limits-state.js';
+export type {
+  LockEventRequest,
+  LockHistoryEvent,
+  LockStoredEvent,
+  PreparedLockEvent,
+} from './lock-events.js';
+export {
+  getLockHistory,
+  parseLockHistoryEvent,
+  parseLockStoredEvent,
+  prepareLockEvent,
+  processPromotedWaiters,
+  resolveLockEvent,
+} from './lock-events.js';
 export type * from './limits.js';
 export {
   areLimitDefinitionsEqual,
@@ -23,6 +43,8 @@ export {
   LimitAcquireRequestSchema,
   LimitAcquireResultSchema,
   LimitConcurrencySchema,
+  LimitConcurrencyAndRateDefinitionSchema,
+  LimitConcurrencyDefinitionSchema,
   LimitDefinitionSchema,
   LimitHeartbeatRequestSchema,
   LimitKeySchema,
@@ -30,6 +52,7 @@ export {
   LimitLockIdSchema,
   LimitPromotedWaiterSchema,
   LimitRateSchema,
+  LimitRateDefinitionSchema,
   LimitReleaseRequestSchema,
   LIMITS_NOT_IMPLEMENTED_MESSAGE,
   parseLockId,

@@ -14,10 +14,13 @@ import {
 } from './fs.js';
 import { initDataDir } from './init.js';
 import { createLimits } from './limits.js';
-import { createQueue, type DirectHandler } from './queue.js';
-import { hashToken } from './storage/helpers.js';
-import { createStorage } from './storage.js';
 import { instrumentObject } from './instrumentObject.js';
+import { createQueue, type DirectHandler } from './queue.js';
+import { createEventsStorage } from './storage/events-storage.js';
+import { hashToken } from './storage/helpers.js';
+import { createHooksStorage } from './storage/hooks-storage.js';
+import { createRunsStorage } from './storage/runs-storage.js';
+import { createStepsStorage } from './storage/steps-storage.js';
 import { createStreamer } from './streamer.js';
 
 // Re-export init types and utilities for consumers
@@ -63,15 +66,30 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const mergedConfig = { ...config.value, ...definedArgs };
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
-  let limits: World['limits'] | undefined;
-  const storage = createStorage(mergedConfig.dataDir, tag, {
-    getLimits: () => limits,
-    queue,
-  });
-  limits = createLimits(mergedConfig.dataDir, {
+  const runs = createRunsStorage(mergedConfig.dataDir, tag);
+  const limits = createLimits(mergedConfig.dataDir, {
     tag,
-    storage,
+    storage: { runs },
   });
+  const storage = {
+    runs: instrumentObject('world.runs', runs),
+    steps: instrumentObject(
+      'world.steps',
+      createStepsStorage(mergedConfig.dataDir, tag)
+    ),
+    events: instrumentObject(
+      'world.events',
+      createEventsStorage(mergedConfig.dataDir, tag, {
+        limits,
+        queue,
+        runs,
+      })
+    ),
+    hooks: instrumentObject(
+      'world.hooks',
+      createHooksStorage(mergedConfig.dataDir, tag)
+    ),
+  };
   return {
     limits,
     ...queue,

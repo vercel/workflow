@@ -21,26 +21,36 @@ export const LimitRateSchema = z.object({
 });
 export type LimitRate = z.infer<typeof LimitRateSchema>;
 
-const LimitConcurrencyOnlySchema = z.strictObject({
+export const LimitConcurrencyDefinitionSchema = z.strictObject({
   concurrency: LimitConcurrencySchema,
-  rate: z.undefined().optional(),
 });
+export type LimitConcurrencyDefinition = z.infer<
+  typeof LimitConcurrencyDefinitionSchema
+>;
 
-const LimitRateOnlySchema = z.strictObject({
-  concurrency: z.undefined().optional(),
+export const LimitRateDefinitionSchema = z.strictObject({
   rate: LimitRateSchema,
 });
+export type LimitRateDefinition = z.infer<typeof LimitRateDefinitionSchema>;
 
-const LimitConcurrencyAndRateSchema = z.strictObject({
+export const LimitConcurrencyAndRateDefinitionSchema = z.strictObject({
   concurrency: LimitConcurrencySchema,
   rate: LimitRateSchema,
 });
+export type LimitConcurrencyAndRateDefinition = z.infer<
+  typeof LimitConcurrencyAndRateDefinitionSchema
+>;
 
-export const LimitDefinitionSchema = z.union([
-  LimitConcurrencyOnlySchema,
-  LimitRateOnlySchema,
-  LimitConcurrencyAndRateSchema,
-]);
+export const LimitDefinitionSchema = z
+  .strictObject({
+    concurrency: LimitConcurrencySchema.optional(),
+    rate: LimitRateSchema.optional(),
+  })
+  .refine(
+    (definition) =>
+      definition.concurrency !== undefined || definition.rate !== undefined,
+    'Limit definition requires concurrency or rate'
+  );
 export type LimitDefinition = z.infer<typeof LimitDefinitionSchema>;
 
 export const LimitLockIdSchema = z.string().min(1);
@@ -164,11 +174,31 @@ export function areLimitDefinitionsEqual(
   left: LimitDefinition,
   right: LimitDefinition
 ): boolean {
-  return (
-    left.concurrency?.max === right.concurrency?.max &&
-    left.rate?.count === right.rate?.count &&
-    left.rate?.periodMs === right.rate?.periodMs
-  );
+  if (
+    (left.concurrency === undefined) !== (right.concurrency === undefined) ||
+    (left.rate === undefined) !== (right.rate === undefined)
+  ) {
+    return false;
+  }
+
+  if (
+    left.concurrency !== undefined &&
+    right.concurrency !== undefined &&
+    left.concurrency.max !== right.concurrency.max
+  ) {
+    return false;
+  }
+
+  if (
+    left.rate !== undefined &&
+    right.rate !== undefined &&
+    (left.rate.count !== right.rate.count ||
+      left.rate.periodMs !== right.rate.periodMs)
+  ) {
+    return false;
+  }
+
+  return true;
 }
 
 export const LimitReleaseRequestSchema = z.strictObject({

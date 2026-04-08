@@ -5,10 +5,12 @@ import {
 } from '@workflow/errors';
 import {
   areLimitDefinitionsEqual,
+  canAcquireFromState,
   createLockId,
-  createLockCorrelationId,
-  createLockWakeCorrelationId,
-  getBlockedReason,
+  createPromotedWaiter,
+  getBlockedReasonFromState,
+  inspectLimitState,
+  isLimitStateEmpty,
   type LimitDefinition,
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
@@ -95,71 +97,6 @@ function definitionFromRow(row: LimitKeyRow): LimitDefinition {
   }
 
   throw new WorkflowWorldError('Missing limit definition');
-}
-
-/*
-When a workflow or step is blocked, we need to calculate the retry after time.
-We do this by finding the earliest expiration time for any leases or tokens.
-*/
-function getRetryAfterMs(
-  leases: LeaseRow[],
-  tokens: TokenRow[],
-  now: number,
-  concurrencyBlocked: boolean,
-  rateBlocked: boolean
-): number | undefined {
-  const candidates: number[] = [];
-
-  if (concurrencyBlocked) {
-    for (const lease of leases) {
-      if (lease.expiresAt) {
-        candidates.push(Math.max(0, toMillis(lease.expiresAt)! - now));
-      }
-    }
-  }
-
-  if (rateBlocked) {
-    for (const token of tokens) {
-      candidates.push(Math.max(0, toMillis(token.expiresAt)! - now));
-    }
-  }
-
-  if (candidates.length === 0) return undefined;
-  return Math.min(...candidates);
-}
-
-function getWaiterRetryAfterMs(
-  leases: LeaseRow[],
-  tokens: TokenRow[],
-  now: number,
-  definition: LimitDefinition
-): number | undefined {
-  return getRetryAfterMs(
-    leases,
-    tokens,
-    now,
-    definition.concurrency !== undefined &&
-      leases.length >= definition.concurrency.max,
-    definition.rate !== undefined && tokens.length >= definition.rate.count
-  );
-}
-
-function getBlockedRetryAfterMs(
-  definition: LimitDefinition,
-  waiters: WaiterRow[],
-  leases: LeaseRow[],
-  tokens: TokenRow[],
-  now: number,
-  concurrencyBlocked: boolean,
-  rateBlocked: boolean
-): number | undefined {
-  const headWaiter = waiters[0];
-  return (
-    (headWaiter
-      ? getWaiterRetryAfterMs(leases, tokens, now, definition)
-      : undefined) ??
-    getRetryAfterMs(leases, tokens, now, concurrencyBlocked, rateBlocked)
-  );
 }
 
 async function pruneExpired(tx: Db, key: string): Promise<void> {
@@ -299,12 +236,7 @@ async function pruneDeadHolders(tx: Db, key: string): Promise<void> {
 
 async function deleteLimitKeyIfEmpty(tx: Db, key: string): Promise<void> {
   const state = await getActiveState(tx, key);
-  if (
-    state &&
-    state.leases.length === 0 &&
-    state.tokens.length === 0 &&
-    state.waiters.length === 0
-  ) {
+  if (state && isLimitStateEmpty(state)) {
     await tx.delete(Schema.limitKeys).where(eq(Schema.limitKeys.limitKey, key));
   }
 }
@@ -342,7 +274,7 @@ async function promoteWaiter(
     throw new WorkflowWorldError(`Failed to promote waiter for key "${key}"`);
   }
 
-  if (definition.rate) {
+  if (definition.rate !== undefined) {
     await tx.insert(Schema.rateLimitTokens).values({
       tokenId: `lmttok_${generateId()}`,
       limitKey: key,
@@ -357,24 +289,13 @@ async function promoteWaiter(
     .where(eq(Schema.limitWaiters.waiterId, waiter.waiterId));
 
   const promotedLease = toLease(acquiredLease, definition);
-  const parsedLockId = parseRequiredLockId(waiter.holderId);
   return {
     lease: promotedLease,
-    promotedWaiter: {
+    promotedWaiter: createPromotedWaiter({
       leaseId: promotedLease.leaseId,
       key: promotedLease.key,
       lockId: promotedLease.lockId,
-      runId: parsedLockId.runId,
-      lockIndex: parsedLockId.lockIndex,
-      wakeCorrelationId: createLockWakeCorrelationId(
-        parsedLockId.runId,
-        parsedLockId.lockIndex
-      ),
-      lockCorrelationId: createLockCorrelationId(
-        parsedLockId.runId,
-        parsedLockId.lockIndex
-      ),
-    } satisfies LimitPromotedWaiter,
+    }) satisfies LimitPromotedWaiter,
   };
 }
 
@@ -429,17 +350,9 @@ export function createLimits(
         const existingWaiter = state.waiters.find(
           (waiter) => waiter.holderId === lockId
         );
+        const blockedState = inspectLimitState(state, existingWaiter?.waiterId);
         if (existingWaiter) {
-          const concurrencyBlocked =
-            state.definition.concurrency !== undefined &&
-            state.leases.length >= state.definition.concurrency.max;
-          const rateBlocked =
-            state.definition.rate !== undefined &&
-            state.tokens.length >= state.definition.rate.count;
-          const queuedBlocked =
-            state.waiters[0]?.waiterId !== existingWaiter.waiterId;
-
-          if (!queuedBlocked && !concurrencyBlocked && !rateBlocked) {
+          if (canAcquireFromState(blockedState)) {
             const promoted = await promoteWaiter(
               tx,
               parsed.key,
@@ -452,35 +365,14 @@ export function createLimits(
             } satisfies LimitAcquireResult;
           }
 
-          const now = Date.now();
           return {
             status: 'blocked',
-            reason: getBlockedReason(
-              queuedBlocked,
-              concurrencyBlocked,
-              rateBlocked
-            ),
-            retryAfterMs: getBlockedRetryAfterMs(
-              state.definition,
-              state.waiters,
-              state.leases,
-              state.tokens,
-              now,
-              concurrencyBlocked,
-              rateBlocked
-            ),
+            reason: getBlockedReasonFromState(blockedState),
+            retryAfterMs: blockedState.retryAfterMs,
           } satisfies LimitAcquireResult;
         }
 
-        const concurrencyBlocked =
-          state.definition.concurrency !== undefined &&
-          state.leases.length >= state.definition.concurrency.max;
-        const rateBlocked =
-          state.definition.rate !== undefined &&
-          state.tokens.length >= state.definition.rate.count;
-        const queuedBlocked = state.waiters.length > 0;
-
-        if (!concurrencyBlocked && !rateBlocked && !queuedBlocked) {
+        if (canAcquireFromState(blockedState)) {
           const expiresAt = nowPlus(parsed.leaseTtlMs);
           const [lease] = await tx
             .insert(Schema.limitLeases)
@@ -493,7 +385,7 @@ export function createLimits(
             })
             .returning();
 
-          if (state.definition.rate) {
+          if (state.definition.rate !== undefined) {
             await tx.insert(Schema.rateLimitTokens).values({
               tokenId: `lmttok_${generateId()}`,
               limitKey: parsed.key,
@@ -520,23 +412,10 @@ export function createLimits(
           })
           .onConflictDoNothing();
 
-        const now = Date.now();
         return {
           status: 'blocked',
-          reason: getBlockedReason(
-            queuedBlocked,
-            concurrencyBlocked,
-            rateBlocked
-          ),
-          retryAfterMs: getBlockedRetryAfterMs(
-            state.definition,
-            state.waiters,
-            state.leases,
-            state.tokens,
-            now,
-            concurrencyBlocked,
-            rateBlocked
-          ),
+          reason: getBlockedReasonFromState(blockedState),
+          retryAfterMs: blockedState.retryAfterMs,
         } satisfies LimitAcquireResult;
       });
     },
@@ -576,14 +455,11 @@ export function createLimits(
               break;
             }
 
-            const concurrencyBlocked =
-              state.definition.concurrency !== undefined &&
-              state.leases.length >= state.definition.concurrency.max;
-            const rateBlocked =
-              state.definition.rate !== undefined &&
-              state.tokens.length >= state.definition.rate.count;
-
-            if (concurrencyBlocked || rateBlocked) {
+            if (
+              !canAcquireFromState(
+                inspectLimitState(state, headWaiter.waiterId)
+              )
+            ) {
               break;
             }
 

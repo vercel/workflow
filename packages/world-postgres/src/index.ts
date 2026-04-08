@@ -16,11 +16,12 @@ import { createStreamer } from './streamer.js';
 function createStorage(
   drizzle: Drizzle,
   options?: {
-    getLimits?: () => Limits | undefined;
+    limits?: Limits;
     queue?: Pick<Queue, 'queue'>;
+    runs?: Storage['runs'];
   }
 ): Storage {
-  const runs = createRunsStorage(drizzle);
+  const runs = options?.runs ?? createRunsStorage(drizzle);
   return {
     runs,
     events: createEventsStorage(drizzle, {
@@ -65,12 +66,13 @@ export function createWorld(
   const drizzle = createClient(pool);
   const queue = createQueue(config, pool);
   const streamer = createStreamer(pool, drizzle);
-  let limits: Limits | undefined;
+  const runs = createRunsStorage(drizzle);
+  const limits = createLimits(config, drizzle);
   const storage = createStorage(drizzle, {
-    getLimits: () => limits,
+    limits,
     queue,
+    runs,
   });
-  limits = createLimits(config, drizzle);
 
   return {
     limits,

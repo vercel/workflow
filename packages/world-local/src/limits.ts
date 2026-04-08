@@ -7,10 +7,12 @@ import {
 import type { Storage, WorkflowRunWithoutData } from '@workflow/world';
 import {
   areLimitDefinitionsEqual,
-  createLockCorrelationId,
+  canAcquireFromState,
   createLockId,
-  createLockWakeCorrelationId,
-  getBlockedReason,
+  createPromotedWaiter,
+  getBlockedReasonFromState,
+  inspectLimitState,
+  isLimitStateEmpty,
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
   LimitDefinitionSchema,
@@ -79,62 +81,6 @@ function pruneKeyState(keyState: KeyState, now = Date.now()): KeyState {
     tokens: keyState.tokens.filter((token) => token.expiresAt.getTime() > now),
     waiters: [...keyState.waiters],
   };
-}
-
-function getRetryAfterMs(
-  keyState: KeyState,
-  now: number,
-  concurrencyBlocked: boolean,
-  rateBlocked: boolean
-): number | undefined {
-  const candidates: number[] = [];
-
-  if (concurrencyBlocked) {
-    for (const lease of keyState.leases) {
-      if (lease.expiresAt) {
-        candidates.push(Math.max(0, lease.expiresAt.getTime() - now));
-      }
-    }
-  }
-
-  if (rateBlocked) {
-    for (const token of keyState.tokens) {
-      candidates.push(Math.max(0, token.expiresAt.getTime() - now));
-    }
-  }
-
-  if (candidates.length === 0) {
-    return undefined;
-  }
-
-  return Math.min(...candidates);
-}
-
-function getWaiterRetryAfterMs(
-  keyState: KeyState,
-  now: number
-): number | undefined {
-  return getRetryAfterMs(
-    keyState,
-    now,
-    keyState.definition.concurrency !== undefined &&
-      keyState.leases.length >= keyState.definition.concurrency.max,
-    keyState.definition.rate !== undefined &&
-      keyState.tokens.length >= keyState.definition.rate.count
-  );
-}
-
-function getBlockedRetryAfterMs(
-  keyState: KeyState,
-  now: number,
-  concurrencyBlocked: boolean,
-  rateBlocked: boolean
-): number | undefined {
-  const headWaiter = keyState.waiters[0];
-  return (
-    (headWaiter ? getWaiterRetryAfterMs(keyState, now) : undefined) ??
-    getRetryAfterMs(keyState, now, concurrencyBlocked, rateBlocked)
-  );
 }
 
 function createLease(
@@ -275,7 +221,6 @@ export function createLimits(
   } => {
     const acquiredAt = new Date();
     const definition = keyState.definition;
-    const parsedLockId = parseRequiredLockId(waiter.lockId);
 
     const lease = createLease(
       keyState.key,
@@ -291,7 +236,7 @@ export function createLimits(
     );
     keyState.leases.push(lease);
 
-    if (definition.rate) {
+    if (definition.rate !== undefined) {
       insertToken(
         keyState,
         waiter.lockId,
@@ -303,21 +248,11 @@ export function createLimits(
     return {
       keyState,
       lease,
-      promotedWaiter: {
+      promotedWaiter: createPromotedWaiter({
         leaseId: lease.leaseId,
         key: lease.key,
         lockId: lease.lockId,
-        runId: parsedLockId.runId,
-        lockIndex: parsedLockId.lockIndex,
-        wakeCorrelationId: createLockWakeCorrelationId(
-          parsedLockId.runId,
-          parsedLockId.lockIndex
-        ),
-        lockCorrelationId: createLockCorrelationId(
-          parsedLockId.runId,
-          parsedLockId.lockIndex
-        ),
-      } satisfies LimitPromotedWaiter,
+      }) satisfies LimitPromotedWaiter,
     };
   };
 
@@ -335,14 +270,9 @@ export function createLimits(
         break;
       }
 
-      const concurrencyBlocked =
-        keyState.definition.concurrency !== undefined &&
-        keyState.leases.length >= keyState.definition.concurrency.max;
-      const rateBlocked =
-        keyState.definition.rate !== undefined &&
-        keyState.tokens.length >= keyState.definition.rate.count;
-
-      if (concurrencyBlocked || rateBlocked) {
+      if (
+        !canAcquireFromState(inspectLimitState(keyState, headWaiter.waiterId))
+      ) {
         break;
       }
 
@@ -370,11 +300,7 @@ export function createLimits(
             waiters: [],
           }
         );
-        if (
-          keyState.leases.length === 0 &&
-          keyState.tokens.length === 0 &&
-          keyState.waiters.length === 0
-        ) {
+        if (isLimitStateEmpty(keyState)) {
           keyState = {
             key: parsed.key,
             definition: parsed.definition,
@@ -404,40 +330,25 @@ export function createLimits(
           };
         }
 
-        const concurrencyBlocked =
-          keyState.definition.concurrency !== undefined &&
-          keyState.leases.length >= keyState.definition.concurrency.max;
-        const rateBlocked =
-          keyState.definition.rate !== undefined &&
-          keyState.tokens.length >= keyState.definition.rate.count;
         const existingWaiter = keyState.waiters.find(
           (waiter) => waiter.lockId === lockId
         );
-        const queuedBlocked =
-          keyState.waiters.length > 0 &&
-          keyState.waiters[0]?.waiterId !== existingWaiter?.waiterId;
+        const blockedState = inspectLimitState(
+          keyState,
+          existingWaiter?.waiterId
+        );
 
-        if (
-          existingWaiter &&
-          keyState.waiters[0]?.waiterId === existingWaiter.waiterId
-        ) {
-          if (!concurrencyBlocked && !rateBlocked) {
-            const promoted = promoteWaiter(keyState, existingWaiter);
-            state.keys[parsed.key] = promoted.keyState;
-            await writeState(state);
-            return {
-              status: 'acquired',
-              lease: promoted.lease,
-            };
-          }
+        if (existingWaiter && canAcquireFromState(blockedState)) {
+          const promoted = promoteWaiter(keyState, existingWaiter);
+          state.keys[parsed.key] = promoted.keyState;
+          await writeState(state);
+          return {
+            status: 'acquired',
+            lease: promoted.lease,
+          };
         }
 
-        if (
-          existingWaiter ||
-          queuedBlocked ||
-          concurrencyBlocked ||
-          rateBlocked
-        ) {
+        if (existingWaiter || !canAcquireFromState(blockedState)) {
           if (!existingWaiter) {
             keyState.waiters.push({
               waiterId: `lmtwait_${monotonicUlid()}`,
@@ -453,17 +364,8 @@ export function createLimits(
           await writeState(state);
           return {
             status: 'blocked',
-            reason: getBlockedReason(
-              queuedBlocked,
-              concurrencyBlocked,
-              rateBlocked
-            ),
-            retryAfterMs: getBlockedRetryAfterMs(
-              keyState,
-              Date.now(),
-              concurrencyBlocked,
-              rateBlocked
-            ),
+            reason: getBlockedReasonFromState(blockedState),
+            retryAfterMs: blockedState.retryAfterMs,
           };
         }
 
@@ -479,7 +381,7 @@ export function createLimits(
 
         keyState.leases.push(lease);
 
-        if (keyState.definition.rate) {
+        if (keyState.definition.rate !== undefined) {
           insertToken(
             keyState,
             lockId,
@@ -525,11 +427,7 @@ export function createLimits(
           ? promoteEligibleWaiters(keyState)
           : { keyState, promotedWaiters: [] };
         state.keys[parsed.key] = promoted.keyState;
-        if (
-          promoted.keyState.leases.length === 0 &&
-          promoted.keyState.tokens.length === 0 &&
-          promoted.keyState.waiters.length === 0
-        ) {
+        if (isLimitStateEmpty(promoted.keyState)) {
           delete state.keys[parsed.key];
         }
 

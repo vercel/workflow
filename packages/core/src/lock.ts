@@ -1,8 +1,9 @@
 import {
   createLimitsNotImplementedError,
-  type LimitDefinition,
+  type LimitConcurrency,
   type LimitKey,
   type LimitLease,
+  type LimitRate,
 } from '@workflow/world';
 import { WORKFLOW_HAS_STEP_CONTEXT, WORKFLOW_LOCK } from './symbols.js';
 
@@ -11,10 +12,30 @@ export { LIMITS_NOT_IMPLEMENTED_MESSAGE } from '@workflow/world';
 export const LOCK_WORKFLOW_ONLY_MESSAGE =
   '`lock()` is only supported in workflow functions. Wrap the step call with `await using` in workflow code.';
 
-export type LockOptions = LimitDefinition & {
+type LockBaseOptions = {
   key: LimitKey;
   leaseTtlMs?: number;
 };
+
+type LockConcurrencyOptions = LockBaseOptions & {
+  concurrency: LimitConcurrency;
+  rate?: never;
+};
+
+type LockRateOptions = LockBaseOptions & {
+  concurrency?: never;
+  rate: LimitRate;
+};
+
+type LockConcurrencyAndRateOptions = LockBaseOptions & {
+  concurrency: LimitConcurrency;
+  rate: LimitRate;
+};
+
+export type LockOptions =
+  | LockConcurrencyOptions
+  | LockRateOptions
+  | LockConcurrencyAndRateOptions;
 
 /**
  * Reserved handle shape for future lock acquisition.

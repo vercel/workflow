@@ -12,9 +12,7 @@ import type {
   EventResult,
   GetEventParams,
   Hook,
-  LockHistoryEvent,
   LockStoredEvent,
-  LimitPromotedWaiter,
   Limits,
   ListEventsParams,
   ListHooksParams,
@@ -31,10 +29,10 @@ import type {
 } from '@workflow/world';
 import {
   EventSchema,
-  getLockHistory,
   HookSchema,
   isLegacySpecVersion,
-  resolveLockEvent,
+  prepareLockEvent,
+  processPromotedWaiters,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
@@ -47,33 +45,6 @@ import { monotonicFactory } from 'ulid';
 import { type Drizzle, Schema } from './drizzle/index.js';
 import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
-
-function parseLockHistoryEvent(event: unknown): LockHistoryEvent {
-  const parsed = EventSchema.parse(event);
-
-  switch (parsed.eventType) {
-    case 'lock_created':
-    case 'lock_acquired':
-    case 'lock_release':
-    case 'lock_waiter_queued':
-      return parsed;
-    default:
-      throw new WorkflowWorldError(
-        `Expected lock event, got "${parsed.eventType}"`
-      );
-  }
-}
-
-function parseLockStoredEvent(event: unknown): LockStoredEvent {
-  const parsed = parseLockHistoryEvent(event);
-  if (parsed.eventType === 'lock_waiter_queued') {
-    throw new WorkflowWorldError(
-      'Expected stored lock event, got "lock_waiter_queued"'
-    );
-  }
-
-  return parsed;
-}
 
 /**
  * Parse legacy errorJson (text column with JSON-stringified StructuredError).
@@ -297,7 +268,7 @@ async function handleLegacyEventPostgres(
 export function createEventsStorage(
   drizzle: Drizzle,
   options?: {
-    getLimits?: () => Limits | undefined;
+    limits?: Limits;
     queue?: Pick<Queue, 'queue'>;
     runs?: Pick<Storage['runs'], 'get'>;
   }
@@ -347,67 +318,6 @@ export function createEventsStorage(
     .where(eq(Schema.waits.waitId, sql.placeholder('waitId')))
     .limit(1)
     .prepare('events_get_wait_for_validation');
-
-  const processPromotedWaiters = async (
-    promotedWaiters: LimitPromotedWaiter[],
-    specVersion: number
-  ) => {
-    const limits = options?.getLimits?.();
-    if (!limits) {
-      return;
-    }
-
-    const pending = [...promotedWaiters];
-    while (pending.length > 0) {
-      const promotedWaiter = pending.shift();
-      if (!promotedWaiter) {
-        continue;
-      }
-
-      let queued = false;
-
-      if (options?.queue && options?.runs) {
-        try {
-          const nextRun = await options.runs.get(promotedWaiter.runId, {
-            resolveData: 'none',
-          });
-          if (!['completed', 'failed', 'cancelled'].includes(nextRun.status)) {
-            await options.queue.queue(
-              `__wkf_workflow_${nextRun.workflowName}`,
-              {
-                runId: promotedWaiter.runId,
-                lockPreApproval: promotedWaiter.lockCorrelationId,
-                requestedAt: new Date(),
-              },
-              {
-                idempotencyKey: promotedWaiter.wakeCorrelationId,
-              }
-            );
-
-            await drizzle.insert(Schema.events).values({
-              runId: promotedWaiter.runId,
-              eventId: `wevt_${ulid()}`,
-              correlationId: promotedWaiter.lockCorrelationId,
-              eventType: 'lock_waiter_queued',
-              specVersion,
-            });
-            queued = true;
-          }
-        } catch {}
-      }
-
-      if (queued) {
-        continue;
-      }
-
-      const releaseResult = await limits.release({
-        leaseId: promotedWaiter.leaseId,
-        key: promotedWaiter.key,
-        lockId: promotedWaiter.lockId,
-      });
-      pending.push(...releaseResult.promotedWaiters);
-    }
-  };
 
   return {
     async create(runId, data, params): Promise<EventResult> {
@@ -647,39 +557,13 @@ export function createEventsStorage(
         data.eventType === 'lock_acquired' ||
         data.eventType === 'lock_release'
       ) {
-        const limits = options?.getLimits?.();
+        const limits = options?.limits;
         if (!limits) {
           throw new WorkflowWorldError(
             `Flow limits are not configured for event type "${data.eventType}"`
           );
         }
 
-        const existingEvents = (
-          await drizzle
-            .select({
-              eventType: Schema.events.eventType,
-              eventData: Schema.events.eventData,
-              createdAt: Schema.events.createdAt,
-              eventId: Schema.events.eventId,
-              specVersion: Schema.events.specVersion,
-            })
-            .from(Schema.events)
-            .where(
-              and(
-                eq(Schema.events.runId, effectiveRunId),
-                eq(Schema.events.correlationId, data.correlationId)
-              )
-            )
-            .orderBy(asc(Schema.events.createdAt), asc(Schema.events.eventId))
-        ).map((event) =>
-          parseLockHistoryEvent({
-            ...event,
-            runId: effectiveRunId,
-            correlationId: data.correlationId,
-            specVersion: event.specVersion ?? undefined,
-          })
-        );
-        const history = getLockHistory(existingEvents);
         const returnExistingEvent = (existingEvent: LockStoredEvent) => {
           const resolveData = params?.resolveData ?? 'all';
           return {
@@ -690,13 +574,6 @@ export function createEventsStorage(
             wait,
           };
         };
-        const resolution = (() => {
-          try {
-            return resolveLockEvent(data, effectiveRunId, history);
-          } catch (error) {
-            throw new WorkflowWorldError((error as Error).message);
-          }
-        })();
         const insertLockEvent = async (event: LockStoredEvent) => {
           const [value] = await drizzle
             .insert(Schema.events)
@@ -721,10 +598,51 @@ export function createEventsStorage(
             storedEvent.eventType === 'lock_release' &&
             storedEvent.eventData.promotedWaiters?.length
           ) {
-            await processPromotedWaiters(
-              storedEvent.eventData.promotedWaiters,
-              effectiveSpecVersion
-            );
+            await processPromotedWaiters({
+              promotedWaiters: storedEvent.eventData.promotedWaiters,
+              limits,
+              queueWaiter: async (promotedWaiter) => {
+                if (!options?.queue || !options.runs) {
+                  return false;
+                }
+
+                try {
+                  const nextRun = await options.runs.get(promotedWaiter.runId, {
+                    resolveData: 'none',
+                  });
+                  if (
+                    ['completed', 'failed', 'cancelled'].includes(
+                      nextRun.status
+                    )
+                  ) {
+                    return false;
+                  }
+
+                  await options.queue.queue(
+                    `__wkf_workflow_${nextRun.workflowName}`,
+                    {
+                      runId: promotedWaiter.runId,
+                      lockPreApproval: promotedWaiter.lockCorrelationId,
+                      requestedAt: new Date(),
+                    },
+                    {
+                      idempotencyKey: promotedWaiter.wakeCorrelationId,
+                    }
+                  );
+
+                  await drizzle.insert(Schema.events).values({
+                    runId: promotedWaiter.runId,
+                    eventId: `wevt_${ulid()}`,
+                    correlationId: promotedWaiter.lockCorrelationId,
+                    eventType: 'lock_waiter_queued',
+                    specVersion: effectiveSpecVersion,
+                  });
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+            });
           }
 
           const resolveData = params?.resolveData ?? 'all';
@@ -736,81 +654,55 @@ export function createEventsStorage(
             wait,
           };
         };
+        const prepared = await prepareLockEvent({
+          event: data,
+          runId: effectiveRunId,
+          eventId,
+          specVersion: effectiveSpecVersion,
+          limits,
+          existingEvents: (
+            await drizzle
+              .select({
+                eventType: Schema.events.eventType,
+                eventData: Schema.events.eventData,
+                createdAt: Schema.events.createdAt,
+                eventId: Schema.events.eventId,
+                specVersion: Schema.events.specVersion,
+              })
+              .from(Schema.events)
+              .where(
+                and(
+                  eq(Schema.events.runId, effectiveRunId),
+                  eq(Schema.events.correlationId, data.correlationId)
+                )
+              )
+              .orderBy(asc(Schema.events.createdAt), asc(Schema.events.eventId))
+          ).map((event) => ({
+            ...event,
+            runId: effectiveRunId,
+            correlationId: data.correlationId,
+            specVersion: event.specVersion ?? undefined,
+          })),
+        });
 
-        if (resolution.type === 'return_existing') {
-          return returnExistingEvent(resolution.event);
-        }
-
-        if (resolution.type === 'release') {
-          const releaseResult = await limits.release(resolution.request);
-          return insertLockEvent(
-            parseLockStoredEvent({
-              eventType: 'lock_release',
-              correlationId: data.correlationId,
-              eventData: {
-                lease: resolution.lease,
-                promotedWaiters: releaseResult.promotedWaiters,
-              },
-              createdAt: new Date(),
-              runId: effectiveRunId,
-              eventId,
-              specVersion: effectiveSpecVersion,
-            })
-          );
-        }
-
-        const result = await limits.acquire(resolution.request);
-        if (resolution.type === 'acquire_after_wait') {
-          if (result.status !== 'acquired') {
+        switch (prepared.type) {
+          case 'invalid':
+            throw new WorkflowWorldError(prepared.message);
+          case 'return_existing':
+            return returnExistingEvent(prepared.event);
+          case 'too_early': {
             const retryAfter =
-              result.retryAfterMs !== undefined
-                ? Math.ceil(result.retryAfterMs / 1000)
-                : undefined;
+              prepared.retryAfterMs === undefined
+                ? undefined
+                : Math.ceil(prepared.retryAfterMs / 1000);
             throw new TooEarlyError(
               `Lock "${data.correlationId}" is not ready to acquire`,
               { retryAfter }
             );
           }
+          case 'store':
+            return insertLockEvent(prepared.event);
         }
-
-        const eventCreatedAt = new Date();
-        if (result.status === 'blocked') {
-          if (resolution.type !== 'acquire_from_created') {
-            throw new WorkflowWorldError(
-              `Lock "${data.correlationId}" is not ready to acquire`
-            );
-          }
-
-          return insertLockEvent(
-            parseLockStoredEvent({
-              eventType: 'lock_created',
-              correlationId: data.correlationId,
-              eventData: {
-                ...resolution.createdEventData,
-                acquireAt:
-                  result.retryAfterMs !== undefined
-                    ? new Date(eventCreatedAt.getTime() + result.retryAfterMs)
-                    : undefined,
-              },
-              createdAt: eventCreatedAt,
-              runId: effectiveRunId,
-              eventId,
-              specVersion: effectiveSpecVersion,
-            })
-          );
-        }
-
-        return insertLockEvent(
-          parseLockStoredEvent({
-            eventType: 'lock_acquired',
-            correlationId: data.correlationId,
-            eventData: { lease: result.lease },
-            createdAt: eventCreatedAt,
-            runId: effectiveRunId,
-            eventId,
-            specVersion: effectiveSpecVersion,
-          })
-        );
       }
 
       // ============================================================

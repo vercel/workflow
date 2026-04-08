@@ -322,7 +322,9 @@ describe('createLock', () => {
         correlationId,
         eventData: {
           key: 'workflow:rate:test',
-          definition: { rate: { count: 1, periodMs: 60_000 } },
+          definition: {
+            rate: { count: 1, periodMs: 60_000 },
+          },
           acquireAt: new Date(workflowNow - 1_000),
         },
         createdAt: new Date(),
@@ -356,7 +358,9 @@ describe('createLock', () => {
     const lease = {
       ...createLease(),
       key: 'workflow:rate:test',
-      definition: { rate: { count: 1, periodMs: 60_000 } },
+      definition: {
+        rate: { count: 1, periodMs: 60_000 },
+      },
     };
     const createEvent = vi
       .fn<() => Promise<EventResult>>()

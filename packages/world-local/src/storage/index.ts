@@ -6,9 +6,8 @@ import { createRunsStorage } from './runs-storage.js';
 import { createStepsStorage } from './steps-storage.js';
 
 export interface LocalStorageOptions {
-  getLimits?: () => Limits | undefined;
+  limits?: Limits;
   queue?: Pick<Queue, 'queue'>;
-  runs?: Pick<Storage['runs'], 'get'>;
 }
 
 /**
