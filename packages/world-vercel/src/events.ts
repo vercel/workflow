@@ -465,7 +465,7 @@ async function createWorkflowRunEventInner(
       run: wireResult.run,
       step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
       hook: wireResult.hook,
-      events: wireResult.events,
+      preloadedEvents: wireResult.events,
     };
   }
 
@@ -494,6 +494,6 @@ async function createWorkflowRunEventInner(
       : undefined,
     step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
     hook: wireResult.hook,
-    events: wireResult.events,
+    preloadedEvents: wireResult.events,
   };
 }
