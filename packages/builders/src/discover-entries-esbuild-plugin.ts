@@ -7,7 +7,6 @@ import { applySwcTransform } from './apply-swc-transform.js';
 import {
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
-  isWorkflowSdkFile,
 } from './transform-utils.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
@@ -172,11 +171,7 @@ export function createDiscoverEntriesPlugin(
               state.discoveredSteps.add(normalizedPath);
             }
 
-            // For @workflow SDK packages, only discover files with actual
-            // directives, not files that just match serde patterns (internal
-            // SDK implementation files).
-            const isSdkFile = isWorkflowSdkFile(args.path);
-            if (hasManifestEntries(workflowManifest.classes) && !isSdkFile) {
+            if (hasManifestEntries(workflowManifest.classes)) {
               state.discoveredSerdeFiles.add(normalizedPath);
             }
           } else {
