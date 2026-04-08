@@ -49,7 +49,9 @@ const FORMAT_VERSION_TABLE: ReadonlyArray<{
   format: SerializationFormatType;
   minVersion: string;
 }> = [
-  { format: SerializationFormat.ENCRYPTED, minVersion: '4.2.0-beta.64' },
+  // Encryption was introduced in 4.2.0-beta.64 and carried forward through
+  // the version reset to 4.0.0 for the v5 beta release. Both ranges support it.
+  { format: SerializationFormat.ENCRYPTED, minVersion: '4.0.0' },
   // Future entries:
   // { format: SerializationFormat.CBOR, minVersion: '5.x.y' },
   // { format: SerializationFormat.ENCRYPTED_V2, minVersion: '5.x.y' },
