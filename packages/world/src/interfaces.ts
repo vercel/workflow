@@ -234,6 +234,16 @@ export interface Storage {
  */
 export interface World extends Queue, Storage, Streamer {
   /**
+   * The highest spec version this World supports.
+   *
+   * When set, `start()` creates runs at this version so world-specific
+   * features (e.g., CBOR queue transport) are enabled automatically.
+   * When omitted, runs default to `SPEC_VERSION_CURRENT` (the lowest
+   * version all worlds are expected to support).
+   */
+  specVersion?: number;
+
+  /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.
    */

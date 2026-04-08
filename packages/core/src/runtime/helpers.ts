@@ -95,7 +95,8 @@ function generateHealthCheckRunId(): string {
  */
 export async function handleHealthCheckMessage(
   healthCheck: HealthCheckPayload,
-  endpoint: 'workflow' | 'step'
+  endpoint: 'workflow' | 'step',
+  worldSpecVersion?: number
 ): Promise<void> {
   const world = getWorld();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
@@ -103,7 +104,7 @@ export async function handleHealthCheckMessage(
     healthy: true,
     endpoint,
     correlationId: healthCheck.correlationId,
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
     workflowCoreVersion,
     timestamp: Date.now(),
   });
@@ -377,7 +378,8 @@ const HEALTH_CHECK_CORS_HEADERS = {
  * based on the presence of a `__health` query parameter.
  */
 export function withHealthCheck(
-  handler: (req: Request) => Promise<Response>
+  handler: (req: Request) => Promise<Response>,
+  worldSpecVersion?: number
 ): (req: Request) => Promise<Response> {
   return async (req: Request) => {
     const url = new URL(req.url);
@@ -394,7 +396,7 @@ export function withHealthCheck(
         JSON.stringify({
           healthy: true,
           endpoint: url.pathname,
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
           workflowCoreVersion,
         }),
         {

@@ -172,7 +172,8 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
+      const specVersion =
+        opts.specVersion ?? world.specVersion ?? SPEC_VERSION_CURRENT;
       const v1Compat = isLegacySpecVersion(specVersion);
 
       // Resolve encryption key for the new run. The runId has already been

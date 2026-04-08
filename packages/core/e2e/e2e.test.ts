@@ -1549,9 +1549,12 @@ describe('e2e', () => {
       expect(flowBody).toEqual({
         healthy: true,
         endpoint: '/.well-known/workflow/v1/flow',
-        specVersion: SPEC_VERSION_CURRENT,
+        // specVersion comes from the World's declared specVersion (e.g. 3
+        // for world-vercel) or falls back to SPEC_VERSION_CURRENT (2).
+        specVersion: expect.any(Number),
         workflowCoreVersion: expect.any(String),
       });
+      expect(flowBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
 
       // Test the step endpoint health check
       const stepHealthUrl = new URL(
@@ -1568,9 +1571,10 @@ describe('e2e', () => {
       expect(stepBody).toEqual({
         healthy: true,
         endpoint: '/.well-known/workflow/v1/step',
-        specVersion: SPEC_VERSION_CURRENT,
+        specVersion: expect.any(Number),
         workflowCoreVersion: expect.any(String),
       });
+      expect(stepBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
     }
   );
 
