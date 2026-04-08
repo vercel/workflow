@@ -477,8 +477,11 @@ describe('e2e', () => {
         body: JSON.stringify({ message: 'three' }),
       }
     );
-    expect(res3.status).toBe(200);
     const body3 = await res3.text();
+    if (res3.status !== 200) {
+      console.error(`Webhook 3 failed: status=${res3.status} body=${body3}`);
+    }
+    expect(res3.status).toBe(200);
     expect(body3).toBe('Hello from webhook!');
 
     const returnValue = await run.returnValue;
