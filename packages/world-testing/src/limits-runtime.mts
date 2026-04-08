@@ -146,10 +146,12 @@ export function createLimitsRuntimeSuite(
       const harness = await createHarness();
       const holdMs = 250;
       const periodMs = 1_500;
-      const [resultA, resultB] = await harness.runWorkflowMixedLimitContention(
-        'shared-user',
-        holdMs,
-        periodMs
+      const [resultA, resultB] = sortByLock(
+        await harness.runWorkflowMixedLimitContention(
+          'shared-user',
+          holdMs,
+          periodMs
+        )
       );
 
       expect(

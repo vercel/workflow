@@ -93,7 +93,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   return {
     limits,
     ...queue,
-    ...createStorage(mergedConfig.dataDir, tag),
+    ...storage,
     ...instrumentObject('world.streams', {
       ...createStreamer(mergedConfig.dataDir, tag),
       ...(mergedConfig.streamFlushIntervalMs !== undefined && {

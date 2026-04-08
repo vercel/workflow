@@ -1,4 +1,3 @@
-import { setTimeout } from 'node:timers/promises';
 import type { Transport } from '@vercel/queue';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { Sema } from 'async-sema';
