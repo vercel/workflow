@@ -5,6 +5,8 @@ on:
     types: [closed, labeled]
     branches: [main]
 
+concurrency: backport-stable
+
 jobs:
   backport:
     name: Backport to stable
