@@ -165,9 +165,11 @@ export async function doStreamStep(
     }),
   };
 
-  const result = await recordSpan({
+  const telemetry = options?.experimental_telemetry;
+
+  return await recordSpan({
     name: 'ai.streamText.doStream',
-    telemetry: options?.experimental_telemetry,
+    telemetry,
     attributes: {
       'ai.model.provider': model.provider,
       'ai.model.id': model.modelId,
@@ -195,335 +197,432 @@ export async function doStreamStep(
       ...(options?.stopSequences !== undefined && {
         'gen_ai.request.stop_sequences': options.stopSequences,
       }),
+      // Input attributes (gated on recordInputs)
+      ...(telemetry?.recordInputs !== false && {
+        'ai.prompt.messages': JSON.stringify(conversationPrompt),
+        ...(tools && { 'ai.prompt.tools': JSON.stringify(tools) }),
+        ...(options?.toolChoice !== undefined && {
+          'ai.prompt.toolChoice': JSON.stringify(options.toolChoice),
+        }),
+      }),
     },
-    fn: () => model!.doStream(callOptions),
-  });
+    fn: async (span) => {
+      const startTime = Date.now();
+      const result = await model!.doStream(callOptions);
 
-  let finish: FinishPart | undefined;
-  const toolCalls: LanguageModelV3ToolCall[] = [];
-  // Map of tool call ID to provider-executed tool result
-  const providerExecutedToolResults = new Map<
-    string,
-    ProviderExecutedToolResult
-  >();
-  const chunks: LanguageModelV3StreamPart[] = [];
-  const includeRawChunks = options?.includeRawChunks ?? false;
-  const collectUIChunks = options?.collectUIChunks ?? false;
-  const uiChunks: UIMessageChunk[] = [];
+      let finish: FinishPart | undefined;
+      const toolCalls: LanguageModelV3ToolCall[] = [];
+      // Map of tool call ID to provider-executed tool result
+      const providerExecutedToolResults = new Map<
+        string,
+        ProviderExecutedToolResult
+      >();
+      const chunks: LanguageModelV3StreamPart[] = [];
+      const includeRawChunks = options?.includeRawChunks ?? false;
+      const collectUIChunks = options?.collectUIChunks ?? false;
+      const uiChunks: UIMessageChunk[] = [];
+      let msToFirstChunk: number | undefined;
 
-  // Build the stream pipeline
-  let stream: ReadableStream<LanguageModelV3StreamPart> = result.stream;
+      // Build the stream pipeline
+      let stream: ReadableStream<LanguageModelV3StreamPart> = result.stream;
 
-  // Apply custom transforms if provided
-  if (options?.transforms && options.transforms.length > 0) {
-    let terminated = false;
-    const stopStream = () => {
-      terminated = true;
-    };
+      // Apply custom transforms if provided
+      if (options?.transforms && options.transforms.length > 0) {
+        let terminated = false;
+        const stopStream = () => {
+          terminated = true;
+        };
 
-    for (const transform of options.transforms) {
-      if (!terminated) {
-        stream = stream.pipeThrough(
-          transform({
-            tools: {} as ToolSet, // Note: toolSet not available inside step boundary due to serialization
-            stopStream,
-          })
-        );
+        for (const transform of options.transforms) {
+          if (!terminated) {
+            stream = stream.pipeThrough(
+              transform({
+                tools: {} as ToolSet, // Note: toolSet not available inside step boundary due to serialization
+                stopStream,
+              })
+            );
+          }
+        }
       }
-    }
-  }
 
-  await stream
-    .pipeThrough(
-      new TransformStream({
-        async transform(chunk, controller) {
-          if (chunk.type === 'tool-call') {
-            toolCalls.push({
-              ...chunk,
-              input: chunk.input || '{}',
-            });
-          } else if (chunk.type === 'tool-result') {
-            // In V3, all tool-result stream parts are provider-executed by definition
-            providerExecutedToolResults.set(chunk.toolCallId, {
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              result: chunk.result,
-              isError: chunk.isError,
-            });
-          } else if (chunk.type === 'finish') {
-            finish = chunk;
-          }
-          chunks.push(chunk);
-          controller.enqueue(chunk);
-        },
-      })
-    )
-    .pipeThrough(
-      new TransformStream<LanguageModelV3StreamPart, UIMessageChunk>({
-        start: (controller) => {
-          if (options?.sendStart) {
-            controller.enqueue({
-              type: 'start',
-              // Note that if useChat is used client-side, useChat will generate a different
-              // messageId. It's hard to work around this.
-              messageId: generateId(),
-            });
-          }
-          controller.enqueue({
-            type: 'start-step',
-          });
-        },
-        flush: (controller) => {
-          controller.enqueue({
-            type: 'finish-step',
-          });
-        },
-        transform: async (part, controller) => {
-          const partType = part.type;
-          switch (partType) {
-            case 'text-start': {
-              controller.enqueue({
-                type: 'text-start',
-                id: part.id,
-                ...(part.providerMetadata != null
-                  ? { providerMetadata: part.providerMetadata }
-                  : {}),
-              });
-              break;
-            }
-
-            case 'text-delta': {
-              controller.enqueue({
-                type: 'text-delta',
-                id: part.id,
-                delta: part.delta,
-                ...(part.providerMetadata != null
-                  ? { providerMetadata: part.providerMetadata }
-                  : {}),
-              });
-              break;
-            }
-
-            case 'text-end': {
-              controller.enqueue({
-                type: 'text-end',
-                id: part.id,
-                ...(part.providerMetadata != null
-                  ? { providerMetadata: part.providerMetadata }
-                  : {}),
-              });
-              break;
-            }
-
-            case 'reasoning-start': {
-              controller.enqueue({
-                type: 'reasoning-start',
-                id: part.id,
-                ...(part.providerMetadata != null
-                  ? { providerMetadata: part.providerMetadata }
-                  : {}),
-              });
-              break;
-            }
-
-            case 'reasoning-delta': {
-              controller.enqueue({
-                type: 'reasoning-delta',
-                id: part.id,
-                delta: part.delta,
-                ...(part.providerMetadata != null
-                  ? { providerMetadata: part.providerMetadata }
-                  : {}),
-              });
-
-              break;
-            }
-
-            case 'reasoning-end': {
-              controller.enqueue({
-                type: 'reasoning-end',
-                id: part.id,
-                ...(part.providerMetadata != null
-                  ? { providerMetadata: part.providerMetadata }
-                  : {}),
-              });
-              break;
-            }
-
-            case 'file': {
-              // Convert data to URL, handling Uint8Array, URL, and string cases
-              let url: string;
-              const fileData = part.data as Uint8Array | string | URL;
-              if (fileData instanceof Uint8Array) {
-                // Convert Uint8Array to base64 and create data URL
-                const base64 = uint8ArrayToBase64(fileData);
-                url = `data:${part.mediaType};base64,${base64}`;
-              } else if (fileData instanceof URL) {
-                // Use URL directly (could be a data URL or remote URL)
-                url = fileData.href;
-              } else if (
-                fileData.startsWith('data:') ||
-                fileData.startsWith('http:') ||
-                fileData.startsWith('https:')
-              ) {
-                // Already a URL string
-                url = fileData;
-              } else {
-                // Assume it's base64-encoded data
-                url = `data:${part.mediaType};base64,${fileData}`;
+      await stream
+        .pipeThrough(
+          new TransformStream({
+            async transform(chunk, controller) {
+              if (msToFirstChunk === undefined) {
+                msToFirstChunk = Date.now() - startTime;
               }
-              controller.enqueue({
-                type: 'file',
-                mediaType: part.mediaType,
-                url,
-              });
-              break;
-            }
-
-            case 'source': {
-              if (part.sourceType === 'url') {
+              if (chunk.type === 'tool-call') {
+                toolCalls.push({
+                  ...chunk,
+                  input: chunk.input || '{}',
+                });
+              } else if (chunk.type === 'tool-result') {
+                // In V3, all tool-result stream parts are provider-executed by definition
+                providerExecutedToolResults.set(chunk.toolCallId, {
+                  toolCallId: chunk.toolCallId,
+                  toolName: chunk.toolName,
+                  result: chunk.result,
+                  isError: chunk.isError,
+                });
+              } else if (chunk.type === 'finish') {
+                finish = chunk;
+              }
+              chunks.push(chunk);
+              controller.enqueue(chunk);
+            },
+          })
+        )
+        .pipeThrough(
+          new TransformStream<LanguageModelV3StreamPart, UIMessageChunk>({
+            start: (controller) => {
+              if (options?.sendStart) {
                 controller.enqueue({
-                  type: 'source-url',
-                  sourceId: part.id,
-                  url: part.url,
-                  title: part.title,
-                  ...(part.providerMetadata != null
-                    ? { providerMetadata: part.providerMetadata }
-                    : {}),
+                  type: 'start',
+                  // Note that if useChat is used client-side, useChat will generate a different
+                  // messageId. It's hard to work around this.
+                  messageId: generateId(),
                 });
               }
+              controller.enqueue({
+                type: 'start-step',
+              });
+            },
+            flush: (controller) => {
+              controller.enqueue({
+                type: 'finish-step',
+              });
+            },
+            transform: async (part, controller) => {
+              const partType = part.type;
+              switch (partType) {
+                case 'text-start': {
+                  controller.enqueue({
+                    type: 'text-start',
+                    id: part.id,
+                    ...(part.providerMetadata != null
+                      ? { providerMetadata: part.providerMetadata }
+                      : {}),
+                  });
+                  break;
+                }
 
-              if (part.sourceType === 'document') {
-                controller.enqueue({
-                  type: 'source-document',
-                  sourceId: part.id,
-                  mediaType: part.mediaType,
-                  title: part.title,
-                  filename: part.filename,
-                  ...(part.providerMetadata != null
-                    ? { providerMetadata: part.providerMetadata }
-                    : {}),
-                });
+                case 'text-delta': {
+                  controller.enqueue({
+                    type: 'text-delta',
+                    id: part.id,
+                    delta: part.delta,
+                    ...(part.providerMetadata != null
+                      ? { providerMetadata: part.providerMetadata }
+                      : {}),
+                  });
+                  break;
+                }
+
+                case 'text-end': {
+                  controller.enqueue({
+                    type: 'text-end',
+                    id: part.id,
+                    ...(part.providerMetadata != null
+                      ? { providerMetadata: part.providerMetadata }
+                      : {}),
+                  });
+                  break;
+                }
+
+                case 'reasoning-start': {
+                  controller.enqueue({
+                    type: 'reasoning-start',
+                    id: part.id,
+                    ...(part.providerMetadata != null
+                      ? { providerMetadata: part.providerMetadata }
+                      : {}),
+                  });
+                  break;
+                }
+
+                case 'reasoning-delta': {
+                  controller.enqueue({
+                    type: 'reasoning-delta',
+                    id: part.id,
+                    delta: part.delta,
+                    ...(part.providerMetadata != null
+                      ? { providerMetadata: part.providerMetadata }
+                      : {}),
+                  });
+
+                  break;
+                }
+
+                case 'reasoning-end': {
+                  controller.enqueue({
+                    type: 'reasoning-end',
+                    id: part.id,
+                    ...(part.providerMetadata != null
+                      ? { providerMetadata: part.providerMetadata }
+                      : {}),
+                  });
+                  break;
+                }
+
+                case 'file': {
+                  // Convert data to URL, handling Uint8Array, URL, and string cases
+                  let url: string;
+                  const fileData = part.data as Uint8Array | string | URL;
+                  if (fileData instanceof Uint8Array) {
+                    // Convert Uint8Array to base64 and create data URL
+                    const base64 = uint8ArrayToBase64(fileData);
+                    url = `data:${part.mediaType};base64,${base64}`;
+                  } else if (fileData instanceof URL) {
+                    // Use URL directly (could be a data URL or remote URL)
+                    url = fileData.href;
+                  } else if (
+                    fileData.startsWith('data:') ||
+                    fileData.startsWith('http:') ||
+                    fileData.startsWith('https:')
+                  ) {
+                    // Already a URL string
+                    url = fileData;
+                  } else {
+                    // Assume it's base64-encoded data
+                    url = `data:${part.mediaType};base64,${fileData}`;
+                  }
+                  controller.enqueue({
+                    type: 'file',
+                    mediaType: part.mediaType,
+                    url,
+                  });
+                  break;
+                }
+
+                case 'source': {
+                  if (part.sourceType === 'url') {
+                    controller.enqueue({
+                      type: 'source-url',
+                      sourceId: part.id,
+                      url: part.url,
+                      title: part.title,
+                      ...(part.providerMetadata != null
+                        ? { providerMetadata: part.providerMetadata }
+                        : {}),
+                    });
+                  }
+
+                  if (part.sourceType === 'document') {
+                    controller.enqueue({
+                      type: 'source-document',
+                      sourceId: part.id,
+                      mediaType: part.mediaType,
+                      title: part.title,
+                      filename: part.filename,
+                      ...(part.providerMetadata != null
+                        ? { providerMetadata: part.providerMetadata }
+                        : {}),
+                    });
+                  }
+                  break;
+                }
+
+                case 'tool-input-start': {
+                  controller.enqueue({
+                    type: 'tool-input-start',
+                    toolCallId: part.id,
+                    toolName: part.toolName,
+                    ...(part.providerExecuted != null
+                      ? { providerExecuted: part.providerExecuted }
+                      : {}),
+                  });
+                  break;
+                }
+
+                case 'tool-input-delta': {
+                  controller.enqueue({
+                    type: 'tool-input-delta',
+                    toolCallId: part.id,
+                    inputTextDelta: part.delta,
+                  });
+                  break;
+                }
+
+                case 'tool-input-end': {
+                  // End of tool input streaming - no UI chunk needed
+                  break;
+                }
+
+                case 'tool-call': {
+                  controller.enqueue({
+                    type: 'tool-input-available',
+                    toolCallId: part.toolCallId,
+                    toolName: part.toolName,
+                    input: JSON.parse(part.input || '{}'),
+                    ...(part.providerExecuted != null
+                      ? { providerExecuted: part.providerExecuted }
+                      : {}),
+                    ...(part.providerMetadata != null
+                      ? { providerMetadata: part.providerMetadata }
+                      : {}),
+                  });
+                  break;
+                }
+
+                case 'tool-result': {
+                  controller.enqueue({
+                    type: 'tool-output-available',
+                    toolCallId: part.toolCallId,
+                    output: part.result,
+                  });
+                  break;
+                }
+
+                case 'error': {
+                  const error = part.error;
+                  controller.enqueue({
+                    type: 'error',
+                    errorText: getErrorMessage(error),
+                  });
+
+                  break;
+                }
+
+                case 'stream-start': {
+                  // Stream start is internal, no UI chunk needed
+                  break;
+                }
+
+                case 'response-metadata': {
+                  // Response metadata is internal, no UI chunk needed
+                  break;
+                }
+
+                case 'finish': {
+                  // Finish is handled separately
+                  break;
+                }
+
+                case 'raw': {
+                  // Raw chunks are only included if explicitly requested
+                  if (includeRawChunks) {
+                    // Raw chunks contain provider-specific data
+                    // We don't have a direct mapping to UIMessageChunk
+                    // but we can log or handle them if needed
+                  }
+                  break;
+                }
+
+                default: {
+                  // Handle any other chunk types gracefully
+                  // const exhaustiveCheck: never = partType;
+                  // console.warn(`Unknown chunk type: ${partType}`);
+                }
               }
-              break;
-            }
-
-            case 'tool-input-start': {
-              controller.enqueue({
-                type: 'tool-input-start',
-                toolCallId: part.id,
-                toolName: part.toolName,
-                ...(part.providerExecuted != null
-                  ? { providerExecuted: part.providerExecuted }
-                  : {}),
-              });
-              break;
-            }
-
-            case 'tool-input-delta': {
-              controller.enqueue({
-                type: 'tool-input-delta',
-                toolCallId: part.id,
-                inputTextDelta: part.delta,
-              });
-              break;
-            }
-
-            case 'tool-input-end': {
-              // End of tool input streaming - no UI chunk needed
-              break;
-            }
-
-            case 'tool-call': {
-              controller.enqueue({
-                type: 'tool-input-available',
-                toolCallId: part.toolCallId,
-                toolName: part.toolName,
-                input: JSON.parse(part.input || '{}'),
-                ...(part.providerExecuted != null
-                  ? { providerExecuted: part.providerExecuted }
-                  : {}),
-                ...(part.providerMetadata != null
-                  ? { providerMetadata: part.providerMetadata }
-                  : {}),
-              });
-              break;
-            }
-
-            case 'tool-result': {
-              controller.enqueue({
-                type: 'tool-output-available',
-                toolCallId: part.toolCallId,
-                output: part.result,
-              });
-              break;
-            }
-
-            case 'error': {
-              const error = part.error;
-              controller.enqueue({
-                type: 'error',
-                errorText: getErrorMessage(error),
-              });
-
-              break;
-            }
-
-            case 'stream-start': {
-              // Stream start is internal, no UI chunk needed
-              break;
-            }
-
-            case 'response-metadata': {
-              // Response metadata is internal, no UI chunk needed
-              break;
-            }
-
-            case 'finish': {
-              // Finish is handled separately
-              break;
-            }
-
-            case 'raw': {
-              // Raw chunks are only included if explicitly requested
-              if (includeRawChunks) {
-                // Raw chunks contain provider-specific data
-                // We don't have a direct mapping to UIMessageChunk
-                // but we can log or handle them if needed
+            },
+          })
+        )
+        .pipeThrough(
+          // Optionally collect UIMessageChunks for later conversion to UIMessage[]
+          new TransformStream<UIMessageChunk, UIMessageChunk>({
+            transform: (chunk, controller) => {
+              if (collectUIChunks) {
+                uiChunks.push(chunk);
               }
-              break;
-            }
+              controller.enqueue(chunk);
+            },
+          })
+        )
+        .pipeTo(writable, { preventClose: true });
 
-            default: {
-              // Handle any other chunk types gracefully
-              // const exhaustiveCheck: never = partType;
-              // console.warn(`Unknown chunk type: ${partType}`);
-            }
-          }
-        },
-      })
-    )
-    .pipeThrough(
-      // Optionally collect UIMessageChunks for later conversion to UIMessage[]
-      new TransformStream<UIMessageChunk, UIMessageChunk>({
-        transform: (chunk, controller) => {
-          if (collectUIChunks) {
-            uiChunks.push(chunk);
-          }
-          controller.enqueue(chunk);
-        },
-      })
-    )
-    .pipeTo(writable, { preventClose: true });
+      const step = chunksToStep(chunks, toolCalls, conversationPrompt, finish);
 
-  const step = chunksToStep(chunks, toolCalls, conversationPrompt, finish);
-  return {
-    toolCalls,
-    finish,
-    step,
-    uiChunks: collectUIChunks ? uiChunks : undefined,
-    providerExecutedToolResults,
-  };
+      // ── Record response-time telemetry attributes on the span ──
+      if (span) {
+        const msToFinish = Date.now() - startTime;
+        const finishReason = normalizeFinishReason(finish?.finishReason);
+
+        // Extract response metadata from collected chunks
+        const responseMetadata = chunks.find(
+          (c): c is Extract<typeof c, { type: 'response-metadata' }> =>
+            c.type === 'response-metadata'
+        );
+
+        // Usage attributes (not gated)
+        const inputTokens = finish?.usage?.inputTokens?.total ?? 0;
+        const outputTokens = finish?.usage?.outputTokens?.total ?? 0;
+        const totalTokens = inputTokens + outputTokens;
+        const reasoningTokens = finish?.usage?.outputTokens?.reasoning;
+        const cachedInputTokens = finish?.usage?.inputTokens?.cacheRead;
+
+        const responseAttrs: Record<string, unknown> = {
+          // Response metadata
+          'ai.response.finishReason': finishReason,
+          'ai.response.id': responseMetadata?.id,
+          'ai.response.model': responseMetadata?.modelId,
+          ...(responseMetadata?.timestamp != null && {
+            'ai.response.timestamp':
+              responseMetadata.timestamp instanceof Date
+                ? responseMetadata.timestamp.toISOString()
+                : String(responseMetadata.timestamp),
+          }),
+
+          // Timing
+          ...(msToFirstChunk !== undefined && {
+            'ai.response.msToFirstChunk': msToFirstChunk,
+          }),
+          'ai.response.msToFinish': msToFinish,
+          ...(outputTokens > 0 &&
+            msToFinish > 0 && {
+              'ai.response.avgOutputTokensPerSecond':
+                (1000 * outputTokens) / msToFinish,
+            }),
+
+          // AI SDK usage attributes
+          'ai.usage.inputTokens': inputTokens,
+          'ai.usage.outputTokens': outputTokens,
+          'ai.usage.totalTokens': totalTokens,
+          ...(reasoningTokens != null && {
+            'ai.usage.reasoningTokens': reasoningTokens,
+          }),
+          ...(cachedInputTokens != null && {
+            'ai.usage.cachedInputTokens': cachedInputTokens,
+          }),
+
+          // gen_ai semantic convention response attributes
+          'gen_ai.response.finish_reasons': [finishReason],
+          ...(responseMetadata?.id != null && {
+            'gen_ai.response.id': responseMetadata.id,
+          }),
+          ...(responseMetadata?.modelId != null && {
+            'gen_ai.response.model': responseMetadata.modelId,
+          }),
+          'gen_ai.usage.input_tokens': inputTokens,
+          'gen_ai.usage.output_tokens': outputTokens,
+        };
+
+        // Output-gated response attributes — reuse aggregated values
+        // from chunksToStep to avoid redundant iteration over chunks.
+        if (telemetry?.recordOutputs !== false) {
+          if (step.text) {
+            responseAttrs['ai.response.text'] = step.text;
+          }
+          if (step.reasoningText) {
+            responseAttrs['ai.response.reasoning'] = step.reasoningText;
+          }
+          if (toolCalls.length > 0) {
+            responseAttrs['ai.response.toolCalls'] = JSON.stringify(toolCalls);
+          }
+        }
+
+        span.setAttributes(responseAttrs);
+      }
+
+      return {
+        toolCalls,
+        finish,
+        step,
+        uiChunks: collectUIChunks ? uiChunks : undefined,
+        providerExecutedToolResults,
+      };
+    },
+  });
 }
 
 /**

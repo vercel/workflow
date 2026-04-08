@@ -1,4 +1,4 @@
-import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 /**__internal_workflows{"steps":{"input.js":{"Service#process":{"stepId":"step//./input//Service#process"},"helper":{"stepId":"step//./input//helper"}}},"classes":{"input.js":{"Service":{"classId":"class//./input//Service"}}}}*/;
 var Service$process$helper = async (x)=>x * 2;
 (function(__wf_fn, __wf_id) {

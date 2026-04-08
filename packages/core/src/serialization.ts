@@ -445,6 +445,12 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           controller.enqueue(result.value);
         }
       },
+      cancel: async (reason) => {
+        if (this.#reader) {
+          await this.#reader.cancel(reason).catch(() => {});
+          this.#reader = undefined;
+        }
+      },
     });
   }
 }

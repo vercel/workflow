@@ -213,7 +213,7 @@ export default OutputSpecification;`}
 - Tools can use core library features like `sleep()` and Hooks within their `execute` functions
 - The agent processes tool calls iteratively until completion or `maxSteps` is reached
 - **Default `maxSteps` is unlimited** - set a value to limit the number of LLM calls
-- The `stream()` method returns `{ messages, steps, experimental_output, uiMessages }` containing the full conversation history, step details, optional structured output, and optionally accumulated UI messages
+- The `stream()` method returns `{ messages, steps, toolCalls, toolResults, experimental_output, uiMessages }` containing the full conversation history, step details, tool call details, optional structured output, and optionally accumulated UI messages
 - Use `collectUIMessages: true` to accumulate `UIMessage[]` during streaming, useful for persisting conversation state without re-reading the stream
 - The `prepareStep` callback runs before each step and can modify model, messages, generation settings, tool choice, and context
 - Generation settings (temperature, maxOutputTokens, etc.) can be set on the constructor and overridden per-stream call
@@ -841,6 +841,91 @@ async function saveConversation(messages: UIMessage[]) {
 <Callout type="info">
 The `uiMessages` property is only available when `collectUIMessages` is set to `true`. When disabled, `uiMessages` is `undefined`.
 </Callout>
+
+### Machine-Readable Tool Results
+
+`stream()` returns tool call information you can inspect programmatically. Compare `toolCalls` with `toolResults` to find unresolved tool calls that need client-side handling:
+
+```typescript lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { UIMessageChunk } from "ai";
+
+async function checkOrderStatus({ orderId }: { orderId: string }) {
+  "use step";
+  return `Order ${orderId}: shipped`;
+}
+
+async function agentWithToolInspection(userMessage: string) {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    tools: {
+      checkOrderStatus: {
+        description: "Check order status",
+        inputSchema: z.object({ orderId: z.string() }),
+        execute: checkOrderStatus,
+      },
+    },
+  });
+
+  const result = await agent.stream({
+    messages: [{ role: "user", content: userMessage }],
+    writable: getWritable<UIMessageChunk>(),
+  });
+
+  const unresolved = result.toolCalls.filter( // [!code highlight]
+    (tc) => !result.toolResults.some((tr) => tr.toolCallId === tc.toolCallId) // [!code highlight]
+  ); // [!code highlight]
+
+  if (unresolved.length > 0) {
+    return {
+      status: "needs-client-tools",
+      unresolved,
+    };
+  }
+
+  return {
+    status: "complete",
+    messages: result.messages,
+    toolResults: result.toolResults,
+  };
+}
+```
+
+<Callout type="info">
+`toolCalls` and `toolResults` reflect the *last step* of the agent loop. Tools without an `execute` function will appear in `toolCalls` but not in `toolResults`, which is how you detect calls that need client-side handling.
+</Callout>
+
+### Aborting Long-Running Streams
+
+Use `timeout` to abort a stream automatically after a fixed duration:
+
+<Callout type="warn">
+`abortSignal` is not yet supported and will be available in a future release. Use `timeout` for now.
+</Callout>
+
+```typescript lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import type { UIMessageChunk } from "ai";
+
+async function agentWithTimeout(userMessage: string) {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+  });
+
+  await agent.stream({
+    messages: [{ role: "user", content: userMessage }],
+    writable: getWritable<UIMessageChunk>(),
+    timeout: 30_000, // [!code highlight]
+  });
+}
+```
 
 ## See Also
 

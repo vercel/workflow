@@ -7,6 +7,8 @@ import {
   type QueueOptions,
   type QueuePayload,
   QueuePayloadSchema,
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
   ValidQueueName,
 } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
@@ -18,6 +20,8 @@ import { type APIConfig, getHeaders, getHttpUrl } from './utils.js';
  * CBOR-based queue transport. Encodes values with cbor-x on send and
  * decodes on receive, preserving Uint8Array values natively (workflow
  * input is a Uint8Array in specVersion >= 2).
+ *
+ * Used for specVersion >= SPEC_VERSION_CURRENT (3).
  */
 class CborTransport implements Transport<unknown> {
   readonly contentType = 'application/cbor';
@@ -35,6 +39,58 @@ class CborTransport implements Transport<unknown> {
       if (value) chunks.push(value);
     }
     return decode(Buffer.concat(chunks));
+  }
+}
+
+/**
+ * JSON-based queue transport. Used for specVersion < SPEC_VERSION_CURRENT
+ * to maintain compatibility with older deployments that expect JSON messages.
+ */
+class JsonTransport implements Transport<unknown> {
+  readonly contentType = 'application/json';
+
+  serialize(value: unknown): Buffer {
+    return Buffer.from(JSON.stringify(value));
+  }
+
+  async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+    const chunks: Uint8Array[] = [];
+    const reader = stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString());
+  }
+}
+
+/**
+ * Dual transport for the queue handler. Serializes with CBOR (handler
+ * re-enqueues target the same new deployment) but deserializes with
+ * CBOR-first, falling back to JSON for messages from older deployments.
+ */
+class DualTransport implements Transport<unknown> {
+  readonly contentType = 'application/cbor';
+
+  serialize(value: unknown): Buffer {
+    return Buffer.from(encode(value));
+  }
+
+  async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+    const chunks: Uint8Array[] = [];
+    const reader = stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    const buffer = Buffer.concat(chunks);
+    try {
+      return decode(buffer);
+    } catch {
+      return JSON.parse(buffer.toString());
+    }
   }
 }
 
@@ -113,11 +169,13 @@ export function createQueue(config?: APIConfig): Queue {
   const region = 'iad1';
 
   const cborTransport = new CborTransport();
+  const jsonTransport = new JsonTransport();
+  const dualTransport = new DualTransport();
 
   const clientOptions = {
     region,
     dispatcher: getDispatcher(),
-    transport: cborTransport,
+    transport: dualTransport,
     ...(usingProxy && {
       // final path will be /queues-proxy/api/v3/topic/...
       // and the proxy will strip the /queues-proxy prefix before forwarding to VQS
@@ -142,9 +200,17 @@ export function createQueue(config?: APIConfig): Queue {
       );
     }
 
+    // Select transport based on the target run's specVersion:
+    // CBOR for specVersion >= 3 (CBOR transport), JSON for older ones.
+    const useCbor =
+      (opts?.specVersion ?? SPEC_VERSION_CURRENT) >=
+      SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT;
+    const transport = useCbor ? cborTransport : jsonTransport;
+
     const client = new QueueClient({
       ...clientOptions,
       deploymentId,
+      transport,
     });
 
     // The CborTransport handles CBOR encoding inside serialize(),

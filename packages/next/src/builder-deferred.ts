@@ -35,9 +35,9 @@ const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
 type WorkflowManifest = import('@workflow/builders').WorkflowManifest;
 
 interface DeferredDiscoveredEntries {
-  discoveredSteps: string[];
-  discoveredWorkflows: string[];
-  discoveredSerdeFiles: string[];
+  discoveredSteps: Set<string>;
+  discoveredWorkflows: Set<string>;
+  discoveredSerdeFiles: Set<string>;
 }
 
 let CachedNextBuilderDeferred: any;
@@ -425,10 +425,10 @@ export async function getNextBuilderDeferred() {
         entryFiles: [...discoveredStepFiles, ...discoveredWorkflowFiles],
         serdeFiles: existingSerdeFileCandidates,
       });
-      const discoveredEntries = {
-        discoveredSteps: discoveredStepFiles,
-        discoveredWorkflows: discoveredWorkflowFiles,
-        discoveredSerdeFiles,
+      const discoveredEntries: DeferredDiscoveredEntries = {
+        discoveredSteps: new Set(discoveredStepFiles),
+        discoveredWorkflows: new Set(discoveredWorkflowFiles),
+        discoveredSerdeFiles: new Set(discoveredSerdeFiles),
       };
       const existingInputFiles = await this.filterExistingFiles(inputFiles);
       const buildInputFiles = Array.from(

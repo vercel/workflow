@@ -56,6 +56,10 @@ Learn more about [`WorkflowReadableStreamOptions`](/docs/api-reference/workflow-
 * All arguments must be [serializable](/docs/foundations/serialization).
 * When `deploymentId` is provided, the argument types and return type become `unknown` since there is no guarantee the workflow function's types will be consistent across different deployments.
 
+<Callout type="info">
+If `start()` throws `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`, the passed function was not transformed as a workflow. The two most common causes are a missing `"use workflow"` directive or missing framework integration. See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function).
+</Callout>
+
 ## Examples
 
 ### With Arguments

@@ -1,7 +1,7 @@
 # Agent Instructions
 
 **CRITICAL RULES:**
-- NEVER push directly to the `main` branch
+- NEVER push directly to the `main` or `stable` branches
 - Do not remove or break agent-discoverable docs sitemap behavior: keep docs/app/sitemap.md/route.ts and docs/app/[lang]/sitemap.md/route.ts, and keep the sitemap link in docs/app/[lang]/llms.mdx/[[...slug]]/route.ts.
 
 ## Overview
@@ -162,17 +162,53 @@ This project uses pnpm with workspace configuration. The required version is spe
 
 When modifying the SWC compiler plugin (`packages/swc-plugin-workflow`), you must also update the specification document at `packages/swc-plugin-workflow/spec.md` to reflect any changes to the transformation behavior.
 
-## Changesets
+## Versioning & Release Strategy
 
-- `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy - they always have the same version number
+This repository uses a dual-branch release model with [changesets](https://github.com/changesets/changesets) for version management.
+
+### Branch Model
+
+- **`main`** — Bleeding-edge / beta channel. Changesets are in pre-release mode (`beta` tag). Published packages get the `beta` npm dist-tag (e.g. `5.0.0-beta.3`).
+- **`stable`** — GA / production channel. Changesets are in regular mode. Published packages get the `latest` npm dist-tag (e.g. `4.2.1`).
+
+Both branches trigger the release workflow (`.github/workflows/release.yml`) on push. The changesets action creates a "Version Packages" PR on each branch when there are pending changesets.
+
+### Changesets
+
+- `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy — they always have the same version number
 - Every PR requires a changeset to be included before it will be merged
 - To check if one is needed, run `pnpm changeset status --since=main >/dev/null 2>&1 && echo "no changeset needed" || echo "changeset needed"`
 - Create a changeset using `pnpm changeset add`
   - All changed packages should be included in the changeset. Never include unchanged packages.
-  - All changes should be marked as "patch". Never use "major" or "minor" modes.
+  - Use the correct semver bump type: `patch` for bug fixes, `minor` for new features, `major` for breaking changes
+  - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
 - When writing changesets, use the `pnpm changeset` command from the root of the repo. Keep the changesets terse (see existing changesets for examples). Try to make changesets that are specific to each modified package so they are targeted. Ensure that any breaking changes are marked as "**BREAKING CHANGE**"
+
+### Backporting to `stable`
+
+To backport a change from `main` to `stable`, add the `backport-stable` label to the PR on `main`. A GitHub Action (`.github/workflows/backport.yml`) will automatically cherry-pick the squashed commit to `stable`. The label can be added before or after merging — the action triggers on both merge and label events. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
+
+If the cherry-pick fails due to conflicts, the action will comment on the original PR with instructions for manual resolution.
+
+### Pre-release Lifecycle
+
+The `main` branch uses changesets' [pre-release mode](https://github.com/changesets/changesets/blob/main/docs/prereleases.md) to publish beta versions.
+
+**Starting a new pre-release cycle:**
+1. Create a changeset with the desired base bump (e.g. `major` for a new major version)
+2. Enter pre-release mode: `pnpm changeset pre enter beta`
+3. Merge the "Version Packages (beta)" PR to publish the first beta
+
+**Publishing subsequent betas:**
+- Merge PRs with changesets to `main` as normal
+- Each "Version Packages (beta)" PR merge publishes the next `beta.N` increment
+
+**Graduating to stable:**
+1. (Optional) Transition to release candidates: `pnpm changeset pre enter rc` (publishes `X.Y.Z-rc.N`)
+2. Exit pre-release mode: `pnpm changeset pre exit`
+3. The next "Version Packages" PR will publish the final stable version to npm
 
 ## Common Patterns
 

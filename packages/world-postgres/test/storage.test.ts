@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Hook, Step, WorkflowRun } from '@workflow/world';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { Pool } from 'pg';
 import {
@@ -385,7 +386,7 @@ describe('Storage (Postgres integration)', () => {
           completedAt: undefined,
           createdAt: expect.any(Date),
           updatedAt: expect.any(Date),
-          specVersion: 2,
+          specVersion: SPEC_VERSION_CURRENT,
         });
       });
     });

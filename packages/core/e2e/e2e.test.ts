@@ -6,7 +6,7 @@ import {
   WorkflowRunFailedError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import type { World } from '@workflow/world';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import {
   afterAll,
   assert,
@@ -1540,11 +1540,17 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(flowRes.status).toBe(200);
-      expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
-      const flowBody = await flowRes.text();
-      expect(flowBody).toBe(
-        'Workflow SDK "/.well-known/workflow/v1/flow" endpoint is healthy'
-      );
+      expect(flowRes.headers.get('Content-Type')).toBe('application/json');
+      const flowBody = await flowRes.json();
+      expect(flowBody).toEqual({
+        healthy: true,
+        endpoint: '/.well-known/workflow/v1/flow',
+        // specVersion comes from the World's declared specVersion (e.g. 3
+        // for world-vercel) or falls back to SPEC_VERSION_CURRENT (2).
+        specVersion: expect.any(Number),
+        workflowCoreVersion: expect.any(String),
+      });
+      expect(flowBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
 
       // Test the step endpoint health check
       const stepHealthUrl = new URL(
@@ -1556,11 +1562,15 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(stepRes.status).toBe(200);
-      expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
-      const stepBody = await stepRes.text();
-      expect(stepBody).toBe(
-        'Workflow SDK "/.well-known/workflow/v1/step" endpoint is healthy'
-      );
+      expect(stepRes.headers.get('Content-Type')).toBe('application/json');
+      const stepBody = await stepRes.json();
+      expect(stepBody).toEqual({
+        healthy: true,
+        endpoint: '/.well-known/workflow/v1/step',
+        specVersion: expect.any(Number),
+        workflowCoreVersion: expect.any(String),
+      });
+      expect(stepBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
     }
   );
 
@@ -2220,6 +2230,41 @@ describe('e2e', () => {
       // WorkflowRunNotFoundError before the queue delivers.
       const returnValue = await run.returnValue;
       expect(returnValue).toBe(133);
+    }
+  );
+
+  test(
+    'getterStepWorkflow - getter functions with "use step" directive',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow tests getter functions marked with "use step".
+      // The Sensor class has custom serialization so the `this` context
+      // can be serialized across the workflow/step boundary.
+      //
+      // getterStepWorkflow(5, 3, 7) should:
+      // 1. Create Sensor(5, 3)
+      // 2. await sensor.reading -> 5 * 3 = 15 (getter step)
+      // 3. await sensor.calibrate(7) -> 5 * 3 + 7 = 22 (instance method step)
+      // 4. Create Sensor(100, 2), await sensor2.reading -> 100 * 2 = 200
+      const run = await start(await e2e('getterStepWorkflow'), [5, 3, 7]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toEqual({
+        reading: 15, // 5 * 3
+        calibrated: 22, // 5 * 3 + 7
+        reading2: 200, // 100 * 2
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toEqual({
+        reading: 15,
+        calibrated: 22,
+        reading2: 200,
+      });
     }
   );
 });

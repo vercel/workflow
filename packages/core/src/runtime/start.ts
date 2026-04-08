@@ -6,7 +6,11 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
-import { isLegacySpecVersion, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  isLegacySpecVersion,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
@@ -168,7 +172,14 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
+      // Use world-declared specVersion when available (our worlds set this),
+      // otherwise fall back to the safe baseline that community worlds handle.
+      // Community worlds built against older @workflow/world reject runs with
+      // specVersion > their SPEC_VERSION_CURRENT via requiresNewerWorld().
+      const specVersion =
+        opts.specVersion ??
+        world.specVersion ??
+        SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
       const v1Compat = isLegacySpecVersion(specVersion);
 
       // Resolve encryption key for the new run. The runId has already been
@@ -220,16 +231,21 @@ export async function start<TArgs extends unknown[], TResult>(
           {
             runId,
             traceCarrier,
-            runInput: {
-              input: workflowArguments,
-              deploymentId,
-              workflowName,
-              specVersion,
-              executionContext,
-            },
+            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+              ? {
+                  runInput: {
+                    input: workflowArguments,
+                    deploymentId,
+                    workflowName,
+                    specVersion,
+                    executionContext,
+                  },
+                }
+              : {}),
           } satisfies WorkflowInvokePayload,
           {
             deploymentId,
+            specVersion,
           }
         ),
       ]);

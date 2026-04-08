@@ -97,7 +97,9 @@ export {
 export function workflowEntrypoint(
   workflowCode: string
 ): (req: Request) => Promise<Response> {
-  const handler = getWorldHandlers().createQueueHandler(
+  const { createQueueHandler, specVersion: worldSpecVersion } =
+    getWorldHandlers();
+  const handler = createQueueHandler(
     '__wkf_workflow_',
     async (message_, metadata) => {
       // Check if this is a health check message
@@ -106,7 +108,11 @@ export function workflowEntrypoint(
       // The stream name includes a unique correlationId that must be known by the caller.
       const healthCheck = parseHealthCheckPayload(message_);
       if (healthCheck) {
-        await handleHealthCheckMessage(healthCheck, 'workflow');
+        await handleHealthCheckMessage(
+          healthCheck,
+          'workflow',
+          worldSpecVersion
+        );
         return;
       }
 
@@ -615,7 +621,7 @@ export function workflowEntrypoint(
     }
   );
 
-  return withHealthCheck(handler);
+  return withHealthCheck(handler, worldSpecVersion);
 }
 
 // this is a no-op placeholder as the client is
