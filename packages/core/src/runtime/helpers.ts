@@ -78,12 +78,13 @@ export function parseHealthCheckPayload(
 }
 
 /**
- * Generates a fake runId for health check streams.
- * This runId passes server validation but is not associated with a real run.
- * The server skips run validation for streams starting with `__health_check__`.
+ * Generates a deterministic fake runId for health check streams.
+ * Both the writer (handleHealthCheckMessage) and reader (healthCheck) derive
+ * the same runId from the correlationId so that implementations that scope
+ * stream reads by runId still work correctly.
  */
-function generateHealthCheckRunId(): string {
-  return `wrun_${generateId()}`;
+function generateHealthCheckRunId(correlationId: string): string {
+  return `wrun_hc_${correlationId}`;
 }
 
 /**
@@ -107,10 +108,9 @@ export async function handleHealthCheckMessage(
     workflowCoreVersion,
     timestamp: Date.now(),
   });
-  // Use a fake runId that passes validation.
-  // The stream name includes the correlationId for identification.
-  // The server skips run validation for health check streams.
-  const fakeRunId = generateHealthCheckRunId();
+  // Use a deterministic fake runId derived from the correlationId so that
+  // the reader side produces the same value.
+  const fakeRunId = generateHealthCheckRunId(healthCheck.correlationId);
   await world.streams.write(fakeRunId, streamName, response);
   await world.streams.close(fakeRunId, streamName);
 }
@@ -253,7 +253,7 @@ export async function healthCheck(
     while (Date.now() - startTime < timeout) {
       try {
         const stream = await world.streams.get(
-          generateHealthCheckRunId(),
+          generateHealthCheckRunId(correlationId),
           streamName
         );
         const reader = stream.getReader();
