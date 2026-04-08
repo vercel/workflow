@@ -2,6 +2,7 @@
 var obj$syncMethod = function() {
     return true;
 };
+obj$syncMethod.stepId = "step//./input//obj/syncMethod";
 // Sync functions with "use step" are allowed.
 // This enables using "use step" as a mechanism to strip Node.js-dependent
 // code from the workflow VM bundle.
@@ -18,4 +19,3 @@ export async function asyncStep(a, b) {
     return a + b;
 }
 asyncStep.stepId = "step//./input//asyncStep";
-obj$syncMethod.stepId = "step//./input//obj/syncMethod";
