@@ -259,18 +259,6 @@ export async function resumeWebhook(
   // throw the same "not found" error the world would throw for a missing
   // token. This prevents leaking that the token is valid.
   if (hook.isWebhook === false) {
-    console.error('[resumeWebhook] isWebhook check failed', {
-      token,
-      isWebhook: hook.isWebhook,
-      hookId: hook.hookId,
-      specVersion: hook.specVersion,
-      hasMetadata: hook.metadata !== undefined,
-      metadataType: typeof hook.metadata,
-      metadataKeys:
-        hook.metadata && typeof hook.metadata === 'object'
-          ? Object.keys(hook.metadata)
-          : undefined,
-    });
     throw new HookNotFoundError(token);
   }
 
