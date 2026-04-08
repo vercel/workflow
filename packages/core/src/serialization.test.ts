@@ -2264,6 +2264,7 @@ describe('step function serialization', () => {
           workflowRunId: 'test-run',
           workflowStartedAt: new Date(),
           url: 'http://localhost:3000',
+          features: { encryption: false },
         },
         ops: [],
       },

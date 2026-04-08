@@ -212,6 +212,7 @@ export async function runWorkflow(
       workflowRunId: workflowRun.runId,
       workflowStartedAt: new vmGlobalThis.Date(+startedAt),
       url,
+      features: { encryption: !!encryptionKey },
     };
 
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work

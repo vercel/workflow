@@ -34,6 +34,7 @@ import {
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
+import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -42,7 +43,6 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
-import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -510,6 +510,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
                     url: isVercel
                       ? `https://${process.env.VERCEL_URL}`
                       : `http://localhost:${port ?? 3000}`,
+                    features: { encryption: !!encryptionKey },
                   },
                   ops,
                   closureVars: hydratedInput.closureVars,
