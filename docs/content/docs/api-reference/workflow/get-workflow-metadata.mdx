@@ -37,11 +37,13 @@ The `features` object indicates which capabilities are active for the current ru
 ```typescript lineNumbers
 import { getWorkflowMetadata } from "workflow"
 
+declare function getUserProfile(userId: string): Promise<{ name: string; ssn: string }>; // @setup
+
 async function fetchUserProfile(userId: string) {
     "use step"
 
     const { features } = getWorkflowMetadata() // [!code highlight]
-    const profile = await db.getUserProfile(userId)
+    const profile = await getUserProfile(userId)
 
     if (!features.encryption) { // [!code highlight]
         // Omit sensitive fields from the return value,
