@@ -5022,8 +5022,13 @@ impl VisitMut for StepTransform {
 
                     // Add instance getter step registrations
                     // For getters, we register Object.getOwnPropertyDescriptor(ClassName.prototype, "getterName").get
-                    for (class_name, getter_name, step_id, _span) in
-                        self.instance_getter_step_registrations.drain(..)
+                    // using an inline IIFE (same pattern as other step registrations)
+                    for (class_name, getter_name, step_id, _span) in {
+                        let regs: Vec<_> =
+                            self.instance_getter_step_registrations.drain(..).collect();
+                        regs
+                    }
+                    .into_iter()
                     {
                         // Build: Object.getOwnPropertyDescriptor(ClassName.prototype, "getterName").get
                         let getter_ref = Expr::Member(MemberExpr {
@@ -5075,40 +5080,19 @@ impl VisitMut for StepTransform {
                             prop: MemberProp::Ident(IdentName::new("get".into(), DUMMY_SP)),
                         });
 
-                        let registration_call = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Call(CallExpr {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-                                    "registerStepFunction".into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                )))),
-                                args: vec![
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                            span: DUMMY_SP,
-                                            value: step_id.into(),
-                                            raw: None,
-                                        }))),
-                                    },
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(getter_ref),
-                                    },
-                                ],
-                                type_args: None,
-                            })),
-                        });
+                        let registration_call =
+                            self.create_inline_step_registration(&step_id, getter_ref);
                         module.body.push(ModuleItem::Stmt(registration_call));
                     }
 
                     // Add static getter step registrations
                     // For static getters, we register Object.getOwnPropertyDescriptor(ClassName, "getterName").get
-                    for (class_name, getter_name, step_id, _span) in
-                        self.static_getter_step_registrations.drain(..)
+                    for (class_name, getter_name, step_id, _span) in {
+                        let regs: Vec<_> =
+                            self.static_getter_step_registrations.drain(..).collect();
+                        regs
+                    }
+                    .into_iter()
                     {
                         // Build: Object.getOwnPropertyDescriptor(ClassName, "getterName").get
                         let getter_ref = Expr::Member(MemberExpr {
@@ -5153,33 +5137,8 @@ impl VisitMut for StepTransform {
                             prop: MemberProp::Ident(IdentName::new("get".into(), DUMMY_SP)),
                         });
 
-                        let registration_call = Stmt::Expr(ExprStmt {
-                            span: DUMMY_SP,
-                            expr: Box::new(Expr::Call(CallExpr {
-                                span: DUMMY_SP,
-                                ctxt: SyntaxContext::empty(),
-                                callee: Callee::Expr(Box::new(Expr::Ident(Ident::new(
-                                    "registerStepFunction".into(),
-                                    DUMMY_SP,
-                                    SyntaxContext::empty(),
-                                )))),
-                                args: vec![
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(Expr::Lit(Lit::Str(Str {
-                                            span: DUMMY_SP,
-                                            value: step_id.into(),
-                                            raw: None,
-                                        }))),
-                                    },
-                                    ExprOrSpread {
-                                        spread: None,
-                                        expr: Box::new(getter_ref),
-                                    },
-                                ],
-                                type_args: None,
-                            })),
-                        });
+                        let registration_call =
+                            self.create_inline_step_registration(&step_id, getter_ref);
                         module.body.push(ModuleItem::Stmt(registration_call));
                     }
 
