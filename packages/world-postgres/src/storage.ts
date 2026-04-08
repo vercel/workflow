@@ -385,6 +385,78 @@ export function createEventsStorage(
           runId: effectiveRunId,
         });
         currentRun = runValue ?? null;
+
+        // Resilient start: run_started on non-existent run with eventData
+        // creates the run first, so the queue can bootstrap a run that
+        // failed to create during start().
+        if (
+          data.eventType === 'run_started' &&
+          !currentRun &&
+          'eventData' in data &&
+          data.eventData
+        ) {
+          const runInputData = (data as any).eventData as {
+            deploymentId?: string;
+            workflowName?: string;
+            input?: any;
+            executionContext?: Record<string, any>;
+          };
+          if (
+            runInputData.deploymentId &&
+            runInputData.workflowName &&
+            runInputData.input !== undefined
+          ) {
+            // Create run + run_created event atomically. The
+            // transaction ensures we never have an orphaned run
+            // without its run_created event.
+            const [inserted] = await drizzle
+              .insert(Schema.runs)
+              .values({
+                runId: effectiveRunId,
+                deploymentId: runInputData.deploymentId,
+                workflowName: runInputData.workflowName,
+                specVersion: effectiveSpecVersion,
+                input: runInputData.input as SerializedContent,
+                executionContext: runInputData.executionContext as
+                  | SerializedContent
+                  | undefined,
+                status: 'pending',
+              })
+              .onConflictDoNothing()
+              .returning();
+
+            if (inserted) {
+              const runCreatedEventId = `wevt_${ulid()}`;
+              await drizzle.insert(events).values({
+                runId: effectiveRunId,
+                eventId: runCreatedEventId,
+                eventType: 'run_created',
+                eventData: {
+                  deploymentId: runInputData.deploymentId,
+                  workflowName: runInputData.workflowName,
+                  input: runInputData.input,
+                  executionContext: runInputData.executionContext,
+                },
+                specVersion: effectiveSpecVersion,
+              });
+            }
+            const createdRun = inserted;
+
+            if (createdRun) {
+              currentRun = {
+                status: 'pending',
+                specVersion: effectiveSpecVersion,
+              };
+            } else {
+              // Run already exists (concurrent run_created won the
+              // race). Re-read so downstream logic sees the real state.
+              const [runValue] = await getRunForValidation.execute({
+                runId: effectiveRunId,
+              });
+              currentRun = runValue ?? null;
+            }
+          }
+        }
       }
 
       // ============================================================
@@ -1360,6 +1432,9 @@ export function createEventsStorage(
           ? { eventData: storedEventData }
           : {}),
       };
+      // Strip eventData leaked by ...data spread for run_started events.
+      // The eventData (run input for resilient start) belongs on
+      // run_created only; storedEventData is already undefined above.
       if (data.eventType === 'run_started') {
         delete (result as any).eventData;
       }

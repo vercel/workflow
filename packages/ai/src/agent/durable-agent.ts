@@ -28,7 +28,7 @@ import {
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { getErrorMessage } from '../get-error-message.js';
 import { streamTextIterator } from './stream-text-iterator.js';
-import { recordSpan } from './telemetry.js';
+import { recordSpan, runInContext } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
 
 // Re-export for consumers
@@ -1037,6 +1037,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
           context,
           uiChunks,
           providerExecutedToolResults,
+          spanHandle,
         } = result.value;
         if (step) {
           // The step result is compatible with StepResult<TTools> since we're using the same tools
@@ -1077,18 +1078,22 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
           // If there are client-side tool calls, stop the loop and return them
           // This matches AI SDK behavior: tools without execute pause the agent loop
           if (clientSideToolCalls.length > 0) {
-            // Execute any executable tools that were also called in this step
-            const executableResults = await Promise.all(
-              executableToolCalls.map(
-                (toolCall): Promise<LanguageModelV3ToolResultPart> =>
-                  executeTool(
-                    toolCall,
-                    effectiveTools as ToolSet,
-                    iterMessages,
-                    experimentalContext,
-                    options.experimental_repairToolCall as ToolCallRepairFunction<ToolSet>,
-                    effectiveTelemetry
-                  )
+            // Execute any executable tools that were also called in this step.
+            // Wrap in the outer ai.streamText span context so ai.toolCall spans
+            // parent correctly (context doesn't propagate across yield boundaries).
+            const executableResults = await runInContext(spanHandle, () =>
+              Promise.all(
+                executableToolCalls.map(
+                  (toolCall): Promise<LanguageModelV3ToolResultPart> =>
+                    executeTool(
+                      toolCall,
+                      effectiveTools as ToolSet,
+                      iterMessages,
+                      experimentalContext,
+                      options.experimental_repairToolCall as ToolCallRepairFunction<ToolSet>,
+                      effectiveTelemetry
+                    )
+                )
               )
             );
 
@@ -1190,18 +1195,22 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
             };
           }
 
-          // Execute client tools (all have execute functions at this point)
-          const clientToolResults = await Promise.all(
-            nonProviderToolCalls.map(
-              (toolCall): Promise<LanguageModelV3ToolResultPart> =>
-                executeTool(
-                  toolCall,
-                  effectiveTools as ToolSet,
-                  iterMessages,
-                  experimentalContext,
-                  options.experimental_repairToolCall as ToolCallRepairFunction<ToolSet>,
-                  effectiveTelemetry
-                )
+          // Execute client tools (all have execute functions at this point).
+          // Wrap in the outer ai.streamText span context so ai.toolCall spans
+          // parent correctly (context doesn't propagate across yield boundaries).
+          const clientToolResults = await runInContext(spanHandle, () =>
+            Promise.all(
+              nonProviderToolCalls.map(
+                (toolCall): Promise<LanguageModelV3ToolResultPart> =>
+                  executeTool(
+                    toolCall,
+                    effectiveTools as ToolSet,
+                    iterMessages,
+                    experimentalContext,
+                    options.experimental_repairToolCall as ToolCallRepairFunction<ToolSet>,
+                    effectiveTelemetry
+                  )
+              )
             )
           );
 
@@ -1630,7 +1639,7 @@ async function executeTool(
         'ai.toolCall.args': toolCall.input,
       }),
     },
-    fn: async () => {
+    fn: async (span) => {
       try {
         // Extract execute function to avoid binding `this` to the tool object.
         // If we called `tool.execute(...)` directly, JavaScript would bind `this`
@@ -1655,6 +1664,13 @@ async function executeTool(
           : typeof toolResult === 'string'
             ? { type: 'text' as const, value: toolResult }
             : { type: 'json' as const, value: toolResult };
+
+        // Record tool result on the span (gated on recordOutputs)
+        if (span && telemetry?.recordOutputs !== false) {
+          span.setAttributes({
+            'ai.toolCall.result': JSON.stringify(output),
+          });
+        }
 
         return {
           type: 'tool-result' as const,

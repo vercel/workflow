@@ -68,23 +68,32 @@ For code samples that intentionally show errors:
 
 ## How it works
 
-1. **Extraction**: Scans MDX/MD files for fenced code blocks (```typescript, ```ts)
-2. **Import inference**: Automatically adds imports for known workflow symbols
-3. **Type checking**: Runs TypeScript compiler on each sample
+1. **Extraction**: Scans MDX/MD files for fenced `ts`, `typescript`, `js`, and `javascript` code blocks.
+2. **Filtering**: Applies `@skip-typecheck` / `@expect-error` markers and automatically skips incomplete or error-demo snippets.
+3. **Batch type checking**: Runs the remaining **TypeScript** samples in a single TypeScript program using explicit workspace `paths` mappings from `src/type-checker.ts` and shared placeholder declarations from `src/docs-globals.d.ts`.
 
-## Adding new symbols
+## What gets checked
 
-To add import inference for new symbols, edit `src/import-inference.ts`:
+The docs test suite includes:
+- `docs/content/docs/**/*.mdx`
+- `packages/*/README.md`
+
+Within those files, fenced `ts` / `typescript` samples are type-checked exactly as written. The tool does **not** auto-insert or infer imports.
+
+Fenced `js` / `javascript` samples are currently extracted by the parser, but they are not part of the verification pass yet.
+
+## Extending module resolution
+
+If a docs example needs a new package or subpath to resolve during type checking, add it to `compilerOptions.paths` in `src/type-checker.ts`.
 
 <!-- @skip-typecheck: incomplete code sample -->
 ```typescript
-const SYMBOL_IMPORTS: Record<string, ImportMapping> = {
-  // Add your symbol here
-  MyNewSymbol: { module: 'workflow' },
-  MyType: { module: 'workflow', isType: true }, // For type-only imports
-};
+paths: {
+  // existing mappings...
+  '@workflow/new-package': [path.join(repoRoot, 'packages/new-package/dist/index')],
+}
 ```
 
-## Adding placeholder types
+## Adding shared placeholder types
 
-For user-defined types/functions commonly used in docs, edit `src/docs-globals.d.ts`.
+For user-defined globals or placeholder declarations used across docs examples, update `src/docs-globals.d.ts`.

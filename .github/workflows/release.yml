@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - stable
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
@@ -66,21 +67,28 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
 
-      - name: Add latest dist-tag to published packages
+      - name: Manage npm dist-tags for published packages
         if: steps.changesets.outputs.published == 'true'
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_ELEVATED }}
         run: |
           FAILED=0
+          BRANCH="${GITHUB_REF_NAME}"
 
-          # Parse published packages and add latest tag to each
           while IFS= read -r pkg; do
             NAME=$(echo "$pkg" | jq -r '.name')
             VERSION=$(echo "$pkg" | jq -r '.version')
-            echo "Adding 'latest' dist-tag to ${NAME}@${VERSION}..."
-            if ! npm dist-tag add "${NAME}@${VERSION}" latest; then
-              echo "::error::Failed to add 'latest' dist-tag to ${NAME}@${VERSION}"
-              FAILED=1
+
+            if [ "$BRANCH" = "stable" ]; then
+              # GA releases from stable get the 'latest' dist-tag
+              echo "Adding 'latest' dist-tag to ${NAME}@${VERSION}..."
+              if ! npm dist-tag add "${NAME}@${VERSION}" latest; then
+                echo "::error::Failed to add 'latest' dist-tag to ${NAME}@${VERSION}"
+                FAILED=1
+              fi
+            else
+              # Pre-release versions from main already get the 'beta' tag from changeset publish
+              echo "Skipping 'latest' dist-tag for pre-release ${NAME}@${VERSION} (published with 'beta' tag by changesets)"
             fi
           done < <(echo '${{ steps.changesets.outputs.publishedPackages }}' | jq -c '.[]')
 
@@ -100,22 +108,31 @@ jobs:
           TITLE=$(echo "$RELEASE_JSON" | jq -r '.title')
           BODY=$(echo "$RELEASE_JSON" | jq -r '.body')
 
+          # Determine release flags based on branch
+          if [ "$GITHUB_REF_NAME" = "stable" ]; then
+            PRERELEASE="false"
+            LATEST_FLAG="--latest"
+          else
+            PRERELEASE="true"
+            LATEST_FLAG="--latest=false"
+          fi
+
           # Check if a release with this tag already exists
           if gh release view "$TAG" &>/dev/null; then
             echo "Release $TAG already exists, updating..."
             gh release edit "$TAG" \
               --title "$TITLE" \
               --notes "$BODY" \
-              --latest \
-              --prerelease=false
+              $LATEST_FLAG \
+              --prerelease=$PRERELEASE
           else
             echo "Creating new release $TAG..."
             gh release create "$TAG" \
               --target "${{ github.sha }}" \
               --title "$TITLE" \
               --notes "$BODY" \
-              --latest \
-              --prerelease=false
+              $LATEST_FLAG \
+              --prerelease=$PRERELEASE
           fi
 
       - name: Post release notes to Slack

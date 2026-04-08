@@ -1,4 +1,5 @@
 import { start } from '@workflow/core/runtime';
+import { healthCheck } from '@workflow/core/runtime/helpers';
 import type { WorkflowRun, World } from '@workflow/world';
 import { logger } from '../config/log.js';
 
@@ -57,7 +58,27 @@ export const startRun = async (
   const deploymentId = run.deploymentId;
   const workflowId = await getWorkflowName(world, workflowNameOrRunId);
 
-  const newRun = await start({ workflowId }, jsonArgs, { deploymentId });
+  // Probe the deployment's specVersion via health check so we use the
+  // correct queue transport (JSON for old deployments, CBOR for new).
+  // Falls back to the run's specVersion if the health check fails
+  // (e.g. old deployment without health check support).
+  let specVersion = run.specVersion;
+  try {
+    const hc = await healthCheck(world, 'workflow', {
+      deploymentId,
+      timeout: 10_000,
+    });
+    if (hc.healthy && hc.specVersion != null) {
+      specVersion = hc.specVersion;
+    }
+  } catch {
+    // Health check failed — use run's specVersion as fallback
+  }
+
+  const newRun = await start({ workflowId }, jsonArgs, {
+    deploymentId,
+    specVersion,
+  });
 
   if (opts.json) {
     process.stdout.write(JSON.stringify(newRun, null, 2));

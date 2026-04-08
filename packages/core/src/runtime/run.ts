@@ -87,9 +87,19 @@ export class Run<TResult> {
    */
   private encryptionKeyPromise: Promise<CryptoKey | undefined> | null = null;
 
-  constructor(runId: string) {
+  /**
+   * When true, run_created failed and the run may not exist yet (the
+   * resilient start path will create it via run_started). pollReturnValue
+   * retries on WorkflowRunNotFoundError only when this flag is set so
+   * that normal runs fail fast on 404.
+   * @internal
+   */
+  private resilientStart = false;
+
+  constructor(runId: string, opts?: { resilientStart?: boolean }) {
     this.runId = runId;
     this.world = getWorld();
+    this.resilientStart = opts?.resilientStart ?? false;
   }
 
   /**
@@ -243,6 +253,15 @@ export class Run<TResult> {
    * @returns The workflow return value.
    */
   private async pollReturnValue(): Promise<TResult> {
+    // When resilientStart is true, run_created failed and the run may
+    // not exist yet. Retry on WorkflowRunNotFoundError up to 3 times
+    // (1s + 3s + 6s = 10s total) to give the queue time to deliver
+    // and the runtime to create the run via run_started.
+    // When resilientStart is false, 404 is a real error — fail fast.
+    let notFoundRetries = 0;
+    const NOT_FOUND_MAX_RETRIES = this.resilientStart ? 3 : 0;
+    const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
+
     while (true) {
       try {
         const run = await this.world.runs.get(this.runId);
@@ -268,6 +287,15 @@ export class Run<TResult> {
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {
           await new Promise((resolve) => setTimeout(resolve, 1_000));
+          continue;
+        }
+        if (
+          WorkflowRunNotFoundError.is(error) &&
+          notFoundRetries < NOT_FOUND_MAX_RETRIES
+        ) {
+          const delay = NOT_FOUND_DELAYS[notFoundRetries]!;
+          notFoundRetries++;
+          await new Promise((resolve) => setTimeout(resolve, delay));
           continue;
         }
         throw error;

@@ -82,12 +82,49 @@ Without `--decrypt`, encrypted fields display as `🔒 Encrypted` placeholders.
 
 ## Custom World Implementations
 
-The core runtime encrypts data automatically when the `World` implementation provides a `getEncryptionKeyForRun()` method. This method receives the run ID and returns the raw encryption key bytes.
+The core runtime encrypts data automatically when the `World` implementation provides a `getEncryptionKeyForRun()` method. The core runtime can call this method in two forms:
+
+{/* @skip-typecheck - interface signature, not runnable code */}
+```typescript
+getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
+getEncryptionKeyForRun?(
+  runId: string,
+  context?: Record<string, unknown>
+): Promise<Uint8Array | undefined>;
+```
+
+Use `getEncryptionKeyForRun(run)` when the run entity already exists. Use `getEncryptionKeyForRun(runId, context?)` in runtime paths like `start()` where the run has not been created yet but the world may still need context such as `deploymentId`.
 
 To add encryption support to a custom `World`:
 
-1. Implement `getEncryptionKeyForRun(runId: string)` on your `World` class
+1. Implement `getEncryptionKeyForRun()` on your `World` class, handling both call shapes
 2. Return the raw 32-byte key as a `Uint8Array` — the core runtime uses it for AES-256-GCM operations
 3. Ensure the same key is returned for the same run ID across invocations (for decryption during replay)
+
+```typescript
+import type { WorkflowRun, World } from "@workflow/world";
+
+export const getEncryptionKeyForRun: World["getEncryptionKeyForRun"] = async (
+  run,
+  context
+) => {
+  const runId = typeof run === "string" ? run : run.runId;
+  const deploymentId =
+    typeof run === "string"
+      ? (context?.deploymentId as string | undefined)
+      : run.deploymentId;
+
+  return await lookupRunKey(runId, deploymentId);
+};
+
+async function lookupRunKey(
+  runId: string,
+  deploymentId?: string
+): Promise<Uint8Array | undefined> {
+  // Look up or derive the encryption key for this run
+  // Return undefined to skip encryption
+  return new Uint8Array(32);
+}
+```
 
 The [Vercel World](/docs/deploying/world/vercel-world) implementation uses HKDF derivation from a deployment-scoped key, but any consistent key management scheme will work.

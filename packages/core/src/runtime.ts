@@ -115,6 +115,7 @@ export function workflowEntrypoint(
         lockPreApproval,
         traceCarrier: traceContext,
         requestedAt,
+        runInput,
       } = WorkflowInvokePayloadSchema.parse(message_);
       const { requestId } = metadata;
       // Extract the workflow name from the topic name
@@ -240,7 +241,7 @@ export function workflowEntrypoint(
                 let workflowStartedAt = -1;
                 let workflowRun: WorkflowRun | undefined;
                 // Pre-loaded events from the run_started response.
-                // When present, we skip the events.list call to reduce TTFB.
+                // When present, we skip the events.list call.
                 let preloadedEvents: Event[] | undefined;
 
                 // --- Infrastructure: prepare the run state ---
@@ -258,7 +259,25 @@ export function workflowEntrypoint(
                     runId,
                     {
                       eventType: 'run_started',
-                      specVersion: SPEC_VERSION_CURRENT,
+                      // Use the spec version from the original start() call
+                      // when available, so the resilient start path creates
+                      // the run with the correct version (not always current).
+                      specVersion:
+                        runInput?.specVersion ?? SPEC_VERSION_CURRENT,
+                      // Pass run input from queue so the server can
+                      // create the run if run_created was missed.
+                      // Uint8Array values survive the queue natively
+                      // (CBOR on world-vercel, JSON reviver on world-local).
+                      ...(runInput
+                        ? {
+                            eventData: {
+                              input: runInput.input,
+                              deploymentId: runInput.deploymentId,
+                              workflowName: runInput.workflowName,
+                              executionContext: runInput.executionContext,
+                            },
+                          }
+                        : {}),
                     },
                     { requestId }
                   );
@@ -269,7 +288,7 @@ export function workflowEntrypoint(
                   }
                   workflowRun = result.run;
 
-                  // If the world returned events, use them to skip
+                  // If the response includes events, use them to skip
                   // the initial events.list call and reduce TTFB.
                   if (
                     result.preloadedEvents &&
@@ -286,13 +305,16 @@ export function workflowEntrypoint(
                 } catch (err) {
                   // Run was concurrently completed/failed/cancelled
                   if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+                    // EntityConflictError: run was concurrently
+                    // completed/failed/cancelled during setup.
+                    // RunExpiredError: run already in terminal state.
+                    // In both cases, skip processing this message.
                     runtimeLogger.info(
                       'Run already finished during setup, skipping',
                       { workflowRunId: runId, message: err.message }
                     );
                     return;
-                  }
-                  if (err instanceof WorkflowRuntimeError) {
+                  } else if (err instanceof WorkflowRuntimeError) {
                     runtimeLogger.error(
                       'Fatal runtime error during workflow setup',
                       { workflowRunId: runId, error: err.message }
@@ -323,9 +345,11 @@ export function workflowEntrypoint(
                       throw failErr;
                     }
                     return;
+                  } else {
+                    throw err;
                   }
-                  throw err;
                 }
+
                 workflowStartedAt = +workflowRun.startedAt;
 
                 span?.setAttributes({

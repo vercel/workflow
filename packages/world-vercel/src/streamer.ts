@@ -12,6 +12,12 @@ import {
   makeRequest,
 } from './utils.js';
 
+/**
+ * Maximum number of chunks per request, matching the server-side
+ * MAX_CHUNKS_PER_BATCH. Larger batches are split into multiple requests.
+ */
+export const MAX_CHUNKS_PER_REQUEST = 1000;
+
 // Streaming calls use plain fetch() without the undici dispatcher.
 // The dispatcher's retry logic doesn't apply well to streaming operations
 // (partial writes, long-lived reads), and duplex streams are incompatible
@@ -109,7 +115,12 @@ export function createStreamer(config?: APIConfig): Streamer {
           headers: httpConfig.headers,
         }
       );
-      await response.text();
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(
+          `Stream write failed: HTTP ${response.status}: ${text}`
+        );
+      }
     },
 
     async writeToStreamMulti(
@@ -127,16 +138,32 @@ export function createStreamer(config?: APIConfig): Streamer {
       // Signal to server that this is a multi-chunk batch
       httpConfig.headers.set('X-Stream-Multi', 'true');
 
-      const body = encodeMultiChunks(chunks);
-      const response = await fetch(
-        getStreamUrl(name, resolvedRunId, httpConfig),
-        {
-          method: 'PUT',
-          body,
-          headers: httpConfig.headers,
+      // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
+      // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
+      // Note: for batches spanning multiple pages, atomicity is relaxed —
+      // earlier pages may persist while a later page fails. The caller
+      // retains the full buffer on error, so chunks from successful pages
+      // will be re-sent on retry, producing duplicates. This is acceptable
+      // because the alternative (400 on all >1000 chunk flushes) is worse,
+      // and the scenario requires a network failure mid-batch.
+      for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
+        const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
+        const body = encodeMultiChunks(batch);
+        const response = await fetch(
+          getStreamUrl(name, resolvedRunId, httpConfig),
+          {
+            method: 'PUT',
+            body,
+            headers: httpConfig.headers,
+          }
+        );
+        const text = await response.text();
+        if (!response.ok) {
+          throw new Error(
+            `Stream write failed: HTTP ${response.status}: ${text}`
+          );
         }
-      );
-      await response.text();
+      }
     },
 
     async closeStream(name: string, runId: string | Promise<string>) {
@@ -152,7 +179,12 @@ export function createStreamer(config?: APIConfig): Streamer {
           headers: httpConfig.headers,
         }
       );
-      await response.text();
+      const text = await response.text();
+      if (!response.ok) {
+        throw new Error(
+          `Stream close failed: HTTP ${response.status}: ${text}`
+        );
+      }
     },
 
     async readFromStream(name: string, startIndex?: number) {
