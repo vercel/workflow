@@ -50,6 +50,8 @@ function hasQueuedEvent(events: { eventType: string }[]) {
   return events.some((event) => event.eventType === 'lock_waiter_queued');
 }
 
+const EVENT_TEST_LEASE_TTL_MS = 30_000;
+
 export function createLimitsEventsContractSuite(
   name: string,
   createHarness: () => Promise<EventsHarness>
@@ -86,28 +88,28 @@ export function createLimitsEventsContractSuite(
         ownerA.runId,
         correlationA,
         'workflow:user:test',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         2
       );
       const second = await harness.createLock(
         ownerB.runId,
         correlationB,
         'workflow:user:test',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         2
       );
       const third = await harness.createLock(
         ownerC.runId,
         correlationC,
         'workflow:user:test',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         2
       );
       const fourth = await harness.createLock(
         ownerD.runId,
         correlationD,
         'workflow:user:test',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         2
       );
 
@@ -167,21 +169,21 @@ export function createLimitsEventsContractSuite(
         holder.runId,
         holderCorrelation,
         'workflow:user:terminal-promoted',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         1
       );
       await harness.createLock(
         terminalWaiter.runId,
         terminalCorrelation,
         'workflow:user:terminal-promoted',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         1
       );
       await harness.createLock(
         liveWaiter.runId,
         liveCorrelation,
         'workflow:user:terminal-promoted',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         1
       );
 
@@ -229,21 +231,21 @@ export function createLimitsEventsContractSuite(
         failedHolder.runId,
         failedHolderCorrelation,
         'workflow:user:queue-failure',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         1
       );
       await harness.createLock(
         failedFirstWaiter.runId,
         failedFirstCorrelation,
         'workflow:user:queue-failure',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         1
       );
       await harness.createLock(
         failedSecondWaiter.runId,
         failedSecondCorrelation,
         'workflow:user:queue-failure',
-        1_000,
+        EVENT_TEST_LEASE_TTL_MS,
         1
       );
 

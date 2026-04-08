@@ -145,6 +145,10 @@ async function waitForAcquired(
   return expectAcquired(result);
 }
 
+const CONFLICT_TEST_LEASE_TTL_MS = 5_000;
+const RESEED_TEST_LEASE_TTL_MS = 200;
+const RESEED_TEST_WAIT_MS = 400;
+
 export function createLimitsContractSuite(
   name: string,
   createHarness: () => Promise<LimitsHarness>
@@ -376,7 +380,7 @@ export function createLimitsContractSuite(
             runId: 'run-a',
             lockIndex: 0,
             definition: concurrencyDefinition(1),
-            leaseTtlMs: 200,
+            leaseTtlMs: CONFLICT_TEST_LEASE_TTL_MS,
           })
         ).resolves.toMatchObject({ status: 'acquired' });
 
@@ -405,11 +409,11 @@ export function createLimitsContractSuite(
             runId: 'run-a',
             lockIndex: 0,
             definition: concurrencyDefinition(1),
-            leaseTtlMs: 200,
+            leaseTtlMs: RESEED_TEST_LEASE_TTL_MS,
           })
         ).resolves.toMatchObject({ status: 'acquired' });
 
-        await sleep(400);
+        await sleep(RESEED_TEST_WAIT_MS);
 
         await expect(
           harness.limits.acquire({
@@ -417,7 +421,7 @@ export function createLimitsContractSuite(
             runId: 'run-b',
             lockIndex: 0,
             definition: rateDefinition(1, 5_000),
-            leaseTtlMs: 200,
+            leaseTtlMs: RESEED_TEST_LEASE_TTL_MS,
           })
         ).resolves.toMatchObject({ status: 'acquired' });
       } finally {
