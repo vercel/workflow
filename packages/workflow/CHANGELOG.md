@@ -1,5 +1,27 @@
 # workflow
 
+## 5.0.0-beta.0
+
+### Major Changes
+
+- [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
+
+### Patch Changes
+
+- Updated dependencies [[`35b539b`](https://github.com/vercel/workflow/commit/35b539b146015fd63ad71e0d08614de96d34aa45), [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd)]:
+  - @workflow/next@5.0.0-beta.0
+  - @workflow/astro@5.0.0-beta.0
+  - @workflow/cli@5.0.0-beta.0
+  - @workflow/core@5.0.0-beta.0
+  - @workflow/errors@5.0.0-beta.0
+  - @workflow/nest@5.0.0-beta.0
+  - @workflow/nitro@5.0.0-beta.0
+  - @workflow/nuxt@5.0.0-beta.0
+  - @workflow/rollup@5.0.0-beta.0
+  - @workflow/sveltekit@5.0.0-beta.0
+  - @workflow/typescript-plugin@5.0.0-beta.0
+  - @workflow/utils@5.0.0-beta.0
+
 ## 4.2.0-beta.78
 
 ### Patch Changes
