@@ -1,5 +1,35 @@
 # @workflow/builders
 
+## 5.0.0-beta.0
+
+### Major Changes
+
+- [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
+
+### Patch Changes
+
+- [#1641](https://github.com/vercel/workflow/pull/1641) [`35b539b`](https://github.com/vercel/workflow/commit/35b539b146015fd63ad71e0d08614de96d34aa45) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `detect` mode to SWC plugin and use it during discovery to filter false positive directive detections
+
+- [#1644](https://github.com/vercel/workflow/pull/1644) [`372abba`](https://github.com/vercel/workflow/commit/372abba55fc6d3d9ba8f6926d38e05d7a6d99011) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix Node.js builtin imports being relativized in step bundles
+
+- Updated dependencies [[`35b539b`](https://github.com/vercel/workflow/commit/35b539b146015fd63ad71e0d08614de96d34aa45), [`bab8cdd`](https://github.com/vercel/workflow/commit/bab8cddf98e1d4ca897fbfc9cc1fb51a3333c695), [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd)]:
+  - @workflow/swc-plugin@5.0.0-beta.0
+  - @workflow/core@5.0.0-beta.0
+  - @workflow/errors@5.0.0-beta.0
+  - @workflow/utils@5.0.0-beta.0
+
+## 4.0.1-beta.69
+
+### Patch Changes
+
+- [#1552](https://github.com/vercel/workflow/pull/1552) [`f5d2aef`](https://github.com/vercel/workflow/commit/f5d2aef58ff6d655989d00e4b9a8712d856bdca0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add serde compliance checker (`analyzeSerdeCompliance`) and build-time warnings for classes with Node.js imports in workflow bundle
+
+- [#1613](https://github.com/vercel/workflow/pull/1613) [`3308701`](https://github.com/vercel/workflow/commit/3308701b341f5b4d7007d5bca97cbbb6e4af222f) Thanks [@matchai](https://github.com/matchai)! - Resolve path aliases when externalizing non-step imports
+
+- Updated dependencies [[`5f138f2`](https://github.com/vercel/workflow/commit/5f138f2ceedcc96c9d043fa36378c4de781ab55b), [`a6bcea9`](https://github.com/vercel/workflow/commit/a6bcea9d2827731040cb20f1615c5127530fc310), [`7e70d18`](https://github.com/vercel/workflow/commit/7e70d1823add7930d6df7f84e1a6a77d888eb851), [`ba916e1`](https://github.com/vercel/workflow/commit/ba916e1566acc56533e7f5fcebbb8466360e0581), [`c9b3038`](https://github.com/vercel/workflow/commit/c9b30381f4e219fdd67bb3ef358f41697ed8c3e5), [`c8dce52`](https://github.com/vercel/workflow/commit/c8dce5260627a2f349618976e8478ce03e656536), [`ab872cc`](https://github.com/vercel/workflow/commit/ab872cc9fb6c24091c8c0eeb0efa7d0cbbdf20d8)]:
+  - @workflow/core@4.2.0-beta.78
+  - @workflow/errors@4.1.0-beta.20
+
 ## 4.0.1-beta.68
 
 ### Patch Changes

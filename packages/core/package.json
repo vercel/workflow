@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "4.2.0-beta.77",
+  "version": "5.0.0-beta.0",
   "description": "Core runtime and engine for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -43,10 +43,6 @@
     "./runtime/resume-hook": {
       "types": "./dist/runtime/resume-hook.d.ts",
       "default": "./dist/runtime/resume-hook.js"
-    },
-    "./private": {
-      "types": "./dist/private.d.ts",
-      "default": "./dist/private.js"
     },
     "./class-serialization": {
       "types": "./dist/class-serialization.d.ts",

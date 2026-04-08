@@ -38,7 +38,6 @@ export function withWorkflow(
       lazyDiscovery?: boolean;
       local?: {
         port?: number;
-        dataDir?: string;
       };
     };
   } = {}

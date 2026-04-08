@@ -50,6 +50,8 @@ export {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from './spec-version.js';
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';

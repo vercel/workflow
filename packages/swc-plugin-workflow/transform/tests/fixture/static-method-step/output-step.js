@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//./input//MyService.process"},"MyService.transform":{"stepId":"step//./input//MyService.transform"}}},"classes":{"input.js":{"MyService":{"classId":"class//./input//MyService"}}}}*/;
 export class MyService {
     static async process(data) {
@@ -12,8 +11,16 @@ export class MyService {
         return 'regular';
     }
 }
-registerStepFunction("step//./input//MyService.process", MyService.process);
-registerStepFunction("step//./input//MyService.transform", MyService.transform);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(MyService.process, "step//./input//MyService.process");
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(MyService.transform, "step//./input//MyService.transform");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);

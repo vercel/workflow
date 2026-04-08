@@ -281,6 +281,21 @@ Upgrade to `workflow@4.0.1-beta.26` or later:
 workflow@latest
 ```
 
+### `start()` says it received an invalid workflow function
+
+If you see this error:
+
+```
+'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.
+```
+
+Check both of these first:
+
+1. The workflow function includes `"use workflow"`.
+2. Your `next.config.ts` is wrapped with [`withWorkflow()`](/docs/api-reference/workflow-next/with-workflow).
+
+See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function) for full examples and fixes.
+
 ## Next Steps
 
 * Learn more about the [Foundations](/docs/foundations).

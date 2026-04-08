@@ -1,8 +1,11 @@
 // Error: Can't have both directives in the same file
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"test":{"stepId":"step//./input//test"}}}}*/;
 'use workflow';
 export async function test() {
     return 42;
 }
-registerStepFunction("step//./input//test", test);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(test, "step//./input//test");

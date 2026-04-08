@@ -15,23 +15,33 @@ export type SpecVersion = number & {
   readonly [SpecVersionBrand]: typeof SpecVersionBrand;
 };
 
-/** Legacy spec version (pre-event-sourcing). Also used for runs without specVersion. */
+/**
+ * Legacy spec version (pre-event-sourcing). Also used for runs without specVersion.
+ * This is the only true legacy version — specVersion 2+ all use the event-sourced model.
+ */
 export const SPEC_VERSION_LEGACY = 1 as SpecVersion;
 
-/** Current spec version (event-sourced architecture). */
-export const SPEC_VERSION_CURRENT = 2 as SpecVersion;
+export const SPEC_VERSION_SUPPORTS_EVENT_SOURCING = 2 as SpecVersion;
+export const SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT = 3 as SpecVersion;
+
+/** Current spec version (event-sourced architecture with CBOR queue transport). */
+export const SPEC_VERSION_CURRENT =
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT as SpecVersion;
 
 /**
- * Check if a spec version is legacy (< SPEC_VERSION_CURRENT or undefined).
+ * Check if a spec version is legacy (<= SPEC_VERSION_LEGACY or undefined).
  * Legacy runs require different handling - they use direct entity mutation
  * instead of the event-sourced model.
+ *
+ * Checks against SPEC_VERSION_LEGACY (1), not SPEC_VERSION_CURRENT, so that
+ * intermediate versions (e.g. 2) are not incorrectly treated as legacy when
+ * SPEC_VERSION_CURRENT is bumped.
  *
  * @param v - The spec version number, or undefined/null for legacy runs
  * @returns true if the run is a legacy run
  */
 export function isLegacySpecVersion(v: number | undefined | null): boolean {
-  if (v === undefined || v === null) return true;
-  return v < SPEC_VERSION_CURRENT;
+  return v === undefined || v === null || v <= SPEC_VERSION_LEGACY;
 }
 
 /**
