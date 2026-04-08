@@ -40,6 +40,24 @@ async function getHookByTokenWithKey(token: string): Promise<{
   const run = await world.runs.get(hook.runId);
   const rawKey = await world.getEncryptionKeyForRun?.(run);
   const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+  if (!encryptionKey) {
+    console.warn(
+      `[getHookByTokenWithKey] No encryption key for run ${hook.runId}`,
+      {
+        hasGetEncryptionKeyForRun:
+          typeof world.getEncryptionKeyForRun === 'function',
+        rawKeyType: typeof rawKey,
+        rawKeyLength: rawKey instanceof Uint8Array ? rawKey.length : undefined,
+        deploymentId: run.deploymentId,
+        VERCEL: process.env.VERCEL,
+        VERCEL_DEPLOYMENT_ID: process.env.VERCEL_DEPLOYMENT_ID?.slice(0, 10),
+        VERCEL_DEPLOYMENT_KEY: process.env.VERCEL_DEPLOYMENT_KEY
+          ? 'set'
+          : 'unset',
+        VERCEL_PROJECT_ID: process.env.VERCEL_PROJECT_ID ? 'set' : 'unset',
+      }
+    );
+  }
   if (typeof hook.metadata !== 'undefined') {
     hook.metadata = await hydrateStepArguments(
       hook.metadata as any,
