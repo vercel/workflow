@@ -54,6 +54,7 @@ export const StructuredErrorSchema = z.object({
   message: z.string(),
   stack: z.string().optional(),
   code: z.string().optional(), // Populated with RunErrorCode values (USER_ERROR, RUNTIME_ERROR) for run_failed events
+  name: z.string().optional(), // Populated with the error class name for proper error rehydration
 });
 
 export type StructuredError = z.infer<typeof StructuredErrorSchema>;

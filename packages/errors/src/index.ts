@@ -154,13 +154,17 @@ export class WorkflowRunFailedError extends WorkflowError {
 
   constructor(runId: string, error: StructuredError) {
     // Create a proper Error instance from the StructuredError to set as cause
-    // NOTE: custom error types do not get serialized/deserialized. Everything is an Error
     const causeError = new Error(error.message);
     if (error.stack) {
       causeError.stack = error.stack;
     }
     if (error.code) {
       (causeError as any).code = error.code;
+    }
+    // Preserve the original error name so callers can identify specific error types
+    // (e.g. WorkflowNotRegisteredError) using the static .is() checks.
+    if (error.name) {
+      causeError.name = error.name;
     }
 
     super(`Workflow run "${runId}" failed: ${error.message}`, {

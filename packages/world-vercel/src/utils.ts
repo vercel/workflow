@@ -97,6 +97,7 @@ export function serializeError<T extends { error?: StructuredError }>(
         message: error.message,
         stack: error.stack,
         code: error.code,
+        name: error.name,
       }),
     } as Omit<T, 'error'> & { error: string };
   }
@@ -142,6 +143,7 @@ export function deserializeError<T extends Record<string, any>>(obj: any): T {
           message: result.data.message,
           stack: result.data.stack,
           code: errorCode ?? result.data.code,
+          name: result.data.name,
         },
       } as T;
     }
@@ -158,6 +160,7 @@ export function deserializeError<T extends Record<string, any>>(obj: any): T {
           message: parsed.message,
           stack: parsed.stack,
           code: errorCode ?? parsed.code,
+          name: parsed.name,
         },
       } as T;
     } catch {

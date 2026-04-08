@@ -627,9 +627,12 @@ describe('step-handler step not found', () => {
         eventType: 'step_failed',
         correlationId: 'step_abc',
         eventData: expect.objectContaining({
-          error: expect.stringContaining(
-            'Step "missingStep" is not registered'
-          ),
+          error: expect.objectContaining({
+            message: expect.stringContaining(
+              'Step "missingStep" is not registered'
+            ),
+            name: 'StepNotRegisteredError',
+          }),
         }),
       }),
       expect.anything()
@@ -658,7 +661,12 @@ describe('step-handler step not found', () => {
       expect.objectContaining({
         eventType: 'step_failed',
         eventData: expect.objectContaining({
-          error: expect.stringContaining('Step "badStep" is not registered'),
+          error: expect.objectContaining({
+            message: expect.stringContaining(
+              'Step "badStep" is not registered'
+            ),
+            name: 'StepNotRegisteredError',
+          }),
         }),
       }),
       expect.anything()

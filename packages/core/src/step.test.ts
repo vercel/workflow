@@ -500,6 +500,41 @@ describe('createUseStep', () => {
     expect(error?.stack).toContain('file.js:10:5');
   });
 
+  it('should preserve error name from object error in step_failed', async () => {
+    const ctx = setupWorkflowContext([
+      {
+        eventId: 'evnt_0',
+        runId: 'wrun_123',
+        eventType: 'step_failed',
+        correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
+        eventData: {
+          error: {
+            message:
+              'Step "myStep" is not registered in the current deployment.',
+            name: 'StepNotRegisteredError',
+          },
+        },
+        createdAt: new Date(),
+      },
+    ]);
+
+    const useStep = createUseStep(ctx);
+    const add = useStep('add');
+
+    let error: Error | undefined;
+    try {
+      await add(1, 2);
+    } catch (err_) {
+      error = err_ as Error;
+    }
+
+    expect(error).toBeInstanceOf(FatalError);
+    expect(error?.message).toBe(
+      'Step "myStep" is not registered in the current deployment.'
+    );
+    expect(error?.name).toBe('StepNotRegisteredError');
+  });
+
   it('should fallback to eventData.stack when error object has no stack', async () => {
     const ctx = setupWorkflowContext([
       {

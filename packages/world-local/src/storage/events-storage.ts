@@ -511,6 +511,7 @@ export function createEventsStorage(
                   : (failedData.error?.message ?? 'Unknown error'),
               stack: failedData.error?.stack,
               code: failedData.errorCode,
+              name: failedData.error?.name,
             },
             completedAt: now,
             updatedAt: now,

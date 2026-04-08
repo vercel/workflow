@@ -331,6 +331,7 @@ export function workflowEntrypoint(
                             error: {
                               message: err.message,
                               stack: err.stack,
+                              name: err.name,
                             },
                             errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
                           },
@@ -535,6 +536,7 @@ export function workflowEntrypoint(
                           error: {
                             message: errorMessage,
                             stack: errorStack,
+                            name: errorName,
                           },
                           errorCode,
                         },

@@ -744,6 +744,10 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
               message: errorMessage,
               stack: eventData.error?.stack,
               code: eventData.errorCode,
+              name:
+                typeof eventData.error === 'object'
+                  ? eventData.error?.name
+                  : undefined,
             },
             completedAt: now,
             updatedAt: now,

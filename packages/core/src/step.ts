@@ -136,6 +136,12 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             if (errorStack) {
               error.stack = errorStack;
             }
+            // Preserve the original error name so callers can identify specific
+            // error types (e.g. StepNotRegisteredError) using the static .is() checks.
+            const errorName = isErrorObject ? errorData.name : undefined;
+            if (errorName) {
+              error.name = errorName;
+            }
             reject(error);
           });
           return EventConsumerResult.Finished;
