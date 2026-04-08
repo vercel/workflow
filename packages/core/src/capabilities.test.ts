@@ -28,16 +28,16 @@ describe('getRunCapabilities', () => {
   describe('v-prefixed versions', () => {
     it('handles v-prefixed version strings', () => {
       // semver.valid() coerces "v" prefix — this is valid input
-      const { supportedFormats } = getRunCapabilities('v4.0.0');
+      const { supportedFormats } = getRunCapabilities('v4.2.0-beta.64');
       expect(supportedFormats.has(SerializationFormat.ENCRYPTED)).toBe(true);
     });
   });
 
   describe('pre-encryption versions', () => {
     it.each([
-      '3.9.9',
+      '4.1.0-beta.63',
+      '4.0.1-beta.27',
       '3.0.0',
-      '2.0.0',
     ])('%s does not support encryption', (version) => {
       const { supportedFormats } = getRunCapabilities(version);
       expect(supportedFormats.has(SerializationFormat.DEVALUE_V1)).toBe(true);
@@ -46,16 +46,14 @@ describe('getRunCapabilities', () => {
   });
 
   describe('encryption-capable versions', () => {
-    it('supports encryption at the exact cutoff version (4.0.0)', () => {
-      const { supportedFormats } = getRunCapabilities('4.0.0');
+    it('supports encryption at the exact cutoff version', () => {
+      const { supportedFormats } = getRunCapabilities('4.2.0-beta.64');
       expect(supportedFormats.has(SerializationFormat.DEVALUE_V1)).toBe(true);
       expect(supportedFormats.has(SerializationFormat.ENCRYPTED)).toBe(true);
     });
 
     it.each([
-      '4.0.1-beta.27',
-      '4.1.0-beta.63',
-      '4.2.0-beta.64',
+      '4.2.0-beta.74',
       '4.2.0',
       '5.0.0',
     ])('%s supports encryption', (version) => {
