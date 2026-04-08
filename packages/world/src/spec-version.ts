@@ -24,20 +24,9 @@ export const SPEC_VERSION_LEGACY = 1 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_EVENT_SOURCING = 2 as SpecVersion;
 export const SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT = 3 as SpecVersion;
 
-/**
- * Current **default** spec version.
- *
- * This must remain at the lowest version that ALL World implementations
- * (including community worlds) can handle.  World implementations that
- * support a higher version declare it via the `specVersion` property on
- * the World interface; `start()` reads that property and uses it instead
- * of this constant.
- *
- * Do NOT bump this constant when adding capabilities that are specific to
- * a single World (e.g., CBOR queue transport in world-vercel).
- */
+/** Current spec version (event-sourced architecture with CBOR queue transport). */
 export const SPEC_VERSION_CURRENT =
-  SPEC_VERSION_SUPPORTS_EVENT_SOURCING as SpecVersion;
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT as SpecVersion;
 
 /**
  * Check if a spec version is legacy (<= SPEC_VERSION_LEGACY or undefined).
