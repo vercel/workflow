@@ -105,7 +105,10 @@ export async function handleSuspension({
           : ((await dehydrateStepArguments(
               queueItem.metadata,
               runId,
-              encryptionKey,
+              // Don't encrypt hook metadata — the webhook handler reads it
+              // via getHookByTokenWithKey and may not have the deployment
+              // encryption key available (e.g. standalone webhook Lambda).
+              undefined,
               suspension.globalThis
             )) as SerializedData);
       return {
