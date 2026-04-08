@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   detectWorkflowPatterns,
+  shouldTransformFile,
   useStepPattern,
   useWorkflowPattern,
   workflowSerdeComputedPropertyPattern,
@@ -350,6 +351,60 @@ export default function Page() { return null; }
       const result = detectWorkflowPatterns(source);
       expect(result.hasUseWorkflow).toBe(true);
       expect(result.hasDirective).toBe(true);
+    });
+  });
+
+  describe('shouldTransformFile', () => {
+    const noPatterns = {
+      hasUseWorkflow: false,
+      hasUseStep: false,
+      hasSerdeImport: false,
+      hasSerdeSymbol: false,
+      hasDirective: false,
+      hasSerde: false,
+    };
+
+    it('excludes generated workflow route files even with directives', () => {
+      expect(
+        shouldTransformFile('/app/.well-known/workflow/v1/route.ts', {
+          ...noPatterns,
+          hasUseWorkflow: true,
+          hasDirective: true,
+        })
+      ).toBe(false);
+    });
+
+    it('transforms files with directive patterns', () => {
+      expect(
+        shouldTransformFile('/app/workflows/my-workflow.ts', {
+          ...noPatterns,
+          hasUseWorkflow: true,
+          hasDirective: true,
+        })
+      ).toBe(true);
+    });
+
+    it('transforms files with serde patterns', () => {
+      expect(
+        shouldTransformFile('/app/lib/my-class.ts', {
+          ...noPatterns,
+          hasSerdeImport: true,
+          hasSerde: true,
+        })
+      ).toBe(true);
+    });
+
+    it('transforms SDK files with serde patterns (no longer excluded)', () => {
+      expect(
+        shouldTransformFile(
+          '/app/node_modules/@workflow/core/dist/serialization.js',
+          { ...noPatterns, hasSerdeSymbol: true, hasSerde: true }
+        )
+      ).toBe(true);
+    });
+
+    it('does not transform files without directives or serde patterns', () => {
+      expect(shouldTransformFile('/app/lib/utils.ts', noPatterns)).toBe(false);
     });
   });
 });

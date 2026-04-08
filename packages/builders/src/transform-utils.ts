@@ -83,8 +83,9 @@ export function isGeneratedWorkflowFile(filePath: string): boolean {
  * Logic:
  * - Generated workflow route files are never transformed
  * - Files with directives ('use workflow' or 'use step') are always transformed
- * - Files with serde patterns are always transformed (the SWC detect mode
- *   determines whether they actually define serde classes at the AST level)
+ * - Files with serde patterns are always transformed; the SWC plugin performs
+ *   AST-level extraction/filtering to determine whether they actually define
+ *   serde classes
  *
  * @param filePath - The file path to check
  * @param patterns - The detected patterns from detectWorkflowPatterns()
