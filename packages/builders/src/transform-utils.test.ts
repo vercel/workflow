@@ -332,6 +332,26 @@ describe('transform-utils patterns', () => {
       expect(result.hasUseStep).toBe(true);
       expect(result.hasSerde).toBe(true);
     });
+
+    it('regexp detection matches directives inside template literals (false positive)', () => {
+      // detectWorkflowPatterns uses regexp and will match directive-like
+      // strings inside template literals. The discover-entries plugin
+      // handles this by using the SWC plugin manifest (AST-level) for
+      // directive discovery instead of relying on regexp alone.
+      const source = `'use client';
+const CODE_SNIPPET = \`import { sleep } from "workflow";
+
+export async function handleUserSignup(email: string) {
+  "use workflow";
+  const user = await createUser(email);
+}
+\`;
+export default function Page() { return null; }
+`;
+      const result = detectWorkflowPatterns(source);
+      expect(result.hasUseWorkflow).toBe(true);
+      expect(result.hasDirective).toBe(true);
+    });
   });
 
   describe('isWorkflowSdkFile', () => {

@@ -1,0 +1,9 @@
+  x Getters cannot be marked with "use workflow". Only static methods, functions, and object methods are supported.
+    ,-[input.js:9:1]
+  8 |       // Error: getter with "use workflow" is not allowed
+  9 | ,->   get entry() {
+ 10 | |       'use workflow';
+ 11 | |       return 'not allowed';
+ 12 | `->   }
+ 13 |     }
+    `----
