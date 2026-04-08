@@ -2232,4 +2232,39 @@ describe('e2e', () => {
       expect(returnValue).toBe(133);
     }
   );
+
+  test(
+    'getterStepWorkflow - getter functions with "use step" directive',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow tests getter functions marked with "use step".
+      // The Sensor class has custom serialization so the `this` context
+      // can be serialized across the workflow/step boundary.
+      //
+      // getterStepWorkflow(5, 3, 7) should:
+      // 1. Create Sensor(5, 3)
+      // 2. await sensor.reading -> 5 * 3 = 15 (getter step)
+      // 3. await sensor.calibrate(7) -> 5 * 3 + 7 = 22 (instance method step)
+      // 4. Create Sensor(100, 2), await sensor2.reading -> 100 * 2 = 200
+      const run = await start(await e2e('getterStepWorkflow'), [5, 3, 7]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toEqual({
+        reading: 15, // 5 * 3
+        calibrated: 22, // 5 * 3 + 7
+        reading2: 200, // 100 * 2
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toEqual({
+        reading: 15,
+        calibrated: 22,
+        reading2: 200,
+      });
+    }
+  );
 });
