@@ -238,8 +238,9 @@ export interface World extends Queue, Storage, Streamer {
    *
    * When set, `start()` creates runs at this version so world-specific
    * features (e.g., CBOR queue transport) are enabled automatically.
-   * When omitted, runs default to `SPEC_VERSION_CURRENT` (the lowest
-   * version all worlds are expected to support).
+   * When omitted, runs default to `SPEC_VERSION_SUPPORTS_EVENT_SOURCING` (2),
+   * the safe baseline that all worlds — including community worlds on
+   * older @workflow/world versions — are expected to handle.
    */
   specVersion?: number;
 
