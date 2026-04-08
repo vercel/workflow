@@ -32,28 +32,25 @@ async function testWorkflow() {
 
 ### Detecting Encryption
 
-The `features` object indicates which capabilities are active for the current run. Library authors can use `features.encryption` to conditionally handle sensitive data before passing it to steps:
+The `features` object indicates which capabilities are active for the current run. Library authors can use `features.encryption` to control whether sensitive data is included in step return values, which are serialized to the event log:
 
 ```typescript lineNumbers
 import { getWorkflowMetadata } from "workflow"
 
-async function storeUserData(data: UserData) {
+async function fetchUserProfile(userId: string) {
     "use step"
-    await db.insert(data)
-}
-
-async function processUser(data: UserData) {
-    "use workflow"
 
     const { features } = getWorkflowMetadata() // [!code highlight]
+    const profile = await db.getUserProfile(userId)
 
     if (!features.encryption) { // [!code highlight]
-        // Redact sensitive fields before passing to steps,
-        // since step inputs are serialized to the event log
-        data = redact(data)
+        // Omit sensitive fields from the return value,
+        // since it will be stored unencrypted in the event log
+        const { ssn, ...safe } = profile
+        return safe
     }
 
-    await storeUserData(data)
+    return profile
 }
 ```
 
