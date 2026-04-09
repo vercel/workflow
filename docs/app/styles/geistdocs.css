@@ -523,7 +523,7 @@
   --color-fd-primary: var(--ds-gray-1000);
 }
 
-/* ── vercel-com-visuals tokens ── */
+/* ── geist tokens (Vercel's design system) ── */
 
 :root {
   --guide-color: var(--ds-gray-400);
