@@ -424,11 +424,12 @@ export abstract class BaseBuilder {
     ).catch(() => undefined);
 
     // These need to handle watching for dev to scan for
-    // new entries and changes to existing ones
-    const discoveryInputs = [...inputFiles];
-    if (resolvedWorkflowRuntime) {
-      discoveryInputs.push(resolvedWorkflowRuntime);
-    }
+    // new entries and changes to existing ones.
+    // Pass inputFiles directly when no extra entries are needed to
+    // preserve the array reference for discoverEntries() WeakMap caching.
+    const discoveryInputs = resolvedWorkflowRuntime
+      ? [...inputFiles, resolvedWorkflowRuntime]
+      : inputFiles;
     const discovered =
       discoveredEntries ??
       (await this.discoverEntries(
