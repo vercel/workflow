@@ -1,8 +1,8 @@
 ---
 title: getWorld
-description: Access the World instance for low-level storage, queuing, and streaming operations.
+description: Async function that resolves the World instance for low-level storage, queuing, and streaming operations.
 type: reference
-summary: Use getWorld to access low-level workflow storage, queuing, and streaming backends directly.
+summary: Async function that resolves the World instance for low-level workflow storage, queuing, and streaming backends.
 prerequisites:
   - /docs/deploying
 ---
@@ -79,7 +79,7 @@ export async function GET(req: Request) {
   const cursor = url.searchParams.get("cursor") ?? undefined;
 
   try {
-    const world = getWorld(); // [!code highlight]
+    const world = await getWorld(); // [!code highlight]
     const runs = await world.runs.list({
       pagination: { cursor },
       resolveData: "none",

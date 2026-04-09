@@ -21,7 +21,7 @@ keywords:
   - stream lifecycle
 ---
 
-Stream methods live on `world.streams` (the `streams` sub-object of the `world` object returned by `getWorld()`). Use them to write chunks, read streams, and manage stream lifecycle outside of the standard `getWritable()` pattern.
+Stream methods live on `world.streams` (the `streams` sub-object of the `World` instance returned by `await getWorld()`). Use them to write chunks, read streams, and manage stream lifecycle outside of the standard `getWritable()` pattern.
 
 <Callout type="info">
   For most streaming use cases, use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside steps. Direct stream methods are for advanced scenarios like building custom stream consumers or managing streams from outside a workflow.
