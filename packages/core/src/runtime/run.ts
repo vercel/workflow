@@ -114,7 +114,6 @@ export class Run<TResult> {
 
   constructor(runId: string, opts?: { resilientStart?: boolean }) {
     this.runId = runId;
-    this.#worldPromise = getWorld();
     this.#resilientStart = opts?.resilientStart ?? false;
   }
 
