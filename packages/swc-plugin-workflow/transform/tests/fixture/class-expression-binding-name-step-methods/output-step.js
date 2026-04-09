@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 // Test class expression where binding name differs from internal class name
 // AND the class has step methods (instance + static).
 // The registration code must reference the binding name (LanguageModel),
@@ -31,8 +30,16 @@ var LanguageModel = class _LanguageModel {
     }
 };
 export { LanguageModel };
-registerStepFunction("step//./input//LanguageModel.generate", LanguageModel.generate);
-registerStepFunction("step//./input//LanguageModel#doStream", LanguageModel.prototype["doStream"]);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(LanguageModel.generate, "step//./input//LanguageModel.generate");
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(LanguageModel.prototype["doStream"], "step//./input//LanguageModel#doStream");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);

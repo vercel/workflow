@@ -111,7 +111,11 @@ export function workflowEntrypoint(
         // The stream name includes a unique correlationId that must be known by the caller.
         const healthCheck = parseHealthCheckPayload(message_);
         if (healthCheck) {
-          await handleHealthCheckMessage(healthCheck, 'workflow');
+          await handleHealthCheckMessage(
+            healthCheck,
+            'workflow',
+            worldHandlers.specVersion
+          );
           return;
         }
 
@@ -305,7 +309,10 @@ export function workflowEntrypoint(
                     }
                   } catch (err) {
                     // Run was concurrently completed/failed/cancelled
-                    if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+                    if (
+                      EntityConflictError.is(err) ||
+                      RunExpiredError.is(err)
+                    ) {
                       // EntityConflictError: run was concurrently
                       // completed/failed/cancelled during setup.
                       // RunExpiredError: run already in terminal state.

@@ -2,7 +2,6 @@
 // This exercises the rewrite path where has_serde=false but has_step_methods=true.
 // The plugin should still rewrite to a const declaration so registration code
 // can reference the class at module scope.
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"__DefaultClass#process":{"stepId":"step//./input//__DefaultClass#process"},"__DefaultClass#validate":{"stepId":"step//./input//__DefaultClass#validate"}}},"classes":{"input.js":{"__DefaultClass":{"classId":"class//./input//__DefaultClass"}}}}*/;
 const __DefaultClass = class {
     constructor(config){
@@ -22,8 +21,16 @@ const __DefaultClass = class {
     }
 };
 export default __DefaultClass;
-registerStepFunction("step//./input//__DefaultClass#process", __DefaultClass.prototype["process"]);
-registerStepFunction("step//./input//__DefaultClass#validate", __DefaultClass.prototype["validate"]);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(__DefaultClass.prototype["process"], "step//./input//__DefaultClass#process");
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(__DefaultClass.prototype["validate"], "step//./input//__DefaultClass#validate");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);

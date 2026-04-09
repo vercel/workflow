@@ -1,0 +1,84 @@
+name: Backport to stable
+
+on:
+  pull_request:
+    types: [closed, labeled]
+    branches: [main]
+
+concurrency: backport-stable
+
+jobs:
+  backport:
+    name: Backport to stable
+    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'backport-stable')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Generate GitHub App Token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Configure Git identity
+        run: |
+          git config user.name "${{ steps.app-token.outputs.app-slug }}[bot]"
+          git config user.email "${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
+
+      - name: Cherry-pick to stable
+        id: cherry-pick
+        run: |
+          git checkout stable
+          git cherry-pick ${{ github.event.pull_request.merge_commit_sha }} --no-edit
+          echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git push origin stable
+
+      - name: Comment on success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const originalSha = '${{ github.event.pull_request.merge_commit_sha }}'.slice(0, 7);
+            const cherryPickSha = '${{ steps.cherry-pick.outputs.cherry_pick_sha }}'.slice(0, 7);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `Backported to \`stable\` (${originalSha} -> ${cherryPickSha}).`
+            });
+
+      - name: Comment on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            const sha = '${{ github.event.pull_request.merge_commit_sha }}';
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: [
+                '**Backport to `stable` failed** — the cherry-pick could not be applied cleanly.',
+                '',
+                'To resolve manually:',
+                '```bash',
+                'git fetch origin stable',
+                'git checkout stable',
+                `git cherry-pick ${sha}`,
+                '# Fix conflicts, then:',
+                'git cherry-pick --continue',
+                'git push origin stable',
+                '```'
+              ].join('\n')
+            });

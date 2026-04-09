@@ -34,6 +34,7 @@ import {
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
+import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -57,7 +58,11 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
       // The stream name includes a unique correlationId that must be known by the caller.
       const healthCheck = parseHealthCheckPayload(message_);
       if (healthCheck) {
-        await handleHealthCheckMessage(healthCheck, 'step');
+        await handleHealthCheckMessage(
+          healthCheck,
+          'step',
+          worldHandlers.specVersion
+        );
         return;
       }
 

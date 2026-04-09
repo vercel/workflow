@@ -125,7 +125,7 @@ export const createWorld = async (): Promise<World> => {
   );
 };
 
-export type WorldHandlers = Pick<World, 'createQueueHandler'>;
+export type WorldHandlers = Pick<World, 'createQueueHandler' | 'specVersion'>;
 
 /**
  * Some functions from the world are needed at build time, but we do NOT want
@@ -152,6 +152,7 @@ export const getWorldHandlers = async (): Promise<WorldHandlers> => {
   globalSymbols[StubbedWorldCache] = _world;
   return {
     createQueueHandler: _world.createQueueHandler,
+    specVersion: _world.specVersion,
   };
 };
 

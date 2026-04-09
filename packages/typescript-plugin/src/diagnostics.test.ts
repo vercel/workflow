@@ -72,8 +72,8 @@ describe('getCustomDiagnostics', () => {
     });
   });
 
-  describe('Error 9002: Step function must be async', () => {
-    it('warns when step function is not async', () => {
+  describe('Sync step functions are allowed (no error 9002)', () => {
+    it('does not warn when step function is sync', () => {
       const source = `
         function myStep() {
           'use step';
@@ -84,10 +84,7 @@ describe('getCustomDiagnostics', () => {
       const { program } = createTestProgram(source);
       const diagnostics = getCustomDiagnostics('test.ts', program, ts);
 
-      expectDiagnostic(diagnostics, {
-        code: 9002,
-        messageIncludes: 'async',
-      });
+      expectNoDiagnostic(diagnostics, 9002);
     });
 
     it('does not warn when step function is async', () => {

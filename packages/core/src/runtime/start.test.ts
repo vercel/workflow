@@ -1,5 +1,10 @@
 import { WorkflowRuntimeError, WorkflowWorldError } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT, SPEC_VERSION_LEGACY } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+} from '@workflow/world';
 import {
   afterEach,
   beforeEach,
@@ -10,8 +15,8 @@ import {
   vi,
 } from 'vitest';
 import type { Run } from './run.js';
-import { start } from './start.js';
 import type { WorkflowFunction } from './start.js';
+import { start } from './start.js';
 import { getWorld } from './world.js';
 
 // Mock @vercel/functions
@@ -109,10 +114,34 @@ describe('start', () => {
       vi.clearAllMocks();
     });
 
-    it('should use SPEC_VERSION_CURRENT when specVersion is not provided', async () => {
+    it('should use world.specVersion when available, falling back to SPEC_VERSION_SUPPORTS_EVENT_SOURCING', async () => {
       const validWorkflow = Object.assign(() => Promise.resolve('result'), {
         workflowId: 'test-workflow',
       });
+
+      // Mock world without specVersion → falls back to safe baseline (v2)
+      await start(validWorkflow, []);
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+        }),
+        expect.objectContaining({
+          v1Compat: false,
+        })
+      );
+
+      vi.clearAllMocks();
+
+      // Mock world with specVersion 3 → uses it
+      vi.mocked(getWorld).mockReturnValue({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
 
       await start(validWorkflow, []);
 
@@ -408,6 +437,8 @@ describe('start', () => {
       const mockEventsCreate = vi.fn().mockRejectedValue(serverError);
 
       vi.mocked(getWorld).mockReturnValue({
+        // World declares specVersion 3 to enable CBOR queue transport + runInput
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -423,7 +454,9 @@ describe('start', () => {
       expect(queuePayload.runInput).toBeDefined();
       expect(queuePayload.runInput.deploymentId).toBe('deploy_123');
       expect(queuePayload.runInput.workflowName).toBe('test-workflow');
-      expect(queuePayload.runInput.specVersion).toBe(SPEC_VERSION_CURRENT);
+      expect(queuePayload.runInput.specVersion).toBe(
+        SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+      );
     });
 
     it('should throw when queue fails even if events.create succeeds', async () => {
