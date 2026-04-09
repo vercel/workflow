@@ -1164,6 +1164,60 @@ const obj = {
 
 **Client mode**: Same as step mode — the getter body is hoisted for `stepId` assignment, original getter preserved.
 
+### Private member dead code elimination
+
+In workflow mode, after stripping `"use step"` methods and getters from a class body, the plugin eliminates private class members that are no longer referenced by any remaining (non-private) member. This applies to both:
+
+- **JS native private members**: `#field`, `#method()` (`ClassMember::PrivateMethod`, `ClassMember::PrivateProp`)
+- **TypeScript `private` members**: `private field`, `private method()` (`ClassMethod`/`ClassProp` with `accessibility: Private`)
+
+The algorithm is iterative: references are first collected from all public members, then the referenced set is expanded by scanning surviving private members' bodies for cross-references, repeating until the set stabilizes. This enables cascading elimination — a private field only referenced by a private method that is itself unreferenced will also be removed.
+
+Input:
+```typescript
+export class Run {
+  static [WORKFLOW_SERIALIZE](instance) { return { id: instance.id }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new Run(data.id); }
+
+  id: string;
+  private encryptionKeyPromise: Promise<any> | null = null;
+
+  private async getEncryptionKey() {
+    if (!this.encryptionKeyPromise) {
+      this.encryptionKeyPromise = importKey(this.id);
+    }
+    return this.encryptionKeyPromise;
+  }
+
+  constructor(id: string) { this.id = id; }
+
+  get value(): Promise<any> {
+    'use step';
+    return this.getEncryptionKey().then(() => getWorld().get(this.id));
+  }
+}
+```
+
+Workflow output:
+```javascript
+export class Run {
+  static [WORKFLOW_SERIALIZE](instance) { return { id: instance.id }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new Run(data.id); }
+  id;
+  // private encryptionKeyPromise — ELIMINATED (only referenced by getEncryptionKey)
+  // private getEncryptionKey()   — ELIMINATED (only referenced by stripped getter)
+  constructor(id) { this.id = id; }
+}
+// getter replaced with step proxy
+var __step_Run$value = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id");
+Object.defineProperty(Run.prototype, "value", {
+  get() { return __step_Run$value.call(this); },
+  configurable: true, enumerable: false
+});
+```
+
+This optimization is critical for SDK classes like `Run` where private helper methods reference Node.js-only imports (encryption, world access, etc.) — eliminating them allows the downstream module-level DCE to also remove those imports from the workflow bundle.
+
 ---
 
 ## Parameter Handling
