@@ -293,6 +293,7 @@ export async function executeStep(
               url: isVercel
                 ? `https://${process.env.VERCEL_URL}`
                 : `http://localhost:${port ?? 3000}`,
+              features: { encryption: !!encryptionKey },
             },
             ops,
             closureVars: hydratedInput.closureVars,

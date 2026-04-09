@@ -10,7 +10,15 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
-import { dirname, extname, isAbsolute, join, resolve } from 'node:path';
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from 'node:path';
 import {
   createSocketServer,
   type SocketIO,
@@ -34,6 +42,7 @@ export async function getNextBuilderDeferred() {
     WORKFLOW_QUEUE_TRIGGER,
     detectWorkflowPatterns,
     applySwcTransform,
+    resolveWorkflowAliasRelativePath,
     // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
   } = (await eval(
     'import("@workflow/builders")'
@@ -1190,6 +1199,49 @@ export async function getNextBuilderDeferred() {
       }
 
       return Array.from(relativeSpecifiers);
+    }
+
+    private async getRelativeFilenameForSwc(filePath: string): Promise<string> {
+      const workingDir = this.config.workingDir;
+      const normalizedWorkingDir = workingDir
+        .replace(/\\/g, '/')
+        .replace(/\/$/, '');
+      const normalizedFilepath = filePath.replace(/\\/g, '/');
+
+      // Windows fix: Use case-insensitive comparison to work around drive letter casing issues.
+      const lowerWd = normalizedWorkingDir.toLowerCase();
+      const lowerPath = normalizedFilepath.toLowerCase();
+
+      let relativeFilename: string;
+      if (lowerPath.startsWith(`${lowerWd}/`)) {
+        relativeFilename = normalizedFilepath.substring(
+          normalizedWorkingDir.length + 1
+        );
+      } else if (lowerPath === lowerWd) {
+        relativeFilename = '.';
+      } else {
+        relativeFilename = relative(workingDir, filePath).replace(/\\/g, '/');
+        if (relativeFilename.startsWith('../')) {
+          const aliasedRelativePath = await resolveWorkflowAliasRelativePath(
+            filePath,
+            workingDir
+          );
+          if (aliasedRelativePath) {
+            relativeFilename = aliasedRelativePath;
+          } else {
+            relativeFilename = relativeFilename
+              .split('/')
+              .filter((part) => part !== '..')
+              .join('/');
+          }
+        }
+      }
+
+      if (relativeFilename.includes(':') || relativeFilename.startsWith('/')) {
+        relativeFilename = basename(normalizedFilepath);
+      }
+
+      return relativeFilename;
     }
 
     private shouldSkipTransitiveStepFile(filePath: string): boolean {
