@@ -1,4 +1,5 @@
 import { createLimitsNotImplementedError, type World } from '@workflow/world';
+import { SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT } from '@workflow/world';
 import { createGetEncryptionKeyForRun } from './encryption.js';
 import { instrumentObject } from './instrumentObject.js';
 import { createQueue } from './queue.js';
@@ -35,6 +36,7 @@ export function createVercelWorld(config?: APIConfig): World {
         throw createLimitsNotImplementedError();
       },
     },
+    specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
     ...createQueue(config),
     ...createStorage(config),
     ...instrumentObject('world.streams', createStreamer(config)),

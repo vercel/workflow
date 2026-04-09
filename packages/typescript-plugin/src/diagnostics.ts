@@ -117,8 +117,6 @@ export function getCustomDiagnostics(
           const functionName = node.name.text;
           workflowFunctions.set(functionName, node);
         }
-      } else if (directive === 'use step') {
-        checkStepFunction(node);
       }
     }
 
@@ -221,22 +219,6 @@ export function getCustomDiagnostics(
     ];
 
     return httpMethods.includes(functionName);
-  }
-
-  function checkStepFunction(node: FunctionLikeDeclaration) {
-    // Ensure it's async
-    if (!isAsyncFunction(node, typeChecker, ts)) {
-      const start = node.getStart(sourceFile);
-      const length = node.getWidth(sourceFile);
-      diagnostics.push({
-        file: sourceFile,
-        start,
-        length,
-        messageText: 'Step functions must be async or return a Promise',
-        category: ts.DiagnosticCategory.Error,
-        code: 9002,
-      });
-    }
   }
 
   function checkDisallowedApiUsage(call: CallExpression) {

@@ -57,7 +57,6 @@ export async function getNextBuilderDeferred() {
     applySwcTransform,
     detectWorkflowPatterns,
     getImportPath,
-    isWorkflowSdkFile,
     resolveWorkflowAliasRelativePath,
     // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
   } = (await eval(
@@ -274,23 +273,21 @@ export async function getNextBuilderDeferred() {
             }
 
             if (!validatePatterns) {
-              const isSdkFile = isWorkflowSdkFile(filePath);
               return {
                 filePath,
                 hasUseWorkflow: candidates.hasWorkflowCandidate,
                 hasUseStep: candidates.hasStepCandidate,
-                hasSerde: candidates.hasSerdeCandidate && !isSdkFile,
+                hasSerde: candidates.hasSerdeCandidate,
               };
             }
 
             const source = await readFile(filePath, 'utf-8');
             const patterns = detectWorkflowPatterns(source);
-            const isSdkFile = isWorkflowSdkFile(filePath);
             return {
               filePath,
               hasUseWorkflow: patterns.hasUseWorkflow,
               hasUseStep: patterns.hasUseStep,
-              hasSerde: patterns.hasSerde && !isSdkFile,
+              hasSerde: patterns.hasSerde,
             };
           } catch {
             return null;
@@ -1585,9 +1582,9 @@ export async function getNextBuilderDeferred() {
           )
         )
       ).sort();
-      // Intentionally re-validate serde seeds against source + SDK filtering.
+      // Intentionally re-validate serde seeds against source patterns.
       // This keeps previously discovered/manual seed entries from sticking when
-      // files no longer match serde patterns or resolve to SDK internals.
+      // files no longer match serde patterns.
       const discoveredSerdeFiles = new Set<string>();
       const queuedFiles = Array.from(
         new Set([...normalizedEntryFiles, ...normalizedSerdeSeedFiles])
@@ -1631,7 +1628,7 @@ export async function getNextBuilderDeferred() {
 
       for (const serdeSeedFile of normalizedSerdeSeedFiles) {
         const seedPatterns = await getPatterns(serdeSeedFile);
-        if (seedPatterns?.hasSerde && !isWorkflowSdkFile(serdeSeedFile)) {
+        if (seedPatterns?.hasSerde) {
           discoveredSerdeFiles.add(serdeSeedFile);
         }
       }
@@ -1665,16 +1662,49 @@ export async function getNextBuilderDeferred() {
           }
 
           const importPatterns = await getPatterns(resolvedImportPath);
-          if (
-            importPatterns?.hasSerde &&
-            !isWorkflowSdkFile(resolvedImportPath)
-          ) {
+          if (importPatterns?.hasSerde) {
             discoveredSerdeFiles.add(resolvedImportPath);
           }
         }
       }
 
-      return Array.from(discoveredSerdeFiles).sort();
+      // AST-level verification: run SWC detect mode on regex-matched candidates
+      // to confirm they actually define serde classes. This prevents SDK internal
+      // files (which match serde regex patterns but define no classes) from being
+      // bundled into the workflow sandbox.
+      const projectRoot = this.config.projectRoot || this.config.workingDir;
+      const verifiedSerdeFiles: string[] = [];
+      await Promise.all(
+        Array.from(discoveredSerdeFiles).map(async (filePath) => {
+          const source = await getSource(filePath);
+          if (!source) return;
+          try {
+            const relativeFilename =
+              await this.getRelativeFilenameForSwc(filePath);
+            const { workflowManifest } = await applySwcTransform(
+              relativeFilename,
+              source,
+              'detect',
+              filePath,
+              projectRoot
+            );
+            // Only include files that actually define serde classes
+            const hasClasses =
+              workflowManifest.classes &&
+              Object.values(workflowManifest.classes).some(
+                (entries) => Object.keys(entries).length > 0
+              );
+            if (hasClasses) {
+              verifiedSerdeFiles.push(filePath);
+            }
+          } catch {
+            // If detect fails, include the file to be safe
+            verifiedSerdeFiles.push(filePath);
+          }
+        })
+      );
+
+      return verifiedSerdeFiles.sort();
     }
 
     private async createResponseBuiltinsStepFile({

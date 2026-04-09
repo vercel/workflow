@@ -89,7 +89,7 @@ Note: File extensions are stripped from local paths for cleaner IDs.
 
 ## Step Mode
 
-In step mode, step function bodies are kept intact and registered using `registerStepFunction` from `workflow/internal/private`. Workflow functions throw an error if called directly (since they should only run in the workflow runtime).
+In step mode, step function bodies are kept intact and registered using an inline IIFE that stores them in a global registry via `Symbol.for("@workflow/core//registeredSteps")`, with no module imports. Workflow functions throw an error if called directly (since they should only run in the workflow runtime).
 
 ### Basic Step Function
 
@@ -103,12 +103,15 @@ export async function add(a, b) {
 
 Output:
 ```javascript
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//./input//add"}}}}*/;
 export async function add(a, b) {
     return a + b;
 }
-registerStepFunction("step//./input//add", add);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(add, "step//./input//add");
 ```
 
 ### Arrow Function Step
@@ -123,12 +126,15 @@ export const multiply = async (a, b) => {
 
 Output:
 ```javascript
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"multiply":{"stepId":"step//./input//multiply"}}}}*/;
 export const multiply = async (a, b) => {
     return a * b;
 };
-registerStepFunction("step//./input//multiply", multiply);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(multiply, "step//./input//multiply");
 ```
 
 ### Workflow Functions in Step Mode
@@ -172,7 +178,6 @@ export async function example(a, b) {
 
 Output:
 ```javascript
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"workflows":{"input.js":{"example":{"workflowId":"workflow//./input//example"}}},"steps":{"input.js":{"innerStep":{"stepId":"step//./input//innerStep"}}}}*/;
 async function example$innerStep(x, y) {
     return x + y;
@@ -181,7 +186,11 @@ export async function example(a, b) {
     throw new Error("You attempted to execute workflow example function directly. To start a workflow, use start(example) from workflow/api");
 }
 example.workflowId = "workflow//./input//example";
-registerStepFunction("step//./input//example/innerStep", example$innerStep);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(example$innerStep, "step//./input//example/innerStep");
 ```
 
 ### Steps in Nested Object Properties
@@ -206,7 +215,6 @@ export const vade = agent({
 
 Output (Step Mode):
 ```javascript
-import { registerStepFunction } from "workflow/internal/private";
 import { agent } from "experimental-agent";
 /**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
 var vade$tools$VercelRequest$execute = async function(input, ctx) {
@@ -219,7 +227,11 @@ export const vade = agent({
         }
     }
 });
-registerStepFunction("step//./input//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(vade$tools$VercelRequest$execute, "step//./input//vade/tools/VercelRequest/execute");
 ```
 
 Note: Step functions are hoisted as regular function expressions (not arrow functions) to preserve `this` binding when called with `.call()` or `.apply()`. This applies even when the original step function was defined as an arrow function.
@@ -254,7 +266,7 @@ export const vade = agent({
 vade$tools$VercelRequest$execute.stepId = "step//./input//vade/tools/VercelRequest/execute";
 ```
 
-Note: In client mode, nested object property step functions are hoisted and have `stepId` set directly (no `registerStepFunction` call). The original call site is replaced with a reference to the hoisted variable, same as step mode.
+Note: In client mode, nested object property step functions are hoisted and have `stepId` set directly via inline property assignment. Step mode also uses inline registration (no import) via a self-contained IIFE. The original call site is replaced with a reference to the hoisted variable in both modes.
 
 Note: The step ID includes the full path through nested objects (`vade/tools/VercelRequest/execute`), while the hoisted variable name uses `$` as the separator (`vade$tools$VercelRequest$execute`) to create a valid JavaScript identifier.
 
@@ -280,7 +292,6 @@ export const vade = agent({
 
 Output (Step Mode):
 ```javascript
-import { registerStepFunction } from "workflow/internal/private";
 import { agent } from "experimental-agent";
 /**__internal_workflows{"steps":{"input.js":{"vade/tools/VercelRequest/execute":{"stepId":"step//./input//vade/tools/VercelRequest/execute"}}}}*/;
 var vade$tools$VercelRequest$execute = async function(input, { experimental_context }) {
@@ -293,14 +304,18 @@ export const vade = agent({
         }
     }
 });
-registerStepFunction("step//./input//vade/tools/VercelRequest/execute", vade$tools$VercelRequest$execute);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(vade$tools$VercelRequest$execute, "step//./input//vade/tools/VercelRequest/execute");
 ```
 
 Note: Shorthand methods are hoisted as regular function expressions (not arrow functions) to preserve `this` binding when called with `.call()` or `.apply()`. Closure variables are handled the same way as other step functions.
 
 ### Closure Variables
 
-When nested steps capture closure variables, they are extracted using `__private_getClosureVars()`. Closure variable detection recursively walks the step function body — including nested function, arrow, method, getter/setter, and class bodies — and collects identifiers that are not parameters, local declarations, known globals, module-level imports, or module-level declarations. TypeScript expression wrappers (`as`, `satisfies`, `!`, type assertions, `const` assertions, instantiation expressions) are traversed to reach the inner expression. Module-level imports and declarations (functions, variables, classes) are excluded since they are available directly in the step bundle and should not be serialized as closure values:
+When nested steps capture closure variables, they are extracted using an inline IIFE that reads from the workflow step context storage via `Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")`. Closure variable detection recursively walks the step function body — including nested function, arrow, method, getter/setter, and class bodies — and collects identifiers that are not parameters, local declarations, known globals, module-level imports, or module-level declarations. TypeScript expression wrappers (`as`, `satisfies`, `!`, type assertions, `const` assertions, instantiation expressions) are traversed to reach the inner expression. Module-level imports and declarations (functions, variables, classes) are excluded since they are available directly in the step bundle and should not be serialized as closure values:
 
 Input:
 ```javascript
@@ -314,10 +329,13 @@ function wrapper(multiplier) {
 
 Output:
 ```javascript
-import { __private_getClosureVars, registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"}}}}*/;
 var wrapper$_anonymousStep0 = async () => {
-    const { multiplier } = __private_getClosureVars();
+    const { multiplier } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return 10 * multiplier;
 };
 function wrapper(multiplier) {
@@ -325,10 +343,14 @@ function wrapper(multiplier) {
         return 10 * multiplier;
     };
 }
-registerStepFunction("step//./input//wrapper/_anonymousStep0", wrapper$_anonymousStep0);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(wrapper$_anonymousStep0, "step//./input//wrapper/_anonymousStep0");
 ```
 
-Note: The hoisted copy (`wrapper$_anonymousStep0`) uses `__private_getClosureVars()` for workflow-driven execution, while the original function body is preserved in `wrapper()` with the directive stripped. This allows the enclosing function to work correctly when called directly (non-workflow), since JavaScript's normal closure semantics naturally capture `multiplier`.
+Note: The hoisted copy (`wrapper$_anonymousStep0`) uses an inline IIFE to extract closure variables from the workflow step context for workflow-driven execution, while the original function body is preserved in `wrapper()` with the directive stripped. This allows the enclosing function to work correctly when called directly (non-workflow), since JavaScript's normal closure semantics naturally capture `multiplier`.
 
 ### Instance Method Step
 
@@ -357,7 +379,6 @@ export class Counter {
 
 Output:
 ```javascript
-import { registerStepFunction } from "workflow/internal/private";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 /**__internal_workflows{"steps":{"input.js":{"Counter#add":{"stepId":"step//./input//Counter#add"}}},"classes":{"input.js":{"Counter":{"classId":"class//./input//Counter"}}}}*/;
 export class Counter {
@@ -374,7 +395,11 @@ export class Counter {
         return this.value + amount;
     }
 }
-registerStepFunction("step//./input//Counter#add", Counter.prototype["add"]);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(Counter.prototype["add"], "step//./input//Counter#add");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);
@@ -401,7 +426,6 @@ export async function subtract(a, b) {
 
 Output:
 ```javascript
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"add":{"stepId":"step//./input//add"},"subtract":{"stepId":"step//./input//subtract"}}}}*/;
 export async function add(a, b) {
     return a + b;
@@ -409,8 +433,16 @@ export async function add(a, b) {
 export async function subtract(a, b) {
     return a - b;
 }
-registerStepFunction("step//./input//add", add);
-registerStepFunction("step//./input//subtract", subtract);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(add, "step//./input//add");
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(subtract, "step//./input//subtract");
 ```
 
 ---
@@ -498,7 +530,7 @@ globalThis.__private_workflows.set("workflow//./input//myWorkflow", myWorkflow);
 
 In client mode, step function bodies are preserved as-is (allowing local testing/execution), and step functions have their `stepId` property set so they can be properly serialized when passed across boundaries (e.g., as arguments to `start()` or returned from other step functions). Workflow functions throw an error and have `workflowId` attached for use with `start()`.
 
-Unlike step mode, client mode does **not** import `registerStepFunction` from `workflow/internal/private` because that module contains server-side dependencies. Instead, the `stepId` property is set directly on the function, similar to how `workflowId` is set on workflow functions.
+Like step mode, client mode also uses inline property assignments with no imports. The `stepId` property is set directly on the function, similar to how `workflowId` is set on workflow functions. The difference is that client mode uses a simple property assignment, while step mode uses an inline IIFE that also adds the function to the global step registry.
 
 Client mode also runs the same DCE pass after transform. The key difference from workflow mode is that module-level step bodies are still preserved and executable, so any imports, local helpers, or other declarations that are referenced only from those step bodies must also be preserved. By contrast, code that is reachable only from workflow bodies that were replaced with throwing stubs can still be removed.
 
@@ -629,14 +661,17 @@ export class MyService {
 
 Output (Step Mode):
 ```javascript
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"MyService.process":{"stepId":"step//./input//MyService.process"}}},"classes":{"input.js":{"MyService":{"classId":"class//./input//MyService"}}}}*/;
 export class MyService {
     static async process(data) {
         return data.value * 2;
     }
 }
-registerStepFunction("step//./input//MyService.process", MyService.process);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(MyService.process, "step//./input//MyService.process");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);
@@ -838,7 +873,7 @@ Note that:
 
 This binding-name preference applies to **all** generated code that references the class at module scope, including:
 - Class serialization registration IIFEs
-- Step method registrations (`registerStepFunction` calls)
+- Step method registrations (inline IIFE calls)
 - Workflow method stub assignments
 
 For example, a class expression with step methods:
@@ -858,8 +893,16 @@ var LanguageModel = class _LanguageModel {
 
 Output (step mode):
 ```javascript
-registerStepFunction("step//./input//LanguageModel.generate", LanguageModel.generate);
-registerStepFunction("step//./input//LanguageModel#doStream", LanguageModel.prototype["doStream"]);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(LanguageModel.generate, "step//./input//LanguageModel.generate");
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(LanguageModel.prototype["doStream"], "step//./input//LanguageModel#doStream");
 (function(__wf_cls, __wf_id) { /* ... */ })(LanguageModel, "class//./input//LanguageModel");
 ```
 
@@ -939,7 +982,11 @@ const __DefaultClass = class __DefaultClass {
     async process(input) { return { result: input }; }
 };
 export default __DefaultClass;
-registerStepFunction("step//./input//__DefaultClass#process", __DefaultClass.prototype["process"]);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(__DefaultClass.prototype["process"], "step//./input//__DefaultClass#process");
 (function(__wf_cls, __wf_id) { /* ... */ })(__DefaultClass, "class//./input//__DefaultClass");
 ```
 
@@ -1050,9 +1097,14 @@ Getters (property accessors) can be marked with `"use step"` to make property ac
 
 ### Instance getter transformation
 
-**Step mode**: The getter is preserved on the class with the directive stripped. Registration uses `Object.getOwnPropertyDescriptor` to extract the getter function:
+**Step mode**: The getter is preserved on the class with the directive stripped. Registration uses an inline IIFE with `Object.getOwnPropertyDescriptor` to extract the getter function:
 ```javascript
-registerStepFunction("step_id", Object.getOwnPropertyDescriptor(ClassName.prototype, "prop").get);
+(function(__wf_fn, __wf_id) {
+  var __wf_sym = Symbol.for("@workflow/core//registeredSteps"),
+      __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+  __wf_reg.set(__wf_id, __wf_fn);
+  __wf_fn.stepId = __wf_id;
+})(Object.getOwnPropertyDescriptor(ClassName.prototype, "prop").get, "step_id");
 ```
 
 **Workflow mode**: The getter is removed from the class body. A hoisted step proxy variable and `Object.defineProperty` call are emitted:
@@ -1073,7 +1125,12 @@ Same as instance getters but targets `ClassName` instead of `ClassName.prototype
 
 **Step mode**:
 ```javascript
-registerStepFunction("step_id", Object.getOwnPropertyDescriptor(ClassName, "prop").get);
+(function(__wf_fn, __wf_id) {
+  var __wf_sym = Symbol.for("@workflow/core//registeredSteps"),
+      __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+  __wf_reg.set(__wf_id, __wf_fn);
+  __wf_fn.stepId = __wf_id;
+})(Object.getOwnPropertyDescriptor(ClassName, "prop").get, "step_id");
 ```
 
 **Workflow mode**:

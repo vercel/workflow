@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { World } from '@workflow/world';
-import { reenqueueActiveRuns } from '@workflow/world';
+import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
 import {
@@ -92,6 +92,7 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   };
   return {
     limits,
+    specVersion: SPEC_VERSION_CURRENT,
     ...queue,
     ...storage,
     ...instrumentObject('world.streams', {
