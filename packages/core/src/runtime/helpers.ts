@@ -229,7 +229,7 @@ export async function healthCheck(
   options?: HealthCheckOptions
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
-  const correlationId = `hc_${generateId()}`;
+  const correlationId = generateId();
   const streamName = getHealthCheckStreamName(correlationId);
 
   const queueName: ValidQueueName =
