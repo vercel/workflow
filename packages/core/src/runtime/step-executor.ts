@@ -166,18 +166,10 @@ export async function executeStep(
         return { type: 'skipped' };
       }
       if (TooEarlyError.is(err)) {
-        const retryAfterStr = (err as any).meta?.retryAfter;
-        const retryAfter = retryAfterStr
-          ? new Date(retryAfterStr)
-          : new Date(Date.now() + 1000);
-        const timeoutSeconds = Math.max(
-          1,
-          Math.ceil((retryAfter.getTime() - Date.now()) / 1000)
-        );
+        const timeoutSeconds = Math.max(1, err.retryAfter ?? 1);
         runtimeLogger.debug('Step retryAfter timestamp not yet reached', {
           stepName,
           stepId,
-          retryAfter,
           timeoutSeconds,
         });
         return { type: 'retry', timeoutSeconds };

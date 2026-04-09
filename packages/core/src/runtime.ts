@@ -20,7 +20,6 @@ import {
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
 import {
-  getAllWorkflowRunEvents,
   getAllWorkflowRunEventsWithCursor,
   getNewWorkflowRunEvents,
   getQueueOverhead,
@@ -124,6 +123,7 @@ export function workflowEntrypoint(
         traceCarrier: traceContext,
         requestedAt,
         stepId: incomingStepId,
+        stepName: incomingStepName,
         runInput,
       } = WorkflowInvokePayloadSchema.parse(message_);
       const { requestId } = metadata;
@@ -247,13 +247,9 @@ export function workflowEntrypoint(
                 // step_completed event. Don't replay here — the step events
                 // (step_started/step_completed) need to be processed by the
                 // workflow's event consumer during replay.
-                if (incomingStepId) {
-                  const stepName = await getStepNameFromEvent(
-                    world,
-                    runId,
-                    incomingStepId
-                  );
-                  if (stepName) {
+                if (incomingStepId && incomingStepName) {
+                  const stepName = incomingStepName;
+                  {
                     const workflowRun = await world.runs.get(runId);
                     if (workflowRun.status !== 'running') {
                       runtimeLogger.debug(
@@ -674,7 +670,7 @@ export function workflowEntrypoint(
                       // Pick one step to execute inline, queue the rest
                       const [inlineStep, ...backgroundSteps] = pendingSteps;
 
-                      // Queue background steps back to __wkf_workflow_* with stepId
+                      // Queue background steps back to __wkf_workflow_* with stepId+stepName
                       for (const bgStep of backgroundSteps) {
                         const traceCarrier = await serializeTraceCarrier();
                         await queueMessage(
@@ -683,6 +679,7 @@ export function workflowEntrypoint(
                           {
                             runId,
                             stepId: bgStep.correlationId,
+                            stepName: bgStep.stepName,
                             traceCarrier,
                             requestedAt: new Date(),
                           },
@@ -711,6 +708,7 @@ export function workflowEntrypoint(
                           {
                             runId,
                             stepId: inlineStep.correlationId,
+                            stepName: inlineStep.stepName,
                             traceCarrier,
                             requestedAt: new Date(),
                           },
@@ -868,27 +866,4 @@ export function workflowEntrypoint(
   );
 
   return withHealthCheck(handler);
-}
-
-/**
- * Look up the step name from the step_created event in the event log.
- * This is needed when the combined handler receives a message with stepId
- * (from a background queue) and needs to know which step function to call.
- */
-async function getStepNameFromEvent(
-  _world: import('@workflow/world').World,
-  runId: string,
-  stepId: string
-): Promise<string | undefined> {
-  const events = await getAllWorkflowRunEvents(runId);
-  const stepCreated = events.find(
-    (e) => e.eventType === 'step_created' && e.correlationId === stepId
-  );
-  if (!stepCreated) return undefined;
-  // The eventData shape varies by event type; step_created has stepName
-  // Use 'in' check since the Event union doesn't narrow through .find()
-  if ('eventData' in stepCreated && stepCreated.eventData) {
-    return (stepCreated.eventData as { stepName?: string }).stepName;
-  }
-  return undefined;
 }
