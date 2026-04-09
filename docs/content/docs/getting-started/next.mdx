@@ -283,18 +283,20 @@ workflow@latest
 
 ### Turborepo caching
 
-If you're using [Turborepo](https://turbo.build/repo) in a monorepo, you need to include the generated Workflow routes in your cache outputs. The Workflow SDK generates route handlers at `app/.well-known/workflow/` during the build process, and these files must be cached alongside your Next.js build output.
+If you're using [Turborepo](https://turbo.build/repo) in a monorepo, you need to include the generated Workflow routes in your cache outputs. The Workflow SDK generates route handlers at `app/.well-known/workflow/` (or `src/app/.well-known/workflow/` if your project uses the `src` directory) during the build process, and these files must be cached alongside your Next.js build output.
 
 Add the following to your `turbo.json`:
 
-```json title="turbo.json"
+```jsonc title="turbo.json"
 {
   "tasks": {
     "build": {
       "outputs": [
         ".next/**",
         "!.next/cache/**",
-        "app/.well-known/workflow/**" // [!code highlight]
+        // Include whichever path matches your project layout
+        "app/.well-known/workflow/**",
+        "src/app/.well-known/workflow/**"
       ]
     }
   }
