@@ -6069,8 +6069,8 @@ impl VisitMut for StepTransform {
                             }
                             Decl::Var(var_decl) => {
                                 for decl in &var_decl.decls {
-                                    if let Some(init) = &decl.init {
-                                        match &**init {
+                                    match &decl.init {
+                                        Some(init) => match &**init {
                                             Expr::Fn(_) | Expr::Arrow(_) => {
                                                 // Function/arrow expressions are allowed
                                             }
@@ -6080,6 +6080,13 @@ impl VisitMut for StepTransform {
                                                     directive: "use step",
                                                 });
                                             }
+                                        },
+                                        None => {
+                                            // Uninitialized exports are not functions
+                                            emit_error(WorkflowErrorKind::InvalidExport {
+                                                span: export.span,
+                                                directive: "use step",
+                                            });
                                         }
                                     }
                                 }
@@ -6099,7 +6106,10 @@ impl VisitMut for StepTransform {
                         }
                     }
                     ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) => {
-                        if named.src.is_some() {
+                        // Re-exports (`export { x } from '...'`) are not allowed.
+                        // Local named exports (`export { x }`) are also rejected
+                        // because we cannot statically verify the binding is a function.
+                        if named.src.is_some() || !named.specifiers.is_empty() {
                             emit_error(WorkflowErrorKind::InvalidExport {
                                 span: named.span,
                                 directive: "use step",

@@ -1079,8 +1079,10 @@ The plugin supports various function declaration styles. Step functions may be s
 - `function name() { "use step"; }` - Sync function declaration
 - `const name = async () => { "use step"; }` - Async arrow function
 - `const name = () => { "use step"; }` - Sync arrow function
-- `let name = async () => { "use step"; }` - Arrow function with let
-- `var name = async () => { "use step"; }` - Arrow function with var
+- `let name = async () => { "use step"; }` - Async arrow function with let
+- `let name = () => { "use step"; }` - Sync arrow function with let
+- `var name = async () => { "use step"; }` - Async arrow function with var
+- `var name = () => { "use step"; }` - Sync arrow function with var
 - `const name = async function() { "use step"; }` - Async function expression
 - `const name = function() { "use step"; }` - Sync function expression
 - `{ async method() { "use step"; } }` - Async object method

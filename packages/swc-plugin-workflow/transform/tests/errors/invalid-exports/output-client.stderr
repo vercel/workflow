@@ -18,4 +18,17 @@
  7 | }
  8 | export * from './other';
    : ^^^^^^^^^^^^^^^^^^^^^^^^
+ 9 | export let uninitVar;
    `----
+  x Only functions can be exported from a "use step" file
+   ,-[input.js:9:1]
+ 8 | export * from './other';
+ 9 | export let uninitVar;
+   : ^^^^^^^^^^^^^^^^^^^^^
+   `----
+  x Only functions can be exported from a "use step" file
+    ,-[input.js:13:1]
+ 12 | const helper = 'not a function';
+ 13 | export { helper };
+    : ^^^^^^^^^^^^^^^^^^
+    `----
