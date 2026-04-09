@@ -5,11 +5,11 @@ import {
 } from '@workflow/errors';
 import {
   areLimitDefinitionsEqual,
-  canAcquireFromState,
   createLockId,
   createPromotedWaiter,
   decideLimitAcquire,
-  inspectLimitState,
+  getHeartbeatExpiry,
+  getPromotableWaiter,
   isLimitStateEmpty,
   type LimitDefinition,
   LimitAcquireRequestSchema,
@@ -49,11 +49,6 @@ function nowPlus(ms?: number): Date | undefined {
 function toDate(value: Date | string | null | undefined): Date | undefined {
   if (value === null || value === undefined) return undefined;
   return value instanceof Date ? value : new Date(value);
-}
-
-function toMillis(value: Date | string | null | undefined): number | undefined {
-  const date = toDate(value);
-  return date ? date.getTime() : undefined;
 }
 
 function parseRequiredLockId(lockId: string) {
@@ -450,16 +445,8 @@ export function createLimits(
 
         if (capacityFreed) {
           while (state) {
-            const headWaiter = state.waiters[0];
+            const headWaiter = getPromotableWaiter(state);
             if (!headWaiter) {
-              break;
-            }
-
-            if (
-              !canAcquireFromState(
-                inspectLimitState(state, headWaiter.waiterId)
-              )
-            ) {
               break;
             }
 
@@ -508,10 +495,11 @@ export function createLimits(
         }
 
         const now = Date.now();
-        const currentExpiry = toMillis(current.expiresAt);
-        const ttlMs =
-          parsed.ttlMs ?? (currentExpiry ? currentExpiry - now : 30_000);
-        const expiresAt = new Date(now + Math.max(1, ttlMs));
+        const expiresAt = getHeartbeatExpiry({
+          currentExpiresAt: current.expiresAt,
+          ttlMs: parsed.ttlMs,
+          now,
+        });
 
         const [updated] = await tx
           .update(Schema.limitLeases)

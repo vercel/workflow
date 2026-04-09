@@ -10,26 +10,17 @@ export {
 export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
-export type * from './limits-state.js';
 export {
-  canAcquireFromState,
   decideLimitAcquire,
   createPromotedWaiter,
-  getBlockedReasonFromState,
-  inspectLimitState,
+  getHeartbeatExpiry,
+  getPromotableWaiter,
   isLimitStateEmpty,
 } from './limits-state.js';
-export type {
-  LockEventRequest,
-  LockHistoryEvent,
-  PreparedLockEvent,
-} from './lock-events.js';
+export type { LockHistoryEvent } from './lock-events.js';
 export {
-  getLockHistory,
-  parseLockHistoryEvent,
   prepareLockEvent,
   processPromotedWaiters,
-  resolveLockEvent,
   wakePromotedWaiters,
 } from './lock-events.js';
 export type * from './limits.js';

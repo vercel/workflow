@@ -188,14 +188,12 @@ export const LimitReleaseRequestSchema = z.strictObject({
 });
 export type LimitReleaseRequest = z.infer<typeof LimitReleaseRequestSchema>;
 
-export const LimitNextWaiterSchema = z.object({
+const LimitNextWaiterSchema = z.object({
   runId: z.string().min(1),
   lockIndex: z.number().int().nonnegative(),
   wakeCorrelationId: z.string().min(1),
   lockCorrelationId: z.string().min(1),
 });
-export type LimitNextWaiter = z.infer<typeof LimitNextWaiterSchema>;
-
 export const LimitPromotedWaiterSchema = LimitNextWaiterSchema.extend({
   leaseId: z.string().min(1),
   key: LimitKeySchema,

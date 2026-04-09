@@ -7,11 +7,11 @@ import {
 import type { Storage, WorkflowRunWithoutData } from '@workflow/world';
 import {
   areLimitDefinitionsEqual,
-  canAcquireFromState,
   createLockId,
   createPromotedWaiter,
   decideLimitAcquire,
-  inspectLimitState,
+  getHeartbeatExpiry,
+  getPromotableWaiter,
   isLimitStateEmpty,
   LimitAcquireRequestSchema,
   type LimitAcquireResult,
@@ -265,14 +265,8 @@ export function createLimits(
     const promotedWaiters: LimitPromotedWaiter[] = [];
 
     while (true) {
-      const headWaiter = keyState.waiters[0];
+      const headWaiter = getPromotableWaiter(keyState);
       if (!headWaiter) {
-        break;
-      }
-
-      if (
-        !canAcquireFromState(inspectLimitState(keyState, headWaiter.waiterId))
-      ) {
         break;
       }
 
@@ -450,12 +444,13 @@ export function createLimits(
           }
 
           const lease = keyState.leases[leaseIndex];
-          const currentExpiry = lease.expiresAt?.getTime();
-          const ttlMs =
-            parsed.ttlMs ?? (currentExpiry ? currentExpiry - now : 30_000);
           const updatedLease: LimitLease = {
             ...lease,
-            expiresAt: new Date(now + Math.max(1, ttlMs)),
+            expiresAt: getHeartbeatExpiry({
+              currentExpiresAt: lease.expiresAt,
+              ttlMs: parsed.ttlMs,
+              now,
+            }),
           };
 
           keyState.leases[leaseIndex] = updatedLease;

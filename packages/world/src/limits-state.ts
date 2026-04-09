@@ -16,7 +16,7 @@ type WaiterValue = {
   waiterId: string;
 };
 
-export interface LimitStateSnapshot<
+interface LimitStateSnapshot<
   TLease = ExpiringValue,
   TToken = ExpiringValue,
   TWaiter = WaiterValue,
@@ -27,14 +27,14 @@ export interface LimitStateSnapshot<
   waiters: readonly TWaiter[];
 }
 
-export interface LimitStateBlock {
+interface LimitStateBlock {
   queuedBlocked: boolean;
   concurrencyBlocked: boolean;
   rateBlocked: boolean;
   retryAfterMs: number | undefined;
 }
 
-export type LimitAcquireDecision<TLease, TWaiter> =
+type LimitAcquireDecision<TLease, TWaiter> =
   | {
       type: 'reuse_lease';
       lease: TLease;
@@ -105,7 +105,7 @@ function getRetryAfterMs(
   return retryAfterMs;
 }
 
-export function inspectLimitState<
+function inspectLimitState<
   TLease extends ExpiringValue,
   TToken extends ExpiringValue,
   TWaiter extends WaiterValue,
@@ -150,7 +150,7 @@ export function inspectLimitState<
   };
 }
 
-export function canAcquireFromState(state: LimitStateBlock): boolean {
+function canAcquireFromState(state: LimitStateBlock): boolean {
   return (
     !state.queuedBlocked && !state.concurrencyBlocked && !state.rateBlocked
   );
@@ -202,9 +202,7 @@ export function decideLimitAcquire<
   };
 }
 
-export function getBlockedReasonFromState(
-  state: LimitStateBlock
-): LimitBlockedReason {
+function getBlockedReasonFromState(state: LimitStateBlock): LimitBlockedReason {
   return getBlockedReason(
     state.queuedBlocked,
     state.concurrencyBlocked,
@@ -220,6 +218,34 @@ export function isLimitStateEmpty(
     state.tokens.length === 0 &&
     state.waiters.length === 0
   );
+}
+
+export function getPromotableWaiter<
+  TLease extends ExpiringValue,
+  TToken extends ExpiringValue,
+  TWaiter extends WaiterValue,
+>(state: LimitStateSnapshot<TLease, TToken, TWaiter>): TWaiter | undefined {
+  const headWaiter = state.waiters[0];
+  if (!headWaiter) {
+    return undefined;
+  }
+
+  return canAcquireFromState(inspectLimitState(state, headWaiter.waiterId))
+    ? headWaiter
+    : undefined;
+}
+
+export function getHeartbeatExpiry(input: {
+  currentExpiresAt?: Date | string | null;
+  ttlMs?: number;
+  now?: number;
+}): Date {
+  const now = input.now ?? Date.now();
+  const currentExpiresAt = toTimestamp(input.currentExpiresAt);
+  const ttlMs =
+    input.ttlMs ??
+    (currentExpiresAt === undefined ? 30_000 : currentExpiresAt - now);
+  return new Date(now + Math.max(1, ttlMs));
 }
 
 export function createPromotedWaiter(input: {

@@ -3,7 +3,6 @@ import {
   type LimitAcquireRequest,
   type LimitLease,
   type LimitPromotedWaiter,
-  type LimitReleaseRequest,
   type Limits,
   parseLockCorrelationId,
 } from './limits.js';
@@ -18,38 +17,18 @@ export type LockHistoryEvent =
   | LockAcquiredEvent
   | LockReleaseEvent;
 
-export type LockHistory =
-  | {
-      type: 'created';
-      created: LockCreatedEvent;
-      acquired?: LockAcquiredEvent;
-      released?: LockReleaseEvent;
-    }
-  | {
-      type: 'acquired';
-      created?: LockCreatedEvent;
-      acquired: LockAcquiredEvent;
-      released?: LockReleaseEvent;
-    }
-  | {
-      type: 'released';
-      created?: LockCreatedEvent;
-      acquired?: LockAcquiredEvent;
-      released: LockReleaseEvent;
-    }
-  | {
-      type: 'empty';
-      created?: undefined;
-      acquired?: undefined;
-      released?: undefined;
-    };
-
-export type LockEventRequest = Extract<
+type LockEventRequest = Extract<
   CreateEventRequest,
   { eventType: 'lock_created' | 'lock_acquired' | 'lock_release' }
 >;
 
-export type PreparedLockEvent =
+type LockHistory = {
+  created?: LockCreatedEvent;
+  acquired?: LockAcquiredEvent;
+  released?: LockReleaseEvent;
+};
+
+type PreparedLockEvent =
   | {
       type: 'invalid';
       message: string;
@@ -65,26 +44,6 @@ export type PreparedLockEvent =
   | {
       type: 'store';
       event: LockHistoryEvent;
-    };
-
-export type LockEventResolution =
-  | {
-      type: 'return_existing';
-      event: LockHistoryEvent;
-    }
-  | {
-      type: 'acquire_from_created';
-      request: LimitAcquireRequest;
-      createdEventData: LockCreatedEvent['eventData'];
-    }
-  | {
-      type: 'acquire_after_wait';
-      request: LimitAcquireRequest;
-    }
-  | {
-      type: 'release';
-      lease: LimitLease;
-      request: LimitReleaseRequest;
     };
 
 function isLeaseLive(lease: LimitLease, now: number): boolean {
@@ -114,7 +73,7 @@ function createAcquireRequest(
   };
 }
 
-export function parseLockHistoryEvent(event: unknown): LockHistoryEvent {
+function parseLockHistoryEvent(event: unknown): LockHistoryEvent {
   const parsed = EventSchema.parse(event);
 
   switch (parsed.eventType) {
@@ -127,9 +86,7 @@ export function parseLockHistoryEvent(event: unknown): LockHistoryEvent {
   }
 }
 
-export function getLockHistory(
-  events: readonly LockHistoryEvent[]
-): LockHistory {
+function getLockHistory(events: readonly LockHistoryEvent[]): LockHistory {
   let created: LockCreatedEvent | undefined;
   let acquired: LockAcquiredEvent | undefined;
   let released: LockReleaseEvent | undefined;
@@ -148,109 +105,23 @@ export function getLockHistory(
     }
   }
 
-  if (released) {
-    return { type: 'released', created, acquired, released };
-  }
-  if (acquired) {
-    return { type: 'acquired', created, acquired };
-  }
-  if (created) {
-    return { type: 'created', created };
-  }
-
-  return { type: 'empty' };
+  return {
+    created,
+    acquired,
+    released,
+  };
 }
 
-export function getLiveAcquiredEvent(
+function getLiveAcquiredEvent(
   history: LockHistory,
   now = Date.now()
 ): LockAcquiredEvent | undefined {
-  if (history.type !== 'acquired' && history.type !== 'released') {
-    return undefined;
-  }
-
   const acquired = history.acquired;
   if (!acquired) {
     return undefined;
   }
 
   return isLeaseLive(acquired.eventData.lease, now) ? acquired : undefined;
-}
-
-export function resolveLockEvent(
-  event: LockEventRequest,
-  runId: string,
-  history: LockHistory
-): LockEventResolution {
-  switch (event.eventType) {
-    case 'lock_created': {
-      const existing =
-        history.type === 'released'
-          ? history.released
-          : (getLiveAcquiredEvent(history) ?? history.created);
-      if (existing) {
-        return { type: 'return_existing', event: existing };
-      }
-
-      return {
-        type: 'acquire_from_created',
-        request: createAcquireRequest(
-          runId,
-          event.correlationId,
-          event.eventData
-        ),
-        createdEventData: event.eventData,
-      };
-    }
-
-    case 'lock_acquired': {
-      if (history.type === 'released') {
-        return { type: 'return_existing', event: history.released };
-      }
-
-      const acquired = getLiveAcquiredEvent(history);
-      if (acquired) {
-        return { type: 'return_existing', event: acquired };
-      }
-
-      if (!history.created) {
-        throw new Error(
-          `Lock "${event.correlationId}" cannot be acquired before lock_created`
-        );
-      }
-
-      return {
-        type: 'acquire_after_wait',
-        request: createAcquireRequest(
-          runId,
-          event.correlationId,
-          history.created.eventData
-        ),
-      };
-    }
-
-    case 'lock_release': {
-      if (history.type === 'released') {
-        return { type: 'return_existing', event: history.released };
-      }
-      if (!history.acquired) {
-        throw new Error(
-          `Lock "${event.correlationId}" cannot be released before lock_acquired`
-        );
-      }
-
-      const lease = history.acquired.eventData.lease;
-      return {
-        type: 'release',
-        lease,
-        request: {
-          leaseId: lease.leaseId,
-          key: lease.key,
-          lockId: lease.lockId,
-        },
-      };
-    }
-  }
 }
 
 export async function prepareLockEvent(input: {
@@ -265,92 +136,146 @@ export async function prepareLockEvent(input: {
   const history = getLockHistory(
     input.existingEvents.map(parseLockHistoryEvent)
   );
-  let resolution: LockEventResolution;
-
-  try {
-    resolution = resolveLockEvent(input.event, input.runId, history);
-  } catch (error) {
-    return {
-      type: 'invalid',
-      message: (error as Error).message,
-    };
-  }
-
-  if (resolution.type === 'return_existing') {
-    return resolution;
-  }
-
-  if (resolution.type === 'release') {
-    const releaseResult = await input.limits.release(resolution.request);
-    return {
-      type: 'store',
-      event: parseLockHistoryEvent({
-        eventType: 'lock_release',
-        correlationId: input.event.correlationId,
-        eventData: {
-          lease: resolution.lease,
-          promotedWaiters: releaseResult.promotedWaiters,
-        },
-        runId: input.runId,
-        eventId: input.eventId,
-        createdAt: input.createdAt ?? new Date(),
-        specVersion: input.specVersion,
-      }),
-    };
-  }
-
-  const acquireResult = await input.limits.acquire(resolution.request);
-  if (
-    resolution.type === 'acquire_after_wait' &&
-    acquireResult.status !== 'acquired'
-  ) {
-    return {
-      type: 'too_early',
-      retryAfterMs: acquireResult.retryAfterMs,
-    };
-  }
-
+  const existingAcquired = getLiveAcquiredEvent(history);
   const createdAt = input.createdAt ?? new Date();
-  if (acquireResult.status === 'blocked') {
-    if (resolution.type !== 'acquire_from_created') {
+
+  switch (input.event.eventType) {
+    case 'lock_created': {
+      const existing = history.released ?? existingAcquired ?? history.created;
+      if (existing) {
+        return {
+          type: 'return_existing',
+          event: existing,
+        };
+      }
+
+      const acquireResult = await input.limits.acquire(
+        createAcquireRequest(
+          input.runId,
+          input.event.correlationId,
+          input.event.eventData
+        )
+      );
+      if (acquireResult.status === 'blocked') {
+        return {
+          type: 'store',
+          event: parseLockHistoryEvent({
+            eventType: 'lock_created',
+            correlationId: input.event.correlationId,
+            eventData: {
+              ...input.event.eventData,
+              acquireAt:
+                acquireResult.retryAfterMs === undefined
+                  ? undefined
+                  : new Date(createdAt.getTime() + acquireResult.retryAfterMs),
+            },
+            runId: input.runId,
+            eventId: input.eventId,
+            createdAt,
+            specVersion: input.specVersion,
+          }),
+        };
+      }
+
       return {
-        type: 'invalid',
-        message: `Lock "${input.event.correlationId}" is not ready to acquire`,
+        type: 'store',
+        event: parseLockHistoryEvent({
+          eventType: 'lock_acquired',
+          correlationId: input.event.correlationId,
+          eventData: { lease: acquireResult.lease },
+          runId: input.runId,
+          eventId: input.eventId,
+          createdAt,
+          specVersion: input.specVersion,
+        }),
       };
     }
 
-    return {
-      type: 'store',
-      event: parseLockHistoryEvent({
-        eventType: 'lock_created',
-        correlationId: input.event.correlationId,
-        eventData: {
-          ...resolution.createdEventData,
-          acquireAt:
-            acquireResult.retryAfterMs === undefined
-              ? undefined
-              : new Date(createdAt.getTime() + acquireResult.retryAfterMs),
-        },
-        runId: input.runId,
-        eventId: input.eventId,
-        createdAt,
-        specVersion: input.specVersion,
-      }),
-    };
-  }
+    case 'lock_acquired': {
+      if (history.released) {
+        return {
+          type: 'return_existing',
+          event: history.released,
+        };
+      }
+      if (existingAcquired) {
+        return {
+          type: 'return_existing',
+          event: existingAcquired,
+        };
+      }
+      if (!history.created) {
+        return {
+          type: 'invalid',
+          message: `Lock "${input.event.correlationId}" cannot be acquired before lock_created`,
+        };
+      }
 
-  return {
-    type: 'store',
-    event: parseLockHistoryEvent({
-      eventType: 'lock_acquired',
-      correlationId: input.event.correlationId,
-      eventData: { lease: acquireResult.lease },
-      runId: input.runId,
-      eventId: input.eventId,
-      createdAt,
-      specVersion: input.specVersion,
-    }),
-  };
+      const acquireResult = await input.limits.acquire(
+        createAcquireRequest(
+          input.runId,
+          input.event.correlationId,
+          history.created.eventData
+        )
+      );
+      if (acquireResult.status !== 'acquired') {
+        return {
+          type: 'too_early',
+          retryAfterMs: acquireResult.retryAfterMs,
+        };
+      }
+
+      return {
+        type: 'store',
+        event: parseLockHistoryEvent({
+          eventType: 'lock_acquired',
+          correlationId: input.event.correlationId,
+          eventData: { lease: acquireResult.lease },
+          runId: input.runId,
+          eventId: input.eventId,
+          createdAt,
+          specVersion: input.specVersion,
+        }),
+      };
+    }
+
+    case 'lock_release': {
+      if (history.released) {
+        return {
+          type: 'return_existing',
+          event: history.released,
+        };
+      }
+      if (!history.acquired) {
+        return {
+          type: 'invalid',
+          message: `Lock "${input.event.correlationId}" cannot be released before lock_acquired`,
+        };
+      }
+
+      const lease = history.acquired.eventData.lease;
+      const releaseResult = await input.limits.release({
+        leaseId: lease.leaseId,
+        key: lease.key,
+        lockId: lease.lockId,
+      });
+      return {
+        type: 'store',
+        event: parseLockHistoryEvent({
+          eventType: 'lock_release',
+          correlationId: input.event.correlationId,
+          eventData: {
+            lease,
+            promotedWaiters: releaseResult.promotedWaiters,
+          },
+          runId: input.runId,
+          eventId: input.eventId,
+          createdAt,
+          specVersion: input.specVersion,
+        }),
+      };
+    }
+  }
 }
 
 export async function processPromotedWaiters(input: {
