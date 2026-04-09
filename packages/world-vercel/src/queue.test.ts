@@ -67,11 +67,12 @@ describe('createQueue', () => {
         await queue.queue('__wkf_workflow_test', { runId: 'run-123' });
 
         expect(mockSend).toHaveBeenCalledTimes(1);
-        // send(topicName, payload, options)
-        const payload = mockSend.mock.calls[0][1];
+        // send(topicName, wrapper, options) — CborTransport encodes
+        // inside serialize(), but the mock bypasses the transport.
+        const wrapper = mockSend.mock.calls[0][1];
 
-        expect(payload.payload).toEqual({ runId: 'run-123' });
-        expect(payload.queueName).toBe('__wkf_workflow_test');
+        expect(wrapper.payload).toEqual({ runId: 'run-123' });
+        expect(wrapper.queueName).toBe('__wkf_workflow_test');
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
@@ -180,7 +181,7 @@ describe('createQueue', () => {
       }
     });
 
-    it('should auto-inject x-workflow-run-id header for workflow payloads', async () => {
+    it('should auto-inject x-vercel-workflow-run-id header for workflow payloads', async () => {
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
 
       const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
@@ -196,7 +197,7 @@ describe('createQueue', () => {
         expect(sendOpts).toEqual(
           expect.objectContaining({
             headers: expect.objectContaining({
-              'x-workflow-run-id': 'wrun_abc123',
+              'x-vercel-workflow-run-id': 'wrun_abc123',
             }),
           })
         );
@@ -209,7 +210,7 @@ describe('createQueue', () => {
       }
     });
 
-    it('should auto-inject x-workflow-run-id and x-workflow-step-id headers for step payloads', async () => {
+    it('should auto-inject x-vercel-workflow-run-id and x-vercel-workflow-step-id headers for step payloads', async () => {
       mockSend.mockResolvedValue({ messageId: 'msg-123' });
 
       const originalEnv = process.env.VERCEL_DEPLOYMENT_ID;
@@ -230,8 +231,8 @@ describe('createQueue', () => {
         expect(sendOpts).toEqual(
           expect.objectContaining({
             headers: expect.objectContaining({
-              'x-workflow-run-id': 'wrun_abc123',
-              'x-workflow-step-id': 'step_xyz789',
+              'x-vercel-workflow-run-id': 'wrun_abc123',
+              'x-vercel-workflow-step-id': 'step_xyz789',
             }),
           })
         );
@@ -283,7 +284,7 @@ describe('createQueue', () => {
           { runId: 'wrun_abc123' },
           {
             headers: {
-              'x-workflow-run-id': 'wrun_override',
+              'x-vercel-workflow-run-id': 'wrun_override',
               'x-custom-header': 'custom-value',
             },
           }
@@ -293,7 +294,7 @@ describe('createQueue', () => {
         // send(topicName, payload, options)
         const sendOpts = mockSend.mock.calls[0][2];
         expect(sendOpts.headers).toEqual({
-          'x-workflow-run-id': 'wrun_override',
+          'x-vercel-workflow-run-id': 'wrun_override',
           'x-custom-header': 'custom-value',
         });
       } finally {
@@ -550,7 +551,7 @@ describe('createQueue', () => {
       expect(mockSend).not.toHaveBeenCalled();
     });
 
-    it('should auto-inject x-workflow-run-id header on delayed re-enqueue', async () => {
+    it('should auto-inject x-vercel-workflow-run-id header on delayed re-enqueue', async () => {
       mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
       const handler = setupHandler({ timeoutSeconds: 300 });
 
@@ -569,7 +570,7 @@ describe('createQueue', () => {
       expect(sendOpts).toEqual(
         expect.objectContaining({
           headers: expect.objectContaining({
-            'x-workflow-run-id': 'wrun_abc123',
+            'x-vercel-workflow-run-id': 'wrun_abc123',
           }),
         })
       );
@@ -601,8 +602,8 @@ describe('createQueue', () => {
       expect(sendOpts).toEqual(
         expect.objectContaining({
           headers: expect.objectContaining({
-            'x-workflow-run-id': 'wrun_abc123',
-            'x-workflow-step-id': 'step_xyz789',
+            'x-vercel-workflow-run-id': 'wrun_abc123',
+            'x-vercel-workflow-step-id': 'step_xyz789',
           }),
         })
       );
@@ -721,10 +722,11 @@ describe('createQueue', () => {
         );
 
         expect(mockSend).toHaveBeenCalledTimes(1);
-        // send(topicName, payload, options)
-        const payload = mockSend.mock.calls[0][1];
-        expect(payload.payload).toEqual(stepPayload);
-        expect(payload.queueName).toBe('__wkf_step_myStep');
+        // send(topicName, wrapper, options) — CborTransport encodes
+        // inside serialize(), but the mock bypasses the transport.
+        const wrapper = mockSend.mock.calls[0][1];
+        expect(wrapper.payload).toEqual(stepPayload);
+        expect(wrapper.queueName).toBe('__wkf_step_myStep');
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;

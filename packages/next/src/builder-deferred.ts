@@ -19,6 +19,7 @@ import {
   relative,
   resolve,
 } from 'node:path';
+import enhancedResolveOrig from 'enhanced-resolve';
 import {
   createSocketServer,
   type SocketIO,
@@ -35,9 +36,9 @@ const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
 type WorkflowManifest = import('@workflow/builders').WorkflowManifest;
 
 interface DeferredDiscoveredEntries {
-  discoveredSteps: string[];
-  discoveredWorkflows: string[];
-  discoveredSerdeFiles: string[];
+  discoveredSteps: Set<string>;
+  discoveredWorkflows: Set<string>;
+  discoveredSerdeFiles: Set<string>;
 }
 
 let CachedNextBuilderDeferred: any;
@@ -57,12 +58,50 @@ export async function getNextBuilderDeferred() {
     applySwcTransform,
     detectWorkflowPatterns,
     getImportPath,
-    isWorkflowSdkFile,
     resolveWorkflowAliasRelativePath,
     // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
   } = (await eval(
     'import("@workflow/builders")'
   )) as typeof import('@workflow/builders');
+
+  // Shared resolve options matching the configuration used by the SWC
+  // esbuild plugin (swc-esbuild-plugin.ts) for consistent resolution
+  // semantics across the toolchain.
+  const NODE_RESOLVE_OPTIONS = {
+    dependencyType: 'commonjs' as const,
+    modules: ['node_modules'],
+    exportsFields: ['exports'],
+    importsFields: ['imports'],
+    conditionNames: ['node', 'require'],
+    descriptionFiles: ['package.json'],
+    extensions: [
+      '.ts',
+      '.tsx',
+      '.mts',
+      '.cts',
+      '.cjs',
+      '.mjs',
+      '.js',
+      '.jsx',
+      '.json',
+      '.node',
+    ],
+    enforceExtensions: false,
+    symlinks: true,
+    mainFields: ['main'],
+    mainFiles: ['index'],
+    roots: [],
+    fullySpecified: false,
+    preferRelative: false,
+    preferAbsolute: false,
+    restrictions: [],
+  };
+
+  const NODE_ESM_RESOLVE_OPTIONS = {
+    ...NODE_RESOLVE_OPTIONS,
+    dependencyType: 'esm' as const,
+    conditionNames: ['node', 'import'],
+  };
 
   class NextDeferredBuilder extends BaseBuilderClass {
     private socketIO?: SocketIO;
@@ -75,6 +114,14 @@ export async function getNextBuilderDeferred() {
     private cacheWriteTimer: NodeJS.Timeout | null = null;
     private deferredRebuildTimer: NodeJS.Timeout | null = null;
     private lastDeferredBuildSignature: string | null = null;
+    // Lazily initialized resolvers for bare specifier rewriting.
+    // Cached to avoid re-creating on every import rewrite.
+    private esmSyncResolver?: ReturnType<
+      typeof enhancedResolveOrig.create.sync
+    >;
+    private cjsSyncResolver?: ReturnType<
+      typeof enhancedResolveOrig.create.sync
+    >;
 
     async build() {
       const outputDir = await this.findAppDirectory();
@@ -274,23 +321,21 @@ export async function getNextBuilderDeferred() {
             }
 
             if (!validatePatterns) {
-              const isSdkFile = isWorkflowSdkFile(filePath);
               return {
                 filePath,
                 hasUseWorkflow: candidates.hasWorkflowCandidate,
                 hasUseStep: candidates.hasStepCandidate,
-                hasSerde: candidates.hasSerdeCandidate && !isSdkFile,
+                hasSerde: candidates.hasSerdeCandidate,
               };
             }
 
             const source = await readFile(filePath, 'utf-8');
             const patterns = detectWorkflowPatterns(source);
-            const isSdkFile = isWorkflowSdkFile(filePath);
             return {
               filePath,
               hasUseWorkflow: patterns.hasUseWorkflow,
               hasUseStep: patterns.hasUseStep,
-              hasSerde: patterns.hasSerde && !isSdkFile,
+              hasSerde: patterns.hasSerde,
             };
           } catch {
             return null;
@@ -425,10 +470,10 @@ export async function getNextBuilderDeferred() {
         entryFiles: [...discoveredStepFiles, ...discoveredWorkflowFiles],
         serdeFiles: existingSerdeFileCandidates,
       });
-      const discoveredEntries = {
-        discoveredSteps: discoveredStepFiles,
-        discoveredWorkflows: discoveredWorkflowFiles,
-        discoveredSerdeFiles,
+      const discoveredEntries: DeferredDiscoveredEntries = {
+        discoveredSteps: new Set(discoveredStepFiles),
+        discoveredWorkflows: new Set(discoveredWorkflowFiles),
+        discoveredSerdeFiles: new Set(discoveredSerdeFiles),
       };
       const existingInputFiles = await this.filterExistingFiles(inputFiles);
       const buildInputFiles = Array.from(
@@ -1109,7 +1154,7 @@ export async function getNextBuilderDeferred() {
           experimentalTriggers: [STEP_QUEUE_TRIGGER],
         },
         workflows: {
-          maxDuration: 60,
+          maxDuration: 'max',
           experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
         },
       };
@@ -1270,6 +1315,33 @@ export async function getNextBuilderDeferred() {
       copiedStepFileBySourcePath: Map<string, string>
     ): string {
       if (!specifier.startsWith('.')) {
+        // Bare specifiers (e.g. '@workflow/serde') that are transitive
+        // dependencies of SDK packages can't be resolved by the bundler
+        // from the copied file's location (__workflow_step_files__/ inside
+        // the app dir) because the app doesn't directly depend on them.
+        //
+        // Only rewrite when the specifier can't be resolved from the app
+        // directory. If the package is a direct dependency of the app,
+        // the bare specifier will resolve normally and should be left as-is.
+        const appResolvable = this.resolveBareCopiedStepSpecifier(
+          specifier,
+          copiedFilePath
+        );
+        if (!appResolvable) {
+          const resolved = this.resolveBareCopiedStepSpecifier(
+            specifier,
+            sourceFilePath
+          );
+          if (!resolved) return specifier;
+          let rewrittenPath = relative(
+            dirname(copiedFilePath),
+            resolved
+          ).replace(/\\/g, '/');
+          if (!rewrittenPath.startsWith('.')) {
+            rewrittenPath = `./${rewrittenPath}`;
+          }
+          return rewrittenPath;
+        }
         return specifier;
       }
 
@@ -1301,6 +1373,41 @@ export async function getNextBuilderDeferred() {
         rewrittenPath = `./${rewrittenPath}`;
       }
       return `${rewrittenPath}${suffix}`;
+    }
+
+    /**
+     * Resolves a bare specifier (e.g. '@workflow/serde', 'workflow') to an
+     * absolute file path using ESM-compatible resolution semantics via
+     * `enhanced-resolve`. Tries ESM conditions first (`node`, `import`),
+     * falling back to CJS resolution if ESM fails.
+     */
+    private resolveBareCopiedStepSpecifier(
+      specifier: string,
+      sourceFilePath: string
+    ): string | undefined {
+      if (!this.esmSyncResolver) {
+        this.esmSyncResolver = enhancedResolveOrig.create.sync(
+          NODE_ESM_RESOLVE_OPTIONS
+        );
+      }
+      if (!this.cjsSyncResolver) {
+        this.cjsSyncResolver =
+          enhancedResolveOrig.create.sync(NODE_RESOLVE_OPTIONS);
+      }
+      const context = dirname(sourceFilePath);
+      try {
+        const resolved = this.esmSyncResolver(context, specifier);
+        if (resolved) return resolved;
+      } catch {
+        // ESM resolution failed, try CJS
+      }
+      try {
+        const resolved = this.cjsSyncResolver(context, specifier);
+        if (resolved) return resolved;
+      } catch {
+        // CJS resolution also failed
+      }
+      return undefined;
     }
 
     private resolveCopiedStepImportTargetPath(targetPath: string): string {
@@ -1585,9 +1692,9 @@ export async function getNextBuilderDeferred() {
           )
         )
       ).sort();
-      // Intentionally re-validate serde seeds against source + SDK filtering.
+      // Intentionally re-validate serde seeds against source patterns.
       // This keeps previously discovered/manual seed entries from sticking when
-      // files no longer match serde patterns or resolve to SDK internals.
+      // files no longer match serde patterns.
       const discoveredSerdeFiles = new Set<string>();
       const queuedFiles = Array.from(
         new Set([...normalizedEntryFiles, ...normalizedSerdeSeedFiles])
@@ -1631,7 +1738,7 @@ export async function getNextBuilderDeferred() {
 
       for (const serdeSeedFile of normalizedSerdeSeedFiles) {
         const seedPatterns = await getPatterns(serdeSeedFile);
-        if (seedPatterns?.hasSerde && !isWorkflowSdkFile(serdeSeedFile)) {
+        if (seedPatterns?.hasSerde) {
           discoveredSerdeFiles.add(serdeSeedFile);
         }
       }
@@ -1665,16 +1772,49 @@ export async function getNextBuilderDeferred() {
           }
 
           const importPatterns = await getPatterns(resolvedImportPath);
-          if (
-            importPatterns?.hasSerde &&
-            !isWorkflowSdkFile(resolvedImportPath)
-          ) {
+          if (importPatterns?.hasSerde) {
             discoveredSerdeFiles.add(resolvedImportPath);
           }
         }
       }
 
-      return Array.from(discoveredSerdeFiles).sort();
+      // AST-level verification: run SWC detect mode on regex-matched candidates
+      // to confirm they actually define serde classes. This prevents SDK internal
+      // files (which match serde regex patterns but define no classes) from being
+      // bundled into the workflow sandbox.
+      const projectRoot = this.config.projectRoot || this.config.workingDir;
+      const verifiedSerdeFiles: string[] = [];
+      await Promise.all(
+        Array.from(discoveredSerdeFiles).map(async (filePath) => {
+          const source = await getSource(filePath);
+          if (!source) return;
+          try {
+            const relativeFilename =
+              await this.getRelativeFilenameForSwc(filePath);
+            const { workflowManifest } = await applySwcTransform(
+              relativeFilename,
+              source,
+              'detect',
+              filePath,
+              projectRoot
+            );
+            // Only include files that actually define serde classes
+            const hasClasses =
+              workflowManifest.classes &&
+              Object.values(workflowManifest.classes).some(
+                (entries) => Object.keys(entries).length > 0
+              );
+            if (hasClasses) {
+              verifiedSerdeFiles.push(filePath);
+            }
+          } catch {
+            // If detect fails, include the file to be safe
+            verifiedSerdeFiles.push(filePath);
+          }
+        })
+      );
+
+      return verifiedSerdeFiles.sort();
     }
 
     private async createResponseBuiltinsStepFile({

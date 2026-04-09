@@ -1,5 +1,6 @@
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
 import seedrandom from 'seedrandom';
+import { installUint8ArrayBase64 } from './uint8array-base64.js';
 import { createRandomUUID } from './uuid.js';
 
 export interface CreateContextOptions {
@@ -90,6 +91,7 @@ export function createContext(options: CreateContextOptions) {
   };
 
   // Stateless + synchronous Web APIs that are made available inside the sandbox
+  g.DOMException = globalThis.DOMException;
   g.Headers = globalThis.Headers;
   g.TextEncoder = globalThis.TextEncoder;
   g.TextDecoder = globalThis.TextDecoder;
@@ -100,8 +102,8 @@ export function createContext(options: CreateContextOptions) {
   g.atob = globalThis.atob;
   g.btoa = globalThis.btoa;
 
-  // Node.js Buffer for base64 encoding/decoding and binary data manipulation
-  (g as any).Buffer = Buffer;
+  // TC39 Uint8Array base64/hex polyfill (proposal-arraybuffer-base64)
+  installUint8ArrayBase64(g.Uint8Array);
 
   // TC39 Explicit Resource Management polyfill for `using` keyword
   (g.Symbol as any).dispose ??= Symbol.for('Symbol.dispose');

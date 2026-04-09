@@ -30,12 +30,18 @@ catalogs:
     ai:
       specifier: 6.0.116
       version: 6.0.116
+    enhanced-resolve:
+      specifier: 5.19.0
+      version: 5.19.0
     esbuild:
       specifier: ^0.27.3
       version: 0.27.3
     nitro:
       specifier: 3.0.1-alpha.1
       version: 3.0.1-alpha.1
+    semver:
+      specifier: 7.7.4
+      version: 7.7.4
     typescript:
       specifier: ^5.9.3
       version: 5.9.3
@@ -416,7 +422,7 @@ importers:
         specifier: 5.6.2
         version: 5.6.2
       enhanced-resolve:
-        specifier: 5.19.0
+        specifier: 'catalog:'
         version: 5.19.0
       esbuild:
         specifier: 'catalog:'
@@ -588,6 +594,9 @@ importers:
       seedrandom:
         specifier: 3.0.5
         version: 3.0.5
+      semver:
+        specifier: 'catalog:'
+        version: 7.7.4
       ulid:
         specifier: 'catalog:'
         version: 3.0.1
@@ -607,6 +616,9 @@ importers:
       '@types/seedrandom':
         specifier: 3.0.8
         version: 3.0.8
+      '@types/semver':
+        specifier: 7.7.1
+        version: 7.7.1
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
@@ -736,8 +748,11 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
+      enhanced-resolve:
+        specifier: 'catalog:'
+        version: 5.19.0
       semver:
-        specifier: 7.7.4
+        specifier: 'catalog:'
         version: 7.7.4
       watchpack:
         specifier: 2.5.1
@@ -897,6 +912,8 @@ importers:
       vite:
         specifier: 7.1.12
         version: 7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3)
+
+  packages/swc-playground-wasm: {}
 
   packages/swc-plugin-workflow:
     dependencies:
@@ -2152,15 +2169,27 @@ importers:
       '@monaco-editor/react':
         specifier: latest
         version: 4.7.0(monaco-editor@0.55.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
-      '@swc/core':
-        specifier: 1.15.3
-        version: 1.15.3
       '@vercel/analytics':
         specifier: latest
         version: 2.0.1(baf0aac73cdb99e7b4aee2bd440a0745)
-      '@workflow/swc-plugin':
+      '@workflow/core':
         specifier: workspace:*
-        version: link:../../packages/swc-plugin-workflow
+        version: link:../../packages/core
+      '@workflow/errors':
+        specifier: workspace:*
+        version: link:../../packages/errors
+      '@workflow/serde':
+        specifier: workspace:*
+        version: link:../../packages/serde
+      '@workflow/swc-playground-wasm':
+        specifier: workspace:*
+        version: link:../../packages/swc-playground-wasm
+      '@workflow/utils':
+        specifier: workspace:*
+        version: link:../../packages/utils
+      '@workflow/world':
+        specifier: workspace:*
+        version: link:../../packages/world
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -2197,6 +2226,9 @@ importers:
       tailwind-merge:
         specifier: ^2.5.5
         version: 2.5.5
+      workflow:
+        specifier: workspace:*
+        version: link:../../packages/workflow
     devDependencies:
       '@tailwindcss/postcss':
         specifier: ^4.1.9
@@ -13605,11 +13637,6 @@ packages:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
     hasBin: true
 
-  semver@7.7.3:
-    resolution: {integrity: sha512-SdsKMrI9TdgjdweUSR9MweHA4EJ8YxHn8DFaDisvhVlUOe4BF1tLD7GAj0lIqWVl+dPb/rExr0Btby5loQm20Q==}
-    engines: {node: '>=10'}
-    hasBin: true
-
   semver@7.7.4:
     resolution: {integrity: sha512-vFKC2IEtQnVhpT78h1Yp8wzwrf8CM+MzKMHGJZfBtzhZNycRFnXsHk6E5TxIkkMsgNS7mdX3AGB7x2QM2di4lA==}
     engines: {node: '>=10'}
@@ -14067,10 +14094,6 @@ packages:
 
   tailwindcss@4.1.18:
     resolution: {integrity: sha512-4+Z+0yiYyEtUVCScyfHCxOYP06L5Ne+JiHhY2IjR2KWMIWhJOYZKLSGZaP5HkZ8+bY0cxfzwDE5uOmzFXyIwxw==}
-
-  tapable@2.2.2:
-    resolution: {integrity: sha512-Re10+NauLTMCudc7T5WLFLAwDhQ0JWdrMK+9B2M8zR5hRExKmsRDCBA7/aV/pNJFltmBFO5BAMlQFi/vq3nKOg==}
-    engines: {node: '>=6'}
 
   tapable@2.3.0:
     resolution: {integrity: sha512-g9ljZiwki/LfxmQADO3dEY1CbpmXT5Hm2fJ+QaGKwSXUylMybePR7/67YW7jOrrvjEgL1Fmz5kzyAjWVWLlucg==}
@@ -21867,7 +21890,7 @@ snapshots:
       fast-glob: 3.3.3
       minimatch: 9.0.5
       piscina: 4.9.2
-      semver: 7.7.3
+      semver: 7.7.4
       slash: 3.0.0
       source-map: 0.7.6
     optionalDependencies:
@@ -25470,7 +25493,7 @@ snapshots:
       node-abort-controller: 3.1.1
       schema-utils: 3.3.0
       semver: 7.7.4
-      tapable: 2.2.2
+      tapable: 2.3.0
       typescript: 5.9.3
       webpack: 5.104.1(@swc/core@1.15.3)(esbuild@0.27.3)
 
@@ -30213,8 +30236,6 @@ snapshots:
 
   semver@6.3.1: {}
 
-  semver@7.7.3: {}
-
   semver@7.7.4: {}
 
   send@0.19.2:
@@ -30858,8 +30879,6 @@ snapshots:
 
   tailwindcss@4.1.18: {}
 
-  tapable@2.2.2: {}
-
   tapable@2.3.0: {}
 
   tar-fs@2.1.4:
@@ -31055,7 +31074,7 @@ snapshots:
     dependencies:
       chalk: 4.1.2
       enhanced-resolve: 5.19.0
-      tapable: 2.2.2
+      tapable: 2.3.0
       tsconfig-paths: 4.2.0
 
   tsconfig-paths@4.2.0:

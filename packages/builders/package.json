@@ -1,7 +1,7 @@
 {
   "name": "@workflow/builders",
-  "version": "4.0.1-beta.64",
-  "description": "Shared builder infrastructure for Workflow DevKit",
+  "version": "5.0.0-beta.0",
+  "description": "Shared builder infrastructure for Workflow SDK",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -46,7 +46,7 @@
     "@workflow/swc-plugin": "workspace:*",
     "builtin-modules": "5.0.0",
     "chalk": "5.6.2",
-    "enhanced-resolve": "5.19.0",
+    "enhanced-resolve": "catalog:",
     "esbuild": "catalog:",
     "find-up": "7.0.0",
     "json5": "2.2.3",

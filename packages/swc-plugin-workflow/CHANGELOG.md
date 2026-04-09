@@ -1,5 +1,25 @@
 # @workflow/swc-plugin
 
+## 5.0.0-beta.0
+
+### Major Changes
+
+- [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
+
+### Patch Changes
+
+- [#1641](https://github.com/vercel/workflow/pull/1641) [`35b539b`](https://github.com/vercel/workflow/commit/35b539b146015fd63ad71e0d08614de96d34aa45) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `detect` mode to SWC plugin and use it during discovery to filter false positive directive detections
+
+- [#1630](https://github.com/vercel/workflow/pull/1630) [`bab8cdd`](https://github.com/vercel/workflow/commit/bab8cddf98e1d4ca897fbfc9cc1fb51a3333c695) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Support getter functions with `"use step"` directive
+
+## 4.1.0-beta.22
+
+### Patch Changes
+
+- [#1599](https://github.com/vercel/workflow/pull/1599) [`5d22e61`](https://github.com/vercel/workflow/commit/5d22e61446d5146887f8c268d305ea42e3f67b09) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix class expression method registrations to use binding name instead of internal class name, preventing `ReferenceError` at runtime for pre-bundled packages
+
+- [#1601](https://github.com/vercel/workflow/pull/1601) [`7c996a7`](https://github.com/vercel/workflow/commit/7c996a76c59cb88fa58d15942218b308d1cd100f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rewrite anonymous `export default class` to a `const` declaration so the class has an accessible binding name for serde/step registration code
+
 ## 4.1.0-beta.21
 
 ### Patch Changes

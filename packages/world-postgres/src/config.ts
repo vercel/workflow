@@ -7,4 +7,9 @@ type PgConnectionConfig =
 export type PostgresWorldConfig = PgConnectionConfig & {
   jobPrefix?: string;
   queueConcurrency?: number;
+  /**
+   * Override the flush interval (in ms) for buffered stream writes.
+   * Default is 10ms. Set to 0 for immediate flushing.
+   */
+  streamFlushIntervalMs?: number;
 };

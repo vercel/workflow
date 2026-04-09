@@ -1,9 +1,19 @@
 import { waitUntil } from '@vercel/functions';
-import { WorkflowRuntimeError } from '@workflow/errors';
+import {
+  EntityConflictError,
+  ThrottleError,
+  WorkflowRuntimeError,
+  WorkflowWorldError,
+} from '@workflow/errors';
 import type { WorkflowInvokePayload, World } from '@workflow/world';
-import { isLegacySpecVersion, SPEC_VERSION_CURRENT } from '@workflow/world';
+import {
+  isLegacySpecVersion,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+} from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { importKey } from '../encryption.js';
+import { runtimeLogger } from '../logger.js';
 import type { Serializable } from '../schemas.js';
 import { dehydrateWorkflowArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -17,19 +27,7 @@ import { getWorld } from './world.js';
 /** ULID generator for client-side runId generation */
 const ulid = monotonicFactory();
 
-export interface StartOptions {
-  /**
-   * The deployment ID to use for the workflow run.
-   *
-   * By default, this is automatically inferred from environment variables
-   * when deploying to Vercel.
-   *
-   * Set to `'latest'` to automatically resolve the most recent deployment
-   * for the current environment (same production target or git branch).
-   * This is currently a Vercel-specific feature.
-   */
-  deploymentId?: 'latest' | (string & {});
-
+export interface StartOptionsBase {
   /**
    * The world to use for the workflow run creation,
    * by default the world is inferred from the environment variables.
@@ -41,6 +39,34 @@ export interface StartOptions {
    */
   specVersion?: number;
 }
+
+export interface StartOptionsWithDeploymentId extends StartOptionsBase {
+  /**
+   * The deployment ID to use for the workflow run.
+   *
+   * By default, this is automatically inferred from environment variables
+   * when deploying to Vercel.
+   *
+   * Set to `'latest'` to automatically resolve the most recent deployment
+   * for the current environment (same production target or git branch).
+   * This is currently a Vercel-specific feature.
+   *
+   * **Note:** When `deploymentId` is provided, the argument and return types become `unknown`
+   * since there is no guarantee the types will be consistent across deployments.
+   */
+  deploymentId: 'latest' | (string & {});
+}
+
+export interface StartOptionsWithoutDeploymentId extends StartOptionsBase {
+  deploymentId?: undefined;
+}
+
+/**
+ * Options for starting a workflow run.
+ */
+export type StartOptions =
+  | StartOptionsWithDeploymentId
+  | StartOptionsWithoutDeploymentId;
 
 /**
  * Represents an imported workflow function.
@@ -62,15 +88,30 @@ export type WorkflowMetadata = { workflowId: string };
  * @param options - The options for the workflow run (optional).
  * @returns The unique run ID for the newly started workflow invocation.
  */
+// Overloads with deploymentId - args and return type become unknown
+// Uses generics so typed workflows are assignable (avoids contravariance issues),
+// but the return type and args are still unknown since the deployed version may differ.
+export function start<TArgs extends unknown[], TResult>(
+  workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata,
+  args: unknown[],
+  options: StartOptionsWithDeploymentId
+): Promise<Run<unknown>>;
+
+export function start<TResult>(
+  workflow: WorkflowFunction<[], TResult> | WorkflowMetadata,
+  options: StartOptionsWithDeploymentId
+): Promise<Run<unknown>>;
+
+// Overloads without deploymentId - preserve type inference
 export function start<TArgs extends unknown[], TResult>(
   workflow: WorkflowFunction<TArgs, TResult> | WorkflowMetadata,
   args: TArgs,
-  options?: StartOptions
+  options?: StartOptionsWithoutDeploymentId
 ): Promise<Run<TResult>>;
 
 export function start<TResult>(
   workflow: WorkflowFunction<[], TResult> | WorkflowMetadata,
-  options?: StartOptions
+  options?: StartOptionsWithoutDeploymentId
 ): Promise<Run<TResult>>;
 
 export async function start<TArgs extends unknown[], TResult>(
@@ -84,7 +125,7 @@ export async function start<TArgs extends unknown[], TResult>(
 
     if (!workflowName) {
       throw new WorkflowRuntimeError(
-        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`,
+        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`,
         { slug: 'start-invalid-workflow-function' }
       );
     }
@@ -131,7 +172,14 @@ export async function start<TArgs extends unknown[], TResult>(
       // Serialize current trace context to propagate across queue boundary
       const traceCarrier = await serializeTraceCarrier();
 
-      const specVersion = opts.specVersion ?? SPEC_VERSION_CURRENT;
+      // Use world-declared specVersion when available (our worlds set this),
+      // otherwise fall back to the safe baseline that community worlds handle.
+      // Community worlds built against older @workflow/world reject runs with
+      // specVersion > their SPEC_VERSION_CURRENT via requiresNewerWorld().
+      const specVersion =
+        opts.specVersion ??
+        world.specVersion ??
+        SPEC_VERSION_SUPPORTS_EVENT_SOURCING;
       const v1Compat = isLegacySpecVersion(specVersion);
 
       // Resolve encryption key for the new run. The runId has already been
@@ -157,33 +205,93 @@ export async function start<TArgs extends unknown[], TResult>(
         globalThis,
         v1Compat
       );
-      const result = await world.events.create(
-        runId,
-        {
-          eventType: 'run_created',
-          specVersion,
-          eventData: {
-            deploymentId: deploymentId,
-            workflowName: workflowName,
-            input: workflowArguments,
-            executionContext: { traceCarrier, workflowCoreVersion },
-          },
-        },
-        { v1Compat }
-      );
 
-      // Assert that the run was created
-      if (!result.run) {
-        throw new WorkflowRuntimeError(
-          "Missing 'run' in server response for 'run_created' event"
-        );
+      const executionContext = { traceCarrier, workflowCoreVersion };
+
+      // Call events.create (run_created) and queue in parallel.
+      // If events.create fails with 429/5xx, the run was still accepted
+      // via the queue and creation will be re-tried async by the runtime.
+      const [runCreatedResult, queueResult] = await Promise.allSettled([
+        world.events.create(
+          runId,
+          {
+            eventType: 'run_created',
+            specVersion,
+            eventData: {
+              deploymentId: deploymentId,
+              workflowName: workflowName,
+              input: workflowArguments,
+              executionContext,
+            },
+          },
+          { v1Compat }
+        ),
+        world.queue(
+          getWorkflowQueueName(workflowName),
+          {
+            runId,
+            traceCarrier,
+            ...(specVersion >= SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+              ? {
+                  runInput: {
+                    input: workflowArguments,
+                    deploymentId,
+                    workflowName,
+                    specVersion,
+                    executionContext,
+                  },
+                }
+              : {}),
+          } satisfies WorkflowInvokePayload,
+          {
+            deploymentId,
+            specVersion,
+          }
+        ),
+      ]);
+
+      // Queue failure is always fatal — the run was not enqueued
+      if (queueResult.status === 'rejected') {
+        throw queueResult.reason;
       }
 
-      // Verify server accepted our runId
-      if (!v1Compat && result.run.runId !== runId) {
-        throw new WorkflowRuntimeError(
-          `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
-        );
+      // Handle events.create result
+      let resilientStart = false;
+      if (runCreatedResult.status === 'rejected') {
+        const err = runCreatedResult.reason;
+        if (EntityConflictError.is(err)) {
+          // 409: The run already exists. This can happen in extreme cases where
+          // the run creation call gets a cold start or other slowdown, and the queue
+          // + run_started call completes faster. We expect this to be <=1% of cases.
+          // In this case, we can safely return.
+        } else if (isRetryableStartError(err)) {
+          // 429 (ThrottleError) and 5xx (WorkflowWorldError with status >= 500)
+          // are retryable — the run was accepted via the queue and creation
+          // will be re-tried by the runtime when it calls run_started.
+          resilientStart = true;
+          runtimeLogger.warn(
+            'Run creation event failed, but the run was accepted via the queue. ' +
+              'The run_created event will be re-tried async by the runtime.',
+            { workflowRunId: runId, error: err.message }
+          );
+        } else {
+          throw err;
+        }
+      } else {
+        const result = runCreatedResult.value;
+        // Assert that the run was created
+        if (!result.run) {
+          throw new WorkflowRuntimeError(
+            "Missing 'run' in server response for 'run_created' event"
+          );
+        }
+
+        // Verify server accepted our runId
+        if (!v1Compat && result.run.runId !== runId) {
+          throw new WorkflowRuntimeError(
+            `Server returned different runId than requested: expected ${runId}, got ${result.run.runId}`
+          );
+        }
       }
 
       waitUntil(
@@ -197,22 +305,27 @@ export async function start<TArgs extends unknown[], TResult>(
 
       span?.setAttributes({
         ...Attribute.WorkflowRunId(runId),
-        ...Attribute.WorkflowRunStatus(result.run.status),
         ...Attribute.DeploymentId(deploymentId),
+        ...(runCreatedResult.status === 'fulfilled' &&
+        runCreatedResult.value.run
+          ? Attribute.WorkflowRunStatus(runCreatedResult.value.run.status)
+          : {}),
       });
 
-      await world.queue(
-        getWorkflowQueueName(workflowName),
-        {
-          runId,
-          traceCarrier,
-        } satisfies WorkflowInvokePayload,
-        {
-          deploymentId,
-        }
-      );
-
-      return new Run<TResult>(runId);
+      return new Run<TResult>(runId, { resilientStart });
     });
   });
+}
+
+/**
+ * Checks if an error from events.create (run_created) is retryable,
+ * meaning the queue can re-try creation later via the run_started path.
+ * - ThrottleError (429): rate limited, will succeed later
+ * - WorkflowWorldError with status >= 500: server error, will succeed later
+ */
+function isRetryableStartError(err: unknown): boolean {
+  if (ThrottleError.is(err)) return true;
+  if (WorkflowWorldError.is(err) && err.status && err.status >= 500)
+    return true;
+  return false;
 }

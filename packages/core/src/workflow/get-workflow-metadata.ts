@@ -18,6 +18,18 @@ export interface WorkflowMetadata {
    * The URL where the workflow can be triggered.
    */
   url: string;
+
+  /**
+   * Feature flags indicating which capabilities are active for this workflow run.
+   */
+  features: {
+    /**
+     * Whether encryption is enabled for this workflow run.
+     * When `true`, step inputs, outputs, and other serialized data
+     * are encrypted at rest.
+     */
+    encryption: boolean;
+  };
 }
 
 export const WORKFLOW_CONTEXT_SYMBOL =

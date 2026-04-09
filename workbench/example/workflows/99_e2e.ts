@@ -246,6 +246,7 @@ export async function workflowAndStepMetadataWorkflow() {
       workflowRunId: workflowMetadata.workflowRunId,
       workflowStartedAt: workflowMetadata.workflowStartedAt,
       url: workflowMetadata.url,
+      features: workflowMetadata.features,
     },
     stepMetadata,
     innerWorkflowMetadata,
@@ -1476,4 +1477,147 @@ export async function sleepWithSequentialStepsWorkflow() {
   const b = await addNumbers(a, 3);
   const c = await addNumbers(b, 4);
   return { a, b, c, shouldCancel };
+}
+
+//////////////////////////////////////////////////////////
+
+/**
+ * Validates that import.meta.url is correctly polyfilled in CJS step bundles
+ * and natively available in ESM step bundles.
+ */
+async function checkImportMetaUrl(): Promise<{
+  isDefined: boolean;
+  type: string;
+  isFileUrl: boolean;
+}> {
+  'use step';
+  const url = import.meta.url;
+  return {
+    isDefined: typeof url === 'string' && url.length > 0,
+    type: typeof url,
+    isFileUrl: typeof url === 'string' && url.startsWith('file://'),
+  };
+}
+
+export async function importMetaUrlWorkflow() {
+  'use workflow';
+  return await checkImportMetaUrl();
+}
+
+//////////////////////////////////////////////////////////
+// Regression test for #1577:
+// getWorkflowMetadata()/getStepMetadata() called from a module-level helper
+// function (not directly inside the step body) must still have access to the
+// AsyncLocalStorage context.
+
+const withStrictMetadataCheck = async <T>(fn: () => Promise<T>) => {
+  const workflowMetadata = getWorkflowMetadata();
+  const stepMetadata = getStepMetadata();
+
+  return await fn().then((result) => ({
+    result,
+    workflowMetadata,
+    stepMetadata,
+  }));
+};
+
+async function metadataHelperStep(label: string): Promise<{
+  label: string;
+  workflowRunId: string;
+  stepId: string;
+  attempt: number;
+}> {
+  'use step';
+
+  const { workflowMetadata, stepMetadata } = await withStrictMetadataCheck(
+    async () => label
+  );
+
+  return {
+    label,
+    workflowRunId: workflowMetadata.workflowRunId,
+    stepId: stepMetadata.stepId,
+    attempt: stepMetadata.attempt,
+  };
+}
+
+export async function metadataFromHelperWorkflow(label: string): Promise<{
+  label: string;
+  workflowRunId: string;
+  stepId: string;
+  attempt: number;
+}> {
+  'use workflow';
+
+  return await metadataHelperStep(label);
+}
+
+//////////////////////////////////////////////////////////
+// Getter Step Tests
+//////////////////////////////////////////////////////////
+
+/**
+ * A class with a getter method marked as a step.
+ * This tests the "use step" support for getter functions.
+ * The class uses custom serialization so the `this` value can be
+ * serialized across the workflow/step boundary.
+ */
+export class Sensor {
+  constructor(
+    public baseValue: number,
+    public multiplier: number
+  ) {}
+
+  static [Symbol.for('workflow-serialize')](instance: Sensor) {
+    return { baseValue: instance.baseValue, multiplier: instance.multiplier };
+  }
+
+  static [Symbol.for('workflow-deserialize')](data: {
+    baseValue: number;
+    multiplier: number;
+  }) {
+    return new Sensor(data.baseValue, data.multiplier);
+  }
+
+  /** Getter step: accessing this property triggers a step invocation */
+  get reading() {
+    'use step';
+    return this.baseValue * this.multiplier;
+  }
+
+  /** Regular instance method step for comparison */
+  async calibrate(offset: number): Promise<number> {
+    'use step';
+    return this.baseValue * this.multiplier + offset;
+  }
+}
+
+/**
+ * Workflow that tests getter steps on a class instance.
+ * Uses `await instance.prop` to trigger step invocations via getters.
+ */
+export async function getterStepWorkflow(
+  base: number,
+  multiplier: number,
+  offset: number
+) {
+  'use workflow';
+
+  const sensor = new Sensor(base, multiplier);
+
+  // Getter step: `await sensor.reading` triggers a step invocation
+  const reading = await sensor.reading;
+
+  // Regular instance method step for comparison
+  const calibrated = await sensor.calibrate(offset);
+
+  // Second sensor to verify different instances work
+  const sensor2 = new Sensor(100, 2);
+  const reading2 = await sensor2.reading;
+
+  return {
+    reading, // base * multiplier
+    calibrated, // base * multiplier + offset
+    reading2, // 100 * 2 = 200
+  };
 }

@@ -4,7 +4,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
+  WorkflowWorldError,
 } from '@workflow/errors';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import {
   afterAll,
   assert,
@@ -594,6 +596,16 @@ describe('e2e', () => {
     );
     expect(returnValue.stepMetadata.url).toBeUndefined();
 
+    // workflow context should have features and stepMetadata shouldn't
+    expect(returnValue.workflowMetadata.features).toBeDefined();
+    expect(typeof returnValue.workflowMetadata.features.encryption).toBe(
+      'boolean'
+    );
+    expect(returnValue.innerWorkflowMetadata.features).toStrictEqual(
+      returnValue.workflowMetadata.features
+    );
+    expect(returnValue.stepMetadata.features).toBeUndefined();
+
     // workflow context shouldn't have stepId, stepStartedAt, or attempt
     expect(returnValue.workflowMetadata.stepId).toBeUndefined();
     expect(returnValue.workflowMetadata.stepStartedAt).toBeUndefined();
@@ -924,11 +936,11 @@ describe('e2e', () => {
             // Workflow catches the error and returns it
             expect(result.caught).toBe(true);
             expect(result.message).toContain('Step error message');
-            // Stack trace can show either the original step function or its transformed wrapper name
-            expect(result.stack).toMatch(/errorStepFn|registerStepFunction/);
+            // Stack trace should contain the original step function name
+            expect(result.stack).toContain('errorStepFn');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('99_e2e.ts');
@@ -946,13 +958,11 @@ describe('e2e', () => {
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.message).toContain('Step error message');
 
-            // Step error stack can show either the original step function or its transformed wrapper name
-            expect(failedStep.error.stack).toMatch(
-              /errorStepFn|registerStepFunction/
-            );
+            // Step error stack should contain the original step function name
+            expect(failedStep.error.stack).toContain('errorStepFn');
             expect(failedStep.error.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('99_e2e.ts');
@@ -980,12 +990,10 @@ describe('e2e', () => {
             );
             // Stack trace propagates to caught error with function names and source file
             expect(result.stack).toContain('throwErrorFromStep');
-            expect(result.stack).toMatch(
-              /stepThatThrowsFromHelper|registerStepFunction/
-            );
+            expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('helpers.ts');
@@ -1002,11 +1010,11 @@ describe('e2e', () => {
             );
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.stack).toContain('throwErrorFromStep');
-            expect(failedStep.error.stack).toMatch(
-              /stepThatThrowsFromHelper|registerStepFunction/
+            expect(failedStep.error.stack).toContain(
+              'stepThatThrowsFromHelper'
             );
             expect(failedStep.error.stack).not.toContain('evalmachine');
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('helpers.ts');
@@ -1542,11 +1550,17 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(flowRes.status).toBe(200);
-      expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
-      const flowBody = await flowRes.text();
-      expect(flowBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/flow" endpoint is healthy'
-      );
+      expect(flowRes.headers.get('Content-Type')).toBe('application/json');
+      const flowBody = await flowRes.json();
+      expect(flowBody).toEqual({
+        healthy: true,
+        endpoint: '/.well-known/workflow/v1/flow',
+        // specVersion comes from the World's declared specVersion (e.g. 3
+        // for world-vercel) or falls back to SPEC_VERSION_CURRENT (2).
+        specVersion: expect.any(Number),
+        workflowCoreVersion: expect.any(String),
+      });
+      expect(flowBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
 
       // Test the step endpoint health check
       const stepHealthUrl = new URL(
@@ -1558,11 +1572,15 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(stepRes.status).toBe(200);
-      expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
-      const stepBody = await stepRes.text();
-      expect(stepBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/step" endpoint is healthy'
-      );
+      expect(stepRes.headers.get('Content-Type')).toBe('application/json');
+      const stepBody = await stepRes.json();
+      expect(stepBody).toEqual({
+        healthy: true,
+        endpoint: '/.well-known/workflow/v1/step',
+        specVersion: expect.any(Number),
+        workflowCoreVersion: expect.any(String),
+      });
+      expect(stepBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
     }
   );
 
@@ -2140,6 +2158,123 @@ describe('e2e', () => {
 
       const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
       expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
+    'importMetaUrlWorkflow - import.meta.url is available in step bundles',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('importMetaUrlWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        isDefined: true,
+        type: 'string',
+        isFileUrl: true,
+      });
+    }
+  );
+
+  test(
+    'metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('metadataFromHelperWorkflow'), [
+        'smoke-test',
+      ]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue.label).toBe('smoke-test');
+      expect(typeof returnValue.workflowRunId).toBe('string');
+      expect(typeof returnValue.stepId).toBe('string');
+      expect(returnValue.attempt).toBeGreaterThanOrEqual(1);
+    }
+  );
+
+  // ============================================================
+  // Resilient start: run completes even when run_created fails
+  // ============================================================
+  // TODO: Switch this to a stream-based workflow (e.g. readableStreamWorkflow)
+  // to also verify that serialization, flushing, and binary data work correctly
+  // over the queue boundary. Currently using addTenWorkflow to avoid the
+  // skipIf(isLocalDeployment()) barrier that stream tests require.
+  test(
+    'resilient start: addTenWorkflow completes when run_created returns 500',
+    { timeout: 60_000 },
+    async () => {
+      // Get the real world and wrap it so the first events.create call
+      // (run_created) throws a 500 server error. The queue should still
+      // be dispatched with runInput, and the runtime should bootstrap
+      // the run via the run_started fallback path.
+      const realWorld = getWorld();
+      let createCallCount = 0;
+      const stubbedWorld: World = {
+        ...realWorld,
+        events: {
+          ...realWorld.events,
+          create: (async (...args: Parameters<World['events']['create']>) => {
+            createCallCount++;
+            if (createCallCount === 1) {
+              // Fail the very first call (run_created from start())
+              throw new WorkflowWorldError('Simulated storage outage', {
+                status: 500,
+              });
+            }
+            return realWorld.events.create(...args);
+          }) as World['events']['create'],
+        },
+      };
+
+      const run = await start(await e2e('addTenWorkflow'), [123], {
+        world: stubbedWorld,
+      });
+
+      // Verify the stub intercepted the run_created call (only call
+      // through the stubbed world — the server-side runtime uses its
+      // own world instance for run_started and subsequent events).
+      expect(createCallCount).toBe(1);
+
+      // The run should still complete despite run_created failing.
+      // The runtime's resilient start path creates the run from
+      // run_started, so returnValue polling may initially get
+      // WorkflowRunNotFoundError before the queue delivers.
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe(133);
+    }
+  );
+
+  test(
+    'getterStepWorkflow - getter functions with "use step" directive',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow tests getter functions marked with "use step".
+      // The Sensor class has custom serialization so the `this` context
+      // can be serialized across the workflow/step boundary.
+      //
+      // getterStepWorkflow(5, 3, 7) should:
+      // 1. Create Sensor(5, 3)
+      // 2. await sensor.reading -> 5 * 3 = 15 (getter step)
+      // 3. await sensor.calibrate(7) -> 5 * 3 + 7 = 22 (instance method step)
+      // 4. Create Sensor(100, 2), await sensor2.reading -> 100 * 2 = 200
+      const run = await start(await e2e('getterStepWorkflow'), [5, 3, 7]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toEqual({
+        reading: 15, // 5 * 3
+        calibrated: 22, // 5 * 3 + 7
+        reading2: 200, // 100 * 2
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toEqual({
+        reading: 15,
+        calibrated: 22,
+        reading2: 200,
+      });
     }
   );
 });

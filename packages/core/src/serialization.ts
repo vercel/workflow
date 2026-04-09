@@ -445,6 +445,12 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
           controller.enqueue(result.value);
         }
       },
+      cancel: async (reason) => {
+        if (this.#reader) {
+          await this.#reader.cancel(reason).catch(() => {});
+          this.#reader = undefined;
+        }
+      },
     });
   }
 }
@@ -522,7 +528,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
             for (const w of currentWaiters) w.reject(err);
           }
         );
-      }, STREAM_FLUSH_INTERVAL_MS);
+      }, world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
     };
 
     super({
@@ -585,6 +591,12 @@ export interface SerializableSpecial {
   BigInt64Array: string; // base64 string
   BigUint64Array: string; // base64 string
   Date: string; // ISO string
+  DOMException: {
+    message: string;
+    name: string;
+    stack?: string;
+    cause?: unknown;
+  };
   Float32Array: string; // base64 string
   Float64Array: string; // base64 string
   Error: Record<string, any>;
@@ -722,6 +734,21 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       const valid = !Number.isNaN(value.getDate());
       // Note: "." is to avoid returning a falsy value when the date is invalid
       return valid ? value.toISOString() : '.';
+    },
+    // DOMException is a special case: in Node.js it passes isNativeError()
+    // and instanceof Error, but has a unique constructor signature
+    // (message, name) and a read-only numeric `code` property derived from
+    // `name`. It must be checked before the generic Error reducer.
+    DOMException: (value) => {
+      if (!types.isNativeError(value)) return false;
+      if (value.constructor?.name !== 'DOMException') return false;
+      const reduced: SerializableSpecial['DOMException'] = {
+        message: value.message,
+        name: value.name,
+        stack: value.stack,
+      };
+      if ('cause' in value) reduced.cause = value.cause;
+      return reduced;
     },
     Error: (value) => {
       // Use types.isNativeError() instead of `instanceof global.Error`
@@ -1033,6 +1060,14 @@ export function getCommonRevivers(global: Record<string, any> = globalThis) {
       return new global.BigUint64Array(ab);
     },
     Date: (value) => new global.Date(value),
+    DOMException: (value) => {
+      const error = new global.DOMException(value.message, value.name);
+      if (value.stack !== undefined) error.stack = value.stack;
+      // DOMException's constructor doesn't accept a cause option, so
+      // we set it manually when present in the serialized data.
+      if ('cause' in value) error.cause = value.cause;
+      return error;
+    },
     Error: (value) => {
       const error = new global.Error(value.message);
       error.name = value.name;

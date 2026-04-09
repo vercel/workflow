@@ -24,23 +24,26 @@ export {
   PSEUDO_PACKAGES,
 } from './pseudo-package-esbuild-plugin.js';
 export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
+export {
+  analyzeSerdeCompliance,
+  extractClassEntries,
+  type SerdeCheckResult,
+  type SerdeClassCheckResult,
+} from './serde-checker.js';
 export { StandaloneBuilder } from './standalone.js';
 export { createSwcPlugin } from './swc-esbuild-plugin.js';
 export {
   detectWorkflowPatterns,
   generatedWorkflowPathPattern,
   isGeneratedWorkflowFile,
-  isWorkflowSdkFile,
   shouldTransformFile,
   turbopackContentPattern,
   useStepPattern,
   useWorkflowPattern,
   type WorkflowPatternMatch,
-  workflowSdkPathPattern,
   workflowSerdeImportPattern,
   workflowSerdeSymbolPattern,
 } from './transform-utils.js';
-export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 export type {
   AstroConfig,
   BuildTarget,
@@ -52,3 +55,4 @@ export type {
 } from './types.js';
 export { isValidBuildTarget, validBuildTargets } from './types.js';
 export { VercelBuildOutputAPIBuilder } from './vercel-build-output-api.js';
+export { resolveWorkflowAliasRelativePath } from './workflow-alias.js';

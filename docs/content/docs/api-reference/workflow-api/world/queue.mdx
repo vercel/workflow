@@ -1,0 +1,86 @@
+---
+title: Queue
+description: Low-level queue interface for dispatching workflow and step invocations.
+type: reference
+summary: "Methods: getDeploymentId(), queue(), createQueueHandler(). Internal queue dispatch — normally handled by the SDK."
+prerequisites:
+  - /docs/api-reference/workflow-api/get-world
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/foundations/starting-workflows
+keywords:
+  - world.queue
+  - getDeploymentId
+  - queue
+  - createQueueHandler
+  - ValidQueueName
+  - queue dispatch
+---
+
+Queue methods live directly on the `world` object (not nested). They dispatch internal workflow and step invocations to the queue backend.
+
+<Callout type="warn">
+  These methods are used internally by the Workflow SDK to dispatch execution. You do not need to call them in normal operations — use [`start()`](/docs/api-reference/workflow-api/start) to trigger workflows instead. Direct queue access is only needed if you programmatically create a run via `world.events.create()` with a `run_created` event and need to kick off its initial execution, or for debugging resumption of a flow or step route.
+</Callout>
+
+## Import
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld(); // [!code highlight]
+// Queue methods are called directly on world — e.g. world.queue()
+```
+
+## Methods
+
+### getDeploymentId()
+
+Get the current deployment ID. Used internally for routing queue messages to the correct deployment.
+
+```typescript lineNumbers
+const deploymentId = await world.getDeploymentId(); // [!code highlight]
+```
+
+**Returns:** `string` — The current deployment ID
+
+### queue()
+
+Dispatch a message to a named queue. The message payload is an internal SDK type (`WorkflowInvokePayload`, `StepInvokePayload`, or `HealthCheckPayload`).
+
+```typescript lineNumbers
+const { messageId } = await world.queue(queueName, payload, opts); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `queueName` | `ValidQueueName` | The queue name (branded string) |
+| `message` | `QueuePayload` | Internal SDK payload |
+| `opts` | `QueueOptions` | Optional — `deploymentId`, `idempotencyKey`, `delaySeconds`, `headers` |
+
+**Returns:** `{ messageId: MessageId | null }`
+
+### createQueueHandler()
+
+Create an HTTP handler that processes messages from a queue. Used to set up the queue consumer endpoint.
+
+```typescript lineNumbers
+const handler = world.createQueueHandler(prefix, callback); // [!code highlight]
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `prefix` | `QueuePrefix` | Queue name prefix to match |
+| `callback` | `(message, meta) => Promise<void \| { timeoutSeconds: number }>` | Handler called for each message. `meta` contains `attempt`, `queueName`, `messageId`, `requestId`. |
+
+**Returns:** `(req: Request) => Promise<Response>`
+
+## Related
+
+- [start()](/docs/api-reference/workflow-api/start) — The standard way to start workflow runs
+- [Starting Workflows](/docs/foundations/starting-workflows) — Core concepts for workflow invocation
+- [Storage](/docs/api-reference/workflow-api/world/storage) — Create events that trigger queue dispatch

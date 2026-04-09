@@ -16,10 +16,12 @@ export {
   MessageId,
   QueuePayloadSchema,
   QueuePrefix,
+  RunInputSchema,
   StepInvokePayloadSchema,
   ValidQueueName,
   WorkflowInvokePayloadSchema,
 } from './queue.js';
+export { reenqueueActiveRuns } from './recovery.js';
 export type * from './runs.js';
 export {
   WorkflowRunBaseSchema,
@@ -48,11 +50,15 @@ export {
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
 } from './spec-version.js';
 export type * from './steps.js';
 export { StepSchema, StepStatusSchema } from './steps.js';
 export {
+  DEFAULT_TIMESTAMP_THRESHOLD_FUTURE_MS,
   DEFAULT_TIMESTAMP_THRESHOLD_MS,
+  DEFAULT_TIMESTAMP_THRESHOLD_PAST_MS,
   ulidToDate,
   validateUlidTimestamp,
 } from './ulid.js';

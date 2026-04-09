@@ -1,16 +1,16 @@
 ---
 name: workflow
-description: Creates durable, resumable workflows using Vercel's Workflow DevKit. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow devkit", "queue", "event", "push", "subscribe", or step-based orchestration.
+description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.4'
+  version: '1.6'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
 
 Your knowledge of `workflow` is outdated.
 
-The `workflow` documentation outlined below matches the installed version of the Workflow DevKit.
+The `workflow` documentation outlined below matches the installed version of the Workflow SDK.
 Follow these instructions before starting on any `workflow`-related tasks:
 
 Search the bundled documentation in `node_modules/workflow/docs/`:
@@ -24,6 +24,7 @@ Documentation structure in `node_modules/workflow/docs/`:
 - `foundations/` - Core concepts (workflows-and-steps.mdx, hooks.mdx, streaming.mdx, etc.)
 - `api-reference/workflow/` - API docs (sleep.mdx, create-hook.mdx, fatal-error.mdx, etc.)
 - `api-reference/workflow-api/` - Client API (start.mdx, get-run.mdx, resume-hook.mdx, etc.)
+- `api-reference/workflow-api/world/` - World SDK (runs.mdx, steps.mdx, hooks.mdx, events.mdx, streams.mdx, queue.mdx, observability.mdx)
 - `ai/` - AI SDK integration docs
 - `errors/` - Error code documentation
 
@@ -33,7 +34,7 @@ Related packages also include bundled docs:
 - `@workflow/core`: `node_modules/@workflow/core/docs/` - Core runtime (foundations, how-it-works)
 - `@workflow/next`: `node_modules/@workflow/next/docs/` - Next.js integration
 
-**When in doubt, update to the latest version of the Workflow DevKit.**
+**When in doubt, update to the latest version of the Workflow SDK.**
 
 ### Official Resources
 
@@ -59,6 +60,9 @@ import { getWorkflowMetadata, getStepMetadata } from "workflow";
 
 // API operations
 import { start, getRun, resumeHook, resumeWebhook } from "workflow/api";
+
+// Observability & data hydration
+import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowName } from "workflow/observability";
 
 // Framework integrations
 import { withWorkflow } from "workflow/next";
@@ -289,9 +293,66 @@ if (res.status === 429) {
 
 All data passed to/from workflows and steps must be serializable.
 
-**Supported types:** string, number, boolean, null, undefined, bigint, plain objects, arrays, Date, RegExp, URL, URLSearchParams, Map, Set, Headers, ArrayBuffer, typed arrays, Request, Response, ReadableStream, WritableStream.
+**Supported built-in types:** string, number, boolean, null, undefined, bigint, plain objects, arrays, Date, RegExp, URL, URLSearchParams, Map, Set, Headers, ArrayBuffer, typed arrays, Request, Response, ReadableStream, WritableStream.
 
-**Not supported:** Functions, class instances, Symbols, WeakMap/WeakSet. Pass data, not callbacks.
+**Not supported:** Functions, Symbols, WeakMap/WeakSet. Pass data, not callbacks.
+
+### Custom Class Serialization
+
+Class instances **can** be serialized across workflow/step boundaries by implementing the `@workflow/serde` protocol. This is essential when a class has instance methods with `"use step"` or when you want to pass class instances between steps.
+
+**Install:** `@workflow/serde` must be a dependency of the package containing the class.
+
+**Pattern:** Add two static methods inside the class body using computed property syntax:
+
+```typescript
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from "@workflow/serde";
+
+export class Point {
+  x: number;
+  y: number;
+
+  constructor(x: number, y: number) {
+    this.x = x;
+    this.y = y;
+  }
+
+  // Serialize: return plain data (must be devalue-compatible types only)
+  static [WORKFLOW_SERIALIZE](instance: Point) {
+    return { x: instance.x, y: instance.y };
+  }
+
+  // Deserialize: reconstruct from plain data
+  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+    return new Point(data.x, data.y);
+  }
+
+  async computeDistance(other: Point) {
+    "use step";
+    return Math.sqrt((this.x - other.x) ** 2 + (this.y - other.y) ** 2);
+  }
+}
+```
+
+**Critical rules:**
+1. **Define serde methods INSIDE the class body** as static methods with computed property syntax (`static [WORKFLOW_SERIALIZE](...)`). The SWC plugin detects them by scanning the class. Do NOT assign them externally (e.g., `(MyClass as any)[WORKFLOW_SERIALIZE] = ...`) -- the compiler will not detect this.
+2. **Serde methods must return only devalue-compatible types** (plain objects, arrays, primitives, Date, Map, Set, Uint8Array, etc.). No functions, no class instances, no Node.js-specific objects.
+3. **Add `"use step"` to Node.js-dependent instance methods.** The SWC plugin strips `"use step"` method bodies from the workflow bundle. This is how you keep Node.js imports (fs, crypto, child_process, etc.) out of the workflow sandbox. The class shell with its serde methods remains in the workflow bundle; only the step method bodies are removed.
+4. **Do NOT manually register classes.** The SWC plugin automatically generates registration code (an IIFE that sets `classId` and adds the class to the global registry). Manual calls to `registerSerializationClass()` are unnecessary and error-prone.
+5. **Do NOT use dynamic imports to work around sandbox restrictions.** If a class method needs Node.js APIs, the correct solution is `"use step"`, not `/* @vite-ignore */ import(...)`.
+
+**When serde works well:** Pure data classes, domain models, configuration objects, and classes where Node.js-dependent methods can be marked with `"use step"`.
+
+**When to avoid serde:** If a class is fundamentally inseparable from Node.js APIs (every method needs `fs`, `net`, etc.) and cannot meaningfully exist as a shell in the workflow sandbox, keep it entirely in step functions and pass plain data objects across boundaries instead.
+
+### Validating Serde Compliance
+
+Use these tools to verify classes are correctly set up:
+
+- **`workflow transform <file> --check-serde`** -- Shows the SWC transform output for a file and checks if serde classes are compliant (no Node.js imports remaining in the workflow bundle).
+- **`workflow validate`** -- Scans all workflow files and reports serde compliance issues. Use `--json` for machine-readable output.
+- **SWC Playground** -- The web playground at `workbench/swc-playground` shows a Serde Analysis panel when serde patterns are detected.
+- **Build-time warnings** -- The builder automatically warns when serde classes have Node.js built-in imports remaining in the workflow bundle.
 
 ## Streaming
 
@@ -470,7 +531,7 @@ npx workflow cancel <run_id> --backend vercel --project <project-name> --team <t
 
 ## Testing Workflows
 
-Workflow DevKit provides a Vitest plugin for testing workflows in-process — no running server required.
+Workflow SDK provides a Vitest plugin for testing workflows in-process — no running server required.
 
 **Unit testing steps:** Steps are just functions; without the compiler, `"use step"` is a no-op. Test them directly:
 
@@ -553,3 +614,145 @@ await resumeWebhook(hook.token, new Request("https://example.com/webhook", {
 - Use deterministic hook tokens based on test data for easier resumption
 - Set generous `testTimeout` — workflows may run longer than typical unit tests
 - `vi.mock()` does **not** work in integration tests — step dependencies are bundled by esbuild
+
+## Observability & World SDK
+
+Use `getWorld()` to build observability dashboards, admin panels, and inspect workflow state.
+
+**Key imports:**
+```typescript
+import { getWorld } from "workflow/runtime";
+import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowName } from "workflow/observability";
+```
+
+**Key docs** (grep `node_modules/workflow/docs/` for full details):
+- `api-reference/workflow-api/world/storage.mdx` — events, runs, steps, hooks (events are source of truth; others are materialized views)
+- `api-reference/workflow-api/world/observability.mdx` — hydration, parsing, encryption
+
+### World SDK Method Signatures
+
+⚠️ Pagination is nested: `{ pagination: { cursor } }` — NOT `{ cursor }` directly.
+
+```typescript
+const world = getWorld();
+
+// Runs
+const { data, cursor } = await world.runs.list({ pagination: { cursor }, resolveData: 'all' | 'none' });
+const run = await world.runs.get(runId, { resolveData: 'all' | 'none' });
+// Cancel via event creation (no cancel() method on runs)
+await world.events.create(runId, { eventType: 'run_cancelled' });
+
+// Steps — runId is top-level, NOT inside pagination
+const { data, cursor } = await world.steps.list({ runId, pagination: { cursor }, resolveData: 'all' | 'none' });
+const step = await world.steps.get(runId, stepId, { resolveData: 'all' | 'none' });
+
+// Events
+const { data, cursor } = await world.events.list({ runId, pagination: { cursor } });
+await world.events.create(runId, { eventType: 'run_cancelled' });
+
+// Hooks
+const hook = await world.hooks.get(hookId);
+const hook = await world.hooks.getByToken(token);
+
+// Streams (methods live directly on world, not nested)
+await world.writeToStream(name, runId, chunk);
+const readable = await world.readFromStream(name);
+const chunks = await world.getStreamChunks(name, runId, { limit, cursor });
+const info = await world.getStreamInfo(name, runId);
+const streams = await world.listStreamsByRunId(runId);
+
+// Queue (methods live directly on world — internal SDK infrastructure)
+await world.queue(queueName, payload, opts);
+const deploymentId = await world.getDeploymentId();
+```
+
+### `resolveData` Parameter
+
+Controls whether input/output data is **included** in the response. Accepts `'all'` (default) or `'none'`.
+
+**IMPORTANT**: Even with `'all'`, data is still devalue-serialized. You MUST call `hydrateResourceIO()` to get usable JS values.
+
+- **Use `'none'`** for status polling, progress dashboards, run listings
+- **Use `'all'`** (or omit) when you need to inspect actual step I/O data — then **always hydrate**
+
+```typescript
+// Lightweight status check — no I/O loaded
+const run = await world.runs.get(runId, { resolveData: 'none' });
+console.log(run.status); // 'running' | 'completed' | 'failed' | 'cancelled'
+
+// Full inspection — resolveData includes data, hydrateResourceIO deserializes it
+const step = await world.steps.get(runId, stepId); // defaults to 'all'
+const hydrated = hydrateResourceIO(step, observabilityRevivers);
+```
+
+> **Common mistake**: Checking `step.input !== undefined` after `resolveData: 'all'` and assuming
+> the data is ready to use. The data exists but is serialized — always hydrate first.
+
+### Data Hydration (Devalue Format)
+
+Step I/O is serialized via [devalue](https://github.com/Rich-Harris/devalue) with a 4-byte format prefix (`devl`). Without hydration, `input`/`output` are Uint8Array-like objects with numeric keys:
+`{"0":100,"1":101,"2":118,"3":108,...}` — these are NOT usable values.
+
+**Always hydrate before using I/O data:**
+
+```typescript
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability";
+
+const { data: steps } = await world.steps.list({ runId, resolveData: 'all' });
+const hydrated = steps.map(s => hydrateResourceIO(s, observabilityRevivers));
+// hydrated[0].input → [123, 2] (actual function arguments)
+// hydrated[0].output → 125 (actual return value)
+```
+
+`hydrateResourceIO` works on both `Step` and `WorkflowRun` objects. For encrypted workflows, use `getEncryptionKeyForRun()` + `hydrateResourceIOWithKey()`.
+
+### Name Parsing
+
+`parseWorkflowName()`, `parseStepName()`, and `parseClassName()` return `{ shortName: string, moduleSpecifier: string } | null`. Always use optional chaining:
+
+```typescript
+const parsed = parseWorkflowName("workflow//./src/workflows/order//processOrder");
+// parsed?.shortName → "processOrder"
+// parsed?.moduleSpecifier → "./src/workflows/order"
+// ⚠️ Returns null if format doesn't match
+```
+
+### Event Types
+
+Events are the append-only source of truth. Runs/Steps/Hooks are materialized views.
+
+| Category | Types |
+|----------|-------|
+| Run | `run_created`, `run_started`, `run_completed`, `run_failed`, `run_cancelled` |
+| Step | `step_created`, `step_started`, `step_completed`, `step_failed`, `step_retrying` |
+| Hook | `hook_created`, `hook_received`, `hook_disposed`, `hook_conflict` |
+| Wait | `wait_created`, `wait_completed` |
+
+## Error Handling Patterns
+
+Three error strategies for different failure modes:
+
+| Error Type | Use When | Behavior |
+|------------|----------|----------|
+| `FatalError` | Permanent failure (bad input, auth denied) | Terminates workflow immediately, no retry |
+| `RetryableError` | Transient failure (rate limit, timeout) | Retries with optional `retryAfter` delay |
+| `Promise.allSettled` | Parallel steps with mixed criticality | Continues even if some steps fail |
+
+```typescript
+import { FatalError, RetryableError } from "workflow";
+
+// Permanent failure — workflow terminates
+throw new FatalError("Invalid input: missing required field");
+
+// Transient failure — will retry
+throw new RetryableError("API rate limited", { retryAfter: "5m" });
+
+// Mixed criticality parallel execution
+const results = await Promise.allSettled([
+  criticalStep(data),    // Must succeed
+  optionalStep(data),    // OK to fail
+  enrichmentStep(data),  // OK to fail
+]);
+const [critical, optional, enrichment] = results;
+if (critical.status === "rejected") throw new FatalError(critical.reason);
+```

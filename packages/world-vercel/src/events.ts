@@ -60,17 +60,19 @@ function stripEventAndLegacyRefs(
 //   undefined), so we use the looser WorkflowRunWireBaseSchema and normalize
 //   the error via deserializeError() afterward.
 const EventResultResolveWireSchema = z.object({
-  event: EventSchema,
+  event: EventSchema.optional(),
   run: WorkflowRunSchema.optional(),
   step: StepWireSchema.optional(),
   hook: HookSchema.optional(),
+  events: z.array(EventSchema).optional(),
 });
 
 const EventResultLazyWireSchema = z.object({
-  event: EventSchema,
+  event: EventSchema.optional(),
   run: WorkflowRunWireBaseSchema.optional(),
   step: StepWireSchema.optional(),
   hook: HookSchema.optional(),
+  events: z.array(EventSchema).optional(),
 });
 
 // Schema for events returned with `remoteRefBehavior=lazy`.
@@ -457,10 +459,13 @@ async function createWorkflowRunEventInner(
     });
 
     return {
-      event: stripEventAndLegacyRefs(wireResult.event, resolveData),
+      event: wireResult.event
+        ? stripEventAndLegacyRefs(wireResult.event, resolveData)
+        : undefined,
       run: wireResult.run,
       step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
       hook: wireResult.hook,
+      events: wireResult.events,
     };
   }
 
@@ -481,11 +486,14 @@ async function createWorkflowRunEventInner(
   // undefined (lazy ref mode), so deserializeError normalizes it into the
   // StructuredError shape expected by WorkflowRun consumers.
   return {
-    event: stripEventAndLegacyRefs(wireResult.event, resolveData),
+    event: wireResult.event
+      ? stripEventAndLegacyRefs(wireResult.event, resolveData)
+      : undefined,
     run: wireResult.run
       ? deserializeError<WorkflowRun>(wireResult.run)
       : undefined,
     step: wireResult.step ? deserializeStep(wireResult.step) : undefined,
     hook: wireResult.hook,
+    events: wireResult.events,
   };
 }

@@ -1,5 +1,46 @@
 # @workflow/ai
 
+## 5.0.0-beta.0
+
+### Major Changes
+
+- [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
+
+### Patch Changes
+
+- Updated dependencies [[`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd)]:
+  - @workflow/serde@5.0.0-beta.0
+  - workflow@5.0.0-beta.0
+
+## 4.1.0-beta.61
+
+### Patch Changes
+
+- [#1444](https://github.com/vercel/workflow/pull/1444) [`e9ebe8f`](https://github.com/vercel/workflow/commit/e9ebe8faa3da673481a699d01c29a1726f15b042) Thanks [@gr2m](https://github.com/gr2m)! - Preserve reasoning content in DurableAgent conversation history across tool loop steps
+
+- [#1608](https://github.com/vercel/workflow/pull/1608) [`70e89bf`](https://github.com/vercel/workflow/commit/70e89bfc96ef96f88a2534c2eae0f93c3745188d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - DurableAgent telemetry: emit full AI SDK-compatible attributes on spans
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.78
+
+## 4.1.0-beta.60
+
+### Patch Changes
+
+- [#1589](https://github.com/vercel/workflow/pull/1589) [`c0f07a9`](https://github.com/vercel/workflow/commit/c0f07a985cbbc5e122ca9e0a6c73de87ddf356b9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix fatal stream errors surfacing as `[object Object]` instead of real error messages
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.76
+
+## 4.1.0-beta.59
+
+### Patch Changes
+
+- [#1529](https://github.com/vercel/workflow/pull/1529) [`a0a7195`](https://github.com/vercel/workflow/commit/a0a71957efe83a6e6223dd7c7c64a1bb65b9dabe) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix `WorkflowChatTransport` blocking browser paint during stream reconnect by yielding to the macrotask queue between chunks
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.74
+
 ## 4.1.0-beta.58
 
 ### Patch Changes

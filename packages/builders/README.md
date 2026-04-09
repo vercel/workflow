@@ -1,6 +1,6 @@
 # @workflow/builders
 
-Shared builder infrastructure for Workflow DevKit. This package provides the base builder class and utilities used by framework-specific integrations.
+Shared builder infrastructure for Workflow SDK. This package provides the base builder class and utilities used by framework-specific integrations.
 
 ## Overview
 

@@ -97,6 +97,37 @@ export function getWebRevivers(): Revivers {
     Uint32Array: (value: string) => new Uint32Array(reviveArrayBuffer(value)),
 
     Headers: (value) => new Headers(value),
+    Request: (value) => {
+      // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+      const ctor = { Request: function () {} }.Request!;
+      const obj = Object.create(ctor.prototype);
+      Object.assign(obj, {
+        method: value.method,
+        url: value.url,
+        headers: new Headers(value.headers),
+        body: value.body,
+        duplex: value.duplex,
+        ...(value.responseWritable
+          ? { responseWritable: value.responseWritable }
+          : {}),
+      });
+      return obj;
+    },
+    Response: (value) => {
+      // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+      const ctor = { Response: function () {} }.Response!;
+      const obj = Object.create(ctor.prototype);
+      Object.assign(obj, {
+        status: value.status,
+        statusText: value.statusText,
+        url: value.url,
+        headers: new Headers(value.headers),
+        body: value.body,
+        redirected: value.redirected,
+        type: value.type,
+      });
+      return obj;
+    },
     URL: (value) => new URL(value),
     URLSearchParams: (value) => new URLSearchParams(value === '.' ? '' : value),
 

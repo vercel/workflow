@@ -13,6 +13,7 @@ You may want to use this function when you need to:
 
 * Log workflow run IDs
 * Access timing information of a workflow
+* Detect whether encryption is enabled for the current run
 
 <Callout>
 If you need to access step context, take a look at [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata).
@@ -26,6 +27,32 @@ async function testWorkflow() {
 
     const ctx = getWorkflowMetadata() // [!code highlight]
     console.log(ctx.workflowRunId)
+}
+```
+
+### Detecting Encryption
+
+The `features` object indicates which capabilities are active for the current run. Library authors can use `features.encryption` to control whether sensitive data is included in step return values, which are serialized to the event log:
+
+```typescript lineNumbers
+import { getWorkflowMetadata } from "workflow"
+
+declare function getUserProfile(userId: string): Promise<{ name: string; ssn: string }>; // @setup
+
+async function fetchUserProfile(userId: string) {
+    "use step"
+
+    const { features } = getWorkflowMetadata() // [!code highlight]
+    const profile = await getUserProfile(userId)
+
+    if (!features.encryption) { // [!code highlight]
+        // Omit sensitive fields from the return value,
+        // since it will be stored unencrypted in the event log
+        const { ssn, ...safe } = profile
+        return safe
+    }
+
+    return profile
 }
 ```
 
