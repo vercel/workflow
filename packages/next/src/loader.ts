@@ -181,13 +181,25 @@ function getSocketInfoFilePath(): string | null {
   // Fallback for worker processes that don't inherit dynamic env updates
   // from the process that created the socket server.
   const distDir = process.env.WORKFLOW_NEXT_DIST_DIR || '.next';
-  const fallbackPath = join(
+  const cwdFallbackPath = join(
     process.cwd(),
     distDir,
     'cache',
     'workflow-socket.json'
   );
-  return fallbackPath;
+  const projectRoot = process.env.WORKFLOW_PROJECT_ROOT;
+  if (projectRoot) {
+    const projectRootFallbackPath = join(
+      projectRoot,
+      distDir,
+      'cache',
+      'workflow-socket.json'
+    );
+    if (existsSync(projectRootFallbackPath)) {
+      return projectRootFallbackPath;
+    }
+  }
+  return cwdFallbackPath;
 }
 
 function getSocketCredentialsFromEnv(): SocketCredentials | null {
