@@ -16,6 +16,7 @@ import {
 import { EditSource } from '@/components/geistdocs/edit-source';
 import { Feedback } from '@/components/geistdocs/feedback';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
+import { MobileDocsBar } from '@/components/geistdocs/mobile-docs-bar';
 import { OpenInChat } from '@/components/geistdocs/open-in-chat';
 import { ScrollTop } from '@/components/geistdocs/scroll-top';
 import * as AccordionComponents from '@/components/ui/accordion';
@@ -57,8 +58,10 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
           </div>
         ),
       }}
+      tableOfContentPopover={{ enabled: false }}
       toc={page.data.toc}
     >
+      <MobileDocsBar toc={page.data.toc} />
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
