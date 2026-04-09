@@ -4,7 +4,7 @@ import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
 import * as z from 'zod';
-import flow from '../.well-known/workflow/v1/flow.js';
+import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
   type: 'json',
 };
@@ -48,7 +48,7 @@ const app = new Hono()
   .post('/.well-known/workflow/v1/flow', async (ctx) => {
     // Clone the request to read the body for tracking without consuming it
     const cloned = ctx.req.raw.clone();
-    const response = await flow.POST(ctx.req.raw);
+    const response = await flowPOST(ctx.req.raw);
     // Extract runId from the request body (queue message payload)
     try {
       const body = (await cloned.json()) as Record<string, unknown>;

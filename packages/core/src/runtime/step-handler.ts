@@ -34,6 +34,7 @@ import {
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
+import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import {
   getQueueOverhead,
   getWorkflowQueueName,
@@ -42,12 +43,13 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
-import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getWorld, getWorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
-const stepHandler = getWorldHandlers().createQueueHandler(
+const { createQueueHandler, specVersion: worldSpecVersion } =
+  getWorldHandlers();
+const stepHandler = createQueueHandler(
   '__wkf_step_',
   async (message_, metadata) => {
     // Check if this is a health check message
@@ -56,7 +58,7 @@ const stepHandler = getWorldHandlers().createQueueHandler(
     // The stream name includes a unique correlationId that must be known by the caller.
     const healthCheck = parseHealthCheckPayload(message_);
     if (healthCheck) {
-      await handleHealthCheckMessage(healthCheck, 'step');
+      await handleHealthCheckMessage(healthCheck, 'step', worldSpecVersion);
       return;
     }
 
@@ -864,4 +866,4 @@ const stepHandler = getWorldHandlers().createQueueHandler(
  * for each step, this is temporary.
  */
 export const stepEntrypoint: (req: Request) => Promise<Response> =
-  /* @__PURE__ */ withHealthCheck(stepHandler);
+  /* @__PURE__ */ withHealthCheck(stepHandler, worldSpecVersion);

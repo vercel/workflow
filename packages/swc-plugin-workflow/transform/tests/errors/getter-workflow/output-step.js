@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"TestClass#value":{"stepId":"step//./input//TestClass#value"}}},"classes":{"input.js":{"TestClass":{"classId":"class//./input//TestClass"}}}}*/;
 export class TestClass {
     // OK: getter with "use step" is allowed
@@ -11,7 +10,11 @@ export class TestClass {
         return 'not allowed';
     }
 }
-registerStepFunction("step//./input//TestClass#value", Object.getOwnPropertyDescriptor(TestClass.prototype, "value").get);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(Object.getOwnPropertyDescriptor(TestClass.prototype, "value").get, "step//./input//TestClass#value");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);

@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 import { someHelper } from './helpers'; // should be removed
 import { anotherHelper, usefulHelper// do not remove
  } from './utils';
@@ -13,6 +12,11 @@ export async function processData(data) {
     localFunction();
     return defaultExport(transformed);
 }
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(processData, "step//./input//processData");
 function localFunction() {
     // only used by the step, so it should be removed
     // when the step body gets removed since it is not used
@@ -24,4 +28,3 @@ export function normalFunction() {
     useful.doSomething();
     return usefulHelper();
 }
-registerStepFunction("step//./input//processData", processData);

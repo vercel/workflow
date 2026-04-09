@@ -109,12 +109,18 @@ export function workflowEntrypoint(
   const NO_INLINE_REPLAY_AFTER_MS =
     Number(process.env.WORKFLOW_V2_TIMEOUT_MS) || 110_000;
 
-  const handler = getWorldHandlers().createQueueHandler(
+  const { createQueueHandler, specVersion: worldSpecVersion } =
+    getWorldHandlers();
+  const handler = createQueueHandler(
     '__wkf_workflow_',
     async (message_, metadata) => {
       const healthCheck = parseHealthCheckPayload(message_);
       if (healthCheck) {
-        await handleHealthCheckMessage(healthCheck, 'workflow');
+        await handleHealthCheckMessage(
+          healthCheck,
+          'workflow',
+          worldSpecVersion
+        );
         return;
       }
 
@@ -865,5 +871,5 @@ export function workflowEntrypoint(
     }
   );
 
-  return withHealthCheck(handler);
+  return withHealthCheck(handler, worldSpecVersion);
 }

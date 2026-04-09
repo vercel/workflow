@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 // Test named default class export with serde and step methods.
 // Named default exports already have the class name in scope,
 // so no rewriting is needed — just ensure the name is used for registration.
@@ -22,7 +21,11 @@ export default class MyService {
         };
     }
 }
-registerStepFunction("step//./input//MyService#handle", MyService.prototype["handle"]);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(MyService.prototype["handle"], "step//./input//MyService#handle");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);

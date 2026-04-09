@@ -85,7 +85,10 @@ export const createWorld = (): World => {
  * Once we migrate to a file-based configuration (workflow.config.ts), we should
  * be able to re-combine getWorld and getWorldHandlers into one singleton.
  */
-export const getWorldHandlers = (): Pick<World, 'createQueueHandler'> => {
+export const getWorldHandlers = (): Pick<
+  World,
+  'createQueueHandler' | 'specVersion'
+> => {
   if (globalSymbols[StubbedWorldCache]) {
     return globalSymbols[StubbedWorldCache];
   }
@@ -93,6 +96,7 @@ export const getWorldHandlers = (): Pick<World, 'createQueueHandler'> => {
   globalSymbols[StubbedWorldCache] = _world;
   return {
     createQueueHandler: _world.createQueueHandler,
+    specVersion: _world.specVersion,
   };
 };
 

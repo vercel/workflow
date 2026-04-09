@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 /**__internal_workflows{"steps":{"input.js":{"DataProcessor#multiply":{"stepId":"step//./input//DataProcessor#multiply"},"DataProcessor#result":{"stepId":"step//./input//DataProcessor#result"}}},"classes":{"input.js":{"DataProcessor":{"classId":"class//./input//DataProcessor"}}}}*/;
 export class DataProcessor {
@@ -20,8 +19,16 @@ export class DataProcessor {
         return value * this.factor;
     }
 }
-registerStepFunction("step//./input//DataProcessor#multiply", DataProcessor.prototype["multiply"]);
-registerStepFunction("step//./input//DataProcessor#result", Object.getOwnPropertyDescriptor(DataProcessor.prototype, "result").get);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(DataProcessor.prototype["multiply"], "step//./input//DataProcessor#multiply");
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(Object.getOwnPropertyDescriptor(DataProcessor.prototype, "result").get, "step//./input//DataProcessor#result");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);
