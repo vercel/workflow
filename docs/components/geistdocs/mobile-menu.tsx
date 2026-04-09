@@ -1,7 +1,8 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
+import { useEffect, useRef, useState } from 'react';
 import { IconArrowUpRight } from '@/components/geistcn-fallbacks/geistcn-assets/icons/icon-arrow-up-right';
 import { nav } from '@/geistdocs';
 import { cn } from '@/lib/utils';
@@ -72,11 +73,16 @@ function MobileMenuButton({
 
 export const MobileMenu = () => {
   const [show, setShow] = useState(false);
+  const pathname = usePathname();
+  const previousPathname = useRef(pathname);
 
   // Close on route change
   useEffect(() => {
-    setShow(false);
-  }, []);
+    if (pathname !== previousPathname.current) {
+      setShow(false);
+      previousPathname.current = pathname;
+    }
+  }, [pathname]);
 
   // Close on escape
   useEffect(() => {
