@@ -372,6 +372,18 @@ The V2 combined bundle is output in CJS format by the standalone builder (step c
 
 The `getWorldHandlers()` return value was updated on main to include `specVersion` (the World's declared spec version). The V2 handler destructures this as `worldSpecVersion` and passes it to `handleHealthCheckMessage()` for inclusion in queue-based health check responses. This was merged alongside the V2 timeout configuration.
 
+### Deferred Next.js Builder Helper Drift After Merge
+
+Merging `main` into the eager-processing branch pulled in a set of helper methods for copied-step import rewriting in `packages/next/src/builder-deferred.ts`, but the corresponding call sites were not present on this branch yet. That left `getRelativeImportSpecifier`, `getStepCopyFileName`, and `rewriteRelativeImportsForCopiedStep` orphaned, and `@workflow/next` failed to build with `TS6133` unused-private-member errors immediately after the merge.
+
+**Fix**: Removed the orphaned helper methods during merge resolution and kept the existing deferred-builder behavior unchanged. The copied-step import-rewrite work should land as a complete change set rather than a partial backport from `main`.
+
+### Next.js React Step Fixture and `eval('require(...)')`
+
+The `nextjs-webpack` e2e suite still failed after the merge in `workflows/8_react_render.tsx`, where the step intentionally did `eval('require("react-dom/server")')` to avoid Next.js linting rules around importing `react-dom/server` directly. That pattern was brittle under webpack rebundling: even though the intermediate step bundle had a `createRequire(import.meta.url)` banner, the rebundled route still failed at runtime with `TypeError: require is not a function`.
+
+**Fix**: Updated the React-rendering step fixture in both Next.js workbenches to use `await import('react-dom/server')` instead. The test still exercises server-side React rendering inside a step, but no longer depends on bundler-specific `eval('require(...)')` behavior.
+
 ## Inline Execution Verification Tests
 
 The `@workflow/world-testing` package includes invocation-counting tests that verify the V2 inline loop behavior for each workflow pattern:

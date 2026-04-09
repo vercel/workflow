@@ -396,28 +396,6 @@ export abstract class BaseBuilder {
     context: esbuild.BuildContext | undefined;
     manifest: WorkflowManifest;
   }> {
-    // These need to handle watching for dev to scan for
-    // new entries and changes to existing ones
-    const discovered =
-      discoveredEntries ??
-      (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
-    const stepFiles = [...discovered.discoveredSteps].sort();
-    const workflowFiles = [...discovered.discoveredWorkflows].sort();
-    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
-
-    // Include serde files that aren't already step files for cross-context class registration.
-    // Classes need to be registered in the step bundle so they can be deserialized
-    // when receiving data from workflows and serialized when returning data to workflows.
-    const stepFilesSet = new Set(stepFiles);
-    const serdeOnlyFiles = serdeFiles.filter((f) => !stepFilesSet.has(f));
-
-    // log the step files for debugging
-    await this.writeDebugFile(outfile, {
-      stepFiles,
-      workflowFiles,
-      serdeOnlyFiles,
-    });
-
     const stepsBundleStart = Date.now();
     const workflowManifest: WorkflowManifest = {};
     const builtInSteps = 'workflow/internal/builtins';
@@ -434,6 +412,46 @@ export abstract class BaseBuilder {
           `Caused by: ${chalk.red(String(err))}`,
         ].join('\n')
       );
+    });
+
+    // Resolve the SDK runtime entry point so that the discovery pass
+    // traces through it and discovers serde classes (like `Run`) that
+    // live inside SDK packages. Without this, files like `run.js` are
+    // only discovered when user code happens to import them.
+    const resolvedWorkflowRuntime = await enhancedResolve(
+      dirname(outfile),
+      'workflow/runtime'
+    ).catch(() => undefined);
+
+    // These need to handle watching for dev to scan for
+    // new entries and changes to existing ones.
+    // Pass inputFiles directly when no extra entries are needed to
+    // preserve the array reference for discoverEntries() WeakMap caching.
+    const discoveryInputs = resolvedWorkflowRuntime
+      ? [...inputFiles, resolvedWorkflowRuntime]
+      : inputFiles;
+    const discovered =
+      discoveredEntries ??
+      (await this.discoverEntries(
+        discoveryInputs,
+        dirname(outfile),
+        tsconfigPath
+      ));
+    const stepFiles = [...discovered.discoveredSteps].sort();
+    const workflowFiles = [...discovered.discoveredWorkflows].sort();
+    const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
+
+    // Include serde files that aren't already step files for cross-context class registration.
+    // Classes need to be registered in the step bundle so they can be deserialized
+    // when receiving data from workflows and serialized when returning data to workflows.
+    const stepFilesSet = new Set(stepFiles);
+    const serdeOnlyFiles = serdeFiles.filter((f) => !stepFilesSet.has(f));
+
+    // log the step files for debugging
+    await this.writeDebugFile(outfile, {
+      stepFiles,
+      workflowFiles,
+      serdeOnlyFiles,
     });
 
     // Helper to create import statement from file path

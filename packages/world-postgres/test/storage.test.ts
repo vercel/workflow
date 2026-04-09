@@ -404,18 +404,6 @@ describe('Storage (Postgres integration)', () => {
         expect(retrieved.stepId).toBe(created.stepId);
       });
 
-      it('should retrieve a step with only stepId', async () => {
-        const created = await createStep(events, testRunId, {
-          stepId: 'unique-step-123',
-          stepName: 'test-step',
-          input: new Uint8Array([1]),
-        });
-
-        const retrieved = await steps.get(undefined, 'unique-step-123');
-
-        expect(retrieved.stepId).toBe(created.stepId);
-      });
-
       it('should throw error for non-existent step', async () => {
         await expect(steps.get(testRunId, 'missing-step')).rejects.toThrow(
           'Step not found'

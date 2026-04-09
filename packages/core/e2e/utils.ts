@@ -56,34 +56,10 @@ export function hasStepSourceMaps(): boolean {
     return false;
   }
 
-  // Vercel production builds don't support step source maps
-  if (process.env.WORKFLOW_VERCEL_ENV === 'production') {
-    return false;
-  }
-
-  // Vercel preview builds: V2 combined handler re-bundles step code into
-  // flow.func/index.js, losing source file names. Only frameworks that
-  // DON'T use the BOA builder (Next.js excluded above, SvelteKit) and
-  // frameworks using bundleFinalOutput: false preserve source maps.
-  // BOA deployments (express, hono, fastify, nitro, nuxt, vite, astro,
-  // example) use bundleFinalOutput: true which strips source info.
   if (!isLocalDeployment()) {
-    // SvelteKit uses its own builder (not BOA), but still doesn't
-    // support step source maps on Vercel preview
-    if (appName === 'sveltekit') return false;
-    // BOA-builder frameworks lose source maps in re-bundled CJS output
-    const boaApps = new Set([
-      'express',
-      'hono',
-      'fastify',
-      'nitro',
-      'nuxt',
-      'vite',
-      'astro',
-      'example',
-    ]);
-    if (boaApps.has(appName)) return false;
-    return true;
+    // Next.js is excluded above because it does not consume inline step
+    // source maps. Other Vercel deployments preserve them, except SvelteKit.
+    return appName !== 'sveltekit';
   }
 
   // Vite only works in vercel, not on local prod or dev

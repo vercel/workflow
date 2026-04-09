@@ -931,15 +931,16 @@ export async function resumeHook(
 export async function readStreamServerAction(
   env: EnvMap,
   streamId: string,
-  startIndex?: number
+  startIndex: number | undefined,
+  runId: string
 ): Promise<ReadableStream<Uint8Array> | ServerActionError> {
   try {
     const world = await getWorldFromEnv(env);
     // Return the raw binary stream — deserialization and decryption
     // happen entirely client-side.
-    return await world.readFromStream(streamId, startIndex);
+    return await world.streams.get(runId, streamId, startIndex);
   } catch (error) {
-    const actionError = createServerActionError(error, 'world.readFromStream', {
+    const actionError = createServerActionError(error, 'world.streams.get', {
       streamId,
       startIndex,
     });
@@ -981,13 +982,13 @@ export async function readStreamChunksServerAction(
     let pageCursor: string | undefined = startCursor;
     let streamDone = false;
     // Track the last non-null cursor so we can resume from the start of
-    // the final page on the next poll. When getStreamChunks returns
+    // the final page on the next poll. When getChunks returns
     // cursor=null we've exhausted all pages, but this saved cursor lets
     // the client re-fetch only the last page + any new chunks.
     let resumeCursor: string | null = startCursor ?? null;
 
     do {
-      const result = await world.getStreamChunks(streamId, runId, {
+      const result = await world.streams.getChunks(runId, streamId, {
         limit: CHUNKS_PAGE_SIZE,
         cursor: pageCursor,
       });
@@ -1019,7 +1020,7 @@ export async function readStreamChunksServerAction(
   } catch (error) {
     const actionError = createServerActionError(
       error,
-      'world.getStreamChunks',
+      'world.streams.getChunks',
       { streamId, runId }
     );
     if (!actionError.success) {
@@ -1038,16 +1039,12 @@ export async function fetchStreams(
 ): Promise<ServerActionResult<string[]>> {
   try {
     const world = await getWorldFromEnv(env);
-    const streams = await world.listStreamsByRunId(runId);
+    const streams = await world.streams.list(runId);
     return createResponse(streams);
   } catch (error) {
-    return createServerActionError<string[]>(
-      error,
-      'world.listStreamsByRunId',
-      {
-        runId,
-      }
-    );
+    return createServerActionError<string[]>(error, 'world.streams.list', {
+      runId,
+    });
   }
 }
 

@@ -8,9 +8,11 @@ vi.mock('../runtime/world.js', () => ({
 describe('step-level getWritable', () => {
   beforeEach(async () => {
     const mockWorld = {
-      writeToStream: vi.fn().mockResolvedValue(undefined),
-      writeToStreamMulti: vi.fn().mockResolvedValue(undefined),
-      closeStream: vi.fn().mockResolvedValue(undefined),
+      streams: {
+        write: vi.fn().mockResolvedValue(undefined),
+        writeMulti: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      },
     };
 
     const { getWorld } = await import('../runtime/world.js');

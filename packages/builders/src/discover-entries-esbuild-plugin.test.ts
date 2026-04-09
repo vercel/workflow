@@ -21,6 +21,7 @@ vi.mock('./apply-swc-transform.js', () => ({
 import {
   createDiscoverEntriesPlugin,
   importParents,
+  parentHasChild,
 } from './discover-entries-esbuild-plugin.js';
 
 const realTmpdir = realpathSync(tmpdir());
@@ -160,5 +161,60 @@ describe('createDiscoverEntriesPlugin projectRoot', () => {
       normalizedWorkflowFile,
       fixture.packageRoot
     );
+  });
+
+  it('tracks importParents through bare specifier imports', async () => {
+    // Simulate: entry.ts -> bare-pkg -> ./serde-file.ts
+    // The bare specifier "bare-pkg" should not break the parent-child chain.
+    const entryFile = join(testRoot, 'entry.ts');
+    const pkgDir = join(testRoot, 'node_modules', 'bare-pkg');
+    const pkgIndex = join(pkgDir, 'index.js');
+    const serdeFile = join(pkgDir, 'serde.js');
+
+    writeFile(
+      join(pkgDir, 'package.json'),
+      JSON.stringify({ name: 'bare-pkg', main: 'index.js' })
+    );
+    writeFile(pkgIndex, `export { Foo } from './serde.js';`);
+    writeFile(serdeFile, `export class Foo {}\n`);
+    writeFile(
+      entryFile,
+      `import { Foo } from 'bare-pkg';\nconsole.log(Foo);\n`
+    );
+
+    const state = {
+      discoveredSteps: new Set<string>(),
+      discoveredWorkflows: new Set<string>(),
+      discoveredSerdeFiles: new Set<string>(),
+    };
+
+    const result = await esbuild.build({
+      entryPoints: [entryFile],
+      absWorkingDir: testRoot,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [createDiscoverEntriesPlugin(state)],
+    });
+
+    expect(result.errors).toHaveLength(0);
+
+    const normalizedEntry = normalizeSlashes(entryFile);
+    const normalizedPkgIndex = normalizeSlashes(pkgIndex);
+    const normalizedSerde = normalizeSlashes(serdeFile);
+
+    // entry.ts -> bare-pkg/index.js should be tracked
+    const entryChildren = importParents.get(normalizedEntry);
+    expect(entryChildren).toBeDefined();
+    expect(entryChildren!.has(normalizedPkgIndex)).toBe(true);
+
+    // bare-pkg/index.js -> bare-pkg/serde.js should be tracked
+    const pkgChildren = importParents.get(normalizedPkgIndex);
+    expect(pkgChildren).toBeDefined();
+    expect(pkgChildren!.has(normalizedSerde)).toBe(true);
+
+    // parentHasChild should transitively find serde.js from entry.ts
+    expect(parentHasChild(normalizedEntry, normalizedSerde)).toBe(true);
   });
 });
