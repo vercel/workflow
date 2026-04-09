@@ -248,7 +248,10 @@ describe('Run custom serialization', () => {
       runId: 'wrun_deserialize',
     });
 
-    expect(serialized).toEqual({ runId: 'wrun_serialize' });
+    expect(serialized).toEqual({
+      runId: 'wrun_serialize',
+      resilientStart: false,
+    });
     expect(deserialized).toBeInstanceOf(Run);
     expect(deserialized.runId).toBe('wrun_deserialize');
   });

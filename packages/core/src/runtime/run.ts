@@ -241,6 +241,9 @@ export class Run<TResult> {
 
   /**
    * The readable stream of the workflow run.
+   *
+   * This is a thin wrapper around {@link getReadable} — the step
+   * entrypoint is on `getReadable()`, not here.
    */
   get readable(): WorkflowReadableStream {
     return this.getReadable();
