@@ -824,26 +824,17 @@ export async function getNextBuilderDeferred() {
       }
 
       const resolveBaseDirs = new Set<string>();
-      if (this.config.projectRoot) {
-        resolveBaseDirs.add(
-          this.normalizeDiscoveredFilePath(this.config.projectRoot)
-        );
-      }
-      const normalizedWorkingDir = this.normalizeDiscoveredFilePath(
-        this.config.workingDir
-      );
-      resolveBaseDirs.add(normalizedWorkingDir);
+      const addResolveBaseDir = (baseDir: string) => {
+        resolveBaseDirs.add(this.normalizeDiscoveredFilePath(baseDir));
+      };
 
-      let currentResolveDir = normalizedWorkingDir;
-      while (true) {
-        if (
-          existsSync(join(currentResolveDir, 'pnpm-workspace.yaml')) ||
-          existsSync(join(currentResolveDir, 'turbo.json')) ||
-          existsSync(join(currentResolveDir, '.git'))
-        ) {
-          resolveBaseDirs.add(currentResolveDir);
-          break;
-        }
+      if (this.config.projectRoot) {
+        addResolveBaseDir(this.config.projectRoot);
+      }
+
+      let currentResolveDir = this.config.workingDir;
+      while (currentResolveDir) {
+        addResolveBaseDir(currentResolveDir);
         const parentResolveDir = dirname(currentResolveDir);
         if (parentResolveDir === currentResolveDir) {
           break;
