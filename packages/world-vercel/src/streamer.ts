@@ -23,17 +23,10 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
 // (partial writes, long-lived reads), and duplex streams are incompatible
 // with undici's experimental H2 support.
 
-function getStreamUrl(
-  name: string,
-  runId: string | undefined,
-  httpConfig: HttpConfig
-) {
-  if (runId) {
-    return new URL(
-      `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
-    );
-  }
-  return new URL(`${httpConfig.baseUrl}/v2/stream/${encodeURIComponent(name)}`);
+function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
+  return new URL(
+    `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+  );
 }
 
 /**
@@ -188,9 +181,9 @@ export function createStreamer(config?: APIConfig): Streamer {
         }
       },
 
-      async get(_runId: string, name: string, startIndex?: number) {
+      async get(runId: string, name: string, startIndex?: number) {
         const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, undefined, httpConfig);
+        const url = getStreamUrl(name, runId, httpConfig);
         if (typeof startIndex === 'number') {
           url.searchParams.set('startIndex', String(startIndex));
         }
