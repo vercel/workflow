@@ -479,6 +479,11 @@ export async function getNextBuilderDeferred() {
           ...discoveredSerdeFiles,
         ])
       ).sort();
+      const discoveredEntries = {
+        discoveredSteps: new Set(discoveredStepFiles),
+        discoveredWorkflows: new Set(discoveredWorkflowFiles),
+        discoveredSerdeFiles: new Set(discoveredSerdeFiles),
+      };
 
       // Ensure output directories exist
       await mkdir(workflowGeneratedDir, { recursive: true });
@@ -506,6 +511,7 @@ export async function getNextBuilderDeferred() {
         bundleFinalOutput: false,
         externalizeNonSteps: true,
         tsconfigPath,
+        discoveredEntries,
       });
       await this.buildWebhookRoute({
         workflowGeneratedDir,

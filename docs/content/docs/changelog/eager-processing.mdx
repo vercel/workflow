@@ -378,6 +378,18 @@ The later `main` merge changed `getWorld()` and `getWorldHandlers()` to be async
 
 **Fix**: Rebases the V2 workflow entrypoint onto the async world API by lazily awaiting `getWorldHandlers()` when wiring the queue handler and awaiting `getWorld()` at the remaining runtime/helper call sites. This preserves the inline replay loop while matching `main`'s new world initialization contract.
 
+### Lazy World Loading for Next.js Production Builds
+
+After the async world merge, `packages/core/src/runtime/world.ts` still eagerly imported both `@workflow/world-local` and `@workflow/world-vercel`, and it initialized `createRequire()` from `process.cwd() + '/package.json'` at module load time. In the Next.js production build jobs that caused the generated flow route to pull `@workflow/world-vercel` and its `debug` dependency into local builds, then fail during page-data collection with `module.createRequire failed parsing argument` and `Dynamic require of "tty" is not supported`.
+
+**Fix**: Switched the runtime world loader to use `createRequire(import.meta.url)` and moved the local/Vercel world imports behind the existing async `createWorld()` branches. Local Next.js builds now only load the selected world implementation at runtime instead of bundling both worlds eagerly into the route module.
+
+### Deferred Next.js Builds Re-Ran Eager Discovery
+
+The later merge also pulled `BaseBuilder.createCombinedBundle()` into the deferred Next.js path without a way to pass the already-discovered workflow/step/serde entry sets. As a result, `packages/next/src/builder-deferred.ts` quietly fell back to `discoverEntries()` during production builds, re-emitting `Discovering workflow directives ...` and failing the local build tests that assert deferred mode avoids eager input-graph scans.
+
+**Fix**: Threaded explicit `discoveredEntries` through `createCombinedBundle()` and passed the deferred builder's tracked workflow/step/serde file sets into that call. Deferred Next.js builds now reuse the socket/cache-driven discovery state instead of re-running the base eager discovery pass.
+
 ### Deferred Next.js Builder Helper Drift After Merge
 
 Merging `main` into the eager-processing branch pulled in a set of helper methods for copied-step import rewriting in `packages/next/src/builder-deferred.ts`, but the corresponding call sites were not present on this branch yet. That left `getRelativeImportSpecifier`, `getStepCopyFileName`, and `rewriteRelativeImportsForCopiedStep` orphaned, and `@workflow/next` failed to build with `TS6133` unused-private-member errors immediately after the merge.

@@ -1018,6 +1018,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     bundleFinalOutput = true,
     tsconfigPath,
     externalizeNonSteps,
+    discoveredEntries,
   }: {
     inputFiles: string[];
     /** Output path for the step registrations bundle (side effects only) */
@@ -1028,6 +1029,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     bundleFinalOutput?: boolean;
     tsconfigPath?: string;
     externalizeNonSteps?: boolean;
+    discoveredEntries?: DiscoveredEntries;
   }): Promise<{
     manifest: WorkflowManifest;
     stepsContext?: esbuild.BuildContext;
@@ -1049,6 +1051,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
         format: bundleFinalOutput ? 'esm' : format,
         externalizeNonSteps,
         tsconfigPath,
+        discoveredEntries,
       });
 
     // 2. Build workflow VM code
@@ -1059,6 +1062,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
       format,
       bundleFinalOutput: false,
       tsconfigPath,
+      discoveredEntries,
     });
 
     const workflowVMCode = workflowsResult.interimBundleText;

@@ -6,12 +6,8 @@ import {
   resolveWorkflowTargetWorld,
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
-import { createLocalWorld } from '@workflow/world-local';
-import { createVercelWorld } from '@workflow/world-vercel';
 
-const require = createRequire(
-  pathToFileURL(process.cwd() + '/package.json').href
-);
+const require = createRequire(import.meta.url);
 
 const WorldCache = Symbol.for('@workflow/world//cache');
 const StubbedWorldCache = Symbol.for('@workflow/world//stubbedCache');
@@ -93,10 +89,12 @@ export const createWorld = async (): Promise<World> => {
       );
     }
 
+    const { createVercelWorld } = await import('@workflow/world-vercel');
     return createVercelWorld();
   }
 
   if (targetWorld === 'local') {
+    const { createLocalWorld } = await import('@workflow/world-local');
     return createLocalWorld({
       dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
     });
