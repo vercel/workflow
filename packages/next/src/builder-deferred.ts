@@ -19,6 +19,7 @@ import {
   relative,
   resolve,
 } from 'node:path';
+import enhancedResolveOrig from 'enhanced-resolve';
 import {
   createSocketServer,
   type SocketIO,
@@ -1267,6 +1268,38 @@ export async function getNextBuilderDeferred() {
       copiedStepFileBySourcePath: Map<string, string>
     ): string {
       if (!specifier.startsWith('.')) {
+        // Bare specifiers (e.g. '@workflow/serde') that are transitive
+        // dependencies of SDK packages can't be resolved by the bundler
+        // from the copied file's location (__workflow_step_files__/ inside
+        // the app dir) because the app doesn't directly depend on them.
+        //
+        // Only rewrite when the specifier can't be resolved from the app
+        // directory. If the package is a direct dependency of the app,
+        // the bare specifier will resolve normally and should be left as-is.
+        const appResolvable = this.resolveBareCopiedStepSpecifier(
+          specifier,
+          copiedFilePath
+        );
+        if (!appResolvable) {
+          try {
+            const resolved = this.resolveBareCopiedStepSpecifier(
+              specifier,
+              sourceFilePath
+            );
+            if (!resolved) return specifier;
+            let rewrittenPath = relative(
+              dirname(copiedFilePath),
+              resolved
+            ).replace(/\\/g, '/');
+            if (!rewrittenPath.startsWith('.')) {
+              rewrittenPath = `./${rewrittenPath}`;
+            }
+            return rewrittenPath;
+          } catch {
+            // If resolution fails (e.g. Node.js builtins), keep as-is.
+            return specifier;
+          }
+        }
         return specifier;
       }
 
@@ -1298,6 +1331,56 @@ export async function getNextBuilderDeferred() {
         rewrittenPath = `./${rewrittenPath}`;
       }
       return `${rewrittenPath}${suffix}`;
+    }
+
+    /**
+     * Resolves a bare specifier (e.g. '@workflow/serde', 'workflow') to an
+     * absolute file path using ESM-compatible resolution semantics via
+     * `enhanced-resolve`. Tries ESM conditions first (`node`, `import`),
+     * falling back to CJS resolution if ESM fails.
+     */
+    private resolveBareCopiedStepSpecifier(
+      specifier: string,
+      sourceFilePath: string
+    ): string | undefined {
+      const resolveOptions = {
+        extensions: [
+          '.ts',
+          '.tsx',
+          '.mts',
+          '.cts',
+          '.cjs',
+          '.mjs',
+          '.js',
+          '.jsx',
+          '.json',
+        ],
+        mainFields: ['main'],
+        mainFiles: ['index'],
+        symlinks: true,
+      };
+      const esmResolver = enhancedResolveOrig.create.sync({
+        ...resolveOptions,
+        conditionNames: ['node', 'import'],
+      });
+      const cjsResolver = enhancedResolveOrig.create.sync({
+        ...resolveOptions,
+        conditionNames: ['node', 'require'],
+      });
+      const context = dirname(sourceFilePath);
+      try {
+        const resolved = esmResolver(context, specifier);
+        if (resolved) return resolved;
+      } catch {
+        // ESM resolution failed, try CJS
+      }
+      try {
+        const resolved = cjsResolver(context, specifier);
+        if (resolved) return resolved;
+      } catch {
+        // CJS resolution also failed
+      }
+      return undefined;
     }
 
     private resolveCopiedStepImportTargetPath(targetPath: string): string {

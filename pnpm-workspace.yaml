@@ -14,6 +14,7 @@ catalog:
   "@vercel/queue": 0.1.4
   "@vitest/coverage-v8": ^4.0.18
   ai: 6.0.116
+  enhanced-resolve: 5.19.0
   esbuild: ^0.27.3
   nitro: 3.0.1-alpha.1
   semver: 7.7.4
