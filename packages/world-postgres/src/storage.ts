@@ -1460,15 +1460,10 @@ export function createStepsStorage(drizzle: Drizzle): Storage['steps'] {
 
   return {
     get: (async (runId, stepId, params) => {
-      // If runId is not provided, query only by stepId
-      const whereClause = runId
-        ? and(eq(steps.stepId, stepId), eq(steps.runId, runId))
-        : eq(steps.stepId, stepId);
-
       const [value] = await drizzle
         .select()
         .from(steps)
-        .where(whereClause)
+        .where(and(eq(steps.runId, runId), eq(steps.stepId, stepId)))
         .limit(1);
 
       if (!value) {

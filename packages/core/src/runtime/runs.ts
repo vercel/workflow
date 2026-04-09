@@ -240,11 +240,12 @@ export async function wakeUpRun(
  */
 export async function readStream(
   world: World,
+  runId: string,
   streamId: string,
   options?: ReadStreamOptions
 ): Promise<ReadableStream<Uint8Array>> {
   try {
-    return await world.readFromStream(streamId, options?.startIndex);
+    return await world.streams.get(runId, streamId, options?.startIndex);
   } catch (err) {
     throw new Error(
       `Failed to read stream ${streamId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -261,7 +262,7 @@ export async function listStreams(
   runId: string
 ): Promise<string[]> {
   try {
-    return await world.listStreamsByRunId(runId);
+    return await world.streams.list(runId);
   } catch (err) {
     throw new Error(
       `Failed to list streams for run ${runId}: ${err instanceof Error ? err.message : String(err)}`,

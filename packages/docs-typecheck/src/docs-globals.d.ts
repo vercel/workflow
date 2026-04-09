@@ -198,32 +198,35 @@ declare global {
       list: (...args: any[]) => Promise<any>;
       listByCorrelationId: (...args: any[]) => Promise<any>;
     };
-    // Stream methods live directly on world (Streamer interface)
-    writeToStream: (
-      name: string,
-      runId: string,
-      chunk: string | Uint8Array
-    ) => Promise<void>;
-    writeToStreamMulti?: (
-      name: string,
-      runId: string,
-      chunks: (string | Uint8Array)[]
-    ) => Promise<void>;
-    readFromStream: (
-      name: string,
-      startIndex?: number
-    ) => Promise<ReadableStream<Uint8Array>>;
-    closeStream: (name: string, runId: string) => Promise<void>;
-    listStreamsByRunId: (runId: string) => Promise<string[]>;
-    getStreamChunks: (
-      name: string,
-      runId: string,
-      options?: { limit?: number; cursor?: string }
-    ) => Promise<any>;
-    getStreamInfo: (
-      name: string,
-      runId: string
-    ) => Promise<{ tailIndex: number; done: boolean }>;
+    // Stream methods live on world.streams (Streamer interface)
+    streams: {
+      write: (
+        runId: string,
+        name: string,
+        chunk: string | Uint8Array
+      ) => Promise<void>;
+      writeMulti?: (
+        runId: string,
+        name: string,
+        chunks: (string | Uint8Array)[]
+      ) => Promise<void>;
+      get: (
+        runId: string,
+        name: string,
+        startIndex?: number
+      ) => Promise<ReadableStream<Uint8Array>>;
+      close: (runId: string, name: string) => Promise<void>;
+      list: (runId: string) => Promise<string[]>;
+      getChunks: (
+        runId: string,
+        name: string,
+        options?: { limit?: number; cursor?: string }
+      ) => Promise<any>;
+      getInfo: (
+        runId: string,
+        name: string
+      ) => Promise<{ tailIndex: number; done: boolean }>;
+    };
     // Queue methods live directly on world (Queue interface)
     getDeploymentId: (...args: any[]) => Promise<any>;
     queue: (...args: any[]) => Promise<any>;

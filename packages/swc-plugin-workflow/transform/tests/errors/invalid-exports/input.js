@@ -6,13 +6,23 @@ export class MyClass {
   method() {}
 }
 export * from './other';
+export let uninitVar;
 
-// This is ok - sync functions are allowed in "use step" files
+// Local named exports also error (can't verify binding is a function)
+const helper = 'not a function';
+export { helper };
+
+// Re-export with specifiers also errors
+export { something } from './re-export';
+
+// These are ok - sync and async functions are allowed in "use step" files
 export function syncFunc() {
   return 'allowed';
 }
 
-// This is ok
 export async function validStep() {
   return 'allowed';
 }
+
+export const arrowStep = () => 'allowed';
+export const asyncArrow = async () => 'allowed';

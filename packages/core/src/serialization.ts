@@ -415,7 +415,7 @@ export function getDeserializeStream(
 export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
   #reader?: ReadableStreamDefaultReader<Uint8Array>;
 
-  constructor(name: string, startIndex?: number) {
+  constructor(runId: string, name: string, startIndex?: number) {
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error(`"name" is required, got "${name}"`);
     }
@@ -427,7 +427,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
         let reader = this.#reader;
         if (!reader) {
           const world = await getWorld();
-          const stream = await world.readFromStream(name, startIndex);
+          const stream = await world.streams.get(runId, name, startIndex);
           reader = this.#reader = stream.getReader();
         }
         if (!reader) {
@@ -462,7 +462,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
 const STREAM_FLUSH_INTERVAL_MS = 10;
 
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
-  constructor(name: string, runId: string) {
+  constructor(runId: string, name: string) {
     if (typeof runId !== 'string') {
       throw new Error(`"runId" must be a string, got "${typeof runId}"`);
     }
@@ -497,16 +497,16 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         resolvedFlushIntervalMs =
           world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
       }
-      // Use writeToStreamMulti if available for batch writes
+      // Use writeMulti if available for batch writes
       if (
-        typeof world.writeToStreamMulti === 'function' &&
+        typeof world.streams.writeMulti === 'function' &&
         chunksToFlush.length > 1
       ) {
-        await world.writeToStreamMulti(name, runId, chunksToFlush);
+        await world.streams.writeMulti(runId, name, chunksToFlush);
       } else {
         // Fall back to sequential writes
         for (const chunk of chunksToFlush) {
-          await world.writeToStream(name, runId, chunk);
+          await world.streams.write(runId, name, chunk);
         }
       }
 
@@ -569,7 +569,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         await flush();
 
         const world = await worldPromise;
-        await world.closeStream(name, runId);
+        await world.streams.close(runId, name);
       },
       abort(reason) {
         // Clean up timer to prevent leaks
@@ -882,7 +882,7 @@ export function getExternalReducers(
       const name = `strm_${streamId}`;
       const type = getStreamType(value);
 
-      const writable = new WorkflowServerWritableStream(name, runId);
+      const writable = new WorkflowServerWritableStream(runId, name);
       if (type === 'bytes') {
         ops.push(value.pipeTo(writable));
       } else {
@@ -909,7 +909,7 @@ export function getExternalReducers(
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
 
-      const readable = new WorkflowServerReadableStream(name);
+      const readable = new WorkflowServerReadableStream(runId, name);
       ops.push(readable.pipeTo(value));
 
       return { name };
@@ -1000,7 +1000,7 @@ function getStepReducers(
         name = `strm_${streamId}`;
         type = getStreamType(value);
 
-        const writable = new WorkflowServerWritableStream(name, runId);
+        const writable = new WorkflowServerWritableStream(runId, name);
         if (type === 'bytes') {
           ops.push(value.pipeTo(writable));
         } else {
@@ -1030,7 +1030,7 @@ function getStepReducers(
         const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
         name = `strm_${streamId}`;
         ops.push(
-          new WorkflowServerReadableStream(name)
+          new WorkflowServerReadableStream(runId, name)
             .pipeThrough(
               getDeserializeStream(
                 getStepRevivers(global, ops, runId, cryptoKey),
@@ -1218,6 +1218,7 @@ export function getExternalRevivers(
       }
 
       const readable = new WorkflowServerReadableStream(
+        runId,
         value.name,
         value.startIndex
       );
@@ -1264,8 +1265,8 @@ export function getExternalRevivers(
         cryptoKey
       );
       const serverWritable = new WorkflowServerWritableStream(
-        value.name,
-        runId
+        runId,
+        value.name
       );
 
       // Create flushable state for this stream
@@ -1490,7 +1491,7 @@ function getStepRevivers(
         return response.body;
       }
 
-      const readable = new WorkflowServerReadableStream(value.name);
+      const readable = new WorkflowServerReadableStream(runId, value.name);
       if (value.type === 'bytes') {
         // For byte streams, use flushable pipe with lock polling
         const state = createFlushableState();
@@ -1534,8 +1535,8 @@ function getStepRevivers(
         cryptoKey
       );
       const serverWritable = new WorkflowServerWritableStream(
-        value.name,
-        runId
+        runId,
+        value.name
       );
 
       // Create flushable state for this stream

@@ -20,7 +20,7 @@ export function createStorage(config?: APIConfig): Storage {
         listWorkflowRuns(params, config)) as Storage['runs']['list'],
     },
     steps: {
-      get: ((runId: string | undefined, stepId: string, params?: any) =>
+      get: ((runId: string, stepId: string, params?: any) =>
         getStep(runId, stepId, params, config)) as Storage['steps']['get'],
       list: ((params: any) =>
         listWorkflowRunSteps(params, config)) as Storage['steps']['list'],

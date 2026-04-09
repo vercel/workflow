@@ -166,54 +166,56 @@ The Streamer interface enables real-time data streaming:
 {/* @skip-typecheck - interface definition, not runnable code */}
 ```typescript
 interface Streamer {
-  writeToStream(
-    name: string,
-    runId: string,
-    chunk: string | Uint8Array
-  ): Promise<void>;
+  streamFlushIntervalMs?: number;
 
-  writeToStreamMulti?(
-    name: string,
-    runId: string,
-    chunks: (string | Uint8Array)[]
-  ): Promise<void>;
+  streams: {
+    write(
+      runId: string,
+      name: string,
+      chunk: string | Uint8Array
+    ): Promise<void>;
 
-  closeStream(
-    name: string,
-    runId: string
-  ): Promise<void>;
+    writeMulti?(
+      runId: string,
+      name: string,
+      chunks: (string | Uint8Array)[]
+    ): Promise<void>;
 
-  readFromStream(
-    name: string,
-    startIndex?: number
-  ): Promise<ReadableStream<Uint8Array>>;
+    close(runId: string, name: string): Promise<void>;
 
-  listStreamsByRunId(runId: string): Promise<string[]>;
+    get(
+      runId: string,
+      name: string,
+      startIndex?: number
+    ): Promise<ReadableStream<Uint8Array>>;
 
-  /** Paginated snapshot of stream chunks. */
-  getStreamChunks(
-    name: string,
-    runId: string,
-    options?: { limit?: number; cursor?: string }
-  ): Promise<{
-    data: { index: number; data: Uint8Array }[];
-    cursor: string | null;
-    hasMore: boolean;
-    done: boolean;
-  }>;
+    list(runId: string): Promise<string[]>;
 
-  /** Lightweight metadata: tail index and completion flag. */
-  getStreamInfo(
-    name: string,
-    runId: string
-  ): Promise<{ tailIndex: number; done: boolean }>;
+    /** Paginated snapshot of stream chunks. */
+    getChunks(
+      runId: string,
+      name: string,
+      options?: { limit?: number; cursor?: string }
+    ): Promise<{
+      data: { index: number; data: Uint8Array }[];
+      cursor: string | null;
+      hasMore: boolean;
+      done: boolean;
+    }>;
+
+    /** Lightweight metadata: tail index and completion flag. */
+    getInfo(
+      runId: string,
+      name: string
+    ): Promise<{ tailIndex: number; done: boolean }>;
+  };
 }
 ```
 
 Streams are identified by a combination of `runId` and `name`. Each workflow run can have multiple named streams.
-`writeToStreamMulti()` is an optional optimization for batching multiple writes.
+`writeMulti()` is an optional optimization for batching multiple writes.
 
-`getStreamChunks` returns a paginated snapshot of currently available chunks (unlike `readFromStream` which returns a live `ReadableStream` that waits for new chunks). `getStreamInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete — useful for resolving negative `startIndex` values into absolute positions.
+`getChunks` returns a paginated snapshot of currently available chunks (unlike `get` which returns a live `ReadableStream` that waits for new chunks). `getInfo` returns the tail index (last chunk index, 0-based, or `-1` when empty) and whether the stream is complete — useful for resolving negative `startIndex` values into absolute positions.
 
 ## Reference Implementations
 
