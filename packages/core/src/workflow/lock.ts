@@ -26,49 +26,28 @@ const DEFAULT_LOCK_LEASE_TTL_MS = 24 * 60 * 60 * 1000;
 const LOCK_HEARTBEAT_UNSUPPORTED_MESSAGE =
   'Lock heartbeat is not supported in workflow functions yet because it cannot be replayed deterministically.';
 
-type PendingLockState = {
+type LockWaitingState = {
   type: 'waiting';
   acquireAt?: Date;
 };
 
-type LockNeedsCreateState = {
-  type: 'needs_create';
-};
-
-type LockAcquiredEvent = Extract<
-  LockHistoryEvent,
-  { eventType: 'lock_acquired' }
->;
-type LockReleasedEvent = Extract<
-  LockHistoryEvent,
-  { eventType: 'lock_release' }
->;
-
 type LockAcquiredState = {
   type: 'acquired';
-  event: LockAcquiredEvent;
+  lease: LimitLease;
 };
 
 type LockReleasedState = {
   type: 'released';
-  event: LockReleasedEvent;
+  lease: LimitLease;
 };
 
-type LockBaseState = {
-  correlationId: string;
-  wakeCorrelationId: string;
-  key: string;
-  leaseTtlMs: number;
-  definition: LimitDefinition;
-};
-
-type LockState = LockBaseState &
-  (
-    | LockNeedsCreateState
-    | PendingLockState
-    | LockAcquiredState
-    | LockReleasedState
-  );
+type LockState =
+  | {
+      type: 'create';
+    }
+  | LockWaitingState
+  | LockAcquiredState
+  | LockReleasedState;
 
 function createSuspension(ctx: WorkflowOrchestratorContext) {
   scheduleWhenIdle(ctx, () => {
@@ -114,38 +93,29 @@ function createLimitDefinition(options: LockOptions): LimitDefinition {
 
 function createLockHandle(
   getState: () => LockState,
-  setReleasedState: (event: LockReleasedEvent) => void,
+  setReleasedState: (lease: LimitLease) => void,
+  correlationId: string,
   ctx: WorkflowOrchestratorContext
 ): LockHandle {
   let disposed = false;
   const initialState = getState();
   if (initialState.type !== 'acquired' && initialState.type !== 'released') {
     throw new WorkflowRuntimeError(
-      `Corrupted event log: lock ${initialState.correlationId} is missing lease metadata`
+      `Corrupted event log: lock ${correlationId} is missing lease metadata`
     );
   }
 
-  const lease = initialState.event.eventData.lease;
-
-  const createReleaseEvent = (event: LockAcquiredEvent): LockReleasedEvent => {
-    return {
-      ...event,
-      eventType: 'lock_release',
-      eventData: {
-        lease: event.eventData.lease,
-      },
-    };
-  };
+  const lease = initialState.lease;
 
   const markReleased = () => {
     const state = getState();
     if (state.type !== 'acquired') {
       throw new WorkflowRuntimeError(
-        `Corrupted event log: lock ${state.correlationId} cannot be released from status "${state.type}"`
+        `Corrupted event log: lock ${correlationId} cannot be released from status "${state.type}"`
       );
     }
 
-    setReleasedState(createReleaseEvent(state.event));
+    setReleasedState(state.lease);
   };
 
   const dispose = async () => {
@@ -160,7 +130,7 @@ function createLockHandle(
       const result = await getWorld().events.create(ctx.runId, {
         eventType: 'lock_release',
         specVersion: SPEC_VERSION_CURRENT,
-        correlationId: state.correlationId,
+        correlationId,
       });
       eventCreatedAt = result.event?.createdAt;
     } catch (error) {
@@ -201,38 +171,36 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
   return async function lockImpl(options: LockOptions): Promise<LockHandle> {
     const lockIndex = ctx.nextLockIndex++;
     const { key, leaseTtlMs } = options;
-    const baseState: LockBaseState = {
-      correlationId: createLockCorrelationId(ctx.runId, lockIndex),
-      wakeCorrelationId: createLockWakeCorrelationId(ctx.runId, lockIndex),
-      key,
-      leaseTtlMs: leaseTtlMs ?? DEFAULT_LOCK_LEASE_TTL_MS,
-      definition: createLimitDefinition(options),
-    };
-    let state: LockState = {
-      ...baseState,
-      type: 'needs_create',
-    };
+    const correlationId = createLockCorrelationId(ctx.runId, lockIndex);
+    const wakeCorrelationId = createLockWakeCorrelationId(ctx.runId, lockIndex);
+    const effectiveLeaseTtlMs = leaseTtlMs ?? DEFAULT_LOCK_LEASE_TTL_MS;
+    const definition = createLimitDefinition(options);
+    let state: LockState = { type: 'create' };
 
     const { promise, resolve, reject } = withResolvers<LockHandle>();
     let resolved = false;
     let pendingRuntimeRequest = false;
     let suspensionScheduled = false;
 
+    const setState = (nextState: LockState) => {
+      state = nextState;
+    };
+
     const resolveHandle = () => {
       if (resolved) return;
       resolved = true;
-      ctx.invocationsQueue.delete(baseState.wakeCorrelationId);
+      ctx.invocationsQueue.delete(wakeCorrelationId);
       ctx.promiseQueue = ctx.promiseQueue.then(() => {
         resolve(
           createLockHandle(
             () => state,
-            (event) => {
-              state = {
-                ...baseState,
+            (lease) => {
+              setState({
                 type: 'released',
-                event,
-              };
+                lease,
+              });
             },
+            correlationId,
             ctx
           )
         );
@@ -248,33 +216,35 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
     };
 
     const scheduleRateRetry = (acquireAt: Date) => {
-      ctx.invocationsQueue.set(baseState.wakeCorrelationId, {
+      ctx.invocationsQueue.set(wakeCorrelationId, {
         type: 'limit_wait',
-        correlationId: baseState.wakeCorrelationId,
+        correlationId: wakeCorrelationId,
         resumeAt: acquireAt,
       });
       suspendWorkflow();
     };
 
     const setWaitingState = (acquireAt?: Date) => {
-      state = {
-        ...baseState,
+      setState({
         type: 'waiting',
         acquireAt,
-      };
+      });
     };
 
-    const shouldAttemptAcquire = () => {
-      if (ctx.lockPreApproval === baseState.correlationId) {
-        return true;
-      }
-      if (state.type !== 'waiting') {
+    const shouldPauseWhileWaiting = (acquireAt?: Date) => {
+      if (ctx.lockPreApproval === correlationId) {
         return false;
       }
-      if (state.acquireAt === undefined) {
+      if (acquireAt === undefined) {
+        suspendWorkflow();
         return true;
       }
-      return state.acquireAt.getTime() <= Date.now();
+      if (acquireAt.getTime() <= Date.now()) {
+        return false;
+      }
+
+      scheduleRateRetry(acquireAt);
+      return true;
     };
 
     const applyLockEvent = (
@@ -295,37 +265,21 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
             setWaitingState();
             return;
           }
-          state = {
-            ...baseState,
+          setState({
             type: 'acquired',
-            event,
-          };
+            lease: event.eventData.lease,
+          });
           resolveHandle();
           return;
 
         case 'lock_release':
-          state = {
-            ...baseState,
+          setState({
             type: 'released',
-            event,
-          };
+            lease: event.eventData.lease,
+          });
           resolveHandle();
           return;
       }
-    };
-
-    const syncWaitingState = () => {
-      if (state.type !== 'waiting') {
-        return;
-      }
-      if (state.acquireAt === undefined) {
-        suspendWorkflow();
-        return;
-      }
-      if (shouldAttemptAcquire()) {
-        return;
-      }
-      scheduleRateRetry(state.acquireAt);
     };
 
     const requestLockCreated = async () => {
@@ -333,26 +287,28 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
         const result = await getWorld().events.create(ctx.runId, {
           eventType: 'lock_created',
           specVersion: SPEC_VERSION_CURRENT,
-          correlationId: baseState.correlationId,
+          correlationId,
           eventData: {
-            key: baseState.key,
-            definition: baseState.definition,
-            leaseTtlMs: baseState.leaseTtlMs,
+            key,
+            definition,
+            leaseTtlMs: effectiveLeaseTtlMs,
           },
         });
         const event = result.event;
         if (!event) {
           throw new WorkflowRuntimeError(
-            `World did not return an event for lock ${baseState.correlationId}`
+            `World did not return an event for lock ${correlationId}`
           );
         }
         if (!isRuntimeLockEvent(event)) {
           throw new WorkflowRuntimeError(
-            `Unexpected event type for lock ${baseState.correlationId}: ${event.eventType}`
+            `Unexpected event type for lock ${correlationId}: ${event.eventType}`
           );
         }
         applyLockEvent(event, true);
-        syncWaitingState();
+        if (state.type === 'waiting') {
+          shouldPauseWhileWaiting(state.acquireAt);
+        }
       } catch (error) {
         reject(error);
       }
@@ -363,31 +319,33 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
         const result = await getWorld().events.create(ctx.runId, {
           eventType: 'lock_acquired',
           specVersion: SPEC_VERSION_CURRENT,
-          correlationId: baseState.correlationId,
+          correlationId,
         });
         const event = result.event;
         if (!event) {
           throw new WorkflowRuntimeError(
-            `World did not acquire lock ${baseState.correlationId}`
+            `World did not acquire lock ${correlationId}`
           );
         }
         if (!isRuntimeLockEvent(event)) {
           throw new WorkflowRuntimeError(
-            `Unexpected event type for lock ${baseState.correlationId}: ${event.eventType}`
+            `Unexpected event type for lock ${correlationId}: ${event.eventType}`
           );
         }
         applyLockEvent(event, true);
-        syncWaitingState();
+        if (state.type === 'waiting') {
+          shouldPauseWhileWaiting(state.acquireAt);
+        }
       } catch (error) {
         if (TooEarlyError.is(error)) {
+          let acquireAt: Date | undefined;
           if (error.retryAfter) {
-            const acquireAt = new Date(Date.now() + error.retryAfter * 1000);
+            acquireAt = new Date(Date.now() + error.retryAfter * 1000);
             setWaitingState(acquireAt);
-            scheduleRateRetry(acquireAt);
           } else {
             setWaitingState();
-            suspendWorkflow();
           }
+          shouldPauseWhileWaiting(acquireAt);
           return;
         }
         reject(error);
@@ -400,7 +358,7 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
       }
 
       switch (state.type) {
-        case 'needs_create':
+        case 'create':
           pendingRuntimeRequest = true;
           void requestLockCreated().finally(() => {
             pendingRuntimeRequest = false;
@@ -408,12 +366,7 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
           return;
 
         case 'waiting':
-          if (!shouldAttemptAcquire()) {
-            if (state.acquireAt) {
-              scheduleRateRetry(state.acquireAt);
-            } else {
-              suspendWorkflow();
-            }
+          if (shouldPauseWhileWaiting(state.acquireAt)) {
             return;
           }
 
@@ -436,14 +389,14 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
         return EventConsumerResult.NotConsumed;
       }
 
-      if (event.correlationId !== baseState.correlationId) {
+      if (event.correlationId !== correlationId) {
         return EventConsumerResult.NotConsumed;
       }
       if (!isRuntimeLockEvent(event)) {
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           ctx.onWorkflowError(
             new WorkflowRuntimeError(
-              `Unexpected event type for lock ${baseState.correlationId} "${event.eventType}"`
+              `Unexpected event type for lock ${correlationId} "${event.eventType}"`
             )
           );
         });
