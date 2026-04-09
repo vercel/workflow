@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 /**__internal_workflows{"steps":{"input.js":{"Calculator#add":{"stepId":"step//./input//Calculator#add"},"Calculator#multiply":{"stepId":"step//./input//Calculator#multiply"}}},"classes":{"input.js":{"Calculator":{"classId":"class//./input//Calculator"}}}}*/;
 export class Calculator {
@@ -20,8 +19,16 @@ export class Calculator {
         return a + b + this.multiplier;
     }
 }
-registerStepFunction("step//./input//Calculator#multiply", Calculator.prototype["multiply"]);
-registerStepFunction("step//./input//Calculator#add", Calculator.prototype["add"]);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(Calculator.prototype["multiply"], "step//./input//Calculator#multiply");
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(Calculator.prototype["add"], "step//./input//Calculator#add");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);

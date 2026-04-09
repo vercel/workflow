@@ -2188,7 +2188,9 @@ describe('step function serialization', () => {
     const stepName = 'step//workflows/test.ts//calculate';
 
     // Create a step function that accesses closure variables
-    const { __private_getClosureVars } = await import('./private.js');
+    const { __private_getClosureVars } = await import(
+      './step/get-closure-vars.js'
+    );
     const { contextStorage } = await import('./step/context-storage.js');
 
     const stepFn = async (x: number) => {
