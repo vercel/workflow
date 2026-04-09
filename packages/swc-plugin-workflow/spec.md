@@ -333,7 +333,8 @@ Output:
 var wrapper$_anonymousStep0 = async () => {
     const { multiplier } = function() {
         var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
-        return __wf_store && __wf_store.closureVars || {};
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
     }();
     return 10 * multiplier;
 };
@@ -1059,12 +1060,12 @@ The plugin emits errors for invalid usage:
 
 | Error | Description |
 |-------|-------------|
-| Non-async workflow function | Functions with `"use workflow"` must be async (step functions may be sync) |
+| Non-async function | Functions with `"use step"` or `"use workflow"` must be async |
 | Instance methods with `"use workflow"` | Only static methods can have `"use workflow"` (not instance methods) |
 | Getters with `"use workflow"` | Getters cannot be marked with `"use workflow"` |
 | Misplaced directive | Directive must be at top of file or start of function body |
 | Conflicting directives | Cannot have both `"use step"` and `"use workflow"` at module level |
-| Invalid exports | Module-level `"use workflow"` files can only export async functions; `"use step"` files can export any function |
+| Invalid exports | Module-level directive files can only export async functions |
 | Misspelled directive | Detects typos like `"use steps"` or `"use workflows"` |
 
 ---
@@ -1096,9 +1097,14 @@ Getters (property accessors) can be marked with `"use step"` to make property ac
 
 ### Instance getter transformation
 
-**Step mode**: The getter is preserved on the class with the directive stripped. Registration uses `Object.getOwnPropertyDescriptor` to extract the getter function:
+**Step mode**: The getter is preserved on the class with the directive stripped. Registration uses an inline IIFE with `Object.getOwnPropertyDescriptor` to extract the getter function:
 ```javascript
-registerStepFunction("step_id", Object.getOwnPropertyDescriptor(ClassName.prototype, "prop").get);
+(function(__wf_fn, __wf_id) {
+  var __wf_sym = Symbol.for("@workflow/core//registeredSteps"),
+      __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+  __wf_reg.set(__wf_id, __wf_fn);
+  __wf_fn.stepId = __wf_id;
+})(Object.getOwnPropertyDescriptor(ClassName.prototype, "prop").get, "step_id");
 ```
 
 **Workflow mode**: The getter is removed from the class body. A hoisted step proxy variable and `Object.defineProperty` call are emitted:
@@ -1119,7 +1125,12 @@ Same as instance getters but targets `ClassName` instead of `ClassName.prototype
 
 **Step mode**:
 ```javascript
-registerStepFunction("step_id", Object.getOwnPropertyDescriptor(ClassName, "prop").get);
+(function(__wf_fn, __wf_id) {
+  var __wf_sym = Symbol.for("@workflow/core//registeredSteps"),
+      __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+  __wf_reg.set(__wf_id, __wf_fn);
+  __wf_fn.stepId = __wf_id;
+})(Object.getOwnPropertyDescriptor(ClassName, "prop").get, "step_id");
 ```
 
 **Workflow mode**:

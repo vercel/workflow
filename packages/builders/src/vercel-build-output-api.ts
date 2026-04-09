@@ -32,7 +32,10 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     };
 
     // Generate unified manifest
-    const workflowBundlePath = join(workflowGeneratedDir, 'flow.func/index.js');
+    const workflowBundlePath = join(
+      workflowGeneratedDir,
+      'flow.func/index.mjs'
+    );
     const manifestJson = await this.createManifest({
       workflowBundlePath,
       manifestDir: workflowGeneratedDir,
@@ -72,13 +75,14 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create steps bundle
     const { manifest } = await this.createStepsBundle({
       inputFiles,
-      outfile: join(stepsFuncDir, 'index.js'),
+      outfile: join(stepsFuncDir, 'index.mjs'),
       tsconfigPath,
     });
 
     // Create package.json and .vc-config.json for steps function
-    await this.createPackageJson(stepsFuncDir, 'commonjs');
+    await this.createPackageJson(stepsFuncDir, 'module');
     await this.createVcConfig(stepsFuncDir, {
+      handler: 'index.mjs',
       shouldAddSourcemapSupport: true,
       maxDuration: 'max',
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
@@ -102,14 +106,15 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await mkdir(workflowsFuncDir, { recursive: true });
 
     const { manifest } = await this.createWorkflowsBundle({
-      outfile: join(workflowsFuncDir, 'index.js'),
+      outfile: join(workflowsFuncDir, 'index.mjs'),
       inputFiles,
       tsconfigPath,
     });
 
     // Create package.json and .vc-config.json for workflows function
-    await this.createPackageJson(workflowsFuncDir, 'commonjs');
+    await this.createPackageJson(workflowsFuncDir, 'module');
     await this.createVcConfig(workflowsFuncDir, {
+      handler: 'index.mjs',
       maxDuration: 'max',
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       runtime: this.config.runtime,
@@ -130,13 +135,14 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
 
     // Bundle the webhook route with dependencies resolved
     await this.createWebhookBundle({
-      outfile: join(webhookFuncDir, 'index.js'),
+      outfile: join(webhookFuncDir, 'index.mjs'),
       bundle, // Build Output API needs bundling (except in tests)
     });
 
     // Create package.json and .vc-config.json for webhook function
-    await this.createPackageJson(webhookFuncDir, 'commonjs');
+    await this.createPackageJson(webhookFuncDir, 'module');
     await this.createVcConfig(webhookFuncDir, {
+      handler: 'index.mjs',
       shouldAddHelpers: false,
       runtime: this.config.runtime,
     });
