@@ -518,6 +518,7 @@
   @apply text-gray-1000;
 }
 
+/* Override fumadocs primary color to match design system */
 :root {
   --color-fd-primary: var(--ds-gray-1000);
 }
