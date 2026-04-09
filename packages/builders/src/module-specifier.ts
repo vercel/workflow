@@ -101,20 +101,72 @@ function findPackageJson(filePath: string): PackageInfo | null {
  * @param pkg - Package info from findPackageJson
  * @returns The subpath (e.g., "/internal/builtins") or empty string for root export
  */
-function resolveExportSubpath(filePath: string, pkg: PackageInfo): string {
+function toPackageRelativePath(
+  filePath: string,
+  pkg: PackageInfo
+): string | null {
+  const normalizedFilePath = filePath.replace(/\\/g, '/');
+  const normalizedPkgDir = pkg.dir.replace(/\\/g, '/');
+  if (!normalizedFilePath.startsWith(normalizedPkgDir + '/')) {
+    return null;
+  }
+
+  return normalizedFilePath.substring(normalizedPkgDir.length + 1);
+}
+
+function getSourceFallbackExportTargets(relativePath: string): string[] {
+  const fallbackTargets = new Set<string>();
+  const extensionFallbacks: Record<string, string[]> = {
+    '.ts': ['.js'],
+    '.tsx': ['.js'],
+    '.mts': ['.mjs'],
+    '.cts': ['.cjs'],
+    '.jsx': ['.js'],
+  };
+
+  const extensionMatch = relativePath.match(/(\.[^./\\]+)$/);
+  const extension = extensionMatch?.[1]?.toLowerCase();
+  if (!extension) {
+    return [];
+  }
+
+  const pathWithoutExtension = relativePath.slice(0, -extension.length);
+  const extensionTargets = extensionFallbacks[extension] ?? [];
+  for (const fallbackExtension of extensionTargets) {
+    fallbackTargets.add(`${pathWithoutExtension}${fallbackExtension}`);
+  }
+
+  if (relativePath.startsWith('src/')) {
+    const distPathWithoutPrefix = relativePath.slice('src/'.length);
+    for (const fallbackExtension of extensionTargets) {
+      fallbackTargets.add(
+        `dist/${distPathWithoutPrefix.slice(0, -extension.length)}${fallbackExtension}`
+      );
+    }
+  }
+
+  return Array.from(fallbackTargets);
+}
+
+function resolveExportSubpath(
+  filePath: string,
+  pkg: PackageInfo,
+  options?: { allowSourceFallback?: boolean }
+): string {
   if (!pkg.exports || typeof pkg.exports !== 'object') {
     return '';
   }
 
-  // Get the relative path from package root to the file
-  const normalizedFilePath = filePath.replace(/\\/g, '/');
-  const normalizedPkgDir = pkg.dir.replace(/\\/g, '/');
-  const relativePath = normalizedFilePath.startsWith(normalizedPkgDir + '/')
-    ? './' + normalizedFilePath.substring(normalizedPkgDir.length + 1)
-    : null;
-
+  const relativePath = toPackageRelativePath(filePath, pkg);
   if (!relativePath) {
     return '';
+  }
+
+  const comparableTargets = new Set([`./${relativePath}`]);
+  if (options?.allowSourceFallback) {
+    for (const fallbackTarget of getSourceFallbackExportTargets(relativePath)) {
+      comparableTargets.add(`./${fallbackTarget}`);
+    }
   }
 
   // Search through exports to find a matching subpath
@@ -122,7 +174,7 @@ function resolveExportSubpath(filePath: string, pkg: PackageInfo): string {
     const resolvedTarget = resolveExportTarget(target);
     if (
       resolvedTarget &&
-      normalizeExportPath(resolvedTarget) === relativePath
+      comparableTargets.has(normalizeExportPath(resolvedTarget))
     ) {
       // Found a match - return the subpath without the leading "."
       // e.g., "./internal/builtins" -> "/internal/builtins"
@@ -317,7 +369,9 @@ export function resolveModuleSpecifier(
   }
 
   // Resolve the export subpath (e.g., "/internal/builtins" for "workflow/internal/builtins")
-  const subpath = resolveExportSubpath(filePath, pkg);
+  const subpath = resolveExportSubpath(filePath, pkg, {
+    allowSourceFallback: true,
+  });
 
   // Return the module specifier as "name/subpath@version" or "name@version"
   const specifier = subpath

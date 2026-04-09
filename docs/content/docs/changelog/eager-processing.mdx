@@ -390,6 +390,30 @@ The later merge also pulled `BaseBuilder.createCombinedBundle()` into the deferr
 
 **Fix**: Threaded explicit `discoveredEntries` through `createCombinedBundle()` and passed the deferred builder's tracked workflow/step/serde file sets into that call. Deferred Next.js builds now reuse the socket/cache-driven discovery state instead of re-running the base eager discovery pass.
 
+### Deferred Package Steps Fell Back to Compiled `dist/` Files
+
+Once deferred discovery stopped re-running the base eager scan, some package-provided steps were only being rediscovered from built artifacts such as `packages/ai/dist/agent/durable-agent.js`. Those compiled files no longer carried every nested `'use step'` directive, so local production Next.js builds could miss registrations like `@workflow/ai/agent`'s `closeStream` helper and fail at runtime with "step is not registered in the current deployment".
+
+**Fix**: The deferred Next.js builder now rewrites discovered workspace package paths from `dist/` back to their matching `src/` files when those sources exist. That keeps deferred bundling pointed at the directive-bearing source modules instead of their compiled output.
+
+### Workspace Source Step IDs Lost Export Subpaths
+
+Switching deferred builds over to workspace `src/` files fixed the missing nested directives, but it exposed a second mismatch in the SWC manifest path logic. `packages/builders/src/module-specifier.ts` only matched package exports against the on-disk file being transformed, so `packages/ai/src/agent/durable-agent.ts` was assigned `@workflow/ai@...` while the runtime still referenced the exported subpath id `@workflow/ai/agent@...`. Local Next.js agent runs then failed with "Step `step//@workflow/ai/agent@...//closeStream` is not registered" even though the source file was finally back in the bundle.
+
+**Fix**: `resolveModuleSpecifier()` now treats workspace source files as the source-backed form of their exported `dist/` targets when deriving step ids. That preserves package export subpaths like `@workflow/ai/agent` for id generation while still bundling the directive-bearing `src/` modules.
+
+### Build Output API Flow Handler Drift
+
+The Vercel Build Output API builder still emitted the combined flow function as `index.js`, but the surrounding metadata kept pointing at `index.mjs`. That mismatch meant BOA-based preview deployments published neither `/.well-known/workflow/v1/flow` nor the public manifest, so the Vercel production e2e suite collapsed into manifest `404` errors immediately after deployment.
+
+**Fix**: Updated `packages/builders/src/vercel-build-output-api.ts` to point both `.vc-config.json` and manifest extraction at `flow.func/index.js`, which matches the CommonJS file the builder actually writes.
+
+### Async World Loading Broke Custom Target Worlds
+
+The first lazy-world-loading fix switched package resolution over to `createRequire(import.meta.url)` globally. That solved the Next.js bundling problem for built-in worlds, but it also made custom targets like `@workflow/world-postgres` resolve relative to `@workflow/core` instead of the consuming app. Local Postgres tests then failed at startup with `Cannot find module '@workflow/world-postgres'`.
+
+**Fix**: The runtime now creates the package resolver lazily from `process.cwd()/package.json` when possible, falling back to `import.meta.url` only when the app root cannot be resolved. That keeps custom world modules app-relative without reintroducing the eager module-load failure in Next.js builds.
+
 ### Deferred Next.js Builder Helper Drift After Merge
 
 Merging `main` into the eager-processing branch pulled in a set of helper methods for copied-step import rewriting in `packages/next/src/builder-deferred.ts`, but the corresponding call sites were not present on this branch yet. That left `getRelativeImportSpecifier`, `getStepCopyFileName`, and `rewriteRelativeImportsForCopiedStep` orphaned, and `@workflow/next` failed to build with `TS6133` unused-private-member errors immediately after the merge.

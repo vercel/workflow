@@ -458,6 +458,29 @@ export abstract class BaseBuilder {
     // For workspace/node_modules packages, uses the package name so esbuild
     // will resolve through package.json exports with the appropriate conditions
     const createImport = (file: string) => {
+      const normalizedWorkspaceRoot = this.config.workingDir
+        .replace(/\\/g, '/')
+        .replace(/\/$/, '');
+      const normalizedWorkspaceFile = file.replace(/\\/g, '/');
+      const isExternalWorkspaceSourceFile =
+        normalizedWorkspaceFile.includes('/packages/') &&
+        normalizedWorkspaceFile.includes('/src/') &&
+        !(
+          normalizedWorkspaceFile === normalizedWorkspaceRoot ||
+          normalizedWorkspaceFile.startsWith(`${normalizedWorkspaceRoot}/`)
+        );
+
+      if (isExternalWorkspaceSourceFile) {
+        let relativePath = relative(
+          normalizedWorkspaceRoot,
+          normalizedWorkspaceFile
+        ).replace(/\\/g, '/');
+        if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
+          relativePath = `./${relativePath}`;
+        }
+        return `import '${relativePath}';`;
+      }
+
       const { importPath, isPackage } = getImportPath(
         file,
         this.config.workingDir

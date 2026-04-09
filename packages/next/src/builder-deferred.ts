@@ -739,10 +739,28 @@ export async function getNextBuilderDeferred() {
       );
     }
 
+    private resolveWorkspaceSourcePath(filePath: string): string {
+      const normalizedPath = filePath.replace(/\\/g, '/');
+      if (
+        !normalizedPath.includes('/packages/') ||
+        !normalizedPath.includes('/dist/')
+      ) {
+        return filePath;
+      }
+
+      const sourceCandidate = normalizedPath.replace('/dist/', '/src/');
+      const resolvedSourceCandidate =
+        this.resolveCopiedStepImportTargetPath(sourceCandidate);
+      return existsSync(resolvedSourceCandidate)
+        ? resolvedSourceCandidate
+        : filePath;
+    }
+
     private normalizeDiscoveredFilePath(filePath: string): string {
-      return isAbsolute(filePath)
+      const absolutePath = isAbsolute(filePath)
         ? filePath
         : resolve(this.config.workingDir, filePath);
+      return this.resolveWorkspaceSourcePath(absolutePath);
     }
 
     private async filterExistingFiles(filePaths: string[]): Promise<string[]> {

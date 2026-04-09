@@ -305,4 +305,29 @@ describe('getImportPath', () => {
       moduleSpecifier: 'vade@0.0.0',
     });
   });
+
+  it('preserves package export subpaths when source files back dist exports', () => {
+    const projectRoot = join(testRoot, 'apps/chat');
+    const workspacePkgDir = join(testRoot, 'packages/agent');
+    const filePath = join(workspacePkgDir, 'src/server.ts');
+
+    writeJson(join(projectRoot, 'package.json'), {
+      name: 'chat',
+      dependencies: { '@internal/agent': 'workspace:*' },
+    });
+
+    writeJson(join(workspacePkgDir, 'package.json'), {
+      name: '@internal/agent',
+      version: '1.0.0',
+      exports: {
+        './server': './dist/server.js',
+      },
+    });
+
+    writeFile(filePath, `'use step';\n`);
+
+    expect(resolveModuleSpecifier(filePath, projectRoot)).toEqual({
+      moduleSpecifier: '@internal/agent/server@1.0.0',
+    });
+  });
 });

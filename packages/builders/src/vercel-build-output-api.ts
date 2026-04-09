@@ -31,6 +31,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     // Create package.json and .vc-config.json for combined function
     await this.createPackageJson(workflowsFuncDir, 'commonjs');
     await this.createVcConfig(workflowsFuncDir, {
+      handler: 'index.js',
       maxDuration: 'max',
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       runtime: this.config.runtime,
@@ -40,10 +41,7 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createBuildOutputConfig(outputDir);
 
     // Generate unified manifest
-    const workflowBundlePath = join(
-      workflowGeneratedDir,
-      'flow.func/index.mjs'
-    );
+    const workflowBundlePath = join(workflowGeneratedDir, 'flow.func/index.js');
     const manifestJson = await this.createManifest({
       workflowBundlePath,
       manifestDir: workflowGeneratedDir,

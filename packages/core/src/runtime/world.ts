@@ -7,7 +7,13 @@ import {
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
 
-const require = createRequire(import.meta.url);
+function getRuntimeRequire() {
+  try {
+    return createRequire(resolve(process.cwd(), 'package.json'));
+  } catch {
+    return createRequire(import.meta.url);
+  }
+}
 
 const WorldCache = Symbol.for('@workflow/world//cache');
 const StubbedWorldCache = Symbol.for('@workflow/world//stubbedCache');
@@ -48,7 +54,7 @@ function resolveModulePath(specifier: string): string {
   }
   // Package specifier - use require.resolve to find the package
   try {
-    return pathToFileURL(require.resolve(specifier)).href;
+    return pathToFileURL(getRuntimeRequire().resolve(specifier)).href;
   } catch {
     return specifier;
   }
@@ -108,7 +114,7 @@ export const createWorld = async (): Promise<World> => {
     const resolvedPath = resolveModulePath(targetWorld);
     mod = await dynamicImport(resolvedPath);
   } catch {
-    mod = require(targetWorld);
+    mod = getRuntimeRequire()(targetWorld);
   }
   if (typeof mod === 'function') {
     return mod() as World;
