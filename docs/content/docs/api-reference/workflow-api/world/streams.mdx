@@ -21,7 +21,7 @@ keywords:
   - stream lifecycle
 ---
 
-Stream methods live on `world.streams` (the `streams` sub-object of the `world` object returned by `getWorld()`). Use them to write chunks, read streams, and manage stream lifecycle outside of the standard `getWritable()` pattern.
+Stream methods live on `world.streams` (the `streams` sub-object of the `World` instance returned by `await getWorld()`). Use them to write chunks, read streams, and manage stream lifecycle outside of the standard `getWritable()` pattern.
 
 <Callout type="info">
   For most streaming use cases, use [`getWritable()`](/docs/api-reference/workflow/get-writable) inside steps. Direct stream methods are for advanced scenarios like building custom stream consumers or managing streams from outside a workflow.
@@ -32,7 +32,7 @@ Stream methods live on `world.streams` (the `streams` sub-object of the `world` 
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld(); // [!code highlight]
+const world = await getWorld(); // [!code highlight]
 // Stream methods are called on world.streams — e.g. world.streams.write()
 ```
 
@@ -183,7 +183,7 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const streamName = url.searchParams.get("name") ?? "default";
   const runId = url.searchParams.get("runId")!;
-  const world = getWorld();
+  const world = await getWorld();
   const readable = await world.streams.get(runId, streamName); // [!code highlight]
 
   return new Response(readable, {
@@ -197,7 +197,7 @@ export async function GET(req: Request) {
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld();
+const world = await getWorld();
 let cursor: string | undefined;
 
 do {

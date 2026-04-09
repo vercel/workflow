@@ -426,7 +426,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       pull: async (controller) => {
         let reader = this.#reader;
         if (!reader) {
-          const world = getWorld();
+          const world = await getWorld();
           const stream = await world.streams.get(runId, name, startIndex);
           reader = this.#reader = stream.getReader();
         }
@@ -469,7 +469,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error(`"name" is required, got "${name}"`);
     }
-    const world = getWorld();
+    const worldPromise = getWorld();
 
     // Buffering state for batched writes
     // Encryption/decryption is handled at the framing level by
@@ -477,6 +477,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     let buffer: Uint8Array[] = [];
     let flushTimer: ReturnType<typeof setTimeout> | null = null;
     let flushPromise: Promise<void> | null = null;
+    let resolvedFlushIntervalMs: number | undefined;
 
     const flush = async (): Promise<void> => {
       if (flushTimer) {
@@ -490,6 +491,12 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
       // This prevents data loss if the write operation fails
       const chunksToFlush = buffer.slice();
 
+      const world = await worldPromise;
+      // Cache the flush interval from the world on first use
+      if (resolvedFlushIntervalMs === undefined) {
+        resolvedFlushIntervalMs =
+          world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS;
+      }
       // Use writeMulti if available for batch writes
       if (
         typeof world.streams.writeMulti === 'function' &&
@@ -528,7 +535,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
             for (const w of currentWaiters) w.reject(err);
           }
         );
-      }, world.streamFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
+      }, resolvedFlushIntervalMs ?? STREAM_FLUSH_INTERVAL_MS);
     };
 
     super({
@@ -561,6 +568,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
         // Flush any remaining buffered chunks
         await flush();
 
+        const world = await worldPromise;
         await world.streams.close(runId, name);
       },
       abort(reason) {

@@ -78,7 +78,7 @@ export class Run<TResult> {
    * The world object.
    * @internal
    */
-  private world: World;
+  private worldPromise: Promise<World>;
 
   /**
    * Cached encryption key resolution. Resolved once on first use and
@@ -98,7 +98,7 @@ export class Run<TResult> {
 
   constructor(runId: string, opts?: { resilientStart?: boolean }) {
     this.runId = runId;
-    this.world = getWorld();
+    this.worldPromise = getWorld();
     this.resilientStart = opts?.resilientStart ?? false;
   }
 
@@ -111,8 +111,9 @@ export class Run<TResult> {
   private getEncryptionKey(): Promise<CryptoKey | undefined> {
     if (!this.encryptionKeyPromise) {
       this.encryptionKeyPromise = (async () => {
-        const run = await this.world.runs.get(this.runId);
-        const rawKey = await this.world.getEncryptionKeyForRun?.(run);
+        const world = await this.worldPromise;
+        const run = await world.runs.get(this.runId);
+        const rawKey = await world.getEncryptionKeyForRun?.(run);
         return rawKey ? await importKey(rawKey) : undefined;
       })();
     }
@@ -127,14 +128,15 @@ export class Run<TResult> {
    * @returns A {@link StopSleepResult} object containing the number of sleep calls that were interrupted.
    */
   async wakeUp(options?: StopSleepOptions): Promise<StopSleepResult> {
-    return wakeUpRun(this.world, this.runId, options);
+    return wakeUpRun(await this.worldPromise, this.runId, options);
   }
 
   /**
    * Cancels the workflow run.
    */
   async cancel(): Promise<void> {
-    await this.world.events.create(this.runId, {
+    const world = await this.worldPromise;
+    await world.events.create(this.runId, {
       eventType: 'run_cancelled',
       specVersion: SPEC_VERSION_CURRENT,
     });
@@ -144,22 +146,26 @@ export class Run<TResult> {
    * Whether the workflow run exists.
    */
   get exists(): Promise<boolean> {
-    return this.world.runs
-      .get(this.runId, { resolveData: 'none' })
-      .then(() => true)
-      .catch((error) => {
-        if (WorkflowRunNotFoundError.is(error)) {
-          return false;
-        }
-        throw error;
-      });
+    return this.worldPromise.then((world) =>
+      world.runs
+        .get(this.runId, { resolveData: 'none' })
+        .then(() => true)
+        .catch((error) => {
+          if (WorkflowRunNotFoundError.is(error)) {
+            return false;
+          }
+          throw error;
+        })
+    );
   }
 
   /**
    * The status of the workflow run.
    */
   get status(): Promise<WorkflowRunStatus> {
-    return this.world.runs.get(this.runId).then((run) => run.status);
+    return this.worldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.status)
+    );
   }
 
   /**
@@ -174,14 +180,18 @@ export class Run<TResult> {
    * The name of the workflow.
    */
   get workflowName(): Promise<string> {
-    return this.world.runs.get(this.runId).then((run) => run.workflowName);
+    return this.worldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.workflowName)
+    );
   }
 
   /**
    * The timestamp when the workflow run was created.
    */
   get createdAt(): Promise<Date> {
-    return this.world.runs.get(this.runId).then((run) => run.createdAt);
+    return this.worldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.createdAt)
+    );
   }
 
   /**
@@ -189,7 +199,9 @@ export class Run<TResult> {
    * Returns undefined if the workflow has not started yet.
    */
   get startedAt(): Promise<Date | undefined> {
-    return this.world.runs.get(this.runId).then((run) => run.startedAt);
+    return this.worldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.startedAt)
+    );
   }
 
   /**
@@ -197,7 +209,9 @@ export class Run<TResult> {
    * Returns undefined if the workflow has not completed yet.
    */
   get completedAt(): Promise<Date | undefined> {
-    return this.world.runs.get(this.runId).then((run) => run.completedAt);
+    return this.worldPromise.then((world) =>
+      world.runs.get(this.runId).then((run) => run.completedAt)
+    );
   }
 
   /**
@@ -237,10 +251,11 @@ export class Run<TResult> {
       startIndex,
     }) as ReadableStream<R>;
 
-    const world = this.world;
+    const worldPromise = this.worldPromise;
     const runId = this.runId;
     return Object.assign(stream, {
       getTailIndex: async (): Promise<number> => {
+        const world = await worldPromise;
         const info = await world.streams.getInfo(runId, name);
         return info.tailIndex;
       },
@@ -253,6 +268,8 @@ export class Run<TResult> {
    * @returns The workflow return value.
    */
   private async pollReturnValue(): Promise<TResult> {
+    const world = await this.worldPromise;
+
     // When resilientStart is true, run_created failed and the run may
     // not exist yet. Retry on WorkflowRunNotFoundError up to 3 times
     // (1s + 3s + 6s = 10s total) to give the queue time to deliver
@@ -264,7 +281,7 @@ export class Run<TResult> {
 
     while (true) {
       try {
-        const run = await this.world.runs.get(this.runId);
+        const run = await world.runs.get(this.runId);
 
         if (run.status === 'completed') {
           const encryptionKey = await this.getEncryptionKey();

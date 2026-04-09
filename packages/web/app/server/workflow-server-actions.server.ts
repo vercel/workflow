@@ -447,7 +447,7 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
     return cachedWorld;
   }
 
-  const world = createWorld();
+  const world = await createWorld();
   worldCache.set(cacheKey, world);
   return world;
 }

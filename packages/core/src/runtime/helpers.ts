@@ -99,7 +99,7 @@ export async function handleHealthCheckMessage(
   endpoint: 'workflow' | 'step',
   worldSpecVersion?: number
 ): Promise<void> {
-  const world = getWorld();
+  const world = await getWorld();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
   const response = JSON.stringify({
     healthy: true,
@@ -334,7 +334,7 @@ export async function getAllWorkflowRunEventsWithCursor(
     let hasMore = true;
     let pagesLoaded = 0;
 
-    const world = getWorld();
+    const world = await getWorld();
     const loadStart = Date.now();
     while (hasMore) {
       // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
@@ -403,7 +403,7 @@ export async function getNewWorkflowRunEvents(
     let hasMore = true;
     let pagesLoaded = 0;
 
-    const world = getWorld();
+    const world = await getWorld();
     const loadStart = Date.now();
     while (hasMore) {
       const pageStart = Date.now();

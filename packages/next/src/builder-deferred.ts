@@ -3,6 +3,7 @@ import { constants, existsSync } from 'node:fs';
 import {
   access,
   mkdir,
+  open,
   readdir,
   readFile,
   rm,
@@ -26,6 +27,7 @@ import {
 } from './socket-server.js';
 
 const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
+const ROUTE_STUB_MARKER_SCAN_BYTES = 4 * 1024;
 
 let CachedNextBuilderDeferred: any;
 
@@ -112,7 +114,12 @@ export async function getNextBuilderDeferred() {
         const inputFiles = this.getCurrentInputFiles(implicitStepFiles);
         const buildSignature =
           await this.createDeferredBuildSignature(inputFiles);
-        if (buildSignature === this.lastDeferredBuildSignature) {
+        const shouldForceBuildForGeneratedRoutes =
+          await this.shouldForceBuildForGeneratedRoutes();
+        if (
+          buildSignature === this.lastDeferredBuildSignature &&
+          !shouldForceBuildForGeneratedRoutes
+        ) {
           return;
         }
 
@@ -159,6 +166,62 @@ export async function getNextBuilderDeferred() {
     private async resolveImplicitStepFiles(): Promise<string[]> {
       const workflowStdlibPath = this.resolveWorkflowStdlibStepFilePath();
       return workflowStdlibPath ? [workflowStdlibPath] : [];
+    }
+
+    private async shouldForceBuildForGeneratedRoutes(): Promise<boolean> {
+      const outputDir = await this.findAppDirectory();
+      const generatedRouteFiles = [
+        join(outputDir, '.well-known/workflow/v1/flow/route.js'),
+        join(outputDir, '.well-known/workflow/v1/webhook/[token]/route.js'),
+      ];
+
+      for (const routeFilePath of generatedRouteFiles) {
+        const routeState = await this.getGeneratedRouteState(routeFilePath);
+        if (routeState === 'missing' || routeState === 'stub') {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
+    private async getGeneratedRouteState(
+      routeFilePath: string
+    ): Promise<'missing' | 'stub' | 'generated'> {
+      let routeStats;
+      try {
+        routeStats = await stat(routeFilePath);
+      } catch {
+        return 'missing';
+      }
+      if (!routeStats.isFile()) {
+        return 'missing';
+      }
+
+      try {
+        const routeFileHandle = await open(routeFilePath, 'r');
+        try {
+          const markerScanBuffer = Buffer.alloc(ROUTE_STUB_MARKER_SCAN_BYTES);
+          const { bytesRead } = await routeFileHandle.read(
+            markerScanBuffer,
+            0,
+            ROUTE_STUB_MARKER_SCAN_BYTES,
+            0
+          );
+          const markerScanSource = markerScanBuffer.toString(
+            'utf8',
+            0,
+            bytesRead
+          );
+          return markerScanSource.includes(ROUTE_STUB_FILE_MARKER)
+            ? 'stub'
+            : 'generated';
+        } finally {
+          await routeFileHandle.close();
+        }
+      } catch {
+        return 'missing';
+      }
     }
 
     private resolveWorkflowStdlibStepFilePath(): string | null {
@@ -643,7 +706,8 @@ export async function getNextBuilderDeferred() {
       }
 
       await this.loadWorkflowsCache();
-      await this.loadDiscoveredEntriesFromInputGraph();
+      // Deferred mode must not run eager input-graph discovery; entries are
+      // discovered via loader->socket notifications during Next's build.
       this.cacheInitialized = true;
     }
 
@@ -949,47 +1013,6 @@ export async function getNextBuilderDeferred() {
       }
       for (const filePath of serdeFiles) {
         this.discoveredSerdeFiles.add(filePath);
-      }
-    }
-
-    private async loadDiscoveredEntriesFromInputGraph(): Promise<void> {
-      const inputFiles = await this.getInputFiles();
-      if (inputFiles.length === 0) {
-        return;
-      }
-
-      const { discoveredWorkflows, discoveredSteps, discoveredSerdeFiles } =
-        await this.discoverEntries(inputFiles, this.config.workingDir);
-      const { workflowFiles, stepFiles, serdeFiles } =
-        await this.reconcileDiscoveredEntries({
-          workflowCandidates: discoveredWorkflows,
-          stepCandidates: discoveredSteps,
-          serdeCandidates: discoveredSerdeFiles,
-          validatePatterns: true,
-        });
-
-      let hasChanges = false;
-      for (const filePath of workflowFiles) {
-        if (!this.discoveredWorkflowFiles.has(filePath)) {
-          this.discoveredWorkflowFiles.add(filePath);
-          hasChanges = true;
-        }
-      }
-      for (const filePath of stepFiles) {
-        if (!this.discoveredStepFiles.has(filePath)) {
-          this.discoveredStepFiles.add(filePath);
-          hasChanges = true;
-        }
-      }
-      for (const filePath of serdeFiles) {
-        if (!this.discoveredSerdeFiles.has(filePath)) {
-          this.discoveredSerdeFiles.add(filePath);
-          hasChanges = true;
-        }
-      }
-
-      if (hasChanges) {
-        this.scheduleWorkflowsCacheWrite();
       }
     }
 

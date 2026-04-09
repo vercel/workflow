@@ -411,7 +411,7 @@ describe('e2e', () => {
     // Poll until all 3 webhooks are registered.
     // On Vercel, webhook registration can be slow due to cold starts and
     // queue processing latency, so we allow up to 60s.
-    const world = getWorld();
+    const world = await getWorld();
     const hooks = await (async () => {
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
@@ -773,7 +773,7 @@ describe('e2e', () => {
           }
 
           // Read all chunks via getChunks pagination
-          const world = getWorld();
+          const world = await getWorld();
           const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
           const paginatedChunks: Uint8Array[] = [];
           let cursor: string | null = null;
@@ -1571,7 +1571,7 @@ describe('e2e', () => {
       // Tests the queue-based health check using healthCheck() directly.
       // This bypasses Vercel Deployment Protection by sending messages
       // through the Queue infrastructure rather than direct HTTP.
-      const world = getWorld();
+      const world = await getWorld();
 
       // Test workflow endpoint health check (V2: combined handler)
       const workflowResult = await healthCheck(world, 'workflow', {
@@ -1956,7 +1956,7 @@ describe('e2e', () => {
       // This exercises the same cancelRun code path that the CLI uses
       // (the CLI delegates directly to this function).
       const { cancelRun } = await import('../src/runtime');
-      await cancelRun(getWorld(), run.runId);
+      await cancelRun(await getWorld(), run.runId);
 
       // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
       const error = await run.returnValue.catch((e: unknown) => e);
@@ -2174,7 +2174,7 @@ describe('e2e', () => {
       // (run_created) throws a 500 server error. The queue should still
       // be dispatched with runInput, and the runtime should bootstrap
       // the run via the run_started fallback path.
-      const realWorld = getWorld();
+      const realWorld = await getWorld();
       let createCallCount = 0;
       const stubbedWorld: World = {
         ...realWorld,

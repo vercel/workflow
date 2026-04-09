@@ -372,6 +372,12 @@ The V2 combined bundle is output in CJS format by the standalone builder (step c
 
 The `getWorldHandlers()` return value was updated on main to include `specVersion` (the World's declared spec version). The V2 handler destructures this as `worldSpecVersion` and passes it to `handleHealthCheckMessage()` for inclusion in queue-based health check responses. This was merged alongside the V2 timeout configuration.
 
+### Async World Singleton Drift After Merge
+
+The later `main` merge changed `getWorld()` and `getWorldHandlers()` to be asynchronous promise-backed singletons, but the eager-processing branch still had synchronous call sites in the V2 runtime path. That left `packages/core/src/runtime.ts` and `packages/core/src/runtime/helpers.ts` trying to access `.events` on a `Promise<World>`, which failed typecheck immediately after the merge.
+
+**Fix**: Rebases the V2 workflow entrypoint onto the async world API by lazily awaiting `getWorldHandlers()` when wiring the queue handler and awaiting `getWorld()` at the remaining runtime/helper call sites. This preserves the inline replay loop while matching `main`'s new world initialization contract.
+
 ### Deferred Next.js Builder Helper Drift After Merge
 
 Merging `main` into the eager-processing branch pulled in a set of helper methods for copied-step import rewriting in `packages/next/src/builder-deferred.ts`, but the corresponding call sites were not present on this branch yet. That left `getRelativeImportSpecifier`, `getStepCopyFileName`, and `rewriteRelativeImportsForCopiedStep` orphaned, and `@workflow/next` failed to build with `TS6133` unused-private-member errors immediately after the merge.
