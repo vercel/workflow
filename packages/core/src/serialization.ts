@@ -653,6 +653,9 @@ export interface SerializableSpecial {
     closureVars?: Record<string, any>;
   };
   URL: string;
+  WorkflowFunction: {
+    workflowId: string;
+  };
   URLSearchParams: string;
   Uint8Array: string; // base64 string
   Uint8ClampedArray: string; // base64 string
@@ -834,6 +837,16 @@ function getCommonReducers(global: Record<string, any> = globalThis) {
       return { stepId };
     },
     URL: (value) => value instanceof global.URL && value.href,
+    WorkflowFunction: (value) => {
+      // Only match function references with a workflowId property (set by
+      // the SWC compiler on workflow functions). Plain { workflowId } objects
+      // are NOT matched — this prevents infinite recursion since the reduced
+      // form { workflowId } is a plain object, not a function.
+      if (typeof value !== 'function') return false;
+      const workflowId = (value as any).workflowId;
+      if (typeof workflowId !== 'string') return false;
+      return { workflowId };
+    },
     URLSearchParams: (value) => {
       if (!(value instanceof global.URLSearchParams)) return false;
 
@@ -1190,6 +1203,16 @@ export function getExternalRevivers(
       );
     },
 
+    WorkflowFunction: (value) =>
+      Object.assign(
+        () => {
+          throw new Error(
+            'Workflow functions cannot be called directly. Use start() to invoke them.'
+          );
+        },
+        { workflowId: value.workflowId }
+      ),
+
     Request: (value) => {
       return new global.Request(value.url, {
         method: value.method,
@@ -1342,6 +1365,17 @@ export function getWorkflowRevivers(
       }
       return value;
     },
+    // Workflow function reviver for workflow context — returns a function-like
+    // object with .workflowId that mimics what the SWC compiler produces,
+    WorkflowFunction: (value) =>
+      Object.assign(
+        () => {
+          throw new Error(
+            'Workflow functions cannot be called directly. Use start() to invoke them.'
+          );
+        },
+        { workflowId: value.workflowId }
+      ),
     Response: (value) => {
       Object.setPrototypeOf(value, global.Response.prototype);
       return value;
@@ -1454,6 +1488,16 @@ function getStepRevivers(
 
       return stepFn;
     },
+
+    WorkflowFunction: (value) =>
+      Object.assign(
+        () => {
+          throw new Error(
+            'Workflow functions cannot be called directly. Use start() to invoke them.'
+          );
+        },
+        { workflowId: value.workflowId }
+      ),
 
     Request: (value) => {
       const responseWritable = value.responseWritable;
