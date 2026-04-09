@@ -43,7 +43,6 @@ import {
   queueMessage,
   withHealthCheck,
 } from './helpers.js';
-import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getWorld, getWorldHandlers, type WorldHandlers } from './world.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
@@ -519,6 +518,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       url: isVercel
                         ? `https://${process.env.VERCEL_URL}`
                         : `http://localhost:${port ?? 3000}`,
+                      features: { encryption: !!encryptionKey },
                     },
                     ops,
                     closureVars: hydratedInput.closureVars,
