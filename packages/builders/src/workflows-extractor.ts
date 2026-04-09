@@ -1167,6 +1167,67 @@ function analyzeStatement(
     exitNodeIds = blockResult.exitNodeIds;
   }
 
+  if (stmt.type === 'TryStatement') {
+    const tryStmt = stmt as any;
+    const tryResult = analyzeBlock(
+      tryStmt.block?.stmts || [],
+      stepDeclarations,
+      context,
+      functionMap,
+      variableMap
+    );
+    nodes.push(...tryResult.nodes);
+    edges.push(...tryResult.edges);
+    entryNodeIds = tryResult.entryNodeIds;
+    exitNodeIds = tryResult.exitNodeIds;
+
+    if (tryStmt.handler?.body?.stmts) {
+      const catchResult = analyzeBlock(
+        tryStmt.handler.body.stmts,
+        stepDeclarations,
+        context,
+        functionMap,
+        variableMap
+      );
+      nodes.push(...catchResult.nodes);
+      edges.push(...catchResult.edges);
+      if (entryNodeIds.length === 0) {
+        entryNodeIds = catchResult.entryNodeIds;
+      }
+      exitNodeIds = Array.from(
+        new Set([...exitNodeIds, ...catchResult.exitNodeIds])
+      );
+    }
+
+    if (tryStmt.finalizer?.stmts) {
+      const finalizerResult = analyzeBlock(
+        tryStmt.finalizer.stmts,
+        stepDeclarations,
+        context,
+        functionMap,
+        variableMap
+      );
+      nodes.push(...finalizerResult.nodes);
+      edges.push(...finalizerResult.edges);
+      if (entryNodeIds.length === 0) {
+        entryNodeIds = finalizerResult.entryNodeIds;
+      }
+      if (finalizerResult.entryNodeIds.length > 0) {
+        for (const exitId of exitNodeIds) {
+          for (const entryId of finalizerResult.entryNodeIds) {
+            edges.push({
+              id: `e_${exitId}_${entryId}`,
+              source: exitId,
+              target: entryId,
+              type: 'default',
+            });
+          }
+        }
+        exitNodeIds = finalizerResult.exitNodeIds;
+      }
+    }
+  }
+
   if (stmt.type === 'ReturnStatement' && (stmt as any).argument) {
     const result = analyzeExpression(
       (stmt as any).argument,

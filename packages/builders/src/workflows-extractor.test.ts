@@ -47,18 +47,23 @@ globalThis.__private_workflows.set("workflow//./workflows/demo//demo", demo);
     expect(labels).toContain('stepWithPure');
   });
 
-  it('detects createHook wrapped by transpiled using helpers', async () => {
+  it('detects createHook wrapped by transpiled using helpers inside try/finally', async () => {
     const workflowCode = `
 var stepA = globalThis[/* @__PURE__ */ Symbol.for("WORKFLOW_USE_STEP")]("step//./workflows/hooks//stepA");
 function _ts_add_disposable_resource(_env, value, _isAsync) {
   return value;
 }
+function _ts_dispose_resources(_env) {}
 async function withHook() {
   const env = { stack: [] };
-  const responseId = await stepA();
-  const hook = _ts_add_disposable_resource(env, createHook({ token: 'hook:' + responseId }), false);
-  const payload = await hook;
-  return payload;
+  try {
+    const responseId = await stepA();
+    const hook = _ts_add_disposable_resource(env, createHook({ token: 'hook:' + responseId }), false);
+    const payload = await hook;
+    return payload;
+  } finally {
+    _ts_dispose_resources(env);
+  }
 }
 withHook.workflowId = "workflow//./workflows/hooks//withHook";
 globalThis.__private_workflows.set("workflow//./workflows/hooks//withHook", withHook);
