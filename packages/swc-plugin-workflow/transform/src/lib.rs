@@ -102,10 +102,17 @@ fn emit_error(error: WorkflowErrorKind) {
         ),
         WorkflowErrorKind::InvalidExport { span, directive } => (
             span,
-            format!(
-                "Only async functions can be exported from a \"{}\" file",
-                directive
-            ),
+            if directive == "use step" {
+                format!(
+                    "Only functions can be exported from a \"{}\" file",
+                    directive
+                )
+            } else {
+                format!(
+                    "Only async functions can be exported from a \"{}\" file",
+                    directive
+                )
+            },
         ),
     };
 
@@ -4054,8 +4061,6 @@ impl StepTransform {
         }
     }
 
-    // Previously validated that step functions must be async. The restriction
-
     // Check if a function should be treated as a step function
     fn should_transform_function(&self, function: &Function, is_exported: bool) -> bool {
         let has_directive = self.has_use_step_directive(&function.body);
@@ -6051,9 +6056,97 @@ impl VisitMut for StepTransform {
         let mut items_to_insert = Vec::new();
 
         for (i, item) in items.iter_mut().enumerate() {
-            // Validate exports if we have a file-level workflow directive.
-            // Step files allow any exports (sync or async), but workflow files
-            // require exported functions to be async.
+            // Validate exports for file-level step directives.
+            // Step files allow sync or async function exports but reject
+            // non-function exports (constants, classes, re-exports) which
+            // can pull Node-only code into the workflow/client bundles.
+            if self.has_file_step_directive {
+                match item {
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => {
+                        match &export.decl {
+                            Decl::Fn(_) => {
+                                // Sync or async function declarations are allowed
+                            }
+                            Decl::Var(var_decl) => {
+                                for decl in &var_decl.decls {
+                                    if let Some(init) = &decl.init {
+                                        match &**init {
+                                            Expr::Fn(_) | Expr::Arrow(_) => {
+                                                // Function/arrow expressions are allowed
+                                            }
+                                            _ => {
+                                                emit_error(WorkflowErrorKind::InvalidExport {
+                                                    span: export.span,
+                                                    directive: "use step",
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Decl::TsInterface(_)
+                            | Decl::TsTypeAlias(_)
+                            | Decl::TsEnum(_)
+                            | Decl::TsModule(_) => {
+                                // TypeScript declarations are okay
+                            }
+                            _ => {
+                                emit_error(WorkflowErrorKind::InvalidExport {
+                                    span: export.span,
+                                    directive: "use step",
+                                });
+                            }
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) => {
+                        if named.src.is_some() {
+                            emit_error(WorkflowErrorKind::InvalidExport {
+                                span: named.span,
+                                directive: "use step",
+                            });
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default)) => {
+                        match &default.decl {
+                            DefaultDecl::Fn(_) => {
+                                // Sync or async function declarations are allowed
+                            }
+                            DefaultDecl::TsInterfaceDecl(_) => {
+                                // TypeScript interface is okay
+                            }
+                            _ => {
+                                emit_error(WorkflowErrorKind::InvalidExport {
+                                    span: default.span,
+                                    directive: "use step",
+                                });
+                            }
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(expr)) => {
+                        match &*expr.expr {
+                            Expr::Fn(_) | Expr::Arrow(_) => {
+                                // Function/arrow expressions are allowed
+                            }
+                            _ => {
+                                emit_error(WorkflowErrorKind::InvalidExport {
+                                    span: expr.span,
+                                    directive: "use step",
+                                });
+                            }
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportAll(export_all)) => {
+                        emit_error(WorkflowErrorKind::InvalidExport {
+                            span: export_all.span,
+                            directive: "use step",
+                        });
+                    }
+                    _ => {}
+                }
+            }
+
+            // Validate exports for file-level workflow directives.
+            // Workflow files require exported functions to be async.
             if self.has_file_workflow_directive {
                 match item {
                     ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => {

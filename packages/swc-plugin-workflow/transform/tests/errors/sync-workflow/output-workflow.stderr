@@ -1,0 +1,8 @@
+  x Functions marked with "use workflow" must be async functions
+   ,-[input.js:2:1]
+ 1 |     // Sync "use workflow" should still error (workflow functions must be async)
+ 2 | ,-> export function syncWorkflow() {
+ 3 | |     'use workflow';
+ 4 | |     return 'not allowed';
+ 5 | `-> }
+   `----
