@@ -364,7 +364,9 @@ The `withHealthCheck()` wrapper in `helpers.ts` was updated (on main) to return 
 
 The V2 combined bundle is output in CJS format by the standalone builder (step code has CJS Node.js dependencies that require `require()`). The `world-testing` test server imported from `flow.mjs`, but Node.js treats `.mjs` files as ESM regardless of content, causing `SyntaxError: does not provide an export named 'POST'`.
 
-**Fix**: The server uses `createRequire` to import from `flow.js` (CJS extension) instead of `flow.mjs`, so Node.js applies CJS semantics correctly.
+**Fix** (two parts):
+1. The server uses `createRequire` to import from `flow.js` (CJS extension) instead of `flow.mjs`, so Node.js applies CJS semantics correctly.
+2. The standalone builder's default config (`workflow-config.ts`) was updated to output `step.js` and `flow.js` instead of `step.mjs` and `flow.mjs`, since the standalone builder always uses CJS format. Without this, the builder produced `flow.mjs` containing CJS code — which worked locally when a stale `flow.js` existed from a previous build, but failed on CI (clean checkout) because no `flow.js` was ever generated.
 
 ### World specVersion in Health Check Responses
 
