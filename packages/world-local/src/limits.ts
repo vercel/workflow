@@ -10,7 +10,7 @@ import {
   canAcquireFromState,
   createLockId,
   createPromotedWaiter,
-  getBlockedReasonFromState,
+  decideLimitAcquire,
   inspectLimitState,
   isLimitStateEmpty,
   LimitAcquireRequestSchema,
@@ -318,28 +318,23 @@ export function createLimits(
           );
         }
         state.keys[parsed.key] = keyState;
+        const decision = decideLimitAcquire({
+          state: keyState,
+          lockId,
+          getLeaseLockId: (lease) => lease.lockId,
+          getWaiterLockId: (waiter) => waiter.lockId,
+        });
 
-        const existingLease = keyState.leases.find(
-          (lease) => lease.lockId === lockId
-        );
-        if (existingLease) {
+        if (decision.type === 'reuse_lease') {
           await writeState(state);
           return {
             status: 'acquired',
-            lease: existingLease,
+            lease: decision.lease,
           };
         }
 
-        const existingWaiter = keyState.waiters.find(
-          (waiter) => waiter.lockId === lockId
-        );
-        const blockedState = inspectLimitState(
-          keyState,
-          existingWaiter?.waiterId
-        );
-
-        if (existingWaiter && canAcquireFromState(blockedState)) {
-          const promoted = promoteWaiter(keyState, existingWaiter);
+        if (decision.type === 'promote_waiter') {
+          const promoted = promoteWaiter(keyState, decision.waiter);
           state.keys[parsed.key] = promoted.keyState;
           await writeState(state);
           return {
@@ -348,8 +343,8 @@ export function createLimits(
           };
         }
 
-        if (existingWaiter || !canAcquireFromState(blockedState)) {
-          if (!existingWaiter) {
+        if (decision.type === 'block') {
+          if (decision.enqueueWaiter) {
             keyState.waiters.push({
               waiterId: `lmtwait_${monotonicUlid()}`,
               lockId,
@@ -364,8 +359,8 @@ export function createLimits(
           await writeState(state);
           return {
             status: 'blocked',
-            reason: getBlockedReasonFromState(blockedState),
-            retryAfterMs: blockedState.retryAfterMs,
+            reason: decision.reason,
+            retryAfterMs: decision.retryAfterMs,
           };
         }
 

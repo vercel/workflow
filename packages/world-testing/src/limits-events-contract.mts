@@ -39,16 +39,7 @@ type EventsHarness = {
       };
     };
   }>;
-  listEvents(correlationId: string): Promise<
-    {
-      eventType: string;
-    }[]
-  >;
 };
-
-function hasQueuedEvent(events: { eventType: string }[]) {
-  return events.some((event) => event.eventType === 'lock_waiter_queued');
-}
 
 const EVENT_TEST_LEASE_TTL_MS = 30_000;
 
@@ -57,7 +48,7 @@ export function createLimitsEventsContractSuite(
   createHarness: () => Promise<EventsHarness>
 ) {
   describe(name, () => {
-    it('persists promotedWaiters metadata and emits lock_waiter_queued for every promoted waiter', async () => {
+    it('persists promotedWaiters metadata and queues every promoted waiter', async () => {
       const harness = await createHarness();
       const ownerA = await harness.createOwner('holder-a');
       const ownerB = await harness.createOwner('holder-b');
@@ -135,12 +126,6 @@ export function createLimitsEventsContractSuite(
         }),
       ]);
       expect(harness.queue.queue).toHaveBeenCalledTimes(2);
-
-      for (const correlationId of [correlationC, correlationD]) {
-        expect(hasQueuedEvent(await harness.listEvents(correlationId))).toBe(
-          true
-        );
-      }
     });
 
     it('compensates skipped or failed waiter wake-ups and recursively queues the next waiter', async () => {
@@ -195,12 +180,6 @@ export function createLimitsEventsContractSuite(
         runId: liveWaiter.runId,
         lockPreApproval: liveCorrelation,
       });
-      expect(
-        hasQueuedEvent(await harness.listEvents(terminalCorrelation))
-      ).toBe(false);
-      expect(hasQueuedEvent(await harness.listEvents(liveCorrelation))).toBe(
-        true
-      );
 
       const failedHolder = await harness.createOwner('holder-d');
       const failedFirstWaiter = await harness.createOwner('holder-e');
@@ -260,12 +239,6 @@ export function createLimitsEventsContractSuite(
         runId: failedSecondWaiter.runId,
         lockPreApproval: failedSecondCorrelation,
       });
-      expect(
-        hasQueuedEvent(await harness.listEvents(failedFirstCorrelation))
-      ).toBe(false);
-      expect(
-        hasQueuedEvent(await harness.listEvents(failedSecondCorrelation))
-      ).toBe(true);
     });
   });
 }

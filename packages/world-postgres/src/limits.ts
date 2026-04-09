@@ -8,7 +8,7 @@ import {
   canAcquireFromState,
   createLockId,
   createPromotedWaiter,
-  getBlockedReasonFromState,
+  decideLimitAcquire,
   inspectLimitState,
   isLimitStateEmpty,
   type LimitDefinition,
@@ -337,42 +337,55 @@ export function createLimits(
           );
         }
         const lockId = createLockId(parsed.runId, parsed.lockIndex);
-        const existingLease = state.leases.find(
-          (lease) => lease.holderId === lockId
-        );
-        if (existingLease) {
+        const decision = decideLimitAcquire({
+          state,
+          lockId,
+          getLeaseLockId: (lease) => lease.holderId,
+          getWaiterLockId: (waiter) => waiter.holderId,
+        });
+
+        if (decision.type === 'reuse_lease') {
           return {
             status: 'acquired',
-            lease: toLease(existingLease, state.definition),
+            lease: toLease(decision.lease, state.definition),
           } satisfies LimitAcquireResult;
         }
 
-        const existingWaiter = state.waiters.find(
-          (waiter) => waiter.holderId === lockId
-        );
-        const blockedState = inspectLimitState(state, existingWaiter?.waiterId);
-        if (existingWaiter) {
-          if (canAcquireFromState(blockedState)) {
-            const promoted = await promoteWaiter(
-              tx,
-              parsed.key,
-              existingWaiter,
-              state.definition
-            );
-            return {
-              status: 'acquired',
-              lease: promoted.lease,
-            } satisfies LimitAcquireResult;
+        if (decision.type === 'promote_waiter') {
+          const promoted = await promoteWaiter(
+            tx,
+            parsed.key,
+            decision.waiter,
+            state.definition
+          );
+          return {
+            status: 'acquired',
+            lease: promoted.lease,
+          } satisfies LimitAcquireResult;
+        }
+
+        if (decision.type === 'block') {
+          if (decision.enqueueWaiter) {
+            await tx
+              .insert(Schema.limitWaiters)
+              .values({
+                waiterId: `lmtwait_${generateId()}`,
+                limitKey: parsed.key,
+                holderId: lockId,
+                createdAt: new Date(),
+                leaseTtlMs: parsed.leaseTtlMs ?? null,
+              })
+              .onConflictDoNothing();
           }
 
           return {
             status: 'blocked',
-            reason: getBlockedReasonFromState(blockedState),
-            retryAfterMs: blockedState.retryAfterMs,
+            reason: decision.reason,
+            retryAfterMs: decision.retryAfterMs,
           } satisfies LimitAcquireResult;
         }
 
-        if (canAcquireFromState(blockedState)) {
+        if (decision.type === 'acquire_new') {
           const expiresAt = nowPlus(parsed.leaseTtlMs);
           const [lease] = await tx
             .insert(Schema.limitLeases)
@@ -401,22 +414,9 @@ export function createLimits(
           } satisfies LimitAcquireResult;
         }
 
-        await tx
-          .insert(Schema.limitWaiters)
-          .values({
-            waiterId: `lmtwait_${generateId()}`,
-            limitKey: parsed.key,
-            holderId: lockId,
-            createdAt: new Date(),
-            leaseTtlMs: parsed.leaseTtlMs ?? null,
-          })
-          .onConflictDoNothing();
-
-        return {
-          status: 'blocked',
-          reason: getBlockedReasonFromState(blockedState),
-          retryAfterMs: blockedState.retryAfterMs,
-        } satisfies LimitAcquireResult;
+        throw new WorkflowWorldError(
+          `Unexpected limit acquire decision for key "${parsed.key}"`
+        );
       });
     },
 

@@ -30,7 +30,6 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
-    "vitest": "catalog:",
     "zod": "catalog:",
     "@workflow/tsconfig": "workspace:*"
   },

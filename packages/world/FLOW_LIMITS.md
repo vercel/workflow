@@ -100,7 +100,7 @@ The shared behavior is:
 
 1. The world promotes waiters from world-owned limit state.
 2. `lock_release` may include the promoted waiters.
-3. Event storage enqueues promoted waiters and records `lock_waiter_queued`.
+3. Event storage enqueues promoted waiters.
 4. Workflows still keep delayed replay fallback in case a prompt wake-up is
    missed.
 
@@ -111,7 +111,6 @@ The lock event lifecycle is:
 - `lock_created`: the workflow asked for a lock
 - `lock_acquired`: a live lease was granted
 - `lock_release`: the granted lease was released
-- `lock_waiter_queued`: a promoted waiter was explicitly re-queued
 
 For rate waits:
 

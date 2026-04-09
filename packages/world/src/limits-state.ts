@@ -34,6 +34,25 @@ export interface LimitStateBlock {
   retryAfterMs: number | undefined;
 }
 
+export type LimitAcquireDecision<TLease, TWaiter> =
+  | {
+      type: 'reuse_lease';
+      lease: TLease;
+    }
+  | {
+      type: 'promote_waiter';
+      waiter: TWaiter;
+    }
+  | {
+      type: 'block';
+      enqueueWaiter: boolean;
+      reason: LimitBlockedReason;
+      retryAfterMs: number | undefined;
+    }
+  | {
+      type: 'acquire_new';
+    };
+
 function toTimestamp(
   value: Date | string | null | undefined
 ): number | undefined {
@@ -86,8 +105,12 @@ function getRetryAfterMs(
   return retryAfterMs;
 }
 
-export function inspectLimitState(
-  state: LimitStateSnapshot<ExpiringValue, ExpiringValue, WaiterValue>,
+export function inspectLimitState<
+  TLease extends ExpiringValue,
+  TToken extends ExpiringValue,
+  TWaiter extends WaiterValue,
+>(
+  state: LimitStateSnapshot<TLease, TToken, TWaiter>,
   existingWaiterId?: string,
   now = Date.now()
 ): LimitStateBlock {
@@ -131,6 +154,52 @@ export function canAcquireFromState(state: LimitStateBlock): boolean {
   return (
     !state.queuedBlocked && !state.concurrencyBlocked && !state.rateBlocked
   );
+}
+
+export function decideLimitAcquire<
+  TLease extends ExpiringValue,
+  TToken extends ExpiringValue = ExpiringValue,
+  TWaiter extends WaiterValue = WaiterValue,
+>(input: {
+  state: LimitStateSnapshot<TLease, TToken, TWaiter>;
+  lockId: string;
+  getLeaseLockId(lease: TLease): string;
+  getWaiterLockId(waiter: TWaiter): string;
+}): LimitAcquireDecision<TLease, TWaiter> {
+  const existingLease = input.state.leases.find(
+    (lease) => input.getLeaseLockId(lease) === input.lockId
+  );
+  if (existingLease) {
+    return {
+      type: 'reuse_lease',
+      lease: existingLease,
+    };
+  }
+
+  const existingWaiter = input.state.waiters.find(
+    (waiter) => input.getWaiterLockId(waiter) === input.lockId
+  );
+  const blockedState = inspectLimitState(input.state, existingWaiter?.waiterId);
+
+  if (existingWaiter && canAcquireFromState(blockedState)) {
+    return {
+      type: 'promote_waiter',
+      waiter: existingWaiter,
+    };
+  }
+
+  if (existingWaiter || !canAcquireFromState(blockedState)) {
+    return {
+      type: 'block',
+      enqueueWaiter: !existingWaiter,
+      reason: getBlockedReasonFromState(blockedState),
+      retryAfterMs: blockedState.retryAfterMs,
+    };
+  }
+
+  return {
+    type: 'acquire_new',
+  };
 }
 
 export function getBlockedReasonFromState(

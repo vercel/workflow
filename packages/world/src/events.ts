@@ -83,7 +83,6 @@ export const EventTypeSchema = z.enum([
   'lock_created',
   'lock_acquired',
   'lock_release',
-  'lock_waiter_queued',
 ]);
 
 // Base event schema with common properties.
@@ -250,10 +249,6 @@ const LockReleaseStoredEventSchema = LockReleaseEventSchema.extend({
   eventData: LockReleaseEventDataSchema,
 });
 
-const LockWaiterQueuedEventSchema = BaseLockEventSchema.extend({
-  eventType: z.literal('lock_waiter_queued'),
-});
-
 // =============================================================================
 // Run lifecycle events
 // =============================================================================
@@ -325,7 +320,8 @@ const RunCancelledEventSchema = BaseEventSchema.extend({
 });
 
 // Discriminated union for user-creatable events (requests to world.events.create)
-// Note: hook_conflict is NOT included here - it can only be created by World implementations
+// Note: hook_conflict is not included here - it can only be created by World
+// implementations.
 export const CreateEventSchema = z.discriminatedUnion('eventType', [
   // Run lifecycle events
   RunCreatedEventSchema,
@@ -350,7 +346,6 @@ export const CreateEventSchema = z.discriminatedUnion('eventType', [
   LockCreatedEventSchema,
   LockAcquiredEventSchema,
   LockReleaseEventSchema,
-  LockWaiterQueuedEventSchema,
 ]);
 
 // Discriminated union for ALL events (includes World-only events like hook_conflict)
@@ -380,7 +375,6 @@ const AllEventsSchema = z.discriminatedUnion('eventType', [
   LockCreatedEventSchema,
   LockAcquiredStoredEventSchema,
   LockReleaseStoredEventSchema,
-  LockWaiterQueuedEventSchema,
 ]);
 
 // Server response includes runId, eventId, and createdAt

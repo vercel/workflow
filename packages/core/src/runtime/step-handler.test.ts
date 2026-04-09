@@ -5,14 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   capturedHandlerRef,
   mockEventsCreate,
-  mockEventsListByCorrelationId,
-  mockLimitsAcquire,
-  mockLimitsHeartbeat,
-  mockLimitsRelease,
   mockQueue,
   mockRuntimeLogger,
   mockStepLogger,
-  mockStepGet,
   mockQueueMessage,
   mockStepFn,
 } = vi.hoisted(() => {
@@ -24,14 +19,6 @@ const {
       current: null as null | ((...args: unknown[]) => Promise<unknown>),
     },
     mockEventsCreate: vi.fn(),
-    mockEventsListByCorrelationId: vi.fn().mockResolvedValue({
-      data: [],
-      cursor: null,
-      hasMore: false,
-    }),
-    mockLimitsAcquire: vi.fn(),
-    mockLimitsHeartbeat: vi.fn(),
-    mockLimitsRelease: vi.fn().mockResolvedValue(undefined),
     mockQueue: vi.fn().mockResolvedValue({ messageId: 'msg_test' }),
     mockRuntimeLogger: {
       warn: vi.fn(),
@@ -46,16 +33,6 @@ const {
       error: vi.fn(),
     },
     mockQueueMessage: vi.fn().mockResolvedValue(undefined),
-    mockStepGet: vi.fn().mockResolvedValue({
-      stepId: 'step_abc',
-      runId: 'wrun_test123',
-      stepName: 'myStep',
-      status: 'pending',
-      input: [],
-      attempt: 0,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    }),
     mockStepFn,
   };
 });
@@ -71,18 +48,7 @@ vi.mock('@vercel/functions', () => ({
 // Mock the world module - createQueueHandler captures the handler
 vi.mock('./world.js', () => ({
   getWorld: vi.fn(() => ({
-    events: {
-      create: mockEventsCreate,
-      listByCorrelationId: mockEventsListByCorrelationId,
-    },
-    limits: {
-      acquire: mockLimitsAcquire,
-      heartbeat: mockLimitsHeartbeat,
-      release: mockLimitsRelease,
-    },
-    steps: {
-      get: mockStepGet,
-    },
+    events: { create: mockEventsCreate },
     queue: mockQueue,
     getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
   })),
@@ -238,38 +204,9 @@ describe('step-handler 409 handling', () => {
     mockStepFn.mockReset().mockResolvedValue('step-result');
     mockStepFn.maxRetries = 3;
     mockQueueMessage.mockResolvedValue(undefined);
-    mockEventsListByCorrelationId.mockReset().mockResolvedValue({
-      data: [],
-      cursor: null,
-      hasMore: false,
-    });
-    mockLimitsAcquire.mockReset();
-    mockLimitsHeartbeat.mockReset();
-    mockLimitsRelease.mockReset().mockResolvedValue(undefined);
-    mockStepGet.mockReset().mockResolvedValue({
-      stepId: 'step_abc',
-      runId: 'wrun_test123',
-      stepName: 'myStep',
-      status: 'pending',
-      input: [],
-      attempt: 0,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    });
     // Re-set getWorld mock since clearAllMocks resets it
     vi.mocked(getWorld).mockReturnValue({
-      events: {
-        create: mockEventsCreate,
-        listByCorrelationId: mockEventsListByCorrelationId,
-      },
-      limits: {
-        acquire: mockLimitsAcquire,
-        heartbeat: mockLimitsHeartbeat,
-        release: mockLimitsRelease,
-      },
-      steps: {
-        get: mockStepGet,
-      },
+      events: { create: mockEventsCreate },
       queue: mockQueue,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
     } as any);
@@ -289,14 +226,6 @@ describe('step-handler 409 handling', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  it('does not call limits for ordinary step execution without lock()', async () => {
-    await capturedHandler(createMessage(), createMetadata('myStep'));
-
-    expect(mockLimitsAcquire).not.toHaveBeenCalled();
-    expect(mockLimitsHeartbeat).not.toHaveBeenCalled();
-    expect(mockLimitsRelease).not.toHaveBeenCalled();
   });
 
   describe('step_completed 409', () => {

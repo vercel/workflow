@@ -21,26 +21,6 @@ export const LimitRateSchema = z.object({
 });
 export type LimitRate = z.infer<typeof LimitRateSchema>;
 
-export const LimitConcurrencyDefinitionSchema = z.strictObject({
-  concurrency: LimitConcurrencySchema,
-});
-export type LimitConcurrencyDefinition = z.infer<
-  typeof LimitConcurrencyDefinitionSchema
->;
-
-export const LimitRateDefinitionSchema = z.strictObject({
-  rate: LimitRateSchema,
-});
-export type LimitRateDefinition = z.infer<typeof LimitRateDefinitionSchema>;
-
-export const LimitConcurrencyAndRateDefinitionSchema = z.strictObject({
-  concurrency: LimitConcurrencySchema,
-  rate: LimitRateSchema,
-});
-export type LimitConcurrencyAndRateDefinition = z.infer<
-  typeof LimitConcurrencyAndRateDefinitionSchema
->;
-
 export const LimitDefinitionSchema = z
   .strictObject({
     concurrency: LimitConcurrencySchema.optional(),

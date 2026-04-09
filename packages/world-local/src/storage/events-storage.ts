@@ -13,7 +13,7 @@ import type {
   EventResult,
   Hook,
   Limits,
-  LockStoredEvent,
+  LockHistoryEvent,
   Queue,
   SerializedData,
   Step,
@@ -26,11 +26,11 @@ import {
   HookSchema,
   isLegacySpecVersion,
   prepareLockEvent,
-  processPromotedWaiters,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
   validateUlidTimestamp,
+  wakePromotedWaiters,
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
@@ -324,8 +324,7 @@ export function createEventsStorage(
           data.eventType === 'wait_created' ||
           data.eventType === 'lock_created' ||
           data.eventType === 'lock_acquired' ||
-          data.eventType === 'lock_release' ||
-          data.eventType === 'lock_waiter_queued'
+          data.eventType === 'lock_release'
         ) {
           throw new EntityConflictError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`
@@ -413,7 +412,7 @@ export function createEventsStorage(
           );
         }
 
-        const returnExistingEvent = (existingEvent: LockStoredEvent) => {
+        const returnExistingEvent = (existingEvent: LockHistoryEvent) => {
           const resolveData =
             params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
           return {
@@ -424,7 +423,7 @@ export function createEventsStorage(
             wait,
           };
         };
-        const storeLockEvent = async (event: LockStoredEvent) => {
+        const storeLockEvent = async (event: LockHistoryEvent) => {
           const compositeKey = `${effectiveRunId}-${eventId}`;
           await writeJSON(
             taggedPath(basedir, 'events', compositeKey, tag),
@@ -435,60 +434,11 @@ export function createEventsStorage(
             event.eventType === 'lock_release' &&
             event.eventData.promotedWaiters?.length
           ) {
-            await processPromotedWaiters({
+            await wakePromotedWaiters({
               promotedWaiters: event.eventData.promotedWaiters,
               limits,
-              queueWaiter: async (promotedWaiter) => {
-                if (!options?.queue || !options.runs) {
-                  return false;
-                }
-
-                try {
-                  const nextRun = await options.runs.get(promotedWaiter.runId, {
-                    resolveData: 'none',
-                  });
-                  if (
-                    ['completed', 'failed', 'cancelled'].includes(
-                      nextRun.status
-                    )
-                  ) {
-                    return false;
-                  }
-
-                  await options.queue.queue(
-                    `__wkf_workflow_${nextRun.workflowName}`,
-                    {
-                      runId: promotedWaiter.runId,
-                      lockPreApproval: promotedWaiter.lockCorrelationId,
-                      requestedAt: new Date(),
-                    },
-                    {
-                      idempotencyKey: promotedWaiter.wakeCorrelationId,
-                    }
-                  );
-
-                  const waiterQueuedEvent = EventSchema.parse({
-                    eventType: 'lock_waiter_queued',
-                    correlationId: promotedWaiter.lockCorrelationId,
-                    runId: promotedWaiter.runId,
-                    eventId: `evnt_${monotonicUlid()}`,
-                    createdAt: new Date(),
-                    specVersion: effectiveSpecVersion,
-                  });
-                  await writeJSON(
-                    taggedPath(
-                      basedir,
-                      'events',
-                      `${waiterQueuedEvent.runId}-${waiterQueuedEvent.eventId}`,
-                      tag
-                    ),
-                    waiterQueuedEvent
-                  );
-                  return true;
-                } catch {
-                  return false;
-                }
-              },
+              runs: options?.runs,
+              queue: options?.queue,
             });
           }
 

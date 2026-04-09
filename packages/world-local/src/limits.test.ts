@@ -146,8 +146,5 @@ createLimitsEventsContractSuite('local world limit events', async () => {
         correlationId,
       });
     },
-    listEvents: async (correlationId) => {
-      return (await events.listByCorrelationId({ correlationId })).data;
-    },
   };
 });

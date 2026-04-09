@@ -13,6 +13,7 @@ export type * from './interfaces.js';
 export type * from './limits-state.js';
 export {
   canAcquireFromState,
+  decideLimitAcquire,
   createPromotedWaiter,
   getBlockedReasonFromState,
   inspectLimitState,
@@ -21,16 +22,15 @@ export {
 export type {
   LockEventRequest,
   LockHistoryEvent,
-  LockStoredEvent,
   PreparedLockEvent,
 } from './lock-events.js';
 export {
   getLockHistory,
   parseLockHistoryEvent,
-  parseLockStoredEvent,
   prepareLockEvent,
   processPromotedWaiters,
   resolveLockEvent,
+  wakePromotedWaiters,
 } from './lock-events.js';
 export type * from './limits.js';
 export {
@@ -43,8 +43,6 @@ export {
   LimitAcquireRequestSchema,
   LimitAcquireResultSchema,
   LimitConcurrencySchema,
-  LimitConcurrencyAndRateDefinitionSchema,
-  LimitConcurrencyDefinitionSchema,
   LimitDefinitionSchema,
   LimitHeartbeatRequestSchema,
   LimitKeySchema,
@@ -52,7 +50,6 @@ export {
   LimitLockIdSchema,
   LimitPromotedWaiterSchema,
   LimitRateSchema,
-  LimitRateDefinitionSchema,
   LimitReleaseRequestSchema,
   LIMITS_NOT_IMPLEMENTED_MESSAGE,
   parseLockId,

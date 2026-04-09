@@ -167,9 +167,6 @@ if (process.platform === 'win32') {
           correlationId,
         });
       },
-      listEvents: async (correlationId) => {
-        return (await events.listByCorrelationId({ correlationId })).data;
-      },
     };
   });
 }

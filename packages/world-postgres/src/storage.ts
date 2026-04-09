@@ -12,7 +12,7 @@ import type {
   EventResult,
   GetEventParams,
   Hook,
-  LockStoredEvent,
+  LockHistoryEvent,
   Limits,
   ListEventsParams,
   ListHooksParams,
@@ -32,12 +32,12 @@ import {
   HookSchema,
   isLegacySpecVersion,
   prepareLockEvent,
-  processPromotedWaiters,
   requiresNewerWorld,
   SPEC_VERSION_CURRENT,
   StepSchema,
   stripEventDataRefs,
   validateUlidTimestamp,
+  wakePromotedWaiters,
   WorkflowRunSchema,
 } from '@workflow/world';
 import { and, asc, desc, eq, gt, lt, notInArray, sql } from 'drizzle-orm';
@@ -553,8 +553,7 @@ export function createEventsStorage(
           data.eventType === 'wait_created' ||
           data.eventType === 'lock_created' ||
           data.eventType === 'lock_acquired' ||
-          data.eventType === 'lock_release' ||
-          data.eventType === 'lock_waiter_queued'
+          data.eventType === 'lock_release'
         ) {
           throw new EntityConflictError(
             `Cannot create new entities on run in terminal state "${currentRun.status}"`
@@ -636,7 +635,7 @@ export function createEventsStorage(
           );
         }
 
-        const returnExistingEvent = (existingEvent: LockStoredEvent) => {
+        const returnExistingEvent = (existingEvent: LockHistoryEvent) => {
           const resolveData = params?.resolveData ?? 'all';
           return {
             event: stripEventDataRefs(existingEvent, resolveData),
@@ -646,7 +645,7 @@ export function createEventsStorage(
             wait,
           };
         };
-        const insertLockEvent = async (event: LockStoredEvent) => {
+        const insertLockEvent = async (event: LockHistoryEvent) => {
           const [value] = await drizzle
             .insert(Schema.events)
             .values({
@@ -664,56 +663,17 @@ export function createEventsStorage(
             ...value,
             runId: effectiveRunId,
             eventId,
-          }) as LockStoredEvent;
+          }) as LockHistoryEvent;
 
           if (
             storedEvent.eventType === 'lock_release' &&
             storedEvent.eventData.promotedWaiters?.length
           ) {
-            await processPromotedWaiters({
+            await wakePromotedWaiters({
               promotedWaiters: storedEvent.eventData.promotedWaiters,
               limits,
-              queueWaiter: async (promotedWaiter) => {
-                if (!options?.queue || !options.runs) {
-                  return false;
-                }
-
-                try {
-                  const nextRun = await options.runs.get(promotedWaiter.runId, {
-                    resolveData: 'none',
-                  });
-                  if (
-                    ['completed', 'failed', 'cancelled'].includes(
-                      nextRun.status
-                    )
-                  ) {
-                    return false;
-                  }
-
-                  await options.queue.queue(
-                    `__wkf_workflow_${nextRun.workflowName}`,
-                    {
-                      runId: promotedWaiter.runId,
-                      lockPreApproval: promotedWaiter.lockCorrelationId,
-                      requestedAt: new Date(),
-                    },
-                    {
-                      idempotencyKey: promotedWaiter.wakeCorrelationId,
-                    }
-                  );
-
-                  await drizzle.insert(Schema.events).values({
-                    runId: promotedWaiter.runId,
-                    eventId: `wevt_${ulid()}`,
-                    correlationId: promotedWaiter.lockCorrelationId,
-                    eventType: 'lock_waiter_queued',
-                    specVersion: effectiveSpecVersion,
-                  });
-                  return true;
-                } catch {
-                  return false;
-                }
-              },
+              runs: options?.runs,
+              queue: options?.queue,
             });
           }
 

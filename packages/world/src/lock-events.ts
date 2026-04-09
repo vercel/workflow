@@ -7,19 +7,16 @@ import {
   type Limits,
   parseLockCorrelationId,
 } from './limits.js';
+import type { Queue } from './queue.js';
+import type { WorkflowRunWithoutData } from './runs.js';
 
 export type LockCreatedEvent = Extract<Event, { eventType: 'lock_created' }>;
 export type LockAcquiredEvent = Extract<Event, { eventType: 'lock_acquired' }>;
 export type LockReleaseEvent = Extract<Event, { eventType: 'lock_release' }>;
-export type LockWaiterQueuedEvent = Extract<
-  Event,
-  { eventType: 'lock_waiter_queued' }
->;
-export type LockStoredEvent =
+export type LockHistoryEvent =
   | LockCreatedEvent
   | LockAcquiredEvent
   | LockReleaseEvent;
-export type LockHistoryEvent = LockStoredEvent | LockWaiterQueuedEvent;
 
 export type LockHistory =
   | {
@@ -59,7 +56,7 @@ export type PreparedLockEvent =
     }
   | {
       type: 'return_existing';
-      event: LockStoredEvent;
+      event: LockHistoryEvent;
     }
   | {
       type: 'too_early';
@@ -67,13 +64,13 @@ export type PreparedLockEvent =
     }
   | {
       type: 'store';
-      event: LockStoredEvent;
+      event: LockHistoryEvent;
     };
 
 export type LockEventResolution =
   | {
       type: 'return_existing';
-      event: LockStoredEvent;
+      event: LockHistoryEvent;
     }
   | {
       type: 'acquire_from_created';
@@ -124,20 +121,10 @@ export function parseLockHistoryEvent(event: unknown): LockHistoryEvent {
     case 'lock_created':
     case 'lock_acquired':
     case 'lock_release':
-    case 'lock_waiter_queued':
       return parsed;
     default:
       throw new Error(`Expected lock event, got "${parsed.eventType}"`);
   }
-}
-
-export function parseLockStoredEvent(event: unknown): LockStoredEvent {
-  const parsed = parseLockHistoryEvent(event);
-  if (parsed.eventType === 'lock_waiter_queued') {
-    throw new Error('Expected stored lock event, got "lock_waiter_queued"');
-  }
-
-  return parsed;
 }
 
 export function getLockHistory(
@@ -157,8 +144,6 @@ export function getLockHistory(
         break;
       case 'lock_release':
         released = event;
-        break;
-      case 'lock_waiter_queued':
         break;
     }
   }
@@ -299,7 +284,7 @@ export async function prepareLockEvent(input: {
     const releaseResult = await input.limits.release(resolution.request);
     return {
       type: 'store',
-      event: parseLockStoredEvent({
+      event: parseLockHistoryEvent({
         eventType: 'lock_release',
         correlationId: input.event.correlationId,
         eventData: {
@@ -336,7 +321,7 @@ export async function prepareLockEvent(input: {
 
     return {
       type: 'store',
-      event: parseLockStoredEvent({
+      event: parseLockHistoryEvent({
         eventType: 'lock_created',
         correlationId: input.event.correlationId,
         eventData: {
@@ -356,7 +341,7 @@ export async function prepareLockEvent(input: {
 
   return {
     type: 'store',
-    event: parseLockStoredEvent({
+    event: parseLockHistoryEvent({
       eventType: 'lock_acquired',
       correlationId: input.event.correlationId,
       eventData: { lease: acquireResult.lease },
@@ -392,4 +377,53 @@ export async function processPromotedWaiters(input: {
     });
     pending.push(...releaseResult.promotedWaiters);
   }
+}
+
+export async function wakePromotedWaiters(input: {
+  promotedWaiters: LimitPromotedWaiter[];
+  limits: Limits;
+  runs?: Pick<
+    {
+      get(
+        runId: string,
+        params: { resolveData: 'none' }
+      ): Promise<WorkflowRunWithoutData>;
+    },
+    'get'
+  >;
+  queue?: Pick<Queue, 'queue'>;
+}): Promise<void> {
+  await processPromotedWaiters({
+    promotedWaiters: input.promotedWaiters,
+    limits: input.limits,
+    queueWaiter: async (waiter) => {
+      if (!input.runs || !input.queue) {
+        return false;
+      }
+
+      try {
+        const run = await input.runs.get(waiter.runId, {
+          resolveData: 'none',
+        });
+        if (['completed', 'failed', 'cancelled'].includes(run.status)) {
+          return false;
+        }
+
+        await input.queue.queue(
+          `__wkf_workflow_${run.workflowName}`,
+          {
+            runId: waiter.runId,
+            lockPreApproval: waiter.lockCorrelationId,
+            requestedAt: new Date(),
+          },
+          {
+            idempotencyKey: waiter.wakeCorrelationId,
+          }
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  });
 }
