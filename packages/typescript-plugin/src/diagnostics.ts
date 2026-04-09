@@ -117,8 +117,6 @@ export function getCustomDiagnostics(
           const functionName = node.name.text;
           workflowFunctions.set(functionName, node);
         }
-      } else if (directive === 'use step') {
-        checkStepFunction(node);
       }
     }
 
@@ -221,12 +219,6 @@ export function getCustomDiagnostics(
     ];
 
     return httpMethods.includes(functionName);
-  }
-
-  function checkStepFunction(_node: FunctionLikeDeclaration) {
-    // Step functions may be synchronous. The "use step" directive can be used
-    // on sync functions to strip Node.js-dependent code from the workflow VM
-    // bundle. No async validation is performed here.
   }
 
   function checkDisallowedApiUsage(call: CallExpression) {
