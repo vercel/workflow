@@ -233,18 +233,17 @@ async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null>
       port: numericPort,
       authToken,
     };
-  } catch (error) {
+  } catch {
     return null;
   }
 }
 
 async function getSocketCredentials(): Promise<SocketCredentials | null> {
-  const fileCredentials = await getSocketCredentialsFromFile();
-  if (fileCredentials) {
-    return fileCredentials;
-  }
   const envCredentials = getSocketCredentialsFromEnv();
-  return envCredentials;
+  if (envCredentials) {
+    return envCredentials;
+  }
+  return await getSocketCredentialsFromFile();
 }
 
 async function getSocketClient(): Promise<Socket | null> {

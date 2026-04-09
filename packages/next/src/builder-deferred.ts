@@ -3,6 +3,7 @@ import { constants, existsSync, realpathSync } from 'node:fs';
 import {
   access,
   mkdir,
+  open,
   readdir,
   readFile,
   rm,
@@ -32,6 +33,7 @@ import {
 } from './step-copy-utils.js';
 
 const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
+const ROUTE_STUB_MARKER_SCAN_BYTES = 4 * 1024;
 
 type WorkflowManifest = import('@workflow/builders').WorkflowManifest;
 
@@ -263,13 +265,28 @@ export async function getNextBuilderDeferred() {
       if (!routeStats.isFile()) {
         return 'missing';
       }
-      if (routeStats.size > 1024) {
-        return 'generated';
-      }
 
       try {
-        const source = await readFile(routeFilePath, 'utf-8');
-        return source.includes(ROUTE_STUB_FILE_MARKER) ? 'stub' : 'generated';
+        const routeFileHandle = await open(routeFilePath, 'r');
+        try {
+          const markerScanBuffer = Buffer.alloc(ROUTE_STUB_MARKER_SCAN_BYTES);
+          const { bytesRead } = await routeFileHandle.read(
+            markerScanBuffer,
+            0,
+            ROUTE_STUB_MARKER_SCAN_BYTES,
+            0
+          );
+          const markerScanSource = markerScanBuffer.toString(
+            'utf8',
+            0,
+            bytesRead
+          );
+          return markerScanSource.includes(ROUTE_STUB_FILE_MARKER)
+            ? 'stub'
+            : 'generated';
+        } finally {
+          await routeFileHandle.close();
+        }
       } catch {
         return 'missing';
       }
