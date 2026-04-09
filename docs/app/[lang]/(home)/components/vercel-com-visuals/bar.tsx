@@ -13,9 +13,9 @@ const barStyles = cva('flex items-center border border-solid', {
       amber: 'bg-amber-100 text-amber-900 border-amber-600',
     },
     size: {
-      small: 'py-1 px-2 text-copy-13-mono rounded-md md:rounded-[1.6cqw]',
+      small: 'py-1 px-2 text-copy-13-mono rounded-md md:rounded-lg',
       large:
-        'py-2 px-2 md:px-3 lg:px-4 text-body-16 font-mono rounded-md md:rounded-[2.5cqw]',
+        'py-2 px-2 md:px-3 lg:px-4 text-body-16 font-mono rounded-md md:rounded-lg',
     },
   },
   defaultVariants: {

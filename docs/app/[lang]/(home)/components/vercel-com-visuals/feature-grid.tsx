@@ -83,7 +83,7 @@ function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
           {description}
         </p>
       </div>
-      <div className="w-full overflow-hidden">{visual}</div>
+      <div className="@container w-full overflow-hidden">{visual}</div>
     </div>
   );
 }
