@@ -364,13 +364,13 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       >
         <SplitPane
           startHeader={
-            <div className="bg-background-100 border-b border-gray-alpha-400 h-8 min-h-8 flex items-center px-2 gap-1.5">
+            <div className="bg-background-100 border rounded-md border-gray-alpha-400 h-10 min-h-10 flex items-center px-2 gap-1.5">
               <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search events..."
+                placeholder="Search spans..."
                 className="flex-1 min-w-0 bg-transparent text-sm text-gray-1000 placeholder:text-gray-800 outline-none"
               />
               {searchQuery && (
