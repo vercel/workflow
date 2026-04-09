@@ -42,7 +42,7 @@ The handler runs an inline execution loop:
 ```
 receive queue message
   |
-  +-- if message has stepId: execute that step, queue workflow continuation, exit
+  +-- if message has stepId+stepName: execute that step, queue workflow continuation, exit
   |
   v
 replay workflow in VM
@@ -87,11 +87,11 @@ This logic lives in `executeStep()` in `packages/core/src/runtime/step-executor.
 When a workflow suspends with multiple pending steps (e.g., from `Promise.all`), the handler:
 
 1. Creates `step_created` events for all pending steps
-2. Queues N-1 steps back to `__wkf_workflow_*` with a `stepId` in the message payload
+2. Queues N-1 steps back to `__wkf_workflow_*` with `stepId` and `stepName` in the message payload
 3. Executes 1 step inline
 4. Loops back to replay
 
-Each background step message is handled by a separate function invocation of the same handler. When a message arrives with `stepId`, the handler executes that specific step, queues a plain workflow continuation (without `stepId`), and exits. It does **not** replay the workflow inline — the step events (step_started/step_completed) need to be consumed by the workflow's event subscriptions during a fresh replay.
+Each background step message is handled by a separate function invocation of the same handler. When a message arrives with `stepId` and `stepName`, the handler executes that specific step, queues a plain workflow continuation (without `stepId`), and exits. It does **not** replay the workflow inline — the step events (step_started/step_completed) need to be consumed by the workflow's event subscriptions during a fresh replay.
 
 ### Convergence After Parallel Steps
 
@@ -133,15 +133,16 @@ If a single step takes longer than the timeout threshold, the step runs to compl
 
 ## Queue Message Changes
 
-The `WorkflowInvokePayload` schema has a new optional field:
+The `WorkflowInvokePayload` schema has two new optional fields:
 
 {/*@skip-typecheck - snippet, not runnable code*/}
 
 ```typescript
 stepId: z.string().optional()
+stepName: z.string().optional()
 ```
 
-When present, the handler executes that specific step before (or instead of) replaying the workflow. Background steps are queued with this field set.
+When `stepId` is present, the handler executes that specific step before (or instead of) replaying the workflow. Background steps are queued with both `stepId` and `stepName` set, so the handler knows which step function to call without loading the event log. Previously, `stepName` was resolved by loading all events and searching for the `step_created` event matching the `stepId` — an O(N) operation on the full event history for every background step arrival.
 
 The queue trigger configuration uses `WORKFLOW_QUEUE_TRIGGER` on the `__wkf_workflow_*` topic. The `__wkf_step_*` topic and its separate trigger are no longer generated.
 
@@ -214,7 +215,7 @@ If a hook conflict is detected during suspension handling, the handler breaks th
 
 ### Encryption Key Resolution
 
-Encryption keys are resolved per-run during event loading and step execution, same as before.
+Encryption keys are resolved once before the inline execution loop starts (after the run status is confirmed as `running`) and reused across all iterations. Background step executions resolve the key independently. The key does not change within a run.
 
 ## Framework Support
 
@@ -347,6 +348,28 @@ The V2 handler creates `wait_completed` events before replay (for elapsed waits)
 
 **Fix**: Extended `onUnconsumedEvent` to also skip `wait_created`, `wait_completed`, and hook lifecycle events (`hook_created`, `hook_completed`, `hook_conflict`, `hook_disposed`) when they have a matching creation event in the log.
 
+### TooEarlyError Retry Delay in Step Executor
+
+The `executeStep()` function handles `TooEarlyError` (thrown when a step's `retryAfter` timestamp hasn't been reached yet) by returning a `retry` result with a timeout. The original implementation used a stale access pattern `(err as any).meta?.retryAfter` copied from an older error shape. The `TooEarlyError` class (from `@workflow/errors`) has `retryAfter` as a direct property (number of seconds), not nested under `.meta`. The stale pattern always evaluated to `undefined`, falling back to a 1-second delay regardless of the server's actual retry-after value.
+
+**Fix**: Changed to `err.retryAfter ?? 1`, matching the correct pattern used in `step-handler.ts`.
+
+### Health Check Endpoint JSON Response
+
+The `withHealthCheck()` wrapper in `helpers.ts` was updated (on main) to return a JSON response with `{ healthy, endpoint, specVersion, workflowCoreVersion }` instead of a plain text string. The V2 branch's e2e test still expected `Content-Type: text/plain` and a text body after merging main, causing the "health check endpoint (HTTP)" test to fail across all frameworks and environments.
+
+**Fix**: Updated the e2e test to expect `Content-Type: application/json` and validate the JSON body structure, including a `specVersion >= SPEC_VERSION_CURRENT` range assertion.
+
+### CJS Combined Bundle Import in world-testing
+
+The V2 combined bundle is output in CJS format by the standalone builder (step code has CJS Node.js dependencies that require `require()`). The `world-testing` test server imported from `flow.mjs`, but Node.js treats `.mjs` files as ESM regardless of content, causing `SyntaxError: does not provide an export named 'POST'`.
+
+**Fix**: The server uses `createRequire` to import from `flow.js` (CJS extension) instead of `flow.mjs`, so Node.js applies CJS semantics correctly.
+
+### World specVersion in Health Check Responses
+
+The `getWorldHandlers()` return value was updated on main to include `specVersion` (the World's declared spec version). The V2 handler destructures this as `worldSpecVersion` and passes it to `handleHealthCheckMessage()` for inclusion in queue-based health check responses. This was merged alongside the V2 timeout configuration.
+
 ## Inline Execution Verification Tests
 
 The `@workflow/world-testing` package includes invocation-counting tests that verify the V2 inline loop behavior for each workflow pattern:
@@ -366,12 +389,12 @@ All framework integrations pass across all test environments:
 
 | Test Suite | Frameworks | Status |
 |-----------|-----------|--------|
-| Unit Tests | core | 462/462 |
+| Unit Tests | core | 581/581 |
 | Embedded Tests | world-testing | 9/9 (including inline execution) |
-| Local Dev | 13 frameworks | All pass |
+| Local Dev | 14 frameworks | All pass |
 | Local Prod | 14 configurations | All pass |
-| Postgres | 13 frameworks | All pass |
-| Vercel Prod | 11 frameworks | 10/11 pass (1 hookWorkflow flake on hono) |
+| Postgres | 14 frameworks | All pass |
+| Vercel Prod | 11 frameworks | All pass |
 | Vercel Deployments | 15 projects | All succeed |
 | Community Worlds | Turso, MongoDB, Redis | All pass |
 | Windows | e2e | Pass |
@@ -379,4 +402,3 @@ All framework integrations pass across all test environments:
 Known remaining flakes (same as main):
 
 - `webhookWorkflow` / `hookWorkflow` — timing-sensitive hook delivery
-- `promiseRaceStressTestWorkflow` — concurrent step race condition (Postgres only)
