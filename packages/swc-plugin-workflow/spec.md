@@ -1060,26 +1060,33 @@ The plugin emits errors for invalid usage:
 
 | Error | Description |
 |-------|-------------|
-| Non-async function | Functions with `"use step"` or `"use workflow"` must be async |
+| Non-async workflow function | Functions with `"use workflow"` must be async (step functions may be sync) |
 | Instance methods with `"use workflow"` | Only static methods can have `"use workflow"` (not instance methods) |
 | Getters with `"use workflow"` | Getters cannot be marked with `"use workflow"` |
 | Misplaced directive | Directive must be at top of file or start of function body |
 | Conflicting directives | Cannot have both `"use step"` and `"use workflow"` at module level |
-| Invalid exports | Module-level directive files can only export async functions |
+| Invalid exports (`"use workflow"`) | Module-level `"use workflow"` files can only export async functions |
+| Invalid exports (`"use step"`) | Module-level `"use step"` files can only export functions (sync or async) |
 | Misspelled directive | Detects typos like `"use steps"` or `"use workflows"` |
 
 ---
 
 ## Supported Function Forms
 
-The plugin supports various function declaration styles:
+The plugin supports various function declaration styles. Step functions may be synchronous or asynchronous. Workflow functions must be async.
 
-- `async function name() { "use step"; }` - Function declaration
-- `const name = async () => { "use step"; }` - Arrow function with const
-- `let name = async () => { "use step"; }` - Arrow function with let
-- `var name = async () => { "use step"; }` - Arrow function with var
-- `const name = async function() { "use step"; }` - Function expression
-- `{ async method() { "use step"; } }` - Object method
+- `async function name() { "use step"; }` - Async function declaration
+- `function name() { "use step"; }` - Sync function declaration
+- `const name = async () => { "use step"; }` - Async arrow function
+- `const name = () => { "use step"; }` - Sync arrow function
+- `let name = async () => { "use step"; }` - Async arrow function with let
+- `let name = () => { "use step"; }` - Sync arrow function with let
+- `var name = async () => { "use step"; }` - Async arrow function with var
+- `var name = () => { "use step"; }` - Sync arrow function with var
+- `const name = async function() { "use step"; }` - Async function expression
+- `const name = function() { "use step"; }` - Sync function expression
+- `{ async method() { "use step"; } }` - Async object method
+- `{ method() { "use step"; } }` - Sync object method
 - `{ nested: { execute: async () => { "use step"; } } }` - Nested object property
 - `static async method() { "use step"; }` - Static class method
 - `async method() { "use step"; }` - Instance class method (requires custom serialization)
