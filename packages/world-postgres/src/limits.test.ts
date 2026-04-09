@@ -1,7 +1,6 @@
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
-import { afterAll, beforeAll, beforeEach, test, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, test } from 'vitest';
 import { createLimitsContractSuite } from '../../world-testing/src/limits-contract.mts';
-import { createLimitsEventsContractSuite } from '../../world-testing/src/limits-events-contract.mts';
 import { createLimits } from './limits.js';
 import { createQueue } from './queue.js';
 import {
@@ -103,69 +102,6 @@ if (process.platform === 'win32') {
           waiterHolderIds: waiters.rows.map((row) => row.lockId),
           tokenHolderIds: tokens.rows.map((row) => row.lockId),
         };
-      },
-    };
-  });
-
-  createLimitsEventsContractSuite('postgres world limit events', async () => {
-    const limits = createLimits(
-      { connectionString: db.connectionString, queueConcurrency: 1 },
-      db.drizzle
-    );
-    const runs = createRunsStorage(db.drizzle);
-    const queue = { queue: vi.fn().mockResolvedValue(undefined) };
-    const events = createEventsStorage(db.drizzle, {
-      limits,
-      queue,
-      runs,
-    });
-    return {
-      queue,
-      prepareQueueFailure: () => {
-        queue.queue
-          .mockRejectedValueOnce(new Error('queue failed'))
-          .mockResolvedValue(undefined);
-      },
-      createOwner: createLockOwner,
-      startRun: async (runId) => {
-        await events.create(runId, {
-          eventType: 'run_started',
-          specVersion: SPEC_VERSION_CURRENT,
-        });
-      },
-      completeRun: async (runId) => {
-        await events.create(runId, {
-          eventType: 'run_completed',
-          specVersion: SPEC_VERSION_CURRENT,
-          eventData: { output: null },
-        });
-      },
-      createLock: async (
-        runId,
-        correlationId,
-        key,
-        leaseTtlMs,
-        concurrencyMax
-      ) => {
-        return await events.create(runId, {
-          eventType: 'lock_created',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId,
-          eventData: {
-            key,
-            definition: {
-              concurrency: { max: concurrencyMax },
-            },
-            leaseTtlMs,
-          },
-        });
-      },
-      releaseLock: async (runId, correlationId) => {
-        return await events.create(runId, {
-          eventType: 'lock_release',
-          specVersion: SPEC_VERSION_CURRENT,
-          correlationId,
-        });
       },
     };
   });

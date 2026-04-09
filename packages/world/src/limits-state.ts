@@ -2,8 +2,10 @@ import {
   createLockCorrelationId,
   createLockWakeCorrelationId,
   getBlockedReason,
+  type LimitAcquireResult,
   type LimitBlockedReason,
   type LimitDefinition,
+  type LimitLease,
   type LimitPromotedWaiter,
   parseLockId,
 } from './limits.js';
@@ -200,6 +202,47 @@ export function decideLimitAcquire<
   return {
     type: 'acquire_new',
   };
+}
+
+export async function applyLimitAcquireDecision<TLease, TWaiter>(input: {
+  decision: LimitAcquireDecision<TLease, TWaiter>;
+  toLease(lease: TLease): Promise<LimitLease> | LimitLease;
+  promoteWaiter(waiter: TWaiter): Promise<LimitLease> | LimitLease;
+  enqueueWaiter(): Promise<void> | void;
+  acquireNew(): Promise<LimitLease> | LimitLease;
+}): Promise<LimitAcquireResult> {
+  switch (input.decision.type) {
+    case 'reuse_lease':
+      return {
+        status: 'acquired',
+        lease: await input.toLease(input.decision.lease),
+      };
+    case 'promote_waiter':
+      return {
+        status: 'acquired',
+        lease: await input.promoteWaiter(input.decision.waiter),
+      };
+    case 'block':
+      if (input.decision.enqueueWaiter) {
+        await input.enqueueWaiter();
+      }
+      return {
+        status: 'blocked',
+        reason: input.decision.reason,
+        retryAfterMs: input.decision.retryAfterMs,
+      };
+    case 'acquire_new':
+      return {
+        status: 'acquired',
+        lease: await input.acquireNew(),
+      };
+    default: {
+      const exhaustive: never = input.decision;
+      throw new Error(
+        `Unexpected limit acquire decision "${(exhaustive as { type?: string }).type}"`
+      );
+    }
+  }
 }
 
 function getBlockedReasonFromState(state: LimitStateBlock): LimitBlockedReason {

@@ -11,6 +11,7 @@ export type * from './hooks.js';
 export { HookSchema } from './hooks.js';
 export type * from './interfaces.js';
 export {
+  applyLimitAcquireDecision,
   decideLimitAcquire,
   createPromotedWaiter,
   getHeartbeatExpiry,

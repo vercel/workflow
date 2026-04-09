@@ -4,6 +4,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import {
+  applyLimitAcquireDecision,
   areLimitDefinitionsEqual,
   createLockId,
   createPromotedWaiter,
@@ -13,7 +14,6 @@ import {
   isLimitStateEmpty,
   type LimitDefinition,
   LimitAcquireRequestSchema,
-  type LimitAcquireResult,
   LimitHeartbeatRequestSchema,
   type LimitLease,
   type LimitPromotedWaiter,
@@ -243,6 +243,7 @@ async function promoteWaiter(
   definition: LimitDefinition
 ): Promise<{ lease: LimitLease; promotedWaiter: LimitPromotedWaiter }> {
   const leaseId = `lmt_${generateId()}`;
+  const acquiredAt = new Date();
   const expiresAt = nowPlus(waiter.leaseTtlMs ?? undefined);
   const [lease] = await tx
     .insert(Schema.limitLeases)
@@ -250,7 +251,7 @@ async function promoteWaiter(
       leaseId,
       limitKey: key,
       holderId: waiter.holderId,
-      acquiredAt: new Date(),
+      acquiredAt,
       expiresAt,
     })
     .onConflictDoNothing()
@@ -274,8 +275,8 @@ async function promoteWaiter(
       tokenId: `lmttok_${generateId()}`,
       limitKey: key,
       holderId: waiter.holderId,
-      acquiredAt: new Date(),
-      expiresAt: new Date(Date.now() + definition.rate.periodMs),
+      acquiredAt,
+      expiresAt: new Date(acquiredAt.getTime() + definition.rate.periodMs),
     });
   }
 
@@ -338,29 +339,13 @@ export function createLimits(
           getLeaseLockId: (lease) => lease.holderId,
           getWaiterLockId: (waiter) => waiter.holderId,
         });
-
-        if (decision.type === 'reuse_lease') {
-          return {
-            status: 'acquired',
-            lease: toLease(decision.lease, state.definition),
-          } satisfies LimitAcquireResult;
-        }
-
-        if (decision.type === 'promote_waiter') {
-          const promoted = await promoteWaiter(
-            tx,
-            parsed.key,
-            decision.waiter,
-            state.definition
-          );
-          return {
-            status: 'acquired',
-            lease: promoted.lease,
-          } satisfies LimitAcquireResult;
-        }
-
-        if (decision.type === 'block') {
-          if (decision.enqueueWaiter) {
+        return applyLimitAcquireDecision({
+          decision,
+          toLease: (lease) => toLease(lease, state.definition),
+          promoteWaiter: async (waiter) =>
+            (await promoteWaiter(tx, parsed.key, waiter, state.definition))
+              .lease,
+          enqueueWaiter: async () => {
             await tx
               .insert(Schema.limitWaiters)
               .values({
@@ -371,47 +356,36 @@ export function createLimits(
                 leaseTtlMs: parsed.leaseTtlMs ?? null,
               })
               .onConflictDoNothing();
-          }
+          },
+          acquireNew: async () => {
+            const acquiredAt = new Date();
+            const expiresAt = nowPlus(parsed.leaseTtlMs);
+            const [lease] = await tx
+              .insert(Schema.limitLeases)
+              .values({
+                leaseId: `lmt_${generateId()}`,
+                limitKey: parsed.key,
+                holderId: lockId,
+                acquiredAt,
+                expiresAt,
+              })
+              .returning();
 
-          return {
-            status: 'blocked',
-            reason: decision.reason,
-            retryAfterMs: decision.retryAfterMs,
-          } satisfies LimitAcquireResult;
-        }
+            if (state.definition.rate !== undefined) {
+              await tx.insert(Schema.rateLimitTokens).values({
+                tokenId: `lmttok_${generateId()}`,
+                limitKey: parsed.key,
+                holderId: lockId,
+                acquiredAt,
+                expiresAt: new Date(
+                  acquiredAt.getTime() + state.definition.rate.periodMs
+                ),
+              });
+            }
 
-        if (decision.type === 'acquire_new') {
-          const expiresAt = nowPlus(parsed.leaseTtlMs);
-          const [lease] = await tx
-            .insert(Schema.limitLeases)
-            .values({
-              leaseId: `lmt_${generateId()}`,
-              limitKey: parsed.key,
-              holderId: lockId,
-              acquiredAt: new Date(),
-              expiresAt,
-            })
-            .returning();
-
-          if (state.definition.rate !== undefined) {
-            await tx.insert(Schema.rateLimitTokens).values({
-              tokenId: `lmttok_${generateId()}`,
-              limitKey: parsed.key,
-              holderId: lockId,
-              acquiredAt: new Date(),
-              expiresAt: new Date(Date.now() + state.definition.rate.periodMs),
-            });
-          }
-
-          return {
-            status: 'acquired',
-            lease: toLease(lease, state.definition),
-          } satisfies LimitAcquireResult;
-        }
-
-        throw new WorkflowWorldError(
-          `Unexpected limit acquire decision for key "${parsed.key}"`
-        );
+            return toLease(lease, state.definition);
+          },
+        });
       });
     },
 

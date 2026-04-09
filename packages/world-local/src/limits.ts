@@ -6,6 +6,7 @@ import {
 } from '@workflow/errors';
 import type { Storage, WorkflowRunWithoutData } from '@workflow/world';
 import {
+  applyLimitAcquireDecision,
   areLimitDefinitionsEqual,
   createLockId,
   createPromotedWaiter,
@@ -215,7 +216,6 @@ export function createLimits(
     keyState: KeyState,
     waiter: LimitWaiter
   ): {
-    keyState: KeyState;
     lease: LimitLease;
     promotedWaiter: LimitPromotedWaiter;
   } => {
@@ -246,7 +246,6 @@ export function createLimits(
     }
 
     return {
-      keyState,
       lease,
       promotedWaiter: createPromotedWaiter({
         leaseId: lease.leaseId,
@@ -258,10 +257,7 @@ export function createLimits(
 
   const promoteEligibleWaiters = (
     keyState: KeyState
-  ): {
-    keyState: KeyState;
-    promotedWaiters: LimitPromotedWaiter[];
-  } => {
+  ): LimitPromotedWaiter[] => {
     const promotedWaiters: LimitPromotedWaiter[] = [];
 
     while (true) {
@@ -271,11 +267,10 @@ export function createLimits(
       }
 
       const promoted = promoteWaiter(keyState, headWaiter);
-      keyState = promoted.keyState;
       promotedWaiters.push(promoted.promotedWaiter);
     }
 
-    return { keyState, promotedWaiters };
+    return promotedWaiters;
   };
 
   return {
@@ -318,27 +313,11 @@ export function createLimits(
           getLeaseLockId: (lease) => lease.lockId,
           getWaiterLockId: (waiter) => waiter.lockId,
         });
-
-        if (decision.type === 'reuse_lease') {
-          await writeState(state);
-          return {
-            status: 'acquired',
-            lease: decision.lease,
-          };
-        }
-
-        if (decision.type === 'promote_waiter') {
-          const promoted = promoteWaiter(keyState, decision.waiter);
-          state.keys[parsed.key] = promoted.keyState;
-          await writeState(state);
-          return {
-            status: 'acquired',
-            lease: promoted.lease,
-          };
-        }
-
-        if (decision.type === 'block') {
-          if (decision.enqueueWaiter) {
+        const result = await applyLimitAcquireDecision({
+          decision,
+          toLease: (lease) => lease,
+          promoteWaiter: (waiter) => promoteWaiter(keyState, waiter).lease,
+          enqueueWaiter: () => {
             keyState.waiters.push({
               waiterId: `lmtwait_${monotonicUlid()}`,
               lockId,
@@ -347,45 +326,35 @@ export function createLimits(
               createdAt: new Date(),
               leaseTtlMs: parsed.leaseTtlMs,
             });
-          }
+          },
+          acquireNew: () => {
+            const acquiredAt = new Date();
+            const lease = createLease(
+              parsed.key,
+              parsed.runId,
+              parsed.lockIndex,
+              keyState.definition,
+              acquiredAt,
+              parsed.leaseTtlMs
+            );
+            keyState.leases.push(lease);
 
-          state.keys[parsed.key] = keyState;
-          await writeState(state);
-          return {
-            status: 'blocked',
-            reason: decision.reason,
-            retryAfterMs: decision.retryAfterMs,
-          };
-        }
+            if (keyState.definition.rate !== undefined) {
+              insertToken(
+                keyState,
+                lockId,
+                acquiredAt,
+                keyState.definition.rate.periodMs
+              );
+            }
 
-        const acquiredAt = new Date();
-        const lease = createLease(
-          parsed.key,
-          parsed.runId,
-          parsed.lockIndex,
-          keyState.definition,
-          acquiredAt,
-          parsed.leaseTtlMs
-        );
-
-        keyState.leases.push(lease);
-
-        if (keyState.definition.rate !== undefined) {
-          insertToken(
-            keyState,
-            lockId,
-            acquiredAt,
-            keyState.definition.rate.periodMs
-          );
-        }
+            return lease;
+          },
+        });
 
         state.keys[parsed.key] = keyState;
         await writeState(state);
-
-        return {
-          status: 'acquired',
-          lease,
-        };
+        return result;
       });
     },
 
@@ -412,16 +381,16 @@ export function createLimits(
         });
         capacityFreed ||= keyState.leases.length !== beforeExplicitRelease;
 
-        const promoted = capacityFreed
+        const promotedWaiters = capacityFreed
           ? promoteEligibleWaiters(keyState)
-          : { keyState, promotedWaiters: [] };
-        state.keys[parsed.key] = promoted.keyState;
-        if (isLimitStateEmpty(promoted.keyState)) {
+          : [];
+        state.keys[parsed.key] = keyState;
+        if (isLimitStateEmpty(keyState)) {
           delete state.keys[parsed.key];
         }
 
         await writeState(state);
-        return { promotedWaiters: promoted.promotedWaiters };
+        return { promotedWaiters };
       });
     },
 
