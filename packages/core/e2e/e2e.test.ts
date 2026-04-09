@@ -596,6 +596,16 @@ describe('e2e', () => {
     );
     expect(returnValue.stepMetadata.url).toBeUndefined();
 
+    // workflow context should have features and stepMetadata shouldn't
+    expect(returnValue.workflowMetadata.features).toBeDefined();
+    expect(typeof returnValue.workflowMetadata.features.encryption).toBe(
+      'boolean'
+    );
+    expect(returnValue.innerWorkflowMetadata.features).toStrictEqual(
+      returnValue.workflowMetadata.features
+    );
+    expect(returnValue.stepMetadata.features).toBeUndefined();
+
     // workflow context shouldn't have stepId, stepStartedAt, or attempt
     expect(returnValue.workflowMetadata.stepId).toBeUndefined();
     expect(returnValue.workflowMetadata.stepStartedAt).toBeUndefined();

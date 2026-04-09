@@ -345,11 +345,6 @@ async function checkGeneratedFile(filePath: string): Promise<boolean> {
   return isGeneratedWorkflowFile(filePath);
 }
 
-async function checkSdkFile(filePath: string): Promise<boolean> {
-  const { isWorkflowSdkFile } = await getBuildersModule();
-  return isWorkflowSdkFile(filePath);
-}
-
 async function checkShouldTransform(
   filePath: string,
   patterns: WorkflowPatternMatch
@@ -490,26 +485,15 @@ export default function workflowLoader(
     // Deferred step copy files must report using their original source path so
     // deferred rebuilds can react to source edits outside generated artifacts.
     if (!isDeferredStepCopyFile || deferredStepSourceMetadata?.absolutePath) {
-      // For @workflow SDK packages, do not report serde-only matches for
-      // discovery, otherwise deferred mode can incorrectly treat SDK internals
-      // as app serde entrypoints.
-      const isSdkFile = await checkSdkFile(discoveryFilePath);
       await notifySocketServer(
         discoveryFilePath,
         patterns.hasUseWorkflow,
         patterns.hasUseStep,
-        patterns.hasSerde && !isSdkFile
+        patterns.hasSerde
       );
     }
 
     if (!isDeferredStepCopyFile) {
-      // For @workflow SDK packages, only transform files with actual directives,
-      // not files that just match serde patterns (which are internal SDK implementation files)
-      const isSdkFile = await checkSdkFile(filename);
-      if (isSdkFile && !patterns.hasDirective) {
-        return { code: normalizedSource, map: sourceMap };
-      }
-
       // Check if file needs transformation based on patterns and path
       if (!(await checkShouldTransform(filename, patterns))) {
         return { code: normalizedSource, map: sourceMap };

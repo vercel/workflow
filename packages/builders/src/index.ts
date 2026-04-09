@@ -36,13 +36,11 @@ export {
   detectWorkflowPatterns,
   generatedWorkflowPathPattern,
   isGeneratedWorkflowFile,
-  isWorkflowSdkFile,
   shouldTransformFile,
   turbopackContentPattern,
   useStepPattern,
   useWorkflowPattern,
   type WorkflowPatternMatch,
-  workflowSdkPathPattern,
   workflowSerdeImportPattern,
   workflowSerdeSymbolPattern,
 } from './transform-utils.js';
