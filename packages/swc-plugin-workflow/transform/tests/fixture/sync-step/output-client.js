@@ -14,6 +14,9 @@ export const syncArrow = ()=>{
     return 'hello';
 };
 syncArrow.stepId = "step//./input//syncArrow";
+export const obj = {
+    syncMethod: obj$syncMethod
+};
 // Async steps still work as before
 export async function asyncStep(a, b) {
     return a + b;

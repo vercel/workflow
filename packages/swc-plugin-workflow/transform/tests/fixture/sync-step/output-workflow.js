@@ -4,5 +4,8 @@
 // code from the workflow VM bundle.
 export var syncStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//syncStep");
 export const syncArrow = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//syncArrow");
+export const obj = {
+    syncMethod: globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//obj/syncMethod")
+};
 // Async steps still work as before
 export var asyncStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//asyncStep");

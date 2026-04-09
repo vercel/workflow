@@ -26,7 +26,7 @@ export const syncArrow = ()=>{
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
 })(syncArrow, "step//./input//syncArrow");
-const obj = {
+export const obj = {
     syncMethod () {
         return true;
     }

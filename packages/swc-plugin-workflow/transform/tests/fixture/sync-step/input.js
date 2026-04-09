@@ -12,7 +12,7 @@ export const syncArrow = () => {
   return 'hello';
 };
 
-const obj = {
+export const obj = {
   syncMethod() {
     'use step';
     return true;
