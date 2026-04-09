@@ -26,7 +26,9 @@ const SEGMENT_CONFIG: Record<
   { className?: string; style?: React.CSSProperties }
 > = {
   queued: { style: { background: QUEUED_BACKGROUND } },
-  retrying: { style: { background: HATCHED_BACKGROUND } },
+  retrying: {
+    className: 'box-border bg-gray-500',
+  },
   waiting: { style: { background: HATCHED_BACKGROUND } },
   running: { className: 'bg-blue-700' },
   failed: { className: 'bg-red-700' },
@@ -58,6 +60,7 @@ const SEGMENT_DOT_COLORS: Record<SegmentStatus, string> = {
 };
 
 const FIXED_BAR_WIDTH_PX = 4;
+const SEGMENT_GAP_PX = 1;
 const ROW_HEIGHT = 36;
 const CONTAINER_PAD_Y = 8;
 const END_CAP_HEIGHT = 8;
@@ -174,20 +177,40 @@ const TimelineBar = memo(function TimelineBar({
   const isCompressed = containerWidth > 0 && pixelWidth < FIXED_BAR_WIDTH_PX;
 
   const segments = useMemo(() => computeSpanSegments(span), [span]);
+  const finalSegment = segments[segments.length - 1];
 
-  const isErrored = span.status.code === 2;
+  const workflowStatus = (span.attributes.data as Record<string, unknown>)
+    ?.status as string | undefined;
+  const isErrored = span.status.code === 2 || workflowStatus === 'failed';
   const colors = getResourceColor(span.resource);
   const fallbackColor = isErrored
     ? (colors.errorBar ?? 'var(--ds-red-700)')
     : colors.bar;
+  const compressedSegmentStatus = isErrored ? 'failed' : finalSegment?.status;
+  const compressedSegmentStyle =
+    compressedSegmentStatus === 'queued'
+      ? { background: 'var(--ds-gray-500)' }
+      : compressedSegmentStatus
+        ? SEGMENT_CONFIG[compressedSegmentStatus].style
+        : undefined;
+  const compressedSegmentClassName = compressedSegmentStatus
+    ? SEGMENT_CONFIG[compressedSegmentStatus].className
+    : undefined;
 
   const barContent = isCompressed ? (
     <div
-      className="h-4 rounded-sm relative top-1"
-      style={{ width: '100%', background: fallbackColor }}
+      className={cn(
+        'h-4 rounded-[0.25rem] relative top-1',
+        compressedSegmentClassName
+      )}
+      style={{
+        width: '100%',
+        background: compressedSegmentStyle ? undefined : fallbackColor,
+        ...compressedSegmentStyle,
+      }}
     />
   ) : segments.length > 0 ? (
-    <div className="relative w-full h-4 top-1 [&>*:nth-child(2)]:rounded-l-sm">
+    <div className="relative w-full h-4 top-1">
       {segments.map((seg, i) => {
         const segPixelWidth =
           (seg.endFraction - seg.startFraction) * pixelWidth;
@@ -200,16 +223,13 @@ const TimelineBar = memo(function TimelineBar({
           <div
             key={`${seg.status}-${i}`}
             className={cn(
-              'absolute h-full first:rounded-sm last:rounded-r-sm',
+              'absolute h-full rounded-[0.25rem]',
               SEGMENT_CONFIG[seg.status].className
             )}
             style={{
-              left: `${seg.startFraction * 100}%`,
-              width:
-                seg.status === 'queued'
-                  ? `calc(${(seg.endFraction - seg.startFraction) * 100}% - 2px)`
-                  : `${(seg.endFraction - seg.startFraction) * 100}%`,
-              minWidth: 2,
+              left: `calc(${seg.startFraction * 100}% + ${SEGMENT_GAP_PX / 2}px)`,
+              width: `calc(${(seg.endFraction - seg.startFraction) * 100}% - ${SEGMENT_GAP_PX}px)`,
+              minWidth: 1,
               ...segStyle,
             }}
           />
@@ -218,7 +238,7 @@ const TimelineBar = memo(function TimelineBar({
     </div>
   ) : (
     <div
-      className="h-4 rounded-sm relative top-1"
+      className="h-4 rounded-[0.25rem] relative top-1"
       style={{
         width: '100%',
         minWidth: 4,
@@ -320,7 +340,7 @@ export function TimelineHeader({
   );
 
   return (
-    <div className="relative bg-background-100 border-b border-gray-alpha-400 h-8 min-h-8 flex items-end px-4 pb-1">
+    <div className="relative bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-end px-4 pb-1">
       {markers.map((m, i) => (
         <span
           key={i}
