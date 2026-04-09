@@ -24,6 +24,55 @@ import { parseSync } from '@swc/core';
  * pauses or wait points in the workflow execution.
  */
 const WORKFLOW_PRIMITIVES = new Set(['sleep', 'createHook', 'createWebhook']);
+const HOOK_PRIMITIVES = new Set(['createHook', 'createWebhook']);
+
+function getIdentifierCallExpressionName(
+  callExpr: CallExpression
+): string | null {
+  return callExpr.callee.type === 'Identifier'
+    ? (callExpr.callee as Identifier).value
+    : null;
+}
+
+function findHookPrimitiveCallName(expr: Expression): string | null {
+  if (expr.type === 'ParenthesisExpression') {
+    return findHookPrimitiveCallName((expr as any).expression);
+  }
+
+  if (expr.type === 'SequenceExpression') {
+    const sequence = expr as any;
+    for (const expression of sequence.expressions || []) {
+      const match = findHookPrimitiveCallName(expression as Expression);
+      if (match) {
+        return match;
+      }
+    }
+    return null;
+  }
+
+  if (expr.type !== 'CallExpression') {
+    return null;
+  }
+
+  const directCallName = getIdentifierCallExpressionName(expr);
+  if (directCallName && HOOK_PRIMITIVES.has(directCallName)) {
+    return directCallName;
+  }
+
+  for (const arg of expr.arguments || []) {
+    if (!arg.expression) {
+      continue;
+    }
+    const nestedCallName = findHookPrimitiveCallName(
+      arg.expression as Expression
+    );
+    if (nestedCallName) {
+      return nestedCallName;
+    }
+  }
+
+  return null;
+}
 
 /**
  * Extract the original function name from a stepId.
@@ -298,7 +347,7 @@ function extractStepDeclarations(
   const stepDeclarations = new Map<string, { stepId: string }>();
 
   const stepPattern =
-    /var (\w+) = globalThis\[Symbol\.for\("WORKFLOW_USE_STEP"\)\]\("([^"]+)"\)/g;
+    /(?:var|let|const)\s+(\w+)\s*=\s*globalThis\[\s*(?:\/\*\s*@__PURE__\s*\*\/\s*)?Symbol\.for\("WORKFLOW_USE_STEP"\)\s*\]\("([^"]+)"\)/g;
 
   const lines = bundleCode.split('\n');
   for (const line of lines) {
@@ -743,12 +792,10 @@ function analyzeStatement(
         // Track webhook/hook variable assignments: const webhook = createWebhook()
         if (
           decl.id.type === 'Identifier' &&
-          decl.init.type === 'CallExpression' &&
-          (decl.init as CallExpression).callee.type === 'Identifier'
+          decl.init.type === 'CallExpression'
         ) {
-          const funcName = ((decl.init as CallExpression).callee as Identifier)
-            .value;
-          if (funcName === 'createWebhook' || funcName === 'createHook') {
+          const funcName = findHookPrimitiveCallName(decl.init as Expression);
+          if (funcName && HOOK_PRIMITIVES.has(funcName)) {
             context.webhookVariables.add((decl.id as Identifier).value);
           }
         }
@@ -1611,6 +1658,25 @@ function analyzeExpression(
                   trackedNodes.push(node);
                 }
               }
+              nodes.push(node);
+              entryNodeIds.push(nodeId);
+              exitNodeIds.push(nodeId);
+            } else if (WORKFLOW_PRIMITIVES.has(funcName)) {
+              const nodeId = `node_${context.nodeCounter++}`;
+              const metadata: NodeMetadata = {};
+              if (context.inConditional) {
+                metadata.conditionalId = context.inConditional;
+              }
+              const node: ManifestNode = {
+                id: nodeId,
+                type: 'primitive',
+                data: {
+                  label: funcName,
+                  nodeKind: 'primitive',
+                },
+                metadata:
+                  Object.keys(metadata).length > 0 ? metadata : undefined,
+              };
               nodes.push(node);
               entryNodeIds.push(nodeId);
               exitNodeIds.push(nodeId);
