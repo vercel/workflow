@@ -65,7 +65,7 @@ function FeatureCard({ title, description, visual }: Feature): JSX.Element {
         <strong className="font-semibold text-gray-1000">{title}</strong>{' '}
         {description}
       </p>
-      <div className="flex items-center justify-center overflow-hidden">
+      <div className="@container flex items-center justify-center overflow-hidden">
         {visual}
       </div>
     </div>
