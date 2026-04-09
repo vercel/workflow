@@ -98,62 +98,21 @@ const StreamChunksResponseSchema = z.object({
 /** Creates the HTTP-backed streamer that talks to workflow-server. */
 export function createStreamer(config?: APIConfig): Streamer {
   return {
-    async writeToStream(
-      name: string,
-      runId: string | Promise<string>,
-      chunk: string | Uint8Array
-    ) {
-      // Await runId if it's a promise to ensure proper flushing
-      const resolvedRunId = await runId;
+    streams: {
+      async write(
+        runId: string | Promise<string>,
+        name: string,
+        chunk: string | Uint8Array
+      ) {
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
 
-      const httpConfig = await getHttpConfig(config);
-      const response = await fetch(
-        getStreamUrl(name, resolvedRunId, httpConfig),
-        {
-          method: 'PUT',
-          body: chunk,
-          headers: httpConfig.headers,
-        }
-      );
-      const text = await response.text();
-      if (!response.ok) {
-        throw new Error(
-          `Stream write failed: HTTP ${response.status}: ${text}`
-        );
-      }
-    },
-
-    async writeToStreamMulti(
-      name: string,
-      runId: string | Promise<string>,
-      chunks: (string | Uint8Array)[]
-    ) {
-      if (chunks.length === 0) return;
-
-      // Await runId if it's a promise to ensure proper flushing
-      const resolvedRunId = await runId;
-
-      const httpConfig = await getHttpConfig(config);
-
-      // Signal to server that this is a multi-chunk batch
-      httpConfig.headers.set('X-Stream-Multi', 'true');
-
-      // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
-      // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
-      // Note: for batches spanning multiple pages, atomicity is relaxed —
-      // earlier pages may persist while a later page fails. The caller
-      // retains the full buffer on error, so chunks from successful pages
-      // will be re-sent on retry, producing duplicates. This is acceptable
-      // because the alternative (400 on all >1000 chunk flushes) is worse,
-      // and the scenario requires a network failure mid-batch.
-      for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
-        const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
-        const body = encodeMultiChunks(batch);
+        const httpConfig = await getHttpConfig(config);
         const response = await fetch(
           getStreamUrl(name, resolvedRunId, httpConfig),
           {
             method: 'PUT',
-            body,
+            body: chunk,
             headers: httpConfig.headers,
           }
         );
@@ -163,93 +122,136 @@ export function createStreamer(config?: APIConfig): Streamer {
             `Stream write failed: HTTP ${response.status}: ${text}`
           );
         }
-      }
-    },
+      },
 
-    async closeStream(name: string, runId: string | Promise<string>) {
-      // Await runId if it's a promise to ensure proper flushing
-      const resolvedRunId = await runId;
+      async writeMulti(
+        runId: string | Promise<string>,
+        name: string,
+        chunks: (string | Uint8Array)[]
+      ) {
+        if (chunks.length === 0) return;
 
-      const httpConfig = await getHttpConfig(config);
-      httpConfig.headers.set('X-Stream-Done', 'true');
-      const response = await fetch(
-        getStreamUrl(name, resolvedRunId, httpConfig),
-        {
-          method: 'PUT',
-          headers: httpConfig.headers,
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
+
+        const httpConfig = await getHttpConfig(config);
+
+        // Signal to server that this is a multi-chunk batch
+        httpConfig.headers.set('X-Stream-Multi', 'true');
+
+        // Send in pages of MAX_CHUNKS_PER_REQUEST to stay within the
+        // server's per-batch limit (MAX_CHUNKS_PER_BATCH).
+        // Note: for batches spanning multiple pages, atomicity is relaxed —
+        // earlier pages may persist while a later page fails. The caller
+        // retains the full buffer on error, so chunks from successful pages
+        // will be re-sent on retry, producing duplicates. This is acceptable
+        // because the alternative (400 on all >1000 chunk flushes) is worse,
+        // and the scenario requires a network failure mid-batch.
+        for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
+          const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
+          const body = encodeMultiChunks(batch);
+          const response = await fetch(
+            getStreamUrl(name, resolvedRunId, httpConfig),
+            {
+              method: 'PUT',
+              body,
+              headers: httpConfig.headers,
+            }
+          );
+          const text = await response.text();
+          if (!response.ok) {
+            throw new Error(
+              `Stream write failed: HTTP ${response.status}: ${text}`
+            );
+          }
         }
-      );
-      const text = await response.text();
-      if (!response.ok) {
-        throw new Error(
-          `Stream close failed: HTTP ${response.status}: ${text}`
+      },
+
+      async close(runId: string | Promise<string>, name: string) {
+        // Await runId if it's a promise to ensure proper flushing
+        const resolvedRunId = await runId;
+
+        const httpConfig = await getHttpConfig(config);
+        httpConfig.headers.set('X-Stream-Done', 'true');
+        const response = await fetch(
+          getStreamUrl(name, resolvedRunId, httpConfig),
+          {
+            method: 'PUT',
+            headers: httpConfig.headers,
+          }
         );
-      }
-    },
+        const text = await response.text();
+        if (!response.ok) {
+          throw new Error(
+            `Stream close failed: HTTP ${response.status}: ${text}`
+          );
+        }
+      },
 
-    async readFromStream(name: string, startIndex?: number) {
-      const httpConfig = await getHttpConfig(config);
-      const url = getStreamUrl(name, undefined, httpConfig);
-      if (typeof startIndex === 'number') {
-        url.searchParams.set('startIndex', String(startIndex));
-      }
-      const response = await fetch(url, {
-        headers: httpConfig.headers,
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to fetch stream: ${response.status}`);
-      }
-      if (!response.body) {
-        throw new Error('No response body for stream');
-      }
-      return response.body as ReadableStream<Uint8Array>;
-    },
+      async get(_runId: string, name: string, startIndex?: number) {
+        const httpConfig = await getHttpConfig(config);
+        const url = getStreamUrl(name, undefined, httpConfig);
+        if (typeof startIndex === 'number') {
+          url.searchParams.set('startIndex', String(startIndex));
+        }
+        const response = await fetch(url, {
+          headers: httpConfig.headers,
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to fetch stream: ${response.status}`);
+        }
+        if (!response.body) {
+          throw new Error('No response body for stream');
+        }
+        return response.body as ReadableStream<Uint8Array>;
+      },
 
-    async getStreamChunks(
-      name: string,
-      runId: string,
-      options?: GetChunksOptions
-    ): Promise<StreamChunksResponse> {
-      const params = new URLSearchParams();
-      if (options?.limit != null) {
-        params.set('limit', String(options.limit));
-      }
-      if (options?.cursor) {
-        params.set('cursor', options.cursor);
-      }
-      const qs = params.toString();
-      const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
-      return makeRequest({
-        endpoint,
-        config,
-        schema: StreamChunksResponseSchema,
-      });
-    },
+      async getChunks(
+        runId: string,
+        name: string,
+        options?: GetChunksOptions
+      ): Promise<StreamChunksResponse> {
+        const params = new URLSearchParams();
+        if (options?.limit != null) {
+          params.set('limit', String(options.limit));
+        }
+        if (options?.cursor) {
+          params.set('cursor', options.cursor);
+        }
+        const qs = params.toString();
+        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/chunks${qs ? `?${qs}` : ''}`;
+        return makeRequest({
+          endpoint,
+          config,
+          schema: StreamChunksResponseSchema,
+        });
+      },
 
-    async getStreamInfo(
-      name: string,
-      runId: string
-    ): Promise<StreamInfoResponse> {
-      const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info`;
-      return makeRequest({
-        endpoint,
-        config,
-        schema: StreamInfoResponseSchema,
-      });
-    },
+      async getInfo(
+        runId: string,
+        name: string
+      ): Promise<StreamInfoResponse> {
+        const endpoint = `/v2/runs/${encodeURIComponent(runId)}/streams/${encodeURIComponent(name)}/info`;
+        return makeRequest({
+          endpoint,
+          config,
+          schema: StreamInfoResponseSchema,
+        });
+      },
 
-    async listStreamsByRunId(runId: string) {
-      const httpConfig = await getHttpConfig(config);
-      const url = new URL(
-        `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/streams`
-      );
-      const response = await fetch(url, {
-        headers: httpConfig.headers,
-      });
-      if (!response.ok) {
-        throw new Error(`Failed to list streams: ${response.status}`);
-      }
-      return (await response.json()) as string[];
+      async list(runId: string) {
+        const httpConfig = await getHttpConfig(config);
+        const url = new URL(
+          `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/streams`
+        );
+        const response = await fetch(url, {
+          headers: httpConfig.headers,
+        });
+        if (!response.ok) {
+          throw new Error(`Failed to list streams: ${response.status}`);
+        }
+        return (await response.json()) as string[];
+      },
     },
   };
 }

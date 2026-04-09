@@ -45,13 +45,15 @@ vi.mock('./storage.js', () => ({
 
 vi.mock('./streamer.js', () => ({
   createStreamer: vi.fn(() => ({
-    writeToStream: vi.fn(),
-    writeToStreamMulti: vi.fn(),
-    closeStream: vi.fn(),
-    readFromStream: vi.fn(),
-    listStreamsByRunId: vi.fn(),
-    getStreamChunks: vi.fn(),
-    getStreamInfo: vi.fn(),
+    streams: {
+      write: vi.fn(),
+      writeMulti: vi.fn(),
+      close: vi.fn(),
+      get: vi.fn(),
+      list: vi.fn(),
+      getChunks: vi.fn(),
+      getInfo: vi.fn(),
+    },
     close: vi.fn(),
   })),
 }));

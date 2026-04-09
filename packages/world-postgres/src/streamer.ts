@@ -142,58 +142,23 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
     !Buffer.isBuffer(chunk) ? Buffer.from(chunk) : chunk;
 
   return {
-    async writeToStream(
-      name: string,
-      _runId: string | Promise<string>,
-      chunk: string | Uint8Array
-    ) {
-      // Await runId if it's a promise to ensure proper flushing
-      const runId = await _runId;
+    streams: {
+      async write(
+        _runId: string | Promise<string>,
+        name: string,
+        chunk: string | Uint8Array
+      ) {
+        // Await runId if it's a promise to ensure proper flushing
+        const runId = await _runId;
 
-      const chunkId = genChunkId();
-      await drizzle.insert(streams).values({
-        chunkId,
-        streamId: name,
-        runId,
-        chunkData: toBuffer(chunk),
-        eof: false,
-      });
-      await notifyStream(
-        JSON.stringify(
-          StreamPublishMessage.encode({
-            chunkId,
-            streamId: name,
-          })
-        )
-      );
-    },
-
-    async writeToStreamMulti(
-      name: string,
-      _runId: string | Promise<string>,
-      chunks: (string | Uint8Array)[]
-    ) {
-      if (chunks.length === 0) return;
-
-      // Generate all chunk IDs up front to preserve ordering
-      const chunkIds = chunks.map(() => genChunkId());
-
-      // Await runId if it's a promise to ensure proper flushing
-      const runId = await _runId;
-
-      // Batch insert all chunks in a single query
-      await drizzle.insert(streams).values(
-        chunks.map((chunk, i) => ({
-          chunkId: chunkIds[i],
+        const chunkId = genChunkId();
+        await drizzle.insert(streams).values({
+          chunkId,
           streamId: name,
           runId,
           chunkData: toBuffer(chunk),
           eof: false,
-        }))
-      );
-
-      // Notify for each chunk (could be batched in future if needed)
-      for (const chunkId of chunkIds) {
+        });
         await notifyStream(
           JSON.stringify(
             StreamPublishMessage.encode({
@@ -202,240 +167,280 @@ export function createStreamer(pool: Pool, drizzle: Drizzle): PostgresStreamer {
             })
           )
         );
-      }
-    },
-    async closeStream(
-      name: string,
-      _runId: string | Promise<string>
-    ): Promise<void> {
-      // Await runId if it's a promise to ensure proper flushing
-      const runId = await _runId;
+      },
 
-      const chunkId = genChunkId();
-      await drizzle.insert(streams).values({
-        chunkId,
-        streamId: name,
-        runId,
-        chunkData: Buffer.from([]),
-        eof: true,
-      });
-      await notifyStream(
-        JSON.stringify(
-          StreamPublishMessage.encode({
+      async writeMulti(
+        _runId: string | Promise<string>,
+        name: string,
+        chunks: (string | Uint8Array)[]
+      ) {
+        if (chunks.length === 0) return;
+
+        // Generate all chunk IDs up front to preserve ordering
+        const chunkIds = chunks.map(() => genChunkId());
+
+        // Await runId if it's a promise to ensure proper flushing
+        const runId = await _runId;
+
+        // Batch insert all chunks in a single query
+        await drizzle.insert(streams).values(
+          chunks.map((chunk, i) => ({
+            chunkId: chunkIds[i],
             streamId: name,
-            chunkId,
-          })
-        )
-      );
-    },
-    async getStreamChunks(
-      name: string,
-      _runId: string,
-      options?: GetChunksOptions
-    ): Promise<StreamChunksResponse> {
-      const limit = options?.limit ?? 100;
+            runId,
+            chunkData: toBuffer(chunk),
+            eof: false,
+          }))
+        );
 
-      // Decode cursor to get the last seen chunkId
-      let cursorChunkId: string | null = null;
-      if (options?.cursor) {
-        try {
-          const decoded = JSON.parse(
-            Buffer.from(options.cursor, 'base64').toString('utf-8')
-          );
-          cursorChunkId = decoded.c;
-        } catch {
-          // Invalid cursor, start from beginning
-        }
-      }
-
-      // Fetch only data rows (exclude EOF) with limit + 1 to detect hasMore.
-      // Filtering EOF here avoids the edge case where an EOF row sorting
-      // mid-batch (e.g. due to clock skew) silently drops data rows.
-      const rows = await drizzle
-        .select({
-          chunkId: streams.chunkId,
-          data: streams.chunkData,
-        })
-        .from(streams)
-        .where(
-          and(
-            eq(streams.streamId, name),
-            eq(streams.eof, false),
-            ...(cursorChunkId
-              ? [gt(streams.chunkId, cursorChunkId as `chnk_${string}`)]
-              : [])
-          )
-        )
-        .orderBy(asc(streams.chunkId))
-        .limit(limit + 1);
-
-      const hasMore = rows.length > limit;
-      const pageRows = rows.slice(0, limit);
-
-      // Check if stream is complete via a separate EOF query
-      let streamDone = false;
-      const [eofRow] = await drizzle
-        .select({ eof: streams.eof })
-        .from(streams)
-        .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
-        .limit(1);
-      if (eofRow) {
-        streamDone = true;
-      }
-
-      // Build the cursor index: we need a running index across pages.
-      // Decode the current start index from the cursor.
-      let baseIndex = 0;
-      if (options?.cursor) {
-        try {
-          const decoded = JSON.parse(
-            Buffer.from(options.cursor, 'base64').toString('utf-8')
-          );
-          if (typeof decoded.i === 'number') {
-            baseIndex = decoded.i;
-          }
-        } catch {
-          // Invalid cursor
-        }
-      }
-
-      const chunks = pageRows.map((row, i) => ({
-        index: baseIndex + i,
-        data: new Uint8Array(row.data),
-      }));
-
-      const nextCursor =
-        hasMore && pageRows.length > 0
-          ? Buffer.from(
-              JSON.stringify({
-                c: pageRows[pageRows.length - 1].chunkId,
-                i: baseIndex + pageRows.length,
+        // Notify for each chunk (could be batched in future if needed)
+        for (const chunkId of chunkIds) {
+          await notifyStream(
+            JSON.stringify(
+              StreamPublishMessage.encode({
+                chunkId,
+                streamId: name,
               })
-            ).toString('base64')
-          : null;
+            )
+          );
+        }
+      },
 
-      return {
-        data: chunks,
-        cursor: nextCursor,
-        hasMore,
-        done: streamDone,
-      };
-    },
+      async close(
+        _runId: string | Promise<string>,
+        name: string
+      ): Promise<void> {
+        // Await runId if it's a promise to ensure proper flushing
+        const runId = await _runId;
 
-    async getStreamInfo(
-      name: string,
-      _runId: string
-    ): Promise<StreamInfoResponse> {
-      // Use COUNT(*) instead of fetching all rows into memory
-      const [countResult] = await drizzle
-        .select({ count: sql<number>`count(*)` })
-        .from(streams)
-        .where(and(eq(streams.streamId, name), eq(streams.eof, false)));
-
-      const dataCount = Number(countResult?.count ?? 0);
-
-      // Check for EOF
-      const [eofRow] = await drizzle
-        .select({ eof: streams.eof })
-        .from(streams)
-        .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
-        .limit(1);
-
-      return {
-        tailIndex: dataCount - 1,
-        done: !!eofRow,
-      };
-    },
-
-    async readFromStream(
-      name: string,
-      startIndex?: number
-    ): Promise<ReadableStream<Uint8Array>> {
-      const cleanups: (() => void)[] = [];
-
-      return new ReadableStream<Uint8Array>({
-        async start(controller) {
-          // an empty string is always < than any string,
-          // so `'' < ulid()` and `ulid() < ulid()` (maintaining order)
-          let lastChunkId = '';
-          let offset = startIndex ?? 0;
-          let buffer = [] as StreamChunkEvent[] | null;
-
-          function enqueue(msg: {
-            id: string;
-            data: Uint8Array;
-            eof: boolean;
-          }) {
-            if (lastChunkId >= msg.id) {
-              // already sent or out of order
-              return;
-            }
-
-            if (offset > 0) {
-              offset--;
-              return;
-            }
-
-            if (msg.data.byteLength) {
-              controller.enqueue(new Uint8Array(msg.data));
-            }
-            if (msg.eof) {
-              controller.close();
-            }
-            lastChunkId = msg.id;
-          }
-
-          function onData(data: StreamChunkEvent) {
-            if (buffer) {
-              buffer.push(data);
-              return;
-            }
-            enqueue(data);
-          }
-          events.on(`strm:${name}`, onData);
-          cleanups.push(() => {
-            events.off(`strm:${name}`, onData);
-          });
-
-          const chunks = await drizzle
-            .select({
-              id: streams.chunkId,
-              eof: streams.eof,
-              data: streams.chunkData,
+        const chunkId = genChunkId();
+        await drizzle.insert(streams).values({
+          chunkId,
+          streamId: name,
+          runId,
+          chunkData: Buffer.from([]),
+          eof: true,
+        });
+        await notifyStream(
+          JSON.stringify(
+            StreamPublishMessage.encode({
+              streamId: name,
+              chunkId,
             })
-            .from(streams)
-            .where(and(eq(streams.streamId, name)))
-            .orderBy(streams.chunkId);
+          )
+        );
+      },
 
-          // Resolve negative offset relative to the data chunk count
-          // (excluding the trailing EOF marker, if present)
-          if (typeof offset === 'number' && offset < 0) {
-            const dataCount =
-              chunks.length > 0 && chunks[chunks.length - 1].eof
-                ? chunks.length - 1
-                : chunks.length;
-            offset = Math.max(0, dataCount + offset);
+      async getChunks(
+        _runId: string,
+        name: string,
+        options?: GetChunksOptions
+      ): Promise<StreamChunksResponse> {
+        const limit = options?.limit ?? 100;
+
+        // Decode cursor to get the last seen chunkId
+        let cursorChunkId: string | null = null;
+        if (options?.cursor) {
+          try {
+            const decoded = JSON.parse(
+              Buffer.from(options.cursor, 'base64').toString('utf-8')
+            );
+            cursorChunkId = decoded.c;
+          } catch {
+            // Invalid cursor, start from beginning
           }
+        }
 
-          for (const chunk of [...chunks, ...(buffer ?? [])]) {
-            enqueue(chunk);
+        // Fetch only data rows (exclude EOF) with limit + 1 to detect hasMore.
+        // Filtering EOF here avoids the edge case where an EOF row sorting
+        // mid-batch (e.g. due to clock skew) silently drops data rows.
+        const rows = await drizzle
+          .select({
+            chunkId: streams.chunkId,
+            data: streams.chunkData,
+          })
+          .from(streams)
+          .where(
+            and(
+              eq(streams.streamId, name),
+              eq(streams.eof, false),
+              ...(cursorChunkId
+                ? [gt(streams.chunkId, cursorChunkId as `chnk_${string}`)]
+                : [])
+            )
+          )
+          .orderBy(asc(streams.chunkId))
+          .limit(limit + 1);
+
+        const hasMore = rows.length > limit;
+        const pageRows = rows.slice(0, limit);
+
+        // Check if stream is complete via a separate EOF query
+        let streamDone = false;
+        const [eofRow] = await drizzle
+          .select({ eof: streams.eof })
+          .from(streams)
+          .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
+          .limit(1);
+        if (eofRow) {
+          streamDone = true;
+        }
+
+        // Build the cursor index: we need a running index across pages.
+        // Decode the current start index from the cursor.
+        let baseIndex = 0;
+        if (options?.cursor) {
+          try {
+            const decoded = JSON.parse(
+              Buffer.from(options.cursor, 'base64').toString('utf-8')
+            );
+            if (typeof decoded.i === 'number') {
+              baseIndex = decoded.i;
+            }
+          } catch {
+            // Invalid cursor
           }
-          buffer = null;
-        },
-        cancel() {
-          cleanups.forEach((fn) => void fn());
-        },
-      });
-    },
+        }
 
-    async listStreamsByRunId(runId: string): Promise<string[]> {
-      // Query distinct stream IDs associated with the runId
-      const results = await drizzle
-        .selectDistinct({ streamId: streams.streamId })
-        .from(streams)
-        .where(eq(streams.runId, runId));
+        const chunks = pageRows.map((row, i) => ({
+          index: baseIndex + i,
+          data: new Uint8Array(row.data),
+        }));
 
-      return results.map((r) => r.streamId);
+        const nextCursor =
+          hasMore && pageRows.length > 0
+            ? Buffer.from(
+                JSON.stringify({
+                  c: pageRows[pageRows.length - 1].chunkId,
+                  i: baseIndex + pageRows.length,
+                })
+              ).toString('base64')
+            : null;
+
+        return {
+          data: chunks,
+          cursor: nextCursor,
+          hasMore,
+          done: streamDone,
+        };
+      },
+
+      async getInfo(
+        _runId: string,
+        name: string
+      ): Promise<StreamInfoResponse> {
+        // Use COUNT(*) instead of fetching all rows into memory
+        const [countResult] = await drizzle
+          .select({ count: sql<number>`count(*)` })
+          .from(streams)
+          .where(and(eq(streams.streamId, name), eq(streams.eof, false)));
+
+        const dataCount = Number(countResult?.count ?? 0);
+
+        // Check for EOF
+        const [eofRow] = await drizzle
+          .select({ eof: streams.eof })
+          .from(streams)
+          .where(and(eq(streams.streamId, name), eq(streams.eof, true)))
+          .limit(1);
+
+        return {
+          tailIndex: dataCount - 1,
+          done: !!eofRow,
+        };
+      },
+
+      async get(
+        _runId: string,
+        name: string,
+        startIndex?: number
+      ): Promise<ReadableStream<Uint8Array>> {
+        const cleanups: (() => void)[] = [];
+
+        return new ReadableStream<Uint8Array>({
+          async start(controller) {
+            // an empty string is always < than any string,
+            // so `'' < ulid()` and `ulid() < ulid()` (maintaining order)
+            let lastChunkId = '';
+            let offset = startIndex ?? 0;
+            let buffer = [] as StreamChunkEvent[] | null;
+
+            function enqueue(msg: {
+              id: string;
+              data: Uint8Array;
+              eof: boolean;
+            }) {
+              if (lastChunkId >= msg.id) {
+                // already sent or out of order
+                return;
+              }
+
+              if (offset > 0) {
+                offset--;
+                return;
+              }
+
+              if (msg.data.byteLength) {
+                controller.enqueue(new Uint8Array(msg.data));
+              }
+              if (msg.eof) {
+                controller.close();
+              }
+              lastChunkId = msg.id;
+            }
+
+            function onData(data: StreamChunkEvent) {
+              if (buffer) {
+                buffer.push(data);
+                return;
+              }
+              enqueue(data);
+            }
+            events.on(`strm:${name}`, onData);
+            cleanups.push(() => {
+              events.off(`strm:${name}`, onData);
+            });
+
+            const chunks = await drizzle
+              .select({
+                id: streams.chunkId,
+                eof: streams.eof,
+                data: streams.chunkData,
+              })
+              .from(streams)
+              .where(and(eq(streams.streamId, name)))
+              .orderBy(streams.chunkId);
+
+            // Resolve negative offset relative to the data chunk count
+            // (excluding the trailing EOF marker, if present)
+            if (typeof offset === 'number' && offset < 0) {
+              const dataCount =
+                chunks.length > 0 && chunks[chunks.length - 1].eof
+                  ? chunks.length - 1
+                  : chunks.length;
+              offset = Math.max(0, dataCount + offset);
+            }
+
+            for (const chunk of [...chunks, ...(buffer ?? [])]) {
+              enqueue(chunk);
+            }
+            buffer = null;
+          },
+          cancel() {
+            cleanups.forEach((fn) => void fn());
+          },
+        });
+      },
+
+      async list(runId: string): Promise<string[]> {
+        // Query distinct stream IDs associated with the runId
+        const results = await drizzle
+          .selectDistinct({ streamId: streams.streamId })
+          .from(streams)
+          .where(eq(streams.runId, runId));
+
+        return results.map((r) => r.streamId);
+      },
     },
 
     async close() {

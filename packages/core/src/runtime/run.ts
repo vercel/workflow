@@ -241,7 +241,7 @@ export class Run<TResult> {
     const runId = this.runId;
     return Object.assign(stream, {
       getTailIndex: async (): Promise<number> => {
-        const info = await world.getStreamInfo(name, runId);
+        const info = await world.streams.getInfo(runId, name);
         return info.tailIndex;
       },
     });

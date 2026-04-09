@@ -180,7 +180,7 @@ vi.mock('./utils.js', () => ({
   }),
 }));
 
-describe('writeToStreamMulti pagination', () => {
+describe('writeMulti pagination', () => {
   /**
    * Decode length-prefixed multi-chunk body to count chunks per request.
    */
@@ -221,7 +221,7 @@ describe('writeToStreamMulti pagination', () => {
       (_, i) => new Uint8Array([i & 0xff])
     );
 
-    await streamer.writeToStreamMulti?.('s', 'run-1', chunks);
+    await streamer.streams.writeMulti?.('run-1', 's', chunks);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
@@ -238,7 +238,7 @@ describe('writeToStreamMulti pagination', () => {
       (_, i) => new Uint8Array([i & 0xff])
     );
 
-    await streamer.writeToStreamMulti?.('s', 'run-1', chunks);
+    await streamer.streams.writeMulti?.('run-1', 's', chunks);
 
     // Should split into 2 requests: one with MAX_CHUNKS_PER_REQUEST, one with 1
     expect(fetchSpy).toHaveBeenCalledTimes(2);
@@ -260,7 +260,7 @@ describe('writeToStreamMulti pagination', () => {
       (_, i) => new Uint8Array([i & 0xff])
     );
 
-    await streamer.writeToStreamMulti?.('s', 'run-1', chunks);
+    await streamer.streams.writeMulti?.('run-1', 's', chunks);
 
     expect(chunkCounts).toEqual([
       MAX_CHUNKS_PER_REQUEST,
