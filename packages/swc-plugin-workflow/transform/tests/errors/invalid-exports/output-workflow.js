@@ -10,6 +10,8 @@ export let uninitVar;
 // Local named exports also error (can't verify binding is a function)
 const helper = 'not a function';
 export { helper };
+// Re-export with specifiers also errors
+export { something } from './re-export';
 // These are ok - sync and async functions are allowed in "use step" files
 export var syncFunc = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//syncFunc");
 export var validStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step//./input//validStep");

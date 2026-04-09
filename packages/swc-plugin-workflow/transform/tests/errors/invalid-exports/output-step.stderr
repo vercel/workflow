@@ -32,3 +32,9 @@
  13 | export { helper };
     : ^^^^^^^^^^^^^^^^^^
     `----
+  x Only functions can be exported from a "use step" file
+    ,-[input.js:16:1]
+ 15 | // Re-export with specifiers also errors
+ 16 | export { something } from './re-export';
+    : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    `----
