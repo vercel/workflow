@@ -4533,6 +4533,6 @@ describe('WorkflowFunction serialization', () => {
     );
     await expect(
       dehydrateStepReturnValue(plainFn, 'wrun_test', undefined)
-    ).rejects.toThrow('serialization');
+    ).rejects.toThrow('Failed to serialize');
   });
 });
