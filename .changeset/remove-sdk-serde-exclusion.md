@@ -4,4 +4,4 @@
 "@workflow/rollup": major
 ---
 
-Remove `isWorkflowSdkFile` serde exclusion — the SWC detect mode's AST-level manifest already correctly filters files without serde class definitions, so the broad SDK path exclusion is no longer needed and was preventing class definitions in SDK packages from being discovered
+**BREAKING CHANGE**: Remove `isWorkflowSdkFile` path-based serde exclusion. Serde discovery now uses AST-level verification via SWC detect mode across all integration paths (esbuild plugin, Next.js deferred builder, Next.js loader). This allows class definitions with serde symbols in SDK packages like `@workflow/core` to be discovered and bundled correctly.
