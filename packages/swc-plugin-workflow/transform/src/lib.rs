@@ -492,25 +492,33 @@ impl TryFrom<&Expr> for Name {
 }
 
 /// Collects all member names referenced within an AST subtree via
-/// `this.foo` or `this.#foo` patterns. Used after stripping `"use step"`
-/// methods in workflow mode to determine which private class members are
-/// still referenced by the remaining body, so unreferenced ones can be
+/// `this.foo`, `this.#foo`, or `obj.foo` (when `foo` is a known
+/// TS-private name) patterns. Used after stripping `"use step"` methods
+/// in workflow mode to determine which private class members are still
+/// referenced by the remaining body, so unreferenced ones can be
 /// dead-code-eliminated.
 ///
 /// Handles both:
-/// - JS native private members (`#field`, `#method()`) — detected via
-///   `MemberProp::PrivateName`
-/// - TypeScript `private` members (`private field`, `private method()`) —
-///   detected via `MemberProp::Ident` on `this` expressions
+/// - JS native private members (`#field`, `#method()`) — stored with `#`
+///   prefix to avoid collisions with TS private members of the same name
+/// - TypeScript `private` members — stored without prefix; detected via
+///   `this.foo` and also `obj.foo` when `foo` is a known TS-private name
+///   (to handle same-class access patterns like `static compare(a, b) {
+///   return a.x - b.x }`)
 struct ClassMemberRefCollector {
-    /// All member names referenced via `this.name` or `this.#name`
+    /// All member names referenced. JS native private names are prefixed
+    /// with `#` (e.g. `"#foo"`), TS private names are unprefixed (`"foo"`).
     referenced: HashSet<String>,
+    /// Known TS-private member names in the current class, so that `a.foo`
+    /// accesses (not just `this.foo`) are recognized as references.
+    ts_private_names: HashSet<String>,
 }
 
 impl ClassMemberRefCollector {
-    fn new() -> Self {
+    fn new(ts_private_names: HashSet<String>) -> Self {
         Self {
             referenced: HashSet::new(),
+            ts_private_names,
         }
     }
 
@@ -523,8 +531,30 @@ impl ClassMemberRefCollector {
     /// iteratively expand by adding references from surviving private
     /// members until the set stabilizes.
     fn collect_from_class_body(body: &[ClassMember]) -> HashSet<String> {
+        // Build the set of known TS-private names for the collector
+        let ts_private_names: HashSet<String> = body
+            .iter()
+            .filter_map(|m| match m {
+                ClassMember::Method(m) if m.accessibility == Some(Accessibility::Private) => {
+                    match &m.key {
+                        PropName::Ident(i) => Some(i.sym.to_string()),
+                        PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                        _ => None,
+                    }
+                }
+                ClassMember::ClassProp(p) if p.accessibility == Some(Accessibility::Private) => {
+                    match &p.key {
+                        PropName::Ident(i) => Some(i.sym.to_string()),
+                        PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+
         // Phase 1: collect references from all non-private members
-        let mut collector = Self::new();
+        let mut collector = Self::new(ts_private_names);
         for member in body {
             if !Self::is_private_member(member) {
                 member.visit_with(&mut collector);
@@ -540,29 +570,7 @@ impl ClassMemberRefCollector {
                     if collector.referenced.contains(&name) {
                         // This private member survived; scan its body for
                         // references to other private members
-                        match member {
-                            ClassMember::PrivateMethod(m) => {
-                                if let Some(body) = &m.function.body {
-                                    body.visit_with(&mut collector);
-                                }
-                            }
-                            ClassMember::PrivateProp(p) => {
-                                if let Some(value) = &p.value {
-                                    value.visit_with(&mut collector);
-                                }
-                            }
-                            ClassMember::Method(m) => {
-                                if let Some(body) = &m.function.body {
-                                    body.visit_with(&mut collector);
-                                }
-                            }
-                            ClassMember::ClassProp(p) => {
-                                if let Some(value) = &p.value {
-                                    value.visit_with(&mut collector);
-                                }
-                            }
-                            _ => {}
-                        }
+                        Self::visit_member_body(member, &mut collector);
                     }
                 }
             }
@@ -574,6 +582,33 @@ impl ClassMemberRefCollector {
         collector.referenced
     }
 
+    /// Visit the body/initializer of a class member for reference collection.
+    fn visit_member_body(member: &ClassMember, collector: &mut Self) {
+        match member {
+            ClassMember::PrivateMethod(m) => {
+                if let Some(body) = &m.function.body {
+                    body.visit_with(collector);
+                }
+            }
+            ClassMember::PrivateProp(p) => {
+                if let Some(value) = &p.value {
+                    value.visit_with(collector);
+                }
+            }
+            ClassMember::Method(m) => {
+                if let Some(body) = &m.function.body {
+                    body.visit_with(collector);
+                }
+            }
+            ClassMember::ClassProp(p) => {
+                if let Some(value) = &p.value {
+                    value.visit_with(collector);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Returns true if the member is a private member (JS native or TS).
     fn is_private_member(member: &ClassMember) -> bool {
         matches!(
@@ -583,11 +618,13 @@ impl ClassMemberRefCollector {
             || matches!(member, ClassMember::ClassProp(p) if p.accessibility == Some(Accessibility::Private))
     }
 
-    /// Returns the name of a private member, if applicable.
+    /// Returns the canonical name of a private member. JS native private
+    /// names are prefixed with `#` to avoid collisions with TS private
+    /// members of the same name.
     fn private_member_name(member: &ClassMember) -> Option<String> {
         match member {
-            ClassMember::PrivateMethod(m) => Some(m.key.name.to_string()),
-            ClassMember::PrivateProp(p) => Some(p.key.name.to_string()),
+            ClassMember::PrivateMethod(m) => Some(format!("#{}", m.key.name)),
+            ClassMember::PrivateProp(p) => Some(format!("#{}", p.key.name)),
             ClassMember::Method(m) if m.accessibility == Some(Accessibility::Private) => {
                 match &m.key {
                     PropName::Ident(i) => Some(i.sym.to_string()),
@@ -605,6 +642,19 @@ impl ClassMemberRefCollector {
             _ => None,
         }
     }
+
+    /// Removes unreferenced private class members from a class body.
+    /// Call after stripping `"use step"` methods in workflow mode.
+    fn retain_referenced_private_members(body: &mut Vec<ClassMember>) {
+        let referenced = Self::collect_from_class_body(body);
+        body.retain(|member| {
+            if let Some(name) = Self::private_member_name(member) {
+                referenced.contains(&name)
+            } else {
+                true
+            }
+        });
+    }
 }
 
 impl Visit for ClassMemberRefCollector {
@@ -612,22 +662,24 @@ impl Visit for ClassMemberRefCollector {
 
     fn visit_member_expr(&mut self, expr: &MemberExpr) {
         match &expr.prop {
-            // Native JS private: `this.#foo`
+            // Native JS private: `this.#foo` — stored as `#foo`
             MemberProp::PrivateName(name) => {
-                self.referenced.insert(name.name.to_string());
+                self.referenced.insert(format!("#{}", name.name));
             }
-            // TS private or any member: `this.foo` — only track when
-            // the object is `this` (to avoid false positives from
-            // unrelated member accesses like `obj.foo`)
+            // TS private or any ident member access. Track `this.foo` as
+            // before, and also track `obj.foo` when `foo` is a known
+            // TS-private member of the current class so same-class
+            // accesses like `a.x` / `b.x` are not missed.
             MemberProp::Ident(ident) => {
-                if matches!(&*expr.obj, Expr::This(_)) {
-                    self.referenced.insert(ident.sym.to_string());
+                let name = ident.sym.to_string();
+                if matches!(&*expr.obj, Expr::This(_)) || self.ts_private_names.contains(&name) {
+                    self.referenced.insert(name);
                 }
             }
             _ => {}
         }
-        // Continue visiting children
-        expr.obj.visit_with(self);
+        // Continue visiting children, including computed property expressions
+        expr.visit_children_with(self);
     }
 }
 
@@ -8338,50 +8390,10 @@ impl VisitMut for StepTransform {
                 // After stripping "use step" methods, eliminate private class
                 // members (both JS native `#field`/`#method()` and TypeScript
                 // `private field`/`private method()`) that are no longer
-                // referenced by any remaining member. This prevents dead
-                // private helpers from keeping Node.js imports alive in the
-                // workflow bundle.
-                let referenced =
-                    ClassMemberRefCollector::collect_from_class_body(&class_decl.class.body);
-                class_decl.class.body.retain(|member| {
-                    match member {
-                        // JS native private: #method()
-                        ClassMember::PrivateMethod(m) => {
-                            referenced.contains(&m.key.name.to_string())
-                        }
-                        // JS native private: #field
-                        ClassMember::PrivateProp(p) => referenced.contains(&p.key.name.to_string()),
-                        // TS private: private method()
-                        ClassMember::Method(m)
-                            if m.accessibility == Some(Accessibility::Private) =>
-                        {
-                            if let Some(name) = match &m.key {
-                                PropName::Ident(i) => Some(i.sym.to_string()),
-                                PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
-                                _ => None,
-                            } {
-                                referenced.contains(&name)
-                            } else {
-                                true // keep if we can't determine the name
-                            }
-                        }
-                        // TS private: private field
-                        ClassMember::ClassProp(p)
-                            if p.accessibility == Some(Accessibility::Private) =>
-                        {
-                            if let Some(name) = match &p.key {
-                                PropName::Ident(i) => Some(i.sym.to_string()),
-                                PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
-                                _ => None,
-                            } {
-                                referenced.contains(&name)
-                            } else {
-                                true
-                            }
-                        }
-                        _ => true,
-                    }
-                });
+                // referenced by any remaining member.
+                ClassMemberRefCollector::retain_referenced_private_members(
+                    &mut class_decl.class.body,
+                );
             }
         }
 
@@ -8502,38 +8514,9 @@ impl VisitMut for StepTransform {
                 });
 
                 // Dead-code-eliminate unreferenced private members
-                // (same logic as visit_mut_class_decl above)
-                let referenced =
-                    ClassMemberRefCollector::collect_from_class_body(&class_expr.class.body);
-                class_expr.class.body.retain(|member| match member {
-                    ClassMember::PrivateMethod(m) => referenced.contains(&m.key.name.to_string()),
-                    ClassMember::PrivateProp(p) => referenced.contains(&p.key.name.to_string()),
-                    ClassMember::Method(m) if m.accessibility == Some(Accessibility::Private) => {
-                        if let Some(name) = match &m.key {
-                            PropName::Ident(i) => Some(i.sym.to_string()),
-                            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
-                            _ => None,
-                        } {
-                            referenced.contains(&name)
-                        } else {
-                            true
-                        }
-                    }
-                    ClassMember::ClassProp(p)
-                        if p.accessibility == Some(Accessibility::Private) =>
-                    {
-                        if let Some(name) = match &p.key {
-                            PropName::Ident(i) => Some(i.sym.to_string()),
-                            PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
-                            _ => None,
-                        } {
-                            referenced.contains(&name)
-                        } else {
-                            true
-                        }
-                    }
-                    _ => true,
-                });
+                ClassMemberRefCollector::retain_referenced_private_members(
+                    &mut class_expr.class.body,
+                );
             }
         }
 
