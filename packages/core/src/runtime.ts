@@ -87,7 +87,10 @@ export {
   type StartOptionsWithoutDeploymentId,
   start,
 } from './runtime/start.js';
-export { stepEntrypoint } from './runtime/step-handler.js';
+// V2: stepEntrypoint is no longer re-exported — the combined handler
+// (workflowEntrypoint) executes steps inline. Removing the re-export
+// prevents Turbopack from tracing step-handler.js → get-port.js
+// filesystem operations into the flow route bundle.
 export {
   createWorld,
   getWorld,

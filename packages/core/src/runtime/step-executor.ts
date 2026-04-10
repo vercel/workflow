@@ -9,7 +9,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
+import { getPortLazy } from './get-port-lazy.js';
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { CryptoKey } from '../encryption.js';
@@ -274,7 +274,7 @@ export async function executeStep(
 
       const args = hydratedInput.args;
       const thisVal = hydratedInput.thisVal ?? null;
-      const port = isVercel ? undefined : await getPort();
+      const port = isVercel ? undefined : await getPortLazy();
 
       const executionStartTime = Date.now();
       result = await trace('step.execute', {}, async () => {

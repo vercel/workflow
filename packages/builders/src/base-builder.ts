@@ -462,19 +462,20 @@ export abstract class BaseBuilder {
         .replace(/\\/g, '/')
         .replace(/\/$/, '');
       const normalizedWorkspaceFile = file.replace(/\\/g, '/');
+      // Only use relative source paths for workspace symlinks (files
+      // outside node_modules in a packages/*/src/ directory). For tarball-
+      // installed packages (files inside node_modules/), fall through to
+      // getImportPath which returns package specifiers — this allows the
+      // SWC plugin's externalizeNonSteps to work correctly.
       const isWorkspaceSourceBackedPackageFile =
         normalizedWorkspaceFile.includes('/packages/') &&
         normalizedWorkspaceFile.includes('/src/') &&
+        !normalizedWorkspaceFile.includes('/node_modules/') &&
         !(
           normalizedWorkspaceFile === normalizedWorkspaceRoot ||
           normalizedWorkspaceFile.startsWith(`${normalizedWorkspaceRoot}/`)
         );
-      const isInstalledSourceBackedPackageFile =
-        normalizedWorkspaceFile.includes('/node_modules/') &&
-        normalizedWorkspaceFile.includes('/src/');
-      const isSourceBackedPackageFile =
-        isWorkspaceSourceBackedPackageFile ||
-        isInstalledSourceBackedPackageFile;
+      const isSourceBackedPackageFile = isWorkspaceSourceBackedPackageFile;
 
       if (isSourceBackedPackageFile) {
         let relativePath = relative(

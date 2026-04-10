@@ -1,17 +1,23 @@
 import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   isVercelWorldTarget,
   resolveWorkflowTargetWorld,
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
+import { createLocalWorld } from '@workflow/world-local';
+import { createVercelWorld } from '@workflow/world-vercel';
 
 function getRuntimeRequire() {
   try {
-    return createRequire(resolve(process.cwd(), 'package.json'));
-  } catch {
+    // Prefer import.meta.url — Turbopack can statically analyze it.
     return createRequire(import.meta.url);
+  } catch {
+    // Fallback for CJS/webpack environments where import.meta.url fails.
+    return createRequire(
+      pathToFileURL(/* turbopackIgnore: true */ process.cwd() + '/package.json')
+        .href
+    );
   }
 }
 
@@ -29,15 +35,12 @@ const globalSymbols: typeof globalThis & {
   [StubbedWorldCachePromise]?: Promise<World>;
 } = globalThis;
 
-/**
- * Hides the dynamic import behind `new Function` to prevent bundlers from
- * trying to resolve it at build time, since the world module may not exist
- * at build time. Falls back to `require()` in environments where
- * `new Function`-based `import()` is unavailable (e.g. CJS test runners).
- */
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-  specifier: string
-) => Promise<any>;
+// Dynamic import for custom world modules. Uses a standard import()
+// wrapped in a try/catch with require() fallback for CJS test runners.
+// Note: the previous `new Function('specifier', 'return import(specifier)')`
+// pattern was replaced because Turbopack (Next.js) treats unresolvable
+// dynamic imports from `new Function` as fatal build errors in the V2
+// combined flow route context.
 
 function resolveModulePath(specifier: string): string {
   // Already a file:// URL
@@ -50,7 +53,9 @@ function resolveModulePath(specifier: string): string {
   }
   // Relative path - resolve relative to cwd and convert to file:// URL
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
-    return pathToFileURL(resolve(process.cwd(), specifier)).href;
+    return pathToFileURL(
+      /* turbopackIgnore: true */ process.cwd() + '/' + specifier
+    ).href;
   }
   // Package specifier - use require.resolve to find the package
   try {
@@ -95,26 +100,24 @@ export const createWorld = async (): Promise<World> => {
       );
     }
 
-    const { createVercelWorld } = await import('@workflow/world-vercel');
     return createVercelWorld();
   }
 
   if (targetWorld === 'local') {
-    const { createLocalWorld } = await import('@workflow/world-local');
     return createLocalWorld({
       dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
     });
   }
 
-  // Try dynamic import() first — ESM-first since this PR's purpose is ESM support.
-  // Fall back to require() for environments where `new Function`-based import()
-  // is unavailable (e.g. CJS test runners).
+  // Try require() first for custom worlds — this avoids Turbopack tracing
+  // a dynamic import() that it can't statically resolve. Fall back to
+  // dynamic import() for ESM-only packages.
   let mod: any;
   try {
-    const resolvedPath = resolveModulePath(targetWorld);
-    mod = await dynamicImport(resolvedPath);
-  } catch {
     mod = getRuntimeRequire()(targetWorld);
+  } catch {
+    const resolvedPath = resolveModulePath(targetWorld);
+    mod = await import(/* webpackIgnore: true */ resolvedPath);
   }
   if (typeof mod === 'function') {
     return mod() as World;
