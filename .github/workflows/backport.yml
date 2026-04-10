@@ -47,11 +47,15 @@ jobs:
         if: steps.cherry-pick.outputs.status == 'clean'
         run: git push origin stable
 
+      - name: Setup Node.js
+        if: steps.cherry-pick.outputs.status == 'conflict'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+
       - name: Install opencode
         if: steps.cherry-pick.outputs.status == 'conflict'
-        run: |
-          curl -fsSL https://opencode.ai/install | bash
-          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+        run: npm install -g opencode-ai
 
       - name: Configure opencode
         if: steps.cherry-pick.outputs.status == 'conflict'
@@ -59,20 +63,21 @@ jobs:
           AI_GATEWAY_TOKEN: ${{ secrets.AI_GATEWAY_TOKEN }}
         run: |
           mkdir -p ~/.local/share/opencode
-          echo '{"vercel":{"type":"api","key":"'"$AI_GATEWAY_TOKEN"'"}}' > ~/.local/share/opencode/auth.json
+          jq -n --arg key "$AI_GATEWAY_TOKEN" '{vercel:{type:"api",key:$key}}' > ~/.local/share/opencode/auth.json
 
       - name: Resolve conflicts with opencode
         if: steps.cherry-pick.outputs.status == 'conflict'
         id: ai-resolve
+        continue-on-error: true
         env:
           OPENCODE_PERMISSION: '{"allow":["*"]}'
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
           COMMIT_MSG=$(git log -1 --format='%B' "$MERGE_SHA")
 
-          opencode run --model vercel/anthropic/claude-opus-4.6 \
-            "The working tree has git merge conflicts from a failed cherry-pick.
+          cat > /tmp/backport-prompt.txt <<PROMPT
+          The working tree has git merge conflicts from a failed cherry-pick.
           A commit is being cherry-picked from the main branch to the stable branch.
 
           PR title: $PR_TITLE
@@ -83,7 +88,10 @@ jobs:
           ======= and >>>>>>> is the incoming change from main.
 
           After resolving each file, run git add on it to mark it as resolved.
-          Do NOT run git cherry-pick --continue or git commit."
+          Do NOT run git cherry-pick --continue or git commit.
+          PROMPT
+
+          opencode run --model vercel/anthropic/claude-opus-4.6 "$(cat /tmp/backport-prompt.txt)"
 
           # Verify all conflicts are resolved
           REMAINING=$(git diff --name-only --diff-filter=U || true)
@@ -100,18 +108,25 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           BRANCH="backport/pr-${{ github.event.pull_request.number }}-to-stable"
-          git checkout -b "$BRANCH"
-          git push origin "$BRANCH"
-          PR_URL=$(gh pr create \
-            --base stable \
-            --head "$BRANCH" \
-            --title "Backport #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}" \
-            --body "$(cat <<'BODY'
+          git checkout -B "$BRANCH"
+          git push --force-with-lease origin "$BRANCH"
+
+          EXISTING_PR=$(gh pr list --state open --base stable --head "$BRANCH" --json url --jq '.[0].url')
+
+          if [ -n "$EXISTING_PR" ]; then
+            PR_URL="$EXISTING_PR"
+          else
+            PR_URL=$(gh pr create \
+              --base stable \
+              --head "$BRANCH" \
+              --title "Backport #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}" \
+              --body "$(cat <<'BODY'
           Automated backport of #${{ github.event.pull_request.number }} to `stable`.
 
           Merge conflicts were resolved by AI ([opencode](https://opencode.ai) with Claude Opus). **Please review the conflict resolution before merging.**
           BODY
           )")
+          fi
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
       - name: Comment on clean backport
