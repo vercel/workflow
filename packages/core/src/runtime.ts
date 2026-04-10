@@ -2,6 +2,7 @@ import {
   EntityConflictError,
   RUN_ERROR_CODES,
   RunExpiredError,
+  WorkflowNotRegisteredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
@@ -43,6 +44,10 @@ import {
 import { getErrorName, getErrorStack, normalizeUnknownError } from './types.js';
 import { buildWorkflowSuspensionMessage } from './util.js';
 import { runWorkflow } from './workflow.js';
+
+const LAZY_DISCOVERY_WORKFLOW_NOT_REGISTERED_RETRY_TIMEOUTS_SECONDS = [
+  1, 1, 2, 3, 5, 8, 13, 21,
+] as const;
 
 export type { Event, WorkflowRun };
 export { WorkflowSuspension } from './global.js';
@@ -495,6 +500,32 @@ export function workflowEntrypoint(
 
                       // Suspension handled, no further work needed
                       return;
+                    }
+
+                    // In lazy-discovery mode, the first few flow deliveries can
+                    // race with deferred route/materialization and temporarily
+                    // report WorkflowNotRegisteredError. Treat this as transient
+                    // for a bounded retry window instead of failing the run.
+                    if (
+                      WorkflowNotRegisteredError.is(err) &&
+                      process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1'
+                    ) {
+                      const retryTimeoutSeconds =
+                        LAZY_DISCOVERY_WORKFLOW_NOT_REGISTERED_RETRY_TIMEOUTS_SECONDS[
+                          metadata.attempt - 1
+                        ];
+                      if (retryTimeoutSeconds !== undefined) {
+                        runtimeLogger.warn(
+                          'Workflow not registered yet in lazy-discovery mode; re-enqueueing run.',
+                          {
+                            workflowRunId: runId,
+                            workflowName,
+                            attempt: metadata.attempt,
+                            retryTimeoutSeconds,
+                          }
+                        );
+                        return { timeoutSeconds: retryTimeoutSeconds };
+                      }
                     }
 
                     // This is a user code error or a WorkflowRuntimeError
