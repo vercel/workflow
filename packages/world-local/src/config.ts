@@ -11,6 +11,15 @@ const getBaseUrlFromEnv = () => {
   return process.env.WORKFLOW_LOCAL_BASE_URL;
 };
 
+const getNextPrivateOriginFromEnv = () => {
+  const origin = process.env.__NEXT_PRIVATE_ORIGIN;
+  if (!origin) {
+    return undefined;
+  }
+
+  return origin;
+};
+
 export type Config = {
   dataDir: string;
   port?: number;
@@ -40,9 +49,10 @@ export const config = once<Config>(() => {
  * Resolves the base URL for queue requests following the priority order:
  * 1. config.baseUrl (highest priority - full override from args)
  * 2. WORKFLOW_LOCAL_BASE_URL env var (checked directly to handle late env var setting)
- * 3. config.port (explicit port override from args)
- * 4. PORT env var (explicit configuration)
- * 5. Auto-detected port via getPort (detect actual listening port)
+ * 3. __NEXT_PRIVATE_ORIGIN env var (Next.js internal server origin)
+ * 4. config.port (explicit port override from args)
+ * 5. PORT env var (explicit configuration)
+ * 6. Auto-detected port via getPort (detect actual listening port)
  */
 export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   if (config.baseUrl) {
@@ -53,6 +63,14 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   // This is important for CLI tools that set the env var after module import
   if (process.env.WORKFLOW_LOCAL_BASE_URL) {
     return process.env.WORKFLOW_LOCAL_BASE_URL;
+  }
+
+  // Next.js sets this internal origin env var for server-side internal fetches.
+  // In dev, workflow queue calls can run in worker processes that are not the
+  // listening server process, so PORT/getWorkflowPort may be unavailable there.
+  const nextPrivateOrigin = getNextPrivateOriginFromEnv();
+  if (nextPrivateOrigin) {
+    return nextPrivateOrigin;
   }
 
   if (typeof config.port === 'number') {

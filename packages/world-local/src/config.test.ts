@@ -194,6 +194,31 @@ describe('resolveBaseUrl', () => {
   });
 
   describe('environment variables', () => {
+    it('should use __NEXT_PRIVATE_ORIGIN when no explicit local base URL is set', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      process.env.__NEXT_PRIVATE_ORIGIN = 'http://localhost:3002';
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:3002');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should prefer WORKFLOW_LOCAL_BASE_URL over __NEXT_PRIVATE_ORIGIN', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      process.env.WORKFLOW_LOCAL_BASE_URL = 'http://127.0.0.1:4000';
+      process.env.__NEXT_PRIVATE_ORIGIN = 'http://localhost:3002';
+      delete process.env.PORT;
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://127.0.0.1:4000');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
     it('should use PORT env var as fallback', async () => {
       const { getWorkflowPort } = await import('@workflow/utils/get-port');
       vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
