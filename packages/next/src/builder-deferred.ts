@@ -842,100 +842,6 @@ export async function getNextBuilderDeferred() {
       return false;
     }
 
-    /**
-     * Generate thin wrapper files for package serde+step files. Instead of
-     * copying the full source (which creates a duplicate class with #private
-     * brand check issues), the wrapper imports the original class and
-     * registers the steps and class from the manifest.
-     */
-    private async generatePackageSerdeStepWrappers({
-      sourceFiles,
-      manifest,
-      stepsRouteDir,
-    }: {
-      sourceFiles: string[];
-      manifest: WorkflowManifest;
-      stepsRouteDir: string;
-    }): Promise<string[]> {
-      if (sourceFiles.length === 0) return [];
-
-      const copiedStepsDir = join(stepsRouteDir, DEFERRED_STEP_COPY_DIR_NAME);
-      await mkdir(copiedStepsDir, { recursive: true });
-      const wrapperFiles: string[] = [];
-
-      for (const sourceFile of sourceFiles) {
-        const normalized = this.normalizeDiscoveredFilePath(sourceFile);
-        const relativeFilename =
-          await this.getRelativeFilenameForSwc(normalized);
-
-        // Find manifest entries for this file
-        const fileSteps = manifest.steps?.[relativeFilename] ?? {};
-        const fileClasses = manifest.classes?.[relativeFilename] ?? {};
-
-        if (
-          Object.keys(fileSteps).length === 0 &&
-          Object.keys(fileClasses).length === 0
-        ) {
-          continue;
-        }
-
-        // Determine class names and their exports
-        const classNames = Object.keys(fileClasses);
-        const copiedFileName = this.getStepCopyFileName(normalized);
-        const copiedFilePath = join(copiedStepsDir, copiedFileName);
-
-        // Generate import path to the original file
-        const importSpecifier = this.getRelativeImportSpecifier(
-          copiedFilePath,
-          normalized
-        );
-
-        // Build wrapper content
-        const lines: string[] = [
-          `// Generated step registration wrapper for ${relativeFilename}`,
-          `// Imports the original class to avoid duplicate #private field issues`,
-          `import { ${classNames.join(', ')} } from '${importSpecifier}';`,
-          '',
-        ];
-
-        // Step registrations
-        for (const [funcName, { stepId }] of Object.entries(fileSteps)) {
-          // funcName is like "Run#cancel" or "Run#returnValue"
-          const hashIdx = funcName.indexOf('#');
-          if (hashIdx === -1) continue;
-          const className = funcName.slice(0, hashIdx);
-          const methodName = funcName.slice(hashIdx + 1);
-
-          // Use a generic approach that works for both methods and getters:
-          // try the property descriptor's getter first, fall back to .value
-          lines.push(
-            `(function(__wf_id, __wf_cls, __wf_name) {`,
-            `  var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());`,
-            `  var __wf_desc = Object.getOwnPropertyDescriptor(__wf_cls.prototype, __wf_name);`,
-            `  var __wf_fn = __wf_desc && (__wf_desc.get || __wf_desc.value);`,
-            `  if (__wf_fn) { __wf_reg.set(__wf_id, __wf_fn); __wf_fn.stepId = __wf_id; }`,
-            `})("${stepId}", ${className}, "${methodName}");`
-          );
-        }
-
-        // Class registrations
-        for (const [className, { classId }] of Object.entries(fileClasses)) {
-          lines.push(
-            `(function(__wf_cls, __wf_id) {`,
-            `  var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());`,
-            `  if (!__wf_reg.has(__wf_id)) { __wf_reg.set(__wf_id, __wf_cls); Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false }); }`,
-            `})(${className}, "${classId}");`
-          );
-        }
-
-        const wrapperSource = lines.join('\n');
-        await this.writeFileIfChanged(copiedFilePath, wrapperSource);
-        wrapperFiles.push(copiedFilePath);
-      }
-
-      return wrapperFiles;
-    }
-
     private getManifestStepResolveBaseDirs(): string[] {
       if (this.manifestStepResolveBaseDirs) {
         return this.manifestStepResolveBaseDirs;
@@ -2243,55 +2149,48 @@ export async function getNextBuilderDeferred() {
 
       const manifestDiscoveredStepFiles =
         await this.collectManifestStepSourceFiles(manifest);
-      // Copy discovered step sources so they are transformed in step mode.
-      // However, files belonging to packages must NOT be copied — copying
-      // creates a duplicate class definition that breaks JS native private
-      // field (#) brand checks. Package files are imported directly so the
-      // bundler deduplicates them with the runtime's copy.
+      // Copy all discovered step sources so they are transformed in step mode.
+      // Importing raw node_modules files directly can bypass loader transforms,
+      // which prevents step registrars from being emitted.
+      //
+      // Exception: package files that are also serde files (define classes with
+      // WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE) must NOT be copied — copying
+      // creates a duplicate class with JS native private field (#) brand check
+      // issues. Instead, these files are added to `forceStepModeFiles` so the
+      // loader transforms the original file in step mode directly.
       const allStepSourceFiles = Array.from(
         new Set([
           ...stepFilesWithManifestSources,
           ...manifestDiscoveredStepFiles,
         ])
       ).sort();
-      // Files that are BOTH step files and serde files from packages must
-      // not be copied — they define classes with JS native private fields
-      // (#) that break if duplicated. Other step files (including package
-      // step files like fetch) must still be copied to ensure the SWC
-      // loader transform runs and registers the step functions.
       const serdeFileSet = new Set(serdeFiles);
-      const userStepSourceFiles: string[] = [];
-      const packageSerdeStepSourceFiles: string[] = [];
+      const filesToCopy: string[] = [];
+      const filesToForceStepMode: string[] = [];
       for (const file of allStepSourceFiles) {
         const normalized = this.normalizeDiscoveredFilePath(file);
         if (
           serdeFileSet.has(normalized) &&
           this.isFileInsidePackage(normalized)
         ) {
-          packageSerdeStepSourceFiles.push(file);
+          filesToForceStepMode.push(normalized);
         } else {
-          userStepSourceFiles.push(file);
+          filesToCopy.push(file);
         }
       }
+      // Register package serde files for step-mode transform in the loader
+      const { forceStepModeFiles } = await import('./loader.js');
+      for (const file of filesToForceStepMode) {
+        forceStepModeFiles.add(file.replace(/\\/g, '/'));
+      }
       const copiedDiscoveredStepFiles = await this.copyDiscoveredStepFiles({
-        stepFiles: userStepSourceFiles,
+        stepFiles: filesToCopy,
         stepsRouteDir,
         preserveFileNames: [basename(responseBuiltinsStepFilePath)],
       });
-      // For package serde files, generate thin wrappers that import the
-      // original class and register steps/classes from the manifest. This
-      // avoids duplicating the class definition (which breaks JS native
-      // private field brand checks) while still registering the steps.
-      const packageSerdeWrapperFiles =
-        await this.generatePackageSerdeStepWrappers({
-          sourceFiles: packageSerdeStepSourceFiles,
-          manifest,
-          stepsRouteDir,
-        });
       const copiedStepFiles = [
         responseBuiltinsStepFilePath,
         ...copiedDiscoveredStepFiles,
-        ...packageSerdeWrapperFiles,
       ];
 
       const stepRouteFile = join(stepsRouteDir, routeFileName);
@@ -2304,7 +2203,17 @@ export async function getNextBuilderDeferred() {
           return `import '${importSpecifier}';`;
         })
         .join('\n');
-      // (Package serde step wrappers are already included in copiedStepFiles)
+      // Import package serde+step files directly (not copied) — the loader
+      // will transform them in step mode via forceStepModeFiles.
+      const forceStepModeImports = filesToForceStepMode
+        .map((file) => {
+          const importSpecifier = this.getRelativeImportSpecifier(
+            stepRouteFile,
+            file
+          );
+          return `import '${importSpecifier}';`;
+        })
+        .join('\n');
       const serdeImports = serdeOnlyFiles
         .map((serdeFile) => {
           const normalizedSerdeFile =
@@ -2328,6 +2237,9 @@ export async function getNextBuilderDeferred() {
         '// biome-ignore-all lint: generated file',
         '/* eslint-disable */',
         copiedStepImports,
+        forceStepModeImports
+          ? `// Package serde+step files (transformed in step mode by loader)\n${forceStepModeImports}`
+          : '',
         serdeImports
           ? `// Serde files for cross-context class registration\n${serdeImports}`
           : '',
