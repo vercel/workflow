@@ -50,13 +50,11 @@ let socketClientKey: string | null = null;
 type SocketCredentials = {
   port: number;
   authToken: string;
-  isDevServer: boolean;
 };
 
 const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
 const ROUTE_STUB_BUILD_WAIT_TIMEOUT_MS = 120_000;
 let pendingDeferredRouteStubBuildPromise: Promise<void> | null = null;
-let pendingDeferredDiscoveryBuildPromise: Promise<void> | null = null;
 
 function registerFileDependency(
   loaderContext: WorkflowLoaderContext,
@@ -215,8 +213,7 @@ function getSocketCredentialsFromEnv(): SocketCredentials | null {
   if (Number.isNaN(port)) {
     return null;
   }
-  const isDevServer = process.env.WORKFLOW_SOCKET_IS_DEV_SERVER === '1';
-  return { port, authToken, isDevServer };
+  return { port, authToken };
 }
 
 async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null> {
@@ -233,7 +230,6 @@ async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null>
     const parsed = JSON.parse(raw) as {
       port?: unknown;
       authToken?: unknown;
-      isDevServer?: unknown;
     };
     const authToken =
       typeof parsed.authToken === 'string' ? parsed.authToken : null;
@@ -245,14 +241,9 @@ async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null>
     if (!authToken || Number.isNaN(numericPort)) {
       return null;
     }
-    const isDevServer =
-      parsed.isDevServer === true ||
-      parsed.isDevServer === '1' ||
-      parsed.isDevServer === 1;
     return {
       port: numericPort,
       authToken,
-      isDevServer,
     };
   } catch {
     return null;
@@ -500,40 +491,6 @@ async function ensureDeferredRouteStubBuildAndWait(): Promise<void> {
   return pendingDeferredRouteStubBuildPromise;
 }
 
-async function triggerDeferredDiscoveryBuildAndWait(): Promise<void> {
-  const socketCredentials = await getSocketCredentials();
-  if (!socketCredentials) {
-    return;
-  }
-  // Trigger-build notifications only drive deferred rebuilds in dev/watch mode.
-  if (!socketCredentials.isDevServer) {
-    return;
-  }
-  const socket = await createSocketConnection(socketCredentials);
-  try {
-    await writeSocketMessage(
-      socket,
-      serializeMessage({ type: 'trigger-build' }, socketCredentials.authToken)
-    );
-    await waitForDeferredBuildComplete(socket, socketCredentials.authToken);
-  } finally {
-    socket.destroy();
-  }
-}
-
-async function ensureDeferredDiscoveryBuildAndWait(): Promise<void> {
-  if (pendingDeferredDiscoveryBuildPromise) {
-    return pendingDeferredDiscoveryBuildPromise;
-  }
-  const pendingPromise = triggerDeferredDiscoveryBuildAndWait();
-  pendingDeferredDiscoveryBuildPromise = pendingPromise.finally(() => {
-    if (pendingDeferredDiscoveryBuildPromise === pendingPromise) {
-      pendingDeferredDiscoveryBuildPromise = null;
-    }
-  });
-  return pendingDeferredDiscoveryBuildPromise;
-}
-
 async function getBuildersModule(): Promise<
   typeof import('@workflow/builders')
 > {
@@ -741,7 +698,7 @@ export default function workflowLoader(
         hasStep: patterns.hasUseStep,
         hasSerde,
       };
-      const { shouldNotify, previousState } = updateDiscoveredPatternState(
+      const { shouldNotify } = updateDiscoveredPatternState(
         discoveryFilePath,
         nextPatternState
       );
@@ -752,33 +709,6 @@ export default function workflowLoader(
           nextPatternState.hasStep,
           nextPatternState.hasSerde
         );
-
-        // In lazy discovery mode, a newly discovered workflow/step/serde file
-        // can be used immediately after this transform completes. Trigger a
-        // deferred rebuild and wait so start()/resume() calls do not race
-        // route generation on first use.
-        const introducedWorkflowPattern =
-          nextPatternState.hasWorkflow && !previousState?.hasWorkflow;
-        const introducedStepPattern =
-          nextPatternState.hasStep && !previousState?.hasStep;
-        const introducedSerdePattern =
-          nextPatternState.hasSerde && !previousState?.hasSerde;
-        if (
-          process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1' &&
-          !isDeferredStepCopyFile &&
-          (introducedWorkflowPattern ||
-            introducedStepPattern ||
-            introducedSerdePattern)
-        ) {
-          try {
-            await ensureDeferredDiscoveryBuildAndWait();
-          } catch (error) {
-            console.warn(
-              `[workflow] Failed waiting for deferred discovery build for ${discoveryFilePath}`,
-              error
-            );
-          }
-        }
       }
     }
 

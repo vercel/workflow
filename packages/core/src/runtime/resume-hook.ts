@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { waitUntil } from '@vercel/functions';
 import {
   ERROR_SLUGS,
@@ -26,6 +27,21 @@ import { waitedUntil } from '../util.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { getWorld } from './world.js';
 
+const LAZY_DISCOVERY_HOOK_LOOKUP_RETRY_DELAYS_MS = [
+  50, 100, 200, 400, 800, 1200, 1800, 2500,
+] as const;
+
+function shouldRetryMissingHookLookup(error: unknown): boolean {
+  if (!HookNotFoundError.is(error)) {
+    return false;
+  }
+
+  // In lazy discovery mode a hook token can be resumed before the first
+  // deferred build has finished generating/activating the workflow route.
+  // Retrying for a short window avoids spurious HookNotFound races.
+  return process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1';
+}
+
 /**
  * Internal helper that returns the hook, the associated workflow run,
  * and the resolved encryption key.
@@ -50,6 +66,36 @@ async function getHookByTokenWithKey(token: string): Promise<{
   return { hook, run, encryptionKey };
 }
 
+async function getHookByTokenWithKeyWithRetry(token: string): Promise<{
+  hook: Hook;
+  run: WorkflowRun;
+  encryptionKey: CryptoKey | undefined;
+}> {
+  let lastError: unknown;
+  for (
+    let attempt = 0;
+    attempt <= LAZY_DISCOVERY_HOOK_LOOKUP_RETRY_DELAYS_MS.length;
+    attempt++
+  ) {
+    try {
+      return await getHookByTokenWithKey(token);
+    } catch (error) {
+      if (!shouldRetryMissingHookLookup(error)) {
+        throw error;
+      }
+
+      lastError = error;
+      if (attempt === LAZY_DISCOVERY_HOOK_LOOKUP_RETRY_DELAYS_MS.length) {
+        break;
+      }
+
+      await delay(LAZY_DISCOVERY_HOOK_LOOKUP_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw lastError;
+}
+
 /**
  * Get the hook by token to find the associated workflow run,
  * and hydrate the `metadata` property if it was set from within
@@ -58,7 +104,7 @@ async function getHookByTokenWithKey(token: string): Promise<{
  * @param token - The unique token identifying the hook
  */
 export async function getHookByToken(token: string): Promise<Hook> {
-  const { hook } = await getHookByTokenWithKey(token);
+  const { hook } = await getHookByTokenWithKeyWithRetry(token);
   return hook;
 }
 
@@ -105,7 +151,7 @@ export async function resumeHook<T = any>(
         let workflowRun: WorkflowRun;
         let encryptionKey: CryptoKey | undefined;
         if (typeof tokenOrHook === 'string') {
-          const result = await getHookByTokenWithKey(tokenOrHook);
+          const result = await getHookByTokenWithKeyWithRetry(tokenOrHook);
           hook = result.hook;
           workflowRun = result.run;
           encryptionKey = encryptionKeyOverride ?? result.encryptionKey;
@@ -252,7 +298,7 @@ export async function resumeWebhook(
   token: string,
   request: Request
 ): Promise<Response> {
-  const { hook, encryptionKey } = await getHookByTokenWithKey(token);
+  const { hook, encryptionKey } = await getHookByTokenWithKeyWithRetry(token);
 
   // Only webhooks can be resumed via the public endpoint.
   // If the hook was created via createHook() (isWebhook !== true),
