@@ -241,9 +241,37 @@ export interface ProbeOptions {
   timeout?: number;
 }
 
+async function probePortWithMethod(
+  port: number,
+  endpoint: string,
+  timeout: number,
+  method: 'HEAD' | 'POST'
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(`http://localhost:${port}${endpoint}`, {
+      method,
+      signal: controller.signal,
+    });
+
+    // The workflow health endpoint returns 200 for healthy.
+    return response.status === 200;
+  } catch {
+    // Connection refused, timeout, or other error
+    return false;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 /**
  * Probes a port to check if it's serving the workflow HTTP server.
- * Uses HEAD request to minimize overhead.
+ *
+ * It first tries HEAD (low overhead), then falls back to POST for runtimes
+ * that only expose health checks on POST (for example Next.js route handlers
+ * that only export POST in lazy-discovery mode).
  *
  * @returns true if the port responds with a 200 status from the health check endpoint
  */
@@ -252,24 +280,10 @@ async function probePort(
   options: ProbeOptions = {}
 ): Promise<boolean> {
   const { endpoint = PROBE_ENDPOINT, timeout = PROBE_TIMEOUT_MS } = options;
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), timeout);
-
-  try {
-    const response = await fetch(`http://localhost:${port}${endpoint}`, {
-      method: 'HEAD',
-      signal: controller.signal,
-    });
-
-    // The workflow health endpoint returns 200 for healthy
-    return response.status === 200;
-  } catch {
-    // Connection refused, timeout, or other error
-    return false;
-  } finally {
-    clearTimeout(timeoutId);
+  if (await probePortWithMethod(port, endpoint, timeout, 'HEAD')) {
+    return true;
   }
+  return await probePortWithMethod(port, endpoint, timeout, 'POST');
 }
 
 /**

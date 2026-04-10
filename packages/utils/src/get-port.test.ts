@@ -273,6 +273,47 @@ describe('getWorkflowPort', () => {
     expect(port).toBe(workflowAddr.port);
   });
 
+  it('should detect workflow server when health endpoint is POST-only', async () => {
+    // Non-workflow server (returns 404 for all requests)
+    const nonWorkflowServer = http.createServer((req, res) => {
+      res.writeHead(404);
+      res.end();
+    });
+
+    // Workflow server that returns 405 for HEAD and 200 for POST health checks
+    const workflowServer = http.createServer((req, res) => {
+      if (req.url?.includes('__health')) {
+        if (req.method === 'POST') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ healthy: true }));
+          return;
+        }
+        res.writeHead(405);
+        res.end();
+        return;
+      }
+
+      if (req.url?.startsWith('/.well-known/workflow/v1/')) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Missing required headers' }));
+        return;
+      }
+
+      res.writeHead(404);
+      res.end();
+    });
+
+    servers.push(nonWorkflowServer, workflowServer);
+
+    await new Promise<void>((resolve) => nonWorkflowServer.listen(0, resolve));
+    await new Promise<void>((resolve) => workflowServer.listen(0, resolve));
+
+    const port = await getWorkflowPort();
+    const workflowAddr = workflowServer.address() as AddressInfo;
+
+    expect(port).toBe(workflowAddr.port);
+  });
+
   it('should fall back to first port when probing fails', async () => {
     // Two non-workflow servers (both return 404)
     const server1 = http.createServer((req, res) => {
