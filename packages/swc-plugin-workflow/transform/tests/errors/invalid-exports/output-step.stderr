@@ -1,0 +1,40 @@
+  x Only functions can be exported from a "use step" file
+   ,-[input.js:4:1]
+ 3 | // These should all error - not functions
+ 4 | export const value = 42;
+   : ^^^^^^^^^^^^^^^^^^^^^^^^
+ 5 | export class MyClass {
+   `----
+  x Only functions can be exported from a "use step" file
+   ,-[input.js:5:1]
+ 4 |     export const value = 42;
+ 5 | ,-> export class MyClass {
+ 6 | |     method() {}
+ 7 | `-> }
+ 8 |     export * from './other';
+   `----
+  x Only functions can be exported from a "use step" file
+   ,-[input.js:8:1]
+ 7 | }
+ 8 | export * from './other';
+   : ^^^^^^^^^^^^^^^^^^^^^^^^
+ 9 | export let uninitVar;
+   `----
+  x Only functions can be exported from a "use step" file
+   ,-[input.js:9:1]
+ 8 | export * from './other';
+ 9 | export let uninitVar;
+   : ^^^^^^^^^^^^^^^^^^^^^
+   `----
+  x Only functions can be exported from a "use step" file
+    ,-[input.js:13:1]
+ 12 | const helper = 'not a function';
+ 13 | export { helper };
+    : ^^^^^^^^^^^^^^^^^^
+    `----
+  x Only functions can be exported from a "use step" file
+    ,-[input.js:16:1]
+ 15 | // Re-export with specifiers also errors
+ 16 | export { something } from './re-export';
+    : ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    `----

@@ -142,7 +142,11 @@ export function HooksTable({
           setInvocationData((prev) => {
             const updated = new Map(prev);
             for (const hook of hooks) {
-              updated.set(hook.hookId, { count: 0, hasMore: false, loading: false });
+              updated.set(hook.hookId, {
+                count: 0,
+                hasMore: false,
+                loading: false,
+              });
             }
             return updated;
           });
@@ -182,7 +186,11 @@ export function HooksTable({
         setInvocationData((prev) => {
           const updated = new Map(prev);
           for (const hook of hooks) {
-            updated.set(hook.hookId, { count: 0, hasMore: false, loading: false });
+            updated.set(hook.hookId, {
+              count: 0,
+              hasMore: false,
+              loading: false,
+            });
           }
           return updated;
         });

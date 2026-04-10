@@ -56,7 +56,7 @@ export function getWritable<W = any>(
   // their writer lock, not only when the stream is explicitly closed.
   // Without this, Vercel functions hang until the runtime timeout because
   // .pipeTo() only resolves on stream close.
-  const serverWritable = new WorkflowServerWritableStream(name, runId);
+  const serverWritable = new WorkflowServerWritableStream(runId, name);
   const state = createFlushableState();
   ctx.ops.push(state.promise);
 

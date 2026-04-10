@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
-import { join } from 'node:path';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   isVercelWorldTarget,
   resolveWorkflowTargetWorld,
@@ -8,15 +9,54 @@ import type { World } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
 
-const require = createRequire(join(process.cwd(), 'index.js'));
+const require = createRequire(
+  pathToFileURL(process.cwd() + '/package.json').href
+);
 
 const WorldCache = Symbol.for('@workflow/world//cache');
 const StubbedWorldCache = Symbol.for('@workflow/world//stubbedCache');
+const WorldCachePromise = Symbol.for('@workflow/world//cachePromise');
+const StubbedWorldCachePromise = Symbol.for(
+  '@workflow/world//stubbedCachePromise'
+);
 
 const globalSymbols: typeof globalThis & {
   [WorldCache]?: World;
   [StubbedWorldCache]?: World;
+  [WorldCachePromise]?: Promise<World>;
+  [StubbedWorldCachePromise]?: Promise<World>;
 } = globalThis;
+
+/**
+ * Hides the dynamic import behind `new Function` to prevent bundlers from
+ * trying to resolve it at build time, since the world module may not exist
+ * at build time. Falls back to `require()` in environments where
+ * `new Function`-based `import()` is unavailable (e.g. CJS test runners).
+ */
+const dynamicImport = new Function('specifier', 'return import(specifier)') as (
+  specifier: string
+) => Promise<any>;
+
+function resolveModulePath(specifier: string): string {
+  // Already a file:// URL
+  if (specifier.startsWith('file://')) {
+    return specifier;
+  }
+  // Absolute path - convert to file:// URL
+  if (specifier.startsWith('/')) {
+    return pathToFileURL(specifier).href;
+  }
+  // Relative path - resolve relative to cwd and convert to file:// URL
+  if (specifier.startsWith('./') || specifier.startsWith('../')) {
+    return pathToFileURL(resolve(process.cwd(), specifier)).href;
+  }
+  // Package specifier - use require.resolve to find the package
+  try {
+    return pathToFileURL(require.resolve(specifier)).href;
+  } catch {
+    return specifier;
+  }
+}
 
 /**
  * Create a new world instance based on environment variables.
@@ -30,7 +70,7 @@ const globalSymbols: typeof globalThis & {
  * vars should call createVercelWorld() directly with an explicit config and
  * use setWorld() to inject the instance.
  */
-export const createWorld = (): World => {
+export const createWorld = async (): Promise<World> => {
   const targetWorld = resolveWorkflowTargetWorld();
 
   if (isVercelWorldTarget(targetWorld)) {
@@ -62,7 +102,16 @@ export const createWorld = (): World => {
     });
   }
 
-  const mod = require(targetWorld);
+  // Try dynamic import() first — ESM-first since this PR's purpose is ESM support.
+  // Fall back to require() for environments where `new Function`-based import()
+  // is unavailable (e.g. CJS test runners).
+  let mod: any;
+  try {
+    const resolvedPath = resolveModulePath(targetWorld);
+    mod = await dynamicImport(resolvedPath);
+  } catch {
+    mod = require(targetWorld);
+  }
   if (typeof mod === 'function') {
     return mod() as World;
   } else if (typeof mod.default === 'function') {
@@ -76,6 +125,8 @@ export const createWorld = (): World => {
   );
 };
 
+export type WorldHandlers = Pick<World, 'createQueueHandler' | 'specVersion'>;
+
 /**
  * Some functions from the world are needed at build time, but we do NOT want
  * to cache the world in those instances for general use, since we don't have
@@ -85,14 +136,19 @@ export const createWorld = (): World => {
  * Once we migrate to a file-based configuration (workflow.config.ts), we should
  * be able to re-combine getWorld and getWorldHandlers into one singleton.
  */
-export const getWorldHandlers = (): Pick<
-  World,
-  'createQueueHandler' | 'specVersion'
-> => {
+export const getWorldHandlers = async (): Promise<WorldHandlers> => {
   if (globalSymbols[StubbedWorldCache]) {
     return globalSymbols[StubbedWorldCache];
   }
-  const _world = createWorld();
+  // Store the promise immediately to prevent race conditions with concurrent calls.
+  // Clear on rejection so subsequent calls can retry instead of caching the failure.
+  if (!globalSymbols[StubbedWorldCachePromise]) {
+    globalSymbols[StubbedWorldCachePromise] = createWorld().catch((err) => {
+      globalSymbols[StubbedWorldCachePromise] = undefined;
+      throw err;
+    });
+  }
+  const _world = await globalSymbols[StubbedWorldCachePromise];
   globalSymbols[StubbedWorldCache] = _world;
   return {
     createQueueHandler: _world.createQueueHandler,
@@ -100,11 +156,19 @@ export const getWorldHandlers = (): Pick<
   };
 };
 
-export const getWorld = (): World => {
+export const getWorld = async (): Promise<World> => {
   if (globalSymbols[WorldCache]) {
     return globalSymbols[WorldCache];
   }
-  globalSymbols[WorldCache] = createWorld();
+  // Store the promise immediately to prevent race conditions with concurrent calls.
+  // Clear on rejection so subsequent calls can retry instead of caching the failure.
+  if (!globalSymbols[WorldCachePromise]) {
+    globalSymbols[WorldCachePromise] = createWorld().catch((err) => {
+      globalSymbols[WorldCachePromise] = undefined;
+      throw err;
+    });
+  }
+  globalSymbols[WorldCache] = await globalSymbols[WorldCachePromise];
   return globalSymbols[WorldCache];
 };
 
@@ -115,4 +179,6 @@ export const getWorld = (): World => {
 export const setWorld = (world: World | undefined): void => {
   globalSymbols[WorldCache] = world;
   globalSymbols[StubbedWorldCache] = world;
+  globalSymbols[WorldCachePromise] = undefined;
+  globalSymbols[StubbedWorldCachePromise] = undefined;
 };

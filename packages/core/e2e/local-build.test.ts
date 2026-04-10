@@ -83,6 +83,14 @@ const ESM_STEP_BUNDLE_PROJECTS: Record<string, string> = {
     '.vercel/output/functions/.well-known/workflow/v1/step.func/index.mjs',
 };
 
+const DEFERRED_BUILD_MODE_PROJECTS = new Set([
+  'nextjs-webpack',
+  'nextjs-turbopack',
+]);
+const DEFERRED_BUILD_UNSUPPORTED_WARNING =
+  'Enabled lazyDiscovery but Next.js version is not compatible';
+const EAGER_DISCOVERY_LOG = 'Discovering workflow directives';
+
 describe.each([
   'example',
   'nextjs-webpack',
@@ -110,6 +118,15 @@ describe.each([
     );
 
     expect(result.output).not.toContain('Error:');
+
+    if (DEFERRED_BUILD_MODE_PROJECTS.has(project)) {
+      const deferredBuildSupported = !result.output.includes(
+        DEFERRED_BUILD_UNSUPPORTED_WARNING
+      );
+      if (deferredBuildSupported) {
+        expect(result.output).not.toContain(EAGER_DISCOVERY_LOG);
+      }
+    }
 
     if (usesVercelWorld()) {
       const diagnosticsManifestPath = path.join(

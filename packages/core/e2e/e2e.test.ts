@@ -411,7 +411,7 @@ describe('e2e', () => {
     // Poll until all 3 webhooks are registered.
     // On Vercel, webhook registration can be slow due to cold starts and
     // queue processing latency, so we allow up to 60s.
-    const world = getWorld();
+    const world = await getWorld();
     const hooks = await (async () => {
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
@@ -718,7 +718,7 @@ describe('e2e', () => {
   });
 
   describe.skipIf(isLocalDeployment())(
-    'outputStreamWorkflow - getTailIndex and getStreamChunks',
+    'outputStreamWorkflow - getTailIndex and getChunks',
     () => {
       test(
         'getTailIndex returns correct index after stream completes',
@@ -755,7 +755,7 @@ describe('e2e', () => {
       );
 
       test(
-        'getStreamChunks returns same content as reading the stream',
+        'getChunks returns same content as reading the stream',
         {
           timeout: 60_000,
         },
@@ -772,13 +772,13 @@ describe('e2e', () => {
             streamChunks.push(value);
           }
 
-          // Read all chunks via getStreamChunks pagination
-          const world = getWorld();
+          // Read all chunks via getChunks pagination
+          const world = await getWorld();
           const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
           const paginatedChunks: Uint8Array[] = [];
           let cursor: string | null = null;
           do {
-            const page = await world.getStreamChunks(streamName, run.runId, {
+            const page = await world.streams.getChunks(run.runId, streamName, {
               limit: 1, // small page size to exercise pagination
               ...(cursor ? { cursor } : {}),
             });
@@ -1528,6 +1528,45 @@ describe('e2e', () => {
     }
   );
 
+  test(
+    'runClassSerializationWorkflow - Run instances serialize across workflow/step boundaries',
+    { timeout: 120_000 },
+    async () => {
+      const inputValue = 21;
+      const run = await start(await e2e('runClassSerializationWorkflow'), [
+        inputValue,
+      ]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toHaveProperty('isRunInWorkflow', true);
+      expect(returnValue).toHaveProperty('childRunId');
+      expect(returnValue).toHaveProperty('runIdFromStep');
+      expect(returnValue).toHaveProperty('childResult');
+
+      expect(typeof returnValue.childRunId).toBe('string');
+      expect(returnValue.childRunId.startsWith('wrun_')).toBe(true);
+      expect(returnValue.runIdFromStep).toBe(returnValue.childRunId);
+      expect(returnValue.childResult).toEqual({
+        childResult: inputValue * 2,
+        originalValue: inputValue,
+      });
+
+      const { json: parentRunData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(parentRunData.status).toBe('completed');
+
+      const { json: childRunData } = await cliInspectJson(
+        `runs ${returnValue.childRunId} --withData`
+      );
+      expect(childRunData.status).toBe('completed');
+      expect(childRunData.output).toEqual({
+        childResult: inputValue * 2,
+        originalValue: inputValue,
+      });
+    }
+  );
+
   // Skipped for Vercel since VQS doesn't support direct HTTP calls
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
@@ -1591,7 +1630,7 @@ describe('e2e', () => {
       // Tests the queue-based health check using healthCheck() directly.
       // This bypasses Vercel Deployment Protection by sending messages
       // through the Queue infrastructure rather than direct HTTP.
-      const world = getWorld();
+      const world = await getWorld();
 
       // Test workflow endpoint health check
       const workflowResult = await healthCheck(world, 'workflow', {
@@ -1988,7 +2027,7 @@ describe('e2e', () => {
       // This exercises the same cancelRun code path that the CLI uses
       // (the CLI delegates directly to this function).
       const { cancelRun } = await import('../src/runtime');
-      await cancelRun(getWorld(), run.runId);
+      await cancelRun(await getWorld(), run.runId);
 
       // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
       const error = await run.returnValue.catch((e: unknown) => e);
@@ -2206,7 +2245,7 @@ describe('e2e', () => {
       // (run_created) throws a 500 server error. The queue should still
       // be dispatched with runInput, and the runtime should bootstrap
       // the run via the run_started fallback path.
-      const realWorld = getWorld();
+      const realWorld = await getWorld();
       let createCallCount = 0;
       const stubbedWorld: World = {
         ...realWorld,

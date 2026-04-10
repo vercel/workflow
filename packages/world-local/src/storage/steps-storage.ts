@@ -2,12 +2,7 @@ import path from 'node:path';
 import type { StepWithoutData, Storage } from '@workflow/world';
 import { StepSchema } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
-import {
-  listJSONFiles,
-  paginatedFileSystemQuery,
-  readJSONWithFallback,
-  stripTag,
-} from '../fs.js';
+import { paginatedFileSystemQuery, readJSONWithFallback } from '../fs.js';
 import { filterStepData } from './filters.js';
 import { getObjectCreatedAt } from './helpers.js';
 
@@ -20,17 +15,7 @@ export function createStepsStorage(
   tag?: string
 ): Storage['steps'] {
   return {
-    get: (async (runId: string | undefined, stepId: string, params?: any) => {
-      if (!runId) {
-        const fileIds = await listJSONFiles(path.join(basedir, 'steps'));
-        const fileId = fileIds.find((fid) =>
-          stripTag(fid).endsWith(`-${stepId}`)
-        );
-        if (!fileId) {
-          throw new Error(`Step ${stepId} not found`);
-        }
-        runId = stripTag(fileId).split('-')[0];
-      }
+    get: (async (runId: string, stepId: string, params?: any) => {
       const compositeKey = `${runId}-${stepId}`;
       const step = await readJSONWithFallback(
         basedir,

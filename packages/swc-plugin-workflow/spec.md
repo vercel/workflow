@@ -1060,26 +1060,33 @@ The plugin emits errors for invalid usage:
 
 | Error | Description |
 |-------|-------------|
-| Non-async function | Functions with `"use step"` or `"use workflow"` must be async |
+| Non-async workflow function | Functions with `"use workflow"` must be async (step functions may be sync) |
 | Instance methods with `"use workflow"` | Only static methods can have `"use workflow"` (not instance methods) |
 | Getters with `"use workflow"` | Getters cannot be marked with `"use workflow"` |
 | Misplaced directive | Directive must be at top of file or start of function body |
 | Conflicting directives | Cannot have both `"use step"` and `"use workflow"` at module level |
-| Invalid exports | Module-level directive files can only export async functions |
+| Invalid exports (`"use workflow"`) | Module-level `"use workflow"` files can only export async functions |
+| Invalid exports (`"use step"`) | Module-level `"use step"` files can only export functions (sync or async) |
 | Misspelled directive | Detects typos like `"use steps"` or `"use workflows"` |
 
 ---
 
 ## Supported Function Forms
 
-The plugin supports various function declaration styles:
+The plugin supports various function declaration styles. Step functions may be synchronous or asynchronous. Workflow functions must be async.
 
-- `async function name() { "use step"; }` - Function declaration
-- `const name = async () => { "use step"; }` - Arrow function with const
-- `let name = async () => { "use step"; }` - Arrow function with let
-- `var name = async () => { "use step"; }` - Arrow function with var
-- `const name = async function() { "use step"; }` - Function expression
-- `{ async method() { "use step"; } }` - Object method
+- `async function name() { "use step"; }` - Async function declaration
+- `function name() { "use step"; }` - Sync function declaration
+- `const name = async () => { "use step"; }` - Async arrow function
+- `const name = () => { "use step"; }` - Sync arrow function
+- `let name = async () => { "use step"; }` - Async arrow function with let
+- `let name = () => { "use step"; }` - Sync arrow function with let
+- `var name = async () => { "use step"; }` - Async arrow function with var
+- `var name = () => { "use step"; }` - Sync arrow function with var
+- `const name = async function() { "use step"; }` - Async function expression
+- `const name = function() { "use step"; }` - Sync function expression
+- `{ async method() { "use step"; } }` - Async object method
+- `{ method() { "use step"; } }` - Sync object method
 - `{ nested: { execute: async () => { "use step"; } } }` - Nested object property
 - `static async method() { "use step"; }` - Static class method
 - `async method() { "use step"; }` - Instance class method (requires custom serialization)
@@ -1156,6 +1163,60 @@ const obj = {
 ```
 
 **Client mode**: Same as step mode — the getter body is hoisted for `stepId` assignment, original getter preserved.
+
+### Private member dead code elimination
+
+In workflow mode, after stripping `"use step"` methods and getters from a class body, the plugin eliminates private class members that are no longer referenced by any remaining (non-private) member. This applies to both:
+
+- **JS native private members**: `#field`, `#method()` (`ClassMember::PrivateMethod`, `ClassMember::PrivateProp`)
+- **TypeScript `private` members**: `private field`, `private method()` (`ClassMethod`/`ClassProp` with `accessibility: Private`)
+
+The algorithm is iterative: references are first collected from all public members, then the referenced set is expanded by scanning surviving private members' bodies for cross-references, repeating until the set stabilizes. This enables cascading elimination — a private field only referenced by a private method that is itself unreferenced will also be removed.
+
+Input:
+```typescript
+export class Run {
+  static [WORKFLOW_SERIALIZE](instance) { return { id: instance.id }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new Run(data.id); }
+
+  id: string;
+  private encryptionKeyPromise: Promise<any> | null = null;
+
+  private async getEncryptionKey() {
+    if (!this.encryptionKeyPromise) {
+      this.encryptionKeyPromise = importKey(this.id);
+    }
+    return this.encryptionKeyPromise;
+  }
+
+  constructor(id: string) { this.id = id; }
+
+  get value(): Promise<any> {
+    'use step';
+    return this.getEncryptionKey().then(() => getWorld().get(this.id));
+  }
+}
+```
+
+Workflow output:
+```javascript
+export class Run {
+  static [WORKFLOW_SERIALIZE](instance) { return { id: instance.id }; }
+  static [WORKFLOW_DESERIALIZE](data) { return new Run(data.id); }
+  id;
+  // private encryptionKeyPromise — ELIMINATED (only referenced by getEncryptionKey)
+  // private getEncryptionKey()   — ELIMINATED (only referenced by stripped getter)
+  constructor(id) { this.id = id; }
+}
+// getter replaced with step proxy
+var __step_Run$value = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("step_id");
+Object.defineProperty(Run.prototype, "value", {
+  get() { return __step_Run$value.call(this); },
+  configurable: true, enumerable: false
+});
+```
+
+This optimization is critical for SDK classes like `Run` where private helper methods reference Node.js-only imports (encryption, world access, etc.) — eliminating them allows the downstream module-level DCE to also remove those imports from the workflow bundle.
 
 ---
 
