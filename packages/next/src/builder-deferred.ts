@@ -818,6 +818,30 @@ export async function getNextBuilderDeferred() {
       }
     }
 
+    /**
+     * Check if a file belongs to a package (has a package.json ancestor
+     * with a name field that isn't the project root). This catches workspace
+     * packages that getImportPath doesn't detect as packages (e.g.
+     * transitive workspace dependencies under strict package managers).
+     */
+    private isFileInsidePackage(filePath: string): boolean {
+      const projectRoot = resolve(this.config.workingDir);
+      let dir = dirname(filePath);
+      while (dir !== dirname(dir)) {
+        if (resolve(dir) === projectRoot) return false;
+        try {
+          const pkgPath = join(dir, 'package.json');
+          const content = require('node:fs').readFileSync(pkgPath, 'utf-8');
+          const pkg = JSON.parse(content);
+          if (typeof pkg.name === 'string') return true;
+        } catch {
+          // No package.json here, keep walking up
+        }
+        dir = dirname(dir);
+      }
+      return false;
+    }
+
     private getManifestStepResolveBaseDirs(): string[] {
       if (this.manifestStepResolveBaseDirs) {
         return this.manifestStepResolveBaseDirs;
@@ -2125,17 +2149,30 @@ export async function getNextBuilderDeferred() {
 
       const manifestDiscoveredStepFiles =
         await this.collectManifestStepSourceFiles(manifest);
-      // Copy all discovered step sources so they are transformed in step mode.
-      // Importing raw node_modules files directly can bypass loader transforms,
-      // which prevents step registrars from being emitted.
-      const copiedStepSourceFiles = Array.from(
+      // Copy discovered step sources so they are transformed in step mode.
+      // However, files belonging to packages must NOT be copied — copying
+      // creates a duplicate class definition that breaks JS native private
+      // field (#) brand checks. Package files are imported directly so the
+      // bundler deduplicates them with the runtime's copy.
+      const allStepSourceFiles = Array.from(
         new Set([
           ...stepFilesWithManifestSources,
           ...manifestDiscoveredStepFiles,
         ])
       ).sort();
+      const userStepSourceFiles: string[] = [];
+      const packageStepSourceFiles: string[] = [];
+      for (const file of allStepSourceFiles) {
+        const normalized = this.normalizeDiscoveredFilePath(file);
+        const { isPackage } = getImportPath(normalized, this.config.workingDir);
+        if (isPackage || this.isFileInsidePackage(normalized)) {
+          packageStepSourceFiles.push(file);
+        } else {
+          userStepSourceFiles.push(file);
+        }
+      }
       const copiedDiscoveredStepFiles = await this.copyDiscoveredStepFiles({
-        stepFiles: copiedStepSourceFiles,
+        stepFiles: userStepSourceFiles,
         stepsRouteDir,
         preserveFileNames: [basename(responseBuiltinsStepFilePath)],
       });
@@ -2150,6 +2187,19 @@ export async function getNextBuilderDeferred() {
           const importSpecifier = this.getRelativeImportSpecifier(
             stepRouteFile,
             copiedStepFile
+          );
+          return `import '${importSpecifier}';`;
+        })
+        .join('\n');
+      // Package step files — imported via relative path to the original
+      // file (not copied). Webpack deduplicates with other imports of the
+      // same file, ensuring a single class instance.
+      const packageStepImports = packageStepSourceFiles
+        .map((file) => {
+          const normalized = this.normalizeDiscoveredFilePath(file);
+          const importSpecifier = this.getRelativeImportSpecifier(
+            stepRouteFile,
+            normalized
           );
           return `import '${importSpecifier}';`;
         })
@@ -2177,6 +2227,9 @@ export async function getNextBuilderDeferred() {
         '// biome-ignore-all lint: generated file',
         '/* eslint-disable */',
         copiedStepImports,
+        packageStepImports
+          ? `// Package step files (imported directly to avoid class duplication)\n${packageStepImports}`
+          : '',
         serdeImports
           ? `// Serde files for cross-context class registration\n${serdeImports}`
           : '',
