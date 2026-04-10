@@ -71,7 +71,7 @@ jobs:
           MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
           COMMIT_MSG=$(git log -1 --format='%B' "$MERGE_SHA")
 
-          opencode run --model vercel/anthropic/claude-opus-4-20250514 \
+          opencode run --model vercel/anthropic/claude-opus-4.6 \
             "The working tree has git merge conflicts from a failed cherry-pick.
           A commit is being cherry-picked from the main branch to the stable branch.
 
