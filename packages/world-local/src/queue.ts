@@ -47,6 +47,25 @@ const LOCAL_QUEUE_MAX_VISIBILITY =
 // persistent state and return another timeoutSeconds if needed.
 const MAX_SAFE_TIMEOUT_MS = 2147483647;
 
+const WARMUP_RETRY_DELAYS_MS = [250, 500, 1000] as const;
+
+function getLocalRetryDelayMs(params: {
+  attempt: number;
+  status: number;
+}): number {
+  const { attempt, status } = params;
+  const isTransientHttpFailure = status === 404 || status >= 500;
+
+  // In local/dev mode, Next route handlers may fail briefly while compiling
+  // (especially with lazy discovery). Prefer fast warmup retries first.
+  if (isTransientHttpFailure && attempt <= WARMUP_RETRY_DELAYS_MS.length) {
+    return WARMUP_RETRY_DELAYS_MS[attempt - 1];
+  }
+
+  // Steady-state backoff to approximate VQS retry cadence.
+  return 5000;
+}
+
 // The local workers share the same Node.js process and event loop,
 // so we need to limit concurrency to avoid overwhelming the system.
 const DEFAULT_CONCURRENCY_LIMIT = 1000;
@@ -214,11 +233,11 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             }
           );
 
-          // 5s linear backoff to approximate VQS retry timing in local dev.
-          // VQS uses 5s linear for attempts 1–32, then exponential, but for
-          // local dev linear 5s is sufficient — the handler enforces the real
-          // cap at MAX_QUEUE_DELIVERIES (48) which keeps total time under ~4min.
-          await setTimeout(5000);
+          const delayMs = getLocalRetryDelayMs({
+            attempt: attempt + 1,
+            status: response.status,
+          });
+          await setTimeout(delayMs);
         }
 
         console.error(

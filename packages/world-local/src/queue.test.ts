@@ -166,4 +166,54 @@ describe('queue timeout re-enqueue', () => {
     // setTimeout should NOT have been called for timeoutSeconds: 0
     expect(mockSetTimeout).not.toHaveBeenCalled();
   });
+
+  it('queue uses warmup retry delays for transient HTTP failures', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    localQueue.registerHandler('__wkf_step_', async () => {
+      callCount++;
+      if (callCount < 4) {
+        return new Response('warming up', { status: 500 });
+      }
+      return Response.json({ ok: true });
+    });
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(callCount).toBe(4);
+    });
+
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(1, 250);
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(2, 500);
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(3, 1000);
+  });
+
+  it('queue falls back to 5s retry delays after warmup retries', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    localQueue.registerHandler('__wkf_step_', async () => {
+      callCount++;
+      if (callCount < 6) {
+        return new Response('still failing', { status: 500 });
+      }
+      return Response.json({ ok: true });
+    });
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(callCount).toBe(6);
+    });
+
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(1, 250);
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(2, 500);
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(3, 1000);
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(4, 5000);
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(5, 5000);
+  });
 });
