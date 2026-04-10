@@ -342,11 +342,11 @@ The 500ms inline ops await in the step executor can now distinguish between:
 - **Steps where ops settle** (data on server, ~200ms after lock release + flush) → continue loop inline
 - **Steps where ops don't settle** (WritableStream kept open across steps) → break loop
 
-### Event Consumer Skip Logic for Wait/Hook Events
+### Event Consumer Skip Logic Was Too Broad For Wait Replays
 
-The V2 handler creates `wait_completed` events before replay (for elapsed waits). The event consumer may encounter these before the VM creates the sleep subscriber, triggering false "unconsumed event" errors. Same timing issue as the step event skip logic.
+The V2 handler needs some tolerance for out-of-order replay, especially around step events created by concurrent continuations. An early follow-up broadened that fallback to all wait lifecycle events too, so `onUnconsumedEvent` would skip `wait_created` and the first `wait_completed` whenever they matched a known wait. In the BOA-backed previews that broke `hookDisposeTestWorkflow`: once the first run disposed its hook and went into `sleep('5s')`, a replay could skip the live wait event before `sleep()` registered its subscriber, leaving the run stuck forever at `wait_created`.
 
-**Fix**: Extended `onUnconsumedEvent` to also skip `wait_created`, `wait_completed`, and hook lifecycle events (`hook_created`, `hook_completed`, `hook_conflict`, `hook_disposed`) when they have a matching creation event in the log.
+**Fix**: Keep the step/hook replay tolerance, but narrow the wait fallback to the one case we actually need: duplicate `wait_completed` events that appear *after* an earlier completion for the same wait. The `hookDispose` e2e was also updated to poll for hook registration/disposal instead of relying on fixed 3-5 second sleeps, which made the Vercel preview timing less brittle.
 
 ### TooEarlyError Retry Delay in Step Executor
 

@@ -124,10 +124,9 @@ export async function runWorkflow(
     const promiseQueueHolder = { current: Promise.resolve() };
 
     // Lazily-built correlation ID sets for O(1) lookup in onUnconsumedEvent.
-    // Initialized on first unconsumed event; always non-null after the null
-    // check inside onUnconsumedEvent that initializes all three together.
+    // Initialized on first unconsumed event because most replays consume all
+    // events without needing the fallback skip logic.
     let stepCreatedIds: Set<string | undefined> | undefined;
-    let waitCreatedIds: Set<string | undefined> | undefined;
     let hookCreatedIds: Set<string | undefined> | undefined;
 
     const eventsConsumer = new EventsConsumer(events, {
@@ -143,17 +142,10 @@ export async function runWorkflow(
         // We only skip events whose correlationId appears in a step_created
         // event in the log — this confirms the step was legitimately created
         // by a handler. Orphaned events with unknown correlationIds still error.
-        // Build correlation ID sets on first unconsumed event for O(1) lookup.
-        // These are lazily initialized because most replays consume all events.
         if (!stepCreatedIds) {
           stepCreatedIds = new Set(
             events
               .filter((e) => e.eventType === 'step_created')
-              .map((e) => e.correlationId)
-          );
-          waitCreatedIds = new Set(
-            events
-              .filter((e) => e.eventType === 'wait_created')
               .map((e) => e.correlationId)
           );
           hookCreatedIds = new Set(
@@ -178,21 +170,27 @@ export async function runWorkflow(
             return true; // skip past this event
           }
         }
-        // Wait lifecycle events: the V2 handler creates wait_completed
-        // events before replay (for elapsed waits). The event consumer
-        // may encounter these before the VM creates the sleep subscriber.
-        if (
-          event.eventType === 'wait_created' ||
-          event.eventType === 'wait_completed'
-        ) {
-          if (
-            waitCreatedIds!.has(event.correlationId) ||
-            event.eventType === 'wait_created'
-          ) {
+        // A duplicate wait_completed can show up after the workflow already
+        // consumed an earlier terminal wait event. Tolerate only that specific
+        // duplicate case; skipping the first wait event would make sleeps hang.
+        if (event.eventType === 'wait_completed') {
+          const eventIndex = events.indexOf(event);
+          const hasEarlierMatchingCompletion =
+            eventIndex > 0 &&
+            events
+              .slice(0, eventIndex)
+              .some(
+                (candidate) =>
+                  candidate.eventType === 'wait_completed' &&
+                  candidate.correlationId === event.correlationId
+              );
+          if (hasEarlierMatchingCompletion) {
             return true;
           }
         }
-        // Hook lifecycle events: validate against matching hook_created
+        // Hook lifecycle events may also race with subscriber registration
+        // during replay, so keep tolerating events that correspond to a hook
+        // the workflow legitimately created.
         if (
           event.eventType === 'hook_created' ||
           event.eventType === 'hook_received' ||

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  HookNotFoundError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowWorldError,
@@ -1337,6 +1338,42 @@ describe('e2e', () => {
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
+      const waitForHook = async (expectedRunId: string) => {
+        const timeoutAt = Date.now() + 20_000;
+        let lastSeenRunId: string | undefined;
+        while (Date.now() < timeoutAt) {
+          try {
+            const currentHook = await getHookByToken(token);
+            lastSeenRunId = currentHook.runId;
+            if (currentHook.runId === expectedRunId) {
+              return currentHook;
+            }
+          } catch (error) {
+            if (!HookNotFoundError.is(error)) {
+              throw error;
+            }
+          }
+          await sleep(1_000);
+        }
+        throw new Error(
+          `Timed out waiting for hook ${token} to belong to ${expectedRunId}. Last runId: ${lastSeenRunId ?? 'missing'}`
+        );
+      };
+      const waitForHookDisposal = async () => {
+        const timeoutAt = Date.now() + 20_000;
+        while (Date.now() < timeoutAt) {
+          try {
+            await getHookByToken(token);
+          } catch (error) {
+            if (HookNotFoundError.is(error)) {
+              return;
+            }
+            throw error;
+          }
+          await sleep(1_000);
+        }
+        throw new Error(`Timed out waiting for hook ${token} to be disposed`);
+      };
 
       // Start first workflow - it will create a hook, receive one payload, then dispose and sleep
       const run1 = await start(await e2e('hookDisposeTestWorkflow'), [
@@ -1344,12 +1381,8 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for the hook to be registered by workflow 1
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
       // Verify the hook exists and belongs to workflow 1
-      let hook = await getHookByToken(token);
-      expect(hook.runId).toBe(run1.runId);
+      let hook = await waitForHook(run1.runId);
 
       // Send payload to first workflow - this will trigger it to dispose the hook
       await resumeHook(hook, {
@@ -1357,9 +1390,9 @@ describe('e2e', () => {
         customData: (hook.metadata as any)?.customData,
       });
 
-      // Wait for workflow 1 to process the payload and dispose the hook
-      // The workflow has a 5s sleep after disposal, so it's still running
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      // Wait for workflow 1 to release the token before starting workflow 2.
+      // The workflow sleeps for 5s after disposal, so the run should still be active.
+      await waitForHookDisposal();
 
       // Now start workflow 2 with the SAME token while workflow 1 is still running
       // This should succeed because workflow 1 disposed its hook
@@ -1368,12 +1401,8 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for workflow 2's hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
       // Verify the hook now belongs to workflow 2
-      hook = await getHookByToken(token);
-      expect(hook.runId).toBe(run2.runId);
+      hook = await waitForHook(run2.runId);
 
       // Send payload to workflow 2
       await resumeHook(hook, {
