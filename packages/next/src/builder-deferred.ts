@@ -842,6 +842,100 @@ export async function getNextBuilderDeferred() {
       return false;
     }
 
+    /**
+     * Generate thin wrapper files for package serde+step files. Instead of
+     * copying the full source (which creates a duplicate class with #private
+     * brand check issues), the wrapper imports the original class and
+     * registers the steps and class from the manifest.
+     */
+    private async generatePackageSerdeStepWrappers({
+      sourceFiles,
+      manifest,
+      stepsRouteDir,
+    }: {
+      sourceFiles: string[];
+      manifest: WorkflowManifest;
+      stepsRouteDir: string;
+    }): Promise<string[]> {
+      if (sourceFiles.length === 0) return [];
+
+      const copiedStepsDir = join(stepsRouteDir, DEFERRED_STEP_COPY_DIR_NAME);
+      await mkdir(copiedStepsDir, { recursive: true });
+      const wrapperFiles: string[] = [];
+
+      for (const sourceFile of sourceFiles) {
+        const normalized = this.normalizeDiscoveredFilePath(sourceFile);
+        const relativeFilename =
+          await this.getRelativeFilenameForSwc(normalized);
+
+        // Find manifest entries for this file
+        const fileSteps = manifest.steps?.[relativeFilename] ?? {};
+        const fileClasses = manifest.classes?.[relativeFilename] ?? {};
+
+        if (
+          Object.keys(fileSteps).length === 0 &&
+          Object.keys(fileClasses).length === 0
+        ) {
+          continue;
+        }
+
+        // Determine class names and their exports
+        const classNames = Object.keys(fileClasses);
+        const copiedFileName = this.getStepCopyFileName(normalized);
+        const copiedFilePath = join(copiedStepsDir, copiedFileName);
+
+        // Generate import path to the original file
+        const importSpecifier = this.getRelativeImportSpecifier(
+          copiedFilePath,
+          normalized
+        );
+
+        // Build wrapper content
+        const lines: string[] = [
+          `// Generated step registration wrapper for ${relativeFilename}`,
+          `// Imports the original class to avoid duplicate #private field issues`,
+          `import { ${classNames.join(', ')} } from '${importSpecifier}';`,
+          '',
+        ];
+
+        // Step registrations
+        for (const [funcName, { stepId }] of Object.entries(fileSteps)) {
+          // funcName is like "Run#cancel" or "Run#returnValue"
+          const hashIdx = funcName.indexOf('#');
+          if (hashIdx === -1) continue;
+          const className = funcName.slice(0, hashIdx);
+          const methodName = funcName.slice(hashIdx + 1);
+
+          // Use a generic approach that works for both methods and getters:
+          // try the property descriptor's getter first, fall back to .value
+          lines.push(
+            `(function(__wf_id, __wf_cls, __wf_name) {`,
+            `  var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());`,
+            `  var __wf_desc = Object.getOwnPropertyDescriptor(__wf_cls.prototype, __wf_name);`,
+            `  var __wf_fn = __wf_desc && (__wf_desc.get || __wf_desc.value);`,
+            `  if (__wf_fn) { __wf_reg.set(__wf_id, __wf_fn); __wf_fn.stepId = __wf_id; }`,
+            `})("${stepId}", ${className}, "${methodName}");`
+          );
+        }
+
+        // Class registrations
+        for (const [className, { classId }] of Object.entries(fileClasses)) {
+          lines.push(
+            `(function(__wf_cls, __wf_id) {`,
+            `  var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());`,
+            `  if (!__wf_reg.has(__wf_id)) { __wf_reg.set(__wf_id, __wf_cls); Object.defineProperty(__wf_cls, "classId", { value: __wf_id, writable: false, enumerable: false, configurable: false }); }`,
+            `})(${className}, "${classId}");`
+          );
+        }
+
+        const wrapperSource = lines.join('\n');
+        await this.writeFileIfChanged(copiedFilePath, wrapperSource);
+        wrapperFiles.push(copiedFilePath);
+      }
+
+      return wrapperFiles;
+    }
+
     private getManifestStepResolveBaseDirs(): string[] {
       if (this.manifestStepResolveBaseDirs) {
         return this.manifestStepResolveBaseDirs;
@@ -2184,9 +2278,20 @@ export async function getNextBuilderDeferred() {
         stepsRouteDir,
         preserveFileNames: [basename(responseBuiltinsStepFilePath)],
       });
+      // For package serde files, generate thin wrappers that import the
+      // original class and register steps/classes from the manifest. This
+      // avoids duplicating the class definition (which breaks JS native
+      // private field brand checks) while still registering the steps.
+      const packageSerdeWrapperFiles =
+        await this.generatePackageSerdeStepWrappers({
+          sourceFiles: packageSerdeStepSourceFiles,
+          manifest,
+          stepsRouteDir,
+        });
       const copiedStepFiles = [
         responseBuiltinsStepFilePath,
         ...copiedDiscoveredStepFiles,
+        ...packageSerdeWrapperFiles,
       ];
 
       const stepRouteFile = join(stepsRouteDir, routeFileName);
@@ -2199,19 +2304,7 @@ export async function getNextBuilderDeferred() {
           return `import '${importSpecifier}';`;
         })
         .join('\n');
-      // Package step files — imported via relative path to the original
-      // file (not copied). Webpack deduplicates with other imports of the
-      // same file, ensuring a single class instance.
-      const packageStepImports = packageSerdeStepSourceFiles
-        .map((file) => {
-          const normalized = this.normalizeDiscoveredFilePath(file);
-          const importSpecifier = this.getRelativeImportSpecifier(
-            stepRouteFile,
-            normalized
-          );
-          return `import '${importSpecifier}';`;
-        })
-        .join('\n');
+      // (Package serde step wrappers are already included in copiedStepFiles)
       const serdeImports = serdeOnlyFiles
         .map((serdeFile) => {
           const normalizedSerdeFile =
@@ -2235,9 +2328,6 @@ export async function getNextBuilderDeferred() {
         '// biome-ignore-all lint: generated file',
         '/* eslint-disable */',
         copiedStepImports,
-        packageStepImports
-          ? `// Package step files (imported directly to avoid class duplication)\n${packageStepImports}`
-          : '',
         serdeImports
           ? `// Serde files for cross-context class registration\n${serdeImports}`
           : '',
