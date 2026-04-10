@@ -1,6 +1,6 @@
 'use client';
 
-import type { Event } from '@workflow/world';
+import { EVENT_DATA_REF_FIELDS, type Event } from '@workflow/world';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { isExpiredMarker } from '../../lib/hydration';
 import { ErrorCard } from '../ui/error-card';
@@ -203,17 +203,17 @@ function EventItem({
 }
 
 /**
- * Check if an eventData object has only expired marker values in its serialized
- * sub-fields (result, input, output, metadata, payload). Non-serialized fields
- * like `resumeAt` or `reason` are ignored.
+ * Check if an eventData object has only expired marker values in ref/payload
+ * fields for this event type (see {@link EVENT_DATA_REF_FIELDS}). Other keys
+ * (e.g. `resumeAt`, `stepName`) are ignored.
  */
-function hasOnlyExpiredFields(data: unknown): boolean {
+function hasOnlyExpiredFields(data: unknown, eventType: string): boolean {
   if (data === null || typeof data !== 'object' || Array.isArray(data)) {
     return false;
   }
   const record = data as Record<string, unknown>;
-  const serializedKeys = ['result', 'input', 'output', 'metadata', 'payload'];
-  const presentKeys = serializedKeys.filter((k) => k in record);
+  const refKeys = EVENT_DATA_REF_FIELDS[eventType] ?? [];
+  const presentKeys = refKeys.filter((k) => k in record);
   return (
     presentKeys.length > 0 &&
     presentKeys.every((k) => isExpiredMarker(record[k]))
@@ -234,7 +234,7 @@ function EventDataBlock({
   // Expired data — show a simple message instead of the raw stub.
   // Check both the top-level eventData and nested sub-fields (result, input, etc.)
   // since the server stubs each ref field independently.
-  if (isExpiredMarker(data) || hasOnlyExpiredFields(data)) {
+  if (isExpiredMarker(data) || hasOnlyExpiredFields(data, eventType)) {
     return (
       <div
         className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
