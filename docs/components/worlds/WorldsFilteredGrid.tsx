@@ -1,8 +1,7 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Label } from '@/components/ui/label';
+import { useState } from 'react';
+import { Badge } from '@/components/ui/badge';
 import type { World } from './types';
 import { WorldCardSimple } from './WorldCardSimple';
 
@@ -38,40 +37,22 @@ const sections = [
   },
 ] as const;
 
-type ActiveFilter = Exclude<Filter, 'all'>;
-
-const matchers: Record<ActiveFilter, (w: World) => boolean> = {
-  vercel: (w) => w.type === 'official',
-  community: (w) => w.type === 'community',
-  compatible: (w) => w.e2e?.status === 'passing',
-  encrypted: (w) => w.features.includes('encryption'),
-};
-
 export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
-  const [mounted, setMounted] = useState(false);
-  const [active, setActive] = useState<Set<ActiveFilter>>(new Set());
-
-  useEffect(() => setMounted(true), []);
-
-  const toggle = (id: Filter) => {
-    if (id === 'all') {
-      setActive(new Set());
-      return;
-    }
-    setActive((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-      return next;
-    });
-  };
+  const [filter, setFilter] = useState<Filter>('all');
 
   const filtered = worlds.filter(([, world]) => {
-    if (active.size === 0) return true;
-    return [...active].every((f) => matchers[f](world));
+    switch (filter) {
+      case 'vercel':
+        return world.type === 'official';
+      case 'community':
+        return world.type === 'community';
+      case 'compatible':
+        return world.e2e?.status === 'passing';
+      case 'encrypted':
+        return world.features.includes('encryption');
+      default:
+        return true;
+    }
   });
 
   const counts = {
@@ -94,29 +75,21 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
   return (
     <>
       <div className="border-y px-4 py-6">
-        <div className="flex flex-wrap justify-center gap-x-6 gap-y-3">
-          {filters.map(({ id, label }) => {
-            const checked =
-              id === 'all' ? active.size === 0 : active.has(id as ActiveFilter);
-            return (
-              <Label
-                key={id}
-                htmlFor={`filter-${id}`}
-                className="flex items-center gap-2 text-sm cursor-pointer select-none font-normal whitespace-nowrap"
-              >
-                {mounted ? (
-                  <Checkbox
-                    checked={checked}
-                    onCheckedChange={() => toggle(id)}
-                    id={`filter-${id}`}
-                  />
-                ) : (
-                  <span className="size-4 shrink-0 rounded-[4px] border border-input shadow-xs" />
-                )}
-                {label}
-              </Label>
-            );
-          })}
+        <div className="flex flex-wrap justify-center gap-3">
+          {filters.map(({ id, label }) => (
+            <Badge
+              key={id}
+              variant="outline"
+              className={`text-sm font-normal py-1 px-3 cursor-pointer select-none ${
+                filter === id
+                  ? 'bg-gray-1000 text-background-100 border-transparent'
+                  : ''
+              }`}
+              onClick={() => setFilter(id)}
+            >
+              {label}
+            </Badge>
+          ))}
         </div>
       </div>
 
