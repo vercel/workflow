@@ -79,4 +79,50 @@ globalThis.__private_workflows.set("workflow//./workflows/hooks//withHook", with
       expect.arrayContaining(['stepA', 'createHook', 'awaitWebhook'])
     );
   });
+
+  it('detects hook.create calls used directly inside Promise.race', async () => {
+    const workflowCode = `
+async function waitForAuthWorkflow() {
+  const session = await Promise.race([
+    authCompleteHook.create({ token: 'auth:demo' }),
+    sleep('1h').then(() => null),
+  ]);
+  return session;
+}
+waitForAuthWorkflow.workflowId = "workflow//./workflows/hooks//waitForAuthWorkflow";
+globalThis.__private_workflows.set("workflow//./workflows/hooks//waitForAuthWorkflow", waitForAuthWorkflow);
+`;
+    const { filePath, tempDir } = await createWorkflowBundleFile(workflowCode);
+    tempDirs.push(tempDir);
+
+    const graphs = await extractWorkflowGraphs(filePath);
+    const hookGraph = graphs['./workflows/hooks']?.waitForAuthWorkflow?.graph;
+    const labels = (hookGraph?.nodes || []).map((node) => node.data.label);
+
+    expect(labels).toEqual(expect.arrayContaining(['createHook']));
+  });
+
+  it('detects for-await hook consumption when hook is created via hook.create', async () => {
+    const workflowCode = `
+var processPayload = globalThis[/* @__PURE__ */ Symbol.for("WORKFLOW_USE_STEP")]("step//./workflows/hooks//processPayload");
+async function streamHookWorkflow() {
+  const hook = activeSubagentRunHook.create({ token: 'stream:demo' });
+  for await (const payload of hook) {
+    await processPayload(payload);
+  }
+}
+streamHookWorkflow.workflowId = "workflow//./workflows/hooks//streamHookWorkflow";
+globalThis.__private_workflows.set("workflow//./workflows/hooks//streamHookWorkflow", streamHookWorkflow);
+`;
+    const { filePath, tempDir } = await createWorkflowBundleFile(workflowCode);
+    tempDirs.push(tempDir);
+
+    const graphs = await extractWorkflowGraphs(filePath);
+    const hookGraph = graphs['./workflows/hooks']?.streamHookWorkflow?.graph;
+    const labels = (hookGraph?.nodes || []).map((node) => node.data.label);
+
+    expect(labels).toEqual(
+      expect.arrayContaining(['processPayload', 'createHook', 'awaitWebhook'])
+    );
+  });
 });

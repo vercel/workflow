@@ -34,6 +34,88 @@ function getIdentifierCallExpressionName(
     : null;
 }
 
+function getMemberExpressionPropertyName(
+  memberExpr: MemberExpression
+): string | null {
+  if (memberExpr.property.type === 'Identifier') {
+    return (memberExpr.property as Identifier).value;
+  }
+
+  if (memberExpr.property.type === 'Computed') {
+    const computedExpr = (memberExpr.property as any).expression;
+    if (computedExpr?.type === 'StringLiteral') {
+      return (computedExpr as any).value;
+    }
+    if (computedExpr?.type === 'Identifier') {
+      return (computedExpr as Identifier).value;
+    }
+  }
+
+  return null;
+}
+
+function getExpressionTerminalName(expr: Expression): string | null {
+  if (expr.type === 'Identifier') {
+    return (expr as Identifier).value;
+  }
+
+  if (expr.type === 'ParenthesisExpression') {
+    return getExpressionTerminalName((expr as any).expression);
+  }
+
+  if (expr.type === 'MemberExpression') {
+    const member = expr as MemberExpression;
+    const propertyName = getMemberExpressionPropertyName(member);
+    if (propertyName) {
+      return propertyName;
+    }
+    return getExpressionTerminalName(member.object as Expression);
+  }
+
+  return null;
+}
+
+function getHookMemberCreatePrimitiveName(
+  callExpr: CallExpression
+): string | null {
+  if (callExpr.callee.type !== 'MemberExpression') {
+    return null;
+  }
+
+  const member = callExpr.callee as MemberExpression;
+  const methodName = getMemberExpressionPropertyName(member);
+  if (methodName !== 'create') {
+    return null;
+  }
+
+  const objectName = getExpressionTerminalName(member.object as Expression);
+  if (!objectName) {
+    return null;
+  }
+
+  // `defineHook(...).create(...)` calls are emitted as member calls in many
+  // bundles. Treat hook-like object names as createHook primitives.
+  if (!/hook/i.test(objectName)) {
+    return null;
+  }
+
+  return 'createHook';
+}
+
+function getWorkflowPrimitiveCallName(callExpr: CallExpression): string | null {
+  const directCallName = getIdentifierCallExpressionName(callExpr);
+  if (directCallName && WORKFLOW_PRIMITIVES.has(directCallName)) {
+    return directCallName;
+  }
+
+  const hookMemberCallName = getHookMemberCreatePrimitiveName(callExpr);
+  if (hookMemberCallName) {
+    return hookMemberCallName;
+  }
+
+  return null;
+}
+
 function findHookPrimitiveCallName(expr: Expression): string | null {
   if (expr.type === 'ParenthesisExpression') {
     return findHookPrimitiveCallName((expr as any).expression);
@@ -54,9 +136,9 @@ function findHookPrimitiveCallName(expr: Expression): string | null {
     return null;
   }
 
-  const directCallName = getIdentifierCallExpressionName(expr);
-  if (directCallName && HOOK_PRIMITIVES.has(directCallName)) {
-    return directCallName;
+  const hookPrimitiveCallName = getWorkflowPrimitiveCallName(expr);
+  if (hookPrimitiveCallName && HOOK_PRIMITIVES.has(hookPrimitiveCallName)) {
+    return hookPrimitiveCallName;
   }
 
   for (const arg of expr.arguments || []) {
@@ -1086,66 +1168,97 @@ function analyzeStatement(
     const isAwait = (stmt as any).isAwait || (stmt as any).await;
     const body = (stmt as any).body;
 
-    if (body.type === 'BlockStatement') {
-      const loopResult = analyzeBlock(
-        body.stmts,
-        stepDeclarations,
-        context,
-        functionMap,
-        variableMap
-      );
-
-      for (const node of loopResult.nodes) {
-        if (!node.metadata) node.metadata = {};
-        node.metadata.loopId = loopId;
-        node.metadata.loopIsAwait = isAwait;
+    // `for await (const payload of hook)` is a webhook/hook wait pattern.
+    // Represent the awaited iterator source as an awaitWebhook primitive.
+    const iterableExpr = (stmt as any).right as Expression | undefined;
+    const awaitHookEntryIds: string[] = [];
+    const awaitHookExitIds: string[] = [];
+    if (isAwait && iterableExpr?.type === 'Identifier') {
+      const iterableName = (iterableExpr as Identifier).value;
+      if (context.webhookVariables.has(iterableName)) {
+        const nodeId = `node_${context.nodeCounter++}`;
+        const metadata: NodeMetadata = {
+          loopId,
+          loopIsAwait: true,
+        };
+        if (context.inConditional) {
+          metadata.conditionalId = context.inConditional;
+        }
+        const node: ManifestNode = {
+          id: nodeId,
+          type: 'primitive',
+          data: {
+            label: 'awaitWebhook',
+            nodeKind: 'primitive',
+          },
+          metadata,
+        };
+        nodes.push(node);
+        awaitHookEntryIds.push(nodeId);
+        awaitHookExitIds.push(nodeId);
       }
+    }
 
-      nodes.push(...loopResult.nodes);
-      edges.push(...loopResult.edges);
-      entryNodeIds = loopResult.entryNodeIds;
-      exitNodeIds = loopResult.exitNodeIds;
+    const loopResult =
+      body.type === 'BlockStatement'
+        ? analyzeBlock(
+            body.stmts,
+            stepDeclarations,
+            context,
+            functionMap,
+            variableMap
+          )
+        : analyzeStatement(
+            body,
+            stepDeclarations,
+            context,
+            functionMap,
+            variableMap
+          );
 
-      for (const exitId of loopResult.exitNodeIds) {
-        for (const entryId of loopResult.entryNodeIds) {
-          edges.push({
-            id: `e_${exitId}_back_${entryId}`,
-            source: exitId,
-            target: entryId,
-            type: 'loop',
-          });
+    for (const node of loopResult.nodes) {
+      if (!node.metadata) node.metadata = {};
+      node.metadata.loopId = loopId;
+      node.metadata.loopIsAwait = isAwait;
+    }
+
+    nodes.push(...loopResult.nodes);
+    edges.push(...loopResult.edges);
+
+    if (awaitHookEntryIds.length > 0) {
+      entryNodeIds = awaitHookEntryIds;
+      if (loopResult.entryNodeIds.length > 0) {
+        for (const hookExitId of awaitHookExitIds) {
+          for (const loopEntryId of loopResult.entryNodeIds) {
+            edges.push({
+              id: `e_${hookExitId}_${loopEntryId}`,
+              source: hookExitId,
+              target: loopEntryId,
+              type: 'default',
+            });
+          }
         }
       }
     } else {
-      // Handle single-statement body (no braces)
-      const loopResult = analyzeStatement(
-        body,
-        stepDeclarations,
-        context,
-        functionMap,
-        variableMap
-      );
-
-      for (const node of loopResult.nodes) {
-        if (!node.metadata) node.metadata = {};
-        node.metadata.loopId = loopId;
-        node.metadata.loopIsAwait = isAwait;
-      }
-
-      nodes.push(...loopResult.nodes);
-      edges.push(...loopResult.edges);
       entryNodeIds = loopResult.entryNodeIds;
-      exitNodeIds = loopResult.exitNodeIds;
+    }
 
-      for (const exitId of loopResult.exitNodeIds) {
-        for (const entryId of loopResult.entryNodeIds) {
-          edges.push({
-            id: `e_${exitId}_back_${entryId}`,
-            source: exitId,
-            target: entryId,
-            type: 'loop',
-          });
-        }
+    if (loopResult.exitNodeIds.length > 0) {
+      exitNodeIds = loopResult.exitNodeIds;
+    } else if (awaitHookExitIds.length > 0) {
+      exitNodeIds = awaitHookExitIds;
+    } else {
+      exitNodeIds = [];
+    }
+
+    for (const exitId of exitNodeIds) {
+      for (const entryId of entryNodeIds) {
+        edges.push({
+          id: `e_${exitId}_back_${entryId}`,
+          source: exitId,
+          target: entryId,
+          type: 'loop',
+        });
       }
     }
 
@@ -1487,6 +1600,33 @@ function analyzeExpression(
           entryNodeIds.push(...transitiveResult.entryNodeIds);
           exitNodeIds.push(...transitiveResult.exitNodeIds);
         }
+      } else {
+        const primitiveName = getWorkflowPrimitiveCallName(callExpr);
+        if (primitiveName) {
+          const nodeId = `node_${context.nodeCounter++}`;
+          const metadata: NodeMetadata = {};
+
+          if (context.inLoop) {
+            metadata.loopId = context.inLoop;
+          }
+          if (context.inConditional) {
+            metadata.conditionalId = context.inConditional;
+          }
+
+          const node: ManifestNode = {
+            id: nodeId,
+            type: 'primitive',
+            data: {
+              label: primitiveName,
+              nodeKind: 'primitive',
+            },
+            metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+          };
+
+          nodes.push(node);
+          entryNodeIds.push(nodeId);
+          exitNodeIds.push(nodeId);
+        }
       }
 
       // Also analyze the arguments of awaited calls for step references in objects
@@ -1607,6 +1747,33 @@ function analyzeExpression(
         edges.push(...transitiveResult.edges);
         entryNodeIds.push(...transitiveResult.entryNodeIds);
         exitNodeIds.push(...transitiveResult.exitNodeIds);
+      }
+    } else {
+      const primitiveName = getWorkflowPrimitiveCallName(callExpr);
+      if (primitiveName) {
+        const nodeId = `node_${context.nodeCounter++}`;
+        const metadata: NodeMetadata = {};
+
+        if (context.inLoop) {
+          metadata.loopId = context.inLoop;
+        }
+        if (context.inConditional) {
+          metadata.conditionalId = context.inConditional;
+        }
+
+        const node: ManifestNode = {
+          id: nodeId,
+          type: 'primitive',
+          data: {
+            label: primitiveName,
+            nodeKind: 'primitive',
+          },
+          metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+        };
+
+        nodes.push(node);
+        entryNodeIds.push(nodeId);
+        exitNodeIds.push(nodeId);
       }
     }
   }
@@ -1733,6 +1900,28 @@ function analyzeExpression(
                 type: 'primitive',
                 data: {
                   label: funcName,
+                  nodeKind: 'primitive',
+                },
+                metadata:
+                  Object.keys(metadata).length > 0 ? metadata : undefined,
+              };
+              nodes.push(node);
+              entryNodeIds.push(nodeId);
+              exitNodeIds.push(nodeId);
+            }
+          } else {
+            const primitiveName = getWorkflowPrimitiveCallName(argCallExpr);
+            if (primitiveName) {
+              const nodeId = `node_${context.nodeCounter++}`;
+              const metadata: NodeMetadata = {};
+              if (context.inConditional) {
+                metadata.conditionalId = context.inConditional;
+              }
+              const node: ManifestNode = {
+                id: nodeId,
+                type: 'primitive',
+                data: {
+                  label: primitiveName,
                   nodeKind: 'primitive',
                 },
                 metadata:
