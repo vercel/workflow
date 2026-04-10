@@ -2160,13 +2160,21 @@ export async function getNextBuilderDeferred() {
           ...manifestDiscoveredStepFiles,
         ])
       ).sort();
+      // Files that are BOTH step files and serde files from packages must
+      // not be copied — they define classes with JS native private fields
+      // (#) that break if duplicated. Other step files (including package
+      // step files like fetch) must still be copied to ensure the SWC
+      // loader transform runs and registers the step functions.
+      const serdeFileSet = new Set(serdeFiles);
       const userStepSourceFiles: string[] = [];
-      const packageStepSourceFiles: string[] = [];
+      const packageSerdeStepSourceFiles: string[] = [];
       for (const file of allStepSourceFiles) {
         const normalized = this.normalizeDiscoveredFilePath(file);
-        const { isPackage } = getImportPath(normalized, this.config.workingDir);
-        if (isPackage || this.isFileInsidePackage(normalized)) {
-          packageStepSourceFiles.push(file);
+        if (
+          serdeFileSet.has(normalized) &&
+          this.isFileInsidePackage(normalized)
+        ) {
+          packageSerdeStepSourceFiles.push(file);
         } else {
           userStepSourceFiles.push(file);
         }
@@ -2194,7 +2202,7 @@ export async function getNextBuilderDeferred() {
       // Package step files — imported via relative path to the original
       // file (not copied). Webpack deduplicates with other imports of the
       // same file, ensuring a single class instance.
-      const packageStepImports = packageStepSourceFiles
+      const packageStepImports = packageSerdeStepSourceFiles
         .map((file) => {
           const normalized = this.normalizeDiscoveredFilePath(file);
           const importSpecifier = this.getRelativeImportSpecifier(
