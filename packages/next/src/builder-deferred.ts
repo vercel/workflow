@@ -1064,24 +1064,29 @@ export async function getNextBuilderDeferred() {
 
       this.deferredRebuildTimer = setTimeout(() => {
         this.deferredRebuildTimer = null;
-        const shouldAckTriggerBuild = this.pendingTriggerBuildAck;
-        this.pendingTriggerBuildAck = false;
-
-        void this.onBeforeDeferredEntries()
-          .catch((error) => {
-            console.warn(
-              '[workflow] Deferred rebuild after source update failed.',
-              error
-            );
-          })
-          .finally(() => {
-            // A trigger-build waiter must always get a completion signal,
-            // even when the rebuild is a no-op (signature unchanged).
-            if (shouldAckTriggerBuild) {
-              this.socketIO?.emit('build-complete');
-            }
-          });
+        void this.runDeferredRebuild();
       }, 75);
+    }
+
+    private async runDeferredRebuild(): Promise<void> {
+      try {
+        await this.onBeforeDeferredEntries();
+      } catch (error) {
+        console.warn(
+          '[workflow] Deferred rebuild after source update failed.',
+          error
+        );
+      } finally {
+        // If another rebuild was queued while this pass was running, wait for
+        // that later pass to settle before acknowledging trigger-build waiters.
+        if (this.deferredRebuildTimer) {
+          return;
+        }
+        if (this.pendingTriggerBuildAck) {
+          this.pendingTriggerBuildAck = false;
+          this.socketIO?.emit('build-complete');
+        }
+      }
     }
 
     private async readWorkflowsCache(): Promise<{

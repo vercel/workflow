@@ -374,6 +374,12 @@ function isWorkflowRouteStubSource(source: string): boolean {
   return source.includes(ROUTE_STUB_FILE_MARKER);
 }
 
+function isGeneratedFlowRouteFilePath(filePath: string): boolean {
+  return filePath
+    .replace(/\\/g, '/')
+    .endsWith('/.well-known/workflow/v1/flow/route.js');
+}
+
 async function createSocketConnection(
   socketCredentials: SocketCredentials,
   timeoutMs = 1_000
@@ -669,13 +675,26 @@ export default function workflowLoader(
         process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1' &&
         isWorkflowRouteStubSource(normalizedSource)
       ) {
+        const isFlowRouteFile = isGeneratedFlowRouteFilePath(filename);
         try {
           await ensureDeferredRouteStubBuildAndWait();
           const refreshedSource = await readFile(filename, 'utf8');
           if (!isWorkflowRouteStubSource(refreshedSource)) {
             return { code: refreshedSource, map: sourceMap };
           }
+          // Flow route requests drive workflow run execution. If the deferred
+          // build did not materialize a non-stub flow route, fail this attempt
+          // so queue delivery can retry instead of writing run_failed with a
+          // transient WorkflowNotRegisteredError.
+          if (isFlowRouteFile) {
+            throw new Error(
+              `Deferred flow route build completed but output remained a stub: ${filename}`
+            );
+          }
         } catch (error) {
+          if (isFlowRouteFile) {
+            throw error;
+          }
           console.warn(
             `[workflow] Failed waiting for deferred route build for ${filename}, using stub output`,
             error
