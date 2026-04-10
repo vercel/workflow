@@ -49,6 +49,19 @@ const MAX_SAFE_TIMEOUT_MS = 2147483647;
 
 const WARMUP_RETRY_DELAYS_MS = [250, 500, 1000] as const;
 
+const DEFAULT_WORKFLOW_ATTEMPT_TIMEOUT_MS = 180_000;
+function getWorkflowAttemptTimeoutMs(): number {
+  const raw = process.env.WORKFLOW_LOCAL_QUEUE_WORKFLOW_ATTEMPT_TIMEOUT_MS;
+  if (!raw) {
+    return DEFAULT_WORKFLOW_ATTEMPT_TIMEOUT_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_WORKFLOW_ATTEMPT_TIMEOUT_MS;
+  }
+  return parsed;
+}
+
 function getLocalRetryDelayMs(params: {
   attempt: number;
   status: number;
@@ -174,33 +187,62 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           };
           const directHandler = directHandlers.get(prefix);
           let response: Response;
+          let text = '';
 
-          if (directHandler) {
-            const req = new Request(
-              `http://localhost/.well-known/workflow/v1/${pathname}`,
+          try {
+            if (directHandler) {
+              const req = new Request(
+                `http://localhost/.well-known/workflow/v1/${pathname}`,
+                {
+                  method: 'POST',
+                  headers,
+                  body,
+                }
+              );
+              response = await directHandler(req);
+            } else {
+              const baseUrl = await resolveBaseUrl(config);
+              // Keep workflow route requests bounded so a stuck lazy-discovery
+              // build cannot block queue delivery forever.
+              const signal =
+                pathname === 'flow'
+                  ? AbortSignal.timeout(getWorkflowAttemptTimeoutMs())
+                  : undefined;
+
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+              response = await fetch(
+                `${baseUrl}/.well-known/workflow/v1/${pathname}`,
+                {
+                  method: 'POST',
+                  duplex: 'half',
+                  dispatcher: httpAgent,
+                  headers,
+                  body,
+                  signal,
+                } as any
+              );
+            }
+
+            text = await response.text();
+          } catch (error) {
+            console.error(
+              `[world-local] Queue message transport failed (attempt ${attempt + 1})`,
               {
-                method: 'POST',
-                headers,
-                body,
+                queueName,
+                messageId,
+                ...(runId && { runId }),
+                ...(stepId && { stepId }),
+                error: error instanceof Error ? error.message : String(error),
               }
             );
-            response = await directHandler(req);
-          } else {
-            const baseUrl = await resolveBaseUrl(config);
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
-            response = await fetch(
-              `${baseUrl}/.well-known/workflow/v1/${pathname}`,
-              {
-                method: 'POST',
-                duplex: 'half',
-                dispatcher: httpAgent,
-                headers,
-                body,
-              } as any
-            );
-          }
 
-          const text = await response.text();
+            const delayMs = getLocalRetryDelayMs({
+              attempt: attempt + 1,
+              status: 503,
+            });
+            await setTimeout(delayMs);
+            continue;
+          }
 
           if (response.ok) {
             try {

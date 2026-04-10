@@ -47,6 +47,8 @@ describe('queue timeout re-enqueue', () => {
   });
 
   afterEach(async () => {
+    delete process.env.WORKFLOW_LOCAL_QUEUE_WORKFLOW_ATTEMPT_TIMEOUT_MS;
+    vi.unstubAllGlobals();
     await localQueue.close();
   });
 
@@ -215,5 +217,54 @@ describe('queue timeout re-enqueue', () => {
     expect(mockSetTimeout).toHaveBeenNthCalledWith(3, 1000);
     expect(mockSetTimeout).toHaveBeenNthCalledWith(4, 5000);
     expect(mockSetTimeout).toHaveBeenNthCalledWith(5, 5000);
+  });
+
+  it('queue retries when direct handler throws transport errors', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    localQueue.registerHandler('__wkf_step_', async () => {
+      callCount++;
+      if (callCount < 3) {
+        throw new Error('handler crashed');
+      }
+      return Response.json({ ok: true });
+    });
+
+    await localQueue.queue('__wkf_step_test' as any, stepPayload);
+
+    await vi.waitFor(() => {
+      expect(callCount).toBe(3);
+    });
+
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(1, 250);
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(2, 500);
+  });
+
+  it('queue retries workflow fetch transport failures', async () => {
+    const { setTimeout: mockSetTimeout } = await import('node:timers/promises');
+    vi.mocked(mockSetTimeout).mockClear();
+
+    let callCount = 0;
+    const fetchMock = vi.fn(async () => {
+      callCount++;
+      if (callCount < 3) {
+        throw new Error('connect ECONNREFUSED 127.0.0.1:3000');
+      }
+      return Response.json({ ok: true });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_01ABC',
+    });
+
+    await vi.waitFor(() => {
+      expect(callCount).toBe(3);
+    });
+
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(1, 250);
+    expect(mockSetTimeout).toHaveBeenNthCalledWith(2, 500);
   });
 });
