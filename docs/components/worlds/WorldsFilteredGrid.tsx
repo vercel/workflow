@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
 import type { World } from './types';
@@ -48,7 +48,10 @@ const matchers: Record<ActiveFilter, (w: World) => boolean> = {
 };
 
 export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
+  const [mounted, setMounted] = useState(false);
   const [active, setActive] = useState<Set<ActiveFilter>>(new Set());
+
+  useEffect(() => setMounted(true), []);
 
   const toggle = (id: Filter) => {
     if (id === 'all') {
@@ -96,24 +99,22 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
             const checked =
               id === 'all' ? active.size === 0 : active.has(id as ActiveFilter);
             return (
-              <button
+              <Label
                 key={id}
-                type="button"
-                className="flex items-center gap-2 cursor-pointer"
-                onClick={() => toggle(id)}
+                htmlFor={`filter-${id}`}
+                className="flex items-center gap-2 text-sm cursor-pointer select-none font-normal whitespace-nowrap"
               >
-                <Checkbox
-                  checked={checked}
-                  onCheckedChange={() => toggle(id)}
-                  id={`filter-${id}`}
-                />
-                <Label
-                  htmlFor={`filter-${id}`}
-                  className="text-sm cursor-pointer select-none font-normal"
-                >
-                  {label}
-                </Label>
-              </button>
+                {mounted ? (
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={() => toggle(id)}
+                    id={`filter-${id}`}
+                  />
+                ) : (
+                  <span className="size-4 shrink-0 rounded-[4px] border border-input shadow-xs" />
+                )}
+                {label}
+              </Label>
             );
           })}
         </div>
