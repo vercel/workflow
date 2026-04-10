@@ -267,4 +267,36 @@ describe('queue timeout re-enqueue', () => {
     expect(mockSetTimeout).toHaveBeenNthCalledWith(1, 250);
     expect(mockSetTimeout).toHaveBeenNthCalledWith(2, 500);
   });
+
+  it('queue waits for first workflow attempt before resolving', async () => {
+    let firstAttemptStarted = false;
+    let releaseFirstAttempt: (() => void) | null = null;
+    const firstAttemptGate = new Promise<void>((resolve) => {
+      releaseFirstAttempt = resolve;
+    });
+
+    localQueue.registerHandler('__wkf_workflow_', async () => {
+      firstAttemptStarted = true;
+      await firstAttemptGate;
+      return Response.json({ ok: true });
+    });
+
+    const queuePromise = localQueue.queue('__wkf_workflow_test' as any, {
+      runId: 'run_01ABC',
+    });
+
+    await vi.waitFor(() => {
+      expect(firstAttemptStarted).toBe(true);
+    });
+
+    let settled = false;
+    queuePromise.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseFirstAttempt?.();
+    await queuePromise;
+  });
 });

@@ -62,6 +62,28 @@ function getWorkflowAttemptTimeoutMs(): number {
   return parsed;
 }
 
+const DEFAULT_WORKFLOW_FIRST_ATTEMPT_WAIT_MS = 1500;
+function getWorkflowFirstAttemptWaitMs(): number {
+  const raw = process.env.WORKFLOW_LOCAL_QUEUE_WORKFLOW_FIRST_ATTEMPT_WAIT_MS;
+  if (!raw) {
+    return DEFAULT_WORKFLOW_FIRST_ATTEMPT_WAIT_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_WORKFLOW_FIRST_ATTEMPT_WAIT_MS;
+  }
+  return parsed;
+}
+
+function waitForMs(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = globalThis.setTimeout(resolve, ms);
+    if (typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
+    }
+  });
+}
+
 function getLocalRetryDelayMs(params: {
   attempt: number;
   status: number;
@@ -147,6 +169,20 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     const body = transport.serialize(message);
     const { pathname, prefix } = getQueueRoute(queueName);
     const messageId = MessageId.parse(`msg_${generateId()}`);
+    let firstAttemptDelivered = false;
+    let resolveFirstAttemptDelivery: (() => void) | null = null;
+    const firstAttemptDeliveryPromise = new Promise<void>((resolve) => {
+      resolveFirstAttemptDelivery = () => {
+        if (firstAttemptDelivered) {
+          return;
+        }
+        firstAttemptDelivered = true;
+        resolve();
+      };
+    });
+    const signalFirstAttemptDelivery = () => {
+      resolveFirstAttemptDelivery?.();
+    };
 
     // Extract identifiers from the message for structured logging.
     // Workflow messages have `runId`, step messages have `workflowRunId` + `stepId`.
@@ -225,6 +261,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
 
             text = await response.text();
           } catch (error) {
+            if (attempt === 0) {
+              signalFirstAttemptDelivery();
+            }
             console.error(
               `[world-local] Queue message transport failed (attempt ${attempt + 1})`,
               {
@@ -248,6 +287,9 @@ export function createQueue(config: Partial<Config>): LocalQueue {
             try {
               const timeoutSeconds = Number(JSON.parse(text).timeoutSeconds);
               if (Number.isFinite(timeoutSeconds) && timeoutSeconds >= 0) {
+                if (attempt === 0) {
+                  signalFirstAttemptDelivery();
+                }
                 // Clamp to MAX_SAFE_TIMEOUT_MS to avoid Node.js setTimeout overflow warning.
                 // When this fires early, the handler recalculates remaining time from
                 // persistent state and returns another timeoutSeconds if needed.
@@ -261,9 +303,15 @@ export function createQueue(config: Partial<Config>): LocalQueue {
                 continue;
               }
             } catch {}
+            if (attempt === 0) {
+              signalFirstAttemptDelivery();
+            }
             return;
           }
 
+          if (attempt === 0) {
+            signalFirstAttemptDelivery();
+          }
           console.error(
             `[world-local] Queue message failed (attempt ${attempt + 1}, HTTP ${response.status})`,
             {
@@ -282,6 +330,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           await setTimeout(delayMs);
         }
 
+        signalFirstAttemptDelivery();
         console.error(
           `[world-local] Queue message exhausted safety limit (${MAX_LOCAL_SAFETY_LIMIT} attempts)`,
           {
@@ -292,10 +341,12 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           }
         );
       } finally {
+        signalFirstAttemptDelivery();
         semaphore.release();
       }
     })()
       .catch((err) => {
+        signalFirstAttemptDelivery();
         // Silently ignore client disconnect errors (e.g., browser refresh during streaming)
         // These are expected and should not cause unhandled rejection warnings
         const isAbortError =
@@ -309,6 +360,13 @@ export function createQueue(config: Partial<Config>): LocalQueue {
           fn();
         }
       });
+
+    if (pathname === 'flow') {
+      await Promise.race([
+        firstAttemptDeliveryPromise,
+        waitForMs(getWorkflowFirstAttemptWaitMs()),
+      ]);
+    }
 
     return { messageId };
   };

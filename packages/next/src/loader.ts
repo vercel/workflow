@@ -763,6 +763,9 @@ export default function workflowLoader(
       workingDir
     );
     const mode = isDeferredStepCopyFile ? 'step' : 'client';
+    const inputSourceMapForTransform = isDeferredStepCopyFile
+      ? deferredSourceMapResult.sourceMap || sourceMap || false
+      : sourceMap || false;
 
     // Transform with SWC
     const result = await transform(sourceForTransform, {
@@ -794,9 +797,10 @@ export default function workflowLoader(
         },
       },
       minify: false,
-      inputSourceMap: isDeferredStepCopyFile
-        ? deferredSourceMapResult.sourceMap || sourceMap
-        : sourceMap,
+      // When no upstream source map is provided, pass `false` explicitly so
+      // SWC does not attempt to load missing sourceMappingURL sidecar files
+      // from dependencies (which can fail deferred route compilation).
+      inputSourceMap: inputSourceMapForTransform,
       sourceMaps: true,
       inlineSourcesContent: true,
     });
