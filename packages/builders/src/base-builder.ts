@@ -462,15 +462,21 @@ export abstract class BaseBuilder {
         .replace(/\\/g, '/')
         .replace(/\/$/, '');
       const normalizedWorkspaceFile = file.replace(/\\/g, '/');
-      const isExternalWorkspaceSourceFile =
+      const isWorkspaceSourceBackedPackageFile =
         normalizedWorkspaceFile.includes('/packages/') &&
         normalizedWorkspaceFile.includes('/src/') &&
         !(
           normalizedWorkspaceFile === normalizedWorkspaceRoot ||
           normalizedWorkspaceFile.startsWith(`${normalizedWorkspaceRoot}/`)
         );
+      const isInstalledSourceBackedPackageFile =
+        normalizedWorkspaceFile.includes('/node_modules/') &&
+        normalizedWorkspaceFile.includes('/src/');
+      const isSourceBackedPackageFile =
+        isWorkspaceSourceBackedPackageFile ||
+        isInstalledSourceBackedPackageFile;
 
-      if (isExternalWorkspaceSourceFile) {
+      if (isSourceBackedPackageFile) {
         let relativePath = relative(
           normalizedWorkspaceRoot,
           normalizedWorkspaceFile

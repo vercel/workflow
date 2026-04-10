@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { constants, existsSync } from 'node:fs';
+import { constants, existsSync, readFileSync } from 'node:fs';
 import {
   access,
   mkdir,
@@ -10,6 +10,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import {
   basename,
@@ -148,6 +149,15 @@ export async function getNextBuilderDeferred() {
           }
         }
         this.lastDeferredBuildSignature = buildSignature;
+
+        if (!this.config.watch) {
+          // Production builds can persist newly discovered deferred-entry files to
+          // the cache after the first pass completes. Reload that cache before we
+          // decide whether the input signature stabilized so staged tarball builds
+          // can immediately replay with the expanded step set.
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          await this.loadWorkflowsCache();
+        }
 
         const postBuildInputFiles =
           this.getCurrentInputFiles(implicitStepFiles);
@@ -457,12 +467,16 @@ export async function getNextBuilderDeferred() {
           ...trackedDiscoveredEntries.discoveredSerdeFiles,
         ])
       ).sort();
-      const discoveredStepFiles = await this.filterExistingFiles(
-        discoveredStepFileCandidates
-      );
       const discoveredWorkflowFiles = await this.filterExistingFiles(
         discoveredWorkflowFileCandidates
       );
+      const existingStepFileCandidates = await this.filterExistingFiles(
+        discoveredStepFileCandidates
+      );
+      const discoveredStepFiles = await this.collectTransitiveStepFiles({
+        entryFiles: [...existingStepFileCandidates, ...discoveredWorkflowFiles],
+        stepFiles: existingStepFileCandidates,
+      });
       const existingSerdeFileCandidates = await this.filterExistingFiles(
         discoveredSerdeFileCandidates
       );
@@ -739,18 +753,67 @@ export async function getNextBuilderDeferred() {
       );
     }
 
-    private resolveWorkspaceSourcePath(filePath: string): string {
+    private findPackageJsonPath(filePath: string): string | null {
+      let currentDir = dirname(filePath);
+      let previousDir = '';
+
+      while (currentDir !== previousDir) {
+        const packageJsonPath = join(currentDir, 'package.json');
+        if (existsSync(packageJsonPath)) {
+          return packageJsonPath;
+        }
+        previousDir = currentDir;
+        currentDir = dirname(currentDir);
+      }
+
+      return null;
+    }
+
+    private shouldPreferSourceBackedPackagePath(filePath: string): boolean {
       const normalizedPath = filePath.replace(/\\/g, '/');
-      if (
-        !normalizedPath.includes('/packages/') ||
-        !normalizedPath.includes('/dist/')
-      ) {
+      if (normalizedPath.includes('/packages/')) {
+        return true;
+      }
+
+      if (!normalizedPath.includes('/node_modules/')) {
+        return false;
+      }
+
+      const packageJsonPath = this.findPackageJsonPath(filePath);
+      if (!packageJsonPath) {
+        return false;
+      }
+
+      try {
+        const packageJson = JSON.parse(
+          readFileSync(packageJsonPath, 'utf-8')
+        ) as { name?: unknown };
+        return (
+          packageJson.name === 'workflow' ||
+          (typeof packageJson.name === 'string' &&
+            packageJson.name.startsWith('@workflow/'))
+        );
+      } catch {
+        return false;
+      }
+    }
+
+    private resolveSourceBackedPackagePath(filePath: string): string {
+      const normalizedPath = filePath.replace(/\\/g, '/');
+      if (!normalizedPath.includes('/dist/')) {
         return filePath;
       }
 
       const sourceCandidate = normalizedPath.replace('/dist/', '/src/');
       const resolvedSourceCandidate =
         this.resolveCopiedStepImportTargetPath(sourceCandidate);
+      if (
+        !existsSync(resolvedSourceCandidate) ||
+        !this.shouldPreferSourceBackedPackagePath(filePath)
+      ) {
+        return filePath;
+      }
+
       return existsSync(resolvedSourceCandidate)
         ? resolvedSourceCandidate
         : filePath;
@@ -760,7 +823,7 @@ export async function getNextBuilderDeferred() {
       const absolutePath = isAbsolute(filePath)
         ? filePath
         : resolve(this.config.workingDir, filePath);
-      return this.resolveWorkspaceSourcePath(absolutePath);
+      return this.resolveSourceBackedPackagePath(absolutePath);
     }
 
     private async filterExistingFiles(filePaths: string[]): Promise<string[]> {
@@ -933,10 +996,14 @@ export async function getNextBuilderDeferred() {
             /\\/g,
             '/'
           );
+          const isSourceBackedPackagePath =
+            this.shouldPreferSourceBackedPackagePath(normalizedSourcePath);
           if (
             normalizedSourcePathForCheck.includes('/.well-known/workflow/') ||
-            normalizedSourcePathForCheck.includes('/node_modules/') ||
-            normalizedSourcePathForCheck.includes('/.pnpm/') ||
+            (!isSourceBackedPackagePath &&
+              normalizedSourcePathForCheck.includes('/node_modules/')) ||
+            (!isSourceBackedPackagePath &&
+              normalizedSourcePathForCheck.includes('/.pnpm/')) ||
             normalizedSourcePathForCheck.includes('/.next/') ||
             normalizedSourcePathForCheck.endsWith('/virtual-entry.js')
           ) {
@@ -964,10 +1031,6 @@ export async function getNextBuilderDeferred() {
     }
 
     private scheduleDeferredRebuild(): void {
-      if (!this.config.watch) {
-        return;
-      }
-
       if (this.deferredRebuildTimer) {
         clearTimeout(this.deferredRebuildTimer);
       }
@@ -1228,6 +1291,12 @@ export async function getNextBuilderDeferred() {
     }
 
     private extractRelativeImportSpecifiers(source: string): string[] {
+      return this.extractImportSpecifiers(source).filter((specifier) =>
+        specifier.startsWith('.')
+      );
+    }
+
+    private extractImportSpecifiers(source: string): string[] {
       const relativeSpecifiers = new Set<string>();
       const importPatterns = [
         /from\s+['"]([^'"]+)['"]/g,
@@ -1239,7 +1308,7 @@ export async function getNextBuilderDeferred() {
       for (const importPattern of importPatterns) {
         for (const match of source.matchAll(importPattern)) {
           const specifier = match[1];
-          if (specifier?.startsWith('.')) {
+          if (specifier) {
             relativeSpecifiers.add(specifier);
           }
         }
@@ -1293,11 +1362,14 @@ export async function getNextBuilderDeferred() {
 
     private shouldSkipTransitiveStepFile(filePath: string): boolean {
       const normalizedPath = filePath.replace(/\\/g, '/');
+      const isSourceBackedPackagePath =
+        this.shouldPreferSourceBackedPackagePath(filePath);
       return (
         normalizedPath.includes('/.well-known/workflow/') ||
         normalizedPath.includes('/.next/') ||
-        normalizedPath.includes('/node_modules/') ||
-        normalizedPath.includes('/.pnpm/')
+        (!isSourceBackedPackagePath &&
+          (normalizedPath.includes('/node_modules/') ||
+            normalizedPath.includes('/.pnpm/')))
       );
     }
 
@@ -1307,6 +1379,28 @@ export async function getNextBuilderDeferred() {
     ): Promise<string | null> {
       const specifierMatch = specifier.match(/^([^?#]+)(.*)$/);
       const importPath = specifierMatch?.[1] ?? specifier;
+
+      if (!importPath.startsWith('.')) {
+        if (importPath !== 'workflow' && !importPath.startsWith('@workflow/')) {
+          return null;
+        }
+
+        try {
+          const resolvedPath =
+            createRequire(sourceFilePath).resolve(importPath);
+          const normalizedResolvedPath =
+            this.normalizeDiscoveredFilePath(resolvedPath);
+          if (this.shouldSkipTransitiveStepFile(normalizedResolvedPath)) {
+            return null;
+          }
+
+          const fileStats = await stat(normalizedResolvedPath);
+          return fileStats.isFile() ? normalizedResolvedPath : null;
+        } catch {
+          return null;
+        }
+      }
+
       const absoluteTargetPath = resolve(dirname(sourceFilePath), importPath);
 
       const candidatePaths = new Set<string>([
@@ -1353,6 +1447,105 @@ export async function getNextBuilderDeferred() {
       }
 
       return null;
+    }
+
+    private async collectTransitiveStepFiles({
+      entryFiles,
+      stepFiles,
+    }: {
+      entryFiles: string[];
+      stepFiles: string[];
+    }): Promise<string[]> {
+      const normalizedEntryFiles = Array.from(
+        new Set(
+          entryFiles.map((entryFile) =>
+            this.normalizeDiscoveredFilePath(entryFile)
+          )
+        )
+      ).sort();
+      const normalizedStepSeedFiles = Array.from(
+        new Set(
+          stepFiles.map((stepFile) =>
+            this.normalizeDiscoveredFilePath(stepFile)
+          )
+        )
+      ).sort();
+      const discoveredStepFiles = new Set<string>(normalizedStepSeedFiles);
+      const queuedFiles = Array.from(
+        new Set([...normalizedEntryFiles, ...normalizedStepSeedFiles])
+      );
+      const visitedFiles = new Set<string>();
+      const sourceCache = new Map<string, string | null>();
+      const patternCache = new Map<
+        string,
+        ReturnType<typeof detectWorkflowPatterns> | null
+      >();
+
+      const getSource = async (filePath: string): Promise<string | null> => {
+        if (sourceCache.has(filePath)) {
+          return sourceCache.get(filePath) ?? null;
+        }
+        try {
+          const source = await readFile(filePath, 'utf-8');
+          sourceCache.set(filePath, source);
+          return source;
+        } catch {
+          sourceCache.set(filePath, null);
+          return null;
+        }
+      };
+
+      const getPatterns = async (
+        filePath: string
+      ): Promise<ReturnType<typeof detectWorkflowPatterns> | null> => {
+        if (patternCache.has(filePath)) {
+          return patternCache.get(filePath) ?? null;
+        }
+        const source = await getSource(filePath);
+        if (source === null) {
+          patternCache.set(filePath, null);
+          return null;
+        }
+        const patterns = detectWorkflowPatterns(source);
+        patternCache.set(filePath, patterns);
+        return patterns;
+      };
+
+      while (queuedFiles.length > 0) {
+        const currentFile = queuedFiles.pop();
+        if (!currentFile || visitedFiles.has(currentFile)) {
+          continue;
+        }
+        visitedFiles.add(currentFile);
+
+        const currentSource = await getSource(currentFile);
+        if (currentSource === null) {
+          continue;
+        }
+
+        const importSpecifiers = this.extractImportSpecifiers(currentSource);
+        for (const specifier of importSpecifiers) {
+          const resolvedImportPath =
+            await this.resolveTransitiveStepImportTargetPath(
+              currentFile,
+              specifier
+            );
+          if (!resolvedImportPath) {
+            continue;
+          }
+
+          if (!visitedFiles.has(resolvedImportPath)) {
+            queuedFiles.push(resolvedImportPath);
+          }
+
+          const importPatterns = await getPatterns(resolvedImportPath);
+          if (importPatterns?.hasUseStep) {
+            discoveredStepFiles.add(resolvedImportPath);
+          }
+        }
+      }
+
+      return Array.from(discoveredStepFiles).sort();
     }
 
     private async collectTransitiveSerdeFiles({

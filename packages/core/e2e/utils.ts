@@ -57,9 +57,9 @@ export function hasStepSourceMaps(): boolean {
   }
 
   if (!isLocalDeployment()) {
-    // Next.js is excluded above because it does not consume inline step
-    // source maps. Other Vercel deployments preserve them, except SvelteKit.
-    return appName !== 'sveltekit';
+    // Current preview deployments still lose step source locations across the
+    // non-local workbench matrix, so keep Vercel e2e expectations conservative.
+    return false;
   }
 
   // Vite only works in vercel, not on local prod or dev

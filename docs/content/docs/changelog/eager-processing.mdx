@@ -402,6 +402,24 @@ Switching deferred builds over to workspace `src/` files fixed the missing neste
 
 **Fix**: `resolveModuleSpecifier()` now treats workspace source files as the source-backed form of their exported `dist/` targets when deriving step ids. That preserves package export subpaths like `@workflow/ai/agent` for id generation while still bundling the directive-bearing `src/` modules.
 
+### Tarball-Staged Next.js Builds Still Lost Package Step Sources
+
+The local production and Postgres Next.js jobs stage the workbenches by packing workspace packages into tarballs and installing those tarballs into a temporary `node_modules` tree. Deferred discovery was already willing to rewrite workspace `packages/*/dist/*` files back to `src/*`, but the tarballed `@workflow/ai` package did not publish its `src/` tree and the base builder still treated `node_modules/@workflow/*/src/*` as ordinary package imports. That meant the staged CI path fell back to `dist/` again and dropped nested steps like `@workflow/ai/agent`'s `closeStream`, even after the workspace build path had been fixed.
+
+**Fix**: Publish `packages/ai/src` in the tarball, treat source-backed `node_modules/@workflow/*/src/*` files like external workspace source files when generating bundle imports, and extend deferred transitive step discovery to follow bare `workflow` / `@workflow/*` package imports during non-watch builds.
+
+### Vercel Step Source Map Expectations Were Too Optimistic
+
+Merging `main` also pulled in a newer `hasStepSourceMaps()` expectation for Vercel preview deployments. On this branch, the non-Next workbench previews still emit step stacks without source filenames like `99_e2e.ts` or `helpers.ts`, so the Vercel step-error assertions regressed across the BOA-backed workbench matrix even though runtime behavior was otherwise unchanged.
+
+**Fix**: Revert the Vercel step source map expectation to the conservative branch behavior so preview e2e only asserts source filenames where this branch actually preserves them.
+
+### Community Worlds Still Used The Pre-`world.streams` API
+
+The Redis community-world benchmark still loads an external world package that has not adopted the newer `world.streams.*` interface yet. Once the eager-processing changes exercised stream writes through the modern namespace consistently, that adapter started failing with `Cannot read properties of undefined (reading 'writeMulti')` before the benchmark could even start.
+
+**Fix**: Normalize legacy worlds at runtime by adapting the old top-level stream methods (`writeToStream`, `writeToStreamMulti`, `closeStream`, `readFromStream`, `listStreamsByRunId`) into the current `world.streams.*` shape when an adapter has not upgraded yet.
+
 ### Build Output API Flow Handler Drift
 
 The Vercel Build Output API builder still emitted the combined flow function as `index.js`, but the surrounding metadata kept pointing at `index.mjs`. That mismatch meant BOA-based preview deployments published neither `/.well-known/workflow/v1/flow` nor the public manifest, so the Vercel production e2e suite collapsed into manifest `404` errors immediately after deployment.
