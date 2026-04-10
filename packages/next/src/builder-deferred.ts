@@ -40,6 +40,12 @@ export async function getNextBuilderDeferred() {
     return CachedNextBuilderDeferred;
   }
 
+  // V2: STEP_QUEUE_TRIGGER, getImportPath, and enhanced-resolve infrastructure
+  // were removed because the V2 combined handler eliminates the separate step
+  // route/topic. The step copy import rewriting (getRelativeImportSpecifier,
+  // getStepCopyFileName, rewriteRelativeImportsForCopiedStep) from main was also
+  // removed — V2 doesn't use step copies. If step copy support is needed, it
+  // should land as a complete feature set.
   const {
     BaseBuilder: BaseBuilderClass,
     WORKFLOW_QUEUE_TRIGGER,
@@ -1155,23 +1161,41 @@ export async function getNextBuilderDeferred() {
     }
 
     protected async getInputFiles(): Promise<string[]> {
-      const inputFiles = await super.getInputFiles();
-      return inputFiles.filter((item) => {
-        // Match App Router entrypoints: route.ts, page.ts, layout.ts in app/ or src/app/ directories
-        // Matches: /app/page.ts, /app/dashboard/page.ts, /src/app/route.ts, etc.
-        if (
-          item.match(
-            /(^|.*[/\\])(app|src[/\\]app)([/\\](route|page|layout)\.|[/\\].*[/\\](route|page|layout)\.)/
-          )
-        ) {
-          return true;
+      // Read Next.js's app-paths-manifest.json from a previous build to
+      // determine which files are actual route entrypoints. This avoids
+      // predicting Next.js conventions with regexes and instead reads
+      // from Next.js's own output.
+      const nextDir = join(this.config.workingDir, '.next');
+      const manifestPath = join(nextDir, 'app-paths-manifest.json');
+      try {
+        const manifestContent = readFileSync(manifestPath, 'utf-8');
+        const manifest = JSON.parse(manifestContent) as Record<string, string>;
+        // The manifest maps route paths to their source files.
+        // Extract the source file paths and resolve them.
+        const manifestFiles = new Set<string>();
+        for (const sourcePath of Object.values(manifest)) {
+          const resolved = resolve(nextDir, 'server', sourcePath);
+          // The manifest points to built output; find the source file
+          // by matching against the base builder's full file list.
+          manifestFiles.add(resolved);
         }
-        // Match Pages Router entrypoints: files in pages/ or src/pages/
-        if (item.match(/[/\\](pages|src[/\\]pages)[/\\]/)) {
-          return true;
-        }
-        return false;
-      });
+
+        // Use the manifest route paths to filter the input files.
+        // A file is included if it matches a known route segment from
+        // the manifest (e.g., app/api/route contains 'app/api/route').
+        const inputFiles = await super.getInputFiles();
+        const routeSegments = Object.keys(manifest).map((route) =>
+          route.replace(/^\//, '').replace(/\/route$/, '')
+        );
+        return inputFiles.filter((item) =>
+          routeSegments.some((segment) => item.includes(segment))
+        );
+      } catch {
+        // No manifest from a previous build — fall back to the base
+        // builder's full file scan. This is safe but slower; subsequent
+        // builds will use the manifest.
+        return super.getInputFiles();
+      }
     }
 
     private async writeFunctionsConfig(outputDir: string) {

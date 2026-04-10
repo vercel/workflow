@@ -107,6 +107,10 @@ export async function handleSuspension({
     })
   );
 
+  // Process hooks first to prevent race conditions with webhook receivers.
+  // All hook creations run in parallel.
+  // Track any hook conflicts that occur — these are returned to the caller
+  // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
 
   if (hookEvents.length > 0) {
@@ -116,6 +120,10 @@ export async function handleSuspension({
           const result = await world.events.create(runId, hookEvent, {
             requestId,
           });
+          // Check if the world returned a hook_conflict event instead of hook_created.
+          // The hook_conflict event is stored in the event log and will be replayed
+          // on the next workflow invocation, causing the hook's promise to reject.
+          // Note: hook events always create an event (legacy runs throw, not return undefined)
           if (result.event!.eventType === 'hook_conflict') {
             hasHookConflict = true;
           }
@@ -136,7 +144,7 @@ export async function handleSuspension({
     );
   }
 
-  // Process hook disposals (same as V1)
+  // Process hook disposals — these release hook tokens for reuse by other workflows.
   if (hooksNeedingDisposal.length > 0) {
     await Promise.all(
       hooksNeedingDisposal.map(async (queueItem) => {
@@ -182,7 +190,10 @@ export async function handleSuspension({
     );
   }
 
-  // Create step events (but do NOT queue step messages — V2 difference)
+  // Create step events for steps that don't have them yet.
+  // Unlike V1, we do NOT queue step messages from here — the caller
+  // decides which steps to execute inline vs. queue to background.
+  // Wait events are also created in parallel below.
   const stepsNeedingCreation = new Set(
     stepItems
       .filter((queueItem) => !queueItem.hasCreatedEvent)
@@ -191,6 +202,7 @@ export async function handleSuspension({
 
   const ops: Promise<void>[] = [];
 
+  // Steps: create step_created events (no queuing — V2 returns pending steps to caller)
   for (const queueItem of stepItems) {
     if (stepsNeedingCreation.has(queueItem.correlationId)) {
       ops.push(

@@ -117,6 +117,10 @@ export function workflowEntrypoint(
     worldHandlers.createQueueHandler(
       '__wkf_workflow_',
       async (message_, metadata) => {
+        // Check if this is a health check message
+        // NOTE: Health check messages are intentionally unauthenticated for monitoring purposes.
+        // They only write a simple status response to a stream and do not expose sensitive data.
+        // The stream name includes a unique correlationId that must be known by the caller.
         const healthCheck = parseHealthCheckPayload(message_);
         if (healthCheck) {
           await handleHealthCheckMessage(
@@ -252,187 +256,254 @@ export function workflowEntrypoint(
                   let cachedEvents: Event[] | null = null;
                   let eventsCursor: string | null = null;
 
-                  // If incoming message has a stepId, this is a background step
-                  // execution. Execute the step, then queue a workflow continuation
-                  // (without stepId) so the workflow can replay and process the
-                  // step_completed event. Don't replay here — the step events
-                  // (step_started/step_completed) need to be processed by the
-                  // workflow's event consumer during replay.
-                  if (incomingStepId && incomingStepName) {
-                    const stepName = incomingStepName;
-                    {
-                      const workflowRun = await world.runs.get(runId);
-                      if (workflowRun.status !== 'running') {
-                        runtimeLogger.debug(
-                          'Run already finished, skipping background step',
-                          { workflowRunId: runId, status: workflowRun.status }
-                        );
-                        return;
-                      }
-                      const workflowStartedAt = workflowRun.startedAt
-                        ? +workflowRun.startedAt
-                        : Date.now();
-                      const stepResult = await executeStep({
-                        world,
-                        workflowRunId: runId,
-                        workflowName,
-                        workflowStartedAt,
-                        stepId: incomingStepId,
-                        stepName,
-                      });
-                      if (stepResult.type === 'retry') {
-                        return { timeoutSeconds: stepResult.timeoutSeconds };
-                      }
-                      if (stepResult.type === 'throttled') {
-                        return { timeoutSeconds: stepResult.timeoutSeconds };
-                      }
-                      // Step completed/failed/skipped/gone — queue workflow
-                      // continuation so it can replay with the new events.
-                      if (
-                        stepResult.type === 'completed' ||
-                        stepResult.type === 'failed' ||
-                        stepResult.type === 'skipped'
-                      ) {
-                        await queueMessage(
-                          world,
-                          getWorkflowQueueName(workflowName),
-                          {
-                            runId,
-                            traceCarrier: await serializeTraceCarrier(),
-                            requestedAt: new Date(),
-                          }
-                        );
-                      }
-                      return;
-                    }
-                    // stepName not found — fall through to replay
-                  }
-
-                  // Fetch run state once before the loop.
+                  // Shared state: set by either the background step path
+                  // or the run_started setup below.
                   let workflowRun: WorkflowRun | undefined;
                   let workflowStartedAt = -1;
                   let preloadedEvents: Event[] | undefined;
 
-                  // --- Infrastructure: prepare the run state ---
-                  // Always call run_started directly — this both transitions
-                  // the run to 'running' AND returns the run entity, saving
-                  // a separate runs.get round-trip.
-                  // Contract: events.create('run_started') must be idempotent
-                  // for runs already in 'running' status (return the run
-                  // without error), not just for pending → running transitions.
-                  try {
-                    const result = await world.events.create(
-                      runId,
-                      {
-                        eventType: 'run_started',
-                        // Use the spec version from the original start() call
-                        // when available, so the resilient start path creates
-                        // the run with the correct version (not always current).
-                        specVersion:
-                          runInput?.specVersion ?? SPEC_VERSION_CURRENT,
-                        // Pass run input from queue so the server can
-                        // create the run if run_created was missed.
-                        // Uint8Array values survive the queue natively
-                        // (CBOR on world-vercel, JSON reviver on world-local).
-                        ...(runInput
-                          ? {
-                              eventData: {
-                                input: runInput.input,
-                                deploymentId: runInput.deploymentId,
-                                workflowName: runInput.workflowName,
-                                executionContext: runInput.executionContext,
-                              },
-                            }
-                          : {}),
-                      },
-                      { requestId }
-                    );
-                    if (!result.run) {
-                      throw new WorkflowRuntimeError(
-                        `Event creation for 'run_started' did not return the run entity for run "${runId}"`
+                  // If incoming message has a stepId, this is a background step
+                  // execution. Execute the step, then check if all parallel steps
+                  // from the batch are done. If so, replay inline (saving a queue
+                  // roundtrip). If not, return — the last handler to complete
+                  // will pick up the replay.
+                  if (incomingStepId && incomingStepName) {
+                    const bgRun = await world.runs.get(runId);
+                    if (bgRun.status !== 'running') {
+                      runtimeLogger.debug(
+                        'Run already finished, skipping background step',
+                        { workflowRunId: runId, status: bgRun.status }
                       );
+                      return;
                     }
-                    workflowRun = result.run;
-
-                    // If the response includes events, use them to skip
-                    // the initial events.list call and reduce TTFB.
-                    if (result.events && result.events.length > 0) {
-                      preloadedEvents = result.events;
+                    const bgStartedAt = bgRun.startedAt
+                      ? +bgRun.startedAt
+                      : Date.now();
+                    const stepResult = await executeStep({
+                      world,
+                      workflowRunId: runId,
+                      workflowName,
+                      workflowStartedAt: bgStartedAt,
+                      stepId: incomingStepId,
+                      stepName: incomingStepName,
+                    });
+                    if (stepResult.type === 'retry') {
+                      return { timeoutSeconds: stepResult.timeoutSeconds };
+                    }
+                    if (stepResult.type === 'throttled') {
+                      return { timeoutSeconds: stepResult.timeoutSeconds };
                     }
 
-                    if (!workflowRun.startedAt) {
-                      throw new WorkflowRuntimeError(
-                        `Workflow run "${runId}" has no "startedAt" timestamp`
-                      );
-                    }
-                  } catch (err) {
-                    // Run was concurrently completed/failed/cancelled
+                    // If step had pending ops (stream writes), break and let
+                    // waitUntil flush them — can't continue inline.
                     if (
-                      EntityConflictError.is(err) ||
-                      RunExpiredError.is(err)
+                      stepResult.type === 'completed' &&
+                      stepResult.hasPendingOps
                     ) {
-                      // EntityConflictError: run was concurrently
-                      // completed/failed/cancelled during setup.
-                      // RunExpiredError: run already in terminal state.
-                      // In both cases, skip processing this message.
-                      runtimeLogger.info(
-                        'Run already finished during setup, skipping',
-                        { workflowRunId: runId, message: err.message }
-                      );
-                      return;
-                    } else if (err instanceof WorkflowRuntimeError) {
-                      runtimeLogger.error(
-                        'Fatal runtime error during workflow setup',
-                        { workflowRunId: runId, error: err.message }
-                      );
-                      try {
-                        await world.events.create(
+                      await queueMessage(
+                        world,
+                        getWorkflowQueueName(workflowName),
+                        {
                           runId,
-                          {
-                            eventType: 'run_failed',
-                            specVersion: SPEC_VERSION_CURRENT,
-                            eventData: {
-                              error: {
-                                message: err.message,
-                                stack: err.stack,
-                              },
-                              errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
-                            },
-                          },
-                          { requestId }
-                        );
-                      } catch (failErr) {
-                        if (
-                          EntityConflictError.is(failErr) ||
-                          RunExpiredError.is(failErr)
-                        ) {
-                          return;
+                          traceCarrier: await serializeTraceCarrier(),
+                          requestedAt: new Date(),
                         }
-                        throw failErr;
-                      }
+                      );
                       return;
+                    }
+
+                    if (
+                      stepResult.type === 'completed' ||
+                      stepResult.type === 'failed' ||
+                      stepResult.type === 'skipped'
+                    ) {
+                      // Load events to check if all parallel steps are done.
+                      // Use cursor-based loading so the main loop can continue
+                      // incrementally from here.
+                      const loaded =
+                        await getAllWorkflowRunEventsWithCursor(runId);
+                      cachedEvents = loaded.events;
+                      eventsCursor = loaded.cursor;
+
+                      // Check for pending steps: any step_created without
+                      // a matching step_completed or step_failed.
+                      const stepCreatedIds = new Set<string | undefined>();
+                      const stepTerminalIds = new Set<string | undefined>();
+                      for (const e of cachedEvents) {
+                        if (e.eventType === 'step_created') {
+                          stepCreatedIds.add(e.correlationId);
+                        } else if (
+                          e.eventType === 'step_completed' ||
+                          e.eventType === 'step_failed'
+                        ) {
+                          stepTerminalIds.add(e.correlationId);
+                        }
+                      }
+                      let hasPendingSteps = false;
+                      for (const id of stepCreatedIds) {
+                        if (!stepTerminalIds.has(id)) {
+                          hasPendingSteps = true;
+                          break;
+                        }
+                      }
+
+                      if (hasPendingSteps) {
+                        // Other steps still in progress. Return without
+                        // queuing — the last handler to complete will see
+                        // all steps done and replay inline.
+                        runtimeLogger.debug(
+                          'Background step done but other steps pending, returning',
+                          { workflowRunId: runId }
+                        );
+                        return;
+                      }
+
+                      // All steps done — fall through to the main replay loop.
+                      // Set up shared state so the loop can continue.
+                      runtimeLogger.debug(
+                        'All parallel steps done, replaying inline after background step',
+                        { workflowRunId: runId }
+                      );
+                      workflowRun = bgRun;
+                      workflowStartedAt = bgStartedAt;
+                      // cachedEvents and eventsCursor already set from load above
                     } else {
-                      throw err;
+                      return;
                     }
                   }
 
-                  workflowStartedAt = +workflowRun.startedAt;
-
-                  span?.setAttributes({
-                    ...Attribute.WorkflowRunStatus(workflowRun.status),
-                    ...Attribute.WorkflowStartedAt(workflowStartedAt),
-                  });
-
-                  if (workflowRun.status !== 'running') {
-                    runtimeLogger.info(
-                      'Workflow already completed or failed, skipping',
-                      {
-                        workflowRunId: runId,
-                        status: workflowRun.status,
+                  // --- Infrastructure: prepare the run state ---
+                  // Skip if workflowRun was already set by the background
+                  // step path (inline replay after all parallel steps done).
+                  if (!workflowRun) {
+                    // Always call run_started directly — this both transitions
+                    // the run to 'running' AND returns the run entity, saving
+                    // a separate runs.get round-trip.
+                    // Contract: events.create('run_started') must be idempotent
+                    // for runs already in 'running' status (return the run
+                    // without error), not just for pending → running transitions.
+                    try {
+                      const result = await world.events.create(
+                        runId,
+                        {
+                          eventType: 'run_started',
+                          // Use the spec version from the original start() call
+                          // when available, so the resilient start path creates
+                          // the run with the correct version (not always current).
+                          specVersion:
+                            runInput?.specVersion ?? SPEC_VERSION_CURRENT,
+                          // Pass run input from queue so the server can
+                          // create the run if run_created was missed.
+                          // Uint8Array values survive the queue natively
+                          // (CBOR on world-vercel, JSON reviver on world-local).
+                          ...(runInput
+                            ? {
+                                eventData: {
+                                  input: runInput.input,
+                                  deploymentId: runInput.deploymentId,
+                                  workflowName: runInput.workflowName,
+                                  executionContext: runInput.executionContext,
+                                },
+                              }
+                            : {}),
+                        },
+                        { requestId }
+                      );
+                      if (!result.run) {
+                        throw new WorkflowRuntimeError(
+                          `Event creation for 'run_started' did not return the run entity for run "${runId}"`
+                        );
                       }
-                    );
-                    return;
-                  }
+                      workflowRun = result.run;
+
+                      // If the response includes events, use them to skip
+                      // the initial events.list call and reduce TTFB.
+                      if (result.events && result.events.length > 0) {
+                        preloadedEvents = result.events;
+                      }
+
+                      if (!workflowRun.startedAt) {
+                        throw new WorkflowRuntimeError(
+                          `Workflow run "${runId}" has no "startedAt" timestamp`
+                        );
+                      }
+                    } catch (err) {
+                      // Run was concurrently completed/failed/cancelled
+                      if (
+                        EntityConflictError.is(err) ||
+                        RunExpiredError.is(err)
+                      ) {
+                        // EntityConflictError: run was concurrently
+                        // completed/failed/cancelled during setup.
+                        // RunExpiredError: run already in terminal state.
+                        // In both cases, skip processing this message.
+                        runtimeLogger.info(
+                          'Run already finished during setup, skipping',
+                          { workflowRunId: runId, message: err.message }
+                        );
+                        return;
+                      } else if (err instanceof WorkflowRuntimeError) {
+                        runtimeLogger.error(
+                          'Fatal runtime error during workflow setup',
+                          { workflowRunId: runId, error: err.message }
+                        );
+                        try {
+                          await world.events.create(
+                            runId,
+                            {
+                              eventType: 'run_failed',
+                              specVersion: SPEC_VERSION_CURRENT,
+                              eventData: {
+                                error: {
+                                  message: err.message,
+                                  stack: err.stack,
+                                },
+                                errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+                              },
+                            },
+                            { requestId }
+                          );
+                        } catch (failErr) {
+                          if (
+                            EntityConflictError.is(failErr) ||
+                            RunExpiredError.is(failErr)
+                          ) {
+                            return;
+                          }
+                          throw failErr;
+                        }
+                        return;
+                      } else {
+                        throw err;
+                      }
+                    }
+
+                    workflowStartedAt = +workflowRun.startedAt;
+
+                    span?.setAttributes({
+                      ...Attribute.WorkflowRunStatus(workflowRun.status),
+                      ...Attribute.WorkflowStartedAt(workflowStartedAt),
+                    });
+
+                    if (workflowRun.status !== 'running') {
+                      // Workflow has already completed or failed, so we can skip it
+                      runtimeLogger.info(
+                        'Workflow already completed or failed, skipping',
+                        {
+                          workflowRunId: runId,
+                          status: workflowRun.status,
+                        }
+                      );
+
+                      // TODO: for `cancel`, we actually want to propagate a WorkflowCancelled event
+                      // inside the workflow context so the user can gracefully exit. this is SIGTERM
+                      // TODO: furthermore, there should be a timeout or a way to force cancel SIGKILL
+                      // so that we actually exit here without replaying the workflow at all, in the case
+                      // the replaying the workflow is itself failing.
+
+                      return;
+                    }
+                  } // end if (!workflowRun)
 
                   // Resolve the encryption key once before the loop since
                   // it doesn't change within a run.

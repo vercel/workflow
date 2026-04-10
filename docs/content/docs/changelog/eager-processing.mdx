@@ -91,11 +91,15 @@ When a workflow suspends with multiple pending steps (e.g., from `Promise.all`),
 3. Executes 1 step inline
 4. Loops back to replay
 
-Each background step message is handled by a separate function invocation of the same handler. When a message arrives with `stepId` and `stepName`, the handler executes that specific step, queues a plain workflow continuation (without `stepId`), and exits. It does **not** replay the workflow inline — the step events (step_started/step_completed) need to be consumed by the workflow's event subscriptions during a fresh replay.
+Each background step message is handled by a separate function invocation of the same handler. When a message arrives with `stepId` and `stepName`, the handler executes that specific step, then checks if all parallel steps from the batch are done by loading the event log and comparing `step_created` events against terminal events (`step_completed`/`step_failed`):
+
+- **All steps done**: The handler replays the workflow inline, continuing the execution loop without a queue roundtrip. Events are loaded with a cursor so subsequent loop iterations can use incremental loading.
+- **Steps still pending**: The handler returns without queuing a continuation. The last handler to complete its step will see all steps done and replay inline.
+- **Pending ops (stream writes)**: The handler queues a continuation and returns, so `waitUntil` can flush the pending stream data to the server.
 
 ### Convergence After Parallel Steps
 
-After N parallel steps complete, up to N concurrent replay attempts may occur (each background step queues a continuation). The event-sourced architecture ensures safe convergence:
+When multiple background steps complete near-simultaneously, the last ~2 handlers may both see all steps done and replay inline concurrently. The event-sourced architecture ensures safe convergence:
 
 - **`step_created` idempotency** --- duplicate creates return 409
 - **`step_completed` idempotency** --- only the first invocation to complete a step records the result (409 for duplicates)
@@ -241,7 +245,7 @@ The local development world (`world-local`) processes queue messages with high c
 
 In production (Vercel), this doesn't happen — each function invocation is isolated with its own event loading.
 
-**Fix**: The world-testing embedded test server now defaults to `WORKFLOW_LOCAL_QUEUE_CONCURRENCY=1`, serializing queue processing to simulate the production isolation model. This prevents concurrent replays from interfering with each other.
+**Fix**: The `EventsConsumer`'s `onUnconsumedEvent` callback (see "Concurrent Replay Interference with Multi-Batch Workflows" below) handles the concurrent event visibility issue. The V2 inline replay optimization (where the last background step to complete replays inline instead of queuing) further reduces concurrent replays. Redundant step executions from concurrent handlers are harmless due to `step_completed` idempotency — only the first completion wins.
 
 ### ESM `bundleFinalOutput` and Dynamic Require Errors
 
@@ -257,9 +261,18 @@ When `bundleFinalOutput: false` is used with Nitro's rollup pipeline, the step r
 
 ### Concurrent Replay Interference with Multi-Batch Workflows
 
-When the V2 inline execution loop advances through multiple suspension points (e.g., completes all steps in batch 1 and creates `step_created` events for batch 2), concurrent continuations from batch 1's background steps may replay the workflow and encounter batch 2's events without matching subscribers. The events have valid correlationIds but the concurrent replay hasn't reached the code path that creates those subscriptions, triggering the "Unconsumed event in event log" error.
+The V2 inline execution loop creates **out-of-order replay visibility**: a handler can see events in the log that were created by a different concurrent handler for subscriptions the current replay hasn't reached yet. For example, handler A completes batch 1 inline and creates `step_created` events for batch 2, while handler B (from a batch 1 background step that just completed) replays and encounters batch 2's events before reaching the code that creates those subscriptions. This triggers "Unconsumed event in event log" errors.
 
-**Fix**: The `EventsConsumer`'s `onUnconsumedEvent` callback now returns `true` (skip) for step lifecycle events (`step_created`, `step_started`, `step_completed`, `step_failed`, `step_retrying`) whose correlationId has a corresponding `step_created` event in the log — confirming they're from a legitimate concurrent handler, not corruption. The `EventsConsumer` was extended to support a `boolean` return from `onUnconsumedEvent`: `true` advances past the event, `false`/`undefined` triggers the error. Orphaned events with unknown correlationIds still error as before.
+This is a fundamental consequence of allowing concurrent handlers to share an event log without event scoping. Server-side idempotency (409 on duplicates) prevents data corruption, but the event consumer sees events without matching subscribers and errors. A long-term fix would be server-side event scoping (each invocation only sees events it created via a `createdBy` field filter), but this requires schema changes in workflow-server.
+
+**Fix**: The `EventsConsumer`'s `onUnconsumedEvent` callback in `packages/core/src/workflow.ts` uses lazily-built `Set<string>` indexes (initialized on first unconsumed event) for O(1) correlationId lookup:
+
+- **Step lifecycle events** (`step_created`, `step_started`, `step_completed`, `step_failed`, `step_retrying`): skipped if the correlationId appears in a `step_created` event in the log — confirming the step was legitimately created by a handler.
+- **Hook lifecycle events** (`hook_created`, `hook_received`, `hook_conflict`): skipped if the correlationId appears in a `hook_created` event.
+- **Duplicate `wait_completed`**: skipped only if an earlier `wait_completed` for the same correlationId already exists in the log (the workflow already consumed the first one).
+- **All other unconsumed events**: still error, preserving corruption detection for orphaned events with unknown correlationIds.
+
+The `EventsConsumer` was extended to support a `boolean` return from `onUnconsumedEvent`: `true` advances past the event, `false`/`undefined` triggers the error.
 
 ### Stale V1 Artifacts in Build Caches
 
@@ -287,11 +300,11 @@ When a step's arguments or return value include serialized streams (e.g., `Writa
 
 In V1, each step ran in a separate function invocation. After the step completed, `waitUntil(ops)` kept the function alive to flush the ops. The function then returned, giving `waitUntil` exclusive event loop time.
 
-**Current state**: `executeStep()` returns `hasPendingOps: true` whenever `ops.length > 0`. The V2 handler breaks the inline loop and queues a continuation, matching V1's per-invocation behavior. `waitUntil(ops)` ensures the stream data reaches S3 before the function is garbage collected.
+**Current state**: `executeStep()` attempts a 500ms `Promise.race` between the ops settling and a timeout. If ops settle in time (data confirmed on server), it returns `hasPendingOps: false` and the V2 handler continues the inline loop. If ops don't settle in 500ms (e.g., `WritableStream` kept open across steps), it returns `hasPendingOps: true` and the V2 handler breaks the loop and queues a continuation so `waitUntil` can flush them.
 
-**Attempted optimizations that failed**:
+**Earlier attempts that failed** (before the flush waiter fix below):
 
-1. **500ms inline ops await** — Await ops with a timeout so the loop can continue inline for steps where ops settle quickly (like AI agent steps). Failed because `WorkflowServerWritableStream` uses a buffered 10ms flush timer: the `flushablePipe`'s `pendingOps` reaches 0 when the buffered `write()` returns (instant), but the actual S3 HTTP write hasn't started yet. The ops appear settled but data isn't on S3. Multiple approaches to fix the timing (delaying `pollWritableLock`, closing the writable to trigger flush, adding a post-settle delay) all failed or caused other issues (deadlocks, premature stream closure).
+1. **500ms inline ops await without flush waiters** — The same 500ms race, but `WorkflowServerWritableStream` used a buffered 10ms flush timer: the `flushablePipe`'s `pendingOps` reached 0 when the buffered `write()` returned (instant), but the actual S3 HTTP write hadn't started yet. The ops appeared settled but data wasn't on S3. Multiple approaches to fix the timing (delaying `pollWritableLock`, closing the writable to trigger flush, adding a post-settle delay) all failed or caused other issues (deadlocks, premature stream closure).
 
 2. **Root cause of the buffered write issue**: `WorkflowServerWritableStream.write()` buffers chunks and schedules a flush via `setTimeout(flush, 10ms)`. The `flushablePipe` calls `await writer.write(chunk)` which returns immediately (data buffered). `pendingOps--` fires before the 10ms timer. The `pollWritableLock` sees `pendingOps === 0` and resolves `state.promise`. The ops appear settled, but data is still in the buffer.
 
@@ -418,7 +431,7 @@ Merging `main` also pulled in a newer `hasStepSourceMaps()` expectation for Verc
 
 The Redis community-world benchmark still loads an external world package that has not adopted the newer `world.streams.*` interface yet. Once the eager-processing changes exercised stream writes through the modern namespace consistently, that adapter started failing with `Cannot read properties of undefined (reading 'writeMulti')` before the benchmark could even start.
 
-**Fix**: Normalize legacy worlds at runtime by adapting the old top-level stream methods (`writeToStream`, `writeToStreamMulti`, `closeStream`, `readFromStream`, `listStreamsByRunId`) into the current `world.streams.*` shape when an adapter has not upgraded yet.
+**Decision**: Community world adapters must implement the `world.streams.*` interface. The runtime legacy stream normalization (`normalizeLegacyWorld`) was removed. Community world e2e tests are skipped until the adapters are updated.
 
 ### Build Output API Flow Handler Drift
 
@@ -457,9 +470,9 @@ The `@workflow/world-testing` package includes invocation-counting tests that ve
 | Workflow Pattern | Expected Invocations | Why |
 |-----------------|---------------------|-----|
 | Sequential steps (3 adds) | **1** | All steps execute inline |
-| Sequential steps + WritableStream | **1** | Ops settle via synchronous flush |
+| Sequential steps + WritableStream | **1** | Ops settle via flush waiter promises (500ms race) |
 | Sleep (1s) + step | **2** | Sleep requires queue round-trip |
-| Promise.all (2 steps) | **2-3** | Background step + continuation |
+| Promise.all (2 steps) | **2-3** | Background step + inline replay after all steps done |
 
 The test server tracks flow handler invocations per `runId` via an internal counter. Each test asserts the exact invocation count after the workflow completes.
 

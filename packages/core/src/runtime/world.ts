@@ -29,93 +29,6 @@ const globalSymbols: typeof globalThis & {
   [StubbedWorldCachePromise]?: Promise<World>;
 } = globalThis;
 
-type LegacyStreamWorld = World & {
-  writeToStream?: (
-    name: string,
-    runId: string,
-    chunk: string | Uint8Array
-  ) => Promise<void>;
-  writeToStreamMulti?: (
-    name: string,
-    runId: string,
-    chunks: (string | Uint8Array)[]
-  ) => Promise<void>;
-  closeStream?: (name: string, runId: string) => Promise<void>;
-  readFromStream?: (
-    name: string,
-    runId: string,
-    startIndex?: number
-  ) => Promise<ReadableStream<Uint8Array>>;
-  listStreamsByRunId?: (runId: string) => Promise<string[]>;
-};
-
-function normalizeLegacyWorld(world: World): World {
-  if (world.streams) {
-    return world;
-  }
-
-  const legacyWorld = world as LegacyStreamWorld;
-  const hasLegacyStreams =
-    typeof legacyWorld.writeToStream === 'function' ||
-    typeof legacyWorld.writeToStreamMulti === 'function' ||
-    typeof legacyWorld.closeStream === 'function' ||
-    typeof legacyWorld.readFromStream === 'function' ||
-    typeof legacyWorld.listStreamsByRunId === 'function';
-
-  if (!hasLegacyStreams) {
-    return world;
-  }
-
-  const unsupported = async (operation: string): Promise<never> => {
-    throw new Error(
-      `The configured world does not implement streams.${operation}(). Upgrade the world adapter to the current stream interface.`
-    );
-  };
-
-  return Object.assign(legacyWorld, {
-    streams: {
-      write: async (
-        runId: string,
-        name: string,
-        chunk: string | Uint8Array
-      ) => {
-        if (typeof legacyWorld.writeToStream === 'function') {
-          return await legacyWorld.writeToStream(name, runId, chunk);
-        }
-        return unsupported('write');
-      },
-      writeMulti:
-        typeof legacyWorld.writeToStreamMulti === 'function'
-          ? async (
-              runId: string,
-              name: string,
-              chunks: (string | Uint8Array)[]
-            ) => legacyWorld.writeToStreamMulti!(name, runId, chunks)
-          : undefined,
-      close: async (runId: string, name: string) => {
-        if (typeof legacyWorld.closeStream === 'function') {
-          return await legacyWorld.closeStream(name, runId);
-        }
-        return unsupported('close');
-      },
-      get: async (runId: string, name: string, startIndex?: number) => {
-        if (typeof legacyWorld.readFromStream === 'function') {
-          return await legacyWorld.readFromStream(name, runId, startIndex);
-        }
-        return unsupported('get');
-      },
-      list: async (runId: string) => {
-        if (typeof legacyWorld.listStreamsByRunId === 'function') {
-          return await legacyWorld.listStreamsByRunId(runId);
-        }
-        return unsupported('list');
-      },
-      getChunks: async () => unsupported('getChunks'),
-      getInfo: async () => unsupported('getInfo'),
-    },
-  }) as World;
-}
-
 /**
  * Hides the dynamic import behind `new Function` to prevent bundlers from
  * trying to resolve it at build time, since the world module may not exist
@@ -183,16 +96,14 @@ export const createWorld = async (): Promise<World> => {
     }
 
     const { createVercelWorld } = await import('@workflow/world-vercel');
-    return normalizeLegacyWorld(createVercelWorld());
+    return createVercelWorld();
   }
 
   if (targetWorld === 'local') {
     const { createLocalWorld } = await import('@workflow/world-local');
-    return normalizeLegacyWorld(
-      createLocalWorld({
-        dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
-      })
-    );
+    return createLocalWorld({
+      dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
+    });
   }
 
   // Try dynamic import() first — ESM-first since this PR's purpose is ESM support.
@@ -206,11 +117,11 @@ export const createWorld = async (): Promise<World> => {
     mod = getRuntimeRequire()(targetWorld);
   }
   if (typeof mod === 'function') {
-    return normalizeLegacyWorld(mod() as World);
+    return mod() as World;
   } else if (typeof mod.default === 'function') {
-    return normalizeLegacyWorld(mod.default() as World);
+    return mod.default() as World;
   } else if (typeof mod.createWorld === 'function') {
-    return normalizeLegacyWorld(mod.createWorld() as World);
+    return mod.createWorld() as World;
   }
 
   throw new Error(
