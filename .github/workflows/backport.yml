@@ -36,12 +36,86 @@ jobs:
           git config user.name "$(git log -1 --format='%an' "$MERGE_SHA")"
           git config user.email "$(git log -1 --format='%ae' "$MERGE_SHA")"
           git checkout stable
-          git cherry-pick "$MERGE_SHA" --no-edit
-          echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          git push origin stable
+          if git cherry-pick "$MERGE_SHA" --no-edit; then
+            echo "status=clean" >> "$GITHUB_OUTPUT"
+            echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Comment on success
-        if: success()
+      - name: Push clean backport
+        if: steps.cherry-pick.outputs.status == 'clean'
+        run: git push origin stable
+
+      - name: Install opencode
+        if: steps.cherry-pick.outputs.status == 'conflict'
+        run: |
+          curl -fsSL https://opencode.ai/install | bash
+          echo "$HOME/.opencode/bin" >> "$GITHUB_PATH"
+
+      - name: Configure opencode
+        if: steps.cherry-pick.outputs.status == 'conflict'
+        env:
+          AI_GATEWAY_TOKEN: ${{ secrets.AI_GATEWAY_TOKEN }}
+        run: |
+          mkdir -p ~/.local/share/opencode
+          echo '{"vercel":{"type":"api","key":"'"$AI_GATEWAY_TOKEN"'"}}' > ~/.local/share/opencode/auth.json
+
+      - name: Resolve conflicts with opencode
+        if: steps.cherry-pick.outputs.status == 'conflict'
+        id: ai-resolve
+        env:
+          OPENCODE_PERMISSION: '{"allow":["*"]}'
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          COMMIT_MSG=$(git log -1 --format='%B' "$MERGE_SHA")
+
+          opencode run --model vercel/anthropic/claude-opus-4-20250514 \
+            "The working tree has git merge conflicts from a failed cherry-pick.
+          A commit is being cherry-picked from the main branch to the stable branch.
+
+          PR title: $PR_TITLE
+          Commit message: $COMMIT_MSG
+
+          Resolve all merge conflicts in the working tree. The content between
+          <<<<<<< HEAD and ======= is the current stable branch. The content between
+          ======= and >>>>>>> is the incoming change from main.
+
+          After resolving each file, run git add on it to mark it as resolved.
+          Do NOT run git cherry-pick --continue or git commit."
+
+          # Verify all conflicts are resolved
+          REMAINING=$(git diff --name-only --diff-filter=U || true)
+          if [ -z "$REMAINING" ]; then
+            GIT_EDITOR=true git cherry-pick --continue
+            echo "resolved=true" >> "$GITHUB_OUTPUT"
+            echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create backport PR with AI-resolved conflicts
+        if: steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true'
+        id: backport-pr
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          BRANCH="backport/pr-${{ github.event.pull_request.number }}-to-stable"
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+          PR_URL=$(gh pr create \
+            --base stable \
+            --head "$BRANCH" \
+            --title "Backport #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}" \
+            --body "$(cat <<'BODY'
+          Automated backport of #${{ github.event.pull_request.number }} to `stable`.
+
+          Merge conflicts were resolved by AI ([opencode](https://opencode.ai) with Claude Opus). **Please review the conflict resolution before merging.**
+          BODY
+          )")
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on clean backport
+        if: steps.cherry-pick.outputs.status == 'clean'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -55,8 +129,21 @@ jobs:
               body: `Backported to \`stable\` (${originalSha} -> ${cherryPickSha}).`
             });
 
+      - name: Comment on AI-resolved backport
+        if: steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: 'Cherry-pick to `stable` had conflicts that were resolved by AI. Please review the backport PR: ${{ steps.backport-pr.outputs.pr_url }}'
+            });
+
       - name: Comment on failure
-        if: failure()
+        if: steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved != 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -67,7 +154,7 @@ jobs:
               repo: context.repo.repo,
               issue_number: context.payload.pull_request.number,
               body: [
-                '**Backport to `stable` failed** — the cherry-pick could not be applied cleanly.',
+                '**Backport to `stable` failed** — the cherry-pick had conflicts that could not be resolved automatically.',
                 '',
                 'To resolve manually:',
                 '```bash',
