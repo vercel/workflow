@@ -126,6 +126,10 @@ export async function applySwcTransform(
     // TODO: investigate proper source map support as they
     // won't even be used in Node.js by default unless we
     // intercept errors and apply them ourselves
+    // Explicitly disable reading input source maps from sourceMappingURL
+    // sidecars. Some published dependencies omit *.map files, which can
+    // otherwise fail deferred route compilation in lazy discovery mode.
+    inputSourceMap: false,
     sourceMaps: false,
     minify: false,
   });

@@ -8,13 +8,16 @@ vi.mock('@workflow/utils/get-port', () => ({
 
 describe('resolveBaseUrl', () => {
   let originalEnv: NodeJS.ProcessEnv;
+  let originalArgv: string[];
 
   beforeEach(() => {
     originalEnv = { ...process.env };
+    originalArgv = [...process.argv];
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    process.argv = originalArgv;
     vi.clearAllMocks();
   });
 
@@ -227,6 +230,86 @@ describe('resolveBaseUrl', () => {
       const result = await resolveBaseUrl({});
 
       expect(result).toBe('http://localhost:4173');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should use TURBO_PORT env var when PORT is not set', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      process.env.TURBO_PORT = '3002';
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:3002');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should parse --port from npm_lifecycle_script when no direct env port is set', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      process.env.npm_lifecycle_script =
+        'MFE_DISABLE_LOCAL_PROXY_REWRITE=1 next dev --port 3002 --turbopack';
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:3002');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should parse --port= from npm_lifecycle_script', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      process.env.npm_lifecycle_script = 'next dev --port=3010 --turbopack';
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:3010');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should parse -p from npm_lifecycle_script', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      process.env.npm_lifecycle_script = 'next dev -p 4005';
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:4005');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should parse -p= from npm_lifecycle_script', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      process.env.npm_lifecycle_script = 'next dev -p=4006';
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:4006');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should use process.argv when env and lifecycle ports are absent', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      delete process.env.npm_lifecycle_script;
+      process.argv = ['/usr/local/bin/node', 'next-server', '--port', '4567'];
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:4567');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
     it('should ignore PORT env var when config.port is provided', async () => {
