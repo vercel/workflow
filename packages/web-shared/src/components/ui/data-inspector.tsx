@@ -9,7 +9,14 @@
  */
 
 import { Lock } from 'lucide-react';
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ObjectInspector,
   ObjectLabel,
@@ -348,12 +355,18 @@ function makeOpaqueRef(ref: Record<string, unknown>): unknown {
 /**
  * Recursively walk data and replace RunRef/StreamRef objects with
  * non-expandable versions so ObjectInspector doesn't show their internals.
+ * Only recurses into plain objects and arrays to avoid stripping class
+ * instances (Date, Error, Map, Set, URL, Headers, etc.) that have their
+ * own rendering in NodeRenderer.
  */
 function collapseRefs(data: unknown): unknown {
   if (data === null || typeof data !== 'object') return data;
   if (isRunRef(data) || isStreamRef(data))
     return makeOpaqueRef(data as unknown as Record<string, unknown>);
   if (Array.isArray(data)) return data.map(collapseRefs);
+  // Only recurse into plain objects — leave class instances untouched
+  const proto = Object.getPrototypeOf(data);
+  if (proto !== Object.prototype && proto !== null) return data;
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
     result[key] = collapseRefs(value);
@@ -387,7 +400,8 @@ export function DataInspector({
   onDecrypt,
   isDecrypting = false,
 }: DataInspectorProps) {
-  const stableData = useStableInspectorData(collapseRefs(data));
+  const collapsedData = useMemo(() => collapseRefs(data), [data]);
+  const stableData = useStableInspectorData(collapsedData);
   const [initialExpandLevel, setInitialExpandLevel] = useState(expandLevel);
   const isDark = useDarkMode();
   const extendedTheme = isDark
