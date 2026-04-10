@@ -314,7 +314,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
                   href="/docs/how-it-works/encryption"
                   className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  <ShieldCheck className="h-4 w-4 shrink-0 text-green-900" />
+                  <ShieldCheck className="h-4 w-4 shrink-0 text-blue-900" />
                   <span>E2E Encrypted</span>
                 </Link>
               </TooltipTrigger>

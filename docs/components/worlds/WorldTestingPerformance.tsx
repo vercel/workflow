@@ -87,17 +87,17 @@ const statusConfig = {
   passing: {
     label: 'Passing',
     icon: CheckCircle2,
-    className: 'bg-green-300 text-green-900',
+    className: 'bg-green-900 dark:bg-green-600 text-white',
   },
   partial: {
     label: 'Partial',
     icon: AlertCircle,
-    className: 'bg-amber-300 text-amber-900',
+    className: 'bg-amber-700 text-white',
   },
   failing: {
     label: 'Failing',
     icon: XCircle,
-    className: 'bg-red-300 text-red-900',
+    className: 'bg-red-900 dark:bg-red-800 text-white',
   },
   pending: {
     label: 'Pending',
@@ -172,9 +172,9 @@ export function WorldTestingPerformance({
           {hasE2E ? (
             <>
               {/* Summary - based on nextjs-turbopack for canonical scoring */}
-              <div className="flex flex-wrap items-center gap-4">
+              <div className="flex flex-wrap items-center gap-3">
                 <Badge
-                  className={cn('gap-1 text-sm py-1 px-3', config.className)}
+                  className={`gap-1 text-sm py-1 px-3 ${config.className}`}
                 >
                   <StatusIcon className="h-4 w-4" />
                   {config.label}
@@ -207,25 +207,27 @@ export function WorldTestingPerformance({
               {/* Details - show pass/fail/skipped counts */}
               <div className="grid gap-4 sm:grid-cols-4 text-sm">
                 <div className="p-4 rounded-lg border bg-card">
-                  <div className="text-2xl font-semibold text-green-900">
+                  <div className="text-2xl font-semibold text-green-900 dark:text-green-600 font-mono">
                     {scoringPassed}
                   </div>
                   <div className="text-muted-foreground">Passed</div>
                 </div>
                 <div className="p-4 rounded-lg border bg-card">
-                  <div className="text-2xl font-semibold text-red-900">
+                  <div className="text-2xl font-semibold text-red-900 dark:text-red-800 font-mono">
                     {scoringFailed}
                   </div>
                   <div className="text-muted-foreground">Failed</div>
                 </div>
                 <div className="p-4 rounded-lg border bg-card">
-                  <div className="text-2xl font-semibold text-muted-foreground">
+                  <div className="text-2xl font-semibold font-mono">
                     {scoringSkipped}
                   </div>
                   <div className="text-muted-foreground">Skipped</div>
                 </div>
                 <div className="p-4 rounded-lg border bg-card">
-                  <div className="text-2xl font-semibold">{scoringTotal}</div>
+                  <div className="text-2xl font-semibold font-mono">
+                    {scoringTotal}
+                  </div>
                   <div className="text-muted-foreground">Total</div>
                 </div>
               </div>

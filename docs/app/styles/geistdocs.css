@@ -251,6 +251,12 @@
   --ds-pink-1000: oklch(26% 0.0977 359);
   --ds-shadow-menu:
     0 0 0 1px oklch(0 0 0 / 0.08), 0 8px 16px oklch(0 0 0 / 0.08);
+  --ds-shadow-background-border: 0 0 0 1px var(--ds-background-200);
+  --ds-shadow-border-base: 0 0 0 1px rgba(0, 0, 0, 0.08);
+  --ds-shadow-small: 0px 2px 2px rgba(0, 0, 0, 0.04);
+  --ds-shadow-border-small:
+    var(--ds-shadow-border-base), var(--ds-shadow-small),
+    var(--ds-shadow-background-border);
 
   --radius: 0.625rem;
   --background: oklch(1 0 0);
@@ -284,6 +290,9 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+
+  /* Marketing visual tokens */
+  --guide-color: var(--ds-gray-300);
 }
 
 .dark {
@@ -381,6 +390,12 @@
   --ds-pink-900: oklch(69.36% 0.2223 3.91);
   --ds-pink-1000: oklch(95.74% 0.0326 350.08);
   --ds-shadow-menu: 0 0 0 1px oklch(1 0 0 / 0.1), 0 8px 16px oklch(0 0 0 / 0.4);
+  --ds-shadow-background-border: 0 0 0 1px var(--ds-background-200);
+  --ds-shadow-border-base: 0 0 0 1px rgba(255, 255, 255, 0.145);
+  --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.16);
+  --ds-shadow-border-small:
+    var(--ds-shadow-border-base), var(--ds-shadow-small),
+    var(--ds-shadow-background-border);
 
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
@@ -413,6 +428,9 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+
+  /* Marketing visual tokens */
+  --guide-color: var(--ds-gray-300);
 }
 
 @layer base {
@@ -462,6 +480,11 @@
 }
 
 /* Line numbers styles for code blocks */
+@utility material-small {
+  @apply bg-background-100 rounded-[6px];
+  box-shadow: var(--ds-shadow-border-small);
+}
+
 @layer utilities {
   .line-numbers code {
     counter-reset: step;
