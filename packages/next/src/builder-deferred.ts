@@ -135,6 +135,19 @@ export async function getNextBuilderDeferred() {
 
       await this.writeStubFiles(outputDir);
       await this.createDiscoverySocketServer();
+
+      // After a dev server restart, stubs are rewritten on disk. If we already
+      // have discovered entries from the persisted cache, trigger a deferred
+      // rebuild immediately so routes do not remain stubbed until a fresh
+      // loader discovery event arrives.
+      if (
+        this.config.watch &&
+        (this.discoveredWorkflowFiles.size > 0 ||
+          this.discoveredStepFiles.size > 0 ||
+          this.discoveredSerdeFiles.size > 0)
+      ) {
+        this.scheduleDeferredRebuild();
+      }
     }
 
     async onBeforeDeferredEntries(): Promise<void> {
