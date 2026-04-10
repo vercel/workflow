@@ -115,6 +115,7 @@ export async function getNextBuilderDeferred() {
     private cacheInitialized = false;
     private cacheWriteTimer: NodeJS.Timeout | null = null;
     private deferredRebuildTimer: NodeJS.Timeout | null = null;
+    private pendingTriggerBuildAck = false;
     private lastDeferredBuildSignature: string | null = null;
     // Lazily initialized resolvers for bare specifier rewriting.
     // Cached to avoid re-creating on every import rewrite.
@@ -767,7 +768,7 @@ export async function getNextBuilderDeferred() {
           }
         },
         onTriggerBuild: () => {
-          this.scheduleDeferredRebuild();
+          this.scheduleDeferredRebuild({ acknowledgeTriggerBuild: true });
         },
       };
 
@@ -1046,9 +1047,15 @@ export async function getNextBuilderDeferred() {
       }, 50);
     }
 
-    private scheduleDeferredRebuild(): void {
+    private scheduleDeferredRebuild(options?: {
+      acknowledgeTriggerBuild?: boolean;
+    }): void {
       if (!this.config.watch) {
         return;
+      }
+
+      if (options?.acknowledgeTriggerBuild) {
+        this.pendingTriggerBuildAck = true;
       }
 
       if (this.deferredRebuildTimer) {
@@ -1057,12 +1064,23 @@ export async function getNextBuilderDeferred() {
 
       this.deferredRebuildTimer = setTimeout(() => {
         this.deferredRebuildTimer = null;
-        void this.onBeforeDeferredEntries().catch((error) => {
-          console.warn(
-            '[workflow] Deferred rebuild after source update failed.',
-            error
-          );
-        });
+        const shouldAckTriggerBuild = this.pendingTriggerBuildAck;
+        this.pendingTriggerBuildAck = false;
+
+        void this.onBeforeDeferredEntries()
+          .catch((error) => {
+            console.warn(
+              '[workflow] Deferred rebuild after source update failed.',
+              error
+            );
+          })
+          .finally(() => {
+            // A trigger-build waiter must always get a completion signal,
+            // even when the rebuild is a no-op (signature unchanged).
+            if (shouldAckTriggerBuild) {
+              this.socketIO?.emit('build-complete');
+            }
+          });
       }, 75);
     }
 
