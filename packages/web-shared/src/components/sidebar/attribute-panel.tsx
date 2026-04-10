@@ -231,6 +231,7 @@ type AttributeKey =
   | keyof Hook
   | keyof Event
   | 'moduleSpecifier'
+  | 'isSystem'
   | 'eventData'
   | 'resumeAt'
   | 'expiredAt'
