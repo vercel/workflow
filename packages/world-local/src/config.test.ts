@@ -1,3 +1,7 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, mkdir } from 'node:fs/promises';
+import os from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveBaseUrl } from './config';
 
@@ -310,6 +314,50 @@ describe('resolveBaseUrl', () => {
 
       expect(result).toBe('http://localhost:4567');
       expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should resolve from process list when dataDir points to a project with a live next dev port', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      delete process.env.npm_lifecycle_script;
+      delete process.env.__NEXT_PRIVATE_ORIGIN;
+      process.argv = ['/usr/local/bin/node', 'vitest'];
+
+      const projectRoot = await mkdtemp(
+        join(os.tmpdir(), 'workflow-config-process-port-')
+      );
+      await mkdir(join(projectRoot, '.next', 'workflow-data'), {
+        recursive: true,
+      });
+
+      const simulatedPort = 41234;
+      const helper = spawn(
+        process.execPath,
+        [
+          '-e',
+          'setInterval(() => {}, 1000)',
+          'next',
+          'dev',
+          '--port',
+          String(simulatedPort),
+          `${projectRoot}/app`,
+        ],
+        { stdio: 'ignore' }
+      );
+
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const result = await resolveBaseUrl({
+          dataDir: join(projectRoot, '.next', 'workflow-data'),
+        });
+        expect(result).toBe(`http://localhost:${simulatedPort}`);
+        expect(getWorkflowPort).not.toHaveBeenCalled();
+      } finally {
+        helper.kill();
+        await new Promise((resolve) => helper.once('exit', resolve));
+      }
     });
 
     it('should ignore PORT env var when config.port is provided', async () => {

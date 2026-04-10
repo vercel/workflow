@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { once } from './util.js';
@@ -7,7 +8,8 @@ const execFileAsync = promisify(execFile);
 const COMMAND_PORT_PATTERN =
   /(?:^|\s)(?:--port(?:=|\s+)|-p(?:=|\s+))(\d{1,5})(?=\s|$)/;
 const MAX_ANCESTOR_PORT_SCAN_DEPTH = 6;
-let cachedAncestorCommandPortPromise: Promise<number | undefined> | null = null;
+const cachedProjectPortByRoot = new Map<string, number>();
+let cachedAncestorCommandPort: number | undefined;
 
 const getDataDirFromEnv = () => {
   return process.env.WORKFLOW_LOCAL_DATA_DIR || '.workflow-data';
@@ -142,13 +144,80 @@ async function getPortFromAncestorCommands(): Promise<number | undefined> {
 async function getCachedPortFromAncestorCommands(): Promise<
   number | undefined
 > {
-  if (!cachedAncestorCommandPortPromise) {
-    cachedAncestorCommandPortPromise = getPortFromAncestorCommands().catch(
-      () => undefined
-    );
+  if (typeof cachedAncestorCommandPort === 'number') {
+    return cachedAncestorCommandPort;
   }
 
-  return cachedAncestorCommandPortPromise;
+  const resolvedPort = await getPortFromAncestorCommands();
+  if (typeof resolvedPort === 'number') {
+    cachedAncestorCommandPort = resolvedPort;
+  }
+  return resolvedPort;
+}
+
+function normalizePath(filePath: string): string {
+  return filePath.replace(/\\/g, '/');
+}
+
+function getProjectRootFromDataDir(
+  dataDir: string | undefined
+): string | undefined {
+  if (!dataDir) {
+    return undefined;
+  }
+
+  const normalized = normalizePath(resolve(dataDir));
+
+  const nextSuffix = '/.next/workflow-data';
+  if (normalized.endsWith(nextSuffix)) {
+    return normalized.slice(0, -nextSuffix.length);
+  }
+
+  const fallbackSuffix = '/.workflow-data';
+  if (normalized.endsWith(fallbackSuffix)) {
+    return normalized.slice(0, -fallbackSuffix.length);
+  }
+
+  return undefined;
+}
+
+async function getPortFromProjectProcessList(
+  projectRoot: string | undefined
+): Promise<number | undefined> {
+  if (!projectRoot || process.platform === 'win32') {
+    return undefined;
+  }
+
+  const cachedPort = cachedProjectPortByRoot.get(projectRoot);
+  if (typeof cachedPort === 'number') {
+    return cachedPort;
+  }
+
+  try {
+    const { stdout } = await execFileAsync('ps', ['-Ao', 'command=']);
+    const normalizedProjectRoot = normalizePath(projectRoot);
+    const projectPrefix = `${normalizedProjectRoot}/`;
+    const commandLines = stdout.split('\n').map((line) => line.trim());
+
+    const nextDevCommands = commandLines.filter(
+      (line) =>
+        line.includes(projectPrefix) &&
+        line.includes('next') &&
+        line.includes(' dev')
+    );
+
+    for (const commandLine of nextDevCommands) {
+      const parsedPort = getPortFromCommand(commandLine);
+      if (typeof parsedPort === 'number') {
+        cachedProjectPortByRoot.set(projectRoot, parsedPort);
+        return parsedPort;
+      }
+    }
+
+    return undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export type Config = {
@@ -186,8 +255,9 @@ export const config = once<Config>(() => {
  * 6. TURBO_PORT env var (set by turbo task runner in some monorepos)
  * 7. npm_lifecycle_script --port/-p value (when dev script encodes the port)
  * 8. process.argv --port/-p value
- * 9. Ancestor process command --port/-p value (for detached worker contexts)
- * 10. Auto-detected port via getPort (detect actual listening port)
+ * 9. Process list lookup by WORKFLOW_LOCAL_DATA_DIR project root (multi-worker fallback)
+ * 10. Ancestor process command --port/-p value (for detached worker contexts)
+ * 11. Auto-detected port via getPort (detect actual listening port)
  */
 export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   if (config.baseUrl) {
@@ -229,6 +299,12 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   const argvPort = getPortFromArgv();
   if (typeof argvPort === 'number') {
     return `http://localhost:${argvPort}`;
+  }
+
+  const projectRoot = getProjectRootFromDataDir(config.dataDir);
+  const projectProcessPort = await getPortFromProjectProcessList(projectRoot);
+  if (typeof projectProcessPort === 'number') {
+    return `http://localhost:${projectProcessPort}`;
   }
 
   const ancestorCommandPort = await getCachedPortFromAncestorCommands();
