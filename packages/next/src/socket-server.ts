@@ -193,6 +193,7 @@ export async function createSocketServer(
                 {
                   port: address.port,
                   authToken,
+                  isDevServer: config.isDevServer,
                 },
                 null,
                 2
@@ -201,6 +202,9 @@ export async function createSocketServer(
             process.env.WORKFLOW_SOCKET_INFO_PATH = socketInfoFilePath;
             process.env.WORKFLOW_SOCKET_PORT = String(address.port);
             process.env.WORKFLOW_SOCKET_AUTH = authToken;
+            process.env.WORKFLOW_SOCKET_IS_DEV_SERVER = config.isDevServer
+              ? '1'
+              : '0';
             resolve();
           } catch (error) {
             reject(error);
