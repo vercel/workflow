@@ -119,6 +119,7 @@ export async function start<TArgs extends unknown[], TResult>(
   argsOrOptions?: TArgs | StartOptions,
   options?: StartOptions
 ) {
+  'use step';
   return await waitedUntil(() => {
     // @ts-expect-error this field is added by our client transform
     const workflowName = workflow?.workflowId;

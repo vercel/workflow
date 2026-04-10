@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getRun, Run, start } from 'workflow/api';
+import { getRun, Run, resumeHook, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -1654,4 +1654,65 @@ export async function getterStepWorkflow(
     calibrated, // base * multiplier + offset
     reading2, // 100 * 2 = 200
   };
+}
+
+//////////////////////////////////////////////////////////
+// start() inside workflow functions
+//////////////////////////////////////////////////////////
+
+/**
+ * Child workflow used by startFromWorkflow.
+ * Receives a hook token from its parent, processes a value,
+ * and signals the parent via resumeHook before completing.
+ */
+export async function childWorkflowWithHookSignal(
+  hookToken: string,
+  value: number
+) {
+  'use workflow';
+  const result = await processAndSignalParent(hookToken, value);
+  return result;
+}
+
+async function processAndSignalParent(hookToken: string, value: number) {
+  'use step';
+  const processed = value * 3;
+  await resumeHook(hookToken, { processed });
+  return { processed };
+}
+
+/**
+ * Parent workflow that calls start() directly to spawn a child workflow,
+ * then waits for a hook signal from the child.
+ */
+export async function startFromWorkflow(inputValue: number) {
+  'use workflow';
+  const hook = createHook<{ processed: number }>();
+  const childRun = await start(childWorkflowWithHookSignal, [
+    hook.token,
+    inputValue,
+  ]);
+  const signal = await hook;
+  return {
+    parentInput: inputValue,
+    childRunId: childRun.runId,
+    signalFromChild: signal,
+  };
+}
+
+/**
+ * Recursive Fibonacci workflow. start() is called directly to spawn
+ * child workflows for fib(n-1) and fib(n-2).
+ */
+export async function fibonacciWorkflow(n: number): Promise<number> {
+  'use workflow';
+  if (n <= 1) return n;
+
+  const [runA, runB] = await Promise.all([
+    start(fibonacciWorkflow, [n - 1]),
+    start(fibonacciWorkflow, [n - 2]),
+  ]);
+
+  const [a, b] = await Promise.all([runA.returnValue, runB.returnValue]);
+  return a + b;
 }
