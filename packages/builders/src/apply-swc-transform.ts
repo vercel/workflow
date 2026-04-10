@@ -50,7 +50,7 @@ export type WorkflowManifest = {
 export async function applySwcTransform(
   filename: string,
   source: string,
-  mode: 'workflow' | 'step' | 'client' | 'detect' | false,
+  mode: 'workflow' | 'step' | 'detect' | false,
   /**
    * Optional absolute path to the file being transformed.
    * Used for module specifier resolution when filename is relative.

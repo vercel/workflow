@@ -4,7 +4,6 @@ import { anotherHelper, usefulHelper// do not remove
 import defaultExport from './default'; // should be removed
 import * as something from './something'; // should be removed
 import * as useful from './useful'; // do not remove
-import 'dotenv/config'; // should be removed
 /**__internal_workflows{"steps":{"input.js":{"processData":{"stepId":"step//./input//processData"}}}}*/;
 export async function processData(data) {
     const result = someHelper(data);

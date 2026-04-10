@@ -1,5 +1,3 @@
-import { DurableAgent } from '@workflow/ai/agent';
-import { gateway } from 'ai';
 /**__internal_workflows{"workflows":{"input.js":{"wflow":{"workflowId":"workflow//./input//wflow"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"f":{"stepId":"step//./input//f"},"fn":{"stepId":"step//./input//fn"},"namedStepWithClosureVars":{"stepId":"step//./input//namedStepWithClosureVars"}}}}*/;
 var stepWrapperReturnArrowFunctionVar$fn = async ()=>{
     const { a, b, c } = function() {
@@ -206,50 +204,6 @@ async function wflow$_anonymousStep4() {
         configurable: true
     });
 })(wflow$_anonymousStep4, "step//./input//wflow/_anonymousStep4");
-function stepWrapperReturnArrowFunctionVar(a, b, c) {
-    const fn = async ()=>{
-        return a + b + c;
-    };
-    return fn;
-}
-function stepWrapperReturnNamedFunction(a, b, c) {
-    return async function f() {
-        return a + b + c;
-    };
-}
-function stepWrapperReturnArrowFunction(a, b, c) {
-    return async ()=>{
-        return a + b + c;
-    };
-}
-function stepWrapperReturnNamedFunctionVar(a, b, c) {
-    async function fn() {
-        return a + b + c;
-    }
-    return fn;
-}
-const arrowWrapperReturnArrowFunctionVar = (a, b, c)=>{
-    const fn = async ()=>{
-        return a + b + c;
-    };
-    return fn;
-};
-const arrowWrapperReturnNamedFunction = (a, b, c)=>{
-    return async function f() {
-        return a + b + c;
-    };
-};
-const arrowWrapperReturnArrowFunction = (a, b, c)=>{
-    return async ()=>{
-        return a + b + c;
-    };
-};
-const arrowWrapperReturnNamedFunctionVar = (a, b, c)=>{
-    async function fn() {
-        return a + b + c;
-    }
-    return fn;
-};
 export async function wflow() {
     throw new Error("You attempted to execute workflow wflow function directly. To start a workflow, use start(wflow) from workflow/api");
 }

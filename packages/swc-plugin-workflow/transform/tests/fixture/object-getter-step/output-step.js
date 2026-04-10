@@ -27,7 +27,5 @@ export const config = {
     get timestamp () {
         return Date.now();
     },
-    async process (data) {
-        return data * 2;
-    }
+    process: config$process
 };

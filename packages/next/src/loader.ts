@@ -616,7 +616,7 @@ function stripDeferredStepSourceMetadataComment(source: string): string {
 }
 
 // This loader applies the "use workflow"/"use step" transform.
-// Deferred step-copy files are transformed in step mode; all other files use client mode.
+// Deferred step-copy files are transformed in step mode; all other files also use step mode.
 type WorkflowLoaderContext = {
   resourcePath: string;
   async?: () => (
@@ -743,7 +743,7 @@ export default function workflowLoader(
       deferredStepSourceMetadata?.absolutePath || filename,
       workingDir
     );
-    const mode = isDeferredStepCopyFile ? 'step' : 'client';
+    const mode = 'step';
 
     // Transform with SWC
     const result = await transform(sourceForTransform, {
