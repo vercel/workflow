@@ -1,15 +1,15 @@
 'use client';
 
-import { useState } from 'react';
 import {
-  CheckCircle2,
   AlertCircle,
-  XCircle,
+  CheckCircle2,
   Clock,
-  TrendingUp,
   Info,
   Timer,
+  TrendingUp,
+  XCircle,
 } from 'lucide-react';
+import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
 import {
   Table,
@@ -25,8 +25,8 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
-import { formatTime, type World } from './types';
 import { BenchmarkHistoryChart } from './BenchmarkHistoryChart';
+import { formatTime, type World } from './types';
 
 const TimeColumnHeader = () => (
   <div className="flex items-center justify-end gap-1">
@@ -87,22 +87,22 @@ const statusConfig = {
   passing: {
     label: 'Passing',
     icon: CheckCircle2,
-    className: 'bg-green-500/10 text-green-600 border-green-500/20',
+    className: 'bg-green-300 text-green-900',
   },
   partial: {
     label: 'Partial',
     icon: AlertCircle,
-    className: 'bg-yellow-500/10 text-yellow-600 border-yellow-500/20',
+    className: 'bg-amber-300 text-amber-900',
   },
   failing: {
     label: 'Failing',
     icon: XCircle,
-    className: 'bg-red-500/10 text-red-600 border-red-500/20',
+    className: 'bg-red-300 text-red-900',
   },
   pending: {
     label: 'Pending',
     icon: Clock,
-    className: 'bg-muted text-muted-foreground',
+    className: 'bg-gray-300 text-gray-1000',
   },
 };
 
@@ -207,13 +207,13 @@ export function WorldTestingPerformance({
               {/* Details - show pass/fail/skipped counts */}
               <div className="grid gap-4 sm:grid-cols-4 text-sm">
                 <div className="p-4 rounded-lg border bg-card">
-                  <div className="text-2xl font-semibold text-green-600">
+                  <div className="text-2xl font-semibold text-green-900">
                     {scoringPassed}
                   </div>
                   <div className="text-muted-foreground">Passed</div>
                 </div>
                 <div className="p-4 rounded-lg border bg-card">
-                  <div className="text-2xl font-semibold text-red-600">
+                  <div className="text-2xl font-semibold text-red-900">
                     {scoringFailed}
                   </div>
                   <div className="text-muted-foreground">Failed</div>

@@ -46,17 +46,17 @@ const statusConfig = {
   passing: {
     label: 'Passing',
     icon: CheckCircle2,
-    className: 'text-green-500',
+    className: 'text-green-900',
   },
   partial: {
     label: 'Partial',
     icon: AlertCircle,
-    className: 'text-yellow-500',
+    className: 'text-amber-900',
   },
   failing: {
     label: 'Failing',
     icon: XCircle,
-    className: 'text-red-500',
+    className: 'text-red-900',
   },
   pending: {
     label: 'Pending',
@@ -142,7 +142,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
             {world.type === 'official' ? (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <BadgeCheck className="h-8 w-8 text-blue-500" />
+                  <BadgeCheck className="h-8 w-8 text-blue-900" />
                 </TooltipTrigger>
                 <TooltipContent side="top">
                   <p className="text-xs">Maintained by Vercel</p>
@@ -151,7 +151,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
             ) : (
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <HeartHandshake className="h-8 w-8 text-pink-500" />
+                  <HeartHandshake className="h-8 w-8 text-pink-900" />
                 </TooltipTrigger>
                 <TooltipContent side="top">
                   <p className="text-xs">Maintained by the community</p>
@@ -243,7 +243,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
                 className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
               >
                 <Timer
-                  className={`h-4 w-4 ${world.benchmark10SeqMs !== null ? 'text-purple-500' : ''}`}
+                  className={`h-4 w-4 ${world.benchmark10SeqMs !== null ? 'text-purple-900' : ''}`}
                 />
                 <span>
                   {world.benchmark10SeqMs !== null ? (
@@ -314,7 +314,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
                   href="/docs/how-it-works/encryption"
                   className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  <ShieldCheck className="h-4 w-4 text-green-500" />
+                  <ShieldCheck className="h-4 w-4 text-green-900" />
                   <span>E2E Encrypted</span>
                 </Link>
               </TooltipTrigger>
