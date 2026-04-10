@@ -62,7 +62,7 @@ export function WorldsDashboard({ data }: WorldsDashboardProps) {
         </Badge>
         <Badge
           variant="outline"
-          className="text-sm py-1 px-3 bg-green-500/10 text-green-600 border-green-500/20"
+          className="text-sm py-1 px-3 bg-green-300 text-green-900 border-green-500/20"
         >
           ✅ {stats.passing} Fully Compatible
         </Badge>

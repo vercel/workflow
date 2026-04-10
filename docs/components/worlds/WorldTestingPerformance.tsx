@@ -239,7 +239,7 @@ export function WorldTestingPerformance({
                   </summary>
                   <div className="mt-3 grid gap-4 sm:grid-cols-4">
                     <div className="p-3 rounded-lg border bg-card">
-                      <div className="text-xl font-semibold text-green-600">
+                      <div className="text-xl font-semibold text-green-900">
                         {e2e.passed}
                       </div>
                       <div className="text-muted-foreground text-xs">
@@ -247,7 +247,7 @@ export function WorldTestingPerformance({
                       </div>
                     </div>
                     <div className="p-3 rounded-lg border bg-card">
-                      <div className="text-xl font-semibold text-red-600">
+                      <div className="text-xl font-semibold text-red-900">
                         {e2e.failed}
                       </div>
                       <div className="text-muted-foreground text-xs">
@@ -323,7 +323,7 @@ export function WorldTestingPerformance({
                               {isPerfBenchmark && (
                                 <Tooltip>
                                   <TooltipTrigger asChild>
-                                    <Timer className="h-4 w-4 text-purple-500 shrink-0" />
+                                    <Timer className="h-4 w-4 text-purple-900 shrink-0" />
                                   </TooltipTrigger>
                                   <TooltipContent
                                     side="top"
@@ -412,10 +412,10 @@ export function WorldTestingPerformance({
                               ? formatTime(metric.workflowTime)
                               : '—'}
                           </TableCell>
-                          <TableCell className="text-right font-mono text-green-600">
+                          <TableCell className="text-right font-mono text-green-900">
                             {metric.ttfb ? formatTime(metric.ttfb) : '—'}
                           </TableCell>
-                          <TableCell className="text-right font-mono text-purple-500">
+                          <TableCell className="text-right font-mono text-purple-900">
                             {metric.slurp ? formatTime(metric.slurp) : '—'}
                           </TableCell>
                           {hasWorkflowRange && (

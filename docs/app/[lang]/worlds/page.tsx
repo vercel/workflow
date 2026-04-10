@@ -81,7 +81,7 @@ export default async function WorldsPage() {
             </Badge>
             <Badge
               variant="outline"
-              className="text-sm py-1 px-3 bg-green-500/10 text-green-600 border-green-500/20"
+              className="text-sm py-1 px-3 bg-green-900 text-background-100 border-transparent!"
             >
               {passingCount} Fully Compatible
             </Badge>
@@ -189,10 +189,10 @@ export default async function WorldsPage() {
                 </div>
                 {/* Benchmark bars */}
                 {[
-                  { name: 'Local', time: 10.76, isFastest: true },
-                  { name: 'Vercel', time: 19.37, isFastest: false },
-                  { name: 'AWS', time: 25.82, isFastest: false },
-                  { name: 'GCP', time: 25.82, isFastest: false },
+                  { name: 'Local', time: 10.76, color: 'bg-green-700' },
+                  { name: 'Vercel', time: 19.37, color: 'bg-blue-700' },
+                  { name: 'AWS', time: 25.82, color: 'bg-blue-700' },
+                  { name: 'GCP', time: 25.82, color: 'bg-blue-700' },
                 ].map((provider) => {
                   const maxTime = 25.82;
                   const width = (provider.time / maxTime) * 100;
@@ -205,13 +205,9 @@ export default async function WorldsPage() {
                       <div className="w-16 text-sm truncate text-right text-muted-foreground">
                         {provider.name}
                       </div>
-                      <div className="flex-1 h-8 bg-muted rounded-md overflow-hidden">
+                      <div className="flex-1 h-8 bg-gray-100 rounded-md overflow-hidden">
                         <div
-                          className={`h-full rounded-md transition-all ${
-                            provider.isFastest
-                              ? 'bg-green-500'
-                              : 'bg-primary/40'
-                          }`}
+                          className={`h-full rounded-md transition-all ${provider.color}`}
                           style={{ width: `${width}%` }}
                         />
                       </div>

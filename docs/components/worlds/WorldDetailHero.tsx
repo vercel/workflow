@@ -115,7 +115,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
       : null);
 
   return (
-    <section className="space-y-6 px-4 pt-8 sm:pt-12 pb-12 border-b">
+    <section className="space-y-6 pt-8 sm:pt-12 pb-12 border-b">
       {/* Breadcrumbs */}
       <Breadcrumb>
         <BreadcrumbList>
@@ -134,9 +134,9 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
       </Breadcrumb>
 
       {/* Main content grid */}
-      <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-8">
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_200px] gap-8 lg:gap-12">
         {/* Left side - Title and description */}
-        <div className="space-y-4 flex-1">
+        <div className="space-y-4 min-w-0">
           <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl flex items-center gap-4">
             {world.name}
             {world.type === 'official' ? (
@@ -205,7 +205,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
         </div>
 
         {/* Right side - Quick links */}
-        <div className="flex-shrink-0 space-y-2 text-sm">
+        <div className="space-y-2 text-sm">
           {/* E2E Tests */}
           <Tooltip>
             <TooltipTrigger asChild>
@@ -214,7 +214,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
                 className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
               >
                 <StatusIcon
-                  className={`h-4 w-4 ${statusConfig[status].className}`}
+                  className={`h-4 w-4 shrink-0 ${statusConfig[status].className}`}
                 />
                 <span>
                   {e2e ? (
@@ -243,7 +243,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
                 className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
               >
                 <Timer
-                  className={`h-4 w-4 ${world.benchmark10SeqMs !== null ? 'text-purple-900' : ''}`}
+                  className={`h-4 w-4 shrink-0 ${world.benchmark10SeqMs !== null ? 'text-purple-900' : ''}`}
                 />
                 <span>
                   {world.benchmark10SeqMs !== null ? (
@@ -276,7 +276,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
             rel="noopener noreferrer"
             className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
           >
-            <Package className="h-4 w-4" />
+            <Package className="h-4 w-4 shrink-0" />
             <span>npm</span>
           </a>
 
@@ -288,7 +288,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
             >
-              <Github className="h-4 w-4" />
+              <Github className="h-4 w-4 shrink-0" />
               <span>Source</span>
             </a>
           )}
@@ -301,7 +301,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
               rel="noopener noreferrer"
               className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
             >
-              <Code className="h-4 w-4" />
+              <Code className="h-4 w-4 shrink-0" />
               <span>Example</span>
             </a>
           )}
@@ -314,7 +314,7 @@ export function WorldDetailHero({ id, world }: WorldDetailHeroProps) {
                   href="/docs/how-it-works/encryption"
                   className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
                 >
-                  <ShieldCheck className="h-4 w-4 text-green-900" />
+                  <ShieldCheck className="h-4 w-4 shrink-0 text-green-900" />
                   <span>E2E Encrypted</span>
                 </Link>
               </TooltipTrigger>

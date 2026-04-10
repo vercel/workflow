@@ -34,17 +34,17 @@ const statusConfig = {
   passing: {
     label: 'Passing',
     icon: CheckCircle2,
-    className: 'bg-green-500/10 text-green-600 border-green-500/20',
+    className: 'bg-green-300 text-green-900',
   },
   partial: {
     label: 'Partial',
     icon: AlertCircle,
-    className: 'bg-yellow-500/10 text-yellow-600 border-yellow-500/20',
+    className: 'bg-amber-300 text-amber-900',
   },
   failing: {
     label: 'Failing',
     icon: XCircle,
-    className: 'bg-red-500/10 text-red-600 border-red-500/20',
+    className: 'bg-red-300 text-red-900',
   },
   pending: {
     label: 'Pending',
@@ -80,10 +80,10 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
   const e2eColorClass = !world.e2e
     ? 'text-muted-foreground'
     : displayProgress === 100
-      ? 'text-green-600/70'
+      ? 'text-green-900'
       : displayProgress >= 75
-        ? 'text-yellow-600/70'
-        : 'text-red-600/70';
+        ? 'text-amber-900'
+        : 'text-red-900';
 
   return (
     <Link href={`/worlds/${id}`} className="block group">
@@ -96,7 +96,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
                 {world.type === 'official' ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <BadgeCheck className="h-5 w-5 text-blue-500 shrink-0" />
+                      <BadgeCheck className="h-5 w-5 text-blue-900 shrink-0" />
                     </TooltipTrigger>
                     <TooltipContent side="top">
                       <p className="text-xs">Maintained by Vercel</p>
@@ -105,7 +105,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
                 ) : (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <HeartHandshake className="h-5 w-5 text-pink-500 shrink-0" />
+                      <HeartHandshake className="h-5 w-5 text-pink-900 shrink-0" />
                     </TooltipTrigger>
                     <TooltipContent side="top">
                       <p className="text-xs">Maintained by the community</p>
@@ -149,8 +149,8 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
                   className={cn(
                     'h-3.5 w-3.5',
                     world.features.includes('encryption')
-                      ? 'text-green-600/70'
-                      : 'text-red-600/70'
+                      ? 'text-green-900'
+                      : 'text-red-900'
                   )}
                 />
                 <span className="text-muted-foreground">Encrypted</span>
@@ -158,8 +158,8 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
                   className={cn(
                     'font-mono',
                     world.features.includes('encryption')
-                      ? 'text-green-600/70'
-                      : 'text-red-600/70'
+                      ? 'text-green-900'
+                      : 'text-red-900'
                   )}
                 >
                   {world.features.includes('encryption') ? 'Yes' : 'No'}
