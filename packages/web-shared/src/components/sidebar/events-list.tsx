@@ -59,11 +59,14 @@ function EventItem({
   // Check if the event already has eventData from the store
   const existingData =
     'eventData' in event && event.eventData != null ? event.eventData : null;
-  const displayData = existingData ?? loadedData;
+  const mergedDisplay = loadedData ?? existingData;
   const canHaveData = DATA_EVENT_TYPES.has(event.eventType);
 
   const loadEventData = useCallback(async () => {
     if (!onLoadEventData || !event.correlationId || !event.eventId) return;
+    if (loadedData !== null) {
+      return;
+    }
 
     try {
       setIsLoading(true);
@@ -75,25 +78,26 @@ function EventItem({
     } finally {
       setIsLoading(false);
     }
-  }, [onLoadEventData, event.correlationId, event.eventId]);
+  }, [onLoadEventData, event.correlationId, event.eventId, loadedData]);
 
   const handleExpand = useCallback(async () => {
-    if (existingData || loadedData !== null || isLoading) return;
+    if (isLoading) return;
     wasExpandedRef.current = true;
     await loadEventData();
-  }, [existingData, loadedData, isLoading, loadEventData]);
+  }, [isLoading, loadEventData]);
 
   // When the encryption key changes and this event was previously expanded,
   // re-load the data so it gets decrypted
   useEffect(() => {
-    if (encryptionKey && wasExpandedRef.current && loadedData !== null) {
-      setLoadedData(null); // clear stale data
-      loadEventData();
-    }
+    if (!encryptionKey || !wasExpandedRef.current) return;
+    setLoadedData(null);
+    void loadEventData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [encryptionKey]);
 
   const createdAt = new Date(event.createdAt);
+
+  const displayPayload = isLoading ? loadedData : mergedDisplay;
 
   return (
     <DetailCard
@@ -189,9 +193,9 @@ function EventItem({
       )}
 
       {/* Event data */}
-      {displayData != null && (
+      {displayPayload != null && (
         <div className="mt-2">
-          <EventDataBlock eventType={event.eventType} data={displayData} />
+          <EventDataBlock eventType={event.eventType} data={displayPayload} />
         </div>
       )}
     </DetailCard>

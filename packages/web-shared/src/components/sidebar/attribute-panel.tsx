@@ -249,6 +249,7 @@ const attributeOrder: AttributeKey[] = [
   'eventId',
   'runId',
   'attempt',
+  'isSystem',
   'token',
   'receivedCount',
   'lastReceivedAt',
@@ -386,6 +387,7 @@ const attributeToDisplayFn: Record<
   // Run/step details
   status: (value: unknown) => String(value),
   attempt: (value: unknown) => String(value),
+  isSystem: (value: unknown) => String(value),
   // Hook details
   token: (value: unknown) => String(value),
   isWebhook: (value: unknown) => String(value),
