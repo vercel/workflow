@@ -55,6 +55,8 @@ function EventItem({
   const [isLoading, setIsLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const wasExpandedRef = useRef(false);
+  /** Mirrors whether we have a fetched payload; avoids stale `loadedData` in load closure. */
+  const loadedDataRef = useRef<unknown | null>(null);
 
   // Check if the event already has eventData from the store
   const existingData =
@@ -62,23 +64,27 @@ function EventItem({
   const mergedDisplay = loadedData ?? existingData;
   const canHaveData = DATA_EVENT_TYPES.has(event.eventType);
 
-  const loadEventData = useCallback(async () => {
-    if (!onLoadEventData || !event.correlationId || !event.eventId) return;
-    if (loadedData !== null) {
-      return;
-    }
+  const loadEventData = useCallback(
+    async (options?: { force?: boolean }) => {
+      if (!onLoadEventData || !event.correlationId || !event.eventId) return;
+      if (!options?.force && loadedDataRef.current !== null) {
+        return;
+      }
 
-    try {
-      setIsLoading(true);
-      setLoadError(null);
-      const data = await onLoadEventData(event.correlationId, event.eventId);
-      setLoadedData(data);
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setIsLoading(false);
-    }
-  }, [onLoadEventData, event.correlationId, event.eventId, loadedData]);
+      try {
+        setIsLoading(true);
+        setLoadError(null);
+        const data = await onLoadEventData(event.correlationId, event.eventId);
+        loadedDataRef.current = data;
+        setLoadedData(data);
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [onLoadEventData, event.correlationId, event.eventId]
+  );
 
   const handleExpand = useCallback(async () => {
     if (isLoading) return;
@@ -90,10 +96,10 @@ function EventItem({
   // re-load the data so it gets decrypted
   useEffect(() => {
     if (!encryptionKey || !wasExpandedRef.current) return;
+    loadedDataRef.current = null;
     setLoadedData(null);
-    void loadEventData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [encryptionKey]);
+    void loadEventData({ force: true });
+  }, [encryptionKey, loadEventData]);
 
   const createdAt = new Date(event.createdAt);
 
