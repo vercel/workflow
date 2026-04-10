@@ -148,7 +148,7 @@ export async function start<TArgs extends unknown[], TResult>(
         ...Attribute.WorkflowArgumentsCount(args.length),
       });
 
-      const world = opts?.world ?? getWorld();
+      const world = opts?.world ?? (await getWorld());
       let deploymentId = opts.deploymentId ?? (await world.getDeploymentId());
 
       // When 'latest' is requested, resolve the actual latest deployment ID

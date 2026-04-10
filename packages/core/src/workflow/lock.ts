@@ -94,7 +94,8 @@ function createLockHandle(
     disposed = true;
     let eventCreatedAt: Date | undefined;
     try {
-      const result = await getWorld().events.create(ctx.runId, {
+      const world = await getWorld();
+      const result = await world.events.create(ctx.runId, {
         eventType: 'lock_release',
         specVersion: SPEC_VERSION_CURRENT,
         correlationId,
@@ -277,7 +278,8 @@ export function createLock(ctx: WorkflowOrchestratorContext) {
       eventType: 'lock_created' | 'lock_acquired'
     ) => {
       try {
-        const result = await getWorld().events.create(
+        const world = await getWorld();
+        const result = await world.events.create(
           ctx.runId,
           eventType === 'lock_created'
             ? {

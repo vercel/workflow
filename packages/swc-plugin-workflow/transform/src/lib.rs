@@ -6,7 +6,7 @@ use swc_core::{
     common::{errors::HANDLER, SyntaxContext, DUMMY_SP},
     ecma::{
         ast::*,
-        visit::{noop_visit_mut_type, VisitMut, VisitMutWith},
+        visit::{noop_visit_mut_type, noop_visit_type, Visit, VisitMut, VisitMutWith, VisitWith},
     },
 };
 
@@ -102,10 +102,17 @@ fn emit_error(error: WorkflowErrorKind) {
         ),
         WorkflowErrorKind::InvalidExport { span, directive } => (
             span,
-            format!(
-                "Only async functions can be exported from a \"{}\" file",
-                directive
-            ),
+            if directive == "use step" {
+                format!(
+                    "Only functions can be exported from a \"{}\" file",
+                    directive
+                )
+            } else {
+                format!(
+                    "Only async functions can be exported from a \"{}\" file",
+                    directive
+                )
+            },
         ),
     };
 
@@ -481,6 +488,198 @@ impl TryFrom<&Expr> for Name {
             }
             _ => Err(()),
         }
+    }
+}
+
+/// Collects all member names referenced within an AST subtree via
+/// `this.foo`, `this.#foo`, or `obj.foo` (when `foo` is a known
+/// TS-private name) patterns. Used after stripping `"use step"` methods
+/// in workflow mode to determine which private class members are still
+/// referenced by the remaining body, so unreferenced ones can be
+/// dead-code-eliminated.
+///
+/// Handles both:
+/// - JS native private members (`#field`, `#method()`) — stored with `#`
+///   prefix to avoid collisions with TS private members of the same name
+/// - TypeScript `private` members — stored without prefix; detected via
+///   `this.foo` and also `obj.foo` when `foo` is a known TS-private name
+///   (to handle same-class access patterns like `static compare(a, b) {
+///   return a.x - b.x }`)
+struct ClassMemberRefCollector {
+    /// All member names referenced. JS native private names are prefixed
+    /// with `#` (e.g. `"#foo"`), TS private names are unprefixed (`"foo"`).
+    referenced: HashSet<String>,
+    /// Known TS-private member names in the current class, so that `a.foo`
+    /// accesses (not just `this.foo`) are recognized as references.
+    ts_private_names: HashSet<String>,
+}
+
+impl ClassMemberRefCollector {
+    fn new(ts_private_names: HashSet<String>) -> Self {
+        Self {
+            referenced: HashSet::new(),
+            ts_private_names,
+        }
+    }
+
+    /// Collects all member names transitively referenced by non-private
+    /// (public) members of the class. Private members that are only
+    /// referenced by other private members (which are themselves
+    /// unreferenced) are NOT included, enabling cascading elimination.
+    ///
+    /// Algorithm: seed the referenced set from public members, then
+    /// iteratively expand by adding references from surviving private
+    /// members until the set stabilizes.
+    fn collect_from_class_body(body: &[ClassMember]) -> HashSet<String> {
+        // Build the set of known TS-private names for the collector
+        let ts_private_names: HashSet<String> = body
+            .iter()
+            .filter_map(|m| match m {
+                ClassMember::Method(m) if m.accessibility == Some(Accessibility::Private) => {
+                    match &m.key {
+                        PropName::Ident(i) => Some(i.sym.to_string()),
+                        PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                        _ => None,
+                    }
+                }
+                ClassMember::ClassProp(p) if p.accessibility == Some(Accessibility::Private) => {
+                    match &p.key {
+                        PropName::Ident(i) => Some(i.sym.to_string()),
+                        PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            })
+            .collect();
+
+        // Phase 1: collect references from all non-private members
+        let mut collector = Self::new(ts_private_names);
+        for member in body {
+            if !Self::is_private_member(member) {
+                member.visit_with(&mut collector);
+            }
+        }
+
+        // Phase 2: iteratively expand — if a private member is referenced,
+        // its body may reference other private members
+        loop {
+            let prev_len = collector.referenced.len();
+            for member in body {
+                if let Some(name) = Self::private_member_name(member) {
+                    if collector.referenced.contains(&name) {
+                        // This private member survived; scan its body for
+                        // references to other private members
+                        Self::visit_member_body(member, &mut collector);
+                    }
+                }
+            }
+            if collector.referenced.len() == prev_len {
+                break; // fixed point reached
+            }
+        }
+
+        collector.referenced
+    }
+
+    /// Visit the body/initializer of a class member for reference collection.
+    fn visit_member_body(member: &ClassMember, collector: &mut Self) {
+        match member {
+            ClassMember::PrivateMethod(m) => {
+                if let Some(body) = &m.function.body {
+                    body.visit_with(collector);
+                }
+            }
+            ClassMember::PrivateProp(p) => {
+                if let Some(value) = &p.value {
+                    value.visit_with(collector);
+                }
+            }
+            ClassMember::Method(m) => {
+                if let Some(body) = &m.function.body {
+                    body.visit_with(collector);
+                }
+            }
+            ClassMember::ClassProp(p) => {
+                if let Some(value) = &p.value {
+                    value.visit_with(collector);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Returns true if the member is a private member (JS native or TS).
+    fn is_private_member(member: &ClassMember) -> bool {
+        matches!(
+            member,
+            ClassMember::PrivateMethod(_) | ClassMember::PrivateProp(_)
+        ) || matches!(member, ClassMember::Method(m) if m.accessibility == Some(Accessibility::Private))
+            || matches!(member, ClassMember::ClassProp(p) if p.accessibility == Some(Accessibility::Private))
+    }
+
+    /// Returns the canonical name of a private member. JS native private
+    /// names are prefixed with `#` to avoid collisions with TS private
+    /// members of the same name.
+    fn private_member_name(member: &ClassMember) -> Option<String> {
+        match member {
+            ClassMember::PrivateMethod(m) => Some(format!("#{}", m.key.name)),
+            ClassMember::PrivateProp(p) => Some(format!("#{}", p.key.name)),
+            ClassMember::Method(m) if m.accessibility == Some(Accessibility::Private) => {
+                match &m.key {
+                    PropName::Ident(i) => Some(i.sym.to_string()),
+                    PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                    _ => None,
+                }
+            }
+            ClassMember::ClassProp(p) if p.accessibility == Some(Accessibility::Private) => {
+                match &p.key {
+                    PropName::Ident(i) => Some(i.sym.to_string()),
+                    PropName::Str(s) => Some(s.value.to_string_lossy().to_string()),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Removes unreferenced private class members from a class body.
+    /// Call after stripping `"use step"` methods in workflow mode.
+    fn retain_referenced_private_members(body: &mut Vec<ClassMember>) {
+        let referenced = Self::collect_from_class_body(body);
+        body.retain(|member| {
+            if let Some(name) = Self::private_member_name(member) {
+                referenced.contains(&name)
+            } else {
+                true
+            }
+        });
+    }
+}
+
+impl Visit for ClassMemberRefCollector {
+    noop_visit_type!();
+
+    fn visit_member_expr(&mut self, expr: &MemberExpr) {
+        match &expr.prop {
+            // Native JS private: `this.#foo` — stored as `#foo`
+            MemberProp::PrivateName(name) => {
+                self.referenced.insert(format!("#{}", name.name));
+            }
+            // TS private or any ident member access. Track `this.foo` as
+            // before, and also track `obj.foo` when `foo` is a known
+            // TS-private member of the current class so same-class
+            // accesses like `a.x` / `b.x` are not missed.
+            MemberProp::Ident(ident) => {
+                let name = ident.sym.to_string();
+                if matches!(&*expr.obj, Expr::This(_)) || self.ts_private_names.contains(&name) {
+                    self.referenced.insert(name);
+                }
+            }
+            _ => {}
+        }
+        // Continue visiting children, including computed property expressions
+        expr.visit_children_with(self);
     }
 }
 
@@ -4054,8 +4253,6 @@ impl StepTransform {
         }
     }
 
-    // Previously validated that step functions must be async. The restriction
-
     // Check if a function should be treated as a step function
     fn should_transform_function(&self, function: &Function, is_exported: bool) -> bool {
         let has_directive = self.has_use_step_directive(&function.body);
@@ -6051,9 +6248,107 @@ impl VisitMut for StepTransform {
         let mut items_to_insert = Vec::new();
 
         for (i, item) in items.iter_mut().enumerate() {
-            // Validate exports if we have a file-level workflow directive.
-            // Step files allow any exports (sync or async), but workflow files
-            // require exported functions to be async.
+            // Validate exports for file-level step directives.
+            // Step files allow sync or async function exports but reject
+            // non-function exports (constants, classes, re-exports) which
+            // can pull Node-only code into the workflow/client bundles.
+            if self.has_file_step_directive {
+                match item {
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => {
+                        match &export.decl {
+                            Decl::Fn(_) => {
+                                // Sync or async function declarations are allowed
+                            }
+                            Decl::Var(var_decl) => {
+                                for decl in &var_decl.decls {
+                                    match &decl.init {
+                                        Some(init) => match &**init {
+                                            Expr::Fn(_) | Expr::Arrow(_) => {
+                                                // Function/arrow expressions are allowed
+                                            }
+                                            _ => {
+                                                emit_error(WorkflowErrorKind::InvalidExport {
+                                                    span: export.span,
+                                                    directive: "use step",
+                                                });
+                                            }
+                                        },
+                                        None => {
+                                            // Uninitialized exports are not functions
+                                            emit_error(WorkflowErrorKind::InvalidExport {
+                                                span: export.span,
+                                                directive: "use step",
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                            Decl::TsInterface(_)
+                            | Decl::TsTypeAlias(_)
+                            | Decl::TsEnum(_)
+                            | Decl::TsModule(_) => {
+                                // TypeScript declarations are okay
+                            }
+                            _ => {
+                                emit_error(WorkflowErrorKind::InvalidExport {
+                                    span: export.span,
+                                    directive: "use step",
+                                });
+                            }
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportNamed(named)) => {
+                        // Re-exports (`export { x } from '...'`) are not allowed.
+                        // Local named exports (`export { x }`) are also rejected
+                        // because we cannot statically verify the binding is a function.
+                        if named.src.is_some() || !named.specifiers.is_empty() {
+                            emit_error(WorkflowErrorKind::InvalidExport {
+                                span: named.span,
+                                directive: "use step",
+                            });
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultDecl(default)) => {
+                        match &default.decl {
+                            DefaultDecl::Fn(_) => {
+                                // Sync or async function declarations are allowed
+                            }
+                            DefaultDecl::TsInterfaceDecl(_) => {
+                                // TypeScript interface is okay
+                            }
+                            _ => {
+                                emit_error(WorkflowErrorKind::InvalidExport {
+                                    span: default.span,
+                                    directive: "use step",
+                                });
+                            }
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportDefaultExpr(expr)) => {
+                        match &*expr.expr {
+                            Expr::Fn(_) | Expr::Arrow(_) => {
+                                // Function/arrow expressions are allowed
+                            }
+                            _ => {
+                                emit_error(WorkflowErrorKind::InvalidExport {
+                                    span: expr.span,
+                                    directive: "use step",
+                                });
+                            }
+                        }
+                    }
+                    ModuleItem::ModuleDecl(ModuleDecl::ExportAll(export_all)) => {
+                        emit_error(WorkflowErrorKind::InvalidExport {
+                            span: export_all.span,
+                            directive: "use step",
+                        });
+                    }
+                    _ => {}
+                }
+            }
+
+            // Validate exports for file-level workflow directives.
+            // Workflow files require exported functions to be async.
             if self.has_file_workflow_directive {
                 match item {
                     ModuleItem::ModuleDecl(ModuleDecl::ExportDecl(export)) => {
@@ -8091,6 +8386,14 @@ impl VisitMut for StepTransform {
                     }
                     true
                 });
+
+                // After stripping "use step" methods, eliminate private class
+                // members (both JS native `#field`/`#method()` and TypeScript
+                // `private field`/`private method()`) that are no longer
+                // referenced by any remaining member.
+                ClassMemberRefCollector::retain_referenced_private_members(
+                    &mut class_decl.class.body,
+                );
             }
         }
 
@@ -8209,6 +8512,11 @@ impl VisitMut for StepTransform {
                     }
                     true
                 });
+
+                // Dead-code-eliminate unreferenced private members
+                ClassMemberRefCollector::retain_referenced_private_members(
+                    &mut class_expr.class.body,
+                );
             }
         }
 

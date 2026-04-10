@@ -147,7 +147,7 @@ const hydrated = hydrateResourceIOWithKey(step, key); // [!code highlight]
 import { getWorld } from "workflow/runtime";
 import { parseStepName, parseWorkflowName } from "workflow/observability"; // [!code highlight]
 
-const world = getWorld();
+const world = await getWorld();
 const run = await world.runs.get(runId, { resolveData: "none" });
 console.log("Workflow:", parseWorkflowName(run.workflowName)?.shortName); // [!code highlight]
 

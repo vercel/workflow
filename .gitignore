@@ -29,6 +29,7 @@ packages/swc-plugin-workflow/build-hash.json
 
 # claude local settings
 .claude/settings.local.json
+.claude/worktrees
 
 # jj
 .jj/

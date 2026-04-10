@@ -5,7 +5,10 @@ export const init: ServerInit = async () => {
   // Needed since we test this in CI
   if (process.env.WORKFLOW_TARGET_WORLD === '@workflow/world-postgres') {
     const { getWorld } = await import('workflow/runtime');
-    console.log('Starting Postgres World...');
-    await getWorld().start?.();
+    const world = await getWorld();
+    if (world.start) {
+      console.log('Starting World workers...');
+      await world.start();
+    }
   }
 };

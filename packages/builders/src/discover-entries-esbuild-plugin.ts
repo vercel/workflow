@@ -79,7 +79,12 @@ export function createDiscoverEntriesPlugin(
   return {
     name: 'discover-entries-esbuild-plugin',
     setup(build) {
-      build.onResolve({ filter: jsTsRegex }, async (args) => {
+      // Track parent→child import relationships for ALL imports (not just
+      // those with file extensions) so that `parentHasChild()` can correctly
+      // identify transitive parents of serde/step files even when the
+      // dependency chain passes through bare specifier imports like
+      // `@workflow/core/runtime` or `workflow/runtime`.
+      build.onResolve({ filter: /.*/ }, async (args) => {
         try {
           const resolved = await enhancedResolve(args.resolveDir, args.path);
 

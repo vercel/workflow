@@ -65,7 +65,8 @@ const app = new Hono()
     return ctx.json({ runId, hookId: hook.hookId });
   })
   .get('/runs/:runId', async (ctx) => {
-    const run = await getWorld().runs.get(ctx.req.param('runId'));
+    const world = await getWorld();
+    const run = await world.runs.get(ctx.req.param('runId'));
     // Custom JSON serialization to handle Uint8Array as base64
     const json = JSON.stringify(run, (_key, value) => {
       if (value instanceof Uint8Array) {
@@ -112,7 +113,7 @@ serve(
       }
     }
 
-    const world = getWorld();
+    const world = await getWorld();
     if (world.start) {
       console.log(`starting background tasks...`);
       await world.start().then(
