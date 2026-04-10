@@ -1,5 +1,23 @@
 # workflow
 
+## 4.2.1
+
+### Patch Changes
+
+- [#1657](https://github.com/vercel/workflow/pull/1657) [`4416146`](https://github.com/vercel/workflow/commit/4416146a81bdafbfef0e03d1ab6b1aa4097a1b42) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Fix `workflow/next` ESM compatibility for `next.config.mjs` files
+
+- Updated dependencies [[`f5fb9b7`](https://github.com/vercel/workflow/commit/f5fb9b7a8f6dbfe74a2651381558248fd067db46)]:
+  - @workflow/core@4.2.1
+  - @workflow/cli@4.2.1
+  - @workflow/next@4.0.2
+  - @workflow/nitro@4.0.2
+  - @workflow/typescript-plugin@4.0.1
+  - @workflow/astro@4.0.1
+  - @workflow/nest@0.0.1
+  - @workflow/rollup@4.0.1
+  - @workflow/sveltekit@4.0.1
+  - @workflow/nuxt@4.0.2
+
 ## 4.2.0
 
 ### Patch Changes

@@ -1,5 +1,11 @@
 # @workflow/core
 
+## 4.2.1
+
+### Patch Changes
+
+- [#1657](https://github.com/vercel/workflow/pull/1657) [`f5fb9b7`](https://github.com/vercel/workflow/commit/f5fb9b7a8f6dbfe74a2651381558248fd067db46) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Remove redundant `hc_` prefix from health check correlationId that caused doubled `hc_hc_` in the derived runId and stream name.
+
 ## 4.2.0
 
 ### Patch Changes

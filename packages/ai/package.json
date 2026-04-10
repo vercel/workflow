@@ -1,6 +1,6 @@
 {
   "name": "@workflow/ai",
-  "version": "4.1.0",
+  "version": "4.1.1",
   "description": "Workflow SDK compatible helper library for the AI SDK",
   "type": "module",
   "main": "dist/index.js",

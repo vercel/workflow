@@ -1,6 +1,6 @@
 {
   "name": "@workflow/rollup",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "Rollup plugin for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",

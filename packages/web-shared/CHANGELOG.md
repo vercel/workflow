@@ -1,5 +1,14 @@
 # @workflow/web-shared
 
+## 4.1.1
+
+### Patch Changes
+
+- [`d210a59`](https://github.com/vercel/workflow/commit/d210a5986f072d6ff9059a957790cc112dd63684) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix event data loading for step_created events
+
+- Updated dependencies [[`f5fb9b7`](https://github.com/vercel/workflow/commit/f5fb9b7a8f6dbfe74a2651381558248fd067db46)]:
+  - @workflow/core@4.2.1
+
 ## 4.1.0
 
 ### Patch Changes
