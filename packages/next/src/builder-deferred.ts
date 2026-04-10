@@ -2155,9 +2155,10 @@ export async function getNextBuilderDeferred() {
       //
       // Exception: package files that are also serde files (define classes with
       // WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE) must NOT be copied — copying
-      // creates a duplicate class with JS native private field (#) brand check
-      // issues. Instead, these files are added to `forceStepModeFiles` so the
-      // loader transforms the original file in step mode directly.
+      // creates a duplicate class with JS native private field (#) brand
+      // checks. These files are imported directly in the step route instead;
+      // the loader transforms them in step mode because it detects their
+      // step/serde patterns.
       const allStepSourceFiles = Array.from(
         new Set([
           ...stepFilesWithManifestSources,
@@ -2166,22 +2167,17 @@ export async function getNextBuilderDeferred() {
       ).sort();
       const serdeFileSet = new Set(serdeFiles);
       const filesToCopy: string[] = [];
-      const filesToForceStepMode: string[] = [];
+      const packageSerdeFiles: string[] = [];
       for (const file of allStepSourceFiles) {
         const normalized = this.normalizeDiscoveredFilePath(file);
         if (
           serdeFileSet.has(normalized) &&
           this.isFileInsidePackage(normalized)
         ) {
-          filesToForceStepMode.push(normalized);
+          packageSerdeFiles.push(normalized);
         } else {
           filesToCopy.push(file);
         }
-      }
-      // Register package serde files for step-mode transform in the loader
-      const { forceStepModeFiles } = await import('./loader.js');
-      for (const file of filesToForceStepMode) {
-        forceStepModeFiles.add(file.replace(/\\/g, '/'));
       }
       const copiedDiscoveredStepFiles = await this.copyDiscoveredStepFiles({
         stepFiles: filesToCopy,
@@ -2204,8 +2200,8 @@ export async function getNextBuilderDeferred() {
         })
         .join('\n');
       // Import package serde+step files directly (not copied) — the loader
-      // will transform them in step mode via forceStepModeFiles.
-      const forceStepModeImports = filesToForceStepMode
+      // will transform them in step mode because it detects their patterns.
+      const packageSerdeImports = packageSerdeFiles
         .map((file) => {
           const importSpecifier = this.getRelativeImportSpecifier(
             stepRouteFile,
@@ -2237,8 +2233,8 @@ export async function getNextBuilderDeferred() {
         '// biome-ignore-all lint: generated file',
         '/* eslint-disable */',
         copiedStepImports,
-        forceStepModeImports
-          ? `// Package serde+step files (transformed in step mode by loader)\n${forceStepModeImports}`
+        packageSerdeImports
+          ? `// Package serde+step files (imported directly, transformed in step mode by loader)\n${packageSerdeImports}`
           : '',
         serdeImports
           ? `// Serde files for cross-context class registration\n${serdeImports}`

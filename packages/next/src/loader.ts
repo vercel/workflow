@@ -4,14 +4,6 @@ import { connect, type Socket } from 'node:net';
 import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
 
-/**
- * Files that should be transformed in step mode even though they are not
- * deferred step copies. Used for package serde+step files (like Run) that
- * would create duplicate classes if copied. The builder adds paths here;
- * the loader checks before deciding the transform mode.
- */
-export const forceStepModeFiles = new Set<string>();
-
 import {
   parseMessage,
   type SocketMessage,
@@ -721,10 +713,7 @@ export default function workflowLoader(
       }
     }
 
-    const isForceStepMode = forceStepModeFiles.has(
-      filename.replace(/\\/g, '/')
-    );
-    if (!isDeferredStepCopyFile && !isForceStepMode) {
+    if (!isDeferredStepCopyFile) {
       // Check if file needs transformation based on patterns and path
       if (!(await checkShouldTransform(filename, patterns))) {
         return { code: normalizedSource, map: sourceMap };
@@ -755,7 +744,15 @@ export default function workflowLoader(
       deferredStepSourceMetadata?.absolutePath || filename,
       workingDir
     );
-    const mode = isDeferredStepCopyFile || isForceStepMode ? 'step' : 'client';
+    // Use step mode for files that have step directives or serde patterns.
+    // This ensures step functions are registered in the global step registry
+    // even when the file is imported directly (not via a deferred step copy).
+    // Step mode is a superset of client mode — the only addition is the step
+    // registry IIFEs, which are harmless side effects for non-step consumers.
+    const mode =
+      isDeferredStepCopyFile || patterns.hasUseStep || patterns.hasSerde
+        ? 'step'
+        : 'client';
     // Transform with SWC
     const result = await transform(sourceForTransform, {
       filename: relativeFilename,
