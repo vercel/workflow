@@ -373,16 +373,23 @@ export const extractClassName = (classId: string): string => {
   return parts[parts.length - 1] || classId;
 };
 
-/** Convert a serialized class instance to a ClassInstanceRef for display */
+/** Convert a serialized class instance to a ClassInstanceRef for display.
+ *  Run instances are special-cased to a RunRef for clickable rendering. */
 export const serializedInstanceToRef = (value: {
   classId: string;
   data: unknown;
-}): ClassInstanceRef => {
-  return new ClassInstanceRef(
-    extractClassName(value.classId),
-    value.classId,
-    value.data
-  );
+}): ClassInstanceRef | RunRef => {
+  const className = extractClassName(value.classId);
+  if (
+    className === 'Run' &&
+    value.data !== null &&
+    typeof value.data === 'object' &&
+    'runId' in value.data &&
+    typeof (value.data as { runId: unknown }).runId === 'string'
+  ) {
+    return serializedRunToRunRef(value.data as { runId: string });
+  }
+  return new ClassInstanceRef(className, value.classId, value.data);
 };
 
 /** Convert a serialized class reference to a display string */
@@ -398,7 +405,6 @@ export const observabilityRevivers: Revivers = {
   ReadableStream: streamToStreamRef,
   WritableStream: streamToStreamRef,
   TransformStream: streamToStreamRef,
-  Run: serializedRunToRunRef,
   StepFunction: serializedStepFunctionToString,
   WorkflowFunction: (value: { workflowId: string }) =>
     `<workflow:${value.workflowId}>`,
