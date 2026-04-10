@@ -1,13 +1,44 @@
-import debug from 'debug';
 import { getActiveSpan } from './telemetry.js';
 
-function createLogger(namespace: string) {
-  const baseDebug = debug(`workflow:${namespace}`);
+function matchesDebugNamespace(
+  namespace: string,
+  patternList: string | undefined
+): boolean {
+  if (!patternList) {
+    return false;
+  }
 
+  let enabled = false;
+  for (const rawPattern of patternList.split(',')) {
+    const pattern = rawPattern.trim();
+    if (!pattern) {
+      continue;
+    }
+
+    const isNegated = pattern.startsWith('-');
+    const candidate = isNegated ? pattern.slice(1) : pattern;
+    const regex = new RegExp(
+      `^${candidate.replace(/[|\\{}()[\]^$+?.]/g, '\\$&').replace(/\*/g, '.*')}$`
+    );
+
+    if (regex.test(namespace)) {
+      enabled = !isNegated;
+    }
+  }
+
+  return enabled;
+}
+
+function createLogger(namespace: string) {
   const logger = (level: string) => {
-    const levelDebug = baseDebug.extend(level);
+    const debugNamespace = `workflow:${namespace}:${level}`;
 
     return (message: string, metadata?: Record<string, any>) => {
+      const debugEnabled = matchesDebugNamespace(
+        debugNamespace,
+        process.env.DEBUG
+      );
+
       // Always output error/warn to console so users see critical issues
       // debug/info only output when DEBUG env var is set
       if (level === 'error') {
@@ -16,10 +47,8 @@ function createLogger(namespace: string) {
         console.warn(`[Workflow] ${message}`, metadata ?? '');
       }
 
-      // Also log to debug library for verbose output when DEBUG is enabled
-      levelDebug(message, metadata);
-
-      if (levelDebug.enabled) {
+      if (debugEnabled) {
+        console.debug(`[${debugNamespace}] ${message}`, metadata ?? '');
         getActiveSpan()
           .then((span) => {
             span?.addEvent(`${level}.${namespace}`, { message, ...metadata });

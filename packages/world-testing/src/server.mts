@@ -56,7 +56,13 @@ const app = new Hono()
     // Extract runId from the request body (queue message payload)
     try {
       const body = (await cloned.json()) as Record<string, unknown>;
-      const runId = body?.runId as string | undefined;
+      const runId =
+        typeof body?.runId === 'string'
+          ? body.runId
+          : typeof (body.payload as Record<string, unknown> | undefined)
+                ?.runId === 'string'
+            ? ((body.payload as Record<string, unknown>).runId as string)
+            : undefined;
       if (runId) {
         flowInvocationCounts.set(
           runId,

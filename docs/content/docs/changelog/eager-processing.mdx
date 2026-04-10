@@ -432,6 +432,12 @@ The first lazy-world-loading fix switched package resolution over to `createRequ
 
 **Fix**: The runtime now creates the package resolver lazily from `process.cwd()/package.json` when possible, falling back to `import.meta.url` only when the app root cannot be resolved. That keeps custom world modules app-relative without reintroducing the eager module-load failure in Next.js builds.
 
+### Core Logger Still Pulled `debug` Into Webpack Flow Routes
+
+Even after lazy world loading stopped eagerly importing `@workflow/world-vercel`, the generated Next.js webpack flow route still evaluated `packages/core/src/logger.ts` at module load. That file had a top-level `import debug from 'debug'`, which in turn pulled `debug/src/node` and its `tty` dynamic require into `/.well-known/workflow/v1/flow`. Webpack then failed during page-data collection with `Dynamic require of "tty" is not supported`.
+
+**Fix**: Replace the static `debug` dependency in the core logger with lightweight `process.env.DEBUG` matching plus `console.debug`. That keeps verbose opt-in logging for local debugging without forcing webpack to bundle `debug` and its Node-only terminal helpers into the flow route.
+
 ### Deferred Next.js Builder Helper Drift After Merge
 
 Merging `main` into the eager-processing branch pulled in a set of helper methods for copied-step import rewriting in `packages/next/src/builder-deferred.ts`, but the corresponding call sites were not present on this branch yet. That left `getRelativeImportSpecifier`, `getStepCopyFileName`, and `rewriteRelativeImportsForCopiedStep` orphaned, and `@workflow/next` failed to build with `TS6133` unused-private-member errors immediately after the merge.
@@ -456,6 +462,12 @@ The `@workflow/world-testing` package includes invocation-counting tests that ve
 | Promise.all (2 steps) | **2-3** | Background step + continuation |
 
 The test server tracks flow handler invocations per `runId` via an internal counter. Each test asserts the exact invocation count after the workflow completes.
+
+### world-testing Flow Invocation Counting Missed Wrapped Queue Payloads
+
+The inline-execution assertions in `packages/world-testing` count how many times the flow handler runs by inspecting the queue callback body and extracting `runId`. After the queue callback shape drifted, some worlds were only exposing the workflow payload under `body.payload.runId`, so the helper recorded `0` invocations even when the workflow completed correctly. That showed up in CI as the Postgres inline-execution spec failing its "single flow invocation" assertion.
+
+**Fix**: Accept both top-level `runId` and nested `payload.runId` when tracking flow invocations in the embedded test server.
 
 ## Final Status
 
