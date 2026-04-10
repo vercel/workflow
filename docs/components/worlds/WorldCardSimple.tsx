@@ -1,16 +1,8 @@
 'use client';
 
-import {
-  AlertCircle,
-  BadgeCheck,
-  Check,
-  CheckCircle2,
-  Clock,
-  HeartHandshake,
-  ShieldCheck,
-  XCircle,
-} from 'lucide-react';
+import { BadgeCheck, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
+import { Badge } from '@/components/ui/badge';
 import {
   Card,
   CardContent,
@@ -18,14 +10,12 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Gauge } from '@/components/ui/gauge';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { cn } from '@/lib/utils';
 import type { World } from './types';
 
 interface WorldCardSimpleProps {
@@ -33,34 +23,7 @@ interface WorldCardSimpleProps {
   world: World;
 }
 
-const statusConfig = {
-  passing: {
-    label: 'Passing',
-    icon: CheckCircle2,
-    className: 'bg-green-300 text-green-900',
-  },
-  partial: {
-    label: 'Partial',
-    icon: AlertCircle,
-    className: 'bg-amber-300 text-amber-900',
-  },
-  failing: {
-    label: 'Failing',
-    icon: XCircle,
-    className: 'bg-red-300 text-red-900',
-  },
-  pending: {
-    label: 'Pending',
-    icon: Clock,
-    className: 'bg-muted text-muted-foreground',
-  },
-};
-
 export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
-  const e2eStatus = world.e2e?.status || 'pending';
-  const config = statusConfig[e2eStatus];
-  const StatusIcon = config.icon;
-
   // Use nextjs-turbopack data for scoring if available, otherwise fall back to total
   const turbopackData = world.e2e?.nextjsTurbopack;
 
@@ -144,7 +107,7 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
           {world.features.includes('encryption') && (
             <Tooltip>
               <TooltipTrigger asChild>
-                <Badge className="bg-blue-700 text-white border-transparent">
+                <Badge className="bg-blue-300 text-blue-700 border-transparent">
                   <ShieldCheck className="h-3.5 w-3.5" />
                   <span>Encrypted</span>
                 </Badge>

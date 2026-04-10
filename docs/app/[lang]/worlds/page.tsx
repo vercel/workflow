@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { PlainGlobe } from '@/app/[lang]/(home)/components/vercel-com-visuals';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { WorldCardSimple } from '@/components/worlds/WorldCardSimple';
+import { WorldsFilteredGrid } from '@/components/worlds/WorldsFilteredGrid';
 import { getWorldsData } from '@/lib/worlds-data';
 
 export const metadata: Metadata = {
@@ -24,25 +24,6 @@ export default async function WorldsPage() {
     if (a.type !== 'official' && b.type === 'official') return 1;
     return a.name.localeCompare(b.name);
   });
-
-  const officialCount = sortedWorlds.filter(
-    ([, w]) => w.type === 'official'
-  ).length;
-  const communityCount = sortedWorlds.filter(
-    ([, w]) => w.type === 'community'
-  ).length;
-  const passingCount = sortedWorlds.filter(
-    ([, w]) => w.e2e?.status === 'passing'
-  ).length;
-
-  const managedIds = new Set(['vercel']);
-  const embeddedIds = new Set(['local', 'redis', 'turso']);
-
-  const managedWorlds = sortedWorlds.filter(([id]) => managedIds.has(id));
-  const selfHostedWorlds = sortedWorlds.filter(
-    ([id]) => !managedIds.has(id) && !embeddedIds.has(id)
-  );
-  const embeddedWorlds = sortedWorlds.filter(([id]) => embeddedIds.has(id));
 
   return (
     <div className="[&_h1]:tracking-tighter [&_h2]:tracking-tighter [&_h3]:tracking-tighter sm:mt-24">
@@ -69,79 +50,8 @@ export default async function WorldsPage() {
           </div>
         </section>
 
-        {/* Stats */}
-        <div className="border-y px-4 py-6">
-          <div className="flex flex-wrap justify-center gap-3">
-            <Badge variant="outline" className="text-sm py-1 px-3">
-              {sortedWorlds.length} Worlds
-            </Badge>
-            <Badge variant="outline" className="text-sm py-1 px-3">
-              {officialCount} Official
-            </Badge>
-            <Badge variant="outline" className="text-sm py-1 px-3">
-              {communityCount} Community
-            </Badge>
-            <Badge
-              variant="outline"
-              className="text-sm py-1 px-3 bg-green-900 dark:bg-green-600 text-background-100 border-transparent!"
-            >
-              {passingCount} Fully Compatible
-            </Badge>
-          </div>
-        </div>
-
-        {/* World Cards — Managed */}
-        <section className="px-4 pt-8 sm:pt-12 pb-8">
-          <div className="mb-4">
-            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
-              Managed
-            </h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Production grade &mdash; zero configuration, high throughput,
-              infinitely-scalable, e2e encrypted, and integrated observability
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {managedWorlds.map(([id, world]) => (
-              <WorldCardSimple key={id} id={id} world={world} />
-            ))}
-          </div>
-        </section>
-
-        {/* World Cards — Self-Hosted */}
-        <section className="px-4 py-8">
-          <div className="mb-4">
-            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
-              Self-Hosted
-            </h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Self hosted &mdash; control your data and scaling while running
-              workflows inside your own infrastructure
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {selfHostedWorlds.map(([id, world]) => (
-              <WorldCardSimple key={id} id={id} world={world} />
-            ))}
-          </div>
-        </section>
-
-        {/* World Cards — Embedded */}
-        <section className="px-4 pt-8 pb-8 sm:pb-12">
-          <div className="mb-4">
-            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
-              Embedded
-            </h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Lightweight solutions for sidecars or local development
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {embeddedWorlds.map(([id, world]) => (
-              <WorldCardSimple key={id} id={id} world={world} />
-            ))}
-          </div>
-        </section>
+        {/* Filters + World Cards */}
+        <WorldsFilteredGrid worlds={sortedWorlds} />
 
         {/* Last Updated */}
         <div className="px-4 pb-8 text-center text-xs text-muted-foreground">
