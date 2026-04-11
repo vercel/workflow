@@ -1,0 +1,117 @@
+---
+title: Resume or Start
+description: Send input to a durable workflow whether or not it is already running.
+type: guide
+summary: Use a single entry point that resumes an existing hook, or starts a new workflow run when the hook doesn't exist yet.
+related:
+  - /docs/cookbook/advanced/durable-objects
+  - /docs/cookbook/agent-patterns/durable-agent
+  - /docs/api-reference/workflow-errors/hook-not-found-error
+  - /docs/api-reference/workflow/define-hook
+---
+
+When you model an entity as a [durable object](/docs/cookbook/advanced/durable-objects) or a stateful agent, the workflow spends most of its life paused on a hook waiting for the next input. Callers don't want to track whether the workflow has been started yet. They just want to send a message to a known token and have it delivered.
+
+The resume-or-start pattern gives you a single caller-side entry point that works in both cases. If the hook exists, the workflow wakes up and processes the input. If it doesn't, a new run is started with the same input.
+
+## When to use this
+
+- Workflows whose inputs all arrive through a single hook (chat sessions, durable objects, inboxes)
+- Callers that don't know, or don't want to know, whether a run for a given entity already exists
+- Entity-per-run designs where the hook token derives from a stable entity ID
+
+## Pattern: Shared schema for args and hook input
+
+The trick is to make the workflow's argument type the same as the hook's input type. The first message is passed as the start argument; every subsequent message is delivered through the hook. Inside the workflow, the first message is processed directly, then the workflow enters a hook loop for follow-ups.
+
+```typescript
+import { defineHook } from "workflow";
+import { z } from "zod";
+
+const messageSchema = z.object({
+  sessionId: z.string(),
+  text: z.string(),
+});
+
+type Message = z.infer<typeof messageSchema>;
+
+// The hook input type matches the workflow argument type.
+export const messageHook = defineHook({ schema: messageSchema });
+
+export async function chatSession(initialMessage: Message) {
+  "use workflow";
+
+  // Process the first message directly. It arrived as the start argument.
+  await handleMessage(initialMessage);
+
+  // Subsequent messages come through the hook.
+  const hook = messageHook.create({
+    token: `chat:${initialMessage.sessionId}`,
+  });
+
+  for await (const message of hook) {
+    await handleMessage(message);
+  }
+}
+
+async function handleMessage(message: Message) {
+  "use step";
+  // ...do work with the message
+  return { ok: true };
+}
+```
+
+The hook is created with a deterministic token derived from `sessionId`, so the caller can compute it without querying the run.
+
+### Caller: try resume, fall back to start
+
+From an API route, try to resume the hook first. If `HookNotFoundError` is thrown, the run doesn't exist yet, so start a new one with the same payload.
+
+```typescript
+import { resumeHook, start } from "workflow/api";
+import { HookNotFoundError } from "workflow/errors";
+import { chatSession } from "@/workflows/chat-session";
+
+export async function POST(request: Request) {
+  const message = await request.json();
+  const token = `chat:${message.sessionId}`;
+
+  try {
+    await resumeHook(token, message);
+  } catch (error) {
+    if (HookNotFoundError.is(error)) {
+      await start(chatSession, [message]); // [!code highlight]
+    } else {
+      throw error;
+    }
+  }
+
+  return Response.json({ ok: true });
+}
+```
+
+Because the workflow argument and the hook input share a type, the same `message` value works as either a start argument or a resume payload.
+
+## Why the first message goes through `start()`
+
+On a fresh run, `start()` returns the run ID before the workflow has executed far enough for `messageHook.create()` to register a hook. If the caller immediately tried to `resumeHook()` on the deterministic token, the hook wouldn't exist yet and the call would fail. Baking the first message into the workflow input avoids this race. The workflow has the data it needs from the moment it begins executing, and the hook only has to exist for follow-up messages.
+
+## Race condition caveats
+
+<Callout>
+The resume-or-start pattern is not atomic. Between the failed `resumeHook()` and the `start()` call, another caller could also observe "not found" and start a duplicate run. Workflow does not currently support idempotent run creation, so there is no native way to make the fallback safe across concurrent callers. An atomic `resumeHookOrStart` primitive is in discussion and will land in a future release; until then, the pattern is best used for single-writer entities (one session ID, one user) where the window is small enough to ignore, or behind an application-level lock keyed off the entity ID.
+</Callout>
+
+## Tips
+
+- **Deterministic tokens are required.** The caller must be able to compute the hook token from the entity ID alone. Use a stable ID like `sessionId` from the start, or pass the run ID back on subsequent requests.
+- **Keep the hook input and workflow argument in sync.** When you add a field to one, add it to the other. Sharing a single schema (as in the example above) keeps them aligned.
+- **Terminal workflows need a different approach.** If the workflow ever finishes, a later `resumeHook()` will fail and the fallback will start a fresh run with no prior state. For long-lived entities, keep the hook loop running indefinitely.
+- **Re-throw unexpected errors.** Only fall back to `start()` when the thrown error is specifically `HookNotFoundError`. Use `HookNotFoundError.is(error)` rather than `instanceof` so the check works across module boundaries.
+
+## Key APIs
+
+- [`defineHook`](/docs/api-reference/workflow/define-hook) -- type-safe hook shared between the workflow and the caller
+- [`resumeHook`](/docs/api-reference/workflow-api/resume-hook) -- deliver a payload to a paused hook from outside the workflow
+- [`start`](/docs/api-reference/workflow-api/start) -- begin a new workflow run when no hook exists yet
+- [`HookNotFoundError`](/docs/api-reference/workflow-errors/hook-not-found-error) -- thrown by `resumeHook()` when the token doesn't match an active hook
