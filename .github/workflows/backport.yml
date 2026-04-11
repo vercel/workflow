@@ -106,8 +106,10 @@ jobs:
         id: backport-pr
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          BRANCH="backport/pr-${{ github.event.pull_request.number }}-to-stable"
+          BRANCH="backport/pr-${PR_NUMBER}-to-stable"
           git checkout -B "$BRANCH"
           git push --force-with-lease origin "$BRANCH"
 
@@ -119,7 +121,7 @@ jobs:
             PR_URL=$(gh pr create \
               --base stable \
               --head "$BRANCH" \
-              --title "Backport #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}" \
+              --title "Backport #${PR_NUMBER}: $PR_TITLE" \
               --body "$(cat <<'BODY'
           Automated backport of #${{ github.event.pull_request.number }} to `stable`.
 
