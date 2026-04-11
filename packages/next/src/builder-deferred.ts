@@ -777,7 +777,14 @@ export async function getNextBuilderDeferred() {
 
     private shouldPreferSourceBackedPackagePath(filePath: string): boolean {
       const normalizedPath = filePath.replace(/\\/g, '/');
-      if (normalizedPath.includes('/packages/')) {
+      // Only prefer source for workspace packages (not in node_modules).
+      // For tarball-installed packages, using source-backed paths causes
+      // esbuild to bundle the full source tree (including world.ts with
+      // process.cwd()) instead of externalizing properly.
+      if (
+        normalizedPath.includes('/packages/') &&
+        !normalizedPath.includes('/node_modules/')
+      ) {
         return true;
       }
 

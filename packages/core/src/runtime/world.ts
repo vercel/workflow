@@ -9,15 +9,16 @@ import { createLocalWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
 
 function getRuntimeRequire() {
+  // Resolve from the app root (process.cwd()) so custom world packages
+  // like @workflow/world-postgres can be found even though they're not
+  // dependencies of @workflow/core. Using import.meta.url would resolve
+  // from core's location, missing app-level packages.
   try {
-    // Prefer import.meta.url — Turbopack can statically analyze it.
-    return createRequire(import.meta.url);
-  } catch {
-    // Fallback for CJS/webpack environments where import.meta.url fails.
     return createRequire(
-      pathToFileURL(/* turbopackIgnore: true */ process.cwd() + '/package.json')
-        .href
+      pathToFileURL(process.cwd() + '/package.json').href
     );
+  } catch {
+    return createRequire(import.meta.url);
   }
 }
 

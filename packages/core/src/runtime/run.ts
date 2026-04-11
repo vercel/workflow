@@ -21,7 +21,7 @@ import {
   type StopSleepResult,
   wakeUpRun,
 } from './runs.js';
-import { getWorld } from './world.js';
+import { getWorldLazy } from './get-world-lazy.js';
 
 /**
  * A `ReadableStream` extended with workflow-specific helpers.
@@ -92,7 +92,7 @@ export class Run<TResult> {
    */
   #worldPromise: Promise<World> | undefined;
   get #lazyWorldPromise() {
-    if (!this.#worldPromise) this.#worldPromise = getWorld();
+    if (!this.#worldPromise) this.#worldPromise = getWorldLazy();
     return this.#worldPromise;
   }
 

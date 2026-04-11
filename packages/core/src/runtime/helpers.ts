@@ -15,7 +15,7 @@ import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
 import { version as workflowCoreVersion } from '../version.js';
-import { getWorld } from './world.js';
+import { getWorldLazy } from './get-world-lazy.js';
 
 /** Default timeout for health checks in milliseconds */
 const DEFAULT_HEALTH_CHECK_TIMEOUT = 30_000;
@@ -99,7 +99,7 @@ export async function handleHealthCheckMessage(
   endpoint: 'workflow' | 'step',
   worldSpecVersion?: number
 ): Promise<void> {
-  const world = await getWorld();
+  const world = await getWorldLazy();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
   const response = JSON.stringify({
     healthy: true,
@@ -334,7 +334,7 @@ export async function getAllWorkflowRunEventsWithCursor(
     let hasMore = true;
     let pagesLoaded = 0;
 
-    const world = await getWorld();
+    const world = await getWorldLazy();
     const loadStart = Date.now();
     while (hasMore) {
       // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
@@ -403,7 +403,7 @@ export async function getNewWorkflowRunEvents(
     let hasMore = true;
     let pagesLoaded = 0;
 
-    const world = await getWorld();
+    const world = await getWorldLazy();
     const loadStart = Date.now();
     while (hasMore) {
       const pageStart = Date.now();
