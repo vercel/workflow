@@ -6,9 +6,8 @@ import { once } from './util.js';
 
 const execFileAsync = promisify(execFile);
 const COMMAND_PORT_PATTERN =
-  /(?:^|\s)(?:--port(?:=|\s+)|-p(?:=|\s+))(\d{1,5})(?=\s|$)/;
+  /(?:^|\s)(?:--port(?:=|\s+)|-p(?:=|\s+))(\d{1,5})(?=\s|$)/g;
 const MAX_ANCESTOR_PORT_SCAN_DEPTH = 6;
-const cachedProjectPortByRoot = new Map<string, number>();
 let cachedAncestorCommandPort: number | undefined;
 
 const getDataDirFromEnv = () => {
@@ -39,7 +38,7 @@ function parsePort(value: string | undefined, radix = 10): number | undefined {
     return undefined;
   }
   const port = Number.parseInt(value, radix);
-  if (!Number.isFinite(port) || port < 0 || port > 65535) {
+  if (!Number.isFinite(port) || port <= 0 || port > 65535) {
     return undefined;
   }
   return port;
@@ -50,12 +49,19 @@ function getPortFromCommand(command: string | undefined): number | undefined {
     return undefined;
   }
 
-  const match = command.match(COMMAND_PORT_PATTERN);
-  if (!match?.[1]) {
+  const matches = Array.from(command.matchAll(COMMAND_PORT_PATTERN));
+  if (matches.length === 0) {
     return undefined;
   }
 
-  return parsePort(match[1]);
+  // Node/Next scripts can contain repeated `--port` flags (e.g. script default
+  // plus CLI override). Use the last match, which matches CLI precedence.
+  const lastMatch = matches[matches.length - 1];
+  if (!lastMatch?.[1]) {
+    return undefined;
+  }
+
+  return parsePort(lastMatch[1]);
 }
 
 function getPortFromLifecycleScript(): number | undefined {
@@ -188,30 +194,158 @@ async function getPortFromProjectProcessList(
     return undefined;
   }
 
-  const cachedPort = cachedProjectPortByRoot.get(projectRoot);
-  if (typeof cachedPort === 'number') {
-    return cachedPort;
-  }
+  const isCommandWithinProjectRoot = (
+    command: string,
+    normalizedProjectRoot: string
+  ): boolean => {
+    return (
+      command.includes(`${normalizedProjectRoot}/`) ||
+      command.includes(`${normalizedProjectRoot} `) ||
+      command.endsWith(normalizedProjectRoot)
+    );
+  };
+
+  const getProcessCwd = async (pid: number): Promise<string | undefined> => {
+    const { stdout: cwdOutput } = await execFileAsync('lsof', [
+      '-a',
+      '-p',
+      String(pid),
+      '-d',
+      'cwd',
+      '-Fn',
+    ]).catch(() => ({ stdout: '' as string }));
+    const cwdLine = cwdOutput
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line.startsWith('n'));
+    if (!cwdLine || cwdLine.length < 2) {
+      return undefined;
+    }
+    return normalizePath(cwdLine.slice(1));
+  };
+
+  const isHttpReachablePort = async (port: number): Promise<boolean> => {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 300);
+      const response = await fetch(`http://localhost:${port}/`, {
+        method: 'HEAD',
+        signal: controller.signal,
+      }).catch(async () => {
+        return await fetch(`http://localhost:${port}/`, {
+          method: 'GET',
+          signal: controller.signal,
+        });
+      });
+      clearTimeout(timeout);
+      return response.status >= 100 && response.status < 600;
+    } catch {
+      return false;
+    }
+  };
 
   try {
-    const { stdout } = await execFileAsync('ps', ['-Ao', 'command=']);
+    const { stdout } = await execFileAsync('ps', ['-Ao', 'pid=,command=']);
     const normalizedProjectRoot = normalizePath(projectRoot);
-    const projectPrefix = `${normalizedProjectRoot}/`;
-    const commandLines = stdout.split('\n').map((line) => line.trim());
 
-    const nextDevCommands = commandLines.filter(
-      (line) =>
-        line.includes(projectPrefix) &&
-        line.includes('next') &&
-        line.includes(' dev')
-    );
+    const nextDevCommands: Array<{ pid: number; command: string }> = [];
+    const processEntries = stdout
+      .split('\n')
+      .map((entry) => entry.trim())
+      .map((line) => {
+        const match = line.match(/^(\d+)\s+(.+)$/);
+        if (!match?.[1] || !match[2]) {
+          return null;
+        }
+        const pid = Number.parseInt(match[1], 10);
+        if (!Number.isFinite(pid)) {
+          return null;
+        }
+        return {
+          pid,
+          command: match[2],
+        };
+      })
+      .filter((entry): entry is { pid: number; command: string } =>
+        Boolean(entry)
+      )
+      .sort((a, b) => b.pid - a.pid);
 
-    for (const commandLine of nextDevCommands) {
-      const parsedPort = getPortFromCommand(commandLine);
-      if (typeof parsedPort === 'number') {
-        cachedProjectPortByRoot.set(projectRoot, parsedPort);
-        return parsedPort;
+    for (const { pid, command } of processEntries) {
+      if (command.includes('detached-flush')) {
+        continue;
       }
+
+      const looksLikeNextDevProcess =
+        command.includes('next') &&
+        (command.includes(' dev') || command.includes('next-server'));
+      if (!looksLikeNextDevProcess) {
+        continue;
+      }
+
+      let matchesProject = isCommandWithinProjectRoot(
+        command,
+        normalizedProjectRoot
+      );
+      if (!matchesProject) {
+        const processCwd = await getProcessCwd(pid);
+        matchesProject = processCwd === normalizedProjectRoot;
+      }
+      if (!matchesProject) {
+        continue;
+      }
+
+      nextDevCommands.push({ pid, command });
+    }
+
+    const candidatePorts: number[] = [];
+    const addCandidatePort = (port: number) => {
+      if (!candidatePorts.includes(port)) {
+        candidatePorts.push(port);
+      }
+    };
+
+    for (const entry of nextDevCommands) {
+      const parsedPort = getPortFromCommand(entry.command);
+      if (typeof parsedPort === 'number') {
+        addCandidatePort(parsedPort);
+      }
+
+      const { stdout: lsofOutput } = await execFileAsync('lsof', [
+        '-a',
+        '-i',
+        '-P',
+        '-n',
+        '-p',
+        String(entry.pid),
+        '-sTCP:LISTEN',
+      ]).catch(() => ({ stdout: '' as string }));
+      const lsofLines = lsofOutput.split('\n');
+      for (const lsofLine of lsofLines) {
+        const parts = lsofLine.trim().split(/\s+/);
+        const address = parts[8];
+        if (!address) {
+          continue;
+        }
+        const colonIndex = address.lastIndexOf(':');
+        if (colonIndex === -1) {
+          continue;
+        }
+        const parsedLsofPort = parsePort(address.slice(colonIndex + 1));
+        if (typeof parsedLsofPort === 'number') {
+          addCandidatePort(parsedLsofPort);
+        }
+      }
+    }
+
+    for (const candidatePort of candidatePorts) {
+      if (await isHttpReachablePort(candidatePort)) {
+        return candidatePort;
+      }
+    }
+
+    if (candidatePorts.length > 0) {
+      return candidatePorts[0];
     }
 
     return undefined;
@@ -279,11 +413,15 @@ export async function resolveBaseUrl(config: Partial<Config>): Promise<string> {
   }
 
   if (typeof config.port === 'number') {
-    return `http://localhost:${config.port}`;
+    const parsedConfigPort = parsePort(String(config.port));
+    if (typeof parsedConfigPort === 'number') {
+      return `http://localhost:${parsedConfigPort}`;
+    }
   }
 
-  if (process.env.PORT) {
-    return `http://localhost:${process.env.PORT}`;
+  const envPort = parsePort(process.env.PORT);
+  if (typeof envPort === 'number') {
+    return `http://localhost:${envPort}`;
   }
 
   const turboPort = getPortFromEnvVariable('TURBO_PORT');

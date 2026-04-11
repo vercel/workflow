@@ -130,15 +130,16 @@ describe('resolveBaseUrl', () => {
       expect(result).toBe('http://localhost:5173');
     });
 
-    it('should handle port 0 (OS-assigned port)', async () => {
+    it('should treat port 0 as invalid and fall back to auto-detection', async () => {
       const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
 
       const result = await resolveBaseUrl({
         port: 0,
       });
 
-      expect(result).toBe('http://localhost:0');
-      expect(getWorkflowPort).not.toHaveBeenCalled();
+      expect(result).toBe('http://localhost:5173');
+      expect(getWorkflowPort).toHaveBeenCalled();
     });
 
     it('should handle port 80', async () => {
@@ -237,6 +238,17 @@ describe('resolveBaseUrl', () => {
       expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
+    it('should ignore invalid PORT env var values and continue fallback resolution', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(5173);
+      process.env.PORT = '0';
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:5173');
+      expect(getWorkflowPort).toHaveBeenCalled();
+    });
+
     it('should use TURBO_PORT env var when PORT is not set', async () => {
       const { getWorkflowPort } = await import('@workflow/utils/get-port');
       vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
@@ -273,6 +285,20 @@ describe('resolveBaseUrl', () => {
       const result = await resolveBaseUrl({});
 
       expect(result).toBe('http://localhost:3010');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should use the last --port flag from npm_lifecycle_script when multiple are present', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      process.env.npm_lifecycle_script =
+        'next dev --port 3002 --turbopack --port 3000';
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:3000');
       expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
@@ -316,6 +342,42 @@ describe('resolveBaseUrl', () => {
       expect(getWorkflowPort).not.toHaveBeenCalled();
     });
 
+    it('should use the last --port flag from process.argv when repeated', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      delete process.env.npm_lifecycle_script;
+      process.argv = [
+        '/usr/local/bin/node',
+        'next-server',
+        '--port',
+        '3002',
+        '--turbopack',
+        '--port',
+        '3000',
+      ];
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:3000');
+      expect(getWorkflowPort).not.toHaveBeenCalled();
+    });
+
+    it('should ignore process.argv --port 0 and fall back to auto-detection', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(4568);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      delete process.env.npm_lifecycle_script;
+      process.argv = ['/usr/local/bin/node', 'next-server', '--port', '0'];
+
+      const result = await resolveBaseUrl({});
+
+      expect(result).toBe('http://localhost:4568');
+      expect(getWorkflowPort).toHaveBeenCalled();
+    });
+
     it('should resolve from process list when dataDir points to a project with a live next dev port', async () => {
       const { getWorkflowPort } = await import('@workflow/utils/get-port');
       vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
@@ -357,6 +419,72 @@ describe('resolveBaseUrl', () => {
       } finally {
         helper.kill();
         await new Promise((resolve) => helper.once('exit', resolve));
+      }
+    });
+
+    it('should prefer the newest matching next dev process when multiple ports exist', async () => {
+      const { getWorkflowPort } = await import('@workflow/utils/get-port');
+      vi.mocked(getWorkflowPort).mockResolvedValue(undefined);
+      delete process.env.PORT;
+      delete process.env.TURBO_PORT;
+      delete process.env.npm_lifecycle_script;
+      delete process.env.__NEXT_PRIVATE_ORIGIN;
+      process.argv = ['/usr/local/bin/node', 'vitest'];
+
+      const projectRoot = await mkdtemp(
+        join(os.tmpdir(), 'workflow-config-process-port-multi-')
+      );
+      await mkdir(join(projectRoot, '.next', 'workflow-data'), {
+        recursive: true,
+      });
+
+      const olderPort = 41231;
+      const newerPort = 41232;
+      const olderHelper = spawn(
+        process.execPath,
+        [
+          '-e',
+          'setInterval(() => {}, 1000)',
+          'next',
+          'dev',
+          '--port',
+          String(olderPort),
+          `${projectRoot}/app`,
+        ],
+        { stdio: 'ignore' }
+      );
+
+      // Ensure PID ordering so the second helper is considered newer.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const newerHelper = spawn(
+        process.execPath,
+        [
+          '-e',
+          'setInterval(() => {}, 1000)',
+          'next',
+          'dev',
+          '--port',
+          String(newerPort),
+          `${projectRoot}/app`,
+        ],
+        { stdio: 'ignore' }
+      );
+
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const result = await resolveBaseUrl({
+          dataDir: join(projectRoot, '.next', 'workflow-data'),
+        });
+        expect(result).toBe(`http://localhost:${newerPort}`);
+        expect(getWorkflowPort).not.toHaveBeenCalled();
+      } finally {
+        olderHelper.kill();
+        newerHelper.kill();
+        await Promise.all([
+          new Promise((resolve) => olderHelper.once('exit', resolve)),
+          new Promise((resolve) => newerHelper.once('exit', resolve)),
+        ]);
       }
     });
 
