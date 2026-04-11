@@ -29,7 +29,23 @@ import {
 } from './flushable-stream.js';
 import { runtimeLogger } from './logger.js';
 import { getStepFunction } from './private.js';
-import { getWorld } from './runtime/world.js';
+// Access the world singleton via globalThis symbols instead of importing
+// world.ts directly. This prevents esbuild from bundling world.ts (and its
+// transitive deps: world-local, world-vercel, process.cwd(), etc.) into the
+// step registrations bundle, which triggers Turbopack NFT tracing errors.
+const WorldCacheKey = Symbol.for('@workflow/world//cache');
+const WorldCachePromiseKey = Symbol.for('@workflow/world//cachePromise');
+const getWorldFromCache = async (): Promise<import('@workflow/world').World> => {
+  const g = globalThis as any;
+  if (g[WorldCacheKey]) return g[WorldCacheKey];
+  if (g[WorldCachePromiseKey]) {
+    g[WorldCacheKey] = await g[WorldCachePromiseKey];
+    return g[WorldCacheKey];
+  }
+  throw new Error(
+    'World not initialized. Ensure the workflow runtime calls getWorld() before serialization is used.'
+  );
+};
 import { contextStorage } from './step/context-storage.js';
 import {
   BODY_INIT_SYMBOL,
@@ -426,7 +442,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       pull: async (controller) => {
         let reader = this.#reader;
         if (!reader) {
-          const world = await getWorld();
+          const world = await getWorldFromCache();
           const stream = await world.streams.get(runId, name, startIndex);
           reader = this.#reader = stream.getReader();
         }
@@ -469,7 +485,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error(`"name" is required, got "${name}"`);
     }
-    const worldPromise = getWorld();
+    const worldPromise = getWorldFromCache();
 
     // Buffering state for batched writes
     // Encryption/decryption is handled at the framing level by

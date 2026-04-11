@@ -395,10 +395,6 @@ export abstract class BaseBuilder {
   }): Promise<{
     context: esbuild.BuildContext | undefined;
     manifest: WorkflowManifest;
-    /** Discovered step files (absolute paths) — used by createCombinedBundle for individual imports */
-    stepFiles: string[];
-    /** Serde-only files (absolute paths) — used by createCombinedBundle for individual imports */
-    serdeOnlyFiles: string[];
   }> {
     const stepsBundleStart = Date.now();
     const workflowManifest: WorkflowManifest = {};
@@ -674,10 +670,10 @@ export abstract class BaseBuilder {
     await this.createSwcGitignore();
 
     if (this.config.watch) {
-      return { context: esbuildCtx, manifest: workflowManifest, stepFiles, serdeOnlyFiles };
+      return { context: esbuildCtx, manifest: workflowManifest };
     }
     await esbuildCtx.dispose();
-    return { context: undefined, manifest: workflowManifest, stepFiles, serdeOnlyFiles };
+    return { context: undefined, manifest: workflowManifest };
   }
 
   /**
@@ -1036,64 +1032,6 @@ export const POST = workflowEntrypoint(workflowCode);`;
   }
 
   /**
-   * Generates individual step/serde import statements relative to a given
-   * output file. Used by createCombinedBundle when bundleFinalOutput is false
-   * so that the framework bundler (e.g. Turbopack) traces each step file
-   * individually instead of pulling in a monolithic esbuild bundle.
-   */
-  private generateIndividualStepImports({
-    stepFiles,
-    serdeOnlyFiles,
-    outputFile,
-  }: {
-    stepFiles: string[];
-    serdeOnlyFiles: string[];
-    outputFile: string;
-  }): string {
-    const outputDir = dirname(outputFile).replace(/\\/g, '/');
-
-    const createRelativeImport = (file: string) => {
-      const { importPath, isPackage } = getImportPath(
-        file,
-        this.config.workingDir
-      );
-
-      if (isPackage) {
-        return `import '${importPath}';`;
-      }
-
-      const normalizedFile = file.replace(/\\/g, '/');
-      let relativePath = relative(outputDir, normalizedFile).replace(
-        /\\/g,
-        '/'
-      );
-      if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
-        relativePath = `./${relativePath}`;
-      }
-      return `import '${relativePath}';`;
-    };
-
-    const lines: string[] = [];
-    lines.push("// Built-in steps");
-    lines.push("import 'workflow/internal/builtins';");
-    if (stepFiles.length > 0) {
-      lines.push("// User steps");
-      for (const f of stepFiles) {
-        lines.push(createRelativeImport(f));
-      }
-    }
-    if (serdeOnlyFiles.length > 0) {
-      lines.push("// Serde files for cross-context class registration");
-      for (const f of serdeOnlyFiles) {
-        lines.push(createRelativeImport(f));
-      }
-    }
-    lines.push("// Sentinel export so bundlers (rollup) don't tree-shake step imports");
-    lines.push("export const __steps_registered = true;");
-    return lines.join('\n');
-  }
-
-  /**
    * V2: Creates a combined bundle that includes both step registrations and
    * workflow orchestration in a single route. The combined entrypoint executes
    * steps inline when possible, reducing function invocations and queue overhead.
@@ -1129,8 +1067,8 @@ export const POST = workflowEntrypoint(workflowCode);`;
     bundleFinal?: (interimBundleResult: string) => Promise<void>;
   }> {
     // 1. Build step registrations bundle (used as separate file for
-    // bundleFinalOutput: true, or skipped in favour of individual imports when false)
-    const { context: stepsContext, manifest: stepsManifest, stepFiles, serdeOnlyFiles } =
+    // bundleFinalOutput: false, or read back for inline content when true)
+    const { context: stepsContext, manifest: stepsManifest } =
       await this.createStepsBundle({
         inputFiles,
         outfile: stepsOutfile,
@@ -1174,36 +1112,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     const stepsRelativePath = './' + basename(stepsOutfile).replace(/\\/g, '/');
     const escapedVMCode = workflowVMCode.replace(/[\\`$]/g, '\\$&');
 
-    if (!bundleFinalOutput) {
-      // When the framework bundler handles resolution (e.g. Next.js/Turbopack),
-      // import each step file individually instead of the monolithic esbuild
-      // bundle. This avoids NFT tracing errors caused by dynamic patterns in the
-      // bundled __step_registrations.js (process.cwd(), dynamic imports of world
-      // adapters, etc.).
-      const individualStepImports = this.generateIndividualStepImports({
-        stepFiles,
-        serdeOnlyFiles,
-        outputFile: flowOutfile,
-      });
-
-      const combinedFunctionCode = `// biome-ignore-all lint: generated file
-/* eslint-disable */
-${individualStepImports}
-import { workflowEntrypoint } from 'workflow/runtime';
-
-// Prevent rollup from tree-shaking the steps side-effect import
-void __steps_registered;
-
-const workflowCode = \`${escapedVMCode}\`;
-
-export const POST = workflowEntrypoint(workflowCode);`;
-
-      // Write directly (Next.js will bundle)
-      const tempPath = `${flowOutfile}.${randomUUID()}.tmp`;
-      await writeFile(tempPath, combinedFunctionCode);
-      await rename(tempPath, flowOutfile);
-    } else {
-      const combinedFunctionCode = `// biome-ignore-all lint: generated file
+    const combinedFunctionCode = `// biome-ignore-all lint: generated file
 /* eslint-disable */
 import { __steps_registered } from '${stepsRelativePath}';
 import { workflowEntrypoint } from 'workflow/runtime';
@@ -1214,6 +1123,13 @@ void __steps_registered;
 const workflowCode = \`${escapedVMCode}\`;
 
 export const POST = workflowEntrypoint(workflowCode);`;
+
+    if (!bundleFinalOutput) {
+      // Write directly (Next.js will bundle)
+      const tempPath = `${flowOutfile}.${randomUUID()}.tmp`;
+      await writeFile(tempPath, combinedFunctionCode);
+      await rename(tempPath, flowOutfile);
+    } else {
       // Bundle the combined code for standalone use
       const bundleStartTime = Date.now();
       const { banner: importMetaBanner, define: importMetaDefine } =
@@ -1263,20 +1179,9 @@ export const POST = workflowEntrypoint(workflowCode);`;
     // Create a custom bundleFinal for watch mode that uses workflowEntrypoint
     const combinedBundleFinal = async (interimBundleText: string) => {
       const escaped = interimBundleText.replace(/[\\`$]/g, '\\$&');
-
-      // Use individual step imports when the framework bundler handles
-      // resolution (same as the non-watch path above).
-      const stepsImportBlock = !bundleFinalOutput
-        ? this.generateIndividualStepImports({
-            stepFiles,
-            serdeOnlyFiles,
-            outputFile: flowOutfile,
-          })
-        : `import { __steps_registered } from '${stepsRelativePath}';\n// Sentinel export already provided by __step_registrations.js`;
-
       const code = `// biome-ignore-all lint: generated file
 /* eslint-disable */
-${stepsImportBlock}
+import { __steps_registered } from '${stepsRelativePath}';
 import { workflowEntrypoint } from 'workflow/runtime';
 
 void __steps_registered;

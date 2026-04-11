@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowServerWritableStream } from './serialization.js';
-
-// Mock the world module for WorkflowServerWritableStream tests
-vi.mock('./runtime/world.js', () => ({
-  getWorld: vi.fn(),
-}));
+import { setWorld } from './runtime/world.js';
 
 describe('WorkflowServerWritableStream', () => {
   let mockStreams: {
@@ -26,11 +22,11 @@ describe('WorkflowServerWritableStream', () => {
 
     mockWorld = { streams: mockStreams };
 
-    const { getWorld } = await import('./runtime/world.js');
-    vi.mocked(getWorld).mockReturnValue(mockWorld as any);
+    setWorld(mockWorld as any);
   });
 
   afterEach(() => {
+    setWorld(undefined);
     vi.clearAllMocks();
   });
 
