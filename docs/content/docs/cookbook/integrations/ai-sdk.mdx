@@ -111,6 +111,7 @@ const agent = new DurableAgent({ model: "bedrock/claude-haiku-4-5-20251001-v1" }
 Import from a provider package to bypass Gateway and connect to the provider directly.
 
 ```typescript
+import { DurableAgent } from "@workflow/ai/agent";
 import { openai } from "@workflow/ai/openai";
 
 const agent = new DurableAgent({ model: openai("gpt-4o") });
