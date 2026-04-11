@@ -1,12 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOCK_POLL_INTERVAL_MS } from '../flushable-stream.js';
-
-vi.mock('../runtime/world.js', () => ({
-  getWorld: vi.fn(),
-}));
+import { setWorld } from '../runtime/world.js';
 
 describe('step-level getWritable', () => {
-  beforeEach(async () => {
+  beforeEach(() => {
     const mockWorld = {
       streams: {
         write: vi.fn().mockResolvedValue(undefined),
@@ -15,11 +12,11 @@ describe('step-level getWritable', () => {
       },
     };
 
-    const { getWorld } = await import('../runtime/world.js');
-    (getWorld as ReturnType<typeof vi.fn>).mockReturnValue(mockWorld);
+    setWorld(mockWorld as any);
   });
 
   afterEach(() => {
+    setWorld(undefined);
     vi.clearAllMocks();
   });
 
