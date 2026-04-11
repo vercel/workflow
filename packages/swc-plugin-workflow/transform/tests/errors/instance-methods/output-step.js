@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 /**__internal_workflows{"steps":{"input.js":{"TestClass#instanceMethod":{"stepId":"step//./input//TestClass#instanceMethod"},"TestClass.staticMethod":{"stepId":"step//./input//TestClass.staticMethod"}}},"classes":{"input.js":{"TestClass":{"classId":"class//./input//TestClass"}}}}*/;
 export class TestClass {
     // OK: instance methods can have "use step" directive
@@ -15,8 +14,16 @@ export class TestClass {
         return 'allowed';
     }
 }
-registerStepFunction("step//./input//TestClass.staticMethod", TestClass.staticMethod);
-registerStepFunction("step//./input//TestClass#instanceMethod", TestClass.prototype["instanceMethod"]);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(TestClass.staticMethod, "step//./input//TestClass.staticMethod");
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(TestClass.prototype["instanceMethod"], "step//./input//TestClass#instanceMethod");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);

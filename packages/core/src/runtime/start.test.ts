@@ -1,6 +1,21 @@
-import { WorkflowRuntimeError } from '@workflow/errors';
-import { SPEC_VERSION_CURRENT, SPEC_VERSION_LEGACY } from '@workflow/world';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WorkflowRuntimeError, WorkflowWorldError } from '@workflow/errors';
+import {
+  SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
+  SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+  SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+} from '@workflow/world';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+  vi,
+} from 'vitest';
+import type { Run } from './run.js';
+import type { WorkflowFunction } from './start.js';
 import { start } from './start.js';
 import { getWorld } from './world.js';
 
@@ -35,7 +50,7 @@ describe('start', () => {
         // @ts-expect-error - intentionally passing undefined
         start(undefined, [])
       ).rejects.toThrow(
-        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`
+        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`
       );
     });
 
@@ -49,7 +64,7 @@ describe('start', () => {
         // @ts-expect-error - intentionally passing null
         start(null, [])
       ).rejects.toThrow(
-        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`
+        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`
       );
     });
 
@@ -61,7 +76,7 @@ describe('start', () => {
       );
 
       await expect(start(invalidWorkflow, [])).rejects.toThrow(
-        `'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.`
+        `'start' received an invalid workflow function. Ensure the Workflow SDK is configured correctly and the function includes a 'use workflow' directive.`
       );
     });
 
@@ -99,10 +114,34 @@ describe('start', () => {
       vi.clearAllMocks();
     });
 
-    it('should use SPEC_VERSION_CURRENT when specVersion is not provided', async () => {
+    it('should use world.specVersion when available, falling back to SPEC_VERSION_SUPPORTS_EVENT_SOURCING', async () => {
       const validWorkflow = Object.assign(() => Promise.resolve('result'), {
         workflowId: 'test-workflow',
       });
+
+      // Mock world without specVersion → falls back to safe baseline (v2)
+      await start(validWorkflow, []);
+
+      expect(mockEventsCreate).toHaveBeenCalledWith(
+        expect.stringMatching(/^wrun_/),
+        expect.objectContaining({
+          eventType: 'run_created',
+          specVersion: SPEC_VERSION_SUPPORTS_EVENT_SOURCING,
+        }),
+        expect.objectContaining({
+          v1Compat: false,
+        })
+      );
+
+      vi.clearAllMocks();
+
+      // Mock world with specVersion 3 → uses it
+      vi.mocked(getWorld).mockReturnValue({
+        specVersion: SPEC_VERSION_CURRENT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
 
       await start(validWorkflow, []);
 
@@ -270,7 +309,7 @@ describe('start', () => {
       expect(mockQueue).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(Object),
-        { deploymentId: 'dpl_resolved_abc123' }
+        expect.objectContaining({ deploymentId: 'dpl_resolved_abc123' })
       );
     });
 
@@ -378,6 +417,124 @@ describe('start', () => {
         }),
         expect.anything()
       );
+    });
+  });
+
+  describe('resilient start (run_created failure)', () => {
+    const validWorkflow = Object.assign(() => Promise.resolve('result'), {
+      workflowId: 'test-workflow',
+    });
+
+    afterEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should succeed when events.create throws a 500 error (queue still dispatched)', async () => {
+      const mockQueue = vi.fn().mockResolvedValue({ messageId: null });
+      const serverError = new WorkflowWorldError('Internal Server Error', {
+        status: 500,
+      });
+      const mockEventsCreate = vi.fn().mockRejectedValue(serverError);
+
+      vi.mocked(getWorld).mockReturnValue({
+        // World declares specVersion 3 to enable CBOR queue transport + runInput
+        specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      // start() should NOT throw — the queue was still dispatched
+      const run = await start(validWorkflow, [42]);
+      expect(run.runId).toMatch(/^wrun_/);
+
+      // Queue should have been called with runInput
+      expect(mockQueue).toHaveBeenCalledTimes(1);
+      const [, queuePayload] = mockQueue.mock.calls[0];
+      expect(queuePayload.runInput).toBeDefined();
+      expect(queuePayload.runInput.deploymentId).toBe('deploy_123');
+      expect(queuePayload.runInput.workflowName).toBe('test-workflow');
+      expect(queuePayload.runInput.specVersion).toBe(
+        SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT
+      );
+    });
+
+    it('should throw when queue fails even if events.create succeeds', async () => {
+      const mockEventsCreate = vi.fn().mockResolvedValue({
+        run: { runId: 'wrun_test', status: 'pending' },
+      });
+      const mockQueue = vi
+        .fn()
+        .mockRejectedValue(new Error('Queue unavailable'));
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(start(validWorkflow, [])).rejects.toThrow(
+        'Queue unavailable'
+      );
+    });
+
+    it('should throw when events.create fails with a non-retryable error (e.g. 400)', async () => {
+      const badRequest = new WorkflowWorldError('Bad Request', {
+        status: 400,
+      });
+      const mockEventsCreate = vi.fn().mockRejectedValue(badRequest);
+      const mockQueue = vi.fn().mockResolvedValue({ messageId: null });
+
+      vi.mocked(getWorld).mockReturnValue({
+        getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
+        events: { create: mockEventsCreate },
+        queue: mockQueue,
+      } as any);
+
+      await expect(start(validWorkflow, [])).rejects.toThrow('Bad Request');
+    });
+  });
+
+  describe('overload type inference', () => {
+    // Type-only assertions that don't execute start() at runtime.
+    // We use expectTypeOf on the function signature's return type directly.
+
+    type TypedWf = WorkflowFunction<[string, number], boolean>;
+    type ZeroArgWf = WorkflowFunction<[], string>;
+    type Meta = { workflowId: string };
+
+    it('should preserve types without deploymentId', () => {
+      // With args
+      expectTypeOf<
+        (wf: TypedWf, args: [string, number]) => Promise<Run<boolean>>
+      >().toMatchTypeOf<typeof start>();
+
+      // Zero-arg workflow without args
+      expectTypeOf(start<string>)
+        .parameter(0)
+        .toMatchTypeOf<ZeroArgWf | Meta>();
+    });
+
+    it('should return Run<unknown> when deploymentId is provided', () => {
+      // Typed workflow with deploymentId - return type becomes Run<unknown>
+      type StartWithDeploymentId = (
+        wf: TypedWf | Meta,
+        args: unknown[],
+        opts: { deploymentId: string }
+      ) => Promise<Run<unknown>>;
+      expectTypeOf<StartWithDeploymentId>().toMatchTypeOf<typeof start>();
+    });
+
+    it('should accept typed workflows with deploymentId (no contravariance issue)', () => {
+      // This is the key test: a typed workflow should be assignable to the
+      // deploymentId overload. We verify by checking the first parameter
+      // accepts TypedWf.
+      type DeploymentIdOverload = <TArgs extends unknown[], TResult>(
+        wf: WorkflowFunction<TArgs, TResult> | Meta,
+        args: unknown[],
+        opts: { deploymentId: string }
+      ) => Promise<Run<unknown>>;
+      expectTypeOf<DeploymentIdOverload>().toMatchTypeOf<typeof start>();
     });
   });
 });

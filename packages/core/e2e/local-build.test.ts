@@ -64,7 +64,35 @@ async function runCommandWithLiveOutput(
   });
 }
 
+/**
+ * Read a file if it exists, return null otherwise.
+ */
+async function readFileIfExists(filePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, 'utf-8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Projects that use the VercelBuildOutputAPIBuilder and produce ESM step bundles.
+ */
+const ESM_STEP_BUNDLE_PROJECTS: Record<string, string> = {
+  example:
+    '.vercel/output/functions/.well-known/workflow/v1/step.func/index.mjs',
+};
+
+const DEFERRED_BUILD_MODE_PROJECTS = new Set([
+  'nextjs-webpack',
+  'nextjs-turbopack',
+]);
+const DEFERRED_BUILD_UNSUPPORTED_WARNING =
+  'Enabled lazyDiscovery but Next.js version is not compatible';
+const EAGER_DISCOVERY_LOG = 'Discovering workflow directives';
+
 describe.each([
+  'example',
   'nextjs-webpack',
   'nextjs-turbopack',
   'nitro',
@@ -91,12 +119,33 @@ describe.each([
 
     expect(result.output).not.toContain('Error:');
 
+    if (DEFERRED_BUILD_MODE_PROJECTS.has(project)) {
+      const deferredBuildSupported = !result.output.includes(
+        DEFERRED_BUILD_UNSUPPORTED_WARNING
+      );
+      if (deferredBuildSupported) {
+        expect(result.output).not.toContain(EAGER_DISCOVERY_LOG);
+      }
+    }
+
     if (usesVercelWorld()) {
       const diagnosticsManifestPath = path.join(
         getWorkbenchAppPath(project),
         '.vercel/output/diagnostics/workflows-manifest.json'
       );
       await fs.access(diagnosticsManifestPath);
+    }
+
+    // Verify ESM step bundles use native import.meta (no CJS polyfill needed)
+    const esmBundlePath = ESM_STEP_BUNDLE_PROJECTS[project];
+    if (esmBundlePath) {
+      const bundleContent = await readFileIfExists(
+        path.join(getWorkbenchAppPath(project), esmBundlePath)
+      );
+      expect(bundleContent).not.toBeNull();
+      // ESM output should NOT contain CJS polyfill
+      expect(bundleContent).not.toContain('var __import_meta_url');
+      expect(bundleContent).not.toContain('pathToFileURL(__filename)');
     }
   });
 });

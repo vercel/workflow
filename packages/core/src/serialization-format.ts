@@ -373,6 +373,8 @@ export const observabilityRevivers: Revivers = {
   WritableStream: streamToStreamRef,
   TransformStream: streamToStreamRef,
   StepFunction: serializedStepFunctionToString,
+  WorkflowFunction: (value: { workflowId: string }) =>
+    `<workflow:${value.workflowId}>`,
   Instance: serializedInstanceToRef,
   Class: serializedClassToString,
 };

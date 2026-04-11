@@ -1,16 +1,22 @@
 import {
   EntityConflictError,
-  WorkflowWorldError,
   WorkflowRunNotFoundError,
+  WorkflowWorldError,
 } from '@workflow/errors';
+import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import type { Event, World } from '@workflow/world';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 // Mock version module to avoid missing generated file
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
-import { wakeUpRun } from './runs.js';
+import { registerSerializationClass } from '../class-serialization.js';
+import {
+  dehydrateStepReturnValue,
+  hydrateStepReturnValue,
+} from '../serialization.js';
 import { Run } from './run.js';
+import { wakeUpRun } from './runs.js';
 import { setWorld } from './world.js';
 
 function createMockWorld(
@@ -223,5 +229,48 @@ describe('Run.wakeUp', () => {
     expect(result.stoppedCount).toBe(0);
     // Should not re-enqueue when nothing was stopped
     expect(world.queue).not.toHaveBeenCalled();
+  });
+});
+
+describe('Run custom serialization', () => {
+  // In production builds, the SWC plugin auto-registers the class via an
+  // inline IIFE. In tests (no SWC), we register manually.
+  registerSerializationClass('Run', Run);
+
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  it('should expose WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE methods', () => {
+    const run = new Run('wrun_serialize');
+    const serialized = Run[WORKFLOW_SERIALIZE](run);
+    const deserialized = Run[WORKFLOW_DESERIALIZE]({
+      runId: 'wrun_deserialize',
+    });
+
+    expect(serialized).toEqual({
+      runId: 'wrun_serialize',
+      resilientStart: false,
+    });
+    expect(deserialized).toBeInstanceOf(Run);
+    expect(deserialized.runId).toBe('wrun_deserialize');
+  });
+
+  it('should roundtrip through step serialization boundary', async () => {
+    const run = new Run('wrun_roundtrip');
+    const dehydrated = await dehydrateStepReturnValue(
+      run,
+      'wrun_parent',
+      undefined
+    );
+
+    const hydrated = await hydrateStepReturnValue(
+      dehydrated,
+      'wrun_parent',
+      undefined
+    );
+
+    expect(hydrated).toBeInstanceOf(Run);
+    expect((hydrated as Run<unknown>).runId).toBe('wrun_roundtrip');
   });
 });

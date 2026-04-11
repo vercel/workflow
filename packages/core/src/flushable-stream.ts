@@ -209,6 +209,7 @@ export async function flushablePipe(
 ): Promise<void> {
   const reader = source.getReader();
   const writer = sink.getWriter();
+  let cancelReason: unknown;
 
   try {
     while (true) {
@@ -219,7 +220,12 @@ export async function flushablePipe(
 
       // Read from source - don't count as pending op since we're just waiting for data
       // The important ops are writes to the sink (server)
-      const readResult = await reader.read();
+      const readResult = await Promise.race([
+        reader.read(),
+        writer.closed.then(() => {
+          throw new Error('Writable stream closed prematurely');
+        }),
+      ]);
 
       // Check if stream has ended (e.g., due to error in another path) before processing
       if (state.streamEnded) {
@@ -248,6 +254,7 @@ export async function flushablePipe(
     }
   } catch (err) {
     state.streamEnded = true;
+    cancelReason = err;
     if (!state.doneResolved) {
       state.doneResolved = true;
       state.reject(err);
@@ -259,6 +266,11 @@ export async function flushablePipe(
     // on `state.reject(err)` for error handling.
     throw err;
   } finally {
+    // Cancel the upstream reader so the source knows to stop generating data.
+    // Uses cancelReason (set in the catch block) so the source receives context
+    // about why it was cancelled. On normal completion cancelReason is undefined,
+    // which is a harmless no-op on an already-done reader.
+    reader.cancel(cancelReason).catch(() => {});
     reader.releaseLock();
     writer.releaseLock();
   }

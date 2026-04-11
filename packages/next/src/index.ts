@@ -38,7 +38,6 @@ export function withWorkflow(
       lazyDiscovery?: boolean;
       local?: {
         port?: number;
-        dataDir?: string;
       };
     };
   } = {}
@@ -66,14 +65,6 @@ export function withWorkflow(
     phase: string,
     ctx: { defaultConfig: NextConfig }
   ) {
-    if (
-      phase === 'phase-development-server' &&
-      !process.env.WORKFLOW_PUBLIC_MANIFEST
-    ) {
-      // Keep local dev/e2e manifest lookup stable by default.
-      process.env.WORKFLOW_PUBLIC_MANIFEST = '1';
-    }
-
     const loaderPath = require.resolve('./loader');
     let runDeferredBuildFromCallback: (() => Promise<void>) | undefined;
 

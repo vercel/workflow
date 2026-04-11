@@ -1,4 +1,4 @@
-import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@vercel/workflow';
+import { WORKFLOW_SERIALIZE, WORKFLOW_DESERIALIZE } from '@workflow/serde';
 
 export class Service {
   static [WORKFLOW_SERIALIZE](instance) {

@@ -237,24 +237,6 @@ describe('createContext', () => {
     expect(result).toEqual('hello world');
   });
 
-  it('should have functional `Buffer` for base64 encoding/decoding', () => {
-    const { context } = createContext({ seed, fixedTimestamp });
-
-    // Test encoding
-    const encoded = vm.runInContext(
-      'Buffer.from("hello world").toString("base64")',
-      context
-    );
-    expect(encoded).toEqual('aGVsbG8gd29ybGQ=');
-
-    // Test decoding
-    const decoded = vm.runInContext(
-      'Buffer.from("aGVsbG8gd29ybGQ=", "base64").toString("utf-8")',
-      context
-    );
-    expect(decoded).toEqual('hello world');
-  });
-
   it('should allow creating basic auth headers using btoa', () => {
     const { context } = createContext({ seed, fixedTimestamp });
 
@@ -267,21 +249,10 @@ describe('createContext', () => {
     expect(decoded).toEqual('api_key:api_secret');
   });
 
-  it('should allow creating basic auth headers using Buffer', () => {
+  it('should not expose Buffer in the VM context', () => {
     const { context } = createContext({ seed, fixedTimestamp });
 
-    // Simulate creating a basic auth header using Buffer (common use case)
-    const result = vm.runInContext(
-      'Buffer.from("api_key:api_secret").toString("base64")',
-      context
-    );
-    expect(result).toEqual('YXBpX2tleTphcGlfc2VjcmV0');
-
-    // Verify it can be decoded back
-    const decoded = vm.runInContext(
-      `Buffer.from("${result}", "base64").toString("utf-8")`,
-      context
-    );
-    expect(decoded).toEqual('api_key:api_secret');
+    const result = vm.runInContext('typeof Buffer', context);
+    expect(result).toBe('undefined');
   });
 });

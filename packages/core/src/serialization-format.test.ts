@@ -710,3 +710,12 @@ describe('encrypted data handling', () => {
     });
   });
 });
+
+describe('observabilityRevivers', () => {
+  it('should render WorkflowFunction as <workflow:workflowId>', () => {
+    const result = observabilityRevivers.WorkflowFunction({
+      workflowId: 'workflow//./workflows/example//myWorkflow',
+    });
+    expect(result).toBe('<workflow:workflow//./workflows/example//myWorkflow>');
+  });
+});

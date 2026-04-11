@@ -144,7 +144,7 @@ export async function POST(request: Request) {
 }
 ```
 
-Your workflow can write to the stream using [`getWritable()`](/docs/api-reference/workflow/get-writable):
+Your workflow can obtain a writable stream using [`getWritable()`](/docs/api-reference/workflow/get-writable):
 
 ```typescript lineNumbers
 import { getWritable } from "workflow";

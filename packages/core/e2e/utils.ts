@@ -56,12 +56,9 @@ export function hasStepSourceMaps(): boolean {
     return false;
   }
 
-  // Vercel production builds don't support step source maps
-  if (process.env.WORKFLOW_VERCEL_ENV === 'production') {
-    return false;
-  }
-
-  // Vercel preview builds have proper source maps for all other frameworks, EXCEPT sveltekit
+  // Vercel deployments (both production and preview) have proper source maps
+  // for all frameworks EXCEPT sveltekit, thanks to ESM step bundles with
+  // inline source maps.
   if (!isLocalDeployment()) {
     return appName !== 'sveltekit';
   }
@@ -522,7 +519,7 @@ async function getRunDiagnostics(tracked: TrackedRun): Promise<string> {
   ];
 
   try {
-    const world = getWorld();
+    const world = await getWorld();
     const runData = await world.runs.get(run.runId);
 
     lines.push(`Status:     ${runData.status}`);

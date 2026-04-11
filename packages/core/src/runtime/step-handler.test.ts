@@ -1,5 +1,13 @@
 import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
 // Use vi.hoisted so these are available in mock factories
 const {
@@ -47,12 +55,12 @@ vi.mock('@vercel/functions', () => ({
 
 // Mock the world module - createQueueHandler captures the handler
 vi.mock('./world.js', () => ({
-  getWorld: vi.fn(() => ({
+  getWorld: vi.fn(async () => ({
     events: { create: mockEventsCreate },
     queue: mockQueue,
     getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
   })),
-  getWorldHandlers: vi.fn(() => ({
+  getWorldHandlers: vi.fn(async () => ({
     createQueueHandler: vi.fn(
       (
         _prefix: string,
@@ -139,9 +147,10 @@ vi.mock('@workflow/utils/get-port', () => ({
   getPort: vi.fn().mockResolvedValue(3000),
 }));
 
-// Import the module AFTER all mocks are set up - this triggers createQueueHandler
-// which populates capturedHandlerRef
-import './step-handler.js';
+// Import the module AFTER all mocks are set up
+// Since getWorldHandlers is now async, we need to call stepEntrypoint
+// to trigger createQueueHandler and populate capturedHandlerRef
+import { stepEntrypoint } from './step-handler.js';
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getStepFunction } from '../private.js';
 import {
@@ -188,6 +197,12 @@ function createMessage(overrides: Record<string, unknown> = {}) {
 }
 
 describe('step-handler 409 handling', () => {
+  // Trigger the lazy handler initialization by calling stepEntrypoint once.
+  // This invokes getWorldHandlers() which calls createQueueHandler and captures the handler.
+  beforeAll(async () => {
+    await stepEntrypoint(new Request('http://localhost'));
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     // Re-set mocks after clearAllMocks
@@ -205,7 +220,7 @@ describe('step-handler 409 handling', () => {
     mockStepFn.maxRetries = 3;
     mockQueueMessage.mockResolvedValue(undefined);
     // Re-set getWorld mock since clearAllMocks resets it
-    vi.mocked(getWorld).mockReturnValue({
+    vi.mocked(getWorld).mockResolvedValue({
       events: { create: mockEventsCreate },
       queue: mockQueue,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
@@ -506,7 +521,7 @@ describe('step-handler max deliveries', () => {
     mockStepFn.mockReset().mockResolvedValue('step-result');
     mockStepFn.maxRetries = 3;
     mockQueueMessage.mockResolvedValue(undefined);
-    vi.mocked(getWorld).mockReturnValue({
+    vi.mocked(getWorld).mockResolvedValue({
       events: { create: mockEventsCreate },
       queue: mockQueue,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
@@ -580,7 +595,7 @@ describe('step-handler step not found', () => {
     mockStepFn.mockReset().mockResolvedValue('step-result');
     mockStepFn.maxRetries = 3;
     mockQueueMessage.mockResolvedValue(undefined);
-    vi.mocked(getWorld).mockReturnValue({
+    vi.mocked(getWorld).mockResolvedValue({
       events: { create: mockEventsCreate },
       queue: mockQueue,
       getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),

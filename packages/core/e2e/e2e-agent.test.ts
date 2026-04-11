@@ -96,6 +96,30 @@ describe.skipIf(isCanary)('DurableAgent e2e', { timeout: 120_000 }, () => {
   });
 
   // ==========================================================================
+  // Provider tool tests
+  // ==========================================================================
+
+  describe('provider tools', () => {
+    it('provider tool identity preserved across step boundaries', async () => {
+      const run = await start(await agentE2e('agentProviderToolE2e'), []);
+      const rv = await run.returnValue;
+      expect(rv).toMatchObject({
+        stepCount: 2,
+        lastStepText: 'I found a result for you.',
+      });
+    });
+
+    it('mixed provider and function tools', async () => {
+      const run = await start(await agentE2e('agentMixedToolsE2e'), [3, 7]);
+      const rv = await run.returnValue;
+      expect(rv).toMatchObject({
+        stepCount: 3,
+        lastStepText: 'The answer is 10',
+      });
+    });
+  });
+
+  // ==========================================================================
   // onStepFinish callback tests
   // ==========================================================================
 

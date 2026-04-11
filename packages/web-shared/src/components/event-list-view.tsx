@@ -801,7 +801,15 @@ function EventRow({
     selectedGroupRange !== null && index === selectedGroupRange.last;
 
   const loadEventDetails = useCallback(async () => {
-    if (loadedEventData !== null || hasExistingEventData) {
+    if (loadedEventData !== null) {
+      return;
+    }
+    if (cachedEventData !== null) {
+      setLoadedEventData(cachedEventData);
+      setHasAttemptedLoad(true);
+      return;
+    }
+    if (isLoading) {
       return;
     }
     setIsLoading(true);
@@ -830,24 +838,20 @@ function EventRow({
   }, [
     event,
     loadedEventData,
-    hasExistingEventData,
+    isLoading,
     onLoadEventData,
     onCacheEventData,
     encryptionKey,
     onEncryptedDataDetected,
+    cachedEventData,
   ]);
 
   // Auto-load event data when remounting in expanded state without cached data
   useEffect(() => {
-    if (
-      isExpanded &&
-      loadedEventData === null &&
-      !hasExistingEventData &&
-      !isLoading &&
-      !hasAttemptedLoad
-    ) {
-      loadEventDetails();
+    if (!isExpanded || isLoading) {
+      return;
     }
+    void loadEventDetails();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -875,8 +879,8 @@ function EventRow({
   const handleRowClick = useCallback(() => {
     onSelectGroup(rowGroupKey === selectedGroupKey ? undefined : rowGroupKey);
     onToggleExpand(event.eventId);
-    if (!isExpanded && loadedEventData === null && !hasExistingEventData) {
-      loadEventDetails();
+    if (!isExpanded) {
+      void loadEventDetails();
     }
   }, [
     selectedGroupKey,
@@ -885,14 +889,16 @@ function EventRow({
     onToggleExpand,
     event.eventId,
     isExpanded,
-    loadedEventData,
-    hasExistingEventData,
     loadEventDetails,
   ]);
 
-  const eventData = hasExistingEventData
-    ? (event as Event & { eventData: unknown }).eventData
-    : loadedEventData;
+  const mergedEventData =
+    loadedEventData ??
+    (hasExistingEventData
+      ? (event as Event & { eventData: unknown }).eventData
+      : null);
+
+  const displayPayload = isLoading ? loadedEventData : mergedEventData;
 
   const contentOpacity = isDimmed ? 0.3 : 1;
 
@@ -1076,8 +1082,8 @@ function EventRow({
             )}
 
             {/* Payload */}
-            {eventData != null ? (
-              <PayloadBlock data={eventData} eventType={event.eventType} />
+            {displayPayload != null ? (
+              <PayloadBlock data={displayPayload} eventType={event.eventType} />
             ) : loadError ? (
               <div
                 className="rounded-md border p-3 text-xs"
@@ -1090,7 +1096,7 @@ function EventRow({
                 {loadError}
               </div>
             ) : isLoading ||
-              (!hasExistingEventData &&
+              (loadedEventData === null &&
                 !hasAttemptedLoad &&
                 event.correlationId) ? (
               <div className="flex flex-col gap-2 p-3">

@@ -16,7 +16,7 @@ When building chat interfaces, it's common to run into network interruptions, pa
 
 Where a standard chat implementation would require the user to resend their message and wait for the entire response again, workflow runs are durable, and so are the streams attached to them. This means a stream can be resumed at any point, optionally only syncing the data that was missed since the last connection.
 
-Resumable streams come out of the box with Workflow DevKit, however, the client needs to recognize that a stream exists, and needs to know which stream to reconnect to, and needs to know where to start from. For this, Workflow DevKit provides the [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) helper, a drop-in transport for the AI SDK that handles client-side resumption logic for you.
+Resumable streams come out of the box with Workflow SDK, however, the client needs to recognize that a stream exists, and needs to know which stream to reconnect to, and needs to know where to start from. For this, Workflow SDK provides the [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) helper, a drop-in transport for the AI SDK that handles client-side resumption logic for you.
 
 ## Implementing stream resumption
 

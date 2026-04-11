@@ -8,9 +8,11 @@ vi.mock('../runtime/world.js', () => ({
 describe('step-level getWritable', () => {
   beforeEach(async () => {
     const mockWorld = {
-      writeToStream: vi.fn().mockResolvedValue(undefined),
-      writeToStreamMulti: vi.fn().mockResolvedValue(undefined),
-      closeStream: vi.fn().mockResolvedValue(undefined),
+      streams: {
+        write: vi.fn().mockResolvedValue(undefined),
+        writeMulti: vi.fn().mockResolvedValue(undefined),
+        close: vi.fn().mockResolvedValue(undefined),
+      },
     };
 
     const { getWorld } = await import('../runtime/world.js');
@@ -36,6 +38,8 @@ describe('step-level getWritable', () => {
         workflowName: 'test-workflow',
         workflowRunId: 'wrun_test123',
         workflowStartedAt: new Date(),
+        url: 'http://localhost:3000',
+        features: { encryption: false },
       },
       ops,
       encryptionKey: undefined,
@@ -82,6 +86,8 @@ describe('step-level getWritable', () => {
         workflowName: 'test-workflow',
         workflowRunId: 'wrun_test123',
         workflowStartedAt: new Date(),
+        url: 'http://localhost:3000',
+        features: { encryption: false },
       },
       ops,
       encryptionKey: undefined,
