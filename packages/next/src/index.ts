@@ -7,6 +7,8 @@ import {
 } from './builder.js';
 
 function resolveNextVersion(workingDir: string): string {
+  const errors: unknown[] = [];
+
   // Try resolving from the consuming project's working directory first.
   // This handles monorepo setups where `next` may not be hoisted to the
   // same location as `@workflow/next`.
@@ -20,8 +22,8 @@ function resolveNextVersion(workingDir: string): string {
     if (typeof resolvedPackageJson.version === 'string') {
       return resolvedPackageJson.version;
     }
-  } catch {
-    // next/package.json not resolvable from working directory
+  } catch (e) {
+    errors.push(e);
   }
 
   // Fall back to resolving relative to this package's location.
@@ -31,12 +33,13 @@ function resolveNextVersion(workingDir: string): string {
     if (typeof version === 'string') {
       return version;
     }
-  } catch {
-    // next/package.json not resolvable from this package's location either
+  } catch (e) {
+    errors.push(e);
   }
 
-  throw new Error(
-    'Could not resolve Next.js version. Ensure `next` is installed in your project.'
+  throw new AggregateError(
+    errors,
+    `Could not resolve Next.js version. Ensure \`next\` is installed in your project (working directory: ${workingDir}).`
   );
 }
 
