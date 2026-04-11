@@ -46,8 +46,7 @@
     "workflow-sdk-compiler-playground": "4.0.0",
     "@workflow/example-nitro": "4.0.0",
     "@workflow/vitest": "4.0.0",
-    "@workflow/vitest-workbench": "4.0.0",
-    "@workflow/swc-playground-wasm": "0.0.0"
+    "@workflow/vitest-workbench": "4.0.0"
   },
   "changesets": [
     "allow-sync-step-functions",

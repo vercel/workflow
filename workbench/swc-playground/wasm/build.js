@@ -86,7 +86,7 @@ if (!commandExists('wasm-pack')) {
 // Build with wasm-pack targeting web (browser ESM)
 console.log('Running wasm-pack build...');
 const pkgDir = fileURLToPath(new URL('.', import.meta.url));
-const workspaceRoot = fileURLToPath(new URL('../..', import.meta.url));
+const workspaceRoot = fileURLToPath(new URL('../../..', import.meta.url));
 runCommand(`wasm-pack build --target web --out-dir pkg --release ${pkgDir}`, {
   cwd: workspaceRoot,
 });
