@@ -7,8 +7,9 @@ import {
 } from './builder.js';
 
 function resolveNextVersion(workingDir: string): string {
-  const fallbackVersion = require('next/package.json').version as string;
-
+  // Try resolving from the consuming project's working directory first.
+  // This handles monorepo setups where `next` may not be hoisted to the
+  // same location as `@workflow/next`.
   try {
     const packageJsonPath = require.resolve('next/package.json', {
       paths: [workingDir],
@@ -16,12 +17,27 @@ function resolveNextVersion(workingDir: string): string {
     const resolvedPackageJson = require(packageJsonPath) as {
       version?: unknown;
     };
-    return typeof resolvedPackageJson.version === 'string'
-      ? resolvedPackageJson.version
-      : fallbackVersion;
+    if (typeof resolvedPackageJson.version === 'string') {
+      return resolvedPackageJson.version;
+    }
   } catch {
-    return fallbackVersion;
+    // next/package.json not resolvable from working directory
   }
+
+  // Fall back to resolving relative to this package's location.
+  try {
+    const version = (require('next/package.json') as { version?: unknown })
+      .version;
+    if (typeof version === 'string') {
+      return version;
+    }
+  } catch {
+    // next/package.json not resolvable from this package's location either
+  }
+
+  throw new Error(
+    'Could not resolve Next.js version. Ensure `next` is installed in your project.'
+  );
 }
 
 export function withWorkflow(
