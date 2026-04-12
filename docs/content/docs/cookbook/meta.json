@@ -1,0 +1,5 @@
+{
+  "title": "Cookbook",
+  "defaultOpen": true,
+  "pages": ["common-patterns", "agent-patterns", "integrations", "advanced"]
+}

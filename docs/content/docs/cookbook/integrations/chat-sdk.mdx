@@ -1,0 +1,191 @@
+---
+title: Chat SDK
+description: Build durable chat sessions by combining workflow persistence with AI SDK's chat primitives.
+type: guide
+summary: Use workflow hooks and streaming to create chat sessions that survive disconnects and server restarts.
+related:
+  - /docs/ai/chat-session-modeling
+  - /docs/ai/resumable-streams
+  - /docs/ai/message-queueing
+  - /docs/api-reference/workflow-ai/durable-agent
+  - /docs/api-reference/workflow/define-hook
+---
+
+AI SDK provides chat primitives (`useChat`, message types, streaming utilities) for building chat interfaces. Workflow SDK makes those chat sessions durable -- surviving disconnects, cold starts, and server restarts -- by persisting every message and LLM response as workflow events.
+
+## What It Enables
+
+- **Durable chat history** -- Messages and responses are persisted in the workflow event log, not just client state
+- **Resumable sessions** -- Users reconnect and pick up where they left off, even after server restarts
+- **Multi-turn conversations** -- A single workflow manages an entire chat session with hook-based message injection
+- **Server-side message queueing** -- Inject follow-up messages while the agent is still processing
+
+## When to Use
+
+Use this pattern when your chat application needs:
+
+- Persistence beyond the browser session
+- Recovery from server failures mid-conversation
+- Long-running agent sessions (minutes to hours)
+- Server-driven message injection (system messages, external events)
+
+## Single-Turn: Stateless Sessions
+
+Each user message starts a new workflow run. The client owns the message history and sends the full array with each request. This is the simplest pattern.
+
+```typescript title="workflows/chat.ts" lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { convertToModelMessages, type UIMessage, type UIMessageChunk } from "ai";
+import { getWritable } from "workflow";
+
+export async function chat(messages: UIMessage[]) {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-sonnet-4-20250514",
+    instructions: "You are a helpful assistant.",
+    tools: { /* your tools here */ },
+  });
+
+  const result = await agent.stream({
+    messages: await convertToModelMessages(messages),
+    writable: getWritable<UIMessageChunk>(),
+  });
+
+  return { messages: result.messages };
+}
+```
+
+```typescript title="app/api/chat/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { chat } from "@/workflows/chat";
+
+export async function POST(request: Request) {
+  const { messages } = await request.json();
+  return start(chat, [messages]);
+}
+```
+
+The client uses `WorkflowChatTransport` for automatic stream resumption.
+
+```typescript title="components/chat.tsx" lineNumbers
+"use client";
+
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@workflow/ai";
+
+export function Chat() {
+  const chat = useChat({
+    transport: new WorkflowChatTransport({ api: "/api/chat" }),
+  });
+
+  return (
+    <div>
+      {chat.messages.map((m) => (
+        <div key={m.id}>{m.content}</div>
+      ))}
+      <form onSubmit={chat.handleSubmit}>
+        <input value={chat.input} onChange={chat.handleInputChange} />
+      </form>
+    </div>
+  );
+}
+```
+
+## Multi-Turn: Durable Sessions
+
+A single workflow manages the entire conversation. The workflow loops, waiting for new messages via a hook. This gives you server-side ownership of the full chat history.
+
+```typescript title="workflows/durable-chat.ts" lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import {
+  convertToModelMessages,
+  type UIMessage,
+  type UIMessageChunk,
+} from "ai";
+import { defineHook, getWritable, getWorkflowMetadata } from "workflow";
+import { z } from "zod";
+
+const chatMessageHook = defineHook({
+  schema: z.object({
+    messages: z.array(z.any()),
+  }),
+});
+
+export async function durableChat(initialMessages: UIMessage[]) {
+  "use workflow";
+
+  const { workflowRunId } = getWorkflowMetadata();
+  let allMessages = await convertToModelMessages(initialMessages);
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-sonnet-4-20250514",
+    instructions: "You are a helpful assistant.",
+    tools: { /* your tools here */ },
+  });
+
+  // First turn
+  const firstResult = await agent.stream({
+    messages: allMessages,
+    writable: getWritable<UIMessageChunk>(),
+    preventClose: true,
+  });
+  allMessages = firstResult.messages;
+
+  // Subsequent turns -- wait for new messages via hook
+  while (true) {
+    const hook = chatMessageHook.create({ token: workflowRunId });
+    const { messages: newMessages } = await hook;
+
+    allMessages = [
+      ...allMessages,
+      ...await convertToModelMessages(newMessages),
+    ];
+
+    const result = await agent.stream({
+      messages: allMessages,
+      writable: getWritable<UIMessageChunk>(),
+      preventClose: true,
+    });
+    allMessages = result.messages;
+  }
+}
+```
+
+### Multi-Turn API Routes
+
+You need two routes: one to start the session, another to send follow-up messages.
+
+```typescript title="app/api/chat/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { durableChat } from "@/workflows/durable-chat";
+
+export async function POST(request: Request) {
+  const { messages } = await request.json();
+  return start(durableChat, [messages]);
+}
+```
+
+```typescript title="app/api/chat/follow-up/route.ts" lineNumbers
+import { resumeHook } from "workflow/api";
+
+export async function POST(request: Request) {
+  const { runId, messages } = await request.json();
+  await resumeHook(runId, { messages });
+  return new Response("OK");
+}
+```
+
+## Choosing a Pattern
+
+| | Single-Turn | Multi-Turn |
+|---|---|---|
+| **State ownership** | Client | Server (workflow event log) |
+| **Message injection** | Not needed | Via hooks |
+| **Complexity** | Low | Medium |
+| **Session duration** | Per-request | Minutes to hours |
+| **Crash recovery** | Client resends full history | Workflow replays from event log |
+
+Start with single-turn. Move to multi-turn when you need server-owned state, message injection from external sources, or sessions that outlive the browser tab.
+
+See [Chat Session Modeling](/docs/ai/chat-session-modeling) for the full guide including multiplayer patterns and message queueing.

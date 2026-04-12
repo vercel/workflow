@@ -2,10 +2,12 @@ import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
-import { notFound, permanentRedirect } from 'next/navigation';
-import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
-import { AgentTraces } from '@/components/custom/agent-traces';
-import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
+import { notFound } from 'next/navigation';
+import type { ComponentProps } from 'react';
+import {
+  rewriteCookbookUrl,
+  rewriteCookbookUrlsInText,
+} from '@/lib/geistdocs/cookbook-source';
 import { AskAI } from '@/components/geistdocs/ask-ai';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
@@ -19,33 +21,35 @@ import { Feedback } from '@/components/geistdocs/feedback';
 import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { OpenInChat } from '@/components/geistdocs/open-in-chat';
 import { ScrollTop } from '@/components/geistdocs/scroll-top';
-import * as AccordionComponents from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { getLLMText, getPageImage, source } from '@/lib/geistdocs/source';
-import { TSDoc } from '@/lib/tsdoc';
 
-// No-op component for world MDX files rendered outside /worlds/ context
-// These pages redirect to /worlds/[id] but still get statically generated
-const WorldTestingPerformanceNoop = () => null;
-
-const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
+const Page = async ({ params }: PageProps<'/[lang]/cookbook/[[...slug]]'>) => {
   const { slug, lang } = await params;
 
-  if (Array.isArray(slug) && slug[0] === 'cookbook') {
-    const rest = slug.slice(1).join('/');
-    const legacyPath = `/docs/cookbook${rest ? `/${rest}` : ''}`;
-    permanentRedirect(`/${lang}${rewriteCookbookUrl(legacyPath)}`);
-  }
-
-  const page = source.getPage(slug, lang);
+  // Prepend 'cookbook' to resolve from the docs source
+  const resolvedSlug = slug ? ['cookbook', ...slug] : ['cookbook'];
+  const page = source.getPage(resolvedSlug, lang);
 
   if (!page) {
     notFound();
   }
 
-  const markdown = await getLLMText(page);
+  const publicUrl = rewriteCookbookUrl(page.url);
+  const publicPage = { ...page, url: publicUrl } as typeof page;
+
+  const markdown = rewriteCookbookUrlsInText(await getLLMText(page));
   const MDX = page.data.body;
+
+  const RelativeLink = createRelativeLink(source, publicPage);
+  const PublicCookbookLink = (props: ComponentProps<typeof RelativeLink>) => {
+    const href =
+      typeof props.href === 'string'
+        ? rewriteCookbookUrl(props.href)
+        : props.href;
+    return <RelativeLink {...props} href={href} />;
+  };
 
   return (
     <DocsPage
@@ -59,8 +63,8 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
             <ScrollTop />
             <Feedback />
             <CopyPage text={markdown} />
-            <AskAI href={page.url} />
-            <OpenInChat href={page.url} />
+            <AskAI href={publicUrl} />
+            <OpenInChat href={publicUrl} />
           </div>
         ),
       }}
@@ -71,20 +75,12 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
       <DocsBody>
         <MDX
           components={getMDXComponents({
-            a: createRelativeLink(source, page),
-
-            // Add your custom components here
-            AgentTraces,
-            FluidComputeCallout,
+            a: PublicCookbookLink,
             Badge,
-            TSDoc,
             Step,
             Steps,
-            ...AccordionComponents,
             Tabs,
             Tab,
-            // No-op for world MDX files (they redirect to /worlds/[id])
-            WorldTestingPerformance: WorldTestingPerformanceNoop,
           })}
         />
       </DocsBody>
@@ -92,23 +88,29 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
   );
 };
 
-export const generateStaticParams = () =>
-  source
-    .generateParams()
-    .filter(
-      (params) =>
-        !(Array.isArray(params.slug) && params.slug[0] === 'cookbook'),
-    );
+export const generateStaticParams = () => {
+  // Generate params for all cookbook pages
+  const allParams = source.generateParams();
+  return allParams
+    .filter((p) => Array.isArray(p.slug) && p.slug[0] === 'cookbook')
+    .map((p) => ({
+      ...p,
+      slug: (p.slug as string[]).slice(1), // Remove 'cookbook' prefix
+    }));
+};
 
 export const generateMetadata = async ({
   params,
-}: PageProps<'/[lang]/docs/[[...slug]]'>) => {
+}: PageProps<'/[lang]/cookbook/[[...slug]]'>) => {
   const { slug, lang } = await params;
-  const page = source.getPage(slug, lang);
+  const resolvedSlug = slug ? ['cookbook', ...slug] : ['cookbook'];
+  const page = source.getPage(resolvedSlug, lang);
 
   if (!page) {
     notFound();
   }
+
+  const publicPath = rewriteCookbookUrl(page.url);
 
   const metadata: Metadata = {
     title: page.data.title,
@@ -117,9 +119,9 @@ export const generateMetadata = async ({
       images: getPageImage(page).url,
     },
     alternates: {
-      canonical: page.url,
+      canonical: publicPath,
       types: {
-        'text/markdown': `${page.url}.md`,
+        'text/markdown': `${publicPath}.md`,
       },
     },
   };

@@ -1,0 +1,191 @@
+---
+title: Durable Agent
+description: Replace a stateless AI agent with a durable one that survives crashes, retries tool calls, and streams output.
+type: guide
+summary: Convert an AI SDK Agent into a DurableAgent backed by a workflow, with tools as retryable steps.
+---
+
+Use this pattern to make any AI SDK agent durable. The agent becomes a workflow, tools become steps, and the framework handles retries, streaming, and state persistence automatically.
+
+## Pattern
+
+Replace `Agent` with `DurableAgent`, wrap the function in `"use workflow"`, mark each tool with `"use step"`, and stream output through `getWritable()`.
+
+### Simplified
+
+```typescript lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { ModelMessage, UIMessageChunk } from "ai";
+
+declare function searchFlights(args: { from: string; to: string; date: string }): Promise<{ flights: { id: string; price: number }[] }>; // @setup
+declare function bookFlight(args: { flightId: string; passenger: string }): Promise<{ confirmationId: string }>; // @setup
+
+export async function flightAgent(messages: ModelMessage[]) {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    instructions: "You are a helpful flight booking assistant.",
+    tools: {
+      searchFlights: {
+        description: "Search for available flights",
+        inputSchema: z.object({
+          from: z.string(),
+          to: z.string(),
+          date: z.string(),
+        }),
+        execute: searchFlights,
+      },
+      bookFlight: {
+        description: "Book a specific flight",
+        inputSchema: z.object({
+          flightId: z.string(),
+          passenger: z.string(),
+        }),
+        execute: bookFlight,
+      },
+    },
+  });
+
+  await agent.stream({
+    messages,
+    writable: getWritable<UIMessageChunk>(),
+  });
+}
+```
+
+### Full Implementation
+
+```typescript lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { ModelMessage, UIMessageChunk } from "ai";
+
+// Step: Search flights with full Node.js access and automatic retries
+async function searchFlights({
+  from,
+  to,
+  date,
+}: {
+  from: string;
+  to: string;
+  date: string;
+}) {
+  "use step";
+
+  const response = await fetch(
+    `https://api.example.com/flights?from=${from}&to=${to}&date=${date}`
+  );
+  if (!response.ok) throw new Error(`Search failed: ${response.status}`);
+  return response.json();
+}
+
+// Step: Book a flight — retries on transient failures
+async function bookFlight({
+  flightId,
+  passenger,
+}: {
+  flightId: string;
+  passenger: string;
+}) {
+  "use step";
+
+  const response = await fetch("https://api.example.com/bookings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ flightId, passenger }),
+  });
+  if (!response.ok) throw new Error(`Booking failed: ${response.status}`);
+  return response.json();
+}
+
+// Step: Check flight status
+async function checkStatus({ flightId }: { flightId: string }) {
+  "use step";
+
+  const response = await fetch(
+    `https://api.example.com/flights/${flightId}/status`
+  );
+  return response.json();
+}
+
+export async function flightAgent(messages: ModelMessage[]) {
+  "use workflow";
+
+  const writable = getWritable<UIMessageChunk>();
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    instructions: "You are a helpful flight booking assistant.",
+    tools: {
+      searchFlights: {
+        description: "Search for available flights between two airports",
+        inputSchema: z.object({
+          from: z.string().describe("Departure airport code"),
+          to: z.string().describe("Arrival airport code"),
+          date: z.string().describe("Travel date (YYYY-MM-DD)"),
+        }),
+        execute: searchFlights,
+      },
+      bookFlight: {
+        description: "Book a specific flight for a passenger",
+        inputSchema: z.object({
+          flightId: z.string().describe("Flight ID from search results"),
+          passenger: z.string().describe("Passenger full name"),
+        }),
+        execute: bookFlight,
+      },
+      checkStatus: {
+        description: "Check the current status of a flight",
+        inputSchema: z.object({
+          flightId: z.string().describe("Flight ID to check"),
+        }),
+        execute: checkStatus,
+      },
+    },
+  });
+
+  const result = await agent.stream({
+    messages,
+    writable,
+    maxSteps: 10,
+  });
+
+  return { messages: result.messages };
+}
+```
+
+### API Route
+
+```typescript lineNumbers
+import { createUIMessageStreamResponse } from "ai";
+import { start } from "workflow/api";
+import { flightAgent } from "@/workflows/flight-agent";
+import type { UIMessage } from "ai";
+import { convertToModelMessages } from "ai";
+
+export async function POST(req: Request) {
+  const { messages }: { messages: UIMessage[] } = await req.json();
+  const modelMessages = await convertToModelMessages(messages);
+
+  const run = await start(flightAgent, [modelMessages]);
+
+  return createUIMessageStreamResponse({
+    stream: run.readable,
+    headers: {
+      "x-workflow-run-id": run.runId,
+    },
+  });
+}
+```
+
+## Key APIs
+
+- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) — declares the orchestrator function
+- [`"use step"`](/docs/api-reference/workflow/use-step) — declares step functions with retries and full Node.js access
+- [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — durable wrapper around AI SDK's Agent
+- [`getWritable()`](/docs/api-reference/workflow/get-writable) — streams agent output to the client
+- [`start()`](/docs/api-reference/workflow-api/start) — starts a workflow run from an API route

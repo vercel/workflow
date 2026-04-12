@@ -1,0 +1,198 @@
+---
+title: AI SDK
+description: Use AI SDK model providers, tool calling, and streaming inside durable workflows.
+type: guide
+summary: Turn any AI SDK model call into a retryable, observable workflow step with built-in streaming.
+related:
+  - /docs/ai
+  - /docs/ai/defining-tools
+  - /docs/ai/resumable-streams
+  - /docs/api-reference/workflow-ai/durable-agent
+---
+
+Workflow SDK integrates with [AI SDK](https://ai-sdk.dev) through the `@workflow/ai` package. This turns your LLM calls and tool executions into durable, retryable steps with built-in streaming and observability.
+
+## What It Enables
+
+- **Durable LLM calls** -- Model invocations become steps that survive crashes and cold starts
+- **Any model provider** -- Use OpenAI, Anthropic, Google, Bedrock, or any AI SDK-compatible provider through [Vercel Gateway](https://vercel.com/docs/gateway) or direct provider configuration
+- **Tool durability** -- Tool executions become steps with automatic retries and event logging
+- **Resumable streaming** -- Clients reconnect mid-stream without losing data
+
+## When to Use
+
+Use this integration when your application calls an LLM and needs:
+
+- Reliability for long-running agent loops (multi-step tool calling)
+- Automatic retry on transient model API failures
+- Stream resumption after disconnects
+- Observability into each model call and tool execution
+
+## DurableAgent with Model Providers
+
+The `DurableAgent` wraps AI SDK's streaming interface. Pass any model string supported by [Vercel Gateway](https://vercel.com/docs/gateway) or a provider-specific model ID.
+
+```typescript title="workflows/research.ts" lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { convertToModelMessages, type UIMessage, type UIMessageChunk } from "ai";
+import { getWritable } from "workflow";
+import z from "zod/v4";
+
+async function searchWeb(input: { query: string }): Promise<{ results: string[] }> {
+  "use step";
+  const response = await fetch(
+    `https://api.example.com/search?q=${encodeURIComponent(input.query)}`
+  );
+  const data = await response.json();
+  return { results: data.items.map((item: { title: string }) => item.title) };
+}
+
+async function summarize(input: { text: string }): Promise<{ summary: string }> {
+  "use step";
+  // Each step is individually retried on failure
+  const response = await fetch("https://api.example.com/summarize", {
+    method: "POST",
+    body: JSON.stringify({ text: input.text }),
+  });
+  const data = await response.json();
+  return { summary: data.summary };
+}
+
+export async function researchAgent(messages: UIMessage[]) {
+  "use workflow";
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-sonnet-4-20250514",
+    instructions: "You are a research assistant. Search the web and summarize findings.",
+    tools: {
+      searchWeb: {
+        description: "Search the web for information",
+        inputSchema: z.object({
+          query: z.string().describe("The search query"),
+        }),
+        execute: searchWeb,
+      },
+      summarize: {
+        description: "Summarize a block of text",
+        inputSchema: z.object({
+          text: z.string().describe("The text to summarize"),
+        }),
+        execute: summarize,
+      },
+    },
+  });
+
+  const result = await agent.stream({
+    messages: await convertToModelMessages(messages),
+    writable: getWritable<UIMessageChunk>(),
+  });
+
+  return { messages: result.messages };
+}
+```
+
+### Using Different Providers
+
+#### Vercel Gateway (string model IDs)
+
+All string model IDs route through [Vercel Gateway](https://vercel.com/docs/gateway). Switch providers by changing the model string -- no other code changes required.
+
+{/* @skip-typecheck - illustrative snippets with intentional redeclarations */}
+```typescript
+// All string model IDs route through Vercel Gateway
+const agent = new DurableAgent({ model: "anthropic/claude-sonnet-4-20250514" });
+const agent = new DurableAgent({ model: "openai/gpt-4o" });
+const agent = new DurableAgent({ model: "google/gemini-2.5-pro" });
+const agent = new DurableAgent({ model: "bedrock/claude-haiku-4-5-20251001-v1" });
+```
+
+#### Direct Provider Access
+
+Import from a provider package to bypass Gateway and connect to the provider directly.
+
+```typescript
+import { DurableAgent } from "@workflow/ai/agent";
+import { openai } from "@workflow/ai/openai";
+
+const agent = new DurableAgent({ model: openai("gpt-4o") });
+```
+
+### Provider-Specific Options
+
+Pass provider options for features like reasoning or extended thinking.
+
+```typescript
+const agent = new DurableAgent({
+  model: "anthropic/claude-sonnet-4-20250514",
+  providerOptions: {
+    anthropic: { thinking: { type: "enabled", budgetTokens: 10000 } },
+  },
+  // ...tools and instructions
+});
+```
+
+## Tool Functions with Steps
+
+Tool `execute` functions can optionally include steps by using the `"use step"` directive. When a tool is **not** a step, it runs inside the workflow context and can modify workflow state directly. When a tool **is** marked with `"use step"`, it becomes a durable step with:
+
+- **Automatic retries** -- If a tool fails (network error, API timeout), the framework retries it
+- **Event logging** -- Inputs and outputs are recorded for observability and replay
+- **Idempotency** -- On replay after a crash, completed steps return their cached result
+
+```typescript
+async function bookFlight(input: {
+  origin: string;
+  destination: string;
+  date: string;
+}): Promise<{ confirmationId: string }> {
+  "use step";
+  // This call is retried on transient failures and its result is persisted
+  const response = await fetch("https://api.airline.com/book", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) throw new Error(`Booking failed: ${response.status}`);
+  return response.json();
+}
+```
+
+## Resumable Streaming
+
+Use `WorkflowChatTransport` on the client to automatically reconnect to a workflow's stream if the connection drops.
+
+```typescript title="app/api/chat/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { researchAgent } from "@/workflows/research";
+
+export async function POST(request: Request) {
+  const { messages } = await request.json();
+  return start(researchAgent, [messages]);
+}
+```
+
+```typescript title="components/chat.tsx" lineNumbers
+"use client";
+
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@workflow/ai";
+
+export function Chat() {
+  const chat = useChat({
+    transport: new WorkflowChatTransport({
+      api: "/api/chat",
+    }),
+  });
+
+  // Standard useChat usage -- reconnection is handled automatically
+  return (
+    <div>
+      {chat.messages.map((m) => (
+        <div key={m.id}>{m.content}</div>
+      ))}
+    </div>
+  );
+}
+```
+
+See [Resumable Streams](/docs/ai/resumable-streams) for advanced options like `startIndex` and `prepareReconnectToStreamRequest`.
