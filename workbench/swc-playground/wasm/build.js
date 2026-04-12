@@ -34,10 +34,7 @@ function ensureRustToolchain() {
           'curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal'
         );
       }
-      // Add rustup's cargo to PATH so it takes precedence over any system Rust
-      const cargoPath = `${process.env.HOME}/.cargo/bin`;
-      process.env.PATH = `${cargoPath}:${process.env.PATH}`;
-      console.log('Rust installed and PATH updated');
+      console.log('Rust installed');
     } else {
       console.error('Rust is required but not installed.');
       console.error(
@@ -48,6 +45,16 @@ function ensureRustToolchain() {
       );
       process.exit(1);
     }
+  }
+
+  // Ensure cargo bin dir is in PATH so that `cargo install`-ed binaries
+  // (like wasm-pack) are found. On Vercel, CARGO_HOME may differ from
+  // $HOME/.cargo.
+  const cargoHome = process.env.CARGO_HOME || `${process.env.HOME}/.cargo`;
+  const cargoBin = `${cargoHome}/bin`;
+  if (!process.env.PATH.includes(cargoBin)) {
+    process.env.PATH = `${cargoBin}:${process.env.PATH}`;
+    console.log(`Added ${cargoBin} to PATH`);
   }
 
   // Ensure a default toolchain is configured (Vercel build images may have
