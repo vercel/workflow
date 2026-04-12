@@ -52,6 +52,22 @@ function uint8ArrayToBase64(data: Uint8Array): string {
 }
 
 /**
+ * Parse streamed tool-call input without crashing the workflow step when a
+ * provider emits malformed or truncated JSON.
+ */
+export function safeParseToolCallInput(input: string | undefined): unknown {
+  if (input == null || input === '') {
+    return {};
+  }
+
+  try {
+    return JSON.parse(input);
+  } catch {
+    return input;
+  }
+}
+
+/**
  * Options for the doStreamStep function.
  */
 export interface DoStreamStepOptions {
@@ -454,7 +470,7 @@ export async function doStreamStep(
                     type: 'tool-input-available',
                     toolCallId: part.toolCallId,
                     toolName: part.toolName,
-                    input: JSON.parse(part.input || '{}'),
+                    input: safeParseToolCallInput(part.input),
                     ...(part.providerExecuted != null
                       ? { providerExecuted: part.providerExecuted }
                       : {}),
@@ -779,6 +795,14 @@ function chunksToStep(
         ? v3FinishReason
         : undefined;
 
+  const mapToolCall = (toolCall: LanguageModelV3ToolCall) => ({
+    type: 'tool-call' as const,
+    toolCallId: toolCall.toolCallId,
+    toolName: toolCall.toolName,
+    input: safeParseToolCallInput(toolCall.input),
+    dynamic: true as const,
+  });
+
   const stepResult: StepResult<any> = {
     stepNumber: 0, // Will be overridden by the caller
     model: {
@@ -790,13 +814,7 @@ function chunksToStep(
     experimental_context: undefined,
     content: [
       ...(text ? [{ type: 'text' as const, text }] : []),
-      ...toolCalls.map((toolCall) => ({
-        type: 'tool-call' as const,
-        toolCallId: toolCall.toolCallId,
-        toolName: toolCall.toolName,
-        input: JSON.parse(toolCall.input),
-        dynamic: true as const,
-      })),
+      ...toolCalls.map(mapToolCall),
     ],
     text,
     reasoning: reasoning.map((r) => ({
@@ -809,21 +827,9 @@ function chunksToStep(
     reasoningText: reasoningText || undefined,
     files,
     sources,
-    toolCalls: toolCalls.map((toolCall) => ({
-      type: 'tool-call' as const,
-      toolCallId: toolCall.toolCallId,
-      toolName: toolCall.toolName,
-      input: JSON.parse(toolCall.input),
-      dynamic: true as const,
-    })),
+    toolCalls: toolCalls.map(mapToolCall),
     staticToolCalls: [],
-    dynamicToolCalls: toolCalls.map((toolCall) => ({
-      type: 'tool-call' as const,
-      toolCallId: toolCall.toolCallId,
-      toolName: toolCall.toolName,
-      input: JSON.parse(toolCall.input),
-      dynamic: true as const,
-    })),
+    dynamicToolCalls: toolCalls.map(mapToolCall),
     toolResults: [],
     staticToolResults: [],
     dynamicToolResults: [],
@@ -864,13 +870,7 @@ function chunksToStep(
     request: {
       body: JSON.stringify({
         prompt: conversationPrompt,
-        tools: toolCalls.map((toolCall) => ({
-          type: 'tool-call' as const,
-          toolCallId: toolCall.toolCallId,
-          toolName: toolCall.toolName,
-          input: JSON.parse(toolCall.input),
-          dynamic: true as const,
-        })),
+        tools: toolCalls.map(mapToolCall),
       }),
     },
     response: {

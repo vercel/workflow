@@ -16,6 +16,7 @@ import {
   doStreamStep,
   type ModelStopCondition,
   type ProviderExecutedToolResult,
+  safeParseToolCallInput,
 } from './do-stream-step.js';
 import type {
   GenerationSettings,
@@ -358,7 +359,7 @@ export async function* streamTextIterator({
                   type: 'tool-call' as const,
                   toolCallId: toolCall.toolCallId,
                   toolName: toolCall.toolName,
-                  input: JSON.parse(toolCall.input),
+                  input: safeParseToolCallInput(toolCall.input),
                   ...(meta != null ? { providerOptions: meta } : {}),
                 };
               }),
