@@ -22,6 +22,11 @@ export type Config = {
    * `.workflow-data` directory.
    */
   tag?: string;
+  /**
+   * Override the flush interval (in ms) for buffered stream writes.
+   * Default is 10ms. Set to 0 for immediate flushing.
+   */
+  streamFlushIntervalMs?: number;
 };
 
 export const config = once<Config>(() => {

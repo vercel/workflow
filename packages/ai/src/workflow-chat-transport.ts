@@ -8,6 +8,7 @@ import {
   type UIMessageChunk,
   uiMessageChunkSchema,
 } from 'ai';
+import { getErrorMessage } from './get-error-message.js';
 import { iteratorToStream, streamToIterator } from './stream-iterator.js';
 
 export interface SendMessagesOptions<UI_MESSAGE extends UIMessage> {
@@ -404,7 +405,7 @@ export class WorkflowChatTransport<UI_MESSAGE extends UIMessage>
 
         if (consecutiveErrors >= this.maxConsecutiveErrors) {
           throw new Error(
-            `Failed to reconnect after ${this.maxConsecutiveErrors} consecutive errors. Last error: ${error instanceof Error ? error.message : String(error)}`
+            `Failed to reconnect after ${this.maxConsecutiveErrors} consecutive errors. Last error: ${getErrorMessage(error)}`
           );
         }
       }

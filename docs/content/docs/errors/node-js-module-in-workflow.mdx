@@ -69,12 +69,12 @@ async function read(filePath: string) {
 These common Node.js core modules cannot be used in workflow functions:
 
 - File system: `fs`, `path`
-- Network: `http`, `https`, `net`, `dns`, `fetch`
+- Network: `http`, `https`, `net`, `dns`
 - Process: `child_process`, `cluster`
 - Crypto: `crypto` (use Web Crypto API instead)
 - Operating system: `os`
 - Streams: `stream` (use Web Streams API instead)
 
 <Callout type="info">
-You can use Web Platform APIs in workflow functions (like `Headers`, `crypto.randomUUID()`, `Response`, etc.), since these are available in the sandboxed environment.
+You can use Web Platform APIs in workflow functions (like `Headers`, `crypto.randomUUID()`, `Response`, etc.), since these are available in the sandboxed environment. See [Workflow Globals](/docs/api-reference/workflow-globals) for the full list.
 </Callout>

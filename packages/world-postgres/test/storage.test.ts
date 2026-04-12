@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import type { Hook, Step, WorkflowRun } from '@workflow/world';
+import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { encode } from 'cbor-x';
 import { Pool } from 'pg';
 import {
@@ -385,7 +386,7 @@ describe('Storage (Postgres integration)', () => {
           completedAt: undefined,
           createdAt: expect.any(Date),
           updatedAt: expect.any(Date),
-          specVersion: 2,
+          specVersion: SPEC_VERSION_CURRENT,
         });
       });
     });
@@ -399,18 +400,6 @@ describe('Storage (Postgres integration)', () => {
         });
 
         const retrieved = await steps.get(testRunId, 'step-123');
-
-        expect(retrieved.stepId).toBe(created.stepId);
-      });
-
-      it('should retrieve a step with only stepId', async () => {
-        const created = await createStep(events, testRunId, {
-          stepId: 'unique-step-123',
-          stepName: 'test-step',
-          input: new Uint8Array([1]),
-        });
-
-        const retrieved = await steps.get(undefined, 'unique-step-123');
 
         expect(retrieved.stepId).toBe(created.stepId);
       });

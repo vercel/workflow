@@ -3,6 +3,7 @@ import { agent } from "experimental-agent";
 var vade$tools$VercelRequest$execute = async function(input, { experimental_context }) {
     return 1 + 1;
 };
+vade$tools$VercelRequest$execute.stepId = "step//./input//vade/tools/VercelRequest/execute";
 export const vade = agent({
     tools: {
         VercelRequest: {
@@ -10,4 +11,3 @@ export const vade = agent({
         }
     }
 });
-vade$tools$VercelRequest$execute.stepId = "step//./input//vade/tools/VercelRequest/execute";

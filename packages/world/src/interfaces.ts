@@ -30,71 +30,89 @@ import type {
 } from './steps.js';
 
 export interface Streamer {
-  writeToStream(
-    name: string,
-    runId: string,
-    chunk: string | Uint8Array
-  ): Promise<void>;
-
   /**
-   * Write multiple chunks to a stream in a single operation.
-   * This is an optional optimization for world implementations that can
-   * batch multiple writes efficiently (e.g., single HTTP request for world-vercel).
+   * Override the default flush interval (in milliseconds) for buffered stream writes.
+   * Chunks are accumulated in a buffer and flushed together on this interval.
    *
-   * If not implemented, the caller should fall back to sequential writeToStream() calls.
+   * The default is 10ms, which is appropriate for HTTP-based backends where
+   * each flush is a network round-trip. For backends with sub-millisecond writes
+   * (e.g., Redis, local filesystem), a lower value (or 0 for immediate flushing) reduces
+   * end-to-end stream latency.
    *
-   * @param name - The stream name
-   * @param runId - The run ID
-   * @param chunks - Array of chunks to write, in order
+   * Not supported by all worlds.
    */
-  writeToStreamMulti?(
-    name: string,
-    runId: string,
-    chunks: (string | Uint8Array)[]
-  ): Promise<void>;
+  streamFlushIntervalMs?: number;
 
-  closeStream(name: string, runId: string): Promise<void>;
-  /**
-   * Read from a stream starting at the given chunk index.
-   * Positive values skip that many chunks from the start (0-based).
-   * Negative values start that many chunks before the current end
-   * (e.g. -3 on a 10-chunk stream starts at chunk 7). Clamped to 0.
-   */
-  readFromStream(
-    name: string,
-    startIndex?: number
-  ): Promise<ReadableStream<Uint8Array>>;
-  listStreamsByRunId(runId: string): Promise<string[]>;
+  streams: {
+    write(
+      runId: string,
+      name: string,
+      chunk: string | Uint8Array
+    ): Promise<void>;
 
-  /**
-   * Fetch stream chunks with cursor-based pagination.
-   *
-   * Unlike `readFromStream` (which returns a live `ReadableStream` that waits
-   * for new chunks in real-time), `getStreamChunks` returns a snapshot of currently
-   * available chunks in a standard paginated response.
-   *
-   * @param name - The stream name/ID
-   * @param runId - The workflow run ID that owns the stream
-   * @param options - Pagination options (limit defaults to 100, max 1000)
-   * @returns Paginated chunks with a `done` flag indicating stream completion
-   */
-  getStreamChunks(
-    name: string,
-    runId: string,
-    options?: GetChunksOptions
-  ): Promise<StreamChunksResponse>;
+    /**
+     * Write multiple chunks to a stream in a single operation.
+     * This is an optional optimization for world implementations that can
+     * batch multiple writes efficiently (e.g., single HTTP request for world-vercel).
+     *
+     * If not implemented, the caller should fall back to sequential write() calls.
+     *
+     * @param runId - The run ID
+     * @param name - The stream name
+     * @param chunks - Array of chunks to write, in order
+     */
+    writeMulti?(
+      runId: string,
+      name: string,
+      chunks: (string | Uint8Array)[]
+    ): Promise<void>;
 
-  /**
-   * Retrieve lightweight metadata about a stream.
-   *
-   * Returns the tail index (index of the last known chunk, 0-based) and
-   * whether the stream is complete. This is useful for resolving a negative
-   * `startIndex` into an absolute position before connecting to a stream.
-   *
-   * @param name - The stream name/ID
-   * @param runId - The workflow run ID that owns the stream
-   */
-  getStreamInfo(name: string, runId: string): Promise<StreamInfoResponse>;
+    close(runId: string, name: string): Promise<void>;
+
+    /**
+     * Read from a stream starting at the given chunk index.
+     * Positive values skip that many chunks from the start (0-based).
+     * Negative values start that many chunks before the current end
+     * (e.g. -3 on a 10-chunk stream starts at chunk 7). Clamped to 0.
+     */
+    get(
+      runId: string,
+      name: string,
+      startIndex?: number
+    ): Promise<ReadableStream<Uint8Array>>;
+
+    list(runId: string): Promise<string[]>;
+
+    /**
+     * Fetch stream chunks with cursor-based pagination.
+     *
+     * Unlike `get` (which returns a live `ReadableStream` that waits
+     * for new chunks in real-time), `getChunks` returns a snapshot of currently
+     * available chunks in a standard paginated response.
+     *
+     * @param runId - The workflow run ID that owns the stream
+     * @param name - The stream name/ID
+     * @param options - Pagination options (limit defaults to 100, max 1000)
+     * @returns Paginated chunks with a `done` flag indicating stream completion
+     */
+    getChunks(
+      runId: string,
+      name: string,
+      options?: GetChunksOptions
+    ): Promise<StreamChunksResponse>;
+
+    /**
+     * Retrieve lightweight metadata about a stream.
+     *
+     * Returns the tail index (index of the last known chunk, 0-based) and
+     * whether the stream is complete. This is useful for resolving a negative
+     * `startIndex` into an absolute position before connecting to a stream.
+     *
+     * @param runId - The workflow run ID that owns the stream
+     * @param name - The stream name/ID
+     */
+    getInfo(runId: string, name: string): Promise<StreamInfoResponse>;
+  };
 }
 
 /**
@@ -140,17 +158,17 @@ export interface Storage {
 
   steps: {
     get(
-      runId: string | undefined,
+      runId: string,
       stepId: string,
       params: GetStepParams & { resolveData: 'none' }
     ): Promise<StepWithoutData>;
     get(
-      runId: string | undefined,
+      runId: string,
       stepId: string,
       params?: GetStepParams & { resolveData?: 'all' }
     ): Promise<Step>;
     get(
-      runId: string | undefined,
+      runId: string,
       stepId: string,
       params?: GetStepParams
     ): Promise<Step | StepWithoutData>;
@@ -219,7 +237,18 @@ export interface Storage {
 /**
  * The "World" interface represents how Workflows are able to communicate with the outside world.
  */
-export interface World extends Queue, Storage, Streamer {
+export interface World extends Queue, Streamer, Storage {
+  /**
+   * The highest spec version this World supports.
+   *
+   * When set, `start()` creates runs at this version so world-specific
+   * features (e.g., CBOR queue transport) are enabled automatically.
+   * When omitted, runs default to `SPEC_VERSION_SUPPORTS_EVENT_SOURCING` (2),
+   * the safe baseline that all worlds — including community worlds on
+   * older @workflow/world versions — are expected to handle.
+   */
+  specVersion?: number;
+
   /**
    * A function that will be called to start any background tasks needed by the World implementation.
    * For example, in the case of a queue backed World, this would start the queue processing.

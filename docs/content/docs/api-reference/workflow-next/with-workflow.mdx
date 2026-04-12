@@ -27,6 +27,57 @@ const workflowConfig = {}
 export default withWorkflow(nextConfig, workflowConfig); // [!code highlight]
 ```
 
+### Monorepos and Workspace Imports
+
+By default, Next.js detects the correct workspace root automatically. If your Next.js app lives in a subdirectory such as `apps/web` and workspace resolution is not working correctly, you can set `outputFileTracingRoot` as a workaround:
+
+```typescript title="apps/web/next.config.ts" lineNumbers
+import { resolve } from "node:path";
+import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
+
+const nextConfig: NextConfig = {
+  outputFileTracingRoot: resolve(process.cwd(), "../.."),
+};
+
+export default withWorkflow(nextConfig);
+```
+
+<Callout type="info">
+Use the smallest directory that contains every workspace package imported by your workflows. If your app already lives at the repository root, you do not need to set `outputFileTracingRoot`.
+</Callout>
+
+## Options
+
+`withWorkflow` accepts an optional second argument to configure the Next.js integration.
+
+```typescript title="next.config.ts" lineNumbers
+import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
+
+const nextConfig: NextConfig = {};
+
+export default withWorkflow(nextConfig, {
+  workflows: {
+    lazyDiscovery: true,
+    local: {
+      port: 4000,
+    },
+  },
+});
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `workflows.lazyDiscovery` | `boolean` | `false` | When `true`, defers workflow discovery until files are requested instead of scanning eagerly at startup. Useful for large projects where startup time matters. |
+| `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
+
+<Callout type="info">
+The `workflows.local` options only affect local development. When deployed to Vercel, the runtime ignores `local` settings and uses the Vercel world automatically.
+</Callout>
+
+## Exporting a Function
+
 If you are exporting a function in your `next.config` you will need to ensure you call the function returned from `withWorkflow`.
 
 ```typescript title="next.config.ts" lineNumbers

@@ -2188,7 +2188,9 @@ describe('step function serialization', () => {
     const stepName = 'step//workflows/test.ts//calculate';
 
     // Create a step function that accesses closure variables
-    const { __private_getClosureVars } = await import('./private.js');
+    const { __private_getClosureVars } = await import(
+      './step/get-closure-vars.js'
+    );
     const { contextStorage } = await import('./step/context-storage.js');
 
     const stepFn = async (x: number) => {
@@ -2264,6 +2266,7 @@ describe('step function serialization', () => {
           workflowRunId: 'test-run',
           workflowStartedAt: new Date(),
           url: 'http://localhost:3000',
+          features: { encryption: false },
         },
         ops: [],
       },
@@ -3177,6 +3180,131 @@ describe('custom Error subclass serialization', () => {
     expect(hydrated).toBeInstanceOf(ReturnError);
     expect(hydrated.message).toBe('timeout');
     expect(hydrated.errorCode).toBe('ERR_TIMEOUT');
+  });
+});
+
+describe('DOMException serialization', () => {
+  const { context, globalThis: vmGlobalThis } = createContext({
+    seed: 'test-domexception',
+    fixedTimestamp: 1714857600000,
+  });
+  vmGlobalThis.Request = globalThis.Request;
+  vmGlobalThis.Response = globalThis.Response;
+  vmGlobalThis.ReadableStream = globalThis.ReadableStream;
+  vmGlobalThis.WritableStream = globalThis.WritableStream;
+
+  async function roundTrip(value: unknown) {
+    const serialized = await dehydrateStepReturnValue(
+      value,
+      mockRunId,
+      noEncryptionKey
+    );
+    return hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+  }
+
+  it('should round-trip DOMException with AbortError name', async () => {
+    const error = new DOMException('operation aborted', 'AbortError');
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated).toBeInstanceOf(DOMException);
+    expect(hydrated.message).toBe('operation aborted');
+    expect(hydrated.name).toBe('AbortError');
+    // code is derived from name automatically
+    expect(hydrated.code).toBe(20);
+  });
+
+  it('should round-trip DOMException with NotFoundError name', async () => {
+    const error = new DOMException('resource not found', 'NotFoundError');
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated).toBeInstanceOf(DOMException);
+    expect(hydrated.message).toBe('resource not found');
+    expect(hydrated.name).toBe('NotFoundError');
+    expect(hydrated.code).toBe(8);
+  });
+
+  it('should round-trip DOMException with default name', async () => {
+    // When no name is provided, DOMException defaults to "Error"
+    const error = new DOMException('something failed');
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated).toBeInstanceOf(DOMException);
+    expect(hydrated.message).toBe('something failed');
+    expect(hydrated.name).toBe('Error');
+    expect(hydrated.code).toBe(0);
+  });
+
+  it('should preserve cause on DOMException when manually set', async () => {
+    const error = new DOMException('aborted', 'AbortError');
+    (error as any).cause = new TypeError('underlying cause');
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated).toBeInstanceOf(DOMException);
+    expect(hydrated.message).toBe('aborted');
+    expect(hydrated.name).toBe('AbortError');
+    expect((hydrated.cause as Error).message).toBe('underlying cause');
+  });
+
+  it('should not set cause on DOMException when original had none', async () => {
+    const error = new DOMException('no cause', 'AbortError');
+    expect('cause' in error).toBe(false);
+    const hydrated = (await roundTrip(error)) as DOMException;
+    expect(hydrated.message).toBe('no cause');
+    expect('cause' in hydrated).toBe(false);
+  });
+
+  it('should use DOMException serialization key (not generic Error)', async () => {
+    const error = new DOMException('test', 'AbortError');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('DOMException');
+    expect(str).not.toMatch(/"Error"/);
+  });
+
+  it('should round-trip DOMException across VM boundaries', async () => {
+    const hostError = new DOMException('host abort', 'AbortError');
+    const serialized = await dehydrateStepReturnValue(
+      hostError,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+    runInContext('var __testVal = null', context);
+    (vmGlobalThis as any).__testVal = hydrated;
+    expect(runInContext('__testVal instanceof DOMException', context)).toBe(
+      true
+    );
+    expect(runInContext('__testVal.message', context)).toBe('host abort');
+    expect(runInContext('__testVal.name', context)).toBe('AbortError');
+  });
+
+  it('should have DOMException available in VM context by default', () => {
+    // DOMException is a standard Web API that is passed through to the VM
+    // context by createContext(), so it should always be available.
+    const { context: freshContext } = createContext({
+      seed: 'test-dom-available',
+      fixedTimestamp: 1714857600000,
+    });
+    expect(runInContext('typeof DOMException', freshContext)).toBe('function');
+    const result = runInContext(
+      'new DOMException("test", "AbortError")',
+      freshContext
+    );
+    expect(result).toBeInstanceOf(DOMException);
+    expect(result.name).toBe('AbortError');
+    expect(result.message).toBe('test');
   });
 });
 
@@ -4292,5 +4420,119 @@ describe('isEncrypted', () => {
 
   it('should return false for data shorter than prefix length', () => {
     expect(isEncrypted(new Uint8Array(2))).toBe(false);
+  });
+});
+
+describe('WorkflowFunction serialization', () => {
+  it('should serialize a function with workflowId and hydrate as a function with workflowId', async () => {
+    const workflowFn = Object.assign(
+      async () => {
+        /* workflow body */
+      },
+      { workflowId: 'wf_myWorkflow' }
+    );
+    const dehydrated = await dehydrateStepReturnValue(
+      workflowFn,
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepReturnValue(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    // Deserialized as a function with .workflowId that throws on direct call
+    expect(typeof hydrated).toBe('function');
+    expect((hydrated as any).workflowId).toBe('wf_myWorkflow');
+    expect(() => (hydrated as any)()).toThrow(
+      'Workflow functions cannot be called directly'
+    );
+  });
+
+  it('should roundtrip through step arguments as a function with workflowId', async () => {
+    const workflowFn = Object.assign(
+      async () => {
+        /* workflow body */
+      },
+      { workflowId: 'wf_argTest' }
+    );
+    const dehydrated = await dehydrateStepArguments(
+      [workflowFn],
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepArguments(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    expect(typeof hydrated[0]).toBe('function');
+    expect((hydrated[0] as any).workflowId).toBe('wf_argTest');
+    expect(() => (hydrated[0] as any)()).toThrow(
+      'Workflow functions cannot be called directly'
+    );
+  });
+
+  it('should not match plain objects with workflowId (only functions)', async () => {
+    const workflowMeta = { workflowId: 'wf_otherWorkflow' };
+    const dehydrated = await dehydrateStepReturnValue(
+      workflowMeta,
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepReturnValue(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    expect(hydrated).toEqual({ workflowId: 'wf_otherWorkflow' });
+  });
+
+  it('should roundtrip workflow function reference through step arguments', async () => {
+    const workflowFn = Object.assign(
+      async () => {
+        /* workflow body */
+      },
+      { workflowId: 'wf_childWorkflow' }
+    );
+    const dehydrated = await dehydrateStepArguments(
+      [workflowFn, [42]],
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepArguments(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    expect(hydrated[0]).toHaveProperty('workflowId', 'wf_childWorkflow');
+    expect(hydrated[1]).toEqual([42]);
+  });
+
+  it('should not match objects without workflowId', async () => {
+    const plainObj = { name: 'test', value: 42 };
+    const dehydrated = await dehydrateStepReturnValue(
+      plainObj,
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepReturnValue(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    expect(hydrated).toEqual({ name: 'test', value: 42 });
+  });
+
+  it('should not match functions without workflowId', async () => {
+    const plainFn = Object.assign(
+      async () => {
+        /* some function */
+      },
+      { someOtherProp: 'test' }
+    );
+    await expect(
+      dehydrateStepReturnValue(plainFn, 'wrun_test', undefined)
+    ).rejects.toThrow('Failed to serialize');
   });
 });

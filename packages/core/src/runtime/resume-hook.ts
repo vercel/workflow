@@ -8,13 +8,16 @@ import {
   type Hook,
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
+import { getRunCapabilities } from '../capabilities.js';
 import { type CryptoKey, importKey } from '../encryption.js';
 import {
   dehydrateStepReturnValue,
   hydrateStepArguments,
+  SerializationFormat,
 } from '../serialization.js';
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -32,7 +35,7 @@ async function getHookByTokenWithKey(token: string): Promise<{
   run: WorkflowRun;
   encryptionKey: CryptoKey | undefined;
 }> {
-  const world = getWorld();
+  const world = await getWorld();
   const hook = await world.hooks.getByToken(token);
   const run = await world.runs.get(hook.runId);
   const rawKey = await world.getEncryptionKeyForRun?.(run);
@@ -95,7 +98,7 @@ export async function resumeHook<T = any>(
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
-      const world = getWorld();
+      const world = await getWorld();
 
       try {
         let hook: Hook;
@@ -122,6 +125,18 @@ export async function resumeHook<T = any>(
           ...Attribute.HookId(hook.hookId),
           ...Attribute.WorkflowRunId(hook.runId),
         });
+
+        // Check the target run's capabilities to ensure we encode the
+        // payload in a format the run's deployment can decode. For example,
+        // runs created before encryption support was added cannot decode
+        // the 'encr' serialization format.
+        const rawVersion = workflowRun.executionContext?.workflowCoreVersion;
+        const { supportedFormats } = getRunCapabilities(
+          typeof rawVersion === 'string' ? rawVersion : undefined
+        );
+        if (!supportedFormats.has(SerializationFormat.ENCRYPTED)) {
+          encryptionKey = undefined;
+        }
 
         // Dehydrate the payload for storage
         const ops: Promise<any>[] = [];
@@ -180,6 +195,7 @@ export async function resumeHook<T = any>(
           } satisfies WorkflowInvokePayload,
           {
             deploymentId: workflowRun.deploymentId,
+            specVersion: workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
           }
         );
 

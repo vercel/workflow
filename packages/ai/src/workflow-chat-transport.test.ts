@@ -469,6 +469,47 @@ describe('WorkflowChatTransport', () => {
     });
   });
 
+  describe('reconnection error formatting', () => {
+    it('should format object errors with JSON instead of [object Object]', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      const transport = new WorkflowChatTransport({
+        fetch: mockFetch,
+        maxConsecutiveErrors: 1,
+      });
+
+      // Return a stream that throws a plain-object error on parse
+      mockFetch.mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        body: new ReadableStream({
+          start(controller) {
+            // Send malformed data to trigger a parse error
+            controller.enqueue(
+              new TextEncoder().encode('data: INVALID_JSON\n\n')
+            );
+            controller.close();
+          },
+        }),
+      });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      await expect(reader.read()).rejects.toThrow(
+        /Failed to reconnect after 1 consecutive errors/
+      );
+      // Crucially, the error message should never contain [object Object]
+      await expect(
+        reader.read().catch((e: Error) => e.message)
+      ).resolves.not.toContain?.('[object Object]');
+
+      errorSpy.mockRestore();
+    });
+  });
+
   describe('callbacks', () => {
     it('should call onChatSendMessage callback', async () => {
       const onChatSendMessage = vi.fn();

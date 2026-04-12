@@ -1,0 +1,7 @@
+  x Only functions can be exported from a "use step" file
+   ,-[input.js:4:1]
+ 3 |     // Error: default class export
+ 4 | ,-> export default class MyClass {
+ 5 | |     method() {}
+ 6 | `-> }
+   `----

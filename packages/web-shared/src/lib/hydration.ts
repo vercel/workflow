@@ -14,6 +14,7 @@ import {
   observabilityRevivers,
   type Revivers,
 } from '@workflow/core/serialization-format';
+import { EVENT_DATA_REF_FIELDS } from '@workflow/world';
 
 // Re-export types and utilities that consumers need
 export {
@@ -97,6 +98,37 @@ export function getWebRevivers(): Revivers {
     Uint32Array: (value: string) => new Uint32Array(reviveArrayBuffer(value)),
 
     Headers: (value) => new Headers(value),
+    Request: (value) => {
+      // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+      const ctor = { Request: function () {} }.Request!;
+      const obj = Object.create(ctor.prototype);
+      Object.assign(obj, {
+        method: value.method,
+        url: value.url,
+        headers: new Headers(value.headers),
+        body: value.body,
+        duplex: value.duplex,
+        ...(value.responseWritable
+          ? { responseWritable: value.responseWritable }
+          : {}),
+      });
+      return obj;
+    },
+    Response: (value) => {
+      // biome-ignore lint/complexity/useArrowFunction: arrow functions have no .prototype
+      const ctor = { Response: function () {} }.Response!;
+      const obj = Object.create(ctor.prototype);
+      Object.assign(obj, {
+        status: value.status,
+        statusText: value.statusText,
+        url: value.url,
+        headers: new Headers(value.headers),
+        body: value.body,
+        redirected: value.redirected,
+        type: value.type,
+      });
+      return obj;
+    },
     URL: (value) => new URL(value),
     URLSearchParams: (value) => new URLSearchParams(value === '.' ? '' : value),
 
@@ -243,24 +275,20 @@ function replaceEncryptedAndExpiredWithMarkers<T>(resource: T): T {
   }
 
   if (result.eventData && typeof result.eventData === 'object') {
+    const eventType =
+      typeof result.eventType === 'string' ? result.eventType : '';
+    const refKeys = EVENT_DATA_REF_FIELDS[eventType] ?? [];
     const ed = { ...(result.eventData as Record<string, unknown>) };
-    for (const key of EVENT_DATA_SERIALIZED_FIELDS) {
-      ed[key] = toDisplayMarker(ed[key]);
+    for (const key of refKeys) {
+      if (key in ed) {
+        ed[key] = toDisplayMarker(ed[key]);
+      }
     }
     result.eventData = ed;
   }
 
   return result as T;
 }
-
-/** Known serialized subfields within eventData, matching hydrateEventData in core */
-const EVENT_DATA_SERIALIZED_FIELDS = [
-  'result',
-  'input',
-  'output',
-  'metadata',
-  'payload',
-];
 
 /**
  * Hydrate resource data with decryption support.
@@ -269,7 +297,7 @@ const EVENT_DATA_SERIALIZED_FIELDS = [
  * This is the async version used when the user clicks "Decrypt" in the web UI.
  *
  * Handles both top-level fields (input, output, metadata) and nested
- * eventData subfields (result, input, output, metadata, payload).
+ * eventData subfields per `EVENT_DATA_REF_FIELDS` from `@workflow/world` for that event type.
  */
 export async function hydrateResourceIOWithKey<T>(
   resource: T,
@@ -313,8 +341,11 @@ export async function hydrateResourceIOWithKey<T>(
 
   // Decrypt + hydrate eventData subfields (events)
   if (result.eventData && typeof result.eventData === 'object') {
+    const eventType =
+      typeof result.eventType === 'string' ? result.eventType : '';
+    const refKeys = EVENT_DATA_REF_FIELDS[eventType] ?? [];
     const eventData = { ...(result.eventData as Record<string, unknown>) };
-    for (const field of EVENT_DATA_SERIALIZED_FIELDS) {
+    for (const field of refKeys) {
       if (field in eventData) {
         eventData[field] = await decryptField(
           eventData[field],

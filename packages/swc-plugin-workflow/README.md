@@ -1,6 +1,6 @@
 # @workflow/swc-plugin
 
-SWC transform plugin to transform the directives for Workflow [Workflow DevKit](https://useworkflow.dev).
+SWC transform plugin to transform the directives for Workflow [Workflow SDK](https://useworkflow.dev).
 
 ## Development
 
