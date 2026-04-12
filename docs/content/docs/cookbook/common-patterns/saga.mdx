@@ -1,0 +1,152 @@
+---
+title: Transactions & Rollbacks (Saga)
+description: Coordinate multi-step transactions with automatic rollback when a step fails.
+type: guide
+summary: Run a sequence of steps where each registers a compensation. If any step throws a FatalError, compensations execute in reverse order to restore consistency.
+---
+
+Use the saga pattern when a business transaction spans multiple services and you need automatic rollback if any step fails. Each forward step registers a compensation, and on failure the workflow unwinds them in reverse order.
+
+## When to use this
+
+- Multi-service transactions (reserve inventory, charge payment, provision access)
+- Any sequence where partial completion leaves the system in an inconsistent state
+- Operations that need "all or nothing" semantics across external APIs
+
+## Pattern
+
+Each step returns a result and pushes a compensation handler onto a stack. If a later step throws a `FatalError`, the workflow catches it and executes compensations in LIFO order.
+
+```typescript
+import { FatalError } from "workflow";
+
+declare function reserveSeats(accountId: string, seats: number): Promise<string>; // @setup
+declare function releaseSeats(accountId: string, reservationId: string): Promise<void>; // @setup
+declare function captureInvoice(accountId: string, seats: number): Promise<string>; // @setup
+declare function refundInvoice(accountId: string, invoiceId: string): Promise<void>; // @setup
+declare function provisionSeats(accountId: string, seats: number): Promise<string>; // @setup
+declare function deprovisionSeats(accountId: string, entitlementId: string): Promise<void>; // @setup
+declare function sendConfirmation(accountId: string, invoiceId: string, entitlementId: string): Promise<void>; // @setup
+
+export async function subscriptionUpgradeSaga(accountId: string, seats: number) {
+  "use workflow";
+
+  const compensations: Array<() => Promise<void>> = [];
+
+  try {
+    // Step 1: Reserve seats
+    const reservationId = await reserveSeats(accountId, seats);
+    compensations.push(() => releaseSeats(accountId, reservationId));
+
+    // Step 2: Capture payment
+    const invoiceId = await captureInvoice(accountId, seats);
+    compensations.push(() => refundInvoice(accountId, invoiceId));
+
+    // Step 3: Provision access
+    const entitlementId = await provisionSeats(accountId, seats);
+    compensations.push(() => deprovisionSeats(accountId, entitlementId));
+
+    // Step 4: Notify
+    await sendConfirmation(accountId, invoiceId, entitlementId);
+    return { status: "completed" };
+  } catch (error) {
+    // Unwind compensations in reverse order
+    for (const compensate of compensations.reverse()) {
+      await compensate();
+    }
+
+    return { status: "rolled_back" };
+  }
+}
+```
+
+### Step functions
+
+Each step is a `"use step"` function with full Node.js access. Forward steps do the work; compensation steps undo it.
+
+```typescript
+import { FatalError } from "workflow";
+
+async function reserveSeats(accountId: string, seats: number): Promise<string> {
+  "use step";
+  const res = await fetch(`https://api.example.com/seats/reserve`, {
+    method: "POST",
+    body: JSON.stringify({ accountId, seats }),
+  });
+  if (!res.ok) throw new FatalError("Seat reservation failed");
+  const { reservationId } = await res.json();
+  return reservationId;
+}
+
+async function releaseSeats(accountId: string, reservationId: string): Promise<void> {
+  "use step";
+  // Compensations should be idempotent — safe to call twice
+  await fetch(`https://api.example.com/seats/release`, {
+    method: "POST",
+    body: JSON.stringify({ accountId, reservationId }),
+  });
+}
+
+async function captureInvoice(accountId: string, seats: number): Promise<string> {
+  "use step";
+  const res = await fetch(`https://api.example.com/invoices`, {
+    method: "POST",
+    body: JSON.stringify({ accountId, seats }),
+  });
+  if (!res.ok) throw new FatalError("Invoice capture failed");
+  const { invoiceId } = await res.json();
+  return invoiceId;
+}
+
+async function refundInvoice(accountId: string, invoiceId: string): Promise<void> {
+  "use step";
+  await fetch(`https://api.example.com/invoices/${invoiceId}/refund`, {
+    method: "POST",
+    body: JSON.stringify({ accountId }),
+  });
+}
+
+async function provisionSeats(accountId: string, seats: number): Promise<string> {
+  "use step";
+  const res = await fetch(`https://api.example.com/entitlements`, {
+    method: "POST",
+    body: JSON.stringify({ accountId, seats }),
+  });
+  if (!res.ok) throw new FatalError("Provisioning failed");
+  const { entitlementId } = await res.json();
+  return entitlementId;
+}
+
+async function deprovisionSeats(accountId: string, entitlementId: string): Promise<void> {
+  "use step";
+  await fetch(`https://api.example.com/entitlements/${entitlementId}`, {
+    method: "DELETE",
+    body: JSON.stringify({ accountId }),
+  });
+}
+
+async function sendConfirmation(
+  accountId: string,
+  invoiceId: string,
+  entitlementId: string
+): Promise<void> {
+  "use step";
+  await fetch(`https://api.example.com/notifications`, {
+    method: "POST",
+    body: JSON.stringify({ accountId, invoiceId, entitlementId, template: "upgrade-complete" }),
+  });
+}
+```
+
+## Tips
+
+- **Use `FatalError` for permanent failures.** Regular errors trigger automatic retries (up to 3 by default). Throw `FatalError` when retrying won't help (e.g., insufficient funds, invalid input).
+- **Make compensations idempotent.** If a compensation step is retried, it should produce the same result. Check whether the resource was already released before releasing it again.
+- **Compensation steps are also `"use step"` functions.** This makes them durable — if the workflow restarts mid-rollback, it resumes where it left off.
+- **Capture values in closures carefully.** Use block-scoped variables or copy values before pushing compensations to avoid referencing stale state.
+
+## Key APIs
+
+- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) -- declares the orchestrator function
+- [`"use step"`](/docs/api-reference/workflow/use-step) -- declares step functions with full Node.js access
+- [`FatalError`](/docs/api-reference/workflow/fatal-error) -- non-retryable error that triggers compensation

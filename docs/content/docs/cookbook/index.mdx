@@ -1,0 +1,42 @@
+---
+title: Cookbook
+description: Best-practice workflow patterns with copy-paste code examples.
+type: overview
+---
+
+A curated collection of workflow patterns with clean, copy-paste code examples for real use cases.
+
+## Common Patterns
+
+- [**Saga**](/cookbook/common-patterns/saga) — Coordinate multi-step transactions with automatic rollback when a step fails
+- [**Batching**](/cookbook/common-patterns/batching) — Process large collections in parallel batches with failure isolation
+- [**Rate Limiting**](/cookbook/common-patterns/rate-limiting) — Handle 429 responses and transient failures with RetryableError and backoff
+- [**Fan-Out**](/cookbook/common-patterns/fan-out) — Send to multiple channels in parallel with independent failure handling
+- [**Scheduling**](/cookbook/common-patterns/scheduling) — Use durable sleep to schedule actions minutes, hours, or weeks ahead
+- [**Idempotency**](/cookbook/common-patterns/idempotency) — Ensure side effects happen exactly once, even when steps retry
+- [**Webhooks**](/cookbook/common-patterns/webhooks) — Receive HTTP callbacks from external services and process them durably
+- [**Conditional Routing**](/cookbook/common-patterns/content-router) — Route payloads to different step handlers based on content
+- [**Child Workflows**](/cookbook/common-patterns/child-workflows) — Spawn and orchestrate child workflows from a parent
+
+## Agent Patterns
+
+- [**Durable Agent**](/cookbook/agent-patterns/durable-agent) — Replace a stateless AI agent with one that survives crashes and retries tool calls
+- [**Tool Streaming**](/cookbook/agent-patterns/tool-streaming) — Stream real-time progress updates from tools to the UI
+- [**Human-in-the-Loop**](/cookbook/agent-patterns/human-in-the-loop) — Pause an agent for human approval, then resume based on the decision
+- [**Tool Orchestration**](/cookbook/agent-patterns/tool-orchestration) — Choose between step-level and workflow-level tools, or combine both
+- [**Stop Workflow**](/cookbook/agent-patterns/stop-workflow) — Gracefully cancel a running agent workflow using a hook signal
+
+## Integrations
+
+- [**AI SDK**](/cookbook/integrations/ai-sdk) — Use AI SDK model providers, tool calling, and streaming inside durable workflows
+- [**Chat SDK**](/cookbook/integrations/chat-sdk) — Build durable chat sessions with workflow persistence and AI SDK chat primitives
+- [**Sandbox**](/cookbook/integrations/sandbox) — Orchestrate Vercel Sandbox lifecycle inside durable workflows
+
+## Advanced
+
+- [**Serializable Steps**](/cookbook/advanced/serializable-steps) — Wrap non-serializable objects so they cross the workflow boundary
+- [**Durable Objects**](/cookbook/advanced/durable-objects) — Model long-lived stateful entities as workflows
+- [**Isomorphic Packages**](/cookbook/advanced/isomorphic-packages) — Publish packages that work inside and outside the workflow runtime
+- [**Secure Credentials**](/cookbook/advanced/secure-credentials) — Encrypt secrets so they never appear in the event log
+- [**Custom Serialization**](/cookbook/advanced/custom-serialization) — Make custom classes survive workflow serialization
+- [**Publishing Libraries**](/cookbook/advanced/publishing-libraries) — Ship npm packages that export reusable workflow functions

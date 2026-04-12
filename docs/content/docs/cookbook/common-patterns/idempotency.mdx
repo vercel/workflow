@@ -1,0 +1,134 @@
+---
+title: Idempotency
+description: Ensure external side effects happen exactly once, even when steps are retried or workflows are replayed.
+type: guide
+summary: Use step IDs as idempotency keys for external APIs like Stripe so that retries and replays don't create duplicate charges.
+---
+
+Workflow steps can be retried (on failure) and replayed (on cold start). If a step calls an external API that isn't idempotent, retries could create duplicate charges, send duplicate emails, or double-process records. Use idempotency keys to make these operations safe.
+
+## When to use this
+
+- Charging a payment (Stripe, PayPal)
+- Sending transactional emails or SMS
+- Creating records in external systems where duplicates are harmful
+- Any step that has side effects in systems you don't control
+
+## Pattern: Step ID as idempotency key
+
+Every step has a unique, deterministic `stepId` available via `getStepMetadata()`. Pass this as the idempotency key to external APIs:
+
+```typescript
+import { getStepMetadata } from "workflow";
+
+declare function createCharge(customerId: string, amount: number): Promise<{ id: string }>; // @setup
+declare function sendReceipt(customerId: string, chargeId: string): Promise<void>; // @setup
+
+export async function chargeCustomer(customerId: string, amount: number) {
+  "use workflow";
+
+  const charge = await createCharge(customerId, amount);
+  await sendReceipt(customerId, charge.id);
+
+  return { customerId, chargeId: charge.id, status: "completed" };
+}
+```
+
+### Step function with idempotency key
+
+```typescript
+import { getStepMetadata } from "workflow";
+
+async function createCharge(
+  customerId: string,
+  amount: number
+): Promise<{ id: string }> {
+  "use step";
+
+  const { stepId } = getStepMetadata();
+
+  // Stripe uses the idempotency key to deduplicate requests.
+  // If this step is retried, Stripe returns the same charge.
+  const charge = await fetch("https://api.stripe.com/v1/charges", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`,
+      "Idempotency-Key": stepId,
+    },
+    body: new URLSearchParams({
+      amount: String(amount),
+      currency: "usd",
+      customer: customerId,
+    }),
+  });
+
+  if (!charge.ok) {
+    const error = await charge.json();
+    throw new Error(`Charge failed: ${error.message}`);
+  }
+
+  return charge.json();
+}
+
+async function sendReceipt(customerId: string, chargeId: string): Promise<void> {
+  "use step";
+
+  const { stepId } = getStepMetadata();
+
+  await fetch("https://api.example.com/receipts", {
+    method: "POST",
+    headers: { "Idempotency-Key": stepId },
+    body: JSON.stringify({ customerId, chargeId }),
+  });
+}
+```
+
+## Pattern: Workflow-level deduplication
+
+Use the workflow `runId` as a natural deduplication key. Start workflows with a deterministic ID so re-triggering the same event doesn't create a second run:
+
+{/* @skip-typecheck: start() doesn't support id option yet -- aspirational API */}
+
+```typescript
+import { start } from "workflow/api";
+
+// POST /api/webhooks/stripe
+export async function POST(request: Request) {
+  const event = await request.json();
+
+  // Use the Stripe event ID as the workflow run ID.
+  // If this webhook is delivered twice, the second start()
+  // returns the existing run instead of creating a new one.
+  const run = await start({
+    id: `stripe-${event.id}`,
+    workflow: processStripeEvent,
+    input: event,
+  });
+
+  return Response.json({ runId: run.id });
+}
+```
+
+## Race condition caveats
+
+Workflow does not currently provide distributed locking or true exactly-once delivery across concurrent runs. If two workflow runs could process the same entity concurrently:
+
+- **Rely on the external API's idempotency** (like Stripe's `Idempotency-Key`) rather than checking a local flag.
+- **Don't use check-then-act patterns** like "read a flag, then write if not set" -- another run could read the same flag between your read and write.
+- **Use deterministic workflow IDs** to prevent duplicate runs from the same trigger event.
+
+If your external API doesn't support idempotency keys natively, consider adding a deduplication layer (e.g., a database unique constraint on the operation ID).
+
+## Tips
+
+- **`stepId` is deterministic.** It's the same value across retries and replays of the same step, making it a reliable idempotency key.
+- **Always provide idempotency keys for non-idempotent external calls.** Even if you think a step won't be retried, cold-start replay will re-execute it.
+- **Handle 409/conflict as success.** If an external API returns "already processed," treat that as a successful result, not an error.
+- **Make your own APIs idempotent** where possible. Accept an idempotency key and return the cached result on duplicate requests.
+
+## Key APIs
+
+- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) -- declares the orchestrator function
+- [`"use step"`](/docs/api-reference/workflow/use-step) -- declares step functions with full Node.js access
+- [`getStepMetadata()`](/docs/api-reference/step/get-step-metadata) -- provides the deterministic `stepId` for idempotency keys
+- [`start()`](/docs/api-reference/workflow-api/start) -- starts a workflow with an optional deterministic ID

@@ -1,0 +1,185 @@
+---
+title: Webhooks & External Callbacks
+description: Receive HTTP callbacks from external services, process them durably, and respond inline.
+type: guide
+summary: Create webhook endpoints that your workflow can await, process incoming requests in steps, and respond to the caller — all within durable workflow context.
+---
+
+Use webhooks when external services push events to your application via HTTP callbacks. The workflow creates a webhook URL, suspends with zero compute cost, and resumes when a request arrives.
+
+## When to use this
+
+- Accepting callbacks from payment processors (Stripe, PayPal)
+- Waiting for third-party verification or processing results
+- Any integration where an external system calls you back asynchronously
+
+## Pattern: Processing webhook events
+
+Create a webhook with manual response control, then iterate over incoming requests:
+
+```typescript
+import { createWebhook, type RequestWithResponse } from "workflow";
+
+declare function processEvent(request: RequestWithResponse): Promise<{ type: string }>; // @setup
+
+export async function paymentWebhook(orderId: string) {
+  "use workflow";
+
+  const webhook = createWebhook({ respondWith: "manual" });
+  // webhook.url is the URL to give to the external service
+
+  const ledger: { type: string }[] = [];
+
+  for await (const request of webhook) {
+    const entry = await processEvent(request);
+    ledger.push(entry);
+
+    // Break when we've received a terminal event
+    if (entry.type === "payment.succeeded" || entry.type === "refund.created") {
+      break;
+    }
+  }
+
+  return { orderId, webhookUrl: webhook.url, ledger, status: "settled" };
+}
+```
+
+### Step function for processing
+
+Each webhook request is processed in its own step, giving you full Node.js access for validation, database writes, and responding to the caller:
+
+```typescript
+import { type RequestWithResponse } from "workflow";
+
+async function processEvent(
+  request: RequestWithResponse
+): Promise<{ type: string }> {
+  "use step";
+
+  const body = await request.json().catch(() => ({}));
+  const type = body?.type ?? "unknown";
+
+  // Validate, process, and respond inline
+  if (type === "payment.succeeded") {
+    // Record the payment in your database
+    await request.respondWith(Response.json({ ack: true, action: "captured" }));
+  } else if (type === "payment.failed") {
+    await request.respondWith(Response.json({ ack: true, action: "flagged" }));
+  } else {
+    await request.respondWith(Response.json({ ack: true, action: "ignored" }));
+  }
+
+  return { type };
+}
+```
+
+## Pattern: Async request-reply with timeout
+
+Submit a request to an external service, pass it your webhook URL, then race the callback against a deadline:
+
+```typescript
+import { createWebhook, sleep, FatalError, type RequestWithResponse } from "workflow";
+
+export async function asyncVerification(documentId: string) {
+  "use workflow";
+
+  const webhook = createWebhook({ respondWith: "manual" });
+
+  // Submit to vendor, passing our webhook URL for the callback
+  await submitToVendor(documentId, webhook.url);
+
+  // Race: wait for callback OR timeout after 30 seconds
+  const result = await Promise.race([
+    (async () => {
+      for await (const request of webhook) {
+        const body = await processCallback(request);
+        return body;
+      }
+      throw new FatalError("Webhook closed without callback");
+    })(),
+    sleep("30s").then(() => ({ status: "timed_out" as const })),
+  ]);
+
+  return { documentId, ...result };
+}
+
+async function submitToVendor(documentId: string, callbackUrl: string): Promise<void> {
+  "use step";
+  await fetch("https://vendor.example.com/verify", {
+    method: "POST",
+    body: JSON.stringify({ documentId, callbackUrl }),
+  });
+}
+
+async function processCallback(
+  request: RequestWithResponse
+): Promise<{ status: string; details: string }> {
+  "use step";
+  const body = await request.json();
+  await request.respondWith(Response.json({ ack: true }));
+  return {
+    status: body.approved ? "verified" : "rejected",
+    details: body.details ?? body.reason ?? "",
+  };
+}
+```
+
+## Pattern: Large payload by reference
+
+When payloads are too large to serialize into the event log, pass a lightweight reference (a "claim check") instead. Use a hook to signal when the data is ready:
+
+```typescript
+import { defineHook } from "workflow";
+
+export const blobReady = defineHook<{ blobToken: string }>();
+
+export async function importLargeFile(importId: string) {
+  "use workflow";
+
+  // Suspend until the external system signals the blob is uploaded
+  const { blobToken } = await blobReady.create({ token: `upload:${importId}` });
+
+  // Process by reference -- the full payload never enters the event log
+  await processBlob(blobToken);
+
+  return { importId, blobToken, status: "indexed" };
+}
+
+async function processBlob(blobToken: string): Promise<void> {
+  "use step";
+  // Fetch the blob using the token, process it
+  const res = await fetch(`https://storage.example.com/blobs/${blobToken}`);
+  const data = await res.arrayBuffer();
+  // Index, transform, or store the data
+}
+```
+
+Resume from an API route when the upload completes:
+
+```typescript
+import { resumeHook } from "workflow/api";
+
+// POST /api/upload-complete
+export async function POST(request: Request) {
+  const { importId, blobToken } = await request.json();
+  await resumeHook(`upload:${importId}`, { blobToken });
+  return Response.json({ ok: true });
+}
+```
+
+## Tips
+
+- **`respondWith: "manual"`** gives you control over the HTTP response from inside a step. Use this when you need to validate the request before responding.
+- **`for await` on a webhook** lets you process multiple events from the same URL. Use `break` to stop listening after a terminal event.
+- **Webhooks auto-generate URLs** at `/.well-known/workflow/v1/webhook/:token`. Pass this URL to external services.
+- **Race webhooks against `sleep()`** for deadlines. If the callback doesn't arrive in time, the workflow can take a fallback action.
+- **For large payloads**, use a hook + reference token instead of passing the data through the workflow. The event log serializes all step inputs/outputs, so large payloads hurt performance.
+
+## Key APIs
+
+- [`"use workflow"`](/docs/foundations/workflows-and-steps) -- marks the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps) -- marks functions with full Node.js access
+- [`createWebhook()`](/docs/api-reference/workflow/create-webhook) -- creates an HTTP endpoint the workflow can await
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) -- creates a typed hook for signal-based patterns
+- [`sleep()`](/docs/api-reference/workflow/sleep) -- durable timer for deadlines
+- [`FatalError`](/docs/api-reference/workflow/fatal-error) -- prevents retry on permanent failures

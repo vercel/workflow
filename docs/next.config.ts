@@ -18,6 +18,9 @@ const config: NextConfig = {
   },
 
   async rewrites() {
+    const markdownAcceptHeader =
+      '(?=.*(?:text/plain|text/markdown))(?!.*text/html.*(?:text/plain|text/markdown)).*';
+
     return {
       beforeFiles: [
         {
@@ -31,10 +34,29 @@ const config: NextConfig = {
             {
               type: 'header',
               key: 'Accept',
-              // Have text/markdown or text/plain but before any text/html
-              // Note, that Claude Code currently requests text/plain
-              value:
-                '(?=.*(?:text/plain|text/markdown))(?!.*text/html.*(?:text/plain|text/markdown)).*',
+              value: markdownAcceptHeader,
+            },
+          ],
+        },
+        {
+          source: '/cookbook',
+          destination: '/llms.mdx/cookbook',
+          has: [
+            {
+              type: 'header',
+              key: 'Accept',
+              value: markdownAcceptHeader,
+            },
+          ],
+        },
+        {
+          source: '/cookbook/:path*',
+          destination: '/llms.mdx/cookbook/:path*',
+          has: [
+            {
+              type: 'header',
+              key: 'Accept',
+              value: markdownAcceptHeader,
             },
           ],
         },
@@ -47,6 +69,26 @@ const config: NextConfig = {
       {
         source: '/docs',
         destination: '/docs/getting-started',
+        permanent: true,
+      },
+      {
+        source: '/docs/cookbook',
+        destination: '/cookbook',
+        permanent: true,
+      },
+      {
+        source: '/docs/cookbook/:path*',
+        destination: '/cookbook/:path*',
+        permanent: true,
+      },
+      {
+        source: '/cookbooks',
+        destination: '/cookbook',
+        permanent: true,
+      },
+      {
+        source: '/cookbooks/:path*',
+        destination: '/cookbook/:path*',
         permanent: true,
       },
       {

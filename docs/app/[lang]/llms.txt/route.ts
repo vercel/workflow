@@ -1,4 +1,5 @@
 import type { NextRequest } from 'next/server';
+import { rewriteCookbookUrlsInText } from '@/lib/geistdocs/cookbook-source';
 import { getLLMText, source } from '@/lib/geistdocs/source';
 
 export const revalidate = false;
@@ -11,7 +12,7 @@ export const GET = async (
   const scan = source.getPages(lang).map(getLLMText);
   const scanned = await Promise.all(scan);
 
-  return new Response(scanned.join('\n\n'), {
+  return new Response(rewriteCookbookUrlsInText(scanned.join('\n\n')), {
     headers: {
       'Content-Type': 'text/markdown; charset=utf-8',
     },
