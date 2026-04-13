@@ -187,6 +187,10 @@ async function _buildSnapshotMap(): Promise<
     url = getNextPageUrl(res.headers.get('Link'));
   }
 
+  if (ghPagesCommits.length >= MAX_SNAPSHOTS) {
+    console.warn(`Benchmark history: hit pagination cap at ${MAX_SNAPSHOTS} gh-pages commits — older snapshots may be missing`);
+  }
+
   // Fetch benchmark data for each gh-pages commit in batches
   const BATCH_SIZE = 30;
   for (let i = 0; i < ghPagesCommits.length; i += BATCH_SIZE) {
