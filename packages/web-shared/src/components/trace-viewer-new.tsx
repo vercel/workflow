@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
-import { WorkflowRun } from '@workflow/core/runtime';
-import { buildTrace, TraceWithMeta } from '../lib/trace-builder';
-import { Event } from '@workflow/world';
+import type { WorkflowRun } from '@workflow/core/runtime';
+import type { Event } from '@workflow/world';
+import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
 import { NewTraceViewer as NewTraceViewerComponent } from './new-trace-viewer/trace-viewer';
-import { Trace } from './trace-viewer/types';
+import type { Trace } from './trace-viewer/types';
 
 const NewTraceViewer = ({
   run,

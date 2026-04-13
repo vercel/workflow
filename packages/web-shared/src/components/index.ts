@@ -15,6 +15,10 @@ export {
 } from './hook-actions';
 export { RunTraceView } from './run-trace-view';
 export { ConversationView } from './sidebar/conversation-view';
+export {
+  SidebarDataProvider,
+  type SidebarDataContextValue,
+} from './sidebar/sidebar-data-context';
 export type {
   SelectedSpanInfo,
   SpanSelectionInfo,
