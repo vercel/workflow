@@ -287,7 +287,7 @@ export function Path({
   useEffect(() => {
     setJsLoaded(true);
     if (!onAnimateComplete || repeat === Number.POSITIVE_INFINITY) return;
-    setTimeout(
+    const id = setTimeout(
       () => {
         onAnimateComplete();
       },
@@ -296,6 +296,7 @@ export function Path({
         onAnimationCompleteOffset) *
         1000
     );
+    return () => clearTimeout(id);
   }, []);
 
   return (
@@ -398,10 +399,11 @@ export function AnimateAttribute({
   useEffect(() => {
     if (!ref.current) return;
     ref.current.endElement();
-    setTimeout(() => {
+    const id = setTimeout(() => {
       if (!ref.current) return;
       ref.current.beginElement();
     }, delay * 1000);
+    return () => clearTimeout(id);
   }, []);
 
   const keyTimes = `${values
