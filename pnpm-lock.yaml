@@ -913,8 +913,6 @@ importers:
         specifier: 7.1.12
         version: 7.1.12(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.30.2)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3)
 
-  packages/swc-playground-wasm: {}
-
   packages/swc-plugin-workflow:
     dependencies:
       '@swc/core':
@@ -2178,9 +2176,6 @@ importers:
       '@workflow/serde':
         specifier: workspace:*
         version: link:../../packages/serde
-      '@workflow/swc-playground-wasm':
-        specifier: workspace:*
-        version: link:../../packages/swc-playground-wasm
       '@workflow/utils':
         specifier: workspace:*
         version: link:../../packages/utils

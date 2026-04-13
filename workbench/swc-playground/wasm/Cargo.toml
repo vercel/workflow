@@ -21,5 +21,5 @@ swc_ecma_ast    = "19.0"
 swc_ecma_codegen = "21.0"
 swc_ecma_parser = { version = "28.0", default-features = false, features = ["typescript"] }
 swc_ecma_visit  = "19.0"
-swc_workflow    = { path = "../swc-plugin-workflow/transform" }
+swc_workflow    = { path = "../../../packages/swc-plugin-workflow/transform" }
 wasm-bindgen    = "0.2"
