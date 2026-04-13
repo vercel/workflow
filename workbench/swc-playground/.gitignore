@@ -5,7 +5,8 @@ next-env.d.ts
 node_modules
 tsconfig.tsbuildinfo
 
-# WASM build artifacts (copied from packages/swc-playground-wasm/pkg)
+# WASM build artifacts
+wasm/pkg/
 public/wasm/
 
 # Auto-generated Monaco type definitions
