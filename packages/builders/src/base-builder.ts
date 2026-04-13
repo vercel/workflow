@@ -218,6 +218,23 @@ export abstract class BaseBuilder {
     };
 
     const discoverStart = Date.now();
+
+    // Resolve the SDK runtime entry point so that the discovery pass
+    // traces through it and discovers serde classes (like `Run`) that
+    // live inside SDK packages. Without this, files like `run.js` are
+    // only discovered when user code happens to import them.
+    // This is resolved here (rather than in callers) so that the original
+    // `inputs` array reference is preserved for WeakMap caching — callers
+    // like createWorkflowsBundle and createStepsBundle can share the same
+    // cache entry when they pass the same inputFiles array.
+    const resolvedWorkflowRuntime = await enhancedResolve(
+      outdir,
+      'workflow/runtime'
+    ).catch(() => undefined);
+    const entryPoints = resolvedWorkflowRuntime
+      ? [...inputs, resolvedWorkflowRuntime]
+      : inputs;
+
     const effectiveTsconfigPath =
       tsconfigPath ?? (await this.findTsConfigPath());
     const esbuildTsconfigOptions = await getEsbuildTsconfigOptions(
@@ -226,7 +243,7 @@ export abstract class BaseBuilder {
     try {
       await esbuild.build({
         treeShaking: true,
-        entryPoints: inputs,
+        entryPoints,
         plugins: [
           createDiscoverEntriesPlugin(state, this.transformProjectRoot),
         ],
@@ -414,29 +431,13 @@ export abstract class BaseBuilder {
       );
     });
 
-    // Resolve the SDK runtime entry point so that the discovery pass
-    // traces through it and discovers serde classes (like `Run`) that
-    // live inside SDK packages. Without this, files like `run.js` are
-    // only discovered when user code happens to import them.
-    const resolvedWorkflowRuntime = await enhancedResolve(
-      dirname(outfile),
-      'workflow/runtime'
-    ).catch(() => undefined);
-
-    // These need to handle watching for dev to scan for
-    // new entries and changes to existing ones.
-    // Pass inputFiles directly when no extra entries are needed to
-    // preserve the array reference for discoverEntries() WeakMap caching.
-    const discoveryInputs = resolvedWorkflowRuntime
-      ? [...inputFiles, resolvedWorkflowRuntime]
-      : inputFiles;
+    // Discovery of workflow/step/serde entries. The SDK runtime entry point
+    // (workflow/runtime) is resolved inside discoverEntries() itself so that
+    // callers can pass the original inputFiles reference and benefit from
+    // WeakMap caching across createWorkflowsBundle / createStepsBundle calls.
     const discovered =
       discoveredEntries ??
-      (await this.discoverEntries(
-        discoveryInputs,
-        dirname(outfile),
-        tsconfigPath
-      ));
+      (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
     const stepFiles = [...discovered.discoveredSteps].sort();
     const workflowFiles = [...discovered.discoveredWorkflows].sort();
     const serdeFiles = [...discovered.discoveredSerdeFiles].sort();
