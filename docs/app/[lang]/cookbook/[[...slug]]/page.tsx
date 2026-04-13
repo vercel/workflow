@@ -8,6 +8,7 @@ import {
   rewriteCookbookUrl,
   rewriteCookbookUrlsInText,
 } from '@/lib/geistdocs/cookbook-source';
+import { MobileDocsBar } from '@/components/geistdocs/mobile-docs-bar';
 import { AskAI } from '@/components/geistdocs/ask-ai';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
@@ -68,8 +69,10 @@ const Page = async ({ params }: PageProps<'/[lang]/cookbook/[[...slug]]'>) => {
           </div>
         ),
       }}
+      tableOfContentPopover={{ enabled: false }}
       toc={page.data.toc}
     >
+      <MobileDocsBar toc={page.data.toc} />
       <DocsTitle>{page.data.title}</DocsTitle>
       <DocsDescription>{page.data.description}</DocsDescription>
       <DocsBody>
