@@ -11,4 +11,4 @@ export { LogoFlagsSdk } from './logo-flags-sdk';
 export { LogoIconVercel } from './logo-icon-vercel';
 export { LogoStreamdown } from './logo-streamdown';
 export { LogoVercelOss } from './logo-vercel-oss';
-export { LogoWorkflowSdk } from './logo-workflow-sdk';
+export { LogoWorkflow } from './logo-workflow';

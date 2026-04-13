@@ -1,6 +1,6 @@
-import { LogoWorkflowSdk } from '@/components/geistcn-fallbacks/geistcn-assets/logos/logo-workflow-sdk';
+import { LogoWorkflow } from '@/components/geistcn-fallbacks/geistcn-assets/logos/logo-workflow';
 
-export const Logo = () => <LogoWorkflowSdk height={22} />;
+export const Logo = () => <LogoWorkflow height={15} />;
 
 export const github = {
   owner: 'vercel',
