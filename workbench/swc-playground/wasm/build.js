@@ -20,41 +20,56 @@ function commandExists(command) {
   }
 }
 
-function ensureRustup() {
-  if (commandExists('rustup')) return;
-
-  // rustup is not available — the system may have a non-rustup Rust install
-  // (e.g. Vercel build environment). Install rustup so we can manage targets.
-  if (process.env.CI) {
-    console.log('Installing Rust via rustup...');
-    if (process.platform === 'win32') {
-      runCommand(
-        'powershell -Command "iwr https://win.rustup.rs -OutFile rustup-init.exe; .\\rustup-init.exe -y --profile minimal; del rustup-init.exe"'
-      );
+function ensureRustToolchain() {
+  if (!commandExists('rustup')) {
+    // rustup is not available — install it
+    if (process.env.CI || process.env.VERCEL) {
+      console.log('Installing Rust via rustup...');
+      if (process.platform === 'win32') {
+        runCommand(
+          'powershell -Command "iwr https://win.rustup.rs -OutFile rustup-init.exe; .\\rustup-init.exe -y --profile minimal; del rustup-init.exe"'
+        );
+      } else {
+        runCommand(
+          'curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal'
+        );
+      }
+      console.log('Rust installed');
     } else {
-      runCommand(
-        'curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal'
+      console.error('Rust is required but not installed.');
+      console.error(
+        'Please visit https://rustup.rs and follow the installation instructions.'
       );
+      console.error(
+        'After installing, run "rustup target add wasm32-unknown-unknown"'
+      );
+      process.exit(1);
     }
-    // Add rustup's cargo to PATH so it takes precedence over any system Rust
-    const cargoPath = `${process.env.HOME}/.cargo/bin`;
-    process.env.PATH = `${cargoPath}:${process.env.PATH}`;
-    console.log('Rust installed and PATH updated');
-  } else {
-    console.error('Rust is required but not installed.');
-    console.error(
-      'Please visit https://rustup.rs and follow the installation instructions.'
-    );
-    console.error(
-      'After installing, run "rustup target add wasm32-unknown-unknown"'
-    );
-    process.exit(1);
+  }
+
+  // Ensure cargo bin dir is in PATH so that `cargo install`-ed binaries
+  // (like wasm-pack) are found. On Vercel, CARGO_HOME may differ from
+  // $HOME/.cargo.
+  const cargoHome = process.env.CARGO_HOME || `${process.env.HOME}/.cargo`;
+  const cargoBin = `${cargoHome}/bin`;
+  if (!process.env.PATH.includes(cargoBin)) {
+    process.env.PATH = `${cargoBin}:${process.env.PATH}`;
+    console.log(`Added ${cargoBin} to PATH`);
+  }
+
+  // Ensure a default toolchain is configured (Vercel build images may have
+  // rustup installed without a default toolchain).
+  try {
+    execSync('rustup default', { stdio: 'pipe', shell: true });
+  } catch {
+    console.log('No default Rust toolchain found, installing stable...');
+    runCommand('rustup default stable');
   }
 }
 
 console.log('Building swc-playground-wasm...');
 
-ensureRustup();
+ensureRustToolchain();
 
 // Check if wasm32-unknown-unknown target exists and install if needed
 console.log('Checking wasm32-unknown-unknown target...');
@@ -86,7 +101,7 @@ if (!commandExists('wasm-pack')) {
 // Build with wasm-pack targeting web (browser ESM)
 console.log('Running wasm-pack build...');
 const pkgDir = fileURLToPath(new URL('.', import.meta.url));
-const workspaceRoot = fileURLToPath(new URL('../..', import.meta.url));
+const workspaceRoot = fileURLToPath(new URL('../../..', import.meta.url));
 runCommand(`wasm-pack build --target web --out-dir pkg --release ${pkgDir}`, {
   cwd: workspaceRoot,
 });
