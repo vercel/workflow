@@ -11,6 +11,7 @@ import { RunAnywhere } from './components/run-anywhere';
 import { Templates } from './components/templates';
 import { TweetWall } from './components/tweet-wall';
 import { UseCases } from './components/use-cases-server';
+import { FeatureGridExtended } from './components/vercel-com-visuals/feature-grid';
 
 const title = 'Make any TypeScript Function Durable';
 const description =
@@ -44,11 +45,14 @@ const Home = () => (
       <div className="grid divide-y border-y sm:border-x">
         <Intro />
         <Implementation />
+        {/* Hidden for now — replaced by FeatureGridExtended visuals
         <div className="grid lg:grid-cols-2 divide-y md:divide-y-0 md:divide-x">
           <Observability />
           <Frameworks />
         </div>
         <Features />
+        */}
+        <FeatureGridExtended />
         <RunAnywhere />
         <UseCases />
         <Templates />
