@@ -49,7 +49,7 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
       case 'compatible':
         return world.e2e?.status === 'passing';
       case 'encrypted':
-        return world.features.includes('encryption');
+        return world.features?.includes('encryption');
       default:
         return true;
     }
