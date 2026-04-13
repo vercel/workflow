@@ -50,9 +50,32 @@
     "@workflow/swc-playground-wasm": "0.0.0"
   },
   "changesets": [
+    "allow-sync-step-functions",
     "ast-directive-validation",
+    "bright-pears-drum",
+    "builders-discovery-fixes",
+    "cool-cups-greet",
+    "esm-builders",
+    "features-encryption-metadata",
     "fix-builtin-externalize",
+    "fix-community-world-specversion",
+    "fix-health-check-correlation-id",
+    "fix-next-esm-compat",
+    "fix-provider-tool-identity",
+    "fix-stream-get-runid",
     "getter-step-support",
-    "old-towns-make"
+    "inline-step-registration",
+    "lazy-discovery-bare-specifiers",
+    "neat-runs-serialize",
+    "ninety-dancers-brush",
+    "old-towns-make",
+    "private-member-dce",
+    "remove-private-subpath",
+    "remove-sdk-serde-exclusion",
+    "slow-bottles-pull",
+    "step-run-required",
+    "sync-step-followup",
+    "tired-spiders-rhyme",
+    "workflow-function-serialization"
   ]
 }

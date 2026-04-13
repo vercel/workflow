@@ -29,16 +29,14 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Configure Git identity
-        run: |
-          git config user.name "${{ steps.app-token.outputs.app-slug }}[bot]"
-          git config user.email "${{ steps.app-token.outputs.app-slug }}[bot]@users.noreply.github.com"
-
       - name: Cherry-pick to stable
         id: cherry-pick
         run: |
+          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
+          git config user.name "$(git log -1 --format='%an' "$MERGE_SHA")"
+          git config user.email "$(git log -1 --format='%ae' "$MERGE_SHA")"
           git checkout stable
-          git cherry-pick ${{ github.event.pull_request.merge_commit_sha }} --no-edit
+          git cherry-pick "$MERGE_SHA" --no-edit
           echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git push origin stable
 

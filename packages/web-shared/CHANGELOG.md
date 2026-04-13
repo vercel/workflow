@@ -1,5 +1,15 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.1
+
+### Patch Changes
+
+- [#1685](https://github.com/vercel/workflow/pull/1685) [`38a642b`](https://github.com/vercel/workflow/commit/38a642b4bec9ba023fdf4ff0ef75a681cdeac7cf) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix event data loading for step_created events
+
+- Updated dependencies [[`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`ec517fa`](https://github.com/vercel/workflow/commit/ec517fa2254131f47cc878177c4d2aa163d584a5), [`a5c90ce`](https://github.com/vercel/workflow/commit/a5c90cefba01070aa4bc12a696334ee4c1061f92), [`ea97bd6`](https://github.com/vercel/workflow/commit/ea97bd600711f67649509b21c7af5808fb13479f), [`71d39d2`](https://github.com/vercel/workflow/commit/71d39d2f8d5739c22fb9d777e70d003b07d05987), [`873b4e2`](https://github.com/vercel/workflow/commit/873b4e2bb451e0a4d28e0a96671c25e1db4932db), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`9513a81`](https://github.com/vercel/workflow/commit/9513a8160cc13ac2b3923a0d9500cd80eb477109)]:
+  - @workflow/world@5.0.0-beta.1
+  - @workflow/core@5.0.0-beta.1
+
 ## 5.0.0-beta.0
 
 ### Major Changes

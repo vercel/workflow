@@ -1,0 +1,216 @@
+---
+title: Stop Workflow
+description: Gracefully cancel a running agent workflow using a hook signal.
+type: guide
+summary: Use a hook as a stop signal to break out of an agent loop and close the stream cleanly.
+---
+
+Use this pattern when you need to gracefully stop a running agent from the outside — for example, a "Stop" button in a chat UI or an admin cancellation endpoint. The workflow listens for a stop signal via a hook while the agent runs, and breaks out of the loop when the signal arrives.
+
+## Pattern
+
+Create a hook with a known token (the run ID). Listen for a stop signal in a non-blocking `.then()`. Check the flag before each agent turn and break if signaled. Close the stream cleanly on exit.
+
+### Simplified
+
+{/* @skip-typecheck - prepareStep stop pattern is conceptual */}
+```typescript lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { defineHook, getWritable, getWorkflowMetadata } from "workflow";
+import { z } from "zod";
+import type { ModelMessage, UIMessageChunk } from "ai";
+
+export const stopHook = defineHook({
+  schema: z.object({ reason: z.string().optional() }),
+});
+
+declare function processQuery(args: { query: string }): Promise<string>; // @setup
+
+export async function stoppableAgent(messages: ModelMessage[]) {
+  "use workflow";
+
+  const { workflowRunId } = getWorkflowMetadata();
+  let stopRequested = false;
+
+  const hook = stopHook.create({ token: `stop:${workflowRunId}` });
+  hook.then(() => { stopRequested = true; });
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    tools: {
+      processQuery: {
+        description: "Process a query",
+        inputSchema: z.object({ query: z.string() }),
+        execute: processQuery,
+      },
+    },
+  });
+
+  const result = await agent.stream({
+    messages,
+    writable: getWritable<UIMessageChunk>(),
+    prepareStep: () => {
+      if (stopRequested) return { stop: true };
+      return {};
+    },
+  });
+
+  return { messages: result.messages, stopped: stopRequested };
+}
+```
+
+### Full Implementation
+
+{/* @skip-typecheck - prepareStep stop pattern is conceptual */}
+```typescript lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { defineHook, getWritable, getWorkflowMetadata } from "workflow";
+import { z } from "zod";
+import type { ModelMessage, UIMessageChunk } from "ai";
+
+// Hook to signal the workflow to stop
+export const stopHook = defineHook({
+  schema: z.object({
+    reason: z.string().optional(),
+  }),
+});
+
+// Step: Search the web
+async function searchWeb({ query }: { query: string }) {
+  "use step";
+
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  return { results: [`Result for "${query}"`] };
+}
+
+// Step: Analyze data
+async function analyzeData({ data }: { data: string }) {
+  "use step";
+
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  return { analysis: `Analysis of: ${data}` };
+}
+
+// Step: Write the final close marker to the stream
+async function closeStream() {
+  "use step";
+
+  const writable = getWritable<UIMessageChunk>();
+  const writer = writable.getWriter();
+  try {
+    await writer.write({ type: "finish" } as UIMessageChunk);
+  } finally {
+    writer.releaseLock();
+  }
+  await writable.close();
+}
+
+export async function stoppableAgent(messages: ModelMessage[]) {
+  "use workflow";
+
+  const { workflowRunId } = getWorkflowMetadata();
+  const writable = getWritable<UIMessageChunk>();
+
+  // Listen for stop signal using a non-blocking hook
+  let stopRequested = false;
+  let stopReason: string | undefined;
+
+  const hook = stopHook.create({ token: `stop:${workflowRunId}` });
+  hook.then(({ reason }) => {
+    stopRequested = true;
+    stopReason = reason;
+  });
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    instructions: "You are a research assistant. Search and analyze data as needed.",
+    tools: {
+      searchWeb: {
+        description: "Search the web for information",
+        inputSchema: z.object({ query: z.string() }),
+        execute: searchWeb,
+      },
+      analyzeData: {
+        description: "Analyze a piece of data",
+        inputSchema: z.object({ data: z.string() }),
+        execute: analyzeData,
+      },
+    },
+    maxSteps: 20,
+  });
+
+  const result = await agent.stream({
+    messages,
+    writable,
+    preventClose: true,
+    prepareStep: ({ stepNumber }) => {
+      // Check stop flag before each agent step
+      if (stopRequested) {
+        return { stop: true };
+      }
+      return {};
+    },
+  });
+
+  // Clean up: close the stream
+  await closeStream();
+
+  return {
+    messages: result.messages,
+    stopped: stopRequested,
+    stopReason,
+    stepsCompleted: result.steps.length,
+  };
+}
+```
+
+### API Route to Trigger Stop
+
+```typescript lineNumbers
+import { stopHook } from "@/workflows/stoppable-agent";
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ runId: string }> }
+) {
+  const { runId } = await params;
+  const { reason } = await request.json();
+
+  await stopHook.resume(`stop:${runId}`, {
+    reason: reason || "User requested stop",
+  });
+
+  return Response.json({ success: true });
+}
+```
+
+### Client Stop Button
+
+```tsx lineNumbers
+"use client";
+
+export function StopButton({ runId }: { runId: string }) {
+  const handleStop = async () => {
+    await fetch(`/api/chat/${runId}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "User clicked stop" }),
+    });
+  };
+
+  return (
+    <button type="button" onClick={handleStop}>
+      Stop Agent
+    </button>
+  );
+}
+```
+
+## Key APIs
+
+- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) — declares the orchestrator function
+- [`"use step"`](/docs/api-reference/workflow/use-step) — declares step functions with retries
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) — type-safe hook for the stop signal
+- [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata) — access the run ID for deterministic hook tokens
+- [`getWritable()`](/docs/api-reference/workflow/get-writable) — stream output and close cleanly on stop
+- [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — `prepareStep` callback to check stop flag before each step

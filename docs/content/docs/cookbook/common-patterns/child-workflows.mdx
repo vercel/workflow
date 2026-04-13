@@ -1,0 +1,372 @@
+---
+title: Child Workflows
+description: Spawn child workflows from a parent and poll their progress for batch processing, report generation, and other multi-workflow orchestration scenarios.
+type: guide
+summary: Orchestrate independent child workflows from a parent workflow using start(), sleep(), and getRun() to fan out work with isolated failure boundaries.
+---
+
+Use child workflows when a single workflow needs to orchestrate many independent units of work. Each child runs as its own workflow with a separate event log, retry boundary, and failure scope -- if one child fails, it doesn't take down the parent or siblings.
+
+## When to use child workflows
+
+Child workflows are the right choice when:
+
+- **Work units are independent.** Each child can run without knowing about the others (e.g., processing individual documents, generating separate reports).
+- **You need isolated failure boundaries.** A failing child should not abort unrelated work. The parent decides how to handle failures.
+- **You want massive fan-out.** Spawning 50 or 500 children is practical because each runs on its own infrastructure.
+- **You need per-item observability.** Each child workflow has its own run ID, status, and event log for monitoring.
+
+For simpler cases where steps share a single event log, use [direct await composition](/docs/foundations/common-patterns#direct-await-flattening) instead.
+
+## Basic pattern: spawn and poll
+
+The core pattern has three parts:
+
+1. A **step** that calls `start()` to spawn a child workflow and returns the run ID
+2. A **polling loop** in the parent workflow that checks child status with `getRun()`
+3. A **step** that retrieves the child's return value once it completes
+
+```typescript
+import { sleep } from "workflow";
+import { getRun, start } from "workflow/api";
+
+declare function pollUntilComplete(runIds: string[]): Promise<void>; // @setup
+declare function collectResults(runIds: string[]): Promise<Array<{ documentId: string; summary: string }>>; // @setup
+
+// Child workflow -- processes a single document
+export async function processDocument(documentId: string) {
+  "use workflow";
+
+  const content = await fetchDocument(documentId);
+  const analysis = await analyzeContent(content);
+  const summary = await generateSummary(analysis);
+
+  return { documentId, summary };
+}
+
+async function fetchDocument(documentId: string): Promise<string> {
+  "use step";
+  const res = await fetch(`https://docs.example.com/api/${documentId}`);
+  return res.text();
+}
+
+async function analyzeContent(content: string): Promise<string> {
+  "use step";
+  // Call analysis API
+  return `analysis of ${content.length} chars`;
+}
+
+async function generateSummary(analysis: string): Promise<string> {
+  "use step";
+  // Generate summary from analysis
+  return `Summary: ${analysis}`;
+}
+
+// Parent workflow -- orchestrates document processing
+export async function processDocumentBatch(documentIds: string[]) {
+  "use workflow";
+
+  // Spawn a child workflow for each document
+  const runIds = await spawnChildren(documentIds);
+
+  // Poll until all children complete
+  await pollUntilComplete(runIds);
+
+  // Collect results
+  const results = await collectResults(runIds);
+
+  return { processed: results.length, results };
+}
+
+async function spawnChildren(
+  documentIds: string[]
+): Promise<string[]> {
+  "use step"; // [!code highlight]
+
+  const runIds: string[] = [];
+  for (const docId of documentIds) {
+    const run = await start(processDocument, [docId]); // [!code highlight]
+    runIds.push(run.runId);
+  }
+  return runIds;
+}
+```
+
+### Polling loop
+
+The parent workflow polls child statuses in a loop, sleeping between checks. This is durable -- if the parent replays, the sleep and status checks replay from the event log.
+
+```typescript
+import { sleep } from "workflow";
+import { getRun } from "workflow/api";
+
+const POLL_INTERVAL = "30s";
+const MAX_POLL_ITERATIONS = 120; // 60 minutes at 30s intervals
+
+async function pollUntilComplete(runIds: string[]): Promise<void> {
+  let iteration = 0;
+
+  while (iteration < MAX_POLL_ITERATIONS) {
+    const status = await checkStatuses(runIds); // [!code highlight]
+
+    if (status.running === 0) {
+      if (status.failed > 0) {
+        throw new Error(
+          `${status.failed} of ${runIds.length} children failed`
+        );
+      }
+      return; // All completed successfully
+    }
+
+    iteration += 1;
+    await sleep(POLL_INTERVAL); // [!code highlight]
+  }
+
+  throw new Error("Timed out waiting for children to complete");
+}
+
+async function checkStatuses(
+  runIds: string[]
+): Promise<{ running: number; completed: number; failed: number }> {
+  "use step"; // [!code highlight]
+
+  let running = 0;
+  let completed = 0;
+  let failed = 0;
+
+  for (const runId of runIds) {
+    const run = getRun(runId); // [!code highlight]
+    const status = await run.status; // [!code highlight]
+
+    if (status === "completed") completed += 1;
+    else if (status === "failed" || status === "cancelled") failed += 1;
+    else running += 1; // queued, starting, running
+  }
+
+  return { running, completed, failed };
+}
+
+async function collectResults(
+  runIds: string[]
+): Promise<Array<{ documentId: string; summary: string }>> {
+  "use step";
+
+  const results = [];
+  for (const runId of runIds) {
+    const run = getRun(runId);
+    const value = await run.returnValue;
+    results.push(value as { documentId: string; summary: string });
+  }
+  return results;
+}
+```
+
+## Fan-out pattern: chunked spawning
+
+When spawning hundreds of children, batch the `start()` calls to avoid overwhelming the system. Use multiple spawn steps, each launching a chunk of children.
+
+```typescript
+import { start } from "workflow/api";
+
+declare function pollUntilComplete(runIds: string[]): Promise<void>; // @setup
+
+const CHUNK_SIZE = 10;
+
+export async function largeReportBatch(reportConfigs: Array<{ id: string; query: string }>) {
+  "use workflow";
+
+  // Spawn children in chunks
+  const allRunIds: string[] = [];
+  for (let i = 0; i < reportConfigs.length; i += CHUNK_SIZE) {
+    const chunk = reportConfigs.slice(i, i + CHUNK_SIZE);
+    const runIds = await spawnReportChunk(chunk); // [!code highlight]
+    allRunIds.push(...runIds);
+  }
+
+  // Poll until all complete
+  await pollUntilComplete(allRunIds);
+
+  const results = await collectReportResults(allRunIds);
+  return { total: results.length, results };
+}
+
+async function spawnReportChunk(
+  configs: Array<{ id: string; query: string }>
+): Promise<string[]> {
+  "use step";
+
+  const runIds: string[] = [];
+  for (const config of configs) {
+    const run = await start(generateReport, [config.id, config.query]);
+    runIds.push(run.runId);
+  }
+  return runIds;
+}
+
+async function generateReport(reportId: string, query: string) {
+  "use workflow";
+
+  const data = await queryDatabase(reportId, query);
+  const formatted = await formatReport(reportId, data);
+  return { reportId, formatted };
+}
+
+declare function queryDatabase(reportId: string, query: string): Promise<string>; // @setup
+declare function formatReport(reportId: string, data: string): Promise<string>; // @setup
+
+declare function collectReportResults(
+  runIds: string[]
+): Promise<Array<{ reportId: string; formatted: string }>>; // @setup
+```
+
+## Error handling
+
+### Tolerating partial failures
+
+Not every batch requires 100% success. Use `allowFailures` logic to let the parent continue when some children fail, while still surfacing the failures.
+
+```typescript
+import { sleep } from "workflow";
+import { getRun } from "workflow/api";
+
+const POLL_INTERVAL = "30s";
+const MAX_POLL_ITERATIONS = 120;
+
+async function pollWithPartialFailures(
+  runIds: string[],
+  maxFailureRate: number
+): Promise<{ completed: string[]; failed: string[] }> {
+  let iteration = 0;
+  const completedIds: string[] = [];
+  const failedIds: string[] = [];
+
+  while (iteration < MAX_POLL_ITERATIONS) {
+    const status = await checkDetailedStatuses(runIds);
+
+    completedIds.length = 0;
+    failedIds.length = 0;
+
+    for (const entry of status) {
+      if (entry.status === "completed") completedIds.push(entry.runId);
+      else if (entry.status === "failed" || entry.status === "cancelled")
+        failedIds.push(entry.runId);
+    }
+
+    const active = runIds.length - completedIds.length - failedIds.length;
+
+    // Check if failure rate exceeds threshold
+    const failureRate = failedIds.length / Math.max(1, runIds.length); // [!code highlight]
+    if (failureRate > maxFailureRate) { // [!code highlight]
+      throw new Error( // [!code highlight]
+        `Failure rate ${(failureRate * 100).toFixed(1)}% exceeds ` + // [!code highlight]
+        `threshold of ${(maxFailureRate * 100).toFixed(1)}%` // [!code highlight]
+      ); // [!code highlight]
+    } // [!code highlight]
+
+    if (active === 0) {
+      return { completed: completedIds, failed: failedIds };
+    }
+
+    iteration += 1;
+    await sleep(POLL_INTERVAL);
+  }
+
+  throw new Error("Timed out waiting for children");
+}
+
+async function checkDetailedStatuses(
+  runIds: string[]
+): Promise<Array<{ runId: string; status: string }>> {
+  "use step";
+
+  const statuses = [];
+  for (const runId of runIds) {
+    const run = getRun(runId);
+    const status = await run.status;
+    statuses.push({ runId, status });
+  }
+  return statuses;
+}
+```
+
+### Retrying failed children
+
+When a child fails, the parent can spawn a replacement and continue polling. Track restart counts to prevent infinite retry loops.
+
+```typescript
+import { sleep } from "workflow";
+
+declare function checkDetailedStatuses(runIds: string[]): Promise<Array<{ runId: string; status: string }>>; // @setup
+
+const POLL_INTERVAL = "30s";
+const MAX_POLL_ITERATIONS = 120;
+
+async function pollWithRetries(
+  initialRunIds: string[],
+  maxRestartsPerChild: number,
+  spawnReplacement: (index: number) => Promise<string>
+): Promise<void> {
+  const activeRuns = new Map<number, string>();
+  const restartCounts = new Map<number, number>();
+
+  initialRunIds.forEach((runId, index) => activeRuns.set(index, runId));
+
+  let iteration = 0;
+
+  while (iteration < MAX_POLL_ITERATIONS) {
+    const statuses = await checkDetailedStatuses(
+      Array.from(activeRuns.values())
+    );
+    const statusByRunId = new Map(
+      statuses.map((s) => [s.runId, s.status])
+    );
+
+    for (const [index, runId] of activeRuns.entries()) {
+      const status = statusByRunId.get(runId) ?? "running";
+
+      if (status === "completed") {
+        activeRuns.delete(index);
+        continue;
+      }
+
+      if (status === "failed" || status === "cancelled") {
+        const restarts = (restartCounts.get(index) ?? 0) + 1; // [!code highlight]
+        restartCounts.set(index, restarts); // [!code highlight]
+
+        if (restarts > maxRestartsPerChild) { // [!code highlight]
+          throw new Error( // [!code highlight]
+            `Child ${index} exceeded restart limit (${maxRestartsPerChild})` // [!code highlight]
+          ); // [!code highlight]
+        } // [!code highlight]
+
+        const newRunId = await spawnReplacement(index); // [!code highlight]
+        activeRuns.set(index, newRunId); // [!code highlight]
+      }
+    }
+
+    if (activeRuns.size === 0) return;
+
+    iteration += 1;
+    await sleep(POLL_INTERVAL);
+  }
+
+  throw new Error("Timed out waiting for children");
+}
+```
+
+## Tips
+
+- **`start()` must be called from a step**, not directly from a workflow function. Wrap it in a `"use step"` function.
+- **`getRun()` must also be called from a step.** The polling loop lives in the workflow, but the actual status check is a step.
+- **Set a max iteration count on polling loops** to prevent runaway workflows. Calculate the count from your expected max duration and poll interval.
+- **Use chunked spawning for large batches.** Spawning 500 children in a single step can time out. Break it into chunks of 10-50.
+- **Each child has its own retry semantics.** Steps inside child workflows retry independently. The parent only sees the child's final status.
+- **Use `deploymentId: "latest"`** if children should run on the most recent deployment. See the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for compatibility considerations.
+
+## Key APIs
+
+- [`start()`](/docs/api-reference/workflow-api/start) -- spawn a new workflow run and get its run ID
+- [`getRun()`](/docs/api-reference/workflow-api/get-run) -- retrieve a workflow run's status and return value
+- [`sleep()`](/docs/api-reference/workflow/sleep) -- durably pause between polling iterations
+- [`"use workflow"`](/docs/foundations/workflows-and-steps) -- marks the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps) -- marks functions with full Node.js access
