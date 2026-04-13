@@ -38,6 +38,10 @@ import {
 } from './workflow-traces/trace-colors';
 import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
 import { NewTraceViewer } from './trace-viewer-new';
+import {
+  SidebarDataProvider,
+  type SidebarDataContextValue,
+} from './sidebar/sidebar-data-context';
 
 /**
  * While a run is live, continuously grow root.duration and rescale so the
@@ -857,6 +861,39 @@ export const WorkflowTraceViewer = ({
     [onSpanSelect]
   );
 
+  const sidebarData = useMemo<SidebarDataContextValue>(
+    () => ({
+      run,
+      events,
+      spanDetailData: spanDetailData ?? null,
+      spanDetailError,
+      spanDetailLoading,
+      onSpanSelect: handleSpanSelect,
+      onStreamClick,
+      onWakeUpSleep,
+      onLoadEventData,
+      onResolveHook,
+      encryptionKey,
+      onDecrypt,
+      isDecrypting,
+    }),
+    [
+      run,
+      events,
+      spanDetailData,
+      spanDetailError,
+      spanDetailLoading,
+      handleSpanSelect,
+      onStreamClick,
+      onWakeUpSleep,
+      onLoadEventData,
+      onResolveHook,
+      encryptionKey,
+      onDecrypt,
+      isDecrypting,
+    ]
+  );
+
   const handleSelectionChange = useCallback(
     (info: SelectedSpanInfo | null) => {
       if (info) {
@@ -967,7 +1004,9 @@ export const WorkflowTraceViewer = ({
 
   return (
     <div className="relative w-full h-full flex flex-col">
-      <NewTraceViewer run={run} events={events} />
+      <SidebarDataProvider value={sidebarData}>
+        <NewTraceViewer run={run} events={events} />
+      </SidebarDataProvider>
       {/* Timeline (takes remaining space) */}
       <div className="flex-1 min-w-0 relative">
         <TraceViewerContextProvider
