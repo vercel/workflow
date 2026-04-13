@@ -775,6 +775,7 @@ export const WorkflowTraceViewer = ({
   encryptionKey,
   onDecrypt,
   isDecrypting = false,
+  hasEncryptedData = false,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -815,6 +816,8 @@ export const WorkflowTraceViewer = ({
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched */
   isDecrypting?: boolean;
+  /** Run-level hint: the run contains encrypted data (from probe). */
+  hasEncryptedData?: boolean;
 }) => {
   const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
@@ -1151,6 +1154,7 @@ export const WorkflowTraceViewer = ({
                 onDecrypt={onDecrypt}
                 isDecrypting={isDecrypting}
                 selectedSpan={selectedSpan}
+                hasEncryptedData={hasEncryptedData}
               />
             </ErrorBoundary>
           </div>

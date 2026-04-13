@@ -75,6 +75,57 @@ export const StreamClickContext = createContext<
   ((streamId: string) => void) | undefined
 >(undefined);
 
+/**
+ * Context for passing a decrypt handler down to DataInspector instances.
+ * When provided, encrypted markers become clickable buttons that trigger decryption.
+ */
+export const DecryptClickContext = createContext<(() => void) | undefined>(
+  undefined
+);
+
+function EncryptedInlineLabel() {
+  const onDecrypt = useContext(DecryptClickContext);
+  if (onDecrypt) {
+    return (
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] cursor-pointer"
+        style={{
+          backgroundColor: 'var(--ds-gray-100)',
+          color: 'var(--ds-gray-700)',
+          border: '1px solid var(--ds-gray-400)',
+          fontStyle: 'italic',
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          onDecrypt();
+        }}
+        title="Click to decrypt"
+      >
+        <Lock
+          className="h-3 w-3"
+          style={{ display: 'inline', flexShrink: 0 }}
+        />
+        <span>Decrypt</span>
+      </button>
+    );
+  }
+  return (
+    <span style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
+      <Lock
+        className="h-3 w-3"
+        style={{
+          display: 'inline',
+          verticalAlign: 'middle',
+          marginRight: '3px',
+          marginTop: '-1px',
+        }}
+      />
+      Encrypted
+    </span>
+  );
+}
+
 function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
   const onStreamClick = useContext(StreamClickContext);
   return (
@@ -132,26 +183,13 @@ function NodeRenderer({
 }) {
   const extendedTheme = useContext(ExtendedThemeContext);
 
-  // Encrypted marker → flat label with Lock icon, non-expandable
+  // Encrypted marker → flat label with Lock icon, clickable when onDecrypt is available
   if (
     data !== null &&
     typeof data === 'object' &&
     data.constructor?.name === ENCRYPTED_DISPLAY_NAME
   ) {
-    const label = (
-      <span style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
-        <Lock
-          className="h-3 w-3"
-          style={{
-            display: 'inline',
-            verticalAlign: 'middle',
-            marginRight: '3px',
-            marginTop: '-1px',
-          }}
-        />
-        Encrypted
-      </span>
-    );
+    const label = <EncryptedInlineLabel />;
     if (depth === 0) {
       return label;
     }
@@ -234,6 +272,8 @@ export interface DataInspectorProps {
   name?: string;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Callback when an encrypted marker is clicked (triggers decryption) */
+  onDecrypt?: () => void;
 }
 
 export function DataInspector({
@@ -241,6 +281,7 @@ export function DataInspector({
   expandLevel = 2,
   name,
   onStreamClick,
+  onDecrypt,
 }: DataInspectorProps) {
   const stableData = useStableInspectorData(data);
   const [initialExpandLevel, setInitialExpandLevel] = useState(expandLevel);
@@ -269,16 +310,25 @@ export function DataInspector({
     </ExtendedThemeContext.Provider>
   );
 
-  // Wrap in StreamClickContext if a handler is provided
+  let wrapped = content;
+
   if (onStreamClick) {
-    return (
+    wrapped = (
       <StreamClickContext.Provider value={onStreamClick}>
-        {content}
+        {wrapped}
       </StreamClickContext.Provider>
     );
   }
 
-  return content;
+  if (onDecrypt) {
+    wrapped = (
+      <DecryptClickContext.Provider value={onDecrypt}>
+        {wrapped}
+      </DecryptClickContext.Provider>
+    );
+  }
+
+  return wrapped;
 }
 
 function useStableInspectorData<T>(next: T): T {

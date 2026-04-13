@@ -1,4 +1,4 @@
-import { hydrateResourceIO } from '@workflow/web-shared';
+import { hasEncryptedFields, hydrateResourceIO } from '@workflow/web-shared';
 import type { Event, WorkflowRun } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { unwrapServerActionResult } from '~/lib/client/workflow-errors';
@@ -31,6 +31,7 @@ export function useWorkflowTraceViewerData(
   const [eventsCursor, setEventsCursor] = useState<string | undefined>();
   const [eventsHasMore, setEventsHasMore] = useState(false);
   const [isLoadingMoreTraceData, setIsLoadingMoreTraceData] = useState(false);
+  const [hasEncryptedData, setHasEncryptedData] = useState(false);
 
   const isFetchingRef = useRef(false);
   const [initialLoadCompleted, setInitialLoadCompleted] = useState(false);
@@ -83,6 +84,28 @@ export function useWorkflowTraceViewerData(
 
     if (!runResult.error && eventsResult.error) {
       setError(eventsResult.error);
+    }
+
+    // Probe: fetch a single event with full data to detect encryption.
+    // This runs in the background after the initial load is complete so
+    // the UI can show the decrypt button before any span is selected.
+    if (!runResult.error) {
+      unwrapServerActionResult(
+        fetchEvents(env, runId, {
+          sortOrder: 'asc',
+          limit: 1,
+          withData: true,
+        })
+      ).then((probeResult) => {
+        if (
+          !probeResult.error &&
+          probeResult.result.data.some((e) =>
+            hasEncryptedFields(hydrateResourceIO(e))
+          )
+        ) {
+          setHasEncryptedData(true);
+        }
+      });
     }
   }, [env, runId]);
 
@@ -220,5 +243,6 @@ export function useWorkflowTraceViewerData(
     loadMoreTraceData,
     hasMoreTraceData: eventsHasMore,
     isLoadingMoreTraceData,
+    hasEncryptedData,
   };
 }

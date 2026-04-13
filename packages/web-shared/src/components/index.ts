@@ -21,7 +21,11 @@ export type {
 } from './sidebar/entity-detail-panel';
 export { type StreamChunk, StreamViewer } from './stream-viewer';
 export type { Span, SpanEvent } from './trace-viewer/types';
-export { DataInspector, type DataInspectorProps } from './ui/data-inspector';
+export {
+  DataInspector,
+  type DataInspectorProps,
+  DecryptClickContext,
+} from './ui/data-inspector';
 export { DecryptButton } from './ui/decrypt-button';
 export { LoadMoreButton } from './ui/load-more-button';
 export { MenuDropdown, type MenuDropdownOption } from './ui/menu-dropdown';

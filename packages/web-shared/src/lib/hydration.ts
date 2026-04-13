@@ -359,3 +359,29 @@ export async function hydrateResourceIOWithKey<T>(
 
   return result as T;
 }
+
+/**
+ * Check whether a hydrated resource (event, step, run, etc.) contains any
+ * encrypted display markers. Inspects the standard top-level fields
+ * (`input`, `output`, `error`, `metadata`) as well as the event-type-specific
+ * `eventData` ref fields.
+ */
+export function hasEncryptedFields(resource: unknown): boolean {
+  if (!resource || typeof resource !== 'object') return false;
+  const r = resource as Record<string, unknown>;
+
+  for (const key of ['input', 'output', 'metadata', 'error']) {
+    if (isEncryptedMarker(r[key])) return true;
+  }
+
+  if (r.eventData && typeof r.eventData === 'object') {
+    const eventType = typeof r.eventType === 'string' ? r.eventType : '';
+    const refKeys = EVENT_DATA_REF_FIELDS[eventType] ?? [];
+    const ed = r.eventData as Record<string, unknown>;
+    for (const key of refKeys) {
+      if (key in ed && isEncryptedMarker(ed[key])) return true;
+    }
+  }
+
+  return false;
+}
