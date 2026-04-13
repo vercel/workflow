@@ -352,8 +352,10 @@ async function fetchReleasesHistory(
     return [];
   }
 
-  // Use the snapshot's existing timestamp instead of making an extra API call
-  // per tag — eliminates up to MAX_ITEMS serial requests.
+  // Use the snapshot's existing timestamp (data.lastUpdated = when CI ran)
+  // instead of fetching commitData.commit.committer.date (when tag was committed)
+  // per tag. These can differ by minutes but are functionally equivalent for
+  // chart display. This eliminates up to MAX_ITEMS serial API requests.
   const historyPoints: BenchmarkHistoryPoint[] = [];
 
   for (const tag of workflowTags) {
