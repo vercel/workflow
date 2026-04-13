@@ -3,6 +3,12 @@
 @import "fumadocs-ui/css/preset.css";
 @import "tw-animate-css";
 
+@keyframes skeleton-shimmer {
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
 @source "../../node_modules/streamdown/dist/*.js";
 
 @custom-variant dark (&:is(.dark *));
@@ -257,6 +263,9 @@
   --ds-shadow-border-small:
     var(--ds-shadow-border-base), var(--ds-shadow-small),
     var(--ds-shadow-background-border);
+  --ds-shadow-tooltip:
+    var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), var(--ds-shadow-background-border);
 
   --radius: 0.625rem;
   --background: oklch(1 0 0);
@@ -396,6 +405,9 @@
   --ds-shadow-border-small:
     var(--ds-shadow-border-base), var(--ds-shadow-small),
     var(--ds-shadow-background-border);
+  --ds-shadow-tooltip:
+    var(--ds-shadow-border-base), 0px 1px 1px rgba(0, 0, 0, 0.02),
+    0px 4px 8px rgba(0, 0, 0, 0.04), var(--ds-shadow-background-border);
 
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);

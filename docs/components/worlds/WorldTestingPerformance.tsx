@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 import {
   AlertCircle,
@@ -8,9 +8,9 @@ import {
   Timer,
   TrendingUp,
   XCircle,
-} from 'lucide-react';
-import { useState } from 'react';
-import { Badge } from '@/components/ui/badge';
+} from "lucide-react";
+import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import {
   Table,
   TableBody,
@@ -18,15 +18,15 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@/components/ui/table';
+} from "@/components/ui/table";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { cn } from '@/lib/utils';
-import { BenchmarkHistoryChart } from './BenchmarkHistoryChart';
-import { formatTime, type World } from './types';
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
+import { BenchmarkHistoryChart } from "./BenchmarkHistoryChart";
+import { formatTime, type World } from "./types";
 
 const TimeColumnHeader = () => (
   <div className="flex items-center justify-end gap-1">
@@ -71,7 +71,7 @@ const SlurpColumnHeader = () => (
 );
 
 // The main benchmark used for the PERF metric
-const PERF_BENCHMARK_NAME = 'workflow with 10 sequential steps';
+const PERF_BENCHMARK_NAME = "workflow with 10 sequential steps";
 
 interface WorldTestingPerformanceProps {
   worldId: string;
@@ -85,24 +85,24 @@ interface WorldTestingPerformanceProps {
 
 const statusConfig = {
   passing: {
-    label: 'Passing',
+    label: "Passing",
     icon: CheckCircle2,
-    className: 'bg-green-900 dark:bg-green-600 text-white',
+    className: "bg-green-900 dark:bg-green-600 text-white",
   },
   partial: {
-    label: 'Partial',
+    label: "Partial",
     icon: AlertCircle,
-    className: 'bg-amber-700 text-white',
+    className: "bg-amber-700 text-white",
   },
   failing: {
-    label: 'Failing',
+    label: "Failing",
     icon: XCircle,
-    className: 'bg-red-900 dark:bg-red-800 text-white',
+    className: "bg-red-900 dark:bg-red-800 text-white",
   },
   pending: {
-    label: 'Pending',
+    label: "Pending",
     icon: Clock,
-    className: 'bg-gray-300 text-gray-1000',
+    className: "bg-gray-300 text-gray-1000",
   },
 };
 
@@ -143,7 +143,7 @@ export function WorldTestingPerformance({
   const displayProgress =
     testsRan > 0 ? Math.round((scoringPassed / testsRan) * 100) : 0;
 
-  const status = e2e?.status ?? 'pending';
+  const status = e2e?.status ?? "pending";
   const config = statusConfig[status];
   const StatusIcon = config.icon;
 
@@ -160,7 +160,7 @@ export function WorldTestingPerformance({
   // Check if we have workflow min/max data (for showing range columns)
   const hasWorkflowRange = allMetrics.some(
     ([, metric]) =>
-      metric.workflowMin !== undefined && metric.workflowMax !== undefined
+      metric.workflowMin !== undefined && metric.workflowMax !== undefined,
   );
 
   return (
@@ -187,11 +187,11 @@ export function WorldTestingPerformance({
               {/* Disclaimer about scoring methodology */}
               <p className="text-sm text-muted-foreground">
                 {hasFrameworkData
-                  ? 'Spec compliance is tested against Next.js (Turbopack) built in production mode and started with `next start`.'
-                  : 'E2E test pass rate across all tests run for this world.'}
+                  ? "Spec compliance is tested against Next.js (Turbopack) built in production mode and started with `next start`."
+                  : "E2E test pass rate across all tests run for this world."}
                 {meta.commit && (
                   <>
-                    {' '}
+                    {" "}
                     <a
                       href={`https://github.com/vercel/workflow/commit/${meta.commit}/checks`}
                       target="_blank"
@@ -241,7 +241,7 @@ export function WorldTestingPerformance({
                   </summary>
                   <div className="mt-3 grid gap-4 sm:grid-cols-4">
                     <div className="p-3 rounded-lg border bg-card">
-                      <div className="text-xl font-semibold text-green-900">
+                      <div className="text-xl font-semibold text-green-900 dark:text-green-600 font-mono">
                         {e2e.passed}
                       </div>
                       <div className="text-muted-foreground text-xs">
@@ -249,7 +249,7 @@ export function WorldTestingPerformance({
                       </div>
                     </div>
                     <div className="p-3 rounded-lg border bg-card">
-                      <div className="text-xl font-semibold text-red-900">
+                      <div className="text-xl font-semibold text-red-900 dark:text-red-800 font-mono">
                         {e2e.failed}
                       </div>
                       <div className="text-muted-foreground text-xs">
@@ -257,7 +257,7 @@ export function WorldTestingPerformance({
                       </div>
                     </div>
                     <div className="p-3 rounded-lg border bg-card">
-                      <div className="text-xl font-semibold text-muted-foreground">
+                      <div className="text-xl font-semibold font-mono">
                         {e2e.skipped}
                       </div>
                       <div className="text-muted-foreground text-xs">
@@ -265,7 +265,9 @@ export function WorldTestingPerformance({
                       </div>
                     </div>
                     <div className="p-3 rounded-lg border bg-card">
-                      <div className="text-xl font-semibold">{e2e.total}</div>
+                      <div className="text-xl font-semibold font-mono">
+                        {e2e.total}
+                      </div>
                       <div className="text-muted-foreground text-xs">Total</div>
                     </div>
                   </div>
@@ -315,8 +317,8 @@ export function WorldTestingPerformance({
                         <TableRow
                           key={name}
                           className={cn(
-                            'cursor-pointer hover:bg-muted/50 transition-colors',
-                            isPerfBenchmark && 'bg-muted/30'
+                            "cursor-pointer hover:bg-muted/50 transition-colors",
+                            isPerfBenchmark && "bg-muted/30",
                           )}
                           onClick={() => setSelectedMetric(name)}
                         >
@@ -343,24 +345,24 @@ export function WorldTestingPerformance({
                           <TableCell className="text-right font-mono">
                             {metric.workflowTime !== undefined
                               ? formatTime(metric.workflowTime)
-                              : '—'}
+                              : "—"}
                           </TableCell>
                           {hasWorkflowRange && (
                             <>
                               <TableCell className="text-right font-mono text-muted-foreground">
                                 {metric.workflowMin !== undefined
                                   ? formatTime(metric.workflowMin)
-                                  : '—'}
+                                  : "—"}
                               </TableCell>
                               <TableCell className="text-right font-mono text-muted-foreground">
                                 {metric.workflowMax !== undefined
                                   ? formatTime(metric.workflowMax)
-                                  : '—'}
+                                  : "—"}
                               </TableCell>
                             </>
                           )}
                           <TableCell className="text-right text-muted-foreground">
-                            {metric.samples || '—'}
+                            {metric.samples || "—"}
                           </TableCell>
                           <TableCell>
                             <TrendingUp className="h-4 w-4 text-muted-foreground" />
@@ -412,30 +414,30 @@ export function WorldTestingPerformance({
                           <TableCell className="text-right font-mono">
                             {metric.workflowTime !== undefined
                               ? formatTime(metric.workflowTime)
-                              : '—'}
+                              : "—"}
                           </TableCell>
                           <TableCell className="text-right font-mono text-green-900">
-                            {metric.ttfb ? formatTime(metric.ttfb) : '—'}
+                            {metric.ttfb ? formatTime(metric.ttfb) : "—"}
                           </TableCell>
                           <TableCell className="text-right font-mono text-purple-900">
-                            {metric.slurp ? formatTime(metric.slurp) : '—'}
+                            {metric.slurp ? formatTime(metric.slurp) : "—"}
                           </TableCell>
                           {hasWorkflowRange && (
                             <>
                               <TableCell className="text-right font-mono text-muted-foreground">
                                 {metric.workflowMin !== undefined
                                   ? formatTime(metric.workflowMin)
-                                  : '—'}
+                                  : "—"}
                               </TableCell>
                               <TableCell className="text-right font-mono text-muted-foreground">
                                 {metric.workflowMax !== undefined
                                   ? formatTime(metric.workflowMax)
-                                  : '—'}
+                                  : "—"}
                               </TableCell>
                             </>
                           )}
                           <TableCell className="text-right text-muted-foreground">
-                            {metric.samples || '—'}
+                            {metric.samples || "—"}
                           </TableCell>
                           <TableCell>
                             <TrendingUp className="h-4 w-4 text-muted-foreground" />
@@ -449,7 +451,7 @@ export function WorldTestingPerformance({
 
               <BenchmarkHistoryChart
                 worldId={worldId}
-                metricName={selectedMetric ?? ''}
+                metricName={selectedMetric ?? ""}
                 open={selectedMetric !== null}
                 onOpenChange={(open) => !open && setSelectedMetric(null)}
               />
@@ -467,8 +469,8 @@ export function WorldTestingPerformance({
             Last updated: {new Date(meta.lastUpdated).toLocaleString()}
             {meta.commit && (
               <>
-                {' · '}
-                Commit:{' '}
+                {" · "}
+                Commit:{" "}
                 <a
                   href={`https://github.com/vercel/workflow/commit/${meta.commit}`}
                   target="_blank"
