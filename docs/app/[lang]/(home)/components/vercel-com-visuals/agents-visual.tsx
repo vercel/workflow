@@ -96,6 +96,7 @@ function AnimatedLine({
   shouldReduceMotion,
 }: AnimatedLineProps): JSX.Element {
   const width = useMotionValue(0);
+  const widthPct = useTransform(width, (v) => `${v}%`);
   const opacity = useMotionValue(1);
   const [hideGradient, setHideGradient] = useState(false);
   const [gradientColor, setGradientColor] = useState<'red' | 'green'>('green');
@@ -164,7 +165,7 @@ function AnimatedLine({
       <DashedLine />
       <motion.div
         style={{
-          width: useTransform(width, (v) => `${v}%`),
+          width: widthPct,
           opacity: opacity,
         }}
         className="absolute top-0 left-0 overflow-hidden"

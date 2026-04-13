@@ -49,6 +49,7 @@ export function AnimatedBar({
   const shouldReduceMotion = shouldReduceMotionProp ?? shouldReduceMotionHook;
 
   const width = useMotionValue(0);
+  const widthPct = useTransform(width, (v) => `${v}%`);
   const counter = useMotionValue(0);
   const [currentCounter, setCurrentCounter] = useState(0);
   const [hideLine, setHideLine] = useState(false);
@@ -119,7 +120,7 @@ export function AnimatedBar({
   return (
     <motion.div
       style={{
-        width: useTransform(width, (v) => `${v}%`),
+        width: widthPct,
         overflow,
       }}
       className="h-full relative"
