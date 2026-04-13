@@ -77,8 +77,6 @@ From an API route, resume the hook to "invoke a method" on the durable object:
 import { resumeHook } from "workflow/api";
 
 export async function POST(request: Request) {
-  "use step";
-
   const { runId, type, amount } = await request.json();
   await resumeHook(`counter:${runId}`, { type, amount });
   return Response.json({ ok: true });

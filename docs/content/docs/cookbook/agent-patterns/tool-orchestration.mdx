@@ -15,7 +15,7 @@ Tools marked with `"use step"` get automatic retries and full Node.js access but
 
 | Capability | Step (`"use step"`) | Workflow Level |
 |------------|---------------------|----------------|
-| `getWritable()` | Yes | No |
+| `getWritable()` | Yes | Yes |
 | Automatic retries | Yes | No |
 | Side effects (fetch, DB) | Yes | No |
 | `sleep()` | No | Yes |
@@ -147,7 +147,7 @@ async function pollEndpoint(endpoint: string) {
 
 async function waitForCallback({ description }: { description: string }) {
   // No "use step" — webhooks are workflow primitives
-  const webhook = createWebhook<{ status: string }>();
+  const webhook = createWebhook();
   // Log the URL so external systems can call it
   console.log(`Waiting for callback at: ${webhook.url}`);
 

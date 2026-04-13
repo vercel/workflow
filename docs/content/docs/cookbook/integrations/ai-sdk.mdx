@@ -162,12 +162,18 @@ async function bookFlight(input: {
 Use `WorkflowChatTransport` on the client to automatically reconnect to a workflow's stream if the connection drops.
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
+import { createUIMessageStreamResponse } from "ai";
 import { start } from "workflow/api";
 import { researchAgent } from "@/workflows/research";
 
 export async function POST(request: Request) {
   const { messages } = await request.json();
-  return start(researchAgent, [messages]);
+  const run = await start(researchAgent, [messages]);
+
+  return createUIMessageStreamResponse({
+    stream: run.readable,
+    headers: { "x-workflow-run-id": run.runId },
+  });
 }
 ```
 
