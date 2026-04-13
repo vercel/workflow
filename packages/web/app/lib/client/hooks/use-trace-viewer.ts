@@ -34,6 +34,7 @@ export function useWorkflowTraceViewerData(
   const [hasEncryptedData, setHasEncryptedData] = useState(false);
 
   const isFetchingRef = useRef(false);
+  const mountedRef = useRef(true);
   const [initialLoadCompleted, setInitialLoadCompleted] = useState(false);
 
   // Fetch Run + first page of Events. These are the only two resources
@@ -96,16 +97,19 @@ export function useWorkflowTraceViewerData(
           limit: 1,
           withData: true,
         })
-      ).then((probeResult) => {
-        if (
-          !probeResult.error &&
-          probeResult.result.data.some((e) =>
-            hasEncryptedFields(hydrateResourceIO(e))
-          )
-        ) {
-          setHasEncryptedData(true);
-        }
-      });
+      )
+        .then((probeResult) => {
+          if (
+            mountedRef.current &&
+            !probeResult.error &&
+            probeResult.result.data.some((e) =>
+              hasEncryptedFields(hydrateResourceIO(e))
+            )
+          ) {
+            setHasEncryptedData(true);
+          }
+        })
+        .catch(() => {});
     }
   }, [env, runId]);
 
@@ -218,6 +222,14 @@ export function useWorkflowTraceViewerData(
   useEffect(() => {
     fetchAllData();
   }, [fetchAllData]);
+
+  // Cleanup: mark unmounted so fire-and-forget probes don't update state.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Live polling
   useEffect(() => {
