@@ -5,7 +5,7 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
@@ -286,8 +286,29 @@ const sortByAttributeOrder = (a: string, b: string): number => {
  * Display names for attributes that should render differently from their key.
  */
 const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
+  moduleSpecifier: 'Module',
+  workflowName: 'Workflow Name',
+  stepName: 'Step Name',
+  stepId: 'Step ID',
+  hookId: 'Hook ID',
+  attempt: 'Attempts',
+  eventId: 'Event ID',
+  runId: 'Run ID',
+  eventType: 'Event Type',
+  correlationId: 'Correlation ID',
+  deploymentId: 'Deployment ID',
+  specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
-  receivedCount: 'times resolved',
+  createdAt: 'Created At',
+  startedAt: 'Started At',
+  updatedAt: 'Updated At',
+  completedAt: 'Completed At',
+  expiredAt: 'Expired At',
+  retryAfter: 'Retry After',
+  resumeAt: 'Resume At',
+  lastReceivedAt: 'Last Received At',
+  disposedAt: 'Disposed At',
+  receivedCount: 'Times Resolved',
 };
 
 /**
@@ -374,17 +395,16 @@ const attributeToDisplayFn: Record<
   (value: unknown, context?: DisplayContext) => null | string | ReactNode
 > = {
   // Names that need pretty-printing
-  workflowName: (value: unknown) =>
-    parseWorkflowName(String(value))?.shortName ?? '?',
+  workflowName: (_value: unknown) => null,
   moduleSpecifier: (value: unknown) => getModuleSpecifierFromName(value),
-  stepName: (value: unknown) => parseStepName(String(value))?.shortName ?? '?',
+  stepName: (_value: unknown) => null,
   // IDs
-  runId: (value: unknown) => String(value),
-  stepId: (value: unknown) => String(value),
+  runId: (_value: unknown) => null,
+  stepId: (_value: unknown) => null,
   hookId: (value: unknown) => String(value),
   eventId: (value: unknown) => String(value),
   // Run/step details
-  status: (value: unknown) => String(value),
+  status: (_value: unknown) => null,
   attempt: (value: unknown) => String(value),
   // Hook details
   token: (value: unknown) => String(value),
@@ -409,7 +429,7 @@ const attributeToDisplayFn: Record<
   startedAt: timestampWithTooltipOrNull,
   updatedAt: timestampWithTooltipOrNull,
   completedAt: timestampWithTooltipOrNull,
-  expiredAt: timestampWithTooltipOrNull,
+  expiredAt: (_value: unknown) => null,
   retryAfter: timestampWithTooltipOrNull,
   resumeAt: timestampWithTooltipOrNull,
   // Resolved attributes, won't actually use this function
@@ -463,7 +483,7 @@ const attributeToDisplayFn: Record<
           <DetailCard
             summary="Input (no data)"
             disabled
-            summaryClassName="text-base py-2"
+            summaryClassName="text-label-14 font-medium py-2"
           />
         );
       }
@@ -472,7 +492,7 @@ const attributeToDisplayFn: Record<
         <>
           <DetailCard
             summary={`Input (${argCount} ${argLabel})`}
-            summaryClassName="text-base py-2"
+            summaryClassName="text-label-14 font-medium py-2"
             contentClassName="mt-0"
           >
             {Array.isArray(args)
@@ -503,14 +523,14 @@ const attributeToDisplayFn: Record<
         <DetailCard
           summary="Input (no data)"
           disabled
-          summaryClassName="text-base py-2"
+          summaryClassName="text-label-14 font-medium py-2"
         />
       );
     }
     return (
       <DetailCard
         summary={`Input (${argCount} ${argLabel})`}
-        summaryClassName="text-base py-2"
+        summaryClassName="text-label-14 font-medium py-2"
         contentClassName="mt-0"
       >
         {Array.isArray(value)
@@ -530,7 +550,7 @@ const attributeToDisplayFn: Record<
     return (
       <DetailCard
         summary="Output"
-        summaryClassName="text-base py-2"
+        summaryClassName="text-label-14 font-medium py-2"
         contentClassName="mt-0"
       >
         {JsonBlock(value)}
@@ -548,7 +568,7 @@ const attributeToDisplayFn: Record<
       return (
         <DetailCard
           summary="Error"
-          summaryClassName="text-base py-2"
+          summaryClassName="text-label-14 font-medium py-2"
           contentClassName="mt-0"
         >
           <ErrorStackBlock value={value} />
@@ -559,7 +579,7 @@ const attributeToDisplayFn: Record<
     return (
       <DetailCard
         summary="Error"
-        summaryClassName="text-base py-2"
+        summaryClassName="text-label-14 font-medium py-2"
         contentClassName="mt-0"
       >
         {JsonBlock(value)}
@@ -617,10 +637,7 @@ export const AttributeBlock = ({
       <div
         className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
       >
-        <span
-          className={`${attribute === 'input' || attribute === 'output' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
+        <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
         <Skeleton className="h-9 w-full rounded-md" />
@@ -668,10 +685,7 @@ export const AttributeBlock = ({
         key={attribute}
         className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'gap-2 my-3.5' : 'gap-0'}`}
       >
-        <span
-          className={`${attribute === 'input' || attribute === 'output' || attribute === 'error' ? 'text-base' : 'text-xs'} font-medium first-letter:uppercase`}
-          style={{ color: 'var(--ds-gray-700)' }}
-        >
+        <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
         <span className="text-xs" style={{ color: 'var(--ds-gray-1000)' }}>
@@ -801,13 +815,8 @@ export const AttributePanel = ({
       <div>
         {/* Basic attributes in a vertical layout with border */}
         {visibleBasicAttributes.length > 0 && (
-          <div
-            className="mb-3 flex flex-col overflow-hidden rounded-lg border"
-            style={{
-              borderColor: 'var(--ds-gray-300)',
-            }}
-          >
-            {orderedBasicAttributes.map((attribute, index) => {
+          <div className="flex flex-col overflow-hidden rounded-lg border text-gray-alpha-400 px-3">
+            {orderedBasicAttributes.map((attribute) => {
               const displayValue = attributeToDisplayFn[
                 attribute as keyof typeof attributeToDisplayFn
               ]?.(displayData[attribute as keyof typeof displayData]);
@@ -816,24 +825,11 @@ export const AttributePanel = ({
                 typeof displayValue === 'string'
                   ? displayValue
                   : String(displayValue ?? displayData.moduleSpecifier ?? '');
-              const shouldCapitalizeLabel = attribute !== 'workflowCoreVersion';
-              const showResumeAtSkeleton =
-                isLoading && resource === 'sleep' && !displayData.resumeAt;
-              const showDivider =
-                index < orderedBasicAttributes.length - 1 ||
-                showResumeAtSkeleton;
 
               return (
-                <div key={attribute} className="py-1">
-                  <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                    <span
-                      className={
-                        shouldCapitalizeLabel
-                          ? 'text-[14px] first-letter:uppercase'
-                          : 'text-[14px]'
-                      }
-                      style={{ color: 'var(--ds-gray-700)' }}
-                    >
+                <React.Fragment key={attribute}>
+                  <div className="flex items-center justify-between gap-4 rounded-sm py-3">
+                    <span className="text-gray-900 text-label-14">
                       {getAttributeDisplayName(attribute)}
                     </span>
                     {isModuleSpecifier ? (
@@ -854,21 +850,16 @@ export const AttributePanel = ({
                         {moduleSpecifierValue}
                       </button>
                     ) : (
-                      <span
-                        className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                        style={{ color: 'var(--ds-gray-1000)' }}
-                      >
+                      <span className="min-w-0 max-w-[70%] truncate text-right text-label-13 font-mono text-gray-1000">
                         {displayValue}
                       </span>
                     )}
                   </div>
-                  {showDivider ? (
-                    <div
-                      className="mx-2.5 border-b"
-                      style={{ borderColor: 'var(--ds-gray-300)' }}
-                    />
-                  ) : null}
-                </div>
+                  <div
+                    className="h-px bg-gray-alpha-200 last:hidden"
+                    aria-hidden="true"
+                  />
+                </React.Fragment>
               );
             })}
             {isLoading && resource === 'sleep' && !displayData.resumeAt && (

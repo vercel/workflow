@@ -256,7 +256,7 @@ function getExecutionNodeStyle(nodeKind: string, executions?: StepExecution[]) {
   // If no execution data, show faded state with gray border
   if (!executions || executions.length === 0) {
     return {
-      color: 'hsl(var(--card-foreground))',
+      color: 'var(--card-foreground)',
       backgroundColor,
       borderColor: '#9ca3af', // gray-400
       opacity: 0.4,
@@ -293,7 +293,7 @@ function getExecutionNodeStyle(nodeKind: string, executions?: StepExecution[]) {
   }
 
   return {
-    color: 'hsl(var(--card-foreground))',
+    color: 'var(--card-foreground)',
     backgroundColor,
     borderColor,
     borderWidth,

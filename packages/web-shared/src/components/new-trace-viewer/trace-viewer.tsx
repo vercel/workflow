@@ -1,7 +1,8 @@
 'use client';
 
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
-import { Search, X } from 'lucide-react';
+import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
+import { Copy, Search, X } from 'lucide-react';
 import {
   type ReactNode,
   useCallback,
@@ -10,6 +11,12 @@ import {
   useRef,
   useState,
 } from 'react';
+import { ErrorBoundary } from '../error-boundary';
+import {
+  EntityDetailPanel,
+  type SelectedSpanInfo,
+} from '../sidebar/entity-detail-panel';
+import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
 import type { Trace } from '../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { SplitPane } from './components/split-pane';
@@ -94,6 +101,35 @@ function useAnimatedViewport(initial: Viewport) {
   return { viewport, setViewport, animateTo };
 }
 
+// ---------------------------------------------------------------------------
+// Hook: bridge ActiveSpanContext + SidebarDataContext → SelectedSpanInfo
+// ---------------------------------------------------------------------------
+
+function useSelectedSpanInfo(): SelectedSpanInfo | null {
+  const { activeSpan } = useActiveSpan();
+  const sidebar = useSidebarDataOptional();
+
+  return useMemo(() => {
+    if (!activeSpan || !sidebar) return null;
+
+    const correlationId = activeSpan.spanId;
+    const rawEvents = correlationId
+      ? sidebar.events.filter((e) => e.correlationId === correlationId)
+      : [];
+
+    return {
+      data: activeSpan.attributes?.data,
+      resource: activeSpan.attributes?.resource as string | undefined,
+      spanId: activeSpan.spanId,
+      rawEvents,
+    };
+  }, [activeSpan, sidebar?.events]);
+}
+
+// ---------------------------------------------------------------------------
+// Root component
+// ---------------------------------------------------------------------------
+
 export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
   return (
     <TooltipPrimitive.Provider delayDuration={0}>
@@ -107,6 +143,9 @@ export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
 function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const { activeSpan, activeSpanId, setActiveSpan, clearActiveSpan } =
     useActiveSpan();
+
+  const sidebar = useSidebarDataOptional();
+  const selectedSpan = useSelectedSpanInfo();
 
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -167,6 +206,10 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
   const handleSelectSpan = useCallback(
     (spanId: string) => {
+      if (spanId === activeSpanId) {
+        clearActiveSpan();
+        return;
+      }
       setActiveSpan(spanId);
 
       const span = trace.spans.find((s) => s.spanId === spanId);
@@ -209,7 +252,15 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
       animateTo({ start: newStart, end: newEnd });
     },
-    [animateTo, setActiveSpan, trace.spans, root.startTime, root.duration]
+    [
+      animateTo,
+      setActiveSpan,
+      clearActiveSpan,
+      activeSpanId,
+      trace.spans,
+      root.startTime,
+      root.duration,
+    ]
   );
 
   const [altHeld, setAltHeld] = useState(false);
@@ -352,11 +403,39 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     return () => el.removeEventListener('wheel', onWheel);
   }, [root.startTime, root.duration]);
 
+  // Derive the selected span name and metadata for the panel header
+  const selectedSpanName = useMemo(() => {
+    if (!selectedSpan?.data) return 'Details';
+    const data = selectedSpan.data as Record<string, unknown>;
+    const stepName = data.stepName as string | undefined;
+    const workflowName = data.workflowName as string | undefined;
+    return (
+      (stepName ? parseStepName(stepName)?.shortName : undefined) ??
+      (workflowName ? parseWorkflowName(workflowName)?.shortName : undefined) ??
+      stepName ??
+      workflowName ??
+      (data.hookId as string) ??
+      'Details'
+    );
+  }, [selectedSpan?.data]);
+
+  const selectedResource = selectedSpan?.resource as string | undefined;
+  const selectedResourceId = useMemo(() => {
+    if (!selectedSpan?.data) return undefined;
+    const data = selectedSpan.data as Record<string, unknown>;
+    return (
+      (data.stepId as string) ??
+      (data.runId as string) ??
+      (data.hookId as string) ??
+      selectedSpan.spanId
+    );
+  }, [selectedSpan?.data, selectedSpan?.spanId]);
+
   return (
     <div
       data-pane="pane-root"
       data-has-detail={activeSpan ? '' : undefined}
-      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(50px,320px,100%)]"
+      className="grid w-full h-full max-h-full grid-cols-[minmax(100px,1fr)] data-[has-detail]:grid-cols-[minmax(100px,1fr)_clamp(280px,420px,100%)]"
     >
       <div
         id="trace-parent"
@@ -421,7 +500,84 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           </div>
         </SplitPane>
       </div>
-      {activeSpan ? (
+
+      {/* Detail panel */}
+      {activeSpan && sidebar ? (
+        <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400">
+          {/* Panel header */}
+          <div className="flex-shrink-0 px-4 pt-4 pb-3">
+            <div className="flex items-start justify-between gap-2">
+              <div className="min-w-0 flex-1">
+                <span className="text-[15px] font-semibold text-gray-1000 truncate block">
+                  {selectedSpanName}
+                </span>
+                {selectedResourceId && (
+                  <div className="mt-1 flex items-center gap-2">
+                    {selectedResource && (
+                      <span
+                        className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium leading-none shrink-0 ${
+                          selectedResource === 'step'
+                            ? 'bg-green-200 text-green-900'
+                            : selectedResource === 'run'
+                              ? 'bg-blue-200 text-blue-900'
+                              : selectedResource === 'hook'
+                                ? 'bg-yellow-200 text-yellow-900'
+                                : 'bg-gray-200 text-gray-900'
+                        }`}
+                      >
+                        {selectedResource.charAt(0).toUpperCase() +
+                          selectedResource.slice(1)}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="flex items-center gap-1 text-[13px] font-mono text-gray-700 hover:text-gray-1000 transition-colors group truncate"
+                      onClick={() => {
+                        navigator.clipboard.writeText(selectedResourceId);
+                      }}
+                      title={selectedResourceId}
+                    >
+                      <span className="truncate">
+                        {selectedResourceId.length > 20
+                          ? `${selectedResourceId.slice(0, 8)} ... ${selectedResourceId.slice(-6)}`
+                          : selectedResourceId}
+                      </span>
+                      <Copy className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </button>
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="p-1 rounded-md text-gray-900 hover:text-gray-1000 hover:bg-gray-alpha-200 transition-colors shrink-0"
+                onClick={clearActiveSpan}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          {/* Panel body */}
+          <div className="flex-1 overflow-y-auto">
+            <ErrorBoundary title="Failed to load entity details">
+              <EntityDetailPanel
+                run={sidebar.run}
+                onStreamClick={sidebar.onStreamClick}
+                spanDetailData={sidebar.spanDetailData}
+                spanDetailError={sidebar.spanDetailError}
+                spanDetailLoading={sidebar.spanDetailLoading}
+                onSpanSelect={sidebar.onSpanSelect}
+                onWakeUpSleep={sidebar.onWakeUpSleep}
+                onLoadEventData={sidebar.onLoadEventData}
+                onResolveHook={sidebar.onResolveHook}
+                encryptionKey={sidebar.encryptionKey}
+                onDecrypt={sidebar.onDecrypt}
+                isDecrypting={sidebar.isDecrypting}
+                selectedSpan={selectedSpan}
+              />
+            </ErrorBoundary>
+          </div>
+        </aside>
+      ) : activeSpan ? (
         <DetailPanel
           span={activeSpan}
           rootStart={root.startTime}

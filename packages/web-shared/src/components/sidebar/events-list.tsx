@@ -301,10 +301,10 @@ export function EventsList({
   return (
     <div className="mt-2" style={{ color: 'var(--ds-gray-1000)' }}>
       <h3
-        className="text-heading-16 font-medium mt-4 mb-2"
+        className="text-label-14 font-medium mt-4 mb-2"
         style={{ color: 'var(--ds-gray-1000)' }}
       >
-        Events {!isLoading && `(${sortedEvents.length})`}
+        Events
       </h3>
       {isLoading ? (
         <div className="flex flex-col gap-4">

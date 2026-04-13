@@ -2,12 +2,9 @@
 
 import {
   Children,
-  type Dispatch,
-  type KeyboardEvent,
   type ReactNode,
   type PointerEvent as ReactPointerEvent,
-  type RefObject,
-  type SetStateAction,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -16,6 +13,8 @@ import { cn } from '../../../lib/utils';
 
 /** Wide enough for comfortable dragging; visual line stays 1px centered. */
 const GUTTER_PX = 9;
+const MIN_PX = 50;
+const DEFAULT_START_PX = 340;
 
 export function Divider() {
   return <div aria-hidden className="h-full w-px shrink-0 bg-gray-alpha-400" />;
@@ -24,70 +23,18 @@ export function Divider() {
 export interface SplitPaneProps {
   children: ReactNode;
   className?: string;
-  /** Initial width fraction for the first pane (0.15–0.85). */
-  defaultRatio?: number;
+  /** Fixed pixel width for the start (left) pane. Default 220. */
+  defaultStartWidth?: number;
   /** Fixed (non-scrolling) header rendered above the start pane. */
   startHeader?: ReactNode;
   /** Fixed (non-scrolling) header rendered above the end pane. */
   endHeader?: ReactNode;
 }
 
-function clampRatio(v: number) {
-  return Math.min(0.85, Math.max(0.15, v));
-}
-
-function markUndoBaseline(
-  initialRatioRef: RefObject<number | null>,
-  splitRatio: number
-) {
-  if (initialRatioRef.current === null) initialRatioRef.current = splitRatio;
-}
-
-function handleSplitKeyboard(
-  e: KeyboardEvent<HTMLDivElement>,
-  splitRatio: number,
-  initialRatioRef: RefObject<number | null>,
-  setSplitRatio: Dispatch<SetStateAction<number>>
-): void {
-  const step = e.shiftKey ? 0.1 : 0.02;
-
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-    e.preventDefault();
-    markUndoBaseline(initialRatioRef, splitRatio);
-    setSplitRatio((r) => clampRatio(r - step));
-    return;
-  }
-  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-    e.preventDefault();
-    markUndoBaseline(initialRatioRef, splitRatio);
-    setSplitRatio((r) => clampRatio(r + step));
-    return;
-  }
-  if (e.key === 'Home') {
-    e.preventDefault();
-    markUndoBaseline(initialRatioRef, splitRatio);
-    setSplitRatio(0.15);
-    return;
-  }
-  if (e.key === 'End') {
-    e.preventDefault();
-    markUndoBaseline(initialRatioRef, splitRatio);
-    setSplitRatio(0.85);
-    return;
-  }
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    if (initialRatioRef.current !== null) {
-      setSplitRatio(initialRatioRef.current);
-      initialRatioRef.current = null;
-    }
-  }
-}
-
 export function SplitPane({
   children,
   className,
-  defaultRatio = 0.45,
+  defaultStartWidth = DEFAULT_START_PX,
   startHeader,
   endHeader,
 }: SplitPaneProps) {
@@ -97,14 +44,13 @@ export function SplitPane({
   }
   const [start, end] = parts;
 
-  const [splitRatio, setSplitRatio] = useState(defaultRatio);
-  const [isDraggingSplit, setIsDraggingSplit] = useState(false);
-  const innerGridRef = useRef<HTMLDivElement>(null);
+  const [startPx, setStartPx] = useState(defaultStartWidth);
+  const [isDragging, setIsDragging] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number | null>(null);
-  const pendingRatio = useRef(defaultRatio);
+  const pendingPx = useRef(defaultStartWidth);
   const pointerIdRef = useRef<number | null>(null);
-  const initialRatioRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
@@ -112,19 +58,26 @@ export function SplitPane({
     };
   }, []);
 
+  const clampPx = useCallback((px: number) => {
+    const el = containerRef.current;
+    if (!el) return px;
+    const maxPx = el.getBoundingClientRect().width - MIN_PX - GUTTER_PX;
+    return Math.min(maxPx, Math.max(MIN_PX, px));
+  }, []);
+
   useEffect(() => {
-    if (!isDraggingSplit) return;
+    if (!isDragging) return;
 
     const onPointerMove = (e: globalThis.PointerEvent) => {
       if (e.pointerId !== pointerIdRef.current) return;
-      const container = innerGridRef.current;
+      const container = containerRef.current;
       if (!container) return;
       const rect = container.getBoundingClientRect();
-      pendingRatio.current = clampRatio((e.clientX - rect.left) / rect.width);
+      pendingPx.current = clampPx(e.clientX - rect.left);
       if (!rafRef.current) {
         rafRef.current = requestAnimationFrame(() => {
           rafRef.current = null;
-          setSplitRatio(pendingRatio.current);
+          setStartPx(pendingPx.current);
         });
       }
     };
@@ -140,7 +93,7 @@ export function SplitPane({
         rafRef.current = null;
       }
       pointerIdRef.current = null;
-      setIsDraggingSplit(false);
+      setIsDragging(false);
     };
 
     document.addEventListener('pointermove', onPointerMove);
@@ -152,48 +105,32 @@ export function SplitPane({
       document.removeEventListener('pointerup', onPointerUp);
       document.removeEventListener('pointercancel', onPointerUp);
     };
-  }, [isDraggingSplit]);
+  }, [isDragging, clampPx]);
 
-  const handleSplitPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+  const handlePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     pointerIdRef.current = e.pointerId;
-    setIsDraggingSplit(true);
+    setIsDragging(true);
   };
 
   const handleLostPointerCapture = () => {
     pointerIdRef.current = null;
-    setIsDraggingSplit(false);
+    setIsDragging(false);
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
     }
   };
 
-  const handleSplitKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    handleSplitKeyboard(e, splitRatio, initialRatioRef, setSplitRatio);
-  };
-
-  const ratioPercent = Math.round(splitRatio * 100);
-  const colTemplate = `minmax(50px, ${splitRatio * 100}%) ${GUTTER_PX}px minmax(50px, ${(1 - splitRatio) * 100}%)`;
-
+  const colTemplate = `${startPx}px ${GUTTER_PX}px minmax(${MIN_PX}px, 1fr)`;
   const hasHeaders = startHeader != null || endHeader != null;
 
   const gutter = (
     <div
       ref={gutterRef}
-      role="slider"
-      aria-orientation="horizontal"
-      aria-valuenow={ratioPercent}
-      aria-valuemin={15}
-      aria-valuemax={85}
-      aria-valuetext={`${ratioPercent}%`}
-      tabIndex={0}
-      className={cn(
-        'relative z-20 isolate flex shrink-0 cursor-col-resize justify-center outline-none focus-visible:ring-2 focus-visible:ring-ring'
-      )}
-      onPointerDown={handleSplitPointerDown}
+      className="relative z-20 isolate flex shrink-0 cursor-col-resize justify-center"
+      onPointerDown={handlePointerDown}
       onLostPointerCapture={handleLostPointerCapture}
-      onKeyDown={handleSplitKeyDown}
     >
       <span
         className="pointer-events-none relative z-10 h-full w-px shrink-0 bg-gray-alpha-400"
@@ -216,15 +153,12 @@ export function SplitPane({
           <div>{endHeader}</div>
         </div>
         <div
-          ref={innerGridRef}
+          ref={containerRef}
           className={cn(
             'grid flex-1 min-h-0 content-start overflow-x-hidden overflow-y-auto',
-            isDraggingSplit && 'select-none'
+            isDragging && 'select-none'
           )}
-          style={{
-            display: 'grid',
-            gridTemplateColumns: colTemplate,
-          }}
+          style={{ gridTemplateColumns: colTemplate }}
         >
           {start}
           {gutter}
@@ -236,17 +170,13 @@ export function SplitPane({
 
   return (
     <div
-      ref={innerGridRef}
+      ref={containerRef}
       className={cn(
         'grid h-full min-h-0 content-start overflow-x-hidden overflow-y-auto',
-        isDraggingSplit && 'select-none',
+        isDragging && 'select-none',
         className
       )}
-      style={{
-        display: 'grid',
-        gridTemplateColumns: colTemplate,
-        height: '100%',
-      }}
+      style={{ gridTemplateColumns: colTemplate, height: '100%' }}
     >
       {start}
       {gutter}

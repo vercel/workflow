@@ -347,59 +347,21 @@ export function EntityDetailPanel({
     return null;
   }
 
-  const resourceLabel = resource.charAt(0).toUpperCase() + resource.slice(1);
   const hasPendingActions =
     (resource === 'sleep' && canWakeUp) ||
     (resource === 'hook' && canResolveHook);
-  const runStateLabel = run.completedAt ? 'Completed' : 'Live';
 
   return (
     <div className="flex h-full flex-col">
-      <div
-        className="border-b px-3 py-3"
-        style={{ borderColor: 'var(--ds-gray-200)' }}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span
-                className="inline-flex items-center rounded-full border px-2 py-0.5 text-[13px] font-medium"
-                style={{
-                  borderColor: 'var(--ds-gray-300)',
-                  color: 'var(--ds-gray-900)',
-                  backgroundColor: 'var(--ds-background-100)',
-                }}
-              >
-                {resourceLabel}
-              </span>
-              <span
-                className="text-[13px]"
-                style={{
-                  color: run.completedAt
-                    ? 'var(--ds-gray-700)'
-                    : 'var(--ds-green-800)',
-                }}
-              >
-                {runStateLabel}
-              </span>
-            </div>
-            <p
-              className="mt-1 truncate font-mono text-[13px]"
-              style={{ color: 'var(--ds-gray-700)' }}
-              title={resourceId}
-            >
-              {resourceId}
-            </p>
-          </div>
-          {(hasEncryptedFields || encryptionKey) && onDecrypt && (
-            <DecryptButton
-              decrypted={!!encryptionKey}
-              loading={isDecrypting}
-              onClick={onDecrypt}
-            />
-          )}
+      {(hasEncryptedFields || encryptionKey) && onDecrypt && (
+        <div className="px-3 pt-3">
+          <DecryptButton
+            decrypted={!!encryptionKey}
+            loading={isDecrypting}
+            onClick={onDecrypt}
+          />
         </div>
-      </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-3 pt-3 pb-8">
         {hasPendingActions && (
@@ -468,12 +430,6 @@ export function EntityDetailPanel({
 
         <div className="space-y-4">
           <section>
-            <h3
-              className="mb-2 text-[13px] font-medium uppercase tracking-wide"
-              style={{ color: 'var(--ds-gray-700)' }}
-            >
-              Details
-            </h3>
             <AttributePanel
               data={displayData}
               moduleSpecifier={moduleSpecifier}
