@@ -87,29 +87,38 @@ export function useWorkflowTraceViewerData(
       setError(eventsResult.error);
     }
 
-    // Probe: fetch a single event with full data to detect encryption.
-    // This runs in the background after the initial load is complete so
-    // the UI can show the decrypt button before any span is selected.
+    // Detect encryption: newer runs store a flag in executionContext.
+    // For older runs that lack the flag, fall back to a probe fetch.
     if (!runResult.error) {
-      unwrapServerActionResult(
-        fetchEvents(env, runId, {
-          sortOrder: 'asc',
-          limit: 1,
-          withData: true,
-        })
-      )
-        .then((probeResult) => {
-          if (
-            mountedRef.current &&
-            !probeResult.error &&
-            probeResult.result.data.some((e) =>
-              hasEncryptedFields(hydrateResourceIO(e))
-            )
-          ) {
-            setHasEncryptedData(true);
-          }
-        })
-        .catch(() => {});
+      const ctx = runResult.result.executionContext as
+        | Record<string, unknown>
+        | undefined;
+      if (
+        ctx?.features &&
+        (ctx.features as Record<string, unknown>).encryption
+      ) {
+        setHasEncryptedData(true);
+      } else {
+        unwrapServerActionResult(
+          fetchEvents(env, runId, {
+            sortOrder: 'asc',
+            limit: 1,
+            withData: true,
+          })
+        )
+          .then((probeResult) => {
+            if (
+              mountedRef.current &&
+              !probeResult.error &&
+              probeResult.result.data.some((e) =>
+                hasEncryptedFields(hydrateResourceIO(e))
+              )
+            ) {
+              setHasEncryptedData(true);
+            }
+          })
+          .catch(() => {});
+      }
     }
   }, [env, runId]);
 
