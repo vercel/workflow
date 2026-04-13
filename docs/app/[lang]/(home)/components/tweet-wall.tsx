@@ -12,6 +12,21 @@ type Tweet = {
 };
 
 const TWEETS: Tweet[] = [
+  // Left column (indices 0-2)
+  {
+    url: 'https://x.com/resend/status/1981494746347630976',
+    name: 'Resend',
+    username: 'resend',
+    image: `${BLOB_URL}/resend.jpg`,
+    tweet: (
+      <>
+        <span>
+          Resend + <InlineLink>@vercel</InlineLink> Workflow Dev Kit
+        </span>
+        <span>A match made in heaven</span>
+      </>
+    ),
+  },
   {
     url: 'https://x.com/michaelcaaarter/status/1986078356325187762',
     name: 'Michael Carter',
@@ -50,6 +65,7 @@ const TWEETS: Tweet[] = [
       </>
     ),
   },
+  // Middle column (indices 3-5)
   {
     url: 'https://x.com/ryancarson/status/1999857760335192159',
     name: 'Ryan Carson',
@@ -93,17 +109,6 @@ const TWEETS: Tweet[] = [
     ),
   },
   {
-    url: 'https://x.com/nikitabase/status/1982509352486682854',
-    name: 'Nikita | Scaling Postgres',
-    username: 'nikitabase',
-    image: `${BLOB_URL}/nikitabase.jpg`,
-    tweet: (
-      <span>
-        <InlineCode>use workflow</InlineCode> is beautiful
-      </span>
-    ),
-  },
-  {
     url: 'https://x.com/kumareth/status/1981434879805194265',
     name: 'Kumar Abhirup',
     username: 'kumareth',
@@ -118,6 +123,18 @@ const TWEETS: Tweet[] = [
           critical demand for durable execution.
         </span>
       </>
+    ),
+  },
+  // Right column (indices 6-8)
+  {
+    url: 'https://x.com/nikitabase/status/1982509352486682854',
+    name: 'Nikita | Scaling Postgres',
+    username: 'nikitabase',
+    image: `${BLOB_URL}/nikitabase.jpg`,
+    tweet: (
+      <span>
+        <InlineCode>use workflow</InlineCode> is beautiful
+      </span>
     ),
   },
   {
@@ -160,20 +177,6 @@ const TWEETS: Tweet[] = [
           differently and reinvent them in a way that feels clean and effortless
         </span>
         <span>this is really exciting to me</span>
-      </>
-    ),
-  },
-  {
-    url: 'https://x.com/resend/status/1981494746347630976',
-    name: 'Resend',
-    username: 'resend',
-    image: `${BLOB_URL}/resend.jpg`,
-    tweet: (
-      <>
-        <span>
-          Resend + <InlineLink>@vercel</InlineLink> Workflow Dev Kit
-        </span>
-        <span>A match made in heaven</span>
       </>
     ),
   },
