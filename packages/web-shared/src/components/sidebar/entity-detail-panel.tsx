@@ -486,6 +486,7 @@ export function EntityDetailPanel({
               error={error ?? undefined}
               onStreamClick={onStreamClick}
               onDecrypt={onDecrypt}
+              isDecrypting={isDecrypting}
               resource={resource}
             />
           </section>

@@ -79,13 +79,18 @@ export const StreamClickContext = createContext<
  * Context for passing a decrypt handler down to DataInspector instances.
  * When provided, encrypted markers become clickable buttons that trigger decryption.
  */
-export const DecryptClickContext = createContext<(() => void) | undefined>(
-  undefined
-);
+export type DecryptClickContextValue = {
+  onDecrypt: () => void;
+  isDecrypting: boolean;
+};
+
+export const DecryptClickContext = createContext<
+  DecryptClickContextValue | undefined
+>(undefined);
 
 function EncryptedInlineLabel() {
-  const onDecrypt = useContext(DecryptClickContext);
-  if (onDecrypt) {
+  const ctx = useContext(DecryptClickContext);
+  if (ctx) {
     return (
       <button
         type="button"
@@ -95,18 +100,32 @@ function EncryptedInlineLabel() {
           color: 'var(--ds-gray-700)',
           border: '1px solid var(--ds-gray-400)',
           fontStyle: 'italic',
+          opacity: ctx.isDecrypting ? 0.6 : 1,
         }}
+        disabled={ctx.isDecrypting}
         onClick={(e) => {
           e.stopPropagation();
-          onDecrypt();
+          ctx.onDecrypt();
         }}
         title="Click to decrypt"
       >
-        <Lock
-          className="h-3 w-3"
-          style={{ display: 'inline', flexShrink: 0 }}
-        />
-        <span>Decrypt</span>
+        {ctx.isDecrypting ? (
+          <span
+            className="h-3 w-3 animate-spin rounded-full border-2"
+            style={{
+              display: 'inline-block',
+              flexShrink: 0,
+              borderColor: 'var(--ds-gray-400)',
+              borderTopColor: 'var(--ds-gray-700)',
+            }}
+          />
+        ) : (
+          <Lock
+            className="h-3 w-3"
+            style={{ display: 'inline', flexShrink: 0 }}
+          />
+        )}
+        <span>{ctx.isDecrypting ? 'Decrypting…' : 'Decrypt'}</span>
       </button>
     );
   }
@@ -274,6 +293,8 @@ export interface DataInspectorProps {
   onStreamClick?: (streamId: string) => void;
   /** Callback when an encrypted marker is clicked (triggers decryption) */
   onDecrypt?: () => void;
+  /** Whether decryption is currently in progress */
+  isDecrypting?: boolean;
 }
 
 export function DataInspector({
@@ -282,6 +303,7 @@ export function DataInspector({
   name,
   onStreamClick,
   onDecrypt,
+  isDecrypting = false,
 }: DataInspectorProps) {
   const stableData = useStableInspectorData(data);
   const [initialExpandLevel, setInitialExpandLevel] = useState(expandLevel);
@@ -322,7 +344,7 @@ export function DataInspector({
 
   if (onDecrypt) {
     wrapped = (
-      <DecryptClickContext.Provider value={onDecrypt}>
+      <DecryptClickContext.Provider value={{ onDecrypt, isDecrypting }}>
         {wrapped}
       </DecryptClickContext.Provider>
     );

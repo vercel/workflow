@@ -1397,7 +1397,9 @@ export function EventListView({
   }
 
   return (
-    <DecryptClickContext.Provider value={onDecrypt}>
+    <DecryptClickContext.Provider
+      value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
+    >
       <div className="h-full flex flex-col overflow-hidden">
         <style>{`@keyframes workflow-dot-pulse{0%{transform:scale(1);opacity:.7}70%,100%{transform:scale(2.2);opacity:0}}`}</style>
         {/* Search bar + sort */}

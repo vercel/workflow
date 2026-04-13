@@ -25,6 +25,7 @@ export {
   DataInspector,
   type DataInspectorProps,
   DecryptClickContext,
+  type DecryptClickContextValue,
 } from './ui/data-inspector';
 export { DecryptButton } from './ui/decrypt-button';
 export { LoadMoreButton } from './ui/load-more-button';

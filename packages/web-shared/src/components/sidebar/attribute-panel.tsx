@@ -180,22 +180,36 @@ function ConversationWithTabs({
  * with the lucide Lock icon matching the title bar Decrypt button.
  */
 function EncryptedFieldBlock() {
-  const onDecrypt = useContext(DecryptClickContext);
-  if (onDecrypt) {
+  const ctx = useContext(DecryptClickContext);
+  if (ctx) {
     return (
       <button
         type="button"
-        onClick={onDecrypt}
+        onClick={ctx.onDecrypt}
+        disabled={ctx.isDecrypting}
         className="flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs cursor-pointer transition-colors"
         style={{
           borderColor: 'var(--ds-gray-400)',
           backgroundColor: 'var(--ds-gray-100)',
           color: 'var(--ds-gray-700)',
+          opacity: ctx.isDecrypting ? 0.6 : 1,
         }}
         title="Click to decrypt"
       >
-        <Lock className="h-3 w-3" />
-        <span className="font-medium">Decrypt</span>
+        {ctx.isDecrypting ? (
+          <span
+            className="h-3 w-3 animate-spin rounded-full border-2"
+            style={{
+              borderColor: 'var(--ds-gray-400)',
+              borderTopColor: 'var(--ds-gray-700)',
+            }}
+          />
+        ) : (
+          <Lock className="h-3 w-3" />
+        )}
+        <span className="font-medium">
+          {ctx.isDecrypting ? 'Decrypting…' : 'Decrypt'}
+        </span>
       </button>
     );
   }
@@ -709,6 +723,7 @@ export const AttributePanel = ({
   expiredAt,
   onStreamClick,
   onDecrypt,
+  isDecrypting = false,
   resource,
 }: {
   data: Record<string, unknown>;
@@ -720,6 +735,8 @@ export const AttributePanel = ({
   onStreamClick?: (streamId: string) => void;
   /** Callback when an encrypted marker is clicked (triggers decryption) */
   onDecrypt?: () => void;
+  /** Whether decryption is currently in progress */
+  isDecrypting?: boolean;
   /** Resource type of the selected span — used to show targeted loading skeletons. */
   resource?: string;
 }) => {
@@ -820,7 +837,9 @@ export const AttributePanel = ({
 
   return (
     <StreamClickContext.Provider value={onStreamClick}>
-      <DecryptClickContext.Provider value={onDecrypt}>
+      <DecryptClickContext.Provider
+        value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
+      >
         <div>
           {/* Basic attributes in a vertical layout with border */}
           {visibleBasicAttributes.length > 0 && (
