@@ -301,7 +301,9 @@
   --sidebar-ring: oklch(0.708 0 0);
 
   /* Marketing visual tokens */
-  --guide-color: var(--ds-gray-300);
+  --guide-color: var(--ds-gray-400);
+  --geist-cyan: #50e3c2;
+  --geist-warning: #f5a623;
 }
 
 .dark {
@@ -442,7 +444,7 @@
   --sidebar-ring: oklch(0.556 0 0);
 
   /* Marketing visual tokens */
-  --guide-color: var(--ds-gray-300);
+  --guide-color: var(--ds-gray-200);
 }
 
 @layer base {
@@ -492,9 +494,34 @@
 }
 
 /* Line numbers styles for code blocks */
+@theme inline {
+  --color-geist-cyan: var(--geist-cyan);
+  --color-geist-warning: var(--geist-warning);
+}
+
 @utility material-small {
   @apply bg-background-100 rounded-[6px];
   box-shadow: var(--ds-shadow-border-small);
+}
+
+@utility text-label-13 {
+  @apply font-sans font-normal text-[13px] leading-[16px];
+}
+
+@utility text-label-14 {
+  @apply font-sans font-normal text-[14px] leading-[20px];
+}
+
+@utility text-label-13-mono {
+  @apply font-mono font-normal text-[13px] leading-[20px];
+}
+
+@utility text-copy-13-mono {
+  @apply font-mono font-normal text-[13px] leading-[18px];
+}
+
+@utility text-body-16 {
+  @apply font-mono font-normal text-[16px] leading-[24px];
 }
 
 @layer utilities {
