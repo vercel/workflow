@@ -4,7 +4,16 @@ import { track } from '@vercel/analytics';
 import Link from 'next/link';
 import type { ComponentProps } from 'react';
 import { toast } from 'sonner';
-import { Badge } from '@/components/ui/badge';
+import {
+  LogoIconAstro,
+  LogoIconExpress,
+  LogoIconHono,
+  LogoIconNext,
+  LogoIconNitro,
+  LogoIconNuxt,
+  LogoIconSvelte,
+  LogoIconVite,
+} from '@/components/geistcn-fallbacks/geistcn-assets/logos/logo-icons';
 
 export const Express = (props: ComponentProps<'svg'>) => (
   <svg
@@ -699,109 +708,59 @@ export const Next = (props: ComponentProps<'svg'>) => (
 );
 
 export const Frameworks = () => {
-  const handleRequest = (framework: string) => {
-    track('Framework requested', { framework: framework.toLowerCase() });
+  const handleRequest = () => {
+    track('Framework requested', { framework: 'tanstack' });
     toast.success('Request received', {
-      description: `Thanks for expressing interest in ${framework}. We will be adding support for it soon.`,
+      description: 'Thanks for expressing interest in TanStack. We will be adding support for it soon.',
     });
   };
 
   return (
-    <div className="grid gap-12 px-4 py-8 sm:py-12 sm:px-12 items-start">
-      <div className="flex flex-col gap-2">
-        <h2 className="font-medium text-xl tracking-tight sm:text-2xl text-muted-foreground">
-          <span className="text-foreground">Universally compatible</span>. Works
-          with the frameworks you already use with more coming soon.
+    <div className="flex flex-col items-center gap-8 px-4 py-12 sm:py-16 sm:px-12 text-center">
+      <div className="flex flex-col gap-3 max-w-xl">
+        <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl">
+          Universally Compatible
         </h2>
+        <p className="text-muted-foreground sm:text-lg">
+          Works with the frameworks you already use with more coming soon.
+        </p>
       </div>
-      <div className="space-y-10 w-fit">
-        <div className="flex flex-wrap gap-6 items-center">
-          <Link
-            href="/docs/getting-started/next"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Next className="size-[56px] relative z-10" />
-            <Next className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/vite"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Vite className="size-[56px] relative z-10" />
-            <Vite className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/astro"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <AstroDark className="size-[52px] relative z-10 hidden dark:block" />
-            <AstroLight className="size-[56px] relative z-10 dark:hidden" />
-            <AstroDark className="size-[60px] absolute top-0 left-0 opacity-10 blur-md hidden dark:block" />
-            <AstroLight className="size-[64px] absolute top-0 left-0 opacity-10 blur-md dark:hidden" />
-          </Link>
-          <Link
-            href="/docs/getting-started/express"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Express className="size-[64px] dark:invert relative z-10" />
-            <Express className="size-[72px] absolute top-0 left-0 opacity-10 blur-md dark:invert" />
-          </Link>
-          <Link href="/docs/getting-started/fastify">
-            <Fastify className="size-[64px] dark:invert" />
-            <Fastify className="size-[72px] absolute top-0 left-0 opacity-10 blur-md dark:invert" />
-          </Link>
-          <Link
-            href="/docs/getting-started/hono"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Hono className="size-[56px] relative z-10" />
-            <Hono className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/nitro"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Nitro className="size-[56px] relative z-10" />
-            <Nitro className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/nuxt"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Nuxt className="size-[56px] relative z-10" />
-            <Nuxt className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/sveltekit"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <SvelteKit className="size-[56px] relative z-10" />
-            <SvelteKit className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/nestjs"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Nest className="size-[56px] relative z-10" />
-            <Nest className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-        </div>
-        <div>
-          <Badge
-            variant="secondary"
-            className="rounded-full py-0.5 px-2 col-span-4"
-          >
-            Coming soon
-          </Badge>
-          <div className="flex flex-wrap gap-6 items-center mt-4">
-            <div
-              className="group relative cursor-pointer"
-              onClick={() => handleRequest('TanStack')}
-            >
-              <TanStackGray className="size-[56px] opacity-70 transition-all duration-200 group-hover:opacity-0 ease-out" />
-              <TanStack className="size-[56px] absolute inset-0 opacity-0 transition-all duration-200 group-hover:opacity-100 dark:invert ease-out" />
-            </div>
-          </div>
+      <div className="flex flex-wrap justify-center gap-6 items-center max-w-xl">
+        <Link href="/docs/getting-started/next" className="hover:opacity-70 transition-opacity duration-200">
+          <Next className="size-[56px] dark:invert" />
+        </Link>
+        <Link href="/docs/getting-started/vite" className="hover:opacity-70 transition-opacity duration-200">
+          <Vite className="size-[56px]" />
+        </Link>
+        <Link href="/docs/getting-started/astro" className="hover:opacity-70 transition-opacity duration-200">
+          <AstroLight className="size-[56px] dark:hidden" />
+          <AstroDark className="size-[52px] hidden dark:block" />
+        </Link>
+        <Link href="/docs/getting-started/express" className="hover:opacity-70 transition-opacity duration-200">
+          <Express className="size-[56px] dark:invert" />
+        </Link>
+        <Link href="/docs/getting-started/fastify" className="hover:opacity-70 transition-opacity duration-200">
+          <Fastify className="size-[64px] dark:invert" />
+        </Link>
+        <Link href="/docs/getting-started/hono" className="hover:opacity-70 transition-opacity duration-200">
+          <Hono className="size-[56px]" />
+        </Link>
+        <Link href="/docs/getting-started/nitro" className="hover:opacity-70 transition-opacity duration-200">
+          <Nitro className="size-[56px]" />
+        </Link>
+        <Link href="/docs/getting-started/nuxt" className="hover:opacity-70 transition-opacity duration-200">
+          <Nuxt className="size-[56px]" />
+        </Link>
+        <Link href="/docs/getting-started/sveltekit" className="hover:opacity-70 transition-opacity duration-200">
+          <SvelteKit className="size-[56px]" />
+        </Link>
+        <Link href="/docs/getting-started/nestjs" className="hover:opacity-70 transition-opacity duration-200">
+          <Nest className="size-[56px]" />
+        </Link>
+        <div className="w-px h-12 bg-gray-alpha-200 mx-2 self-center" />
+        <div className="relative cursor-pointer" onClick={handleRequest}>
+          <TanStackGray className="size-[48px] text-gray-700" />
+          <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-xs text-muted-foreground whitespace-nowrap">Coming soon</span>
         </div>
       </div>
     </div>
