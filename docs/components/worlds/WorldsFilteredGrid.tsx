@@ -85,7 +85,15 @@ export function WorldsFilteredGrid({ worlds }: WorldsFilteredGridProps) {
                   ? 'bg-gray-1000 text-background-100 border-transparent'
                   : ''
               }`}
+              role="button"
+              tabIndex={0}
               onClick={() => setFilter(id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  setFilter(id);
+                }
+              }}
             >
               {label}
             </Badge>
