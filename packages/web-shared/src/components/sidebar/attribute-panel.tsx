@@ -637,7 +637,7 @@ export const AttributeBlock = ({
       <div
         className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
       >
-        <span className="text-label-14 text-gray-1000 font-medium">
+        <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
         </span>
         <Skeleton className="h-9 w-full rounded-md" />

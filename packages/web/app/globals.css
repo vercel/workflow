@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@import "../../web-shared/src/styles.css";
 
 /* Scan web-shared package for Tailwind classes */
 @source "../../web-shared/src";
@@ -111,113 +112,51 @@
   --node-bg-tool: #f3e8ff;
   --node-bg-conditional: #fee2e2;
 
-  /* Geist Design System Colors - Light Mode */
-  /* Backgrounds */
-  --ds-background-100: rgb(255 255 255);
-  --ds-background-200: rgb(250 250 250);
-
-  /* Gray Scale */
-  --ds-gray-100: rgb(250 250 250);
-  --ds-gray-200: rgb(245 245 245);
-  --ds-gray-300: rgb(229 229 229);
-  --ds-gray-400: rgb(212 212 212);
-  --ds-gray-500: rgb(163 163 163);
-  --ds-gray-600: rgb(115 115 115);
-  --ds-gray-700: rgb(82 82 82);
-  --ds-gray-800: rgb(64 64 64);
-  --ds-gray-900: rgb(23 23 23);
-  --ds-gray-1000: rgb(0 0 0);
-
-  /* Gray Alpha */
-  --ds-gray-alpha-100: rgba(0, 0, 0, 0.05);
-  --ds-gray-alpha-200: hsla(0, 0%, 0%, 0.081);
-  --ds-gray-alpha-400: hsla(0, 0%, 0%, 0.08);
-  --ds-gray-alpha-700: hsla(0, 0%, 0%, 0.44);
-  --ds-gray-alpha-1000: hsla(0, 0%, 0%, 0.91);
-
-  /* Blue */
-  --ds-blue-100: rgb(224 242 254);
-  --ds-blue-200: rgb(186 230 253);
-  --ds-blue-300: rgb(125 211 252);
-  --ds-blue-400: rgb(56 189 248);
-  --ds-blue-500: rgb(14 165 233);
-  --ds-blue-600: rgb(2 132 199);
-  --ds-blue-700: rgb(3 105 161);
+  /* GeistCN gaps still needed by the app and web-shared consumers */
+  --ds-black: oklch(0 0 0);
+  --ds-white: oklch(1 0 0);
+  --ds-gray-alpha-300: hsla(0, 0%, 0%, 0.1);
+  --ds-gray-alpha-500: hsla(0, 0%, 0%, 0.21);
+  --ds-gray-alpha-600: hsla(0, 0%, 0%, 0.24);
+  --ds-gray-alpha-800: hsla(0, 0%, 0%, 0.51);
+  --ds-gray-alpha-900: hsla(0, 0%, 0%, 0.7);
   --ds-blue-800: rgb(7 89 133);
-  --ds-blue-900: rgb(12 74 110);
   --ds-blue-1000: rgb(8 47 73);
-
-  /* Red */
-  --ds-red-100: rgb(254 226 226);
-  --ds-red-200: rgb(254 202 202);
-  --ds-red-300: rgb(252 165 165);
-  --ds-red-400: rgb(248 113 113);
-  --ds-red-500: rgb(239 68 68);
-  --ds-red-600: rgb(220 38 38);
-  --ds-red-700: rgb(185 28 28);
   --ds-red-800: rgb(153 27 27);
-  --ds-red-900: rgb(127 29 29);
   --ds-red-1000: rgb(69 10 10);
-
-  /* Amber */
-  --ds-amber-100: rgb(254 243 199);
-  --ds-amber-200: rgb(253 230 138);
-  --ds-amber-300: rgb(252 211 77);
-  --ds-amber-400: rgb(251 191 36);
-  --ds-amber-500: rgb(245 158 11);
-  --ds-amber-600: rgb(217 119 6);
-  --ds-amber-700: rgb(180 83 9);
   --ds-amber-800: rgb(146 64 14);
-  --ds-amber-900: rgb(120 53 15);
   --ds-amber-1000: rgb(69 26 3);
-
-  /* Green */
-  --ds-green-100: rgb(220 252 231);
-  --ds-green-200: rgb(187 247 208);
-  --ds-green-300: rgb(134 239 172);
-  --ds-green-400: rgb(74 222 128);
-  --ds-green-500: rgb(34 197 94);
-  --ds-green-600: rgb(22 163 74);
-  --ds-green-700: rgb(21 128 61);
+  --ds-green-50: color-mix(in srgb, var(--ds-green-100) 55%, white);
   --ds-green-800: rgb(22 101 52);
-  --ds-green-900: rgb(20 83 45);
   --ds-green-1000: rgb(5 46 22);
-
-  /* Purple */
-  --ds-purple-100: rgb(243 232 255);
-  --ds-purple-200: rgb(233 213 255);
-  --ds-purple-300: rgb(216 180 254);
-  --ds-purple-400: rgb(192 132 252);
-  --ds-purple-500: rgb(168 85 247);
-  --ds-purple-600: rgb(147 51 234);
-  --ds-purple-700: rgb(126 34 206);
-  --ds-purple-800: rgb(107 33 168);
-  --ds-purple-900: rgb(88 28 135);
-  --ds-purple-1000: rgb(59 7 100);
-
-  /* Pink */
-  --ds-pink-200: rgb(252 231 243);
-  --ds-pink-400: rgb(249 168 212);
-  --ds-pink-500: rgb(244 114 182);
-  --ds-pink-900: rgb(131 24 67);
-
-  /* Teal */
   --ds-teal-100: rgb(204 251 241);
-  --ds-teal-200: rgb(153 246 228);
   --ds-teal-300: rgb(94 234 212);
-  --ds-teal-400: rgb(45 212 191);
-  --ds-teal-500: rgb(20 184 166);
   --ds-teal-600: rgb(13 148 136);
   --ds-teal-700: rgb(15 118 110);
   --ds-teal-800: rgb(17 94 89);
-  --ds-teal-900: rgb(19 78 74);
   --ds-teal-1000: rgb(4 47 46);
-
-  /* Shadows */
-  --ds-shadow-small: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 2px 4px rgba(0, 0, 0, 0.05), 0 12px 24px rgba(0, 0, 0, 0.05);
+  --ds-purple-800: rgb(107 33 168);
+  --ds-purple-1000: rgb(59 7 100);
+  --ds-pink-100: rgb(253 242 248);
+  --ds-pink-300: rgb(251 207 232);
+  --ds-pink-600: rgb(219 39 119);
+  --ds-pink-700: rgb(190 24 93);
+  --ds-pink-800: rgb(157 23 77);
+  --ds-pink-1000: rgb(80 7 36);
+  --ds-shadow-2xs: 0 1px 2px rgba(0, 0, 0, 0.03);
+  --ds-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
   --ds-shadow-medium: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 4px 8px rgba(0, 0, 0, 0.07), 0 24px 48px rgba(0, 0, 0, 0.07);
-  --ds-shadow-large: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 8px 16px rgba(0, 0, 0, 0.10), 0 48px 96px rgba(0, 0, 0, 0.10);
+  --ds-shadow-large: 0 0 0 1px rgba(0, 0, 0, 0.07), 0 8px 16px rgba(0, 0, 0, 0.1), 0 48px 96px rgba(0, 0, 0, 0.1);
+  --ds-shadow-xl: var(--ds-shadow-large);
+  --ds-shadow-2xl: var(--ds-shadow-large);
+  --ds-shadow-border: 0 0 0 1px var(--ds-gray-alpha-200);
+  --ds-shadow-border-small: var(--ds-shadow-small);
+  --ds-shadow-border-medium: var(--ds-shadow-medium);
+  --ds-shadow-border-large: var(--ds-shadow-large);
+  --ds-shadow-tooltip: var(--ds-shadow-medium);
   --ds-shadow-menu: var(--ds-shadow-medium);
+  --ds-shadow-modal: var(--ds-shadow-large);
+  --ds-shadow-fullscreen: var(--ds-shadow-large);
 
   /* Legacy aliases used by trace-viewer.module.css */
   --geist-background: var(--ds-background-100);
@@ -226,7 +165,9 @@
   --accents-7: var(--ds-gray-900);
 }
 
-.dark {
+.dark,
+.dark-theme,
+[data-theme="dark"] {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -268,113 +209,49 @@
   --node-bg-tool: #581c87;
   --node-bg-conditional: #7f1d1d;
 
-  /* Geist Design System Colors - Dark Mode */
-  /* Backgrounds */
-  --ds-background-100: rgb(0 0 0);
-  --ds-background-200: rgb(10 10 10);
-
-  /* Gray Scale */
-  --ds-gray-100: rgb(17 17 17);
-  --ds-gray-200: rgb(23 23 23);
-  --ds-gray-300: rgb(41 41 41);
-  --ds-gray-400: rgb(64 64 64);
-  --ds-gray-500: rgb(115 115 115);
-  --ds-gray-600: rgb(163 163 163);
-  --ds-gray-700: rgb(212 212 212);
-  --ds-gray-800: rgb(229 229 229);
-  --ds-gray-900: rgb(245 245 245);
-  --ds-gray-1000: rgb(255 255 255);
-
-  /* Gray Alpha - Dark Mode */
-  --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
-  --ds-gray-alpha-200: rgba(255, 255, 255, 0.09);
-  --ds-gray-alpha-400: rgba(255, 255, 255, 0.14);
-  --ds-gray-alpha-700: rgba(255, 255, 255, 0.45);
-  --ds-gray-alpha-1000: rgba(255, 255, 255, 0.92);
-
-  /* Blue - Dark Mode */
-  --ds-blue-100: rgb(8 47 73);
-  --ds-blue-200: rgb(12 74 110);
-  --ds-blue-300: rgb(7 89 133);
-  --ds-blue-400: rgb(3 105 161);
-  --ds-blue-500: rgb(2 132 199);
-  --ds-blue-600: rgb(14 165 233);
-  --ds-blue-700: rgb(56 189 248);
+  /* GeistCN gaps still needed by the app and web-shared consumers */
+  --ds-gray-alpha-300: rgba(255, 255, 255, 0.13);
+  --ds-gray-alpha-500: rgba(255, 255, 255, 0.24);
+  --ds-gray-alpha-600: rgba(255, 255, 255, 0.51);
+  --ds-gray-alpha-800: rgba(255, 255, 255, 0.47);
+  --ds-gray-alpha-900: rgba(255, 255, 255, 0.61);
   --ds-blue-800: rgb(125 211 252);
-  --ds-blue-900: rgb(186 230 253);
   --ds-blue-1000: rgb(224 242 254);
-
-  /* Red - Dark Mode */
-  --ds-red-100: rgb(69 10 10);
-  --ds-red-200: rgb(127 29 29);
-  --ds-red-300: rgb(153 27 27);
-  --ds-red-400: rgb(185 28 28);
-  --ds-red-500: rgb(220 38 38);
-  --ds-red-600: rgb(239 68 68);
-  --ds-red-700: rgb(248 113 113);
   --ds-red-800: rgb(252 165 165);
-  --ds-red-900: rgb(254 202 202);
   --ds-red-1000: rgb(254 226 226);
-
-  /* Amber - Dark Mode */
-  --ds-amber-100: rgb(69 26 3);
-  --ds-amber-200: rgb(120 53 15);
-  --ds-amber-300: rgb(146 64 14);
-  --ds-amber-400: rgb(180 83 9);
-  --ds-amber-500: rgb(217 119 6);
-  --ds-amber-600: rgb(245 158 11);
-  --ds-amber-700: rgb(251 191 36);
   --ds-amber-800: rgb(252 211 77);
-  --ds-amber-900: rgb(253 230 138);
   --ds-amber-1000: rgb(254 243 199);
-
-  /* Green - Dark Mode */
-  --ds-green-100: rgb(5 46 22);
-  --ds-green-200: rgb(20 83 45);
-  --ds-green-300: rgb(22 101 52);
-  --ds-green-400: rgb(21 128 61);
-  --ds-green-500: rgb(22 163 74);
-  --ds-green-600: rgb(34 197 94);
-  --ds-green-700: rgb(74 222 128);
+  --ds-green-50: color-mix(in srgb, var(--ds-green-100) 35%, black);
   --ds-green-800: rgb(134 239 172);
-  --ds-green-900: rgb(187 247 208);
   --ds-green-1000: rgb(220 252 231);
-
-  /* Purple - Dark Mode */
-  --ds-purple-100: rgb(59 7 100);
-  --ds-purple-200: rgb(88 28 135);
-  --ds-purple-300: rgb(107 33 168);
-  --ds-purple-400: rgb(126 34 206);
-  --ds-purple-500: rgb(147 51 234);
-  --ds-purple-600: rgb(168 85 247);
-  --ds-purple-700: rgb(192 132 252);
-  --ds-purple-800: rgb(216 180 254);
-  --ds-purple-900: rgb(233 213 255);
-  --ds-purple-1000: rgb(243 232 255);
-
-  /* Pink - Dark Mode */
-  --ds-pink-200: rgb(131 24 67);
-  --ds-pink-400: rgb(157 23 77);
-  --ds-pink-500: rgb(190 24 93);
-  --ds-pink-900: rgb(251 207 232);
-
-  /* Teal - Dark Mode */
   --ds-teal-100: rgb(4 47 46);
-  --ds-teal-200: rgb(19 78 74);
   --ds-teal-300: rgb(17 94 89);
-  --ds-teal-400: rgb(15 118 110);
-  --ds-teal-500: rgb(13 148 136);
   --ds-teal-600: rgb(20 184 166);
   --ds-teal-700: rgb(45 212 191);
   --ds-teal-800: rgb(94 234 212);
-  --ds-teal-900: rgb(153 246 228);
   --ds-teal-1000: rgb(204 251 241);
-
-  /* Shadows - Dark Mode */
-  --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
+  --ds-purple-800: rgb(216 180 254);
+  --ds-purple-1000: rgb(243 232 255);
+  --ds-pink-100: rgb(80 7 36);
+  --ds-pink-300: rgb(131 24 67);
+  --ds-pink-600: rgb(219 39 119);
+  --ds-pink-700: rgb(244 114 182);
+  --ds-pink-800: rgb(249 168 212);
+  --ds-pink-1000: rgb(253 242 248);
+  --ds-shadow-2xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --ds-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
   --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
   --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
+  --ds-shadow-xl: var(--ds-shadow-large);
+  --ds-shadow-2xl: var(--ds-shadow-large);
+  --ds-shadow-border: 0 0 0 1px var(--ds-gray-alpha-200);
+  --ds-shadow-border-small: var(--ds-shadow-small);
+  --ds-shadow-border-medium: var(--ds-shadow-medium);
+  --ds-shadow-border-large: var(--ds-shadow-large);
+  --ds-shadow-tooltip: var(--ds-shadow-medium);
   --ds-shadow-menu: var(--ds-shadow-medium);
+  --ds-shadow-modal: var(--ds-shadow-large);
+  --ds-shadow-fullscreen: var(--ds-shadow-large);
 
   /* Legacy aliases used by trace-viewer.module.css */
   --geist-background: var(--ds-background-100);
@@ -418,101 +295,120 @@
     --sidebar-accent-foreground: oklch(0.985 0 0);
     --sidebar-border: oklch(1 0 0 / 10%);
     --sidebar-ring: oklch(0.556 0 0);
-
-    /* Workflow node background colors - Dark Mode */
     --node-bg-step: #14532d;
     --node-bg-start: #1e3a5f;
     --node-bg-primitive: #7c2d12;
     --node-bg-agent: #831843;
     --node-bg-tool: #581c87;
     --node-bg-conditional: #7f1d1d;
-
-    /* Geist Design System Colors - Dark Mode (same as .dark) */
-    --ds-background-100: rgb(0 0 0);
-    --ds-background-200: rgb(10 10 10);
-    --ds-gray-100: rgb(17 17 17);
-    --ds-gray-200: rgb(23 23 23);
-    --ds-gray-300: rgb(41 41 41);
-    --ds-gray-400: rgb(64 64 64);
-    --ds-gray-500: rgb(115 115 115);
-    --ds-gray-600: rgb(163 163 163);
-    --ds-gray-700: rgb(212 212 212);
-    --ds-gray-800: rgb(229 229 229);
-    --ds-gray-900: rgb(245 245 245);
-    --ds-gray-1000: rgb(255 255 255);
+    --ds-background-100: hsl(0, 0%, 7%);
+    --ds-background-200: hsl(0, 0%, 10%);
+    --ds-gray-100: hsl(0, 0%, 11%);
+    --ds-gray-200: hsl(0, 0%, 14%);
+    --ds-gray-300: hsl(0, 0%, 17%);
+    --ds-gray-400: hsl(0, 0%, 14%);
+    --ds-gray-500: hsl(0, 0%, 23%);
+    --ds-gray-600: hsl(0, 0%, 34%);
+    --ds-gray-700: hsl(0, 0%, 44%);
+    --ds-gray-800: hsl(0, 0%, 51%);
+    --ds-gray-900: hsl(0, 0%, 63%);
+    --ds-gray-1000: hsl(0, 0%, 93%);
     --ds-gray-alpha-100: rgba(255, 255, 255, 0.06);
     --ds-gray-alpha-200: rgba(255, 255, 255, 0.09);
     --ds-gray-alpha-400: rgba(255, 255, 255, 0.14);
     --ds-gray-alpha-700: rgba(255, 255, 255, 0.45);
     --ds-gray-alpha-1000: rgba(255, 255, 255, 0.92);
-    --ds-blue-100: rgb(8 47 73);
-    --ds-blue-200: rgb(12 74 110);
-    --ds-blue-300: rgb(7 89 133);
-    --ds-blue-400: rgb(3 105 161);
-    --ds-blue-500: rgb(2 132 199);
-    --ds-blue-600: rgb(14 165 233);
-    --ds-blue-700: rgb(56 189 248);
+    --ds-blue-100: hsl(216, 50%, 12%);
+    --ds-blue-200: hsl(214, 59%, 15%);
+    --ds-blue-300: hsl(213, 71%, 20%);
+    --ds-blue-400: hsl(212, 78%, 23%);
+    --ds-blue-500: hsl(211, 86%, 27%);
+    --ds-blue-600: hsl(210, 92%, 36%);
+    --ds-blue-700: hsl(210, 100%, 45%);
+    --ds-blue-900: hsl(210, 100%, 72%);
+    --ds-red-100: hsl(357, 37%, 12%);
+    --ds-red-200: hsl(357, 46%, 16%);
+    --ds-red-300: hsl(356, 54%, 22%);
+    --ds-red-400: hsl(357, 55%, 26%);
+    --ds-red-500: hsl(357, 60%, 32%);
+    --ds-red-600: hsl(358, 75%, 44%);
+    --ds-red-700: hsl(358, 75%, 59%);
+    --ds-red-900: hsl(358, 100%, 76%);
+    --ds-amber-100: hsl(35, 100%, 8%);
+    --ds-amber-200: hsl(33, 100%, 11%);
+    --ds-amber-300: hsl(33, 100%, 15%);
+    --ds-amber-400: hsl(35, 100%, 17%);
+    --ds-amber-500: hsl(35, 100%, 22%);
+    --ds-amber-600: hsl(36, 100%, 30%);
+    --ds-amber-700: hsl(39, 100%, 57%);
+    --ds-amber-900: hsl(39, 100%, 77%);
+    --ds-green-100: hsl(136, 50%, 9%);
+    --ds-green-200: hsl(137, 50%, 12%);
+    --ds-green-300: hsl(136, 50%, 14%);
+    --ds-green-400: hsl(135, 70%, 16%);
+    --ds-green-500: hsl(135, 70%, 23%);
+    --ds-green-600: hsl(135, 70%, 34%);
+    --ds-green-700: hsl(131, 41%, 46%);
+    --ds-green-900: hsl(120, 46%, 72%);
+    --ds-teal-200: hsl(169, 78%, 10%);
+    --ds-teal-400: hsl(170, 70%, 17%);
+    --ds-teal-500: hsl(170, 70%, 22%);
+    --ds-teal-900: hsl(168, 80%, 60%);
+    --ds-purple-100: hsl(283, 30%, 12%);
+    --ds-purple-200: hsl(281, 38%, 16%);
+    --ds-purple-300: hsl(279, 44%, 23%);
+    --ds-purple-400: hsl(277, 46%, 28%);
+    --ds-purple-500: hsl(274, 49%, 35%);
+    --ds-purple-600: hsl(272, 51%, 54%);
+    --ds-purple-700: hsl(272, 51%, 54%);
+    --ds-purple-900: hsl(275, 80%, 71%);
+    --ds-pink-200: hsl(335, 32%, 14%);
+    --ds-pink-400: hsl(336, 44%, 25%);
+    --ds-pink-500: hsl(336, 50%, 32%);
+    --ds-pink-900: hsl(336, 80%, 70%);
+    --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.3);
+    --ds-gray-alpha-300: rgba(255, 255, 255, 0.13);
+    --ds-gray-alpha-500: rgba(255, 255, 255, 0.24);
+    --ds-gray-alpha-600: rgba(255, 255, 255, 0.51);
+    --ds-gray-alpha-800: rgba(255, 255, 255, 0.47);
+    --ds-gray-alpha-900: rgba(255, 255, 255, 0.61);
     --ds-blue-800: rgb(125 211 252);
-    --ds-blue-900: rgb(186 230 253);
     --ds-blue-1000: rgb(224 242 254);
-    --ds-red-100: rgb(69 10 10);
-    --ds-red-200: rgb(127 29 29);
-    --ds-red-300: rgb(153 27 27);
-    --ds-red-400: rgb(185 28 28);
-    --ds-red-500: rgb(220 38 38);
-    --ds-red-600: rgb(239 68 68);
-    --ds-red-700: rgb(248 113 113);
     --ds-red-800: rgb(252 165 165);
-    --ds-red-900: rgb(254 202 202);
     --ds-red-1000: rgb(254 226 226);
-    --ds-amber-100: rgb(69 26 3);
-    --ds-amber-200: rgb(120 53 15);
-    --ds-amber-300: rgb(146 64 14);
-    --ds-amber-400: rgb(180 83 9);
-    --ds-amber-500: rgb(217 119 6);
-    --ds-amber-600: rgb(245 158 11);
-    --ds-amber-700: rgb(251 191 36);
     --ds-amber-800: rgb(252 211 77);
-    --ds-amber-900: rgb(253 230 138);
     --ds-amber-1000: rgb(254 243 199);
-    --ds-green-100: rgb(5 46 22);
-    --ds-green-200: rgb(20 83 45);
-    --ds-green-300: rgb(22 101 52);
-    --ds-green-400: rgb(21 128 61);
-    --ds-green-500: rgb(22 163 74);
-    --ds-green-600: rgb(34 197 94);
-    --ds-green-700: rgb(74 222 128);
+    --ds-green-50: color-mix(in srgb, var(--ds-green-100) 35%, black);
     --ds-green-800: rgb(134 239 172);
-    --ds-green-900: rgb(187 247 208);
     --ds-green-1000: rgb(220 252 231);
-    --ds-purple-100: rgb(59 7 100);
-    --ds-purple-200: rgb(88 28 135);
-    --ds-purple-300: rgb(107 33 168);
-    --ds-purple-400: rgb(126 34 206);
-    --ds-purple-500: rgb(147 51 234);
-    --ds-purple-600: rgb(168 85 247);
-    --ds-purple-700: rgb(192 132 252);
-    --ds-purple-800: rgb(216 180 254);
-    --ds-purple-900: rgb(233 213 255);
-    --ds-purple-1000: rgb(243 232 255);
-    --ds-pink-200: rgb(131 24 67);
-    --ds-pink-400: rgb(157 23 77);
-    --ds-pink-500: rgb(190 24 93);
-    --ds-pink-900: rgb(251 207 232);
     --ds-teal-100: rgb(4 47 46);
-    --ds-teal-200: rgb(19 78 74);
     --ds-teal-300: rgb(17 94 89);
-    --ds-teal-400: rgb(15 118 110);
-    --ds-teal-500: rgb(13 148 136);
     --ds-teal-600: rgb(20 184 166);
     --ds-teal-700: rgb(45 212 191);
     --ds-teal-800: rgb(94 234 212);
-    --ds-teal-900: rgb(153 246 228);
     --ds-teal-1000: rgb(204 251 241);
-    --ds-shadow-small: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 2px 4px rgba(0, 0, 0, 0.3), 0 12px 24px rgba(0, 0, 0, 0.3);
+    --ds-purple-800: rgb(216 180 254);
+    --ds-purple-1000: rgb(243 232 255);
+    --ds-pink-100: rgb(80 7 36);
+    --ds-pink-300: rgb(131 24 67);
+    --ds-pink-600: rgb(219 39 119);
+    --ds-pink-700: rgb(244 114 182);
+    --ds-pink-800: rgb(249 168 212);
+    --ds-pink-1000: rgb(253 242 248);
+    --ds-shadow-2xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+    --ds-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
     --ds-shadow-medium: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 4px 8px rgba(0, 0, 0, 0.4), 0 24px 48px rgba(0, 0, 0, 0.4);
     --ds-shadow-large: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 8px 16px rgba(0, 0, 0, 0.5), 0 48px 96px rgba(0, 0, 0, 0.5);
+    --ds-shadow-xl: var(--ds-shadow-large);
+    --ds-shadow-2xl: var(--ds-shadow-large);
+    --ds-shadow-border: 0 0 0 1px var(--ds-gray-alpha-200);
+    --ds-shadow-border-small: var(--ds-shadow-small);
+    --ds-shadow-border-medium: var(--ds-shadow-medium);
+    --ds-shadow-border-large: var(--ds-shadow-large);
+    --ds-shadow-tooltip: var(--ds-shadow-medium);
     --ds-shadow-menu: var(--ds-shadow-medium);
+    --ds-shadow-modal: var(--ds-shadow-large);
+    --ds-shadow-fullscreen: var(--ds-shadow-large);
     --geist-background: var(--ds-background-100);
     --accents-2: var(--ds-gray-300);
     --accents-5: var(--ds-gray-700);
@@ -524,9 +420,11 @@
   * {
     @apply border-border outline-ring/50;
   }
+
   body {
     @apply bg-background text-foreground overscroll-none;
   }
+
   html {
     @apply overscroll-none;
   }
@@ -536,6 +434,7 @@
   0%, 100% {
     background-position: 0% 50%;
   }
+
   50% {
     background-position: 100% 50%;
   }
