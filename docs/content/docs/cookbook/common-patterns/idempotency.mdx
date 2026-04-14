@@ -83,39 +83,12 @@ async function sendReceipt(customerId: string, chargeId: string): Promise<void> 
 }
 ```
 
-## Pattern: Workflow-level deduplication
-
-Use the workflow `runId` as a natural deduplication key. Start workflows with a deterministic ID so re-triggering the same event doesn't create a second run:
-
-{/* @skip-typecheck: start() doesn't support id option yet -- aspirational API */}
-
-```typescript
-import { start } from "workflow/api";
-
-// POST /api/webhooks/stripe
-export async function POST(request: Request) {
-  const event = await request.json();
-
-  // Use the Stripe event ID as the workflow run ID.
-  // If this webhook is delivered twice, the second start()
-  // returns the existing run instead of creating a new one.
-  const run = await start({
-    id: `stripe-${event.id}`,
-    workflow: processStripeEvent,
-    input: event,
-  });
-
-  return Response.json({ runId: run.id });
-}
-```
-
 ## Race condition caveats
 
 Workflow does not currently provide distributed locking or true exactly-once delivery across concurrent runs. If two workflow runs could process the same entity concurrently:
 
 - **Rely on the external API's idempotency** (like Stripe's `Idempotency-Key`) rather than checking a local flag.
 - **Don't use check-then-act patterns** like "read a flag, then write if not set" -- another run could read the same flag between your read and write.
-- **Use deterministic workflow IDs** to prevent duplicate runs from the same trigger event.
 
 If your external API doesn't support idempotency keys natively, consider adding a deduplication layer (e.g., a database unique constraint on the operation ID).
 
@@ -131,4 +104,4 @@ If your external API doesn't support idempotency keys natively, consider adding 
 - [`"use workflow"`](/docs/api-reference/workflow/use-workflow) -- declares the orchestrator function
 - [`"use step"`](/docs/api-reference/workflow/use-step) -- declares step functions with full Node.js access
 - [`getStepMetadata()`](/docs/api-reference/step/get-step-metadata) -- provides the deterministic `stepId` for idempotency keys
-- [`start()`](/docs/api-reference/workflow-api/start) -- starts a workflow with an optional deterministic ID
+- [`start()`](/docs/api-reference/workflow-api/start) -- starts a new workflow run
