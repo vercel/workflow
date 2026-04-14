@@ -30,6 +30,7 @@ import {
   runInContext,
   type SpanHandle,
 } from './telemetry.js';
+import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 import type { CompatibleLanguageModel } from './types.js';
 
@@ -358,7 +359,7 @@ export async function* streamTextIterator({
                   type: 'tool-call' as const,
                   toolCallId: toolCall.toolCallId,
                   toolName: toolCall.toolName,
-                  input: JSON.parse(toolCall.input),
+                  input: safeParseToolCallInput(toolCall.input),
                   ...(meta != null ? { providerOptions: meta } : {}),
                 };
               }),
