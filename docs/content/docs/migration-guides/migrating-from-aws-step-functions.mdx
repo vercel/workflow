@@ -46,8 +46,13 @@ The migration replaces declarative configuration with idiomatic TypeScript and c
 Start with a single Task state. In ASL, even "call one Lambda" requires a state machine shell:
 
 ```json title="stateMachine.asl.json"
-// Before (ASL)
-"LoadOrder": { "Type": "Task", "Resource": "arn:...:function:loadOrder", "End": true }
+// Before (ASL) — excerpt from a state machine's "States" block
+"LoadOrder": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::lambda:invoke",
+  "Parameters": { "FunctionName": "loadOrder", "Payload.$": "$" },
+  "End": true
+}
 ```
 
 ```typescript title="workflow/workflows/order.ts"
@@ -101,8 +106,19 @@ export async function POST(request: Request) {
 The minimal ASL for a callback is a Task with `.waitForTaskToken`:
 
 ```json title="approval.asl.json"
-// Before (ASL)
-"WaitForApproval": { "Type": "Task", "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken", "End": true }
+// Before (ASL) — excerpt; paired with a consumer that calls SendTaskSuccess
+"WaitForApproval": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+  "Parameters": {
+    "QueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789012/approvals",
+    "MessageBody": {
+      "refundId.$": "$.refundId",
+      "TaskToken.$": "$$.Task.Token"
+    }
+  },
+  "End": true
+}
 ```
 
 ```typescript title="workflow/workflows/refund.ts"
@@ -140,8 +156,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ refundI
 In ASL, branching after the wait requires a Choice state. In TypeScript, it's just `if`/`else`:
 
 ```json
-// Before (ASL)
-"CheckApproval": { "Type": "Choice", "Choices": [{ "Variable": "$.approved", "BooleanEquals": true, "Next": "Approved" }], "Default": "Rejected" }
+// Before (ASL) — excerpt; "Approved" and "Rejected" are sibling states in "States"
+"CheckApproval": {
+  "Type": "Choice",
+  "Choices": [
+    { "Variable": "$.approved", "BooleanEquals": true, "Next": "Approved" }
+  ],
+  "Default": "Rejected"
+}
 ```
 
 ```typescript
