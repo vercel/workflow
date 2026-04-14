@@ -90,7 +90,7 @@ export default defineConfig({
   dts: true,
   sourcemap: true,
   clean: true,
-  external: ["workflow"],
+  external: ["workflow"], // [!code highlight]
 });
 ```
 
@@ -105,7 +105,7 @@ The fix is a **re-export file**. The consumer creates a file in their `workflows
 ```typescript lineNumbers
 // workflows/media.ts (in the consumer's project)
 // Re-export library workflows so the build system assigns stable IDs
-export * from "@acme/media/workflows";
+export * from "@acme/media/workflows"; // [!code highlight]
 ```
 
 This one-line file is all that's needed. The workflow compiler transforms this file, discovers the workflow and step functions from the library, and assigns IDs that are stable across deployments.
@@ -126,14 +126,12 @@ When you publish a workflow library, every step function's inputs and outputs ar
 
 ### 1. Everything Must Be Serializable
 
-Step inputs and outputs must be JSON-serializable. Do not pass or return:
+Step inputs and outputs must be serializable. The workflow runtime supports a rich set of types beyond plain JSON — including `Date`, `RegExp`, `Map`, `Set`, `BigInt`, `Uint8Array`, `URL`, `Error`, and class instances that implement [custom class serialization](/docs/cookbook/advanced/custom-serialization). See the [serialization reference](/docs/foundations/serialization) for the full list of supported types. Do not pass or return:
 
-- Class instances (unless they implement custom serialization)
 - Functions or closures
-- `Map`, `Set`, `WeakRef`, or other non-JSON types
-- Circular references
+- `WeakRef`, `WeakMap`, or `WeakSet`
 
-If your library works with complex objects, pass serializable configuration into steps and reconstruct the objects inside the step body.
+If your library works with complex objects that don't implement custom class serialization, pass serializable configuration into steps and reconstruct the objects inside the step body.
 
 {/* @skip-typecheck - good/bad comparison with duplicate function names */}
 ```typescript lineNumbers
@@ -154,45 +152,28 @@ async function callExternalApi(client: ApiClient, params: Record<string, string>
 
 See [Serializable Steps](/docs/cookbook/advanced/serializable-steps) for the step-as-factory pattern.
 
-### 2. Secrets Must Not Appear in Step I/O
+### 2. Credentials
 
-Step inputs and outputs are persisted in the event log and may be visible in observability tools. **Never pass secrets as step arguments or return them from steps.**
+With workflow encryption enabled, credentials passed as step arguments are encrypted in the event log, so either approach is valid:
 
 {/* @skip-typecheck - good/bad comparison with duplicate function names */}
 ```typescript lineNumbers
-// Bad: API key appears in the event log
-async function fetchData(apiKey: string, query: string) {
-  "use step";
-  const client = createClient(apiKey);
-  return await client.fetch(query);
-}
-
-// Good: resolve credentials inside the step from environment
+// Option A: resolve credentials from environment inside the step
 async function fetchData(query: string) {
   "use step";
   const client = createClient(process.env.API_KEY!);
   return await client.fetch(query);
 }
-```
 
-Similarly, helper functions that create API clients using credentials should **not** be marked as steps. If a function's return value would contain sensitive data, keep it as a plain function called inside a step body:
-
-{/* @skip-typecheck - references undefined ServiceClient */}
-```typescript lineNumbers
-// This is NOT a step — intentionally, to avoid credentials in step I/O
-function createAuthenticatedClient(credentials: { token: string }) {
-  return new ServiceClient({ auth: credentials.token });
-}
-
-async function processItem(itemId: string) {
+// Option B: pass credentials as step arguments (encrypted in the event log)
+async function fetchData(apiKey: string, query: string) {
   "use step";
-  // Resolve credentials and create client inside the step
-  const client = createAuthenticatedClient({
-    token: process.env.SERVICE_TOKEN!,
-  });
-  return await client.process(itemId);
+  const client = createClient(apiKey);
+  return await client.fetch(query);
 }
 ```
+
+The choice is a matter of library API design preference. Resolving from environment variables keeps the step signature simpler, while passing credentials explicitly makes dependencies visible and can be easier to test.
 
 ## Testing Workflow Libraries
 
@@ -204,7 +185,7 @@ Create a minimal test server that re-exports your library's workflows, just like
 
 ```typescript lineNumbers
 // test-server/workflows.ts
-export * from "@acme/media/workflows";
+export * from "@acme/media/workflows"; // [!code highlight]
 ```
 
 This test server acts as a stand-in consumer app. Point your test runner at it to exercise the full workflow lifecycle: start, replay, and completion.
@@ -267,7 +248,7 @@ async function isWorkflowRuntime(): Promise<boolean> {
   try {
     const wf = await import("workflow");
     if (typeof wf.getWorkflowMetadata !== "function") return false;
-    wf.getWorkflowMetadata();
+    wf.getWorkflowMetadata(); // [!code highlight]
     return true;
   } catch {
     return false;
@@ -285,8 +266,8 @@ Before publishing a workflow library:
 - [ ] Separate `./workflows` export in `package.json` for the raw workflow functions
 - [ ] `workflow` is marked as **external** in your bundler config
 - [ ] Documentation tells consumers to re-export from `@your-lib/workflows`
-- [ ] No secrets in step inputs or outputs — credentials are resolved at runtime inside steps
-- [ ] All step I/O is JSON-serializable
+- [ ] Credentials are either resolved from environment variables or passed explicitly (both are safe with encryption enabled)
+- [ ] All step I/O uses [supported serializable types](/docs/foundations/serialization)
 - [ ] Integration tests use a test server with re-exported workflows
 - [ ] Both with-workflow and without-workflow code paths are tested
 

@@ -31,7 +31,7 @@ export async function processBatch(items: string[], batchSize: number = 5) {
     const batch = items.slice(i, i + batchSize);
 
     // Run batch in parallel -- failures are isolated
-    const outcomes = await Promise.allSettled(
+    const outcomes = await Promise.allSettled( // [!code highlight]
       batch.map((item) => processItem(item))
     );
 
@@ -46,7 +46,7 @@ export async function processBatch(items: string[], batchSize: number = 5) {
 
     // Pace between batches to avoid overload
     if (i + batchSize < items.length) {
-      await sleep("1s");
+      await sleep("1s"); // [!code highlight]
     }
   }
 
@@ -81,7 +81,7 @@ When you need results from multiple independent sources before continuing, fan o
 export async function scatterGather(query: string) {
   "use workflow";
 
-  const [web, database, cache] = await Promise.allSettled([
+  const [web, database, cache] = await Promise.allSettled([ // [!code highlight]
     searchWeb(query),
     searchDatabase(query),
     searchCache(query),
@@ -128,7 +128,7 @@ async function processConcurrently<T>(
 
   for (let i = 0; i < items.length; i += maxConcurrent) {
     const batch = items.slice(i, i + maxConcurrent);
-    const batchResults = await Promise.all(batch.map(processor));
+    const batchResults = await Promise.all(batch.map(processor)); // [!code highlight]
     results.push(...batchResults);
   }
 

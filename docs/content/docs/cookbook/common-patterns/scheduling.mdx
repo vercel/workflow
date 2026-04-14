@@ -25,13 +25,13 @@ export async function onboardingDrip(email: string) {
 
   await sendEmail(email, "welcome");
 
-  await sleep("1d");
+  await sleep("1d"); // [!code highlight]
   await sendEmail(email, "getting-started-tips");
 
-  await sleep("2d");
+  await sleep("2d"); // [!code highlight]
   await sendEmail(email, "feature-highlights");
 
-  await sleep("4d");
+  await sleep("4d"); // [!code highlight]
   await sendEmail(email, "follow-up");
 
   return { email, status: "completed", totalDays: 7 };
@@ -70,9 +70,9 @@ export async function scheduleReminder(userId: string, delayMs: number) {
   let sendAt = new Date(Date.now() + delayMs);
   const action = reminderActionHook.create({ token: `reminder:${userId}` });
 
-  const outcome = await Promise.race([
-    sleep(sendAt).then(() => ({ kind: "time" as const })),
-    action.then((payload) => ({ kind: "action" as const, payload })),
+  const outcome = await Promise.race([ // [!code highlight]
+    sleep(sendAt).then(() => ({ kind: "time" as const })), // [!code highlight]
+    action.then((payload) => ({ kind: "action" as const, payload })), // [!code highlight]
   ]);
 
   if (outcome.kind === "action") {
@@ -107,7 +107,7 @@ import { resumeHook } from "workflow/api";
 // POST /api/reminder/cancel
 export async function POST(request: Request) {
   const { userId } = await request.json();
-  await resumeHook(`reminder:${userId}`, { type: "cancel" });
+  await resumeHook(`reminder:${userId}`, { type: "cancel" }); // [!code highlight]
   return Response.json({ ok: true });
 }
 ```
@@ -137,12 +137,12 @@ export async function collectAndSendDigest(
   const events: EventPayload[] = [];
 
   while (true) {
-    const outcome = await Promise.race([
+    const outcome = await Promise.race([ // [!code highlight]
       hook.then((payload) => ({ kind: "event" as const, payload })),
       windowClosed,
     ]);
 
-    if (outcome.kind === "window_closed") break;
+    if (outcome.kind === "window_closed") break; // [!code highlight]
     events.push(outcome.payload);
   }
 
@@ -172,9 +172,9 @@ import { sleep, FatalError } from "workflow";
 export async function processWithTimeout(jobId: string) {
   "use workflow";
 
-  const result = await Promise.race([
+  const result = await Promise.race([ // [!code highlight]
     processData(jobId),
-    sleep("30s").then(() => "timeout" as const),
+    sleep("30s").then(() => "timeout" as const), // [!code highlight]
   ]);
 
   if (result === "timeout") {
@@ -209,9 +209,9 @@ export async function waitForTranscription(jobId: string) {
   const maxAttempts = 36; // ~3 minutes at 5s intervals
 
   while (status === "processing" && attempts < maxAttempts) {
-    await sleep(5000);
+    await sleep(5000); // [!code highlight]
     attempts++;
-    const result = await checkJobStatus(jobId);
+    const result = await checkJobStatus(jobId); // [!code highlight]
     status = result.status;
   }
 

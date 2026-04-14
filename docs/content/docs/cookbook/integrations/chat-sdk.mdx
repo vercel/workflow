@@ -47,7 +47,7 @@ export async function chat(messages: UIMessage[]) {
     tools: { /* your tools here */ },
   });
 
-  const result = await agent.stream({
+  const result = await agent.stream({ // [!code highlight]
     messages: await convertToModelMessages(messages),
     writable: getWritable<UIMessageChunk>(),
   });
@@ -57,12 +57,18 @@ export async function chat(messages: UIMessage[]) {
 ```
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
+import { createUIMessageStreamResponse } from "ai";
 import { start } from "workflow/api";
 import { chat } from "@/workflows/chat";
 
 export async function POST(request: Request) {
   const { messages } = await request.json();
-  return start(chat, [messages]);
+  const run = await start(chat, [messages]); // [!code highlight]
+
+  return createUIMessageStreamResponse({
+    stream: run.readable,
+    headers: { "x-workflow-run-id": run.runId },
+  });
 }
 ```
 
@@ -76,7 +82,7 @@ import { WorkflowChatTransport } from "@workflow/ai";
 
 export function Chat() {
   const chat = useChat({
-    transport: new WorkflowChatTransport({ api: "/api/chat" }),
+    transport: new WorkflowChatTransport({ api: "/api/chat" }), // [!code highlight]
   });
 
   return (
@@ -106,7 +112,7 @@ import {
 import { defineHook, getWritable, getWorkflowMetadata } from "workflow";
 import { z } from "zod";
 
-const chatMessageHook = defineHook({
+const chatMessageHook = defineHook({ // [!code highlight]
   schema: z.object({
     messages: z.array(z.any()),
   }),
@@ -135,7 +141,7 @@ export async function durableChat(initialMessages: UIMessage[]) {
   // Subsequent turns -- wait for new messages via hook
   while (true) {
     const hook = chatMessageHook.create({ token: workflowRunId });
-    const { messages: newMessages } = await hook;
+    const { messages: newMessages } = await hook; // [!code highlight]
 
     allMessages = [
       ...allMessages,
@@ -157,12 +163,18 @@ export async function durableChat(initialMessages: UIMessage[]) {
 You need two routes: one to start the session, another to send follow-up messages.
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
+import { createUIMessageStreamResponse } from "ai";
 import { start } from "workflow/api";
 import { durableChat } from "@/workflows/durable-chat";
 
 export async function POST(request: Request) {
   const { messages } = await request.json();
-  return start(durableChat, [messages]);
+  const run = await start(durableChat, [messages]); // [!code highlight]
+
+  return createUIMessageStreamResponse({
+    stream: run.readable,
+    headers: { "x-workflow-run-id": run.runId },
+  });
 }
 ```
 
@@ -171,7 +183,7 @@ import { resumeHook } from "workflow/api";
 
 export async function POST(request: Request) {
   const { runId, messages } = await request.json();
-  await resumeHook(runId, { messages });
+  await resumeHook(runId, { messages }); // [!code highlight]
   return new Response("OK");
 }
 ```

@@ -40,17 +40,17 @@ export async function sandboxPipeline(input: {
 }) {
   "use workflow";
 
-  const sandbox = await Sandbox.create({ template: input.template });
+  const sandbox = await Sandbox.create({ template: input.template }); // [!code highlight]
 
   try {
     const results = [];
     for (const command of input.commands) {
-      const result = await sandbox.runCommand(command);
+      const result = await sandbox.runCommand(command); // [!code highlight]
       results.push(result);
     }
     return { status: "completed", results };
   } catch (error) {
-    await sandbox.destroy();
+    await sandbox.destroy(); // [!code highlight]
     throw error;
   }
 }
@@ -85,7 +85,7 @@ export async function codeAgent(messages: UIMessage[]) {
           template: z.string().describe("The sandbox template (e.g., 'node', 'python')"),
         }),
         execute: async ({ template }) => {
-          activeSandbox = await Sandbox.create({ template });
+          activeSandbox = await Sandbox.create({ template }); // [!code highlight]
           return { sandboxId: activeSandbox.id };
         },
       },
@@ -96,7 +96,7 @@ export async function codeAgent(messages: UIMessage[]) {
         }),
         execute: async ({ command }) => {
           if (!activeSandbox) throw new Error("No active sandbox");
-          return activeSandbox.runCommand(command);
+          return activeSandbox.runCommand(command); // [!code highlight]
         },
       },
       cleanupSandbox: {
@@ -104,7 +104,7 @@ export async function codeAgent(messages: UIMessage[]) {
         inputSchema: z.object({}),
         execute: async () => {
           if (!activeSandbox) throw new Error("No active sandbox");
-          await activeSandbox.destroy();
+          await activeSandbox.destroy(); // [!code highlight]
           activeSandbox = null;
           return { cleaned: true };
         },

@@ -28,9 +28,9 @@ declare function handleFeedback(ticketId: string): Promise<void>; // @setup
 export async function routeTicket(ticketId: string, subject: string) {
   "use workflow";
 
-  const { ticketType } = await classifyTicket(ticketId, subject);
+  const { ticketType } = await classifyTicket(ticketId, subject); // [!code highlight]
 
-  if (ticketType === "billing") {
+  if (ticketType === "billing") { // [!code highlight]
     await handleBilling(ticketId);
   } else if (ticketType === "technical") {
     await handleTechnical(ticketId);
@@ -103,7 +103,7 @@ export async function enrichAndRoute(email: string) {
   const contact = await lookupContact(email);
 
   // Step 2: Enrich from multiple sources in parallel
-  const [crm, social] = await Promise.allSettled([
+  const [crm, social] = await Promise.allSettled([ // [!code highlight]
     fetchCrmData(contact),
     fetchSocialData(contact),
   ]);
@@ -115,7 +115,7 @@ export async function enrichAndRoute(email: string) {
   };
 
   // Step 3: Route based on enriched data
-  if (enriched.crm?.segment === "enterprise") {
+  if (enriched.crm?.segment === "enterprise") { // [!code highlight]
     await routeToEnterpriseSales(enriched);
   } else {
     await routeToSelfServe(enriched);
@@ -167,12 +167,12 @@ export async function waitForAllSignals(orderId: string) {
   "use workflow";
 
   const hooks = SIGNALS.map((kind) =>
-    orderSignal.create({ token: `${kind}:${orderId}` })
+    orderSignal.create({ token: `${kind}:${orderId}` }) // [!code highlight]
   );
 
-  const outcome = await Promise.race([
-    Promise.all(hooks).then(() => ({ type: "ready" as const })),
-    sleep("5m").then(() => ({ type: "timeout" as const })),
+  const outcome = await Promise.race([ // [!code highlight]
+    Promise.all(hooks).then(() => ({ type: "ready" as const })), // [!code highlight]
+    sleep("5m").then(() => ({ type: "timeout" as const })), // [!code highlight]
   ]);
 
   if (outcome.type === "timeout") {

@@ -33,9 +33,9 @@ async function requestBookingApproval(
   { flightId, passenger, price }: { flightId: string; passenger: string; price: number },
   { toolCallId }: { toolCallId: string }
 ) {
-  const hook = bookingApprovalHook.create({ token: toolCallId });
+  const hook = bookingApprovalHook.create({ token: toolCallId }); // [!code highlight]
 
-  const result = await Promise.race([
+  const result = await Promise.race([ // [!code highlight]
     hook.then((payload) => ({ type: "decision" as const, ...payload })),
     sleep("24h").then(() => ({ type: "timeout" as const, approved: false })),
   ]);
@@ -66,7 +66,7 @@ export async function bookingAgent(messages: ModelMessage[]) {
     },
   });
 
-  await agent.stream({
+  await agent.stream({ // [!code highlight]
     messages,
     writable: getWritable<UIMessageChunk>(),
   });
@@ -136,10 +136,10 @@ async function requestBookingApproval(
 ) {
   // No "use step" — hooks are workflow-level primitives
 
-  const hook = bookingApprovalHook.create({ token: toolCallId });
+  const hook = bookingApprovalHook.create({ token: toolCallId }); // [!code highlight]
 
   // Race: human approval vs. 24-hour timeout
-  const result = await Promise.race([
+  const result = await Promise.race([ // [!code highlight]
     hook.then((payload) => ({ type: "decision" as const, ...payload })),
     sleep("24h").then(() => ({ type: "timeout" as const, approved: false })),
   ]);
@@ -188,7 +188,7 @@ export async function bookingAgent(messages: ModelMessage[]) {
     },
   });
 
-  await agent.stream({ messages, writable });
+  await agent.stream({ messages, writable }); // [!code highlight]
 }
 ```
 
@@ -201,7 +201,7 @@ export async function POST(request: Request) {
   const { toolCallId, approved, comment } = await request.json();
 
   // Schema validation happens automatically via defineHook
-  await bookingApprovalHook.resume(toolCallId, { approved, comment });
+  await bookingApprovalHook.resume(toolCallId, { approved, comment }); // [!code highlight]
 
   return Response.json({ success: true });
 }

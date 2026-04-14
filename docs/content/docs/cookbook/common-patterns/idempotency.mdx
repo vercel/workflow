@@ -45,7 +45,7 @@ async function createCharge(
 ): Promise<{ id: string }> {
   "use step";
 
-  const { stepId } = getStepMetadata();
+  const { stepId } = getStepMetadata(); // [!code highlight]
 
   // Stripe uses the idempotency key to deduplicate requests.
   // If this step is retried, Stripe returns the same charge.
@@ -53,7 +53,7 @@ async function createCharge(
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`,
-      "Idempotency-Key": stepId,
+      "Idempotency-Key": stepId, // [!code highlight]
     },
     body: new URLSearchParams({
       amount: String(amount),

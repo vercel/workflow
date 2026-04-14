@@ -61,7 +61,7 @@ async function summarize(input: { text: string }): Promise<{ summary: string }> 
 export async function researchAgent(messages: UIMessage[]) {
   "use workflow";
 
-  const agent = new DurableAgent({
+  const agent = new DurableAgent({ // [!code highlight]
     model: "anthropic/claude-sonnet-4-20250514",
     instructions: "You are a research assistant. Search the web and summarize findings.",
     tools: {
@@ -82,7 +82,7 @@ export async function researchAgent(messages: UIMessage[]) {
     },
   });
 
-  const result = await agent.stream({
+  const result = await agent.stream({ // [!code highlight]
     messages: await convertToModelMessages(messages),
     writable: getWritable<UIMessageChunk>(),
   });
@@ -162,12 +162,18 @@ async function bookFlight(input: {
 Use `WorkflowChatTransport` on the client to automatically reconnect to a workflow's stream if the connection drops.
 
 ```typescript title="app/api/chat/route.ts" lineNumbers
+import { createUIMessageStreamResponse } from "ai";
 import { start } from "workflow/api";
 import { researchAgent } from "@/workflows/research";
 
 export async function POST(request: Request) {
   const { messages } = await request.json();
-  return start(researchAgent, [messages]);
+  const run = await start(researchAgent, [messages]); // [!code highlight]
+
+  return createUIMessageStreamResponse({
+    stream: run.readable, // [!code highlight]
+    headers: { "x-workflow-run-id": run.runId },
+  });
 }
 ```
 
@@ -179,7 +185,7 @@ import { WorkflowChatTransport } from "@workflow/ai";
 
 export function Chat() {
   const chat = useChat({
-    transport: new WorkflowChatTransport({
+    transport: new WorkflowChatTransport({ // [!code highlight]
       api: "/api/chat",
     }),
   });
