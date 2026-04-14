@@ -1,9 +1,9 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { PlainGlobe } from '@/app/[lang]/(home)/components/vercel-com-visuals';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Globe } from '@/components/worlds/Globe';
-import { WorldCardSimple } from '@/components/worlds/WorldCardSimple';
+import { WorldsFilteredGrid } from '@/components/worlds/WorldsFilteredGrid';
 import { getWorldsData } from '@/lib/worlds-data';
 
 export const metadata: Metadata = {
@@ -25,37 +25,20 @@ export default async function WorldsPage() {
     return a.name.localeCompare(b.name);
   });
 
-  const officialCount = sortedWorlds.filter(
-    ([, w]) => w.type === 'official'
-  ).length;
-  const communityCount = sortedWorlds.filter(
-    ([, w]) => w.type === 'community'
-  ).length;
-  const passingCount = sortedWorlds.filter(
-    ([, w]) => w.e2e?.status === 'passing'
-  ).length;
-
-  const managedIds = new Set(['vercel']);
-  const embeddedIds = new Set(['local', 'redis', 'turso']);
-
-  const managedWorlds = sortedWorlds.filter(([id]) => managedIds.has(id));
-  const selfHostedWorlds = sortedWorlds.filter(
-    ([id]) => !managedIds.has(id) && !embeddedIds.has(id)
-  );
-  const embeddedWorlds = sortedWorlds.filter(([id]) => embeddedIds.has(id));
-
   return (
-    <div className="[&_h1]:tracking-tighter [&_h2]:tracking-tighter [&_h3]:tracking-tighter">
+    <div className="[&_h1]:tracking-tighter [&_h2]:tracking-tighter [&_h3]:tracking-tighter sm:mt-24">
       <div className="mx-auto w-full max-w-[1080px]">
         {/* Hero Section */}
-        <section className="mt-[var(--fd-nav-height)] relative overflow-hidden px-4 pt-16 sm:pt-24 pb-16 text-center">
+        <section className="relative px-4 overflow-hidden text-center h-[340px]">
           {/* Globe backdrop */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <Globe className="w-full max-w-[1200px] opacity-30 translate-y-[30%]" />
+            <div className="w-[85%] translate-y-[20%]">
+              <PlainGlobe />
+            </div>
           </div>
 
           {/* Content */}
-          <div className="relative z-10 mx-auto w-full max-w-3xl space-y-5">
+          <div className="relative z-10 mt-32 sm:mt-28 mx-auto w-full max-w-3xl space-y-3 sm:space-y-5">
             <h1 className="text-center font-semibold text-4xl leading-[1.1] tracking-tight sm:text-5xl xl:text-6xl text-balance">
               Worlds
             </h1>
@@ -67,79 +50,8 @@ export default async function WorldsPage() {
           </div>
         </section>
 
-        {/* Stats */}
-        <div className="border-y px-4 py-6">
-          <div className="flex flex-wrap justify-center gap-3">
-            <Badge variant="outline" className="text-sm py-1 px-3">
-              {sortedWorlds.length} Worlds
-            </Badge>
-            <Badge variant="outline" className="text-sm py-1 px-3">
-              {officialCount} Official
-            </Badge>
-            <Badge variant="outline" className="text-sm py-1 px-3">
-              {communityCount} Community
-            </Badge>
-            <Badge
-              variant="outline"
-              className="text-sm py-1 px-3 bg-green-500/10 text-green-600 border-green-500/20"
-            >
-              {passingCount} Fully Compatible
-            </Badge>
-          </div>
-        </div>
-
-        {/* World Cards — Managed */}
-        <section className="px-4 pt-8 sm:pt-12 pb-4">
-          <div className="mb-4">
-            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
-              Managed
-            </h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Production grade &mdash; zero configuration, high throughput,
-              infinitely-scalable, e2e encrypted, and integrated observability
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {managedWorlds.map(([id, world]) => (
-              <WorldCardSimple key={id} id={id} world={world} />
-            ))}
-          </div>
-        </section>
-
-        {/* World Cards — Self-Hosted */}
-        <section className="px-4 py-4">
-          <div className="mb-4">
-            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
-              Self-Hosted
-            </h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Self hosted &mdash; control your data and scaling while running
-              workflows inside your own infrastructure
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {selfHostedWorlds.map(([id, world]) => (
-              <WorldCardSimple key={id} id={id} world={world} />
-            ))}
-          </div>
-        </section>
-
-        {/* World Cards — Embedded */}
-        <section className="px-4 pt-4 pb-8 sm:pb-12">
-          <div className="mb-4">
-            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
-              Embedded
-            </h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Lightweight solutions for sidecars or local development
-            </p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {embeddedWorlds.map(([id, world]) => (
-              <WorldCardSimple key={id} id={id} world={world} />
-            ))}
-          </div>
-        </section>
+        {/* Filters + World Cards */}
+        <WorldsFilteredGrid worlds={sortedWorlds} />
 
         {/* Last Updated */}
         <div className="px-4 pb-8 text-center text-xs text-muted-foreground">
@@ -162,90 +74,97 @@ export default async function WorldsPage() {
 
         {/* Provider Benchmarks Section */}
         <section className="border-t px-4 py-12 sm:py-16">
-          <div className="max-w-4xl mx-auto">
-            <div className="flex flex-col lg:flex-row gap-8 lg:gap-12 items-center">
-              {/* Left: Text content */}
-              <div className="flex-1 space-y-4 text-center lg:text-left">
+          <div className="flex flex-col lg:flex-row gap-8 items-start justify-between">
+            {/* Left: Text content */}
+            <div className="space-y-4 mt-4 max-w-md">
+              <div className="flex items-center gap-2.5">
                 <h2 className="font-semibold text-2xl tracking-tight sm:text-3xl">
                   Provider Benchmarks
                 </h2>
-                <p className="text-muted-foreground">
-                  See how workflows compare across the different worlds deployed
-                  on different providers. Lower execution time means faster
-                  workflows.
-                </p>
-                <Button variant="secondary" size="lg" className="mt-2" disabled>
+                <Badge variant="outline" className="text-sm">
+                  Coming soon
+                </Badge>
+              </div>
+              <p className="text-muted-foreground max-w-md">
+                See how workflows compare across the different worlds deployed
+                on different providers. Lower execution time means faster
+                workflows.
+              </p>
+              {/* <Button variant="secondary" size="lg" className="mt-2" disabled>
                   Coming Soon
-                </Button>
-              </div>
+                </Button> */}
+            </div>
 
-              {/* Right: Benchmark preview visualization */}
-              <div className="flex-1 w-full max-w-md space-y-3">
-                {/* Header row */}
-                <div className="flex items-center gap-3 text-xs text-muted-foreground uppercase tracking-wider">
-                  <div className="w-16" />
-                  <div className="flex-1" />
-                  <div className="w-14 text-right font-semibold">Perf</div>
+            {/* Right: Benchmark preview visualization */}
+            <div className="w-full lg:max-w-lg min-w-0 space-y-3">
+              {/* Header row */}
+              <div className="flex items-center gap-3 text-xs text-muted-foreground uppercase tracking-wider">
+                <div className="w-16" />
+                <div className="flex-1" />
+                <div className="w-14 text-right text-gray-1000 font-medium font-mono">
+                  Perf
                 </div>
-                {/* Benchmark bars */}
-                {[
-                  { name: 'Local', time: 10.76, isFastest: true },
-                  { name: 'Vercel', time: 19.37, isFastest: false },
-                  { name: 'AWS', time: 25.82, isFastest: false },
-                  { name: 'GCP', time: 25.82, isFastest: false },
-                ].map((provider) => {
-                  const maxTime = 25.82;
-                  const width = (provider.time / maxTime) * 100;
-
-                  return (
-                    <div
-                      key={provider.name}
-                      className="flex items-center gap-3"
-                    >
-                      <div className="w-16 text-sm truncate text-right text-muted-foreground">
-                        {provider.name}
-                      </div>
-                      <div className="flex-1 h-8 bg-muted rounded-md overflow-hidden">
-                        <div
-                          className={`h-full rounded-md transition-all ${
-                            provider.isFastest
-                              ? 'bg-green-500'
-                              : 'bg-primary/40'
-                          }`}
-                          style={{ width: `${width}%` }}
-                        />
-                      </div>
-                      <div className="w-14 text-right font-mono text-sm">
-                        {provider.time.toFixed(2)}s
-                      </div>
-                    </div>
-                  );
-                })}
-                <p className="text-xs text-muted-foreground/60 italic pt-1">
-                  For illustration purposes only
-                </p>
               </div>
+
+              {/* Benchmark bars */}
+              {[
+                {
+                  name: 'Local',
+                  time: 10.76,
+                  color: 'bg-green-700 dark:bg-green-600',
+                },
+                { name: 'Vercel', time: 19.37, color: 'bg-blue-700' },
+                { name: 'AWS', time: 25.82, color: 'bg-blue-700' },
+                { name: 'GCP', time: 25.82, color: 'bg-blue-700' },
+              ].map((provider) => {
+                const maxTime = 25.82;
+                const width = (provider.time / maxTime) * 100;
+
+                return (
+                  <div
+                    key={provider.name}
+                    className="flex items-center gap-4 w-full"
+                  >
+                    <div className="w-14 text-sm truncate text-right text-muted-foreground">
+                      {provider.name}
+                    </div>
+                    <div className="w-full h-8 bg-gray-100 rounded-md overflow-hidden">
+                      <div
+                        className={`h-full rounded-md transition-all ${provider.color}`}
+                        style={{ width: `${width}%` }}
+                      />
+                    </div>
+                    <div className="w-13 shrink-0 text-right font-mono text-gray-900 text-sm">
+                      {provider.time.toFixed(2)}s
+                    </div>
+                  </div>
+                );
+              })}
+              <p className="text-xs text-gray-900 text-right pt-1">
+                For illustration purposes only
+              </p>
             </div>
           </div>
         </section>
 
         {/* Learn More Section */}
-        <section className="border-t px-4 py-8 sm:py-12 sm:px-12">
+        <section className="border-t px-4 py-8 sm:pt-24 sm:pb-16 sm:px-12">
           <div className="max-w-2xl mx-auto text-center space-y-4">
-            <h2 className="font-semibold text-xl tracking-tight sm:text-2xl">
+            <h2 className="font-semibold text-3xl tracking-tight sm:text-4xl">
               Learn more about worlds
             </h2>
             <p className="text-muted-foreground">
               To learn more about how worlds work or to create your own, check
-              the docs.
+              the docs. You can also build a custom world to connect workflows
+              to any storage or queuing backend.
             </p>
-            <div className="flex justify-center gap-3">
-              <Button asChild variant="outline">
+            <div className="flex justify-center gap-3 mt-8">
+              <Button asChild size="lg">
                 <Link href="/docs/deploying/building-a-world">
                   World Interface Docs
                 </Link>
               </Button>
-              <Button asChild variant="outline">
+              <Button asChild variant="outline" size="lg">
                 <a
                   href="https://github.com/vercel/workflow/blob/main/worlds-manifest.json"
                   target="_blank"

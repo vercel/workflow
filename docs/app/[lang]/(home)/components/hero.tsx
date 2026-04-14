@@ -36,7 +36,7 @@ export const Hero = ({ title, description }: HeroProps) => {
   const Icon = copied ? CheckIcon : CopyIcon;
 
   return (
-    <section className="mt-[var(--fd-nav-height)] space-y-6 px-4 pt-16 sm:pt-24 pb-16 text-center">
+    <section className="mt-[var(--fd-nav-height)] space-y-6 px-4 pt-24 sm:pt-32 pb-32 text-center">
       <div className="mx-auto w-full max-w-4xl space-y-5">
         <h1 className="text-center font-semibold text-4xl leading-[1.1] tracking-tight lg:font-semibold sm:text-5xl! xl:text-6xl! text-balance">
           {title}

@@ -1,15 +1,8 @@
 'use client';
 
-import {
-  AlertCircle,
-  BadgeCheck,
-  CheckCircle2,
-  Clock,
-  HeartHandshake,
-  ShieldCheck,
-  XCircle,
-} from 'lucide-react';
+import { BadgeCheck, ShieldCheck } from 'lucide-react';
 import Link from 'next/link';
+import { Badge } from '@/components/ui/badge';
 import {
   Card,
   CardContent,
@@ -17,12 +10,12 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
+import { Gauge } from '@/components/ui/gauge';
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
-import { cn } from '@/lib/utils';
 import type { World } from './types';
 
 interface WorldCardSimpleProps {
@@ -30,34 +23,7 @@ interface WorldCardSimpleProps {
   world: World;
 }
 
-const statusConfig = {
-  passing: {
-    label: 'Passing',
-    icon: CheckCircle2,
-    className: 'bg-green-500/10 text-green-600 border-green-500/20',
-  },
-  partial: {
-    label: 'Partial',
-    icon: AlertCircle,
-    className: 'bg-yellow-500/10 text-yellow-600 border-yellow-500/20',
-  },
-  failing: {
-    label: 'Failing',
-    icon: XCircle,
-    className: 'bg-red-500/10 text-red-600 border-red-500/20',
-  },
-  pending: {
-    label: 'Pending',
-    icon: Clock,
-    className: 'bg-muted text-muted-foreground',
-  },
-};
-
 export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
-  const e2eStatus = world.e2e?.status || 'pending';
-  const config = statusConfig[e2eStatus];
-  const StatusIcon = config.icon;
-
   // Use nextjs-turbopack data for scoring if available, otherwise fall back to total
   const turbopackData = world.e2e?.nextjsTurbopack;
 
@@ -76,39 +42,21 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
       ? Math.round((effectivePassed / effectiveTotal) * 100)
       : 0;
 
-  // E2E color based on pass rate (muted)
-  const e2eColorClass = !world.e2e
-    ? 'text-muted-foreground'
-    : displayProgress === 100
-      ? 'text-green-600/70'
-      : displayProgress >= 75
-        ? 'text-yellow-600/70'
-        : 'text-red-600/70';
-
   return (
     <Link href={`/worlds/${id}`} className="block group">
-      <Card className="h-full transition-colors hover:border-foreground/20 cursor-pointer overflow-hidden flex flex-col !py-0 !gap-0">
-        <CardHeader className="pt-6 pb-2">
+      <Card className="h-full transition-colors cursor-pointer overflow-hidden py-0! gap-2">
+        <CardHeader className="px-4 pt-4 pb-0">
           <div className="flex items-start justify-between gap-2">
             <div className="space-y-1 min-w-0">
               <CardTitle className="text-lg flex items-center gap-1.5 flex-wrap">
                 <span className="truncate">{world.name}</span>
-                {world.type === 'official' ? (
+                {world.type === 'official' && (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <BadgeCheck className="h-5 w-5 text-blue-500 shrink-0" />
+                      <BadgeCheck className="size-4 text-gray-900 shrink-0" />
                     </TooltipTrigger>
                     <TooltipContent side="top">
-                      <p className="text-xs">Maintained by Vercel</p>
-                    </TooltipContent>
-                  </Tooltip>
-                ) : (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <HeartHandshake className="h-5 w-5 text-pink-500 shrink-0" />
-                    </TooltipTrigger>
-                    <TooltipContent side="top">
-                      <p className="text-xs">Maintained by the community</p>
+                      <span className="text-xs">Maintained by Vercel</span>
                     </TooltipContent>
                   </Tooltip>
                 )}
@@ -119,21 +67,35 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
             </div>
           </div>
         </CardHeader>
-        <CardContent className="flex-1 pt-4 pb-4">
+        <CardContent className="flex-1 px-4 pb-2">
           <p className="text-sm text-muted-foreground line-clamp-2">
             {world.description}
           </p>
         </CardContent>
-        {/* Stats footer band */}
-        <div className="grid grid-cols-2 border-t border-border/50 bg-muted/30">
-          {/* E2E - left */}
+        {/* Stats footer */}
+        <div className="flex items-center justify-between px-4 pb-4 pt-2">
+          {/* E2E with gauge */}
           <Tooltip>
             <TooltipTrigger asChild>
-              <div className="flex items-center gap-1.5 px-4 py-2.5 text-sm border-r border-border/50">
-                <StatusIcon className={cn('h-3.5 w-3.5', e2eColorClass)} />
-                <span className="text-muted-foreground">E2E</span>
-                <span className={cn('font-mono', e2eColorClass)}>
-                  {world.e2e ? `${displayProgress}%` : '—'}
+              <div className="flex items-center gap-2 text-sm">
+                <Gauge
+                  value={world.e2e ? displayProgress : 0}
+                  size="tiny"
+                  colors={
+                    !world.e2e
+                      ? { primary: 'var(--ds-gray-alpha-400)' }
+                      : displayProgress >= 75
+                        ? { primary: 'var(--ds-green-700)' }
+                        : displayProgress >= 50
+                          ? { primary: 'var(--ds-amber-700)' }
+                          : { primary: 'var(--ds-red-700)' }
+                  }
+                />
+                <span className="font-normal text-gray-1000">
+                  E2E:{` `}
+                  <span className="font-mono font-normal">
+                    {world.e2e ? `${displayProgress}%` : '—'}
+                  </span>
                 </span>
               </div>
             </TooltipTrigger>
@@ -141,35 +103,20 @@ export function WorldCardSimple({ id, world }: WorldCardSimpleProps) {
               <p className="text-xs">E2E Test Suite Coverage</p>
             </TooltipContent>
           </Tooltip>
-          {/* Encryption - right */}
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex items-center gap-1.5 px-4 py-2.5 text-sm">
-                <ShieldCheck
-                  className={cn(
-                    'h-3.5 w-3.5',
-                    world.features.includes('encryption')
-                      ? 'text-green-600/70'
-                      : 'text-red-600/70'
-                  )}
-                />
-                <span className="text-muted-foreground">Encrypted</span>
-                <span
-                  className={cn(
-                    'font-mono',
-                    world.features.includes('encryption')
-                      ? 'text-green-600/70'
-                      : 'text-red-600/70'
-                  )}
-                >
-                  {world.features.includes('encryption') ? 'Yes' : 'No'}
-                </span>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="max-w-[200px]">
-              <p className="text-xs">End-to-end user data encryption</p>
-            </TooltipContent>
-          </Tooltip>
+          {/* Encryption badge */}
+          {world.features.includes('encryption') && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge className="bg-blue-300 text-blue-700 border-transparent">
+                  <ShieldCheck className="h-3.5 w-3.5" />
+                  <span>Encrypted</span>
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[200px]">
+                <p className="text-xs">End-to-end user data encryption</p>
+              </TooltipContent>
+            </Tooltip>
+          )}
         </div>
       </Card>
     </Link>
