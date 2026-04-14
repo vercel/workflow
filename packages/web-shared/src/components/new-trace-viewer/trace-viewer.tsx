@@ -503,7 +503,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
       {/* Detail panel */}
       {activeSpan && sidebar ? (
-        <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400">
+        <aside className="flex flex-col h-full max-h-full bg-background-100 border-l border-gray-alpha-400 overflow-auto">
           {/* Panel header */}
           <div className="flex-shrink-0 px-4 pt-4 pb-3">
             <div className="flex items-start justify-between gap-2">

@@ -769,7 +769,7 @@ export function RunDetailView({
 
             <TabsContent value="trace" className="mt-0 flex-1 min-h-0">
               <ErrorBoundary title="Failed to load trace viewer">
-                <div className="h-full">
+                <div className="h-full -mx-6 pl-6 bg-background-100 border-t border-gray-alpha-400 overflow-hidden">
                   <SidebarDataProvider value={sidebarData}>
                     <NewTraceViewer run={run} events={allEvents ?? []} />
                   </SidebarDataProvider>
