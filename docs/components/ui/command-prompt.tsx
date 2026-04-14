@@ -1,22 +1,22 @@
 'use client';
 
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
   Children,
+  type ComponentPropsWithoutRef,
   createContext,
   isValidElement,
+  type JSX,
+  type ReactNode,
   useContext,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
-  type ComponentPropsWithoutRef,
-  type JSX,
-  type ReactNode,
 } from 'react';
-import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import { cn } from '@/lib/utils';
 
-function CheckIcon({
+function IconCheck({
   size = 16,
   className,
 }: {
@@ -31,6 +31,7 @@ function CheckIcon({
       fill="none"
       className={className}
     >
+      <title>check icon</title>
       <path
         fillRule="evenodd"
         clipRule="evenodd"
@@ -41,7 +42,7 @@ function CheckIcon({
   );
 }
 
-function CopyIcon({
+function IconCopy({
   size = 16,
   className,
 }: {
@@ -56,6 +57,7 @@ function CopyIcon({
       fill="none"
       className={className}
     >
+      <title>copy icon</title>
       <path
         fillRule="evenodd"
         clipRule="evenodd"
@@ -205,7 +207,7 @@ export function CommandPromptTrigger({
       aria-pressed={active}
       className={cn(
         'cursor-pointer text-gray-900 hover:text-gray-1000 px-3 py-2',
-        'text-label-13 touch-manipulation border-none bg-transparent rounded-sm',
+        'text-label-13! font-medium! touch-manipulation border-none bg-transparent rounded-sm',
         'outline outline-2 outline-offset-2 outline-transparent focus-visible:outline-[var(--ds-focus-color)]',
         'text-gray-900 data-[active]:text-gray-1000 data-[active]:font-medium',
         'flex gap-1.5 items-center whitespace-nowrap',
@@ -280,7 +282,7 @@ export function CommandPromptPrefix({
 }: ComponentPropsWithoutRef<'span'>): JSX.Element {
   return (
     <span
-      className={cn('block text-label-16-mono text-gray-500 pr-1', className)}
+      className={cn('block text-label-16-mono! text-gray-500 pr-1', className)}
       {...props}
     />
   );
@@ -360,7 +362,7 @@ export function CommandPromptViewport({
           : { width: shouldReduceMotion ? 'auto' : commandWidth }
       }
       className={cn(
-        'relative block min-w-0 overflow-hidden text-label-14-mono text-gray-1000',
+        'relative block min-w-0 overflow-hidden text-label-14-mono! text-gray-1000',
         className
       )}
       initial={false}
@@ -457,9 +459,9 @@ export function CommandPromptCopy({
     <button
       aria-label={context.copied ? 'Copied' : 'Copy command'}
       className={cn(
-        'text-gray-1000 rounded-full border-none bg-transparent shrink-0 cursor-pointer relative size-8 flex items-center justify-center',
+        'text-gray-1000 rounded-full border-none bg-transparent shrink-0 cursor-pointer relative size-8 flex items-center justify-center translate-x-0.5',
         'group-hover:bg-gray-alpha-100 hover:!bg-gray-alpha-200 transition-colors touch-manipulation',
-        'outline outline-2 outline-offset-2 outline-transparent focus-visible:outline-[var(--ds-focus-color)]',
+        'outline-2 outline-offset-2 outline-transparent focus-visible:outline-[var(--ds-focus-color)]',
         className
       )}
       onClick={(event) => {
@@ -495,8 +497,9 @@ export function CommandPromptCopy({
                 ? { duration: 0 }
                 : { duration: 0.2, ease: [0.23, 1, 0.32, 1] }
             }
+            className="absolute inset-0 flex items-center justify-center"
           >
-            <CopyIcon size={16} className="block" />
+            <IconCopy size={16} className="block" />
           </motion.span>
         )}
       </AnimatePresence>
@@ -526,7 +529,7 @@ export function CommandPromptCopy({
             }
             className="absolute inset-0 flex items-center justify-center"
           >
-            <CheckIcon size={16} className="block" />
+            <IconCheck size={16} className="block" />
           </motion.span>
         )}
       </AnimatePresence>
