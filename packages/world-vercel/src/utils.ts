@@ -61,7 +61,7 @@ function httpLog(
  *
  * Example: 'https://workflow-server-git-branch-name.vercel.sh'
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+const WORKFLOW_SERVER_URL_OVERRIDE = 'https://workflow-server-2wsch3sbv.vercel.sh';
 
 export interface APIConfig {
   token?: string;
