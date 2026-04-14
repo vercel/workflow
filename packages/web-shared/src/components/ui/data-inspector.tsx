@@ -10,6 +10,7 @@
 
 import { Lock } from 'lucide-react';
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
+import { Spinner } from './spinner';
 import {
   ObjectInspector,
   ObjectLabel,
@@ -110,15 +111,7 @@ function EncryptedInlineLabel() {
         title="Click to decrypt"
       >
         {ctx.isDecrypting ? (
-          <span
-            className="h-3 w-3 animate-spin rounded-full border-2"
-            style={{
-              display: 'inline-block',
-              flexShrink: 0,
-              borderColor: 'var(--ds-gray-400)',
-              borderTopColor: 'var(--ds-gray-700)',
-            }}
-          />
+          <Spinner size={12} />
         ) : (
           <Lock
             className="h-3 w-3"
