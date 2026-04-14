@@ -5,7 +5,6 @@ import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '../../lib/toast';
-import { isEncryptedMarker } from '../../lib/hydration';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -66,7 +65,6 @@ export function EntityDetailPanel({
   onDecrypt,
   isDecrypting = false,
   selectedSpan,
-  hasEncryptedData = false,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
@@ -103,8 +101,6 @@ export function EntityDetailPanel({
   isDecrypting?: boolean;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
-  /** Run-level hint: the run contains encrypted data (from probe). */
-  hasEncryptedData?: boolean;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);

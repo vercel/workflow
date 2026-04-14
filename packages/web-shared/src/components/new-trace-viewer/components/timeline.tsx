@@ -340,24 +340,26 @@ export function TimelineHeader({
   );
 
   return (
-    <div className="relative bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-end px-4 pb-1">
-      {markers.map((m, i) => (
-        <span
-          key={i}
-          className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap -translate-x-1/2"
-          style={{ left: `${m.position * 100}%` }}
-        >
-          {m.label}
-        </span>
-      ))}
-      {hoverInfo && (
-        <span
-          className="absolute top-1 pointer-events-none z-10 font-mono text-[11px] leading-4 text-gray-1000 whitespace-nowrap bg-background-100 border border-gray-alpha-400 rounded px-1 -translate-x-1/2"
-          style={{ left: `${hoverInfo.fraction * 100}%` }}
-        >
-          {hoverInfo.label}
-        </span>
-      )}
+    <div className="relative bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-end px-2 pb-1">
+      <div className="relative h-full flex-1">
+        {markers.map((m, i) => (
+          <span
+            key={i}
+            className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap -translate-x-1/2"
+            style={{ left: `${m.position * 100}%` }}
+          >
+            {m.label}
+          </span>
+        ))}
+        {hoverInfo && (
+          <span
+            className="absolute top-1 pointer-events-none z-10 font-mono text-[11px] leading-4 text-gray-1000 whitespace-nowrap bg-background-100 border border-gray-alpha-400 rounded px-1 -translate-x-1/2"
+            style={{ left: `${hoverInfo.fraction * 100}%` }}
+          >
+            {hoverInfo.label}
+          </span>
+        )}
+      </div>
       {isZoomed && (
         <button
           type="button"
