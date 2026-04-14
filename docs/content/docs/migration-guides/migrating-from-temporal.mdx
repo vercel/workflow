@@ -44,7 +44,7 @@ Start with the directive change. The Temporal definition proxies activities thro
 ```typescript title="workflows/order.ts"
 // Before (Temporal)
 const { chargePayment } = wf.proxyActivities<typeof activities>({
-  startToCloseTimeout: '5 minute',
+  startToCloseTimeout: '5 minutes',
 });
 
 export async function processOrder(orderId: string) {

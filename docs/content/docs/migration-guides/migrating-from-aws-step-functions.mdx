@@ -200,11 +200,18 @@ A Step Functions saga wires Retry and a Catch-to-compensation path on every forw
 ```json title="saga.asl.json"
 "ReserveInventory": {
   "Type": "Task",
+  "Resource": "arn:aws:states:::lambda:invoke",
+  "Parameters": { "FunctionName": "reserveInventory", "Payload.$": "$" },
   "Retry": [{ "ErrorEquals": ["States.ALL"], "MaxAttempts": 3 }],
   "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ReleaseInventory" }],
   "Next": "ChargePayment"
 },
-"ReleaseInventory": { "Type": "Task", "Next": "FailOrder" }
+"ReleaseInventory": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::lambda:invoke",
+  "Parameters": { "FunctionName": "releaseInventory", "Payload.$": "$" },
+  "Next": "FailOrder"
+}
 ```
 
 Other forward states (`ChargePayment`, `CreateShipment`) repeat the same Retry/Catch shape, and the compensation chain is wired explicitly as separate states.
