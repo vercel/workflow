@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.1
+
+### Patch Changes
+
+- [`f1cc68f`](https://github.com/vercel/workflow/commit/f1cc68f76a25241cd47058e5c2f5855d051dea71) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Make encrypted markers clickable to trigger decryption and detect encryption at run level before span selection. Persist `features.encryption` flag in `executionContext` at run creation so the UI can detect encryption without a probe fetch.
+
 ## 4.1.0
 
 ### Patch Changes
