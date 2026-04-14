@@ -23,7 +23,7 @@ A counter that persists its value without a database. Each increment/decrement i
 import { defineHook, getWorkflowMetadata } from "workflow";
 import { z } from "zod";
 
-const counterAction = defineHook({
+const counterAction = defineHook({ // [!code highlight]
   schema: z.object({
     type: z.enum(["increment", "decrement", "get"]),
     amount: z.number().default(1),
@@ -38,7 +38,7 @@ export async function durableCounter() {
 
   while (true) {
     const hook = counterAction.create({ token: `counter:${workflowRunId}` });
-    const action = await hook;
+    const action = await hook; // [!code highlight]
 
     switch (action.type) {
       case "increment":
@@ -78,7 +78,7 @@ import { resumeHook } from "workflow/api";
 
 export async function POST(request: Request) {
   const { runId, type, amount } = await request.json();
-  await resumeHook(`counter:${runId}`, { type, amount });
+  await resumeHook(`counter:${runId}`, { type, amount }); // [!code highlight]
   return Response.json({ ok: true });
 }
 ```
@@ -94,7 +94,7 @@ import { anthropic } from "@workflow/ai/anthropic";
 import { z } from "zod";
 import type { UIMessageChunk, ModelMessage } from "ai";
 
-const messageHook = defineHook({
+const messageHook = defineHook({ // [!code highlight]
   schema: z.object({
     role: z.literal("user"),
     content: z.string(),
@@ -115,7 +115,7 @@ export async function durableSession() {
 
   while (true) {
     const hook = messageHook.create({ token: `session:${runId}` });
-    const userMessage = await hook;
+    const userMessage = await hook; // [!code highlight]
 
     messages.push({
       role: userMessage.role,

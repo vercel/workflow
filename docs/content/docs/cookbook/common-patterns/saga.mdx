@@ -36,23 +36,23 @@ export async function subscriptionUpgradeSaga(accountId: string, seats: number) 
   try {
     // Step 1: Reserve seats
     const reservationId = await reserveSeats(accountId, seats);
-    compensations.push(() => releaseSeats(accountId, reservationId));
+    compensations.push(() => releaseSeats(accountId, reservationId)); // [!code highlight]
 
     // Step 2: Capture payment
     const invoiceId = await captureInvoice(accountId, seats);
-    compensations.push(() => refundInvoice(accountId, invoiceId));
+    compensations.push(() => refundInvoice(accountId, invoiceId)); // [!code highlight]
 
     // Step 3: Provision access
     const entitlementId = await provisionSeats(accountId, seats);
-    compensations.push(() => deprovisionSeats(accountId, entitlementId));
+    compensations.push(() => deprovisionSeats(accountId, entitlementId)); // [!code highlight]
 
     // Step 4: Notify
     await sendConfirmation(accountId, invoiceId, entitlementId);
     return { status: "completed" };
   } catch (error) {
     // Unwind compensations in reverse order
-    for (const compensate of compensations.reverse()) {
-      await compensate();
+    for (const compensate of compensations.reverse()) { // [!code highlight]
+      await compensate(); // [!code highlight]
     }
 
     return { status: "rolled_back" };
@@ -73,7 +73,7 @@ async function reserveSeats(accountId: string, seats: number): Promise<string> {
     method: "POST",
     body: JSON.stringify({ accountId, seats }),
   });
-  if (!res.ok) throw new FatalError("Seat reservation failed");
+  if (!res.ok) throw new FatalError("Seat reservation failed"); // [!code highlight]
   const { reservationId } = await res.json();
   return reservationId;
 }
@@ -93,7 +93,7 @@ async function captureInvoice(accountId: string, seats: number): Promise<string>
     method: "POST",
     body: JSON.stringify({ accountId, seats }),
   });
-  if (!res.ok) throw new FatalError("Invoice capture failed");
+  if (!res.ok) throw new FatalError("Invoice capture failed"); // [!code highlight]
   const { invoiceId } = await res.json();
   return invoiceId;
 }
@@ -112,7 +112,7 @@ async function provisionSeats(accountId: string, seats: number): Promise<string>
     method: "POST",
     body: JSON.stringify({ accountId, seats }),
   });
-  if (!res.ok) throw new FatalError("Provisioning failed");
+  if (!res.ok) throw new FatalError("Provisioning failed"); // [!code highlight]
   const { entitlementId } = await res.json();
   return entitlementId;
 }

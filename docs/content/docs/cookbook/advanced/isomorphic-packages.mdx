@@ -30,7 +30,7 @@ export async function processPayment(amount: number, currency: string) {
 
   let runId: string | undefined;
   try {
-    const metadata = getWorkflowMetadata();
+    const metadata = getWorkflowMetadata(); // [!code highlight]
     runId = metadata.workflowRunId;
   } catch {
     // Not running inside a workflow — proceed without durability
@@ -39,7 +39,7 @@ export async function processPayment(amount: number, currency: string) {
 
   if (runId) {
     // Inside a workflow: use the run ID as an idempotency key
-    return await chargeWithIdempotency(amount, currency, runId);
+    return await chargeWithIdempotency(amount, currency, runId); // [!code highlight]
   } else {
     // Outside a workflow: standard charge
     return await chargeStandard(amount, currency);
@@ -69,7 +69,7 @@ export async function createDurableTask(name: string, payload: unknown) {
   let sleep: ((duration: string) => Promise<void>) | undefined;
 
   try {
-    const wf = await import("workflow");
+    const wf = await import("workflow"); // [!code highlight]
     sleep = wf.sleep;
   } catch {
     // workflow not installed — use setTimeout fallback
@@ -80,7 +80,7 @@ export async function createDurableTask(name: string, payload: unknown) {
 
   if (sleep) {
     // Inside workflow: durable sleep that survives restarts
-    await sleep("5m");
+    await sleep("5m"); // [!code highlight]
   } else {
     // Outside workflow: plain timer (not durable)
     await new Promise((resolve) => setTimeout(resolve, 5 * 60 * 1000));

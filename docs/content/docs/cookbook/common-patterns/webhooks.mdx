@@ -25,12 +25,12 @@ declare function processEvent(request: RequestWithResponse): Promise<{ type: str
 export async function paymentWebhook(orderId: string) {
   "use workflow";
 
-  const webhook = createWebhook({ respondWith: "manual" });
+  const webhook = createWebhook({ respondWith: "manual" }); // [!code highlight]
   // webhook.url is the URL to give to the external service
 
   const ledger: { type: string }[] = [];
 
-  for await (const request of webhook) {
+  for await (const request of webhook) { // [!code highlight]
     const entry = await processEvent(request);
     ledger.push(entry);
 
@@ -62,7 +62,7 @@ async function processEvent(
   // Validate, process, and respond inline
   if (type === "payment.succeeded") {
     // Record the payment in your database
-    await request.respondWith(Response.json({ ack: true, action: "captured" }));
+    await request.respondWith(Response.json({ ack: true, action: "captured" })); // [!code highlight]
   } else if (type === "payment.failed") {
     await request.respondWith(Response.json({ ack: true, action: "flagged" }));
   } else {
@@ -89,7 +89,7 @@ export async function asyncVerification(documentId: string) {
   await submitToVendor(documentId, webhook.url);
 
   // Race: wait for callback OR timeout after 30 seconds
-  const result = await Promise.race([
+  const result = await Promise.race([ // [!code highlight]
     (async () => {
       for await (const request of webhook) {
         const body = await processCallback(request);
@@ -97,7 +97,7 @@ export async function asyncVerification(documentId: string) {
       }
       throw new FatalError("Webhook closed without callback");
     })(),
-    sleep("30s").then(() => ({ status: "timed_out" as const })),
+    sleep("30s").then(() => ({ status: "timed_out" as const })), // [!code highlight]
   ]);
 
   return { documentId, ...result };
@@ -131,13 +131,13 @@ When payloads are too large to serialize into the event log, pass a lightweight 
 ```typescript
 import { defineHook } from "workflow";
 
-export const blobReady = defineHook<{ blobToken: string }>();
+export const blobReady = defineHook<{ blobToken: string }>(); // [!code highlight]
 
 export async function importLargeFile(importId: string) {
   "use workflow";
 
   // Suspend until the external system signals the blob is uploaded
-  const { blobToken } = await blobReady.create({ token: `upload:${importId}` });
+  const { blobToken } = await blobReady.create({ token: `upload:${importId}` }); // [!code highlight]
 
   // Process by reference -- the full payload never enters the event log
   await processBlob(blobToken);
@@ -162,7 +162,7 @@ import { resumeHook } from "workflow/api";
 // POST /api/upload-complete
 export async function POST(request: Request) {
   const { importId, blobToken } = await request.json();
-  await resumeHook(`upload:${importId}`, { blobToken });
+  await resumeHook(`upload:${importId}`, { blobToken }); // [!code highlight]
   return Response.json({ ok: true });
 }
 ```

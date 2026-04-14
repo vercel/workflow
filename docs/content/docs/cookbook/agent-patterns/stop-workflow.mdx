@@ -31,8 +31,8 @@ export async function stoppableAgent(messages: ModelMessage[]) {
   const { workflowRunId } = getWorkflowMetadata();
   let stopRequested = false;
 
-  const hook = stopHook.create({ token: `stop:${workflowRunId}` });
-  hook.then(() => { stopRequested = true; });
+  const hook = stopHook.create({ token: `stop:${workflowRunId}` }); // [!code highlight]
+  hook.then(() => { stopRequested = true; }); // [!code highlight]
 
   const agent = new DurableAgent({
     model: "anthropic/claude-haiku-4.5",
@@ -48,8 +48,8 @@ export async function stoppableAgent(messages: ModelMessage[]) {
   const result = await agent.stream({
     messages,
     writable: getWritable<UIMessageChunk>(),
-    prepareStep: () => {
-      if (stopRequested) return { toolChoice: "none" };
+    prepareStep: () => { // [!code highlight]
+      if (stopRequested) return { toolChoice: "none" }; // [!code highlight]
       return {};
     },
   });
@@ -113,8 +113,8 @@ export async function stoppableAgent(messages: ModelMessage[]) {
   let stopRequested = false;
   let stopReason: string | undefined;
 
-  const hook = stopHook.create({ token: `stop:${workflowRunId}` });
-  hook.then(({ reason }) => {
+  const hook = stopHook.create({ token: `stop:${workflowRunId}` }); // [!code highlight]
+  hook.then(({ reason }) => { // [!code highlight]
     stopRequested = true;
     stopReason = reason;
   });
@@ -141,12 +141,12 @@ export async function stoppableAgent(messages: ModelMessage[]) {
     writable,
     preventClose: true,
     maxSteps: 20,
-    prepareStep: ({ stepNumber }) => {
+    prepareStep: ({ stepNumber }) => { // [!code highlight]
       // Check stop flag before each agent step.
       // Setting toolChoice to "none" prevents tool calls,
       // causing the agent to generate a final response and exit.
       if (stopRequested) {
-        return { toolChoice: "none" };
+        return { toolChoice: "none" }; // [!code highlight]
       }
       return {};
     },
@@ -176,7 +176,7 @@ export async function POST(
   const { runId } = await params;
   const { reason } = await request.json();
 
-  await stopHook.resume(`stop:${runId}`, {
+  await stopHook.resume(`stop:${runId}`, { // [!code highlight]
     reason: reason || "User requested stop",
   });
 
