@@ -14,7 +14,7 @@
 | `batch.triggerAndWait()` | parallel `start()` + `Promise.all(runIds.map(id => getRun(id).returnValue))` |
 | `tasks.trigger()` from API route / server action | `start()` from `workflow/api` |
 | `AbortTaskRunError` | `FatalError` |
-| `retry.onThrow` / `retry.fetch` / `retry.exponentialBackoff` | step `RetryableError` + `maxRetries` |
+| `retry.onThrow` / `retry.fetch` | step `RetryableError` + `maxRetries` |
 | `retry` options on `task()` | `maxRetries` on the step |
 | `queue` / `machine` config on `task()` | remove from app code |
 | `logger.info` / `logger.warn` | standard logging |
@@ -45,7 +45,7 @@
   - See `references/shared-patterns.md` -> `## Generated callback URL (manual response)`
 - Durable progress writes with `getWritable()` (replaces `metadata.stream()`)
 - Idempotency keys on external writes via `getStepMetadata().stepId`
-- Step-level `RetryableError` + `maxRetries` (replaces `retry.onThrow`, `retry.fetch`, `retry.exponentialBackoff`)
+- Step-level `RetryableError` + `maxRetries` (replaces `retry.onThrow` and `retry.fetch`; exponential backoff moves to `maxRetries` config)
 - `FatalError` at step boundaries (replaces `AbortTaskRunError`)
 - Step-wrapped `start()` / `getRun()` for child runs (replaces `task.triggerAndWait()` and `batch.triggerAndWait()`)
 - Parallel fan-out via `Promise.all()` over step-wrapped `start()` calls (replaces `batch.triggerAndWait()`)

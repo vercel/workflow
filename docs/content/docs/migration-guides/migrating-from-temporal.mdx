@@ -41,8 +41,7 @@ Migration removes infrastructure and collapses indirection. Business logic stays
 
 Start with the directive change. The Temporal definition proxies activities through a module; the Workflow SDK version puts the directive inline.
 
-```typescript title="workflows/order.ts"
-// Before (Temporal)
+```typescript title="workflows/order.ts (Temporal)"
 const { chargePayment } = wf.proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
 });
@@ -51,8 +50,9 @@ export async function processOrder(orderId: string) {
   await chargePayment(orderId);
   return { orderId, status: 'completed' };
 }
+```
 
-// After (Workflow SDK)
+```typescript title="workflows/order.ts (Workflow SDK)"
 export async function processOrder(orderId: string) {
   'use workflow'; // [!code highlight]
   await chargePayment(orderId);

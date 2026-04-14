@@ -92,15 +92,15 @@ No event bus, no registry — `start()` returns a handle immediately.
 
 `step.waitForEvent()` becomes `createHook()` plus `await`.
 
-```typescript title="workflow/workflows/refund.ts"
-// Before (Inngest)
+```typescript title="workflow/workflows/refund.ts (Inngest)"
 const approval = await step.waitForEvent('wait-for-approval', {
   event: 'refund/approved',
   match: 'data.refundId',
   timeout: '7d',
 });
+```
 
-// After (Workflow SDK)
+```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
 using approval = createHook<{ approved: boolean }>({ // [!code highlight]
   token: `refund:${refundId}:approval`,
 });

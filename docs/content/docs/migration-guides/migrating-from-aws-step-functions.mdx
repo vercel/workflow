@@ -45,8 +45,7 @@ The migration replaces declarative configuration with idiomatic TypeScript and c
 
 Start with a single Task state. In ASL, even "call one Lambda" requires a state machine shell:
 
-```json title="stateMachine.asl.json"
-// Before (ASL) — excerpt from a state machine's "States" block
+```json title="stateMachine.asl.json (Step Functions)"
 "LoadOrder": {
   "Type": "Task",
   "Resource": "arn:aws:states:::lambda:invoke",
@@ -55,8 +54,7 @@ Start with a single Task state. In ASL, even "call one Lambda" requires a state 
 }
 ```
 
-```typescript title="workflow/workflows/order.ts"
-// After (TypeScript)
+```typescript title="workflow/workflows/order.ts (Workflow SDK)"
 export async function processOrder(orderId: string) {
   'use workflow'; // [!code highlight]
   return await loadOrder(orderId);
@@ -105,8 +103,7 @@ export async function POST(request: Request) {
 
 The minimal ASL for a callback is a Task with `.waitForTaskToken`:
 
-```json title="approval.asl.json"
-// Before (ASL) — excerpt; paired with a consumer that calls SendTaskSuccess
+```json title="approval.asl.json (Step Functions)"
 "WaitForApproval": {
   "Type": "Task",
   "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
@@ -121,8 +118,7 @@ The minimal ASL for a callback is a Task with `.waitForTaskToken`:
 }
 ```
 
-```typescript title="workflow/workflows/refund.ts"
-// After (TypeScript)
+```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
 import { createHook } from 'workflow';
 
 export async function refundWorkflow(refundId: string) {
@@ -155,8 +151,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ refundI
 
 In ASL, branching after the wait requires a Choice state. In TypeScript, it's just `if`/`else`:
 
-```json
-// Before (ASL) — excerpt; "Approved" and "Rejected" are sibling states in "States"
+```json title="approval.asl.json (Step Functions)"
 "CheckApproval": {
   "Type": "Choice",
   "Choices": [
@@ -166,8 +161,7 @@ In ASL, branching after the wait requires a Choice state. In TypeScript, it's ju
 }
 ```
 
-```typescript
-// After (TypeScript)
+```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
 const { approved } = await approval;
 if (approved) return { refundId, status: 'approved' }; // [!code highlight]
 return { refundId, status: 'rejected' };

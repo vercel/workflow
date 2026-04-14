@@ -35,7 +35,7 @@ Migration collapses the task abstraction into plain async functions. Business lo
 | `tasks.trigger()` / `triggerAndWait()` | `start()` and `getRun(runId).returnValue` | Wrap both in `"use step"` functions. |
 | `batch.triggerAndWait()` | `Promise.all(runIds.map(collectResult))` | Fan out via standard concurrency. |
 | `AbortTaskRunError` | `FatalError` | Stops retries immediately. |
-| `retry.onThrow` / `retry.fetch` | `RetryableError`, `FatalError`, `maxRetries` | Retry lives on the step. |
+| `retry.onThrow` / `retry.fetch` | `RetryableError`, `FatalError`, `maxRetries` | Retry lives on the step. Exponential backoff is a step `maxRetries` config, not a helper. |
 | `metadata.stream()` / Realtime | `getWritable()` | Durable stream per run. |
 | Self-hosted worker + dashboard | Managed execution + built-in UI | No worker fleet to operate. |
 
@@ -43,8 +43,7 @@ Migration collapses the task abstraction into plain async functions. Business lo
 
 Start with the shell. trigger.dev wraps the handler in `task()`; the Workflow SDK marks the function with a directive.
 
-```typescript title="trigger/order.ts"
-// Before (trigger.dev)
+```typescript title="trigger/order.ts (trigger.dev)"
 import { task } from '@trigger.dev/sdk/v3';
 
 export const processOrder = task({
@@ -53,8 +52,9 @@ export const processOrder = task({
     return { orderId: payload.orderId, status: 'completed' };
   },
 });
+```
 
-// After (Workflow SDK)
+```typescript title="trigger/order.ts (Workflow SDK)"
 export async function processOrder(orderId: string) {
   'use workflow'; // [!code highlight]
   return { orderId, status: 'completed' };
@@ -98,12 +98,14 @@ No id lookup, no API key, no separate worker. `start()` returns a handle immedia
 
 `wait.forToken()` becomes `createHook()` plus `await`.
 
-```typescript title="workflow/workflows/refund.ts"
-// Before (trigger.dev)
+```typescript title="workflow/workflows/refund.ts (trigger.dev, abbreviated)"
+// import { wait } from '@trigger.dev/sdk/v3';
 const token = await wait.createToken({ timeout: '7d' });
-const approval = await wait.forToken<{ approved: boolean }>(token);
+const approval = await wait.forToken<{ approved: boolean }>(token.id).unwrap();
+// External system resumes with: await wait.completeToken(token.id, { approved: true });
+```
 
-// After (Workflow SDK)
+```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
 using approval = createHook<{ approved: boolean }>({ // [!code highlight]
   token: `refund:${refundId}:approval`,
 });
