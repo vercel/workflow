@@ -14,6 +14,13 @@ related:
   - /docs/deploying/world/vercel-world
 ---
 
+## Why migrate to the Workflow SDK
+
+- Streaming is built in. Durable progress writes go to named streams via `getWritable()`. There is no separate realtime publish channel or WebSocket layer to operate.
+- Infrastructure and orchestration live in a single deployment. Workflows run where the app runs. There is no separate Inngest Dev Server or event bus to operate.
+- TypeScript-first DX. Steps are named async functions marked with `"use step"`. No inline closures tied to a framework-specific lifecycle.
+- Agent-first tooling: the `npx workflow` CLI, `@workflow/ai` integration for durable AI agents, and a Claude skill for generating workflows.
+
 ## What changes when you leave Inngest
 
 Inngest defines functions with `inngest.createFunction()`, registers them through a `serve()` handler, and breaks work into steps with `step.run()`, `step.sleep()`, and `step.waitForEvent()`. The platform routes events, schedules steps, and applies retries.
@@ -34,7 +41,7 @@ Migration collapses the SDK abstraction into plain async functions. Business log
 | `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly. |
 | Retry configuration (`retries`) | `RetryableError`, `FatalError`, `maxRetries` | Retry logic lives at the step level. |
 | `step.sendEvent()` | `"use step"` wrapper around `start()` | Fan out via `start()`, not an event bus. |
-| Realtime / `step.realtime.publish()` | `getWritable()` | Durable streaming from steps. |
+| Realtime / `step.realtime.publish()` | `getWritable()` / `getWritable({ namespace })` | Named streams are the canonical way for clients to read workflow status. No database or `getRun()` polling required. |
 
 ## Translate your first workflow
 
@@ -86,7 +93,7 @@ import { processOrder } from '@/workflow/workflows/order';
 const run = await start(processOrder, [orderId]); // [!code highlight]
 ```
 
-No event bus, no registry — `start()` returns a handle immediately.
+No event bus, no registry. `start()` returns a handle immediately.
 
 ## Wait for an external signal
 
@@ -107,7 +114,7 @@ using approval = createHook<{ approved: boolean }>({ // [!code highlight]
 const payload = await approval;
 ```
 
-**What changed:** event name + match expression collapse into a single `token` string. The caller supplies that token directly — no event schema.
+**What changed:** event name + match expression collapse into a single `token` string. The caller supplies that token directly, with no event schema.
 
 ### Resume from an API route
 
@@ -145,13 +152,12 @@ Event matching disappears. A hook's token encodes the routing (for example, `ref
 
 ## Spawn a child workflow
 
-`step.invoke()` splits into two steps: spawn and collect. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions and pass the `runId` through the workflow.
+`step.invoke()` splits into two steps: spawn and collect. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Return the `Run` object from the spawn step so observability can deep-link into the child run.
 
 ```typescript title="workflow/workflows/parent.ts"
-async function spawnChild(item: string): Promise<string> {
+async function spawnChild(item: string) {
   'use step';
-  const run = await start(childWorkflow, [item]); // [!code highlight]
-  return run.runId;
+  return start(childWorkflow, [item]); // [!code highlight]
 }
 ```
 
@@ -166,146 +172,14 @@ async function collectResult(runId: string) {
 
 export async function parentWorkflow(item: string) {
   'use workflow';
-  const runId = await spawnChild(item);
-  return await collectResult(runId);
+  const child = await spawnChild(item);
+  return await collectResult(child.runId);
 }
 ```
 
-## Migrate a full order-processing saga
+## Writing a saga with the Workflow SDK
 
-This example covers compensation, idempotency keys, retry semantics, and progress streaming — the patterns that matter most in a real migration.
-
-### Inngest version
-
-```typescript title="inngest/functions/order-saga.ts"
-import { inngest } from '../client';
-
-type Order = { id: string; customerId: string; total: number };
-type Reservation = { reservationId: string };
-type Charge = { chargeId: string };
-type Shipment = { shipmentId: string };
-
-export const processOrderSaga = inngest.createFunction(
-  {
-    id: 'process-order-saga',
-    retries: 3,
-    triggers: [{ event: 'order/process' }],
-  },
-  async ({ event, step }) => {
-    const orderId = event.data.orderId;
-
-    const order = await step.run('load-order', async () => {
-      const res = await fetch(
-        `https://example.com/api/orders/${orderId}`
-      );
-      if (!res.ok) throw new Error('Order not found');
-      return res.json() as Promise<Order>;
-    });
-
-    const inventory = await step.run('reserve-inventory', async () => {
-      const res = await fetch(
-        'https://example.com/api/inventory/reservations',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ orderId: order.id }),
-        }
-      );
-      if (!res.ok) throw new Error('Inventory reservation failed');
-      return res.json() as Promise<Reservation>;
-    });
-
-    let payment: Charge;
-    try {
-      payment = await step.run('charge-payment', async () => {
-        const res = await fetch(
-          'https://example.com/api/payments/charges',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              orderId: order.id,
-              customerId: order.customerId,
-              amount: order.total,
-            }),
-          }
-        );
-        if (!res.ok) throw new Error('Payment charge failed');
-        return res.json() as Promise<Charge>;
-      });
-    } catch (error) {
-      await step.run('release-inventory', async () => {
-        await fetch(
-          `https://example.com/api/inventory/reservations/${inventory.reservationId}`,
-          { method: 'DELETE' }
-        );
-      });
-      throw error;
-    }
-
-    let shipment: Shipment;
-    try {
-      shipment = await step.run('create-shipment', async () => {
-        const res = await fetch('https://example.com/api/shipments', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ orderId: order.id }),
-        });
-        if (!res.ok) throw new Error('Shipment creation failed');
-        return res.json() as Promise<Shipment>;
-      });
-    } catch (error) {
-      await step.run('refund-payment', async () => {
-        await fetch(
-          `https://example.com/api/payments/charges/${payment.chargeId}/refund`,
-          { method: 'POST' }
-        );
-      });
-      await step.run('release-inventory-after-refund', async () => {
-        await fetch(
-          `https://example.com/api/inventory/reservations/${inventory.reservationId}`,
-          { method: 'DELETE' }
-        );
-      });
-      throw error;
-    }
-
-    return {
-      orderId: order.id,
-      reservationId: inventory.reservationId,
-      chargeId: payment.chargeId,
-      shipmentId: shipment.shipmentId,
-      status: 'completed',
-    };
-  }
-);
-```
-
-**Sample input:**
-
-```json
-{
-  "event": {
-    "data": {
-      "orderId": "ord_123"
-    }
-  }
-}
-```
-
-**Expected output:**
-
-```json
-{
-  "orderId": "ord_123",
-  "reservationId": "res_456",
-  "chargeId": "ch_789",
-  "shipmentId": "shp_101",
-  "status": "completed"
-}
-```
-
-### Workflow SDK version
+A saga coordinates multiple side effects so that a failure in a later step unwinds the earlier ones. Both Inngest and the Workflow SDK support this pattern through ordinary TypeScript control flow. The example below shows one way to implement compensation in plain TypeScript: a rollback array that the orchestrator builds up as it goes and unwinds in a `catch` block. It is a convention, not a built-in SDK feature.
 
 The saga splits into four sections: the orchestrator, the forward steps, the compensation steps, and a progress emitter. Each block shares the same imports and types:
 
@@ -358,7 +232,7 @@ async function unwind(rollbacks: Array<() => Promise<void>>) {
 
 #### Forward step with retry semantics
 
-`getStepMetadata().stepId` is stable across replays — pass it as `Idempotency-Key`. Use `FatalError` to skip retries on permanent failures.
+`getStepMetadata().stepId` is stable across replays, so pass it as `Idempotency-Key`. Use `FatalError` to skip retries on permanent failures.
 
 ```typescript
 async function reserveInventory(order: Order): Promise<Reservation> {
@@ -394,19 +268,19 @@ async function releaseInventory(reservationId: string) {
 
 #### Durable progress streaming
 
-`getWritable()` replaces Inngest Realtime.
+Workflows push data out through named streams. Clients read from the end of the stream to get the latest value. No separate realtime publish channel, database write, or `getRun()` poll is involved.
 
 ```typescript
 async function emitProgress(update: { stage: string; orderId: string }) {
   'use step';
-  const writer = getWritable<typeof update>().getWriter();
+  const writer = getWritable<typeof update>({ namespace: 'status' }).getWriter();
   try { await writer.write(update); } // [!code highlight]
   finally { writer.releaseLock(); }
 }
 ```
 
 <Callout type="info">
-Inngest's per-step try/catch compensation maps to a single rollback stack. The pattern scales to any number of steps without nested error handlers.
+A single rollback array scales to any number of steps without nested `try`/`catch` blocks. Any other compensation strategy that plain TypeScript supports works too.
 </Callout>
 
 ## What you stop operating
@@ -428,12 +302,12 @@ Pick one Inngest function and migrate it end-to-end before touching the rest. Th
 Add the runtime and the framework integration that matches the app.
 
 ```bash
-pnpm add workflow @workflow/next
+pnpm add workflow
 ```
 
 ### Step 2: Convert `createFunction` to a `"use workflow"` export
 
-Replace the factory call with a plain async export. Move the handler body up — the event-binding argument goes away.
+Replace the factory call with a plain async export. Move the handler body up. The event-binding argument goes away.
 
 ```ts title="workflows/order.ts"
 // Before (Inngest)
@@ -464,7 +338,7 @@ async function loadOrder(id: string) {
 
 - `step.waitForEvent(...)` → `createHook({ token })` + `await hook`. Resume it from an API route with `resumeHook(token, payload)`.
 - `step.sleep(...)` → `sleep("5m")` from `workflow`.
-- `step.invoke(child, { data })` → wrap `start(child, [data])` in a `"use step"` function and optionally read its return value with `getRun(runId).returnValue`.
+- `step.invoke(child, { data })` → wrap `start(child, [data])` in a `"use step"` function that returns the `Run`, and optionally read its return value with `getRun(run.runId).returnValue`.
 
 ### Step 5: Start runs from the app
 
