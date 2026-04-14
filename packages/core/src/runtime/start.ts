@@ -206,7 +206,11 @@ export async function start<TArgs extends unknown[], TResult>(
         v1Compat
       );
 
-      const executionContext = { traceCarrier, workflowCoreVersion };
+      const executionContext = {
+        traceCarrier,
+        workflowCoreVersion,
+        features: { encryption: !!encryptionKey },
+      };
 
       // Call events.create (run_created) and queue in parallel.
       // If events.create fails with 429/5xx, the run was still accepted
