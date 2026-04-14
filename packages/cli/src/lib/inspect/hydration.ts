@@ -13,8 +13,10 @@ import {
   hydrateResourceIO as hydrateResourceIOGeneric,
   isEncryptedData,
   isExpiredStub,
+  isRunRef,
   observabilityRevivers,
   type Revivers,
+  serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
 import { parseClassName } from '@workflow/utils/parse-name';
 import chalk from 'chalk';
@@ -206,12 +208,18 @@ export function getCLIRevivers(): Revivers {
     ...observabilityRevivers,
     // CLI-specific overrides for class instances with inspect.custom
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
-    Instance: (value) =>
-      new CLIClassInstanceRef(
+    Instance: (value) => {
+      // Run instances are rendered as RunRef for clickable rendering
+      const runRef = serializedInstanceToRef(value);
+      if (isRunRef(runRef)) {
+        return runRef;
+      }
+      return new CLIClassInstanceRef(
         extractClassName(value.classId),
         value.classId,
         value.data
-      ),
+      );
+    },
     Set: (value) => new Set(value),
     URL: (value) => new URL(value),
     URLSearchParams: (value) => new URLSearchParams(value === '.' ? '' : value),

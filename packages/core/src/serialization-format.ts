@@ -243,6 +243,32 @@ export interface StreamRef {
   streamId: string;
 }
 
+/** Marker for Run reference objects rendered as links in the UI */
+export const RUN_REF_TYPE = '__workflow_run_ref__';
+
+/** A Run reference for UI display */
+export interface RunRef {
+  __type: typeof RUN_REF_TYPE;
+  runId: string;
+}
+
+/** Check if a value is a RunRef object */
+export const isRunRef = (value: unknown): value is RunRef => {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    '__type' in value &&
+    value.__type === RUN_REF_TYPE &&
+    'runId' in value &&
+    typeof value.runId === 'string'
+  );
+};
+
+/** Convert a serialized Run value to a RunRef for display */
+export const serializedRunToRunRef = (value: { runId: string }): RunRef => {
+  return { __type: RUN_REF_TYPE, runId: value.runId };
+};
+
 /** Marker for custom class instance references */
 export const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
 
@@ -347,16 +373,23 @@ export const extractClassName = (classId: string): string => {
   return parts[parts.length - 1] || classId;
 };
 
-/** Convert a serialized class instance to a ClassInstanceRef for display */
+/** Convert a serialized class instance to a ClassInstanceRef for display.
+ *  Run instances are special-cased to a RunRef for clickable rendering. */
 export const serializedInstanceToRef = (value: {
   classId: string;
   data: unknown;
-}): ClassInstanceRef => {
-  return new ClassInstanceRef(
-    extractClassName(value.classId),
-    value.classId,
-    value.data
-  );
+}): ClassInstanceRef | RunRef => {
+  const className = extractClassName(value.classId);
+  if (
+    className === 'Run' &&
+    value.data !== null &&
+    typeof value.data === 'object' &&
+    'runId' in value.data &&
+    typeof (value.data as { runId: unknown }).runId === 'string'
+  ) {
+    return serializedRunToRunRef(value.data as { runId: string });
+  }
+  return new ClassInstanceRef(className, value.classId, value.data);
 };
 
 /** Convert a serialized class reference to a display string */

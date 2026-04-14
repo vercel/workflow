@@ -767,6 +767,7 @@ export const WorkflowTraceViewer = ({
   onResolveHook,
   onCancelRun,
   onStreamClick,
+  onRunClick,
   onSpanSelect,
   onLoadEventData,
   onLoadMoreSpans,
@@ -797,6 +798,8 @@ export const WorkflowTraceViewer = ({
   onCancelRun?: (runId: string) => Promise<void>;
   /** Callback when a stream reference is clicked in the detail panel */
   onStreamClick?: (streamId: string) => void;
+  /** Callback when a run reference is clicked in the detail panel */
+  onRunClick?: (runId: string) => void;
   /** Callback when a span is selected. */
   onSpanSelect?: (info: SpanSelectionInfo) => void;
   /** Callback to load event data for a specific event (lazy loading in sidebar) */
@@ -905,6 +908,12 @@ export const WorkflowTraceViewer = ({
       };
     });
   }, [events, selectedSpan?.spanId]);
+
+  // Reset selected span when navigating to a different run
+  useEffect(() => {
+    setSelectedSpan(null);
+    setDeselectTrigger((n) => n + 1);
+  }, [run?.runId]);
 
   const handleClose = useCallback(() => {
     setSelectedSpan(null);
@@ -1143,6 +1152,7 @@ export const WorkflowTraceViewer = ({
               <EntityDetailPanel
                 run={run}
                 onStreamClick={onStreamClick}
+                onRunClick={onRunClick}
                 spanDetailData={spanDetailData ?? null}
                 spanDetailError={spanDetailError}
                 spanDetailLoading={spanDetailLoading}
