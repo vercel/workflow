@@ -2,7 +2,7 @@
 title: Migration Guides
 description: Move your existing durable workflow system to the Workflow SDK with side-by-side code comparisons and a realistic migration example.
 type: overview
-summary: Migrate from Temporal, Inngest, or AWS Step Functions to the Workflow SDK.
+summary: Migrate from Temporal, Inngest, AWS Step Functions, or trigger.dev to the Workflow SDK.
 related:
   - /docs/foundations/workflows-and-steps
   - /docs/getting-started
@@ -19,5 +19,8 @@ Move an existing orchestration system to the Workflow SDK. Each guide pairs a co
     </Card>
     <Card href="/docs/migration-guides/migrating-from-aws-step-functions" title="Migrating from AWS Step Functions">
         Replace ASL JSON states, Task / Choice / Wait / Parallel states, and `.waitForTaskToken` callbacks with TypeScript.
+    </Card>
+    <Card href="/docs/migration-guides/migrating-from-trigger-dev" title="Migrating from trigger.dev">
+        Map `task()`, `schemaTask()`, `wait.for` / `wait.forToken`, `triggerAndWait`, and `metadata.stream` onto workflows, steps, hooks, and `start()` / `getRun()`.
     </Card>
 </Cards>
