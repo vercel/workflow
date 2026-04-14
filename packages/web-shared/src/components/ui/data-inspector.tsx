@@ -9,8 +9,14 @@
  */
 
 import { Lock } from 'lucide-react';
-import { createContext, useContext, useEffect, useRef, useState } from 'react';
-import { Spinner } from './spinner';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ObjectInspector,
   ObjectLabel,
@@ -27,6 +33,7 @@ import {
   inspectorThemeExtendedLight,
   inspectorThemeLight,
 } from './inspector-theme';
+import { Spinner } from './spinner';
 
 // ---------------------------------------------------------------------------
 // StreamRef / ClassInstanceRef type detection
@@ -35,19 +42,29 @@ import {
 
 const STREAM_REF_TYPE = '__workflow_stream_ref__';
 const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
+const RUN_REF_TYPE = '__workflow_run_ref__';
 
 interface StreamRef {
   __type: typeof STREAM_REF_TYPE;
   streamId: string;
 }
 
+interface RunRef {
+  __type: typeof RUN_REF_TYPE;
+  runId: string;
+}
+
 function isStreamRef(value: unknown): value is StreamRef {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    '__type' in value &&
-    (value as Record<string, unknown>).__type === STREAM_REF_TYPE
-  );
+  if (value === null || typeof value !== 'object') return false;
+  // Check both enumerable and non-enumerable __type (opaque refs use non-enumerable)
+  const desc = Object.getOwnPropertyDescriptor(value, '__type');
+  return desc?.value === STREAM_REF_TYPE;
+}
+
+function isRunRef(value: unknown): value is RunRef {
+  if (value === null || typeof value !== 'object') return false;
+  const desc = Object.getOwnPropertyDescriptor(value, '__type');
+  return desc?.value === RUN_REF_TYPE;
 }
 
 function isClassInstanceRef(value: unknown): value is {
@@ -87,6 +104,10 @@ export type DecryptClickContextValue = {
 
 export const DecryptClickContext = createContext<
   DecryptClickContextValue | undefined
+>(undefined);
+
+export const RunClickContext = createContext<
+  ((runId: string) => void) | undefined
 >(undefined);
 
 function EncryptedInlineLabel() {
@@ -137,23 +158,55 @@ function EncryptedInlineLabel() {
     </span>
   );
 }
-
 function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
   const onStreamClick = useContext(StreamClickContext);
+  const [hovered, setHovered] = useState(false);
   return (
     <button
       type="button"
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer"
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer underline decoration-transparent transition-colors"
       style={{
-        backgroundColor: 'var(--ds-blue-100)',
-        color: 'var(--ds-blue-800)',
+        backgroundColor: hovered ? 'var(--ds-blue-200)' : 'var(--ds-blue-100)',
+        color: 'var(--ds-blue-900)',
         border: '1px solid var(--ds-blue-300)',
       }}
-      onClick={() => onStreamClick?.(streamRef.streamId)}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={(e) => {
+        e.stopPropagation();
+        onStreamClick?.(streamRef.streamId);
+      }}
       title={`View stream: ${streamRef.streamId}`}
     >
       <span>📡</span>
       <span>{streamRef.streamId}</span>
+    </button>
+  );
+}
+
+function RunRefInline({ runRef }: { runRef: RunRef }) {
+  const onRunClick = useContext(RunClickContext);
+  const [hovered, setHovered] = useState(false);
+  return (
+    <button
+      type="button"
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer underline decoration-transparent transition-colors"
+      style={{
+        backgroundColor: hovered
+          ? 'var(--ds-purple-200)'
+          : 'var(--ds-purple-100)',
+        color: 'var(--ds-purple-900)',
+        border: '1px solid var(--ds-purple-300)',
+      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onClick={(e) => {
+        e.stopPropagation();
+        onRunClick?.(runRef.runId);
+      }}
+      title={`View run: ${runRef.runId}`}
+    >
+      <span>{runRef.runId}</span>
     </button>
   );
 }
@@ -225,6 +278,17 @@ function NodeRenderer({
     );
   }
 
+  // RunRef → inline clickable badge linking to the target run
+  if (isRunRef(data)) {
+    return (
+      <span>
+        {name != null && <ObjectName name={name} />}
+        {name != null && <span>: </span>}
+        <RunRefInline runRef={data} />
+      </span>
+    );
+  }
+
   // ClassInstanceRef → show className as type, data as the inspectable value
   if (isClassInstanceRef(data)) {
     if (depth === 0) {
@@ -275,6 +339,41 @@ function NodeRenderer({
 // Public component
 // ---------------------------------------------------------------------------
 
+/**
+ * Create a non-expandable wrapper that carries ref data as non-enumerable
+ * properties. ObjectInspector won't render children for objects with no
+ * enumerable keys, but our NodeRenderer can still detect them.
+ */
+function makeOpaqueRef(ref: Record<string, unknown>): unknown {
+  const opaque = Object.create(null);
+  for (const [key, value] of Object.entries(ref)) {
+    Object.defineProperty(opaque, key, { value, enumerable: false });
+  }
+  return opaque;
+}
+
+/**
+ * Recursively walk data and replace RunRef/StreamRef objects with
+ * non-expandable versions so ObjectInspector doesn't show their internals.
+ * Only recurses into plain objects and arrays to avoid stripping class
+ * instances (Date, Error, Map, Set, URL, Headers, etc.) that have their
+ * own rendering in NodeRenderer.
+ */
+function collapseRefs(data: unknown): unknown {
+  if (data === null || typeof data !== 'object') return data;
+  if (isRunRef(data) || isStreamRef(data))
+    return makeOpaqueRef(data as unknown as Record<string, unknown>);
+  if (Array.isArray(data)) return data.map(collapseRefs);
+  // Only recurse into plain objects — leave class instances untouched
+  const proto = Object.getPrototypeOf(data);
+  if (proto !== Object.prototype && proto !== null) return data;
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(data)) {
+    result[key] = collapseRefs(value);
+  }
+  return result;
+}
+
 export interface DataInspectorProps {
   /** The data to inspect */
   data: unknown;
@@ -284,6 +383,8 @@ export interface DataInspectorProps {
   name?: string;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Callback when a run reference is clicked */
+  onRunClick?: (runId: string) => void;
   /** Callback when an encrypted marker is clicked (triggers decryption) */
   onDecrypt?: () => void;
   /** Whether decryption is currently in progress */
@@ -295,10 +396,12 @@ export function DataInspector({
   expandLevel = 2,
   name,
   onStreamClick,
+  onRunClick,
   onDecrypt,
   isDecrypting = false,
 }: DataInspectorProps) {
-  const stableData = useStableInspectorData(data);
+  const collapsedData = useMemo(() => collapseRefs(data), [data]);
+  const stableData = useStableInspectorData(collapsedData);
   const [initialExpandLevel, setInitialExpandLevel] = useState(expandLevel);
   const isDark = useDarkMode();
   const extendedTheme = isDark
@@ -334,7 +437,13 @@ export function DataInspector({
       </StreamClickContext.Provider>
     );
   }
-
+  if (onRunClick) {
+    wrapped = (
+      <RunClickContext.Provider value={onRunClick}>
+        {wrapped}
+      </RunClickContext.Provider>
+    );
+  }
   if (onDecrypt) {
     wrapped = (
       <DecryptClickContext.Provider value={{ onDecrypt, isDecrypting }}>

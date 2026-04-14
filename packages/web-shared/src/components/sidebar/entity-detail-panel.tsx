@@ -4,8 +4,8 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useToast } from '../../lib/toast';
 import { isEncryptedMarker } from '../../lib/hydration';
+import { useToast } from '../../lib/toast';
 import { DecryptClickContext } from '../ui/data-inspector';
 import { DecryptButton } from '../ui/decrypt-button';
 import { AttributePanel } from './attribute-panel';
@@ -57,6 +57,7 @@ export interface SelectedSpanInfo {
 export function EntityDetailPanel({
   run,
   onStreamClick,
+  onRunClick,
   spanDetailData,
   spanDetailError,
   spanDetailLoading,
@@ -73,6 +74,8 @@ export function EntityDetailPanel({
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Callback when a run reference is clicked */
+  onRunClick?: (runId: string) => void;
   /** Pre-fetched span detail data for the selected span. */
   spanDetailData: WorkflowRun | Step | Hook | Event | null;
   /** Error from external span detail fetch. */
@@ -489,6 +492,7 @@ export function EntityDetailPanel({
                 isLoading={loading}
                 error={error ?? undefined}
                 onStreamClick={onStreamClick}
+                onRunClick={onRunClick}
                 onDecrypt={onDecrypt}
                 isDecrypting={isDecrypting}
                 resource={resource}
