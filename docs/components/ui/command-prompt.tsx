@@ -457,7 +457,7 @@ export function CommandPromptCopy({
     <button
       aria-label={context.copied ? 'Copied' : 'Copy command'}
       className={cn(
-        'text-gray-1000 rounded-full p-3.5 border-none bg-transparent shrink-0 cursor-pointer relative w-6 h-6 flex items-center justify-center',
+        'text-gray-1000 rounded-full border-none bg-transparent shrink-0 cursor-pointer relative size-8 flex items-center justify-center',
         'group-hover:bg-gray-alpha-100 hover:!bg-gray-alpha-200 transition-colors touch-manipulation',
         'outline outline-2 outline-offset-2 outline-transparent focus-visible:outline-[var(--ds-focus-color)]',
         className
@@ -526,7 +526,7 @@ export function CommandPromptCopy({
             }
             className="absolute inset-0 flex items-center justify-center"
           >
-            <CheckIcon size={16} className="-mt-0.5 block" />
+            <CheckIcon size={16} className="block" />
           </motion.span>
         )}
       </AnimatePresence>
