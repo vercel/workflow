@@ -5,7 +5,6 @@
     "durable-objects",
     "isomorphic-packages",
     "custom-serialization",
-    "secure-credentials",
     "publishing-libraries"
   ]
 }
