@@ -11,6 +11,10 @@
     [
       "workflow",
       "@workflow/core"
+    ],
+    [
+      "@workflow/web",
+      "@workflow/web-shared"
     ]
   ],
   "linked": [],
