@@ -849,7 +849,10 @@ export const showStream = async (
       'Filtering by step-id is not supported when showing a stream, ignoring filter.'
     );
   }
-  const rawStream = await world.readFromStream(streamId);
+  if (!opts.runId) {
+    throw new Error('--run is required when showing a stream');
+  }
+  const rawStream = await world.streams.get(opts.runId, streamId);
 
   // Only resolve the encryption key when --decrypt is passed and --run is provided.
   // We fetch the full WorkflowRun object so that getEncryptionKeyForRun has
@@ -921,7 +924,7 @@ export const listStreamsByRunId = async (
   }
 
   try {
-    const streamIds = await world.listStreamsByRunId(runId);
+    const streamIds = await world.streams.list(runId);
     const matchingStreams = streamIds.map((streamId) => ({
       runId,
       streamId,

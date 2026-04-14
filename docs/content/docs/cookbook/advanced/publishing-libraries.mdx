@@ -1,0 +1,298 @@
+---
+title: Publishing Libraries
+description: Structure and publish npm packages that export workflow functions for consumers to use with Workflow SDK.
+type: guide
+summary: Learn how to build, export, and test npm packages that ship workflow and step functions — including package.json exports, re-exporting for stable workflow IDs, keeping step I/O clean, and integration testing.
+---
+
+<Callout>
+This is an advanced guide for library authors who want to publish reusable workflow functions as npm packages. It assumes familiarity with `"use workflow"`, `"use step"`, and the workflow execution model.
+</Callout>
+
+## Package Structure
+
+A workflow library follows a standard TypeScript package layout with a dedicated `workflows/` directory. Each workflow file exports one or more workflow functions that consumers can import and pass to `start()`.
+
+```
+my-media-lib/
+├── src/
+│   ├── index.ts              # Package entry point
+│   ├── types.ts              # Shared types
+│   ├── workflows/
+│   │   ├── index.ts          # Re-exports all workflows
+│   │   ├── transcode.ts      # Workflow: transcode a video
+│   │   └── generate-thumbnails.ts
+│   └── lib/
+│       └── api-client.ts     # Internal helpers (NOT steps)
+├── test-server/
+│   └── workflows.ts          # Re-export for integration tests
+├── tsup.config.ts
+├── package.json
+└── tsconfig.json
+```
+
+### Entry Points and Exports
+
+Use the `exports` field in `package.json` to expose separate entry points for the main API and the raw workflow functions:
+
+```json
+{
+  "name": "@acme/media",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": { "import": "./dist/index.d.ts" },
+      "import": "./dist/index.js"
+    },
+    "./workflows": {
+      "types": { "import": "./dist/workflows/index.d.ts" },
+      "import": "./dist/workflows/index.js"
+    }
+  },
+  "files": ["dist"]
+}
+```
+
+The main entry point (`@acme/media`) exports types, utilities, and convenience wrappers. The `./workflows` entry point (`@acme/media/workflows`) exports the raw workflow functions that consumers need for the build system.
+
+### Source Files
+
+The package entry re-exports workflows alongside any utilities:
+
+```typescript lineNumbers
+// src/index.ts
+export * from "./types";
+export * as workflows from "./workflows";
+```
+
+The workflows barrel file re-exports each workflow:
+
+```typescript lineNumbers
+// src/workflows/index.ts
+export * from "./transcode";
+export * from "./generate-thumbnails";
+```
+
+### Build Configuration
+
+Use a bundler like `tsup` with separate entry points for each export. Mark `workflow` as external so it's resolved from the consumer's project:
+
+```typescript lineNumbers
+// tsup.config.ts
+import { defineConfig } from "tsup";
+
+export default defineConfig({
+  entry: [
+    "src/index.ts",
+    "src/workflows/index.ts",
+  ],
+  format: ["esm"],
+  dts: true,
+  sourcemap: true,
+  clean: true,
+  external: ["workflow"],
+});
+```
+
+## Re-Exporting for Workflow ID Stability
+
+Workflow SDK's compiler assigns each workflow function a stable ID based on its position in the source file that the build system processes. When a consumer imports a pre-built workflow from an npm package, the compiler never sees the original source — it only sees the compiled output. This means workflow IDs won't match between the library's development environment and the consumer's app.
+
+The fix is a **re-export file**. The consumer creates a file in their `workflows/` directory that re-exports the library's workflows. The build system then processes this file and assigns stable IDs.
+
+### Consumer Setup
+
+```typescript lineNumbers
+// workflows/media.ts (in the consumer's project)
+// Re-export library workflows so the build system assigns stable IDs
+export * from "@acme/media/workflows";
+```
+
+This one-line file is all that's needed. The workflow compiler transforms this file, discovers the workflow and step functions from the library, and assigns IDs that are stable across deployments.
+
+### Why This Is Necessary
+
+Without re-exporting, the workflow runtime cannot match a running workflow to its function definition. When a workflow run is replayed after a cold start, the runtime looks up functions by their compiler-assigned IDs. If the IDs don't exist (because the compiler never processed the library's source), replay fails.
+
+The re-export pattern ensures:
+
+1. **Stable IDs** — the compiler assigns IDs based on the consumer's source tree
+2. **Replay safety** — IDs persist across deployments and cold starts
+3. **Version upgrades** — re-exported IDs remain stable as long as the consumer's file doesn't change
+
+## Keeping Step I/O Clean
+
+When you publish a workflow library, every step function's inputs and outputs are recorded in the event log. This has two implications:
+
+### 1. Everything Must Be Serializable
+
+Step inputs and outputs must be JSON-serializable. Do not pass or return:
+
+- Class instances (unless they implement custom serialization)
+- Functions or closures
+- `Map`, `Set`, `WeakRef`, or other non-JSON types
+- Circular references
+
+If your library works with complex objects, pass serializable configuration into steps and reconstruct the objects inside the step body.
+
+{/* @skip-typecheck - good/bad comparison with duplicate function names */}
+```typescript lineNumbers
+// Good: pass serializable config, construct inside the step
+async function callExternalApi(endpoint: string, params: Record<string, string>) {
+  "use step";
+  const client = createApiClient(process.env.API_KEY!);
+  return await client.request(endpoint, params);
+}
+
+// Bad: pass a pre-constructed client object
+async function callExternalApi(client: ApiClient, params: Record<string, string>) {
+  "use step";
+  // ApiClient is not serializable — this will fail on replay
+  return await client.request(params);
+}
+```
+
+See [Serializable Steps](/docs/cookbook/advanced/serializable-steps) for the step-as-factory pattern.
+
+### 2. Secrets Must Not Appear in Step I/O
+
+Step inputs and outputs are persisted in the event log and may be visible in observability tools. **Never pass secrets as step arguments or return them from steps.**
+
+{/* @skip-typecheck - good/bad comparison with duplicate function names */}
+```typescript lineNumbers
+// Bad: API key appears in the event log
+async function fetchData(apiKey: string, query: string) {
+  "use step";
+  const client = createClient(apiKey);
+  return await client.fetch(query);
+}
+
+// Good: resolve credentials inside the step from environment
+async function fetchData(query: string) {
+  "use step";
+  const client = createClient(process.env.API_KEY!);
+  return await client.fetch(query);
+}
+```
+
+Similarly, helper functions that create API clients using credentials should **not** be marked as steps. If a function's return value would contain sensitive data, keep it as a plain function called inside a step body:
+
+{/* @skip-typecheck - references undefined ServiceClient */}
+```typescript lineNumbers
+// This is NOT a step — intentionally, to avoid credentials in step I/O
+function createAuthenticatedClient(credentials: { token: string }) {
+  return new ServiceClient({ auth: credentials.token });
+}
+
+async function processItem(itemId: string) {
+  "use step";
+  // Resolve credentials and create client inside the step
+  const client = createAuthenticatedClient({
+    token: process.env.SERVICE_TOKEN!,
+  });
+  return await client.process(itemId);
+}
+```
+
+## Testing Workflow Libraries
+
+Library authors need integration tests that exercise workflows through the full Workflow SDK runtime — not just unit tests of individual functions.
+
+### Test Server Pattern
+
+Create a minimal test server that re-exports your library's workflows, just like a consumer would:
+
+```typescript lineNumbers
+// test-server/workflows.ts
+export * from "@acme/media/workflows";
+```
+
+This test server acts as a stand-in consumer app. Point your test runner at it to exercise the full workflow lifecycle: start, replay, and completion.
+
+### Vitest Configuration
+
+Use a dedicated Vitest config for integration tests that run against the Workflow SDK runtime:
+
+```typescript lineNumbers
+// vitest.workflowdevkit.config.ts
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+  test: {
+    include: ["tests/integration/**/*.workflowdevkit.test.ts"],
+    testTimeout: 120_000, // Workflows may take time to complete
+    setupFiles: ["./tests/setup.ts"],
+  },
+});
+```
+
+Run these tests separately from your unit tests:
+
+```bash
+# Unit tests (fast, no workflow runtime)
+pnpm vitest run tests/unit
+
+# Integration tests (requires workflow runtime)
+pnpm vitest run --config vitest.workflowdevkit.config.ts
+```
+
+### What to Test
+
+- **Happy path**: workflow starts, all steps execute, and the final result is correct
+- **Serialization round-trip**: inputs and outputs survive the event log
+- **Replay**: kill and restart a workflow mid-execution to verify deterministic replay
+- **Error handling**: verify that step failures produce the expected errors
+
+## Working With and Without Workflow Installed
+
+If your library should work both as a standalone package and inside Workflow SDK, declare `workflow` as an optional peer dependency:
+
+```json
+{
+  "peerDependencies": {
+    "workflow": ">=4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "workflow": {
+      "optional": true
+    }
+  }
+}
+```
+
+Use dynamic imports and runtime detection so your library gracefully degrades when workflow is not installed:
+
+```typescript lineNumbers
+async function isWorkflowRuntime(): Promise<boolean> {
+  try {
+    const wf = await import("workflow");
+    if (typeof wf.getWorkflowMetadata !== "function") return false;
+    wf.getWorkflowMetadata();
+    return true;
+  } catch {
+    return false;
+  }
+}
+```
+
+See [Isomorphic Packages](/docs/cookbook/advanced/isomorphic-packages) for the full pattern including feature detection, dynamic imports, and dual-path execution.
+
+## Checklist
+
+Before publishing a workflow library:
+
+- [ ] `workflow` is listed as an **optional** peer dependency
+- [ ] Separate `./workflows` export in `package.json` for the raw workflow functions
+- [ ] `workflow` is marked as **external** in your bundler config
+- [ ] Documentation tells consumers to re-export from `@your-lib/workflows`
+- [ ] No secrets in step inputs or outputs — credentials are resolved at runtime inside steps
+- [ ] All step I/O is JSON-serializable
+- [ ] Integration tests use a test server with re-exported workflows
+- [ ] Both with-workflow and without-workflow code paths are tested
+
+## Key APIs
+
+- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) — declares the orchestrator function
+- [`"use step"`](/docs/api-reference/workflow/use-step) — marks functions for durable execution
+- [`start`](/docs/api-reference/workflow/start) — starts a workflow run
+- [`getWorkflowMetadata`](/docs/api-reference/workflow/get-workflow-metadata) — runtime detection and run ID access

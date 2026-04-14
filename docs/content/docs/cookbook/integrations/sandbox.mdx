@@ -1,0 +1,128 @@
+---
+title: Sandbox
+description: Orchestrate Vercel Sandbox lifecycle -- creation, code execution, snapshotting -- inside durable workflows.
+type: guide
+summary: Use workflow steps to provision sandboxes, run code, and manage sandbox lifecycle with automatic cleanup on failure.
+related:
+  - /docs/ai/defining-tools
+  - /docs/foundations/errors-and-retries
+  - /docs/api-reference/workflow-ai/durable-agent
+---
+
+[Vercel Sandbox](https://vercel.com/docs/sandbox) provides isolated code execution environments. The `@vercel/sandbox` package implements first-class support for the Workflow SDK -- the `Sandbox` class is serializable, and its methods (`create`, `runCommand`, `destroy`, etc.) implicitly run as steps. This means you can interact with sandboxes directly inside workflow functions without wrapping each operation in a separate `"use step"` function.
+
+## What It Enables
+
+- **Durable sandbox sessions** -- Sandbox provisioning and teardown survive cold starts
+- **Automatic cleanup** -- Saga-style compensation ensures sandboxes are destroyed on failure
+- **Multi-step code execution** -- Run a sequence of commands in the same sandbox with each step logged
+- **Agent-driven sandboxes** -- Give your DurableAgent a tool that spins up sandboxes on demand
+
+## When to Use
+
+Use this integration when your workflow needs to:
+
+- Execute user-provided or AI-generated code safely
+- Run multi-step build/test pipelines in isolated environments
+- Provision temporary environments for interactive sessions
+- Snapshot sandbox state between steps for reproducibility
+
+## Sandbox Lifecycle in a Workflow
+
+Because `@vercel/sandbox` methods are implicit steps, each call is automatically persisted to the event log. If a failure occurs partway through, the workflow replays from where it left off.
+
+```typescript title="workflows/sandbox-pipeline.ts" lineNumbers
+import { Sandbox } from "@vercel/sandbox";
+
+export async function sandboxPipeline(input: {
+  template: string;
+  commands: string[];
+}) {
+  "use workflow";
+
+  const sandbox = await Sandbox.create({ template: input.template });
+
+  try {
+    const results = [];
+    for (const command of input.commands) {
+      const result = await sandbox.runCommand(command);
+      results.push(result);
+    }
+    return { status: "completed", results };
+  } catch (error) {
+    await sandbox.destroy();
+    throw error;
+  }
+}
+```
+
+## Sandbox as an Agent Tool
+
+Give a DurableAgent the ability to create and use sandboxes. The agent decides when to spin up a sandbox, what code to run, and when to tear it down. Since sandbox methods are implicit steps, the tool execute functions can call them directly.
+
+```typescript title="workflows/code-agent.ts" lineNumbers
+import { Sandbox } from "@vercel/sandbox";
+import { DurableAgent } from "@workflow/ai/agent";
+import { convertToModelMessages, type UIMessage, type UIMessageChunk } from "ai";
+import { getWritable } from "workflow";
+import z from "zod/v4";
+
+export async function codeAgent(messages: UIMessage[]) {
+  "use workflow";
+
+  let activeSandbox: Sandbox | null = null;
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-sonnet-4-20250514",
+    instructions:
+      "You are a coding assistant. You can create sandboxes to run code. " +
+      "Always create a sandbox first, then execute code in it. " +
+      "Clean up the sandbox when you are done.",
+    tools: {
+      createSandbox: {
+        description: "Create an isolated sandbox environment for running code",
+        inputSchema: z.object({
+          template: z.string().describe("The sandbox template (e.g., 'node', 'python')"),
+        }),
+        execute: async ({ template }) => {
+          activeSandbox = await Sandbox.create({ template });
+          return { sandboxId: activeSandbox.id };
+        },
+      },
+      executeCode: {
+        description: "Execute a command in the active sandbox",
+        inputSchema: z.object({
+          command: z.string().describe("The command to execute"),
+        }),
+        execute: async ({ command }) => {
+          if (!activeSandbox) throw new Error("No active sandbox");
+          return activeSandbox.runCommand(command);
+        },
+      },
+      cleanupSandbox: {
+        description: "Destroy the active sandbox when finished",
+        inputSchema: z.object({}),
+        execute: async () => {
+          if (!activeSandbox) throw new Error("No active sandbox");
+          await activeSandbox.destroy();
+          activeSandbox = null;
+          return { cleaned: true };
+        },
+      },
+    },
+  });
+
+  const result = await agent.stream({
+    messages: await convertToModelMessages(messages),
+    writable: getWritable<UIMessageChunk>(),
+  });
+
+  return { messages: result.messages };
+}
+```
+
+## Saga Pattern for Cleanup
+
+Combine sandbox orchestration with the [saga pattern](/docs/cookbook/common-patterns/saga) to ensure sandboxes are always cleaned up, even when a step in the middle of your pipeline fails.
+
+The example above uses a try/catch around the command execution loop. For more complex pipelines with multiple resources (sandbox + database + external API), push compensation functions onto a stack as shown in the [saga recipe](/docs/cookbook/common-patterns/saga).

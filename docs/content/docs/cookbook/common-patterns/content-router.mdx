@@ -1,0 +1,207 @@
+---
+title: Conditional Routing
+description: Inspect a payload and route it to different step handlers based on its content.
+type: guide
+summary: Classify incoming messages and branch to specialized handlers using standard if/else logic in the workflow function.
+---
+
+Use conditional routing when incoming messages need different processing paths depending on their content. A support ticket about billing goes to the billing handler; a bug report goes to engineering. The workflow inspects the payload and branches with standard JavaScript control flow.
+
+## When to use this
+
+- Support ticket routing by category
+- Order processing with different flows per product type
+- Event handling where different event types need different logic
+- Any message-driven system where the handler depends on the content
+
+## Pattern: Content-based router
+
+The workflow classifies the input, then branches with `if`/`else` to call the appropriate step:
+
+```typescript
+declare function classifyTicket(ticketId: string, subject: string): Promise<{ ticketType: string }>; // @setup
+declare function handleBilling(ticketId: string): Promise<void>; // @setup
+declare function handleTechnical(ticketId: string): Promise<void>; // @setup
+declare function handleAccount(ticketId: string): Promise<void>; // @setup
+declare function handleFeedback(ticketId: string): Promise<void>; // @setup
+
+export async function routeTicket(ticketId: string, subject: string) {
+  "use workflow";
+
+  const { ticketType } = await classifyTicket(ticketId, subject);
+
+  if (ticketType === "billing") {
+    await handleBilling(ticketId);
+  } else if (ticketType === "technical") {
+    await handleTechnical(ticketId);
+  } else if (ticketType === "account") {
+    await handleAccount(ticketId);
+  } else {
+    await handleFeedback(ticketId);
+  }
+
+  return { ticketId, routedTo: ticketType };
+}
+```
+
+### Step functions
+
+Each handler is a separate `"use step"` function. The classification step can use an LLM, keyword matching, or any logic you need:
+
+```typescript
+async function classifyTicket(
+  ticketId: string,
+  subject: string
+): Promise<{ ticketType: string }> {
+  "use step";
+
+  // Example: simple keyword classification
+  // In production, this could call an LLM or ML model
+  const lower = subject.toLowerCase();
+  if (lower.includes("invoice") || lower.includes("charge") || lower.includes("refund")) {
+    return { ticketType: "billing" };
+  }
+  if (lower.includes("error") || lower.includes("bug") || lower.includes("crash")) {
+    return { ticketType: "technical" };
+  }
+  if (lower.includes("password") || lower.includes("login") || lower.includes("access")) {
+    return { ticketType: "account" };
+  }
+  return { ticketType: "feedback" };
+}
+
+async function handleBilling(ticketId: string): Promise<void> {
+  "use step";
+  // Look up billing records, process refund, etc.
+}
+
+async function handleTechnical(ticketId: string): Promise<void> {
+  "use step";
+  // Create bug report, notify engineering, etc.
+}
+
+async function handleAccount(ticketId: string): Promise<void> {
+  "use step";
+  // Reset password, update permissions, etc.
+}
+
+async function handleFeedback(ticketId: string): Promise<void> {
+  "use step";
+  // Log feedback, notify product team, etc.
+}
+```
+
+## Pattern: Enrichment before routing
+
+When downstream handlers need more context than the raw input provides, enrich the message in parallel before routing:
+
+```typescript
+export async function enrichAndRoute(email: string) {
+  "use workflow";
+
+  // Step 1: Look up base data
+  const contact = await lookupContact(email);
+
+  // Step 2: Enrich from multiple sources in parallel
+  const [crm, social] = await Promise.allSettled([
+    fetchCrmData(contact),
+    fetchSocialData(contact),
+  ]);
+
+  const enriched = {
+    ...contact,
+    crm: crm.status === "fulfilled" ? crm.value : null,
+    social: social.status === "fulfilled" ? social.value : null,
+  };
+
+  // Step 3: Route based on enriched data
+  if (enriched.crm?.segment === "enterprise") {
+    await routeToEnterpriseSales(enriched);
+  } else {
+    await routeToSelfServe(enriched);
+  }
+
+  return { email, segment: enriched.crm?.segment ?? "self-serve" };
+}
+
+async function lookupContact(email: string): Promise<{ email: string; domain: string }> {
+  "use step";
+  return { email, domain: email.split("@")[1] ?? "unknown" };
+}
+
+async function fetchCrmData(contact: { email: string }): Promise<{ segment: string }> {
+  "use step";
+  const res = await fetch(`https://crm.example.com/lookup?email=${contact.email}`);
+  return res.json();
+}
+
+async function fetchSocialData(contact: { email: string }): Promise<{ followers: number }> {
+  "use step";
+  const res = await fetch(`https://social.example.com/lookup?email=${contact.email}`);
+  return res.json();
+}
+
+async function routeToEnterpriseSales(enriched: unknown): Promise<void> {
+  "use step";
+  // Assign to enterprise sales team
+}
+
+async function routeToSelfServe(enriched: unknown): Promise<void> {
+  "use step";
+  // Add to self-serve onboarding flow
+}
+```
+
+## Pattern: Multiple event sources
+
+When a workflow must wait for signals from different systems before proceeding, create one hook per source and use `Promise.all` with a deadline:
+
+```typescript
+import { defineHook, sleep } from "workflow";
+
+export const orderSignal = defineHook<{ ok: true }>();
+
+const SIGNALS = ["payment", "inventory", "fraud"] as const;
+
+export async function waitForAllSignals(orderId: string) {
+  "use workflow";
+
+  const hooks = SIGNALS.map((kind) =>
+    orderSignal.create({ token: `${kind}:${orderId}` })
+  );
+
+  const outcome = await Promise.race([
+    Promise.all(hooks).then(() => ({ type: "ready" as const })),
+    sleep("5m").then(() => ({ type: "timeout" as const })),
+  ]);
+
+  if (outcome.type === "timeout") {
+    return { orderId, status: "timeout" };
+  }
+
+  await shipOrder(orderId);
+  return { orderId, status: "shipped" };
+}
+
+async function shipOrder(orderId: string): Promise<void> {
+  "use step";
+  await fetch(`https://shipping.example.com/ship`, {
+    method: "POST",
+    body: JSON.stringify({ orderId }),
+  });
+}
+```
+
+## Tips
+
+- **Workflow functions use standard JavaScript.** `if`/`else`, `switch`, ternaries -- any branching logic works. No special routing DSL needed.
+- **Each handler is an independent step.** This means each gets its own retries, its own error handling, and its own entry in the event log.
+- **Combine with enrichment** when downstream handlers need data from multiple sources. Fan out enrichment with `Promise.allSettled`, then route on the merged result.
+- **Use `defineHook` for event gateways** when the routing decision depends on external signals arriving asynchronously.
+
+## Key APIs
+
+- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) -- marks the orchestrator function
+- [`"use step"`](/docs/api-reference/workflow/use-step) -- marks each handler as a durable step
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) -- creates hooks for event gateway patterns
+- [`sleep()`](/docs/api-reference/workflow/sleep) -- durable deadline for event gateways

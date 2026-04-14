@@ -1,5 +1,6 @@
 import type { MetadataRoute } from 'next';
 
+import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
 import { source } from '@/lib/geistdocs/source';
 
 const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http';
@@ -17,7 +18,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: 'weekly' as const,
       lastModified: undefined,
       priority: 0.5,
-      url: url(page.url),
+      url: url(rewriteCookbookUrl(page.url)),
     });
   }
 

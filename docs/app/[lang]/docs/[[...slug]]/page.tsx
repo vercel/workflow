@@ -2,7 +2,8 @@ import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
-import { notFound } from 'next/navigation';
+import { notFound, permanentRedirect } from 'next/navigation';
+import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
 import { AskAI } from '@/components/geistdocs/ask-ai';
@@ -30,6 +31,12 @@ const WorldTestingPerformanceNoop = () => null;
 
 const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
   const { slug, lang } = await params;
+
+  if (Array.isArray(slug) && slug[0] === 'cookbook') {
+    const rest = slug.slice(1).join('/');
+    const legacyPath = `/docs/cookbook${rest ? `/${rest}` : ''}`;
+    permanentRedirect(`/${lang}${rewriteCookbookUrl(legacyPath)}`);
+  }
 
   const page = source.getPage(slug, lang);
 
@@ -85,7 +92,12 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
   );
 };
 
-export const generateStaticParams = () => source.generateParams();
+export const generateStaticParams = () =>
+  source
+    .generateParams()
+    .filter(
+      (params) => !(Array.isArray(params.slug) && params.slug[0] === 'cookbook')
+    );
 
 export const generateMetadata = async ({
   params,

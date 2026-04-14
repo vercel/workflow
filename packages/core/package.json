@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "5.0.0-beta.0",
+  "version": "5.0.0-beta.1",
   "description": "Core runtime and engine for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -31,6 +31,10 @@
     "./runtime": {
       "types": "./dist/runtime.d.ts",
       "default": "./dist/runtime.js"
+    },
+    "./runtime/run": {
+      "types": "./dist/runtime/run.d.ts",
+      "default": "./dist/runtime/run.js"
     },
     "./runtime/start": {
       "types": "./dist/runtime/start.d.ts",

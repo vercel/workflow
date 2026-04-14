@@ -67,6 +67,7 @@ export function EntityDetailPanel({
   onDecrypt,
   isDecrypting = false,
   selectedSpan,
+  hasEncryptedData = false,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
@@ -103,6 +104,8 @@ export function EntityDetailPanel({
   isDecrypting?: boolean;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
+  /** Run-level hint: the run contains encrypted data (from probe). */
+  hasEncryptedData?: boolean;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
@@ -353,15 +356,14 @@ export function EntityDetailPanel({
 
   return (
     <div className="flex h-full flex-col">
-      {(hasEncryptedFields || encryptionKey) && onDecrypt && (
-        <div className="px-3 pt-3">
+      {(hasEncryptedFields || hasEncryptedData || encryptionKey) &&
+        onDecrypt && (
           <DecryptButton
             decrypted={!!encryptionKey}
             loading={isDecrypting}
             onClick={onDecrypt}
           />
-        </div>
-      )}
+        )}
 
       <div className="flex-1 overflow-y-auto px-3 pt-3 pb-8">
         {hasPendingActions && (
@@ -437,6 +439,8 @@ export function EntityDetailPanel({
               isLoading={loading}
               error={error ?? undefined}
               onStreamClick={onStreamClick}
+              onDecrypt={onDecrypt}
+              isDecrypting={isDecrypting}
               resource={resource}
             />
           </section>

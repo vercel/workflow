@@ -519,7 +519,7 @@ async function getRunDiagnostics(tracked: TrackedRun): Promise<string> {
   ];
 
   try {
-    const world = getWorld();
+    const world = await getWorld();
     const runData = await world.runs.get(run.runId);
 
     lines.push(`Status:     ${runData.status}`);

@@ -1,0 +1,149 @@
+---
+title: Serializable Steps
+description: Wrap non-serializable objects (like AI model providers) inside step functions so they can cross the workflow boundary.
+type: guide
+summary: Return a callback from a step to defer provider initialization, making non-serializable AI SDK models work inside durable workflows.
+---
+
+<Callout>
+This is an advanced guide. It dives into workflow internals and is not required reading to use workflow.
+</Callout>
+
+## The Problem
+
+Workflow functions run inside a sandboxed VM where every value that crosses a function boundary must be serializable (JSON-safe). AI SDK model providers — `openai("gpt-4o")`, `anthropic("claude-sonnet-4-20250514")`, etc. — return complex objects with methods, closures, and internal state. Passing one directly into a step causes a serialization error.
+
+```typescript lineNumbers
+import { openai } from "@ai-sdk/openai";
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import type { UIMessageChunk } from "ai";
+
+export async function brokenAgent(prompt: string) {
+  "use workflow";
+
+  const writable = getWritable<UIMessageChunk>();
+  const agent = new DurableAgent({
+    // This fails — the model object is not serializable
+    model: openai("gpt-4o"),
+  });
+
+  await agent.stream({ messages: [{ role: "user", content: prompt }], writable });
+}
+```
+
+## The Solution: Step-as-Factory
+
+Instead of passing the model object, pass a **callback function** that returns the model. Marking that callback with `"use step"` tells the compiler to serialize the *function reference* (which is just a string identifier) rather than its return value. The provider is only instantiated at execution time, inside the step's full Node.js runtime.
+
+```typescript lineNumbers
+import { openai as openaiProvider } from "@ai-sdk/openai";
+
+// Returns a step function, not a model object
+export function openai(...args: Parameters<typeof openaiProvider>) {
+  return async () => {
+    "use step";
+    return openaiProvider(...args);
+  };
+}
+```
+
+The `DurableAgent` receives a function (`() => Promise<LanguageModel>`) instead of a model object. When the agent needs to call the LLM, it invokes the factory inside a step where the real provider can be constructed with full Node.js access.
+
+## How `@workflow/ai` Uses This
+
+The `@workflow/ai` package ships pre-wrapped providers for all major AI SDK backends. Each one follows the same pattern:
+
+```typescript lineNumbers
+// packages/ai/src/providers/anthropic.ts
+import { anthropic as anthropicProvider } from "@ai-sdk/anthropic";
+
+export function anthropic(...args: Parameters<typeof anthropicProvider>) {
+  return async () => {
+    "use step";
+    return anthropicProvider(...args);
+  };
+}
+```
+
+This means you import from `@workflow/ai` instead of `@ai-sdk/*` directly:
+
+```typescript lineNumbers
+import { anthropic } from "@workflow/ai/providers/anthropic";
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import type { UIMessageChunk } from "ai";
+
+export async function chatAgent(prompt: string) {
+  "use workflow";
+
+  const writable = getWritable<UIMessageChunk>();
+  const agent = new DurableAgent({
+    model: anthropic("claude-sonnet-4-20250514"),
+  });
+
+  await agent.stream({ messages: [{ role: "user", content: prompt }], writable });
+}
+```
+
+## Writing Your Own Serializable Wrapper
+
+Apply the same pattern to any non-serializable dependency. The key rule: **the outer function captures serializable arguments, and the inner `"use step"` function constructs the real object at runtime**.
+
+```typescript lineNumbers
+import type { S3Client as S3ClientType } from "@aws-sdk/client-s3";
+
+// The arguments (region, bucket) are plain strings — serializable
+export function createS3Client(region: string) {
+  return async (): Promise<S3ClientType> => {
+    "use step";
+    const { S3Client } = await import("@aws-sdk/client-s3");
+    return new S3Client({ region });
+  };
+}
+
+// Usage in a workflow
+export async function processUpload(region: string, key: string) {
+  "use workflow";
+
+  const getClient = createS3Client(region);
+  // getClient is a serializable step reference, not an S3Client
+  await uploadFile(getClient, key);
+}
+
+async function uploadFile(
+  getClient: () => Promise<S3ClientType>,
+  key: string
+) {
+  "use step";
+  const client = await getClient();
+  // Now you have a real S3Client with full Node.js access
+  await client.send(/* ... */);
+}
+```
+
+## Why This Works
+
+1. **Compiler transformation**: `"use step"` tells the SWC plugin to extract the function into a separate bundle. The workflow VM only sees a serializable reference (function ID + captured arguments).
+2. **Closure tracking**: The compiler tracks which variables the step function closes over. Only serializable values (strings, numbers, plain objects) can be captured.
+3. **Deferred construction**: The actual provider/client is only constructed when the step executes in the Node.js runtime — never in the sandboxed workflow VM.
+
+## Bundle optimization with dynamic imports
+
+Step functions run in full Node.js, so they can use `await import()` to load heavy dependencies on demand. This keeps the workflow bundle light -- the sandboxed workflow VM never needs to parse or load these libraries.
+
+```typescript
+async function processWithHeavyLib(data: string) {
+  "use step";
+  const { parse } = await import("heavy-parser-lib");
+  return parse(data);
+}
+```
+
+This is especially useful for large SDKs (AWS, Google Cloud, parser libraries) that would bloat the workflow bundle unnecessarily. The `createS3Client` example [above](#writing-your-own-serializable-wrapper) already uses this pattern with `await import("@aws-sdk/client-s3")`.
+
+## Key APIs
+
+- [`"use step"`](/docs/api-reference/workflow/use-step) — marks a function for extraction and serialization
+- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) — declares the orchestrator function
+- [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — accepts a model factory for durable AI agent streaming

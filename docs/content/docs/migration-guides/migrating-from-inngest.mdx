@@ -1,0 +1,543 @@
+---
+title: Migrating from Inngest
+description: Move an Inngest TypeScript app to the Workflow SDK by replacing createFunction, step.run(), step.sleep(), step.waitForEvent(), and step.invoke() with Workflows, Steps, Hooks, and start()/getRun().
+type: guide
+summary: Translate an Inngest app into the Workflow SDK with side-by-side code and a realistic order-processing saga.
+prerequisites:
+  - /docs/getting-started/next
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/starting-workflows
+  - /docs/foundations/errors-and-retries
+  - /docs/foundations/hooks
+  - /docs/foundations/streaming
+  - /docs/deploying/world/vercel-world
+---
+
+## What changes when you leave Inngest?
+
+With Inngest, you define functions using `inngest.createFunction()`, register them through a `serve()` handler, and break work into steps with `step.run()`, `step.sleep()`, and `step.waitForEvent()`. The Inngest platform manages event routing, step execution, and retries on its infrastructure.
+
+With the Workflow SDK, you write `"use workflow"` functions that orchestrate `"use step"` functions — all in the same file, all plain TypeScript. There is no separate function registry, no event-driven dispatch layer, and no SDK client to configure. Durable replay, automatic retries, and step-level persistence still exist — they are built into the runtime.
+
+The migration path is mostly about **collapsing the SDK abstraction** and **writing plain async functions**, not rewriting business logic.
+
+## Concept mapping
+
+| Inngest | Workflow SDK | Migration note |
+| --- | --- | --- |
+| `inngest.createFunction()` | `"use workflow"` function started with `start()` | The workflow function itself is the entry point — no wrapper needed. |
+| `step.run()` | `"use step"` function | Each step is a standalone async function with full Node.js access. |
+| `step.sleep()` / `step.sleepUntil()` | `sleep()` | Import `sleep` from `workflow` and call it in your workflow function. |
+| `step.waitForEvent()` | `createHook()` or `createWebhook()` | Use hooks for typed resume signals; webhooks for HTTP callbacks. |
+| `step.invoke()` | `"use step"` wrappers around `start()` / `getRun()` | Start another workflow from a step, return its `runId`, then await the child result from another step. |
+| `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly instead of routing through an event bus. |
+| Retry configuration (`retries`) | Step retries, `RetryableError`, `FatalError`, `maxRetries` | Retry logic moves down to the step level. |
+| `step.sendEvent()` | `"use step"` wrapper around `start()` | Fan out to other workflows from a step instead of emitting onto an event bus. |
+| Realtime / `step.realtime.publish()` | `getWritable()` | Stream progress directly from steps with built-in durable streaming. |
+
+## Side-by-side: hello workflow
+
+### Inngest
+
+```typescript
+// inngest/functions/order.ts
+import { inngest } from '../client';
+
+export const processOrder = inngest.createFunction(
+  { id: 'process-order' },
+  { event: 'order/created' },
+  async ({ event, step }) => {
+    const order = await step.run('load-order', async () => {
+      const res = await fetch(
+        `https://example.com/api/orders/${event.data.orderId}`
+      );
+      return res.json() as Promise<{ id: string }>;
+    });
+
+    await step.run('reserve-inventory', async () => {
+      await fetch(`https://example.com/api/orders/${order.id}/reserve`, {
+        method: 'POST',
+      });
+    });
+
+    await step.run('charge-payment', async () => {
+      await fetch(`https://example.com/api/orders/${order.id}/charge`, {
+        method: 'POST',
+      });
+    });
+
+    return { orderId: order.id, status: 'completed' };
+  }
+);
+```
+
+### Workflow SDK
+
+```typescript
+// workflow/workflows/order.ts
+export async function processOrder(orderId: string) {
+  'use workflow';
+
+  const order = await loadOrder(orderId);
+  await reserveInventory(order.id);
+  await chargePayment(order.id);
+  return { orderId: order.id, status: 'completed' };
+}
+
+async function loadOrder(orderId: string) {
+  'use step';
+  const res = await fetch(`https://example.com/api/orders/${orderId}`);
+  return res.json() as Promise<{ id: string }>;
+}
+
+async function reserveInventory(orderId: string) {
+  'use step';
+  await fetch(`https://example.com/api/orders/${orderId}/reserve`, {
+    method: 'POST',
+  });
+}
+
+async function chargePayment(orderId: string) {
+  'use step';
+  await fetch(`https://example.com/api/orders/${orderId}/charge`, {
+    method: 'POST',
+  });
+}
+```
+
+The biggest change is replacing `step.run()` closures with named `"use step"` functions. Each step becomes a regular async function instead of an inline callback — easier to test, easier to reuse, and the orchestration reads as plain TypeScript.
+
+## Side-by-side: waiting for external approval
+
+### Inngest
+
+```typescript
+// inngest/functions/refund.ts
+import { inngest } from '../client';
+
+export const refundWorkflow = inngest.createFunction(
+  { id: 'refund-workflow' },
+  { event: 'refund/requested' },
+  async ({ event, step }) => {
+    const refundId = event.data.refundId;
+
+    const approval = await step.waitForEvent('wait-for-approval', {
+      event: 'refund/approved',
+      match: 'data.refundId',
+      timeout: '7d',
+    });
+
+    if (!approval) {
+      return { refundId, status: 'timed-out' };
+    }
+
+    if (!approval.data.approved) {
+      return { refundId, status: 'rejected' };
+    }
+
+    return { refundId, status: 'approved' };
+  }
+);
+```
+
+### Workflow SDK
+
+```typescript
+// workflow/workflows/refund.ts
+import { createHook, sleep } from 'workflow';
+
+type ApprovalResult =
+  | { type: 'decision'; approved: boolean }
+  | { type: 'timeout'; approved: false };
+
+export async function refundWorkflow(refundId: string) {
+  'use workflow';
+
+  using approval = createHook<{ approved: boolean }>({
+    token: `refund:${refundId}:approval`,
+  });
+
+  const result: ApprovalResult = await Promise.race([
+    approval.then((payload) => ({
+      type: 'decision' as const,
+      approved: payload.approved,
+    })),
+    sleep('7d').then(() => ({
+      type: 'timeout' as const,
+      approved: false as const,
+    })),
+  ]);
+
+  if (result.type === 'timeout') {
+    return { refundId, status: 'timed-out' };
+  }
+
+  if (!result.approved) {
+    return { refundId, status: 'rejected' };
+  }
+
+  return { refundId, status: 'approved' };
+}
+```
+
+### Resuming the hook from an API route
+
+```typescript
+// app/api/refunds/[refundId]/approve/route.ts
+import { resumeHook } from 'workflow/api';
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ refundId: string }> }
+) {
+  const { refundId } = await params;
+  const body = (await request.json()) as { approved: boolean };
+
+  await resumeHook(`refund:${refundId}:approval`, {
+    approved: body.approved,
+  });
+
+  return Response.json({ ok: true });
+}
+```
+
+Inngest's `step.waitForEvent()` with event matching maps to `createHook()`, and the `timeout: '7d'` behavior maps to `sleep('7d')` combined with `Promise.race()`. The workflow still suspends durably in both branches — there is no event bus or matching expression, but the timeout is modeled explicitly.
+
+### Child workflows: keep `start()` and `getRun()` in steps
+
+When you need an independent child run, the important migration detail is the **step boundary**. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions and pass serializable `runId` values through the workflow:
+
+```typescript
+import { getRun, start } from 'workflow/api';
+
+async function processItem(item: string): Promise<string> {
+  'use step';
+  return `processed-${item}`;
+}
+
+export async function childWorkflow(item: string) {
+  'use workflow';
+  const result = await processItem(item);
+  return { item, result };
+}
+
+async function spawnChild(item: string): Promise<string> {
+  'use step';
+  const run = await start(childWorkflow, [item]);
+  return run.runId;
+}
+
+async function collectResult(
+  runId: string
+): Promise<{ item: string; result: string }> {
+  'use step';
+  const run = getRun(runId);
+  const value = await run.returnValue;
+  return value as { item: string; result: string };
+}
+
+export async function parentWorkflow(item: string) {
+  'use workflow';
+  const runId = await spawnChild(item);
+  const result = await collectResult(runId);
+  return { childRunId: runId, result };
+}
+```
+
+## End-to-end migration: order processing saga
+
+This example exercises compensation (rollbacks), idempotency keys, retry semantics, and progress streaming — the patterns that matter most in a real migration.
+
+### Inngest version
+
+```typescript
+// inngest/functions/order-saga.ts
+import { inngest } from '../client';
+
+type Order = { id: string; customerId: string; total: number };
+type Reservation = { reservationId: string };
+type Charge = { chargeId: string };
+type Shipment = { shipmentId: string };
+
+export const processOrderSaga = inngest.createFunction(
+  { id: 'process-order-saga', retries: 3 },
+  { event: 'order/process' },
+  async ({ event, step }) => {
+    const orderId = event.data.orderId;
+
+    const order = await step.run('load-order', async () => {
+      const res = await fetch(
+        `https://example.com/api/orders/${orderId}`
+      );
+      if (!res.ok) throw new Error('Order not found');
+      return res.json() as Promise<Order>;
+    });
+
+    const inventory = await step.run('reserve-inventory', async () => {
+      const res = await fetch(
+        'https://example.com/api/inventory/reservations',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: order.id }),
+        }
+      );
+      if (!res.ok) throw new Error('Inventory reservation failed');
+      return res.json() as Promise<Reservation>;
+    });
+
+    let payment: Charge;
+    try {
+      payment = await step.run('charge-payment', async () => {
+        const res = await fetch(
+          'https://example.com/api/payments/charges',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              orderId: order.id,
+              customerId: order.customerId,
+              amount: order.total,
+            }),
+          }
+        );
+        if (!res.ok) throw new Error('Payment charge failed');
+        return res.json() as Promise<Charge>;
+      });
+    } catch (error) {
+      await step.run('release-inventory', async () => {
+        await fetch(
+          `https://example.com/api/inventory/reservations/${inventory.reservationId}`,
+          { method: 'DELETE' }
+        );
+      });
+      throw error;
+    }
+
+    let shipment: Shipment;
+    try {
+      shipment = await step.run('create-shipment', async () => {
+        const res = await fetch('https://example.com/api/shipments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: order.id }),
+        });
+        if (!res.ok) throw new Error('Shipment creation failed');
+        return res.json() as Promise<Shipment>;
+      });
+    } catch (error) {
+      await step.run('refund-payment', async () => {
+        await fetch(
+          `https://example.com/api/payments/charges/${payment.chargeId}/refund`,
+          { method: 'POST' }
+        );
+      });
+      await step.run('release-inventory-after-refund', async () => {
+        await fetch(
+          `https://example.com/api/inventory/reservations/${inventory.reservationId}`,
+          { method: 'DELETE' }
+        );
+      });
+      throw error;
+    }
+
+    return {
+      orderId: order.id,
+      reservationId: inventory.reservationId,
+      chargeId: payment.chargeId,
+      shipmentId: shipment.shipmentId,
+      status: 'completed',
+    };
+  }
+);
+```
+
+**Sample input:**
+
+```json
+{
+  "event": {
+    "data": {
+      "orderId": "ord_123"
+    }
+  }
+}
+```
+
+**Expected output:**
+
+```json
+{
+  "orderId": "ord_123",
+  "reservationId": "res_456",
+  "chargeId": "ch_789",
+  "shipmentId": "shp_101",
+  "status": "completed"
+}
+```
+
+### Workflow SDK version
+
+```typescript
+import { FatalError, getStepMetadata, getWritable } from 'workflow';
+
+type Order = { id: string; customerId: string; total: number };
+type Reservation = { reservationId: string };
+type Charge = { chargeId: string };
+type Shipment = { shipmentId: string };
+
+export async function processOrderSaga(orderId: string) {
+  'use workflow';
+
+  const rollbacks: Array<() => Promise<void>> = [];
+
+  try {
+    const order = await loadOrder(orderId);
+    await emitProgress({ stage: 'loaded', orderId: order.id });
+
+    const inventory = await reserveInventory(order);
+    rollbacks.push(() => releaseInventory(inventory.reservationId));
+    await emitProgress({ stage: 'inventory_reserved', orderId: order.id });
+
+    const payment = await chargePayment(order);
+    rollbacks.push(() => refundPayment(payment.chargeId));
+    await emitProgress({ stage: 'payment_captured', orderId: order.id });
+
+    const shipment = await createShipment(order);
+    rollbacks.push(() => cancelShipment(shipment.shipmentId));
+    await emitProgress({ stage: 'shipment_created', orderId: order.id });
+
+    return {
+      orderId: order.id,
+      reservationId: inventory.reservationId,
+      chargeId: payment.chargeId,
+      shipmentId: shipment.shipmentId,
+      status: 'completed',
+    };
+  } catch (error) {
+    while (rollbacks.length > 0) {
+      await rollbacks.pop()!();
+    }
+    throw error;
+  }
+}
+
+async function loadOrder(orderId: string): Promise<Order> {
+  'use step';
+  const res = await fetch(`https://example.com/api/orders/${orderId}`);
+  if (!res.ok) throw new FatalError('Order not found');
+  return res.json() as Promise<Order>;
+}
+
+async function reserveInventory(order: Order): Promise<Reservation> {
+  'use step';
+  const { stepId } = getStepMetadata();
+  const res = await fetch('https://example.com/api/inventory/reservations', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': stepId,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ orderId: order.id }),
+  });
+  if (!res.ok) throw new Error('Inventory reservation failed');
+  return res.json() as Promise<Reservation>;
+}
+
+async function releaseInventory(reservationId: string): Promise<void> {
+  'use step';
+  await fetch(
+    `https://example.com/api/inventory/reservations/${reservationId}`,
+    { method: 'DELETE' }
+  );
+}
+
+async function chargePayment(order: Order): Promise<Charge> {
+  'use step';
+  const { stepId } = getStepMetadata();
+  const res = await fetch('https://example.com/api/payments/charges', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': stepId,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      orderId: order.id,
+      customerId: order.customerId,
+      amount: order.total,
+    }),
+  });
+  if (!res.ok) throw new Error('Payment charge failed');
+  return res.json() as Promise<Charge>;
+}
+
+async function refundPayment(chargeId: string): Promise<void> {
+  'use step';
+  await fetch(`https://example.com/api/payments/charges/${chargeId}/refund`, {
+    method: 'POST',
+  });
+}
+
+async function createShipment(order: Order): Promise<Shipment> {
+  'use step';
+  const res = await fetch('https://example.com/api/shipments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ orderId: order.id }),
+  });
+  if (!res.ok) throw new Error('Shipment creation failed');
+  return res.json() as Promise<Shipment>;
+}
+
+async function cancelShipment(shipmentId: string): Promise<void> {
+  'use step';
+  await fetch(`https://example.com/api/shipments/${shipmentId}`, {
+    method: 'DELETE',
+  });
+}
+
+async function emitProgress(update: { stage: string; orderId: string }) {
+  'use step';
+  const writable = getWritable<{ stage: string; orderId: string }>();
+  const writer = writable.getWriter();
+  try {
+    await writer.write(update);
+  } finally {
+    writer.releaseLock();
+  }
+}
+```
+
+- Inngest's per-step compensation (`step.run` for rollback after a failed step) maps cleanly to a rollback stack in the workflow function. The rollback pattern scales to any number of steps without nested try/catch blocks.
+- Use `getStepMetadata().stepId` as the idempotency key for payment and inventory APIs — no manual step naming required.
+- Stream user-visible progress from steps with `getWritable()` instead of Inngest Realtime's `step.realtime.publish()`. The stream is durable and built into the workflow runtime.
+
+## Why teams usually simplify infrastructure in this move
+
+Inngest adds an event-driven orchestration layer between your app and your durable logic. You configure an Inngest client, register functions through a `serve()` handler, route work through events, and manage step execution through the Inngest platform. This is a clean model when you want event-driven fan-out across many loosely coupled functions — but for TypeScript teams, the indirection often outweighs the benefit.
+
+With the Workflow SDK:
+
+- **No SDK client or serve handler.** Workflow functions are regular TypeScript files with directive annotations. There is no client to configure, no function registry to maintain, and no serve endpoint to wire up.
+- **No event bus.** Start workflows directly with `start()` from your API routes, server actions, or app boundary. You do not need to define event schemas or route through a dispatch layer.
+- **TypeScript all the way down.** Steps are named async functions, not inline closures passed to `step.run()`. They are easier to test, type, and reuse.
+- **Durable streaming built in.** `getWritable()` lets you push progress updates from steps without adding Inngest Realtime or a separate WebSocket/SSE transport.
+- **Efficient resource usage.** When a workflow is suspended on `sleep()` or a hook, it pauses cleanly instead of keeping a worker process alive.
+
+This is not about replacing every Inngest feature. It is about recognizing that most TypeScript teams use a fraction of Inngest's event-routing surface and pay for the rest in SDK complexity and platform coupling.
+
+## Quick-start checklist
+
+- Replace `inngest.createFunction()` with a `"use workflow"` function and start it with `start()` from your app boundary.
+- Convert each `step.run()` callback into a named `"use step"` function.
+- Replace `step.sleep()` / `step.sleepUntil()` with `sleep()` imported from `workflow`.
+- Replace `step.waitForEvent()` with `createHook()` or `createWebhook()` depending on whether the caller is internal or HTTP-based.
+- When `step.waitForEvent()` includes a timeout, map it to `createHook()` or `createWebhook()` plus `sleep()` and `Promise.race()`.
+- Replace `step.invoke()` with `"use step"` wrappers around `start()` and `getRun()` when you need a child workflow with an independent run.
+- Replace `step.sendEvent()` fan-out with `start()` called from a `"use step"` function when the fan-out originates inside a workflow.
+- Remove the Inngest client, `serve()` handler, and event definitions from your app.
+- Move retry configuration down to step boundaries using default retries, `maxRetries`, `RetryableError`, and `FatalError`.
+- Add idempotency keys to external side effects using `getStepMetadata().stepId`.
+- Replace `step.realtime.publish()` with `getWritable()` for streaming progress to clients.
+- Deploy your app and verify workflows run end-to-end with built-in observability.

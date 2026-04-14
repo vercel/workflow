@@ -1,5 +1,16 @@
 # @workflow/ai
 
+## 5.0.0-beta.1
+
+### Patch Changes
+
+- [#1663](https://github.com/vercel/workflow/pull/1663) [`4d31619`](https://github.com/vercel/workflow/commit/4d31619eb724bf243b9775ef71a34f20668a9e2a) Thanks [@gr2m](https://github.com/gr2m)! - fix(ai): preserve provider tool identity across step boundaries
+
+  Provider tools (e.g. `anthropic.tools.webSearch`) were being converted to plain function tools in `toolsToModelTools`, stripping `type: 'provider'`, `id`, and `args`. This caused providers like Anthropic Gateway to not recognize them as provider-executed tools.
+
+- Updated dependencies [[`c6b630f`](https://github.com/vercel/workflow/commit/c6b630fc07335e1439752fc4f1122625515d17ce), [`71d39d2`](https://github.com/vercel/workflow/commit/71d39d2f8d5739c22fb9d777e70d003b07d05987), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d)]:
+  - workflow@5.0.0-beta.1
+
 ## 5.0.0-beta.0
 
 ### Major Changes

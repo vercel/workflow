@@ -1,5 +1,21 @@
 # @workflow/swc-plugin
 
+## 5.0.0-beta.1
+
+### Major Changes
+
+- [#1632](https://github.com/vercel/workflow/pull/1632) [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Inline all step registrations as self-contained IIFEs instead of generating `import { registerStepFunction } from "workflow/internal/private"`. Closure variable access is also inlined. This eliminates the dependency on the `workflow` package being available in `node_modules`, enabling 3rd-party packages to define step functions. Registrations are now placed immediately after each function definition instead of being batched at the bottom of the file.
+
+### Minor Changes
+
+- [#1633](https://github.com/vercel/workflow/pull/1633) [`d040182`](https://github.com/vercel/workflow/commit/d0401829320c2880a0a5c2404ed9dede94eb17a0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Allow synchronous functions to use `"use step"` directive. This enables using `"use step"` as a mechanism to strip Node.js-dependent code from the workflow VM bundle without requiring the function to be async.
+
+### Patch Changes
+
+- [#1671](https://github.com/vercel/workflow/pull/1671) [`66585fd`](https://github.com/vercel/workflow/commit/66585fd46723604a632d08b6c973d5a95582b1af) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Eliminate unreferenced private class members in workflow mode after `"use step"` stripping
+
+- [#1664](https://github.com/vercel/workflow/pull/1664) [`ebb0a4a`](https://github.com/vercel/workflow/commit/ebb0a4a4e366eb1be1d385bf1eedbbe27371c9a9) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Restore export validation for file-level `"use step"` files: only function exports (sync or async) are allowed; non-function exports (constants, classes, re-exports) emit an error
+
 ## 5.0.0-beta.0
 
 ### Major Changes

@@ -12,6 +12,21 @@ type Tweet = {
 };
 
 const TWEETS: Tweet[] = [
+  // Left column (indices 0-2)
+  {
+    url: 'https://x.com/resend/status/1981494746347630976',
+    name: 'Resend',
+    username: 'resend',
+    image: `${BLOB_URL}/resend.jpg`,
+    tweet: (
+      <>
+        <span>
+          Resend + <InlineLink>@vercel</InlineLink> Workflow Dev Kit
+        </span>
+        <span>A match made in heaven</span>
+      </>
+    ),
+  },
   {
     url: 'https://x.com/michaelcaaarter/status/1986078356325187762',
     name: 'Michael Carter',
@@ -50,8 +65,9 @@ const TWEETS: Tweet[] = [
       </>
     ),
   },
+  // Middle column (indices 3-5)
   {
-    url: 'https://x.com/ryancarson/status/1996318671749120315',
+    url: 'https://x.com/ryancarson/status/1999857760335192159',
     name: 'Ryan Carson',
     username: 'ryancarson',
     image: `${BLOB_URL}/ryancarson.jpg`,
@@ -89,6 +105,78 @@ const TWEETS: Tweet[] = [
           Hard to believe that almost all the complexity I remember from back
           then is now solved with just a <InlineCode>use workflow</InlineCode>
         </span>
+      </>
+    ),
+  },
+  {
+    url: 'https://x.com/kumareth/status/1981434879805194265',
+    name: 'Kumar Abhirup',
+    username: 'kumareth',
+    image: `${BLOB_URL}/kumareth.jpg`,
+    tweet: (
+      <>
+        <span>
+          Vercel&apos;s <InlineCode>use workflow</InlineCode> is game changing.
+        </span>
+        <span>
+          Temporal existed for years, but AI Agents are what brought the
+          critical demand for durable execution.
+        </span>
+      </>
+    ),
+  },
+  // Right column (indices 6-8)
+  {
+    url: 'https://x.com/nikitabase/status/1982509352486682854',
+    name: 'Nikita | Scaling Postgres',
+    username: 'nikitabase',
+    image: `${BLOB_URL}/nikitabase.jpg`,
+    tweet: (
+      <span>
+        <InlineCode>use workflow</InlineCode> is beautiful
+      </span>
+    ),
+  },
+  {
+    url: 'https://x.com/YashSolanki_/status/1992131148823040327',
+    name: 'Yash Solanki',
+    username: 'YashSolanki_',
+    image: `${BLOB_URL}/YashSolanki_.jpg`,
+    tweet: (
+      <>
+        <span>
+          If you&apos;re building any agentic workflow, then you should
+          definitely watch this.
+        </span>
+        <span>
+          I feel like using workflow will become the go-to choice for your
+          projects.
+        </span>
+        <span>
+          Whether it&apos;s a side project or complex agentic flows,{' '}
+          <InlineCode>use workflow</InlineCode> by{' '}
+          <InlineLink>@vercel</InlineLink> just makes so much sense now.
+        </span>
+        <span>
+          Love that the logs screen makes it easier to see what&apos;s going.
+        </span>
+      </>
+    ),
+  },
+  {
+    url: 'https://x.com/eersnington/status/1982225225010782715',
+    name: 'Sree',
+    username: 'eersnington',
+    image: `${BLOB_URL}/eersnington.jpg`,
+    tweet: (
+      <>
+        <span>vercel has the vibe as apple during steve jobs era</span>
+        <span>
+          durable workflows aren&apos;t anything new (and a massive headache to
+          roll your own too), but vercel isn&apos;t afraid of doing things
+          differently and reinvent them in a way that feels clean and effortless
+        </span>
+        <span>this is really exciting to me</span>
       </>
     ),
   },

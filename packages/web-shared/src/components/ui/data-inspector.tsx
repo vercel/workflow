@@ -75,6 +75,76 @@ export const StreamClickContext = createContext<
   ((streamId: string) => void) | undefined
 >(undefined);
 
+/**
+ * Context for passing a decrypt handler down to DataInspector instances.
+ * When provided, encrypted markers become clickable buttons that trigger decryption.
+ */
+export type DecryptClickContextValue = {
+  onDecrypt: () => void;
+  isDecrypting: boolean;
+};
+
+export const DecryptClickContext = createContext<
+  DecryptClickContextValue | undefined
+>(undefined);
+
+function EncryptedInlineLabel() {
+  const ctx = useContext(DecryptClickContext);
+  if (ctx) {
+    return (
+      <button
+        type="button"
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] cursor-pointer"
+        style={{
+          backgroundColor: 'var(--ds-gray-100)',
+          color: 'var(--ds-gray-700)',
+          border: '1px solid var(--ds-gray-400)',
+          fontStyle: 'italic',
+          opacity: ctx.isDecrypting ? 0.6 : 1,
+        }}
+        disabled={ctx.isDecrypting}
+        onClick={(e) => {
+          e.stopPropagation();
+          ctx.onDecrypt();
+        }}
+        title="Click to decrypt"
+      >
+        {ctx.isDecrypting ? (
+          <span
+            className="h-3 w-3 animate-spin rounded-full border-2"
+            style={{
+              display: 'inline-block',
+              flexShrink: 0,
+              borderColor: 'var(--ds-gray-400)',
+              borderTopColor: 'var(--ds-gray-700)',
+            }}
+          />
+        ) : (
+          <Lock
+            className="h-3 w-3"
+            style={{ display: 'inline', flexShrink: 0 }}
+          />
+        )}
+        <span>{ctx.isDecrypting ? 'Decrypting…' : 'Decrypt'}</span>
+      </button>
+    );
+  }
+  return (
+    <span style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
+      <Lock
+        className="h-3 w-3"
+        style={{
+          display: 'inline',
+          verticalAlign: 'middle',
+          marginRight: '3px',
+          marginTop: '-1px',
+        }}
+      />
+      Encrypted
+    </span>
+  );
+}
+
 function StreamRefInline({ streamRef }: { streamRef: StreamRef }) {
   const onStreamClick = useContext(StreamClickContext);
   return (
@@ -132,26 +202,13 @@ function NodeRenderer({
 }) {
   const extendedTheme = useContext(ExtendedThemeContext);
 
-  // Encrypted marker → flat label with Lock icon, non-expandable
+  // Encrypted marker → flat label with Lock icon, clickable when onDecrypt is available
   if (
     data !== null &&
     typeof data === 'object' &&
     data.constructor?.name === ENCRYPTED_DISPLAY_NAME
   ) {
-    const label = (
-      <span style={{ color: 'var(--ds-gray-600)', fontStyle: 'italic' }}>
-        <Lock
-          className="h-3 w-3"
-          style={{
-            display: 'inline',
-            verticalAlign: 'middle',
-            marginRight: '3px',
-            marginTop: '-1px',
-          }}
-        />
-        Encrypted
-      </span>
-    );
+    const label = <EncryptedInlineLabel />;
     if (depth === 0) {
       return label;
     }
@@ -234,6 +291,10 @@ export interface DataInspectorProps {
   name?: string;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Callback when an encrypted marker is clicked (triggers decryption) */
+  onDecrypt?: () => void;
+  /** Whether decryption is currently in progress */
+  isDecrypting?: boolean;
 }
 
 export function DataInspector({
@@ -241,6 +302,8 @@ export function DataInspector({
   expandLevel = 2,
   name,
   onStreamClick,
+  onDecrypt,
+  isDecrypting = false,
 }: DataInspectorProps) {
   const stableData = useStableInspectorData(data);
   const [initialExpandLevel, setInitialExpandLevel] = useState(expandLevel);
@@ -269,16 +332,25 @@ export function DataInspector({
     </ExtendedThemeContext.Provider>
   );
 
-  // Wrap in StreamClickContext if a handler is provided
+  let wrapped = content;
+
   if (onStreamClick) {
-    return (
+    wrapped = (
       <StreamClickContext.Provider value={onStreamClick}>
-        {content}
+        {wrapped}
       </StreamClickContext.Provider>
     );
   }
 
-  return content;
+  if (onDecrypt) {
+    wrapped = (
+      <DecryptClickContext.Provider value={{ onDecrypt, isDecrypting }}>
+        {wrapped}
+      </DecryptClickContext.Provider>
+    );
+  }
+
+  return wrapped;
 }
 
 function useStableInspectorData<T>(next: T): T {

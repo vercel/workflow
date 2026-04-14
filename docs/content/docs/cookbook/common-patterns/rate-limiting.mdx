@@ -1,0 +1,228 @@
+---
+title: Rate Limiting & Retries
+description: Handle 429 responses and transient failures with RetryableError and exponential backoff.
+type: guide
+summary: When an external API returns 429, throw RetryableError with the Retry-After value so the workflow runtime automatically reschedules the step after the specified delay.
+---
+
+Use this pattern when calling external APIs that enforce rate limits. Instead of writing manual retry loops, throw `RetryableError` with a `retryAfter` value and let the workflow runtime handle rescheduling.
+
+## When to use this
+
+- Calling APIs that return 429 (Too Many Requests) with `Retry-After` headers
+- Any step that hits transient failures and needs backoff
+- Syncing data with third-party services (Stripe, CRMs, scrapers)
+
+## Pattern: RetryableError with Retry-After
+
+A step function calls an external API. On 429, it reads the `Retry-After` header and throws `RetryableError`. The runtime reschedules the step automatically.
+
+```typescript
+import { RetryableError } from "workflow";
+
+declare function fetchFromCrm(contactId: string): Promise<unknown>; // @setup
+declare function upsertToWarehouse(contactId: string, contact: unknown): Promise<void>; // @setup
+
+export async function syncContact(contactId: string) {
+  "use workflow";
+
+  const contact = await fetchFromCrm(contactId);
+  await upsertToWarehouse(contactId, contact);
+
+  return { contactId, status: "synced" };
+}
+```
+
+### Step function with rate limit handling
+
+```typescript
+import { RetryableError } from "workflow";
+
+async function fetchFromCrm(contactId: string) {
+  "use step";
+
+  const res = await fetch(`https://crm.example.com/contacts/${contactId}`);
+
+  if (res.status === 429) {
+    const retryAfter = res.headers.get("Retry-After");
+    throw new RetryableError("Rate limited by CRM", {
+      retryAfter: retryAfter ? parseInt(retryAfter) * 1000 : "1m",
+    });
+  }
+
+  if (!res.ok) throw new Error(`CRM returned ${res.status}`);
+  return res.json();
+}
+
+async function upsertToWarehouse(contactId: string, contact: unknown) {
+  "use step";
+  await fetch(`https://warehouse.example.com/contacts/${contactId}`, {
+    method: "PUT",
+    body: JSON.stringify(contact),
+  });
+}
+```
+
+## Pattern: Exponential backoff
+
+Use `getStepMetadata()` to access the current attempt number and calculate increasing delays:
+
+```typescript
+import { RetryableError, getStepMetadata } from "workflow";
+
+async function callFlakeyApi(endpoint: string) {
+  "use step";
+
+  const { attempt } = getStepMetadata();
+  const res = await fetch(endpoint);
+
+  if (res.status === 429 || res.status >= 500) {
+    throw new RetryableError(`Request failed (${res.status})`, {
+      retryAfter: (attempt ** 2) * 1000, // 1s, 4s, 9s...
+    });
+  }
+
+  return res.json();
+}
+```
+
+## Pattern: Circuit breaker with sleep
+
+When a dependency is completely down, stop hitting it for a cooldown period using `sleep()`, then probe with a single test request:
+
+```typescript
+import { sleep } from "workflow";
+
+export async function circuitBreaker(maxRequests: number = 10) {
+  "use workflow";
+
+  let state: "closed" | "open" | "half-open" = "closed";
+  let consecutiveFailures = 0;
+  const FAILURE_THRESHOLD = 3;
+
+  for (let i = 1; i <= maxRequests; i++) {
+    if (state === "open") {
+      await sleep("30s"); // Durable cooldown
+      state = "half-open";
+    }
+
+    const success = await callService(i);
+
+    if (success) {
+      consecutiveFailures = 0;
+      if (state === "half-open") state = "closed";
+    } else {
+      consecutiveFailures++;
+      if (consecutiveFailures >= FAILURE_THRESHOLD) {
+        state = "open";
+        consecutiveFailures = 0;
+      }
+    }
+  }
+
+  return { status: state === "closed" ? "recovered" : "failed" };
+}
+
+async function callService(requestNum: number): Promise<boolean> {
+  "use step";
+  try {
+    const res = await fetch("https://payment-gateway.example.com/charge");
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+```
+
+## Pattern: Custom max retries
+
+Override the default retry count (3) for steps that need more or fewer attempts:
+
+```typescript
+async function fetchWithRetries(url: string) {
+  "use step";
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Failed: ${res.status}`);
+  return res.json();
+}
+
+// Allow up to 10 retry attempts
+fetchWithRetries.maxRetries = 10;
+```
+
+## Application-level retry
+
+Sometimes you need retry logic at the workflow level -- wrapping a step call with your own backoff instead of relying on the framework's built-in `RetryableError`. This is useful when you want full control over retry conditions, delays, and error filtering.
+
+```typescript
+interface RetryOptions {
+  maxRetries?: number;
+  baseDelay?: number;
+  maxDelay?: number;
+  shouldRetry?: (error: Error, attempt: number) => boolean;
+}
+
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  options: RetryOptions = {},
+): Promise<T> {
+  const { maxRetries = 3, baseDelay = 2000, maxDelay = 10000, shouldRetry } = options;
+  let lastError: Error | undefined;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      const isLastAttempt = attempt === maxRetries;
+      if (isLastAttempt || (shouldRetry && !shouldRetry(lastError, attempt + 1))) {
+        throw lastError;
+      }
+      // Exponential backoff with jitter
+      const delay = Math.min(baseDelay * 2 ** attempt * (0.5 + Math.random() * 0.5), maxDelay);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  throw lastError;
+}
+```
+
+Use it in a workflow to wrap step calls:
+
+```typescript
+declare function withRetry<T>(fn: () => Promise<T>, options?: { maxRetries?: number; shouldRetry?: (error: Error) => boolean }): Promise<T>; // @setup
+declare function downloadFile(url: string): Promise<any>; // @setup
+
+export async function downloadWithRetry(url: string) {
+  "use workflow";
+
+  const result = await withRetry(() => downloadFile(url), {
+    maxRetries: 5,
+    shouldRetry: (error) => error.message.includes("Timeout"),
+  });
+
+  return result;
+}
+```
+
+**When to use this vs `RetryableError`/`FatalError`:**
+- **`RetryableError`** runs inside a step -- the framework reschedules the step after the delay. Use it for transient HTTP errors (429, 503) where the runtime should handle backoff.
+- **Application-level retry** wraps the step call from the workflow. Use it when you need custom retry conditions, want to retry across different steps, or when you're building a library and prefer not to depend on workflow-specific error classes.
+
+## Tips
+
+- **`RetryableError` is for transient failures.** Use it when the request might succeed on a later attempt (429, 503, network timeout).
+- **`FatalError` is for permanent failures.** Use it when retrying won't help (404, 401, invalid input). This skips all remaining retries.
+- **The `retryAfter` option accepts** a millisecond number, a duration string (`"1m"`, `"30s"`), or a `Date` object.
+- **Steps retry up to 3 times by default.** Set `fn.maxRetries = N` to change this per step function.
+- **Don't write manual sleep-retry loops.** The runtime handles scheduling natively with `RetryableError` -- it's more efficient and survives cold starts.
+
+## Key APIs
+
+- [`"use workflow"`](/docs/foundations/workflows-and-steps) -- marks the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps) -- marks functions that run with full Node.js access
+- [`RetryableError`](/docs/api-reference/workflow/retryable-error) -- signals the runtime to retry after a delay
+- [`FatalError`](/docs/api-reference/workflow/fatal-error) -- signals a permanent failure, skipping retries
+- [`getStepMetadata()`](/docs/api-reference/step/get-step-metadata) -- provides the current attempt number and step ID
+- [`sleep()`](/docs/api-reference/workflow/sleep) -- durable pause for circuit breaker cooldowns

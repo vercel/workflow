@@ -5,11 +5,11 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
-import React, { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
-import { StreamClickContext } from '../ui/data-inspector';
+import { DecryptClickContext, StreamClickContext } from '../ui/data-inspector';
 import { ErrorCard } from '../ui/error-card';
 import {
   ErrorStackBlock,
@@ -180,9 +180,42 @@ function ConversationWithTabs({
  * with the lucide Lock icon matching the title bar Decrypt button.
  */
 function EncryptedFieldBlock() {
+  const ctx = useContext(DecryptClickContext);
+  if (ctx) {
+    return (
+      <button
+        type="button"
+        onClick={ctx.onDecrypt}
+        disabled={ctx.isDecrypting}
+        className="flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs cursor-pointer transition-colors"
+        style={{
+          borderColor: 'var(--ds-gray-400)',
+          backgroundColor: 'var(--ds-gray-100)',
+          color: 'var(--ds-gray-700)',
+          opacity: ctx.isDecrypting ? 0.6 : 1,
+        }}
+        title="Click to decrypt"
+      >
+        {ctx.isDecrypting ? (
+          <span
+            className="h-3 w-3 animate-spin rounded-full border-2"
+            style={{
+              borderColor: 'var(--ds-gray-400)',
+              borderTopColor: 'var(--ds-gray-700)',
+            }}
+          />
+        ) : (
+          <Lock className="h-3 w-3" />
+        )}
+        <span className="font-medium">
+          {ctx.isDecrypting ? 'Decrypting…' : 'Decrypt'}
+        </span>
+      </button>
+    );
+  }
   return (
     <div
-      className="flex items-center gap-1.5 rounded-md border px-3 py-2 text-xs"
+      className="flex w-full items-center justify-center gap-1.5 rounded-md border px-3 py-2 text-xs"
       style={{
         borderColor: 'var(--ds-gray-300)',
         backgroundColor: 'var(--ds-gray-100)',
@@ -703,6 +736,8 @@ export const AttributePanel = ({
   error,
   expiredAt,
   onStreamClick,
+  onDecrypt,
+  isDecrypting = false,
   resource,
 }: {
   data: Record<string, unknown>;
@@ -712,6 +747,10 @@ export const AttributePanel = ({
   expiredAt?: string | Date;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Callback when an encrypted marker is clicked (triggers decryption) */
+  onDecrypt?: () => void;
+  /** Whether decryption is currently in progress */
+  isDecrypting?: boolean;
   /** Resource type of the selected span — used to show targeted loading skeletons. */
   resource?: string;
 }) => {
@@ -812,93 +851,116 @@ export const AttributePanel = ({
 
   return (
     <StreamClickContext.Provider value={onStreamClick}>
-      <div>
-        {/* Basic attributes in a vertical layout with border */}
-        {visibleBasicAttributes.length > 0 && (
-          <div className="flex flex-col overflow-hidden rounded-lg border text-gray-alpha-400 px-3">
-            {orderedBasicAttributes.map((attribute) => {
-              const displayValue = attributeToDisplayFn[
-                attribute as keyof typeof attributeToDisplayFn
-              ]?.(displayData[attribute as keyof typeof displayData]);
-              const isModuleSpecifier = attribute === 'moduleSpecifier';
-              const moduleSpecifierValue =
-                typeof displayValue === 'string'
-                  ? displayValue
-                  : String(displayValue ?? displayData.moduleSpecifier ?? '');
+      <DecryptClickContext.Provider
+        value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
+      >
+        <div>
+          {/* Basic attributes in a vertical layout with border */}
+          {visibleBasicAttributes.length > 0 && (
+            <div className="mb-3 flex flex-col overflow-hidden rounded-lg border border-gray-alpha-400">
+              {orderedBasicAttributes.map((attribute, index) => {
+                const displayValue = attributeToDisplayFn[
+                  attribute as keyof typeof attributeToDisplayFn
+                ]?.(displayData[attribute as keyof typeof displayData]);
+                const isModuleSpecifier = attribute === 'moduleSpecifier';
+                const moduleSpecifierValue =
+                  typeof displayValue === 'string'
+                    ? displayValue
+                    : String(displayValue ?? displayData.moduleSpecifier ?? '');
+                const shouldCapitalizeLabel =
+                  attribute !== 'workflowCoreVersion';
+                const showResumeAtSkeleton =
+                  isLoading && resource === 'sleep' && !displayData.resumeAt;
+                const showDivider =
+                  index < orderedBasicAttributes.length - 1 ||
+                  showResumeAtSkeleton;
 
-              return (
-                <React.Fragment key={attribute}>
-                  <div className="flex items-center justify-between gap-4 rounded-sm py-3">
-                    <span className="text-gray-900 text-label-14">
-                      {getAttributeDisplayName(attribute)}
-                    </span>
-                    {isModuleSpecifier ? (
-                      <button
-                        type="button"
-                        className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
-                        style={{
-                          color: 'var(--ds-gray-1000)',
-                          background: 'transparent',
-                          border: 'none',
-                          padding: 0,
-                        }}
-                        title={moduleSpecifierValue}
-                        onClick={() =>
-                          handleCopyModuleSpecifier(moduleSpecifierValue)
+                return (
+                  <div key={attribute} className="py-1">
+                    <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                      <span
+                        className={
+                          shouldCapitalizeLabel
+                            ? 'text-[14px] first-letter:uppercase'
+                            : 'text-[14px]'
                         }
+                        style={{ color: 'var(--ds-gray-700)' }}
                       >
-                        {moduleSpecifierValue}
-                      </button>
-                    ) : (
-                      <span className="min-w-0 max-w-[70%] truncate text-right text-label-13 font-mono text-gray-1000">
-                        {displayValue}
+                        {getAttributeDisplayName(attribute)}
                       </span>
-                    )}
+                      {isModuleSpecifier ? (
+                        <button
+                          type="button"
+                          className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
+                          style={{
+                            color: 'var(--ds-gray-1000)',
+                            background: 'transparent',
+                            border: 'none',
+                            padding: 0,
+                          }}
+                          title={moduleSpecifierValue}
+                          onClick={() =>
+                            handleCopyModuleSpecifier(moduleSpecifierValue)
+                          }
+                        >
+                          {moduleSpecifierValue}
+                        </button>
+                      ) : (
+                        <span
+                          className="min-w-0 max-w-[70%] truncate text-right text-[13px] font-mono"
+                          style={{ color: 'var(--ds-gray-1000)' }}
+                        >
+                          {displayValue}
+                        </span>
+                      )}
+                    </div>
+                    {showDivider ? (
+                      <div
+                        className="mx-2.5 border-b"
+                        style={{ borderColor: 'var(--ds-gray-300)' }}
+                      />
+                    ) : null}
                   </div>
-                  <div
-                    className="h-px bg-gray-alpha-200 last:hidden"
-                    aria-hidden="true"
-                  />
-                </React.Fragment>
-              );
-            })}
-            {isLoading && resource === 'sleep' && !displayData.resumeAt && (
-              <div className="py-1">
-                <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
-                  <span
-                    className="text-[14px] first-letter:uppercase"
-                    style={{ color: 'var(--ds-gray-700)' }}
-                  >
-                    resumeAt
-                  </span>
-                  <Skeleton className="h-4 w-[55%]" />
+                );
+              })}
+              {isLoading && resource === 'sleep' && !displayData.resumeAt && (
+                <div className="py-1">
+                  <div className="flex min-h-[32px] items-center justify-between gap-4 rounded-sm px-2.5 py-1">
+                    <span
+                      className="text-[14px] first-letter:uppercase"
+                      style={{ color: 'var(--ds-gray-700)' }}
+                    >
+                      resumeAt
+                    </span>
+                    <Skeleton className="h-4 w-[55%]" />
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-        )}
-        {error ? (
-          <ErrorCard
-            title="Failed to load resource details"
-            details={error.message}
-            className="my-4"
-          />
-        ) : hasExpired ? (
-          <ExpiredDataMessage />
-        ) : (
-          <>
-            {resolvedAttributes.map((attribute) => (
-              <AttributeBlock
-                isLoading={isLoading}
-                key={attribute}
-                attribute={attribute}
-                value={displayData[attribute as keyof typeof displayData]}
-                context={displayContext}
-              />
-            ))}
-          </>
-        )}
-      </div>
+              )}
+            </div>
+          )}
+          {error ? (
+            <ErrorCard
+              title="Failed to load resource details"
+              details={error.message}
+              className="my-4"
+            />
+          ) : hasExpired ? (
+            <ExpiredDataMessage />
+          ) : (
+            <>
+              {resolvedAttributes.map((attribute) => (
+                <AttributeBlock
+                  isLoading={isLoading}
+                  key={attribute}
+                  attribute={attribute}
+                  value={displayData[attribute as keyof typeof displayData]}
+                  context={displayContext}
+                />
+              ))}
+            </>
+          )}
+        </div>
+      </DecryptClickContext.Provider>
     </StreamClickContext.Provider>
   );
 };

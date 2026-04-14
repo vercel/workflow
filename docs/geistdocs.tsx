@@ -28,6 +28,10 @@ export const nav = [
     href: '/docs',
   },
   {
+    label: 'Cookbook',
+    href: '/cookbook',
+  },
+  {
     label: 'Worlds',
     href: '/worlds',
   },

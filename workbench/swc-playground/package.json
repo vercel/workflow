@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:wasm": "node wasm/build.js",
     "copy-wasm": "node scripts/copy-wasm.js",
     "generate-types": "node scripts/generate-monaco-types.js",
-    "prebuild": "node scripts/copy-wasm.js && node scripts/generate-monaco-types.js",
+    "prebuild": "node wasm/build.js && node scripts/copy-wasm.js && node scripts/generate-monaco-types.js",
     "build": "next build",
-    "dev": "node scripts/copy-wasm.js && node scripts/generate-monaco-types.js && next dev",
+    "dev": "node wasm/build.js && node scripts/copy-wasm.js && node scripts/generate-monaco-types.js && next dev",
     "lint": "eslint .",
     "start": "next start"
   },
@@ -18,7 +19,6 @@
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/serde": "workspace:*",
-    "@workflow/swc-playground-wasm": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
     "workflow": "workspace:*",

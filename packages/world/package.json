@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world",
-  "version": "5.0.0-beta.0",
+  "version": "5.0.0-beta.1",
   "description": "The Workflows World interface",
   "type": "module",
   "main": "dist/index.js",

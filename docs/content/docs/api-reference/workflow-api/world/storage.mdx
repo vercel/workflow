@@ -37,7 +37,7 @@ The World storage interface exposes four sub-interfaces for querying workflow da
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld(); // [!code highlight]
+const world = await getWorld(); // [!code highlight]
 ```
 
 ---
@@ -304,7 +304,7 @@ const result = await world.hooks.list({ // [!code highlight]
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld();
+const world = await getWorld();
 let cursor: string | undefined;
 
 const runs = await world.runs.list({ // [!code highlight]
@@ -319,7 +319,7 @@ cursor = runs.cursor; // pass to next call for pagination
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld();
+const world = await getWorld();
 
 // Full data (default) — includes serialized input/output
 const run = await world.runs.get(runId); // [!code highlight]
@@ -336,7 +336,7 @@ const lightweight = await world.runs.get(runId, { // [!code highlight]
 import { getWorld } from "workflow/runtime";
 import { parseStepName } from "workflow/observability"; // [!code highlight]
 
-const world = getWorld();
+const world = await getWorld();
 const steps = await world.steps.list({ // [!code highlight]
   runId,
   resolveData: "none",
@@ -358,7 +358,7 @@ const progress = steps.data.map((step) => {
 import { getWorld } from "workflow/runtime";
 import { hydrateResourceIO, observabilityRevivers } from "workflow/observability"; // [!code highlight]
 
-const world = getWorld();
+const world = await getWorld();
 const step = await world.steps.get(runId, stepId); // [!code highlight]
 const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
 console.log(hydrated.input, hydrated.output);
@@ -369,7 +369,7 @@ console.log(hydrated.input, hydrated.output);
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld();
+const world = await getWorld();
 await world.events.create(runId, { // [!code highlight]
   eventType: "run_cancelled", // [!code highlight]
 }); // [!code highlight]
@@ -380,7 +380,7 @@ await world.events.create(runId, { // [!code highlight]
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld();
+const world = await getWorld();
 const hook = await world.hooks.getByToken(token); // [!code highlight]
 console.log(hook.runId, hook.metadata); // [!code highlight]
 ```
@@ -390,7 +390,7 @@ console.log(hook.runId, hook.metadata); // [!code highlight]
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld();
+const world = await getWorld();
 const events = await world.events.list({ runId }); // [!code highlight]
 
 for (const event of events.data) {
