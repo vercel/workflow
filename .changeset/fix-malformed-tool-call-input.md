@@ -2,4 +2,4 @@
 '@workflow/ai': patch
 ---
 
-fix(ai): preserve malformed streamed tool-call input instead of crashing before repair hooks can run
+Preserve malformed streamed tool-call input until repair hooks can run
