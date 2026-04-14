@@ -1,5 +1,11 @@
 # @workflow/web-shared
 
+## 4.1.3
+
+### Patch Changes
+
+- [`1c70bfa`](https://github.com/vercel/workflow/commit/1c70bfa0f2c1e140f5612391932a563e03f541dd) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Support in-line decryption for data inspector on the detail panel
+
 ## 4.1.2
 
 ### Patch Changes
