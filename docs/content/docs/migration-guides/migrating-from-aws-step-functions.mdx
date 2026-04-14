@@ -2,7 +2,7 @@
 title: Migrating from AWS Step Functions
 description: Move an AWS Step Functions state machine to the Workflow SDK by replacing JSON state definitions, Task states, Choice/Wait/Parallel states, Retry/Catch blocks, and .waitForTaskToken callbacks with Workflows, Steps, Hooks, and idiomatic TypeScript control flow.
 type: guide
-summary: Translate an AWS Step Functions state machine into the Workflow SDK with side-by-side code and a realistic order-processing saga.
+summary: Translate an AWS Step Functions state machine into the Workflow SDK with side-by-side code examples.
 prerequisites:
   - /docs/getting-started/next
   - /docs/foundations/workflows-and-steps
@@ -15,6 +15,14 @@ related:
 ---
 
 Move an AWS Step Functions state machine to the Workflow SDK by replacing JSON state definitions with TypeScript functions. This guide shows the direct mapping between ASL states and Workflow SDK primitives.
+
+<Callout type="info">
+Install the Workflow SDK migration skill:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
 
 ## Why migrate to the Workflow SDK
 
@@ -214,76 +222,6 @@ async function collectResult(runId: string) {
 ```
 
 Then in the workflow: `const result = await collectResult(run.runId);`. The child workflow itself (`childWorkflow`) is defined elsewhere with `"use workflow"`.
-
-## Writing a saga with the Workflow SDK
-
-Step Functions expresses the saga pattern with `Catch` transitions to explicit compensation states. The Workflow SDK expresses the same pattern with plain TypeScript: collect compensating actions in an array as forward steps succeed, then drain it in reverse inside a `catch` block. This is a standard compensation pattern, not a built-in SDK feature.
-
-### Forward path with a compensation array
-
-```typescript title="workflow/workflows/order-saga.ts"
-export async function processOrderSaga(orderId: string) {
-  'use workflow';
-  const rollbacks: Array<() => Promise<void>> = []; // [!code highlight]
-
-  try {
-    const order = await loadOrder(orderId);
-    const inventory = await reserveInventory(order);
-    rollbacks.push(() => releaseInventory(inventory.reservationId));
-    const payment = await chargePayment(order);
-    rollbacks.push(() => refundPayment(payment.chargeId));
-
-    return { orderId: order.id, status: 'completed' };
-  } catch (error) {
-    while (rollbacks.length > 0) { // [!code highlight]
-      await rollbacks.pop()!();
-    }
-    throw error;
-  }
-}
-```
-
-The `rollbacks` array is a plain TypeScript variable. Each forward step pushes a compensating action; the `catch` block drains the stack in reverse. Because each compensating call is a `"use step"` function, every rollback runs durably even if the workflow restarts mid-compensation.
-
-### Forward steps: retry and idempotency
-
-Retry moves from per-state ASL config to step defaults. `FatalError` opts out of retry, and `getStepMetadata().stepId` gives a stable idempotency key:
-
-```typescript title="workflow/workflows/order-saga.ts"
-import { FatalError, getStepMetadata } from 'workflow';
-
-async function reserveInventory(order: Order): Promise<Reservation> {
-  'use step';
-  const { stepId } = getStepMetadata();
-  const res = await fetch('https://example.com/api/inventory/reservations', {
-    method: 'POST',
-    headers: { 'Idempotency-Key': stepId, 'Content-Type': 'application/json' }, // [!code highlight]
-    body: JSON.stringify({ orderId: order.id }),
-  });
-  if (res.status === 404) throw new FatalError('Order not found'); // [!code highlight]
-  if (!res.ok) throw new Error('Inventory reservation failed');
-  return res.json() as Promise<Reservation>;
-}
-```
-
-`loadOrder`, `chargePayment`, and `createShipment` follow the same shape. Compensation steps (`releaseInventory`, `refundPayment`, `cancelShipment`) are `"use step"` functions that issue a DELETE or refund call.
-
-### Streaming progress with named streams
-
-Write durable progress updates out with `getWritable()`. Clients read them back by reading from the end of the stream via `getRun()`. No DynamoDB or SNS glue required.
-
-```typescript
-import { getWritable } from 'workflow';
-
-async function emitProgress(update: { stage: string; orderId: string }) {
-  'use step';
-  const writer = getWritable<typeof update>({ namespace: 'status' }).getWriter();
-  await writer.write(update); // [!code highlight]
-  writer.releaseLock();
-}
-```
-
-The `namespace` option distinguishes multiple streams on the same run (for example, `'status'` for UI updates versus the default stream for logs). Clients get current progress by reading from the stream on the returned `Run`.
 
 ## What you stop operating
 

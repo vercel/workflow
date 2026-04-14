@@ -2,7 +2,7 @@
 title: Migrating from Temporal
 description: Move a Temporal TypeScript workflow to the Workflow SDK by replacing Activities, Workers, Signals, and Child Workflows with Workflows, Steps, Hooks, and start()/getRun().
 type: guide
-summary: Translate a Temporal app into the Workflow SDK with side-by-side code and a realistic order-processing saga.
+summary: Translate a Temporal app into the Workflow SDK with side-by-side code examples.
 prerequisites:
   - /docs/getting-started/next
   - /docs/foundations/workflows-and-steps
@@ -13,6 +13,14 @@ related:
   - /docs/foundations/streaming
   - /docs/deploying/world/vercel-world
 ---
+
+<Callout type="info">
+Install the Workflow SDK migration skill:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
 
 ## Why migrate to the Workflow SDK
 
@@ -192,93 +200,6 @@ Call both steps from the parent in sequence: `const result = await collectResult
 <Callout type="warn">
 Activity retry policy moves to the step boundary. Use `maxRetries`, `RetryableError`, and `FatalError` on each step instead of a single workflow-wide retry block.
 </Callout>
-
-## Writing a saga
-
-Sagas are not a feature of any particular SDK. They are a general pattern: run forward steps, and on failure run their compensations in reverse. Temporal workflows and Workflow SDK workflows can both implement this pattern the same way, typically with a compensation stack (see, for example, [Temporal's saga pattern guide](https://temporal.io/blog/saga-pattern-made-easy)).
-
-Below is one way to write the SAGA pattern with the Workflow SDK, using a rollback stack, per-step idempotency keys, and a durable progress stream.
-
-#### Orchestration: forward path
-
-Start with the happy path. Each forward call pushes its compensation onto a stack.
-
-```typescript
-export async function processOrderSaga(orderId: string) {
-  'use workflow';
-  const rollbacks: Array<() => Promise<void>> = [];
-
-  const order = await loadOrder(orderId);
-  const inventory = await reserveInventory(order);
-  rollbacks.push(() => releaseInventory(inventory.reservationId)); // [!code highlight]
-  const payment = await chargePayment(order);
-  rollbacks.push(() => refundPayment(payment.chargeId)); // [!code highlight]
-  const shipment = await createShipment(order);
-  rollbacks.push(() => cancelShipment(shipment.shipmentId)); // [!code highlight]
-
-  return { orderId: order.id, shipmentId: shipment.shipmentId, status: 'completed' };
-}
-```
-
-#### Compensation: rollback loop
-
-Wrap the forward path in a try/catch. On failure, unwind the stack in reverse:
-
-```typescript
-try {
-  // ...forward path above
-} catch (error) {
-  while (rollbacks.length > 0) {
-    await rollbacks.pop()!(); // [!code highlight]
-  }
-  throw error;
-}
-```
-
-#### Steps: one forward step
-
-Forward steps use `FatalError` to skip retries on unrecoverable responses and `getStepMetadata().stepId` as an idempotency key:
-
-```typescript
-import { FatalError, getStepMetadata } from 'workflow';
-
-async function reserveInventory(order: Order) {
-  'use step';
-  const { stepId } = getStepMetadata();
-  const res = await fetch('https://example.com/api/inventory/reservations', {
-    method: 'POST',
-    headers: { 'Idempotency-Key': stepId, 'Content-Type': 'application/json' }, // [!code highlight]
-    body: JSON.stringify({ orderId: order.id }),
-  });
-  if (res.status === 404) throw new FatalError('Order not found'); // [!code highlight]
-  if (!res.ok) throw new Error('Inventory reservation failed');
-  return res.json() as Promise<{ reservationId: string }>;
-}
-```
-
-The other forward steps (`loadOrder`, `chargePayment`, `createShipment`) follow the same shape. Compensation steps (`releaseInventory`, `refundPayment`, `cancelShipment`) are plain `DELETE`/refund calls marked `"use step"`.
-
-#### Streaming progress
-
-`getWritable({ namespace: 'status' })` replaces any external progress transport. Writes flow back to callers over a durable stream, and clients read from the end of the stream to get the latest status:
-
-```typescript
-import { getWritable } from 'workflow';
-
-async function emitProgress(update: { stage: string; orderId: string }) {
-  'use step';
-  const writer = getWritable<typeof update>({ namespace: 'status' }).getWriter(); // [!code highlight]
-  try { await writer.write(update); } finally { writer.releaseLock(); }
-}
-```
-
-Call `await emitProgress({ stage: 'inventory_reserved', orderId: order.id })` between forward steps.
-
-**What changed:**
-
-- Compensation wiring collapses into a rollback stack with a single catch block.
-- `getStepMetadata().stepId` provides a stable idempotency key for external APIs.
-- `getWritable()` streams progress from steps directly, without a separate progress store.
 
 ## What you stop operating
 

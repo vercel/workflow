@@ -2,7 +2,7 @@
 title: Migrating from trigger.dev
 description: Move a trigger.dev v3 TypeScript app to the Workflow SDK by replacing task(), schemaTask(), wait.for / wait.forToken, triggerAndWait, and metadata streams with Workflows, Steps, Hooks, and start() / getRun().
 type: guide
-summary: Translate a trigger.dev v3 app into the Workflow SDK with side-by-side code and a realistic order-processing saga.
+summary: Translate a trigger.dev v3 app into the Workflow SDK with side-by-side code examples.
 prerequisites:
   - /docs/getting-started/next
   - /docs/foundations/workflows-and-steps
@@ -13,6 +13,14 @@ related:
   - /docs/foundations/streaming
   - /docs/deploying/world/vercel-world
 ---
+
+<Callout type="info">
+Install the Workflow SDK migration skill:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
 
 ## Why migrate to the Workflow SDK?
 
@@ -188,112 +196,6 @@ export async function parentWorkflow(item: string) {
 ```
 
 To fan out, call `spawnChild` inside a loop, then `Promise.all` the `collectResult` calls. That replaces `batch.triggerAndWait()`.
-
-## Writing a saga with the Workflow SDK
-
-A saga coordinates forward work with compensation on failure. The Workflow SDK does not ship a dedicated saga primitive. The pattern below is plain TypeScript: push a compensating callback into an array after each successful side effect, and unwind the array in LIFO order if anything throws. Trigger.dev users write the same pattern by hand today. The difference is that the Workflow SDK runs every step and every compensation durably, so a crash mid-rollback resumes where it left off.
-
-This example covers compensation, idempotency keys, retry semantics, and progress streaming. The saga splits into four parts: the orchestrator, the forward steps, the compensation steps, and a progress emitter. Each block shares the same imports and types:
-
-```typescript title="workflow/workflows/order-saga.ts"
-import { FatalError, getStepMetadata, getWritable } from 'workflow';
-
-type Order = { id: string; customerId: string; total: number };
-type Reservation = { reservationId: string };
-type Charge = { chargeId: string };
-type Shipment = { shipmentId: string };
-```
-
-#### Orchestrator: forward path
-
-The workflow calls each step in order. After every successful side effect, it pushes a compensation callback onto a plain array. This is a standard TypeScript compensation pattern, not a Workflow SDK primitive.
-
-```typescript
-export async function processOrderSaga(orderId: string) {
-  'use workflow';
-  const rollbacks: Array<() => Promise<void>> = []; // [!code highlight]
-  try {
-    const order = await loadOrder(orderId);
-    const inventory = await reserveInventory(order);
-    rollbacks.push(() => releaseInventory(inventory.reservationId));
-    const payment = await chargePayment(order);
-    rollbacks.push(() => refundPayment(payment.chargeId));
-    const shipment = await createShipment(order);
-    rollbacks.push(() => cancelShipment(shipment.shipmentId));
-    return { orderId: order.id, shipmentId: shipment.shipmentId, status: 'completed' };
-  } catch (error) {
-    await unwind(rollbacks);
-    throw error;
-  }
-}
-```
-
-Call `await emitProgress(...)` between steps to stream stage updates.
-
-#### Compensation loop
-
-If any forward step throws, unwind in LIFO order:
-
-```typescript
-async function unwind(rollbacks: Array<() => Promise<void>>) {
-  while (rollbacks.length > 0) {
-    await rollbacks.pop()!(); // [!code highlight]
-  }
-}
-```
-
-#### Forward step with retry semantics
-
-`getStepMetadata().stepId` stays stable across replays, so pass it as `Idempotency-Key`. `FatalError` replaces `AbortTaskRunError` for permanent failures.
-
-```typescript
-async function reserveInventory(order: Order): Promise<Reservation> {
-  'use step';
-  const { stepId } = getStepMetadata(); // [!code highlight]
-  const res = await fetch('https://example.com/api/inventory/reservations', {
-    method: 'POST',
-    headers: { 'Idempotency-Key': stepId, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ orderId: order.id }),
-  });
-  if (res.status === 404) throw new FatalError('Order not found'); // [!code highlight]
-  if (!res.ok) throw new Error('Inventory reservation failed');
-  return res.json() as Promise<Reservation>;
-}
-```
-
-`loadOrder`, `chargePayment`, and `createShipment` follow the same shape.
-
-#### Compensation steps
-
-Compensations are `"use step"` functions too, so a restart mid-rollback resumes where it left off. Keep them idempotent.
-
-```typescript
-async function releaseInventory(reservationId: string) {
-  'use step';
-  await fetch(`https://example.com/api/inventory/reservations/${reservationId}`, {
-    method: 'DELETE',
-  });
-}
-```
-
-`refundPayment` and `cancelShipment` follow the same shape.
-
-#### Durable progress streaming
-
-`getWritable()` replaces `metadata.stream()` and Realtime. Use a namespace to isolate status updates from other streams on the same run. Clients read from the end of the named stream for current status. There is no polling of `getRun()` and no separate database write.
-
-```typescript
-async function emitProgress(update: { stage: string; orderId: string }) {
-  'use step';
-  const writer = getWritable<typeof update>({ namespace: 'status' }).getWriter();
-  try { await writer.write(update); } // [!code highlight]
-  finally { writer.releaseLock(); }
-}
-```
-
-<Callout type="info">
-Per-task retry config (`retry: { maxAttempts: 3 }`) collapses into step-level defaults. Throw `RetryableError` to retry with a delay, or `FatalError` to stop immediately. There is no central task policy.
-</Callout>
 
 ## What you stop operating
 
