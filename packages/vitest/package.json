@@ -38,7 +38,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "vite": "7.1.12"
+    "vite": "7.3.2"
   },
   "peerDependencies": {
     "vite": ">=6.0.0",

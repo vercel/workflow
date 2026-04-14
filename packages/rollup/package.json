@@ -33,6 +33,6 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "rollup": "^4.53.2"
+    "rollup": "^4.60.0"
   }
 }

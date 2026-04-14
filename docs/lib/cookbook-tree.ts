@@ -54,7 +54,6 @@ export const slugToCategory: Record<string, string> = {
   'serializable-steps': 'advanced',
   'durable-objects': 'advanced',
   'isomorphic-packages': 'advanced',
-  'secure-credentials': 'advanced',
   'custom-serialization': 'advanced',
   'publishing-libraries': 'advanced',
 };
@@ -206,13 +205,6 @@ export const recipes: Record<string, Recipe> = {
     title: 'Isomorphic Packages',
     description:
       'Publish reusable workflow packages that work both inside and outside the workflow runtime.',
-    category: 'advanced',
-  },
-  'secure-credentials': {
-    slug: 'secure-credentials',
-    title: 'Secure Credentials',
-    description:
-      'Encrypt secrets before passing them through workflows so they never appear in the event log.',
     category: 'advanced',
   },
   'custom-serialization': {

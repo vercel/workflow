@@ -341,6 +341,7 @@ export function RunDetailView({
     loadMoreTraceData,
     hasMoreTraceData,
     isLoadingMoreTraceData,
+    hasEncryptedData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
   const run = runData ?? ({} as WorkflowRun);
@@ -760,6 +761,7 @@ export function RunDetailView({
                     encryptionKey={encryptionKey ?? undefined}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
+                    hasEncryptedData={hasEncryptedData}
                   />
                 </div>
               </ErrorBoundary>
@@ -781,6 +783,7 @@ export function RunDetailView({
                     onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
+                    hasEncryptedData={hasEncryptedData}
                   />
                 </div>
               </ErrorBoundary>
