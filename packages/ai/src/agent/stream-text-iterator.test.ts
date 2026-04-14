@@ -1095,4 +1095,92 @@ describe('streamTextIterator', () => {
       });
     });
   });
+
+  describe('malformed tool-call input handling', () => {
+    it('should preserve malformed tool-call input instead of throwing', async () => {
+      const mockWritable = createMockWritable();
+      const mockModel = vi.fn();
+
+      let capturedPrompt: LanguageModelV3Prompt | undefined;
+
+      const malformedToolCall: LanguageModelV3ToolCall = {
+        type: 'tool-call',
+        toolCallId: 'call-1',
+        toolName: 'testTool',
+        input: '{"query":"test"',
+      };
+
+      vi.mocked(doStreamStep)
+        .mockResolvedValueOnce({
+          toolCalls: [malformedToolCall],
+          finish: { finishReason: 'tool-calls' },
+          step: createMockStepResult({
+            finishReason: 'tool-calls',
+            toolCalls: [
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'testTool',
+                input: '{"query":"test"',
+                dynamic: true as const,
+              },
+            ],
+            dynamicToolCalls: [
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'testTool',
+                input: '{"query":"test"',
+                dynamic: true as const,
+              },
+            ],
+          }),
+        })
+        .mockImplementationOnce(async (prompt) => {
+          capturedPrompt = prompt;
+          return {
+            toolCalls: [],
+            finish: { finishReason: 'stop' },
+            step: createMockStepResult({ finishReason: 'stop' }),
+          };
+        });
+
+      const iterator = streamTextIterator({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'test' }] }],
+        tools: {
+          testTool: {
+            description: 'A test tool',
+            execute: async () => ({ result: 'success' }),
+          },
+        } as ToolSet,
+        writable: mockWritable,
+        model: mockModel as any,
+      });
+
+      const firstResult = await iterator.next();
+      expect(firstResult.done).toBe(false);
+      expect(firstResult.value.toolCalls).toHaveLength(1);
+
+      const toolResults: LanguageModelV3ToolResult[] = [
+        {
+          type: 'tool-result',
+          toolCallId: 'call-1',
+          toolName: 'testTool',
+          output: { type: 'text', value: '{"result":"success"}' },
+        },
+      ];
+
+      await iterator.next(toolResults);
+
+      const assistantMessage = capturedPrompt?.find(
+        (msg) => msg.role === 'assistant'
+      );
+      const toolCallPart = (assistantMessage?.content as any[])?.find(
+        (part) => part.type === 'tool-call'
+      );
+
+      expect(toolCallPart).toBeDefined();
+      expect(toolCallPart.input).toBe('{"query":"test"');
+    });
+  });
 });

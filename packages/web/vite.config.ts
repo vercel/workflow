@@ -4,7 +4,12 @@ import { defineConfig } from 'vite';
 
 export default defineConfig(({ command, isSsrBuild }) => ({
   build: {
-    rollupOptions: isSsrBuild ? { input: './server/app.ts' } : undefined,
+    // Use Express server entry for self-hosting (node server.js).
+    // On Vercel, the React Router preset handles the server entry.
+    rollupOptions:
+      isSsrBuild && !process.env.VERCEL
+        ? { input: './server/app.ts' }
+        : undefined,
   },
   // Bundle all dependencies into the server build so that @workflow/web
   // can be installed and run without needing any of the UI dependencies
@@ -17,7 +22,7 @@ export default defineConfig(({ command, isSsrBuild }) => ({
   // noExternal for dev so dependencies are loaded natively by Node.js.
   ssr: {
     noExternal: command === 'build' ? true : undefined,
-    external: ['express'],
+    external: process.env.VERCEL ? undefined : ['express'],
   },
   plugins: [tailwindcss(), reactRouter()],
   resolve: {

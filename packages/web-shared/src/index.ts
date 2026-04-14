@@ -40,6 +40,7 @@ export {
   ENCRYPTED_PLACEHOLDER,
   extractStreamIds,
   getWebRevivers,
+  hasEncryptedFields,
   hydrateResourceIO,
   hydrateResourceIOWithKey,
   isClassInstanceRef,

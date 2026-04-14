@@ -1,0 +1,15 @@
+{
+  "title": "Common Patterns",
+  "defaultOpen": true,
+  "pages": [
+    "saga",
+    "batching",
+    "rate-limiting",
+    "fan-out",
+    "scheduling",
+    "idempotency",
+    "webhooks",
+    "content-router",
+    "child-workflows"
+  ]
+}

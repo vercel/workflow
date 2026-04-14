@@ -1,0 +1,430 @@
+---
+title: Migrating from Temporal
+description: Move a Temporal TypeScript workflow to the Workflow SDK by replacing Activities, Workers, Signals, and Child Workflows with Workflows, Steps, Hooks, and start()/getRun().
+type: guide
+summary: Translate a Temporal app into the Workflow SDK with side-by-side code and a realistic order-processing saga.
+prerequisites:
+  - /docs/getting-started/next
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/starting-workflows
+  - /docs/foundations/errors-and-retries
+  - /docs/foundations/hooks
+  - /docs/foundations/streaming
+  - /docs/deploying/world/vercel-world
+---
+
+## What changes when you leave Temporal?
+
+With Temporal, you operate a control plane (Temporal Server or Cloud), deploy and maintain a Worker fleet, define Activities in a separate module, wire them through `proxyActivities`, and manage Task Queues. Your workflow code is durable, but the infrastructure around it is not trivial.
+
+With the Workflow SDK, the runtime is managed for you. You write `"use workflow"` functions that orchestrate `"use step"` functions — all in the same file, all plain TypeScript. There are no Workers to poll, no Task Queues to configure, and no separate Activity modules to maintain. Durable replay, automatic retries, and event history still exist — they just happen behind the scenes.
+
+The migration path is mostly about **removing infrastructure** and **collapsing indirection**, not rewriting business logic.
+
+## Concept mapping
+
+| Temporal | Workflow SDK | Migration note |
+| --- | --- | --- |
+| Workflow Definition / Workflow Execution | `"use workflow"` function / run started with `start()` | Keep orchestration code in the workflow function. |
+| Activity | `"use step"` function | Put side effects and Node.js access in steps. |
+| Worker + Task Queue | Managed execution | No worker fleet or polling loop to operate. |
+| Signal | `createHook()` or `createWebhook()` | Use hooks for typed resume signals; webhooks for HTTP callbacks. |
+| Query / Update | `getRun()` + app API, or hook-driven mutation + returned state | Usually model reads through your app and writes through hooks/webhooks. |
+| Child Workflow | `"use step"` wrappers around `start()` / `getRun()` | Spawn children from a step, return serializable `runId` values, then poll or await child results from another step. |
+| Activity retry policy | Step retries, `RetryableError`, `FatalError`, `maxRetries` | Retry logic moves down to the step level. |
+| Event History | Workflow event log / run timeline | Same durable replay idea, fewer surfaces to manage directly. |
+
+## Side-by-side: hello workflow
+
+### Temporal
+
+```typescript
+// temporal/workflows/order.ts
+import * as wf from '@temporalio/workflow';
+import type * as activities from '../activities/order';
+
+const { loadOrder, reserveInventory, chargePayment } =
+  wf.proxyActivities<typeof activities>({
+    startToCloseTimeout: '5 minute',
+  });
+
+export async function processOrder(orderId: string) {
+  const order = await loadOrder(orderId);
+  await reserveInventory(order.id);
+  await chargePayment(order.id);
+  return { orderId: order.id, status: 'completed' };
+}
+```
+
+### Workflow SDK
+
+```typescript
+// workflow/workflows/order.ts
+export async function processOrder(orderId: string) {
+  'use workflow';
+
+  const order = await loadOrder(orderId);
+  await reserveInventory(order.id);
+  await chargePayment(order.id);
+  return { orderId: order.id, status: 'completed' };
+}
+
+async function loadOrder(orderId: string) {
+  'use step';
+  const res = await fetch(`https://example.com/api/orders/${orderId}`);
+  return res.json() as Promise<{ id: string }>;
+}
+
+async function reserveInventory(orderId: string) {
+  'use step';
+  await fetch(`https://example.com/api/orders/${orderId}/reserve`, {
+    method: 'POST',
+  });
+}
+
+async function chargePayment(orderId: string) {
+  'use step';
+  await fetch(`https://example.com/api/orders/${orderId}/charge`, {
+    method: 'POST',
+  });
+}
+```
+
+The biggest code change is not "rewrite the workflow logic." It is "move side effects into `"use step"` functions and stop thinking about workers as application code." The orchestration stays as regular async TypeScript.
+
+## Side-by-side: waiting for external approval
+
+### Temporal
+
+```typescript
+// temporal/workflows/refund.ts
+import * as wf from '@temporalio/workflow';
+
+export const approveRefund = wf.defineSignal<[boolean]>('approveRefund');
+
+export async function refundWorkflow(refundId: string) {
+  let approved: boolean | undefined;
+
+  wf.setHandler(approveRefund, (value) => {
+    approved = value;
+  });
+
+  await wf.condition(() => approved !== undefined);
+
+  if (!approved) {
+    return { refundId, status: 'rejected' };
+  }
+
+  return { refundId, status: 'approved' };
+}
+```
+
+### Workflow SDK
+
+```typescript
+// workflow/workflows/refund.ts
+import { createHook } from 'workflow';
+
+export async function refundWorkflow(refundId: string) {
+  'use workflow';
+
+  using approval = createHook<{ approved: boolean }>({
+    token: `refund:${refundId}:approval`,
+  });
+
+  const { approved } = await approval;
+
+  if (!approved) {
+    return { refundId, status: 'rejected' };
+  }
+
+  return { refundId, status: 'approved' };
+}
+```
+
+### Resuming the hook from an API route
+
+```typescript
+// app/api/refunds/[refundId]/approve/route.ts
+import { resumeHook } from 'workflow/api';
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ refundId: string }> }
+) {
+  const { refundId } = await params;
+  const body = (await request.json()) as { approved: boolean };
+
+  await resumeHook(`refund:${refundId}:approval`, {
+    approved: body.approved,
+  });
+
+  return Response.json({ ok: true });
+}
+```
+
+Temporal's Signal + `condition()` pattern becomes a single `createHook()` call. The workflow suspends durably until the hook is resumed — no polling, no separate signal handler registration.
+
+### Child workflows: keep `start()` and `getRun()` in steps
+
+When you need an independent child run, the important migration detail is the **step boundary**. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions and pass serializable `runId` values through the workflow:
+
+```typescript
+import { getRun, start } from 'workflow/api';
+
+async function processItem(item: string): Promise<string> {
+  'use step';
+  return `processed-${item}`;
+}
+
+export async function childWorkflow(item: string) {
+  'use workflow';
+  const result = await processItem(item);
+  return { item, result };
+}
+
+async function spawnChild(item: string): Promise<string> {
+  'use step';
+  const run = await start(childWorkflow, [item]);
+  return run.runId;
+}
+
+async function collectResult(
+  runId: string
+): Promise<{ item: string; result: string }> {
+  'use step';
+  const run = getRun(runId);
+  const value = await run.returnValue;
+  return value as { item: string; result: string };
+}
+
+export async function parentWorkflow(item: string) {
+  'use workflow';
+  const runId = await spawnChild(item);
+  const result = await collectResult(runId);
+  return { childRunId: runId, result };
+}
+```
+
+## End-to-end migration: order processing saga
+
+This example exercises compensation (rollbacks), idempotency keys, retry semantics, and progress streaming — the patterns that matter most in a real migration.
+
+### Temporal version
+
+A Temporal saga requires manual compensation wiring — typically nested try/catch blocks around each Activity call, with explicit rollback Activities in each catch:
+
+```typescript
+// temporal/workflows/order-saga.ts
+import * as wf from '@temporalio/workflow';
+import type * as activities from '../activities/order-saga';
+
+const {
+  loadOrder,
+  reserveInventory,
+  releaseInventory,
+  chargePayment,
+  refundPayment,
+  createShipment,
+  cancelShipment,
+} = wf.proxyActivities<typeof activities>({
+  startToCloseTimeout: '5 minute',
+  retry: { maximumAttempts: 3 },
+});
+
+export async function processOrderSaga(orderId: string) {
+  const order = await loadOrder(orderId);
+
+  const inventory = await reserveInventory(order);
+
+  let payment: { chargeId: string };
+  try {
+    payment = await chargePayment(order);
+  } catch (error) {
+    await releaseInventory(inventory.reservationId);
+    throw error;
+  }
+
+  let shipment: { shipmentId: string };
+  try {
+    shipment = await createShipment(order);
+  } catch (error) {
+    await refundPayment(payment.chargeId);
+    await releaseInventory(inventory.reservationId);
+    throw error;
+  }
+
+  return {
+    orderId: order.id,
+    reservationId: inventory.reservationId,
+    chargeId: payment.chargeId,
+    shipmentId: shipment.shipmentId,
+    status: 'completed',
+  };
+}
+```
+
+Each compensation step must be wired explicitly — and as the saga grows, the nested try/catch blocks multiply. There is no built-in streaming primitive; progress reporting requires a separate Activity that writes to an external store.
+
+### Workflow SDK version
+
+```typescript
+import { FatalError, getStepMetadata, getWritable } from 'workflow';
+
+type Order = { id: string; customerId: string; total: number };
+type Reservation = { reservationId: string };
+type Charge = { chargeId: string };
+type Shipment = { shipmentId: string };
+
+export async function processOrderSaga(orderId: string) {
+  'use workflow';
+
+  const rollbacks: Array<() => Promise<void>> = [];
+
+  try {
+    const order = await loadOrder(orderId);
+    await emitProgress({ stage: 'loaded', orderId: order.id });
+
+    const inventory = await reserveInventory(order);
+    rollbacks.push(() => releaseInventory(inventory.reservationId));
+    await emitProgress({ stage: 'inventory_reserved', orderId: order.id });
+
+    const payment = await chargePayment(order);
+    rollbacks.push(() => refundPayment(payment.chargeId));
+    await emitProgress({ stage: 'payment_captured', orderId: order.id });
+
+    const shipment = await createShipment(order);
+    rollbacks.push(() => cancelShipment(shipment.shipmentId));
+    await emitProgress({ stage: 'shipment_created', orderId: order.id });
+
+    return {
+      orderId: order.id,
+      reservationId: inventory.reservationId,
+      chargeId: payment.chargeId,
+      shipmentId: shipment.shipmentId,
+      status: 'completed',
+    };
+  } catch (error) {
+    while (rollbacks.length > 0) {
+      await rollbacks.pop()!();
+    }
+    throw error;
+  }
+}
+
+async function loadOrder(orderId: string): Promise<Order> {
+  'use step';
+  const res = await fetch(`https://example.com/api/orders/${orderId}`);
+  if (!res.ok) throw new FatalError('Order not found');
+  return res.json() as Promise<Order>;
+}
+
+async function reserveInventory(order: Order): Promise<Reservation> {
+  'use step';
+  const { stepId } = getStepMetadata();
+  const res = await fetch('https://example.com/api/inventory/reservations', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': stepId,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ orderId: order.id }),
+  });
+  if (!res.ok) throw new Error('Inventory reservation failed');
+  return res.json() as Promise<Reservation>;
+}
+
+async function releaseInventory(reservationId: string): Promise<void> {
+  'use step';
+  await fetch(
+    `https://example.com/api/inventory/reservations/${reservationId}`,
+    { method: 'DELETE' }
+  );
+}
+
+async function chargePayment(order: Order): Promise<Charge> {
+  'use step';
+  const { stepId } = getStepMetadata();
+  const res = await fetch('https://example.com/api/payments/charges', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': stepId,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      orderId: order.id,
+      customerId: order.customerId,
+      amount: order.total,
+    }),
+  });
+  if (!res.ok) throw new Error('Payment charge failed');
+  return res.json() as Promise<Charge>;
+}
+
+async function refundPayment(chargeId: string): Promise<void> {
+  'use step';
+  await fetch(`https://example.com/api/payments/charges/${chargeId}/refund`, {
+    method: 'POST',
+  });
+}
+
+async function createShipment(order: Order): Promise<Shipment> {
+  'use step';
+  const res = await fetch('https://example.com/api/shipments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ orderId: order.id }),
+  });
+  if (!res.ok) throw new Error('Shipment creation failed');
+  return res.json() as Promise<Shipment>;
+}
+
+async function cancelShipment(shipmentId: string): Promise<void> {
+  'use step';
+  await fetch(`https://example.com/api/shipments/${shipmentId}`, {
+    method: 'DELETE',
+  });
+}
+
+async function emitProgress(update: { stage: string; orderId: string }) {
+  'use step';
+  const writable = getWritable<{ stage: string; orderId: string }>();
+  const writer = writable.getWriter();
+  try {
+    await writer.write(update);
+  } finally {
+    writer.releaseLock();
+  }
+}
+```
+
+- Temporal compensation logic maps cleanly to a rollback stack in the workflow function.
+- Use `getStepMetadata().stepId` as the idempotency key for payment and inventory APIs.
+- Stream user-visible progress from steps with `getWritable()` instead of adding a separate progress transport.
+
+## Why teams usually simplify infrastructure in this move
+
+Temporal requires you to operate (or pay for) a Temporal Server, deploy and scale a Worker fleet, and manage Task Queue routing. These are powerful abstractions when you need cross-language orchestration or custom search attributes — but for TypeScript-first teams, they are overhead without a corresponding benefit.
+
+With the Workflow SDK:
+
+- **No workers to operate.** The runtime manages execution scheduling. You deploy your app; workflows run where your app runs.
+- **No separate server.** Durable state lives in the managed event log. There is no cluster to provision, monitor, or upgrade.
+- **TypeScript all the way down.** Workflow and step functions are regular TypeScript with directive annotations. No code generation, no separate SDK for activities, no `proxyActivities` indirection.
+- **Durable streaming built in.** `getWritable()` lets you push progress updates from steps without bolting on a separate WebSocket or SSE transport.
+- **Efficient resource usage.** When a workflow is suspended on `sleep()` or a hook, it pauses cleanly instead of keeping a worker process alive.
+
+This is not about replacing every Temporal feature. It is about recognizing that most TypeScript teams use a fraction of Temporal's surface and pay for the rest in operational complexity.
+
+## Quick-start checklist
+
+- Move orchestration into a single `"use workflow"` function.
+- Convert each Temporal Activity into a `"use step"` function.
+- Remove Worker and task-queue application code; start workflows from your app boundary with `start()`.
+- Replace Signals with `createHook()` or `createWebhook()` depending on whether the caller is internal or HTTP-based.
+- Replace Child Workflows with `"use step"` wrappers around `start()` and `getRun()` when you need independent runs. Return serializable `runId` values to the workflow and collect child results from a step.
+- Move retry policy down to step boundaries using default retries, `maxRetries`, `RetryableError`, and `FatalError`.
+- Add idempotency keys to external side effects using `getStepMetadata().stepId`.
+- Stream user-visible progress from steps with `getWritable()` when you previously used custom progress plumbing.
+- Deploy your app and verify workflows run end-to-end with built-in observability.
