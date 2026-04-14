@@ -1,7 +1,7 @@
 name: Backport to stable
 
 on:
-  pull_request:
+  pull_request_target:
     types: [closed, labeled]
     branches: [main]
 
@@ -13,8 +13,7 @@ jobs:
     if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'backport-stable')
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
     steps:
       - name: Generate GitHub App Token
         id: app-token
