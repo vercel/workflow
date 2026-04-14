@@ -1,10 +1,7 @@
 import type { UIMessageChunk } from 'ai';
 import { describe, expect, it } from 'vitest';
-import {
-  doStreamStep,
-  normalizeFinishReason,
-  safeParseToolCallInput,
-} from './do-stream-step.js';
+import { doStreamStep, normalizeFinishReason } from './do-stream-step.js';
+import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 
 describe('normalizeFinishReason', () => {
   describe('string finish reasons', () => {

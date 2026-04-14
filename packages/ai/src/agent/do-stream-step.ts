@@ -22,6 +22,7 @@ import type {
   TelemetrySettings,
 } from './durable-agent.js';
 import { getErrorMessage } from '../get-error-message.js';
+import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 import { recordSpan } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
 
@@ -49,22 +50,6 @@ function uint8ArrayToBase64(data: Uint8Array): string {
     binary += String.fromCharCode(data[i]);
   }
   return btoa(binary);
-}
-
-/**
- * Parse streamed tool-call input without crashing the workflow step when a
- * provider emits malformed or truncated JSON.
- */
-export function safeParseToolCallInput(input: string | undefined): unknown {
-  if (input == null || input === '') {
-    return {};
-  }
-
-  try {
-    return JSON.parse(input);
-  } catch {
-    return input;
-  }
 }
 
 /**

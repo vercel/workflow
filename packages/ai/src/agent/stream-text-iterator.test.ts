@@ -18,17 +18,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 // Mock doStreamStep
 vi.mock('./do-stream-step.js', () => ({
   doStreamStep: vi.fn(),
-  safeParseToolCallInput: (input: string | undefined) => {
-    if (input == null || input === '') {
-      return {};
-    }
-
-    try {
-      return JSON.parse(input);
-    } catch {
-      return input;
-    }
-  },
 }));
 
 // Import after mocking

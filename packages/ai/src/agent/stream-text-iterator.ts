@@ -16,7 +16,6 @@ import {
   doStreamStep,
   type ModelStopCondition,
   type ProviderExecutedToolResult,
-  safeParseToolCallInput,
 } from './do-stream-step.js';
 import type {
   GenerationSettings,
@@ -31,6 +30,7 @@ import {
   runInContext,
   type SpanHandle,
 } from './telemetry.js';
+import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 import { toolsToModelTools } from './tools-to-model-tools.js';
 import type { CompatibleLanguageModel } from './types.js';
 
