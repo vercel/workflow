@@ -126,14 +126,12 @@ When you publish a workflow library, every step function's inputs and outputs ar
 
 ### 1. Everything Must Be Serializable
 
-Step inputs and outputs must be JSON-serializable. Do not pass or return:
+Step inputs and outputs must be serializable. The workflow runtime supports a rich set of types beyond plain JSON — including `Date`, `RegExp`, `Map`, `Set`, `BigInt`, `Uint8Array`, `URL`, `Error`, and class instances that implement the [custom serde protocol](/docs/cookbook/advanced/custom-serialization). See the [serialization reference](/docs/foundations/serialization) for the full list of supported types. Do not pass or return:
 
-- Class instances (unless they implement custom serialization)
 - Functions or closures
-- `Map`, `Set`, `WeakRef`, or other non-JSON types
-- Circular references
+- `WeakRef`, `WeakMap`, or `WeakSet`
 
-If your library works with complex objects, pass serializable configuration into steps and reconstruct the objects inside the step body.
+If your library works with complex objects that don't implement serde, pass serializable configuration into steps and reconstruct the objects inside the step body.
 
 {/* @skip-typecheck - good/bad comparison with duplicate function names */}
 ```typescript lineNumbers
@@ -154,43 +152,24 @@ async function callExternalApi(client: ApiClient, params: Record<string, string>
 
 See [Serializable Steps](/docs/cookbook/advanced/serializable-steps) for the step-as-factory pattern.
 
-### 2. Secrets Must Not Appear in Step I/O
+### 2. Resolve Credentials Inside Steps
 
-Step inputs and outputs are persisted in the event log and may be visible in observability tools. **Never pass secrets as step arguments or return them from steps.**
+While workflow encryption protects the event log at rest, it's still best practice to resolve credentials from environment variables inside step functions rather than passing them as step arguments. This avoids secrets appearing in observability tooling and keeps your library's API clean.
 
 {/* @skip-typecheck - good/bad comparison with duplicate function names */}
 ```typescript lineNumbers
-// Bad: API key appears in the event log
-async function fetchData(apiKey: string, query: string) {
-  "use step";
-  const client = createClient(apiKey);
-  return await client.fetch(query);
-}
-
-// Good: resolve credentials inside the step from environment
+// Preferred: resolve credentials inside the step from environment
 async function fetchData(query: string) {
   "use step";
   const client = createClient(process.env.API_KEY!);
   return await client.fetch(query);
 }
-```
 
-Similarly, helper functions that create API clients using credentials should **not** be marked as steps. If a function's return value would contain sensitive data, keep it as a plain function called inside a step body:
-
-{/* @skip-typecheck - references undefined ServiceClient */}
-```typescript lineNumbers
-// This is NOT a step — intentionally, to avoid credentials in step I/O
-function createAuthenticatedClient(credentials: { token: string }) {
-  return new ServiceClient({ auth: credentials.token });
-}
-
-async function processItem(itemId: string) {
+// Works but unnecessary: credentials in step arguments
+async function fetchData(apiKey: string, query: string) {
   "use step";
-  // Resolve credentials and create client inside the step
-  const client = createAuthenticatedClient({
-    token: process.env.SERVICE_TOKEN!,
-  });
-  return await client.process(itemId);
+  const client = createClient(apiKey);
+  return await client.fetch(query);
 }
 ```
 
@@ -285,8 +264,8 @@ Before publishing a workflow library:
 - [ ] Separate `./workflows` export in `package.json` for the raw workflow functions
 - [ ] `workflow` is marked as **external** in your bundler config
 - [ ] Documentation tells consumers to re-export from `@your-lib/workflows`
-- [ ] No secrets in step inputs or outputs — credentials are resolved at runtime inside steps
-- [ ] All step I/O is JSON-serializable
+- [ ] Credentials are resolved from environment variables inside steps
+- [ ] All step I/O uses [supported serializable types](/docs/foundations/serialization)
 - [ ] Integration tests use a test server with re-exported workflows
 - [ ] Both with-workflow and without-workflow code paths are tested
 
