@@ -4,6 +4,7 @@ import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import { Lock } from 'lucide-react';
+import { Spinner } from '../ui/spinner';
 import type { KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
@@ -197,13 +198,7 @@ function EncryptedFieldBlock() {
         title="Click to decrypt"
       >
         {ctx.isDecrypting ? (
-          <span
-            className="h-3 w-3 animate-spin rounded-full border-2"
-            style={{
-              borderColor: 'var(--ds-gray-400)',
-              borderTopColor: 'var(--ds-gray-700)',
-            }}
-          />
+          <Spinner size={12} />
         ) : (
           <Lock className="h-3 w-3" />
         )}
