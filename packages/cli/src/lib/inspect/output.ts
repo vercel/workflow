@@ -276,7 +276,7 @@ const formatIdField = (
   return idStr;
 };
 
-const formatTableValue = (
+export const formatTableValue = (
   prop: string,
   value: unknown,
   opts: InspectCLIOptions = {},
@@ -494,9 +494,10 @@ const showInspectInfoBox = (resource: string) => {
 const EXPIRED_DATA_MESSAGE = chalk.gray('<data expired>');
 
 /**
- * Checks if a run has expired data storage (run-level expiredAt field)
+ * Checks if a run has expired data storage (run-level expiredAt field).
+ * Only returns true when `expiredAt` is in the past.
  */
-const hasExpiredData = (run: WorkflowRun): boolean => {
+export const hasExpiredData = (run: WorkflowRun): boolean => {
   return (
     'expiredAt' in run &&
     run.expiredAt != null &&
