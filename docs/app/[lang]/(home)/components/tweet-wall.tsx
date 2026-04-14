@@ -191,7 +191,7 @@ function InlineCode({ children }: { children: ReactNode }) {
 }
 
 function InlineLink({ children }: { children: ReactNode }) {
-  return <span className="text-blue-500">{children}</span>;
+  return <span className="text-blue-700">{children}</span>;
 }
 
 function VerifiedBadge() {

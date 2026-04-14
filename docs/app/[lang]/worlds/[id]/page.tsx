@@ -1,19 +1,19 @@
-import type { Metadata } from 'next';
-import type { ReactNode } from 'react';
-import { notFound } from 'next/navigation';
 import { Step, Steps } from 'fumadocs-ui/components/steps';
 import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
+import type { Metadata } from 'next';
+import { notFound } from 'next/navigation';
+import type { ReactNode } from 'react';
+import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
+import { getMDXComponents } from '@/components/geistdocs/mdx-components';
+import { WorldDataProvider } from '@/components/worlds/WorldDataProvider';
 import { WorldDetailHero } from '@/components/worlds/WorldDetailHero';
 import { WorldDetailToc } from '@/components/worlds/WorldDetailToc';
 import { WorldInstructions } from '@/components/worlds/WorldInstructions';
 import { WorldTestingPerformance } from '@/components/worlds/WorldTestingPerformance';
-import { WorldDataProvider } from '@/components/worlds/WorldDataProvider';
 import { WorldTestingPerformanceMDX } from '@/components/worlds/WorldTestingPerformanceMDX';
-import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
-import { getMDXComponents } from '@/components/geistdocs/mdx-components';
-import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 import { source } from '@/lib/geistdocs/source';
+import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
 // Map world IDs to their MDX doc slugs
 const officialWorldMdxSlugs: Record<string, string[]> = {
@@ -120,7 +120,7 @@ export default async function WorldDetailPage({ params }: PageProps) {
             <main className="min-w-0">
               {isOfficial && mdxContent ? (
                 // Official worlds: MDX controls the entire content structure
-                <div className="py-8 sm:py-12 border-t prose prose-neutral dark:prose-invert max-w-none">
+                <div className="py-8 sm:py-12 prose prose-neutral dark:prose-invert max-w-none">
                   {mdxContent}
                 </div>
               ) : (

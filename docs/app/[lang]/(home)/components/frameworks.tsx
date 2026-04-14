@@ -1,12 +1,11 @@
-'use client';
+"use client";
 
-import { track } from '@vercel/analytics';
-import Link from 'next/link';
-import type { ComponentProps } from 'react';
-import { toast } from 'sonner';
-import { Badge } from '@/components/ui/badge';
+import { track } from "@vercel/analytics";
+import Link from "next/link";
+import type { ComponentProps } from "react";
+import { toast } from "sonner";
 
-export const Express = (props: ComponentProps<'svg'>) => (
+export const Express = (props: ComponentProps<"svg">) => (
   <svg
     width="999"
     height="223"
@@ -23,7 +22,7 @@ export const Express = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const Fastify = (props: ComponentProps<'svg'>) => (
+export const Fastify = (props: ComponentProps<"svg">) => (
   <svg
     viewBox="0 0 1000 1000"
     fill="none"
@@ -38,7 +37,7 @@ export const Fastify = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const AstroDark = (props: ComponentProps<'svg'>) => (
+export const AstroDark = (props: ComponentProps<"svg">) => (
   <svg
     viewBox="0 0 85 107"
     fill="none"
@@ -79,7 +78,7 @@ export const AstroDark = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const AstroLight = (props: ComponentProps<'svg'>) => (
+export const AstroLight = (props: ComponentProps<"svg">) => (
   <svg
     viewBox="0 0 85 107"
     fill="none"
@@ -105,7 +104,7 @@ export const AstroLight = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const AstroGray = (props: ComponentProps<'svg'>) => (
+export const AstroGray = (props: ComponentProps<"svg">) => (
   <svg
     viewBox="0 0 85 107"
     fill="none"
@@ -131,7 +130,7 @@ export const AstroGray = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const TanStack = (props: ComponentProps<'svg'>) => (
+export const TanStack = (props: ComponentProps<"svg">) => (
   <svg
     viewBox="0 0 410 413"
     fill="none"
@@ -153,13 +152,14 @@ export const TanStack = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const TanStackGray = (props: ComponentProps<'svg'>) => (
+export const TanStackGray = (props: ComponentProps<"svg">) => (
   <svg
     viewBox="0 0 409 413"
     fill="none"
     xmlns="http://www.w3.org/2000/svg"
     {...props}
   >
+    <title>TanStack</title>
     <path
       d="M188.683 0.390747C194.074 -0.325509 199.769 0.162063 205.202 0.162063C225.331 0.162063 245.093 3.32427 264.351 9.31751C288.929 16.9666 311.822 29.1958 332.027 45.2845C356.792 65.0042 377.312 90.8692 390.478 119.898C415.113 174.207 414.933 240.026 389.694 294.107C373.375 329.075 347.195 358.342 315.508 379.684C289.653 397.098 259.414 407.757 228.649 411.531C189.488 416.336 147.153 409.315 111.949 391.05C45.861 356.762 0.931592 287.753 0.0427543 212.126C-0.128299 197.545 0.0960419 182.878 2.94853 168.439C7.59468 144.924 15.6955 122.193 27.8616 101.56C41.022 79.2387 58.0213 59.5417 78.3777 43.6611C102.249 25.0379 129.994 11.6426 159.375 4.82797C166.47 3.18244 173.595 2.2705 180.755 1.38854L183.017 1.1102C184.903 0.877708 186.792 0.642166 188.683 0.390747ZM120.315 344.208C111.214 345.195 101.615 346.871 93.8044 352.044C95.5627 352.471 97.5781 352.047 99.4124 352.044C103.818 352.036 108.267 351.868 112.668 352.064C123.686 352.553 135.166 354.337 145.806 357.289C159.429 361.069 171.429 368.508 184.553 373.524C198.399 378.816 212.181 380.461 226.868 380.461C234.269 380.461 241.614 380.438 248.791 378.394C245.045 376.376 239.684 376.755 235.535 375.914C226.533 374.09 217.683 371.862 209.024 368.736C202.652 366.436 196.514 363.596 190.404 360.696L186.478 358.828C180.807 356.132 175.122 353.471 169.258 351.23C153.84 345.336 136.755 342.424 120.315 344.208ZM134.08 305.027C116.045 305.027 97.8049 308.241 81.5686 316.521C77.6348 318.528 73.8958 320.918 70.3525 323.567C69.2727 324.374 67.3583 325.412 66.9591 326.816C66.5543 328.24 68.0017 329.433 68.823 330.343C72.8812 328.155 76.737 325.838 81.0588 324.176C109.01 313.432 142.894 315.684 170.788 325.536C184.698 330.449 197.515 337.796 211.064 343.558C226.217 350.002 241.693 354.18 257.967 356.323C277.164 358.849 299.05 356.802 316.597 348.036C322.763 344.956 331.324 340.263 333.931 333.443C330.711 333.728 327.814 335.124 324.754 336.087C319.89 337.617 314.967 338.915 309.969 339.928C293.033 343.361 275.022 344.07 257.967 340.954C241.894 338.018 226.959 332.119 212.095 325.914L210.197 325.121C208.933 324.591 207.668 324.059 206.403 323.528L204.505 322.732C196.911 319.55 189.288 316.405 181.494 313.652C166.352 308.304 150.125 305.027 134.08 305.027ZM165.689 24.6928C144.07 29.5252 124.704 38.9354 106.04 50.7982C95.2049 57.6849 84.8401 64.74 75.4507 73.6035C61.4877 86.7854 50.8161 102.807 41.5087 119.541C31.9189 136.783 25.7705 156.878 22.7987 176.375C19.8835 195.503 19.4033 215.615 22.7426 234.759C26.9171 258.693 34.8627 281.153 47.4104 301.926C51.6272 299.934 54.6209 295.39 58.1167 292.329C65.1757 286.149 72.587 280.422 80.549 275.479C83.4962 273.649 86.5241 272.228 89.7258 270.926C90.9335 270.435 92.9081 269.986 93.4766 268.644C94.38 266.512 92.7093 262.802 92.4222 260.593C91.6029 254.275 91.1084 247.851 91.2629 241.476C91.7115 222.91 95.1401 204.086 101.668 186.709C106.587 173.615 114.102 161.727 123.004 151.058C126.025 147.438 129.237 144.068 132.551 140.725C134.51 138.75 136.941 137.059 138.159 134.525C131.767 134.529 125.374 136.394 119.296 138.288C106.201 142.367 93.4454 148.421 82.5883 156.961C77.6358 160.858 74.0089 165.964 69.3252 170.065C67.8885 171.323 65.3149 173.009 63.3297 172.059C60.3304 170.626 60.7933 164.654 60.4497 161.908C59.1282 151.35 63.0809 137.994 68.1042 128.841C76.168 114.149 91.0783 101.603 108.589 102.041C116.151 102.23 122.772 104.889 130.002 106.625C128.168 103.989 125.711 102.068 123.374 99.9078C117.649 94.6145 111.388 89.78 104.511 86.123C101.744 84.652 98.7649 83.7582 95.8437 82.6773C94.3749 82.1343 92.5252 81.3867 91.9726 79.7349C90.9494 76.6757 96.3932 73.8422 98.3928 72.5521C106.123 67.5652 115.601 63.4628 124.904 63.2319C139.442 62.8707 153.646 71.0336 159.635 84.9243C161.74 89.8072 162.363 94.9709 162.776 100.182L162.851 101.16L162.959 102.627C162.971 102.791 162.982 102.954 162.994 103.117L163.066 104.096L163.14 105.075C167.706 101.308 170.918 95.7651 175.376 91.731C185.803 82.2955 200.073 78.1068 213.613 82.3544C225.849 86.1922 236.484 94.737 242.743 106.108C244.381 109.083 248.949 116.354 245.649 119.317C243.065 121.637 239.789 119.829 237.065 118.867C235.002 118.139 232.87 117.677 230.731 117.249L229.564 117.018C229.175 116.941 228.786 116.864 228.398 116.785C220.989 115.282 212.371 115.438 204.946 116.759C200.145 117.613 195.454 119.342 190.671 120.058V121.091C203.75 121.201 216.402 128.751 222.854 140.208C225.528 144.955 226.863 150.388 227.887 155.708C229.154 162.285 228.264 169.449 226.488 175.859C225.892 178.007 224.812 181.65 222.272 182.145C220.477 182.495 218.953 180.687 217.928 179.468C215.242 176.271 212.686 173.233 209.534 170.473C201.56 163.491 193.128 157.051 184.553 150.841C180 147.543 175.014 143.257 169.768 141.242C171.243 144.837 172.688 148.179 173.189 152.092C174.665 163.601 169.903 174.434 162.756 183.092C160.575 185.734 158.242 188.396 155.493 190.448C154.353 191.3 152.922 192.412 151.414 192.171C146.686 191.415 146.123 184.203 145.398 180.509C142.943 167.994 143.929 155.565 147.336 143.308C144.305 144.863 142.114 148.267 140.211 151.058C136.024 157.201 132.391 163.698 129.786 170.692C119.41 198.55 119.51 231.18 132.951 258C134.452 260.995 136.73 260.593 139.688 260.593C140.134 260.593 140.581 260.59 141.027 260.586L142.368 260.572C145.051 260.544 147.74 260.532 150.395 260.89C151.772 261.076 153.685 260.91 154.776 261.938C156.081 263.168 155.385 265.278 155.085 266.793C154.244 271.026 153.964 274.874 153.964 279.193C159.544 278.318 161.091 269.265 163.069 264.726C165.311 259.585 167.592 254.438 169.666 249.226C170.685 246.664 172.049 243.8 171.691 240.959C171.289 237.767 169.01 234.382 167.421 231.659C164.414 226.506 160.997 221.204 158.783 215.642C157.013 211.196 158.661 205.641 163.651 204.052C166.403 203.176 169.339 204.894 171.13 206.907C174.885 211.127 177.309 217.406 180.036 222.359L201.306 261.109C203.112 264.391 204.922 267.669 206.771 270.926C207.491 272.197 208.225 274.16 209.702 274.702C211.017 275.184 212.814 274.498 214.123 274.233C217.519 273.545 220.91 272.802 224.319 272.179C228.404 271.432 234.63 271.572 237.575 268.343C233.269 266.963 228.291 267.044 223.809 267.355C221.117 267.542 218.133 268.517 215.66 266.926C211.978 264.559 209.531 259.09 207.279 255.426C201.725 246.39 196.493 237.219 191.175 228.042L190.324 226.581L188.613 223.662C187.76 222.201 186.912 220.737 186.091 219.259C185.455 218.116 184.514 216.61 185.424 215.35C186.38 214.027 188.463 213.949 190.344 213.946L190.717 213.946C191.456 213.947 192.149 213.948 192.71 213.873C200.3 212.863 207.996 212.026 215.652 212.026C215.056 209.928 213.352 207.557 213.897 205.311C215.116 200.286 222.261 198.714 225.585 202.319C227.815 204.74 229.112 208.072 230.563 210.992C232.479 214.848 234.66 218.575 236.711 222.359C240.301 228.983 244.222 235.426 247.914 241.993C248.219 242.534 248.532 243.073 248.849 243.611L249.327 244.419C250.92 247.112 252.521 249.823 253.379 252.843C240.556 252.249 230.93 237.187 225.339 227.009C224.893 228.639 225.618 230.093 226.197 231.659C227.402 234.912 228.842 238.009 230.654 240.959C233.242 245.172 236.208 249.511 240.124 252.569C247.072 257.997 256.235 258.027 264.595 257.447C269.956 257.074 276.656 254.605 281.929 256.28C287.194 257.953 289.313 263.829 286.187 268.342C283.845 271.723 280.718 273 276.831 273.51C279.58 279.477 283.181 285.014 285.792 291.076C286.879 293.602 288.012 297.472 290.618 298.805C292.353 299.691 294.838 298.866 296.714 298.826C294.832 293.787 291.307 289.51 289.577 284.36C294.854 284.604 299.958 287.39 304.871 289.169C314.537 292.667 324.081 296.491 333.612 300.351L338.01 302.133C341.93 303.722 345.873 305.295 349.736 307.022C351.149 307.654 353.106 309.131 354.668 308.222C355.942 307.479 356.767 305.709 357.553 304.51C359.752 301.155 361.743 297.671 363.716 294.176C371.615 280.181 377.409 264.845 381.28 249.226C394.047 197.712 383.094 140.872 352.415 97.8411C340.627 81.3081 325.803 67.0149 309.46 55.178C268.559 25.5567 214.899 13.6939 165.689 24.6928ZM249.3 281.585C238.458 284.445 227.284 287.038 216.162 288.493C217.625 293.532 221.199 298.434 223.815 302.96C224.827 304.71 225.909 307.053 227.908 307.813C230.166 308.671 232.895 307.279 235.025 306.577C234.039 303.845 232.379 301.388 231.02 298.826C230.46 297.77 229.594 296.52 230.056 295.266C230.928 292.897 234.549 293.036 236.555 292.624C241.84 291.539 247.071 290.185 252.359 289.113C254.308 288.718 257.021 287.647 258.979 288.309C260.446 288.804 261.329 290.026 262.166 291.301L262.541 291.876C263.041 292.641 263.553 293.389 264.192 293.973C266.331 295.926 269.528 296.227 272.243 296.76C270.586 292.988 267.833 289.688 266.068 285.91C265.042 283.712 264.199 280.479 261.952 279.209C258.857 277.46 252.464 280.75 249.3 281.585ZM180.984 256.459C180.474 263.01 178.488 268.339 175.376 274.026C178.942 274.483 182.58 274.646 186.082 275.524C188.707 276.182 191.127 277.438 193.73 278.16C192.338 274.306 189.756 270.868 187.755 267.309C185.735 263.717 183.927 259.352 180.984 256.459Z"
       fill="var(--color-muted-foreground)"
@@ -167,7 +167,7 @@ export const TanStackGray = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const Vite = (props: ComponentProps<'svg'>) => (
+export const Vite = (props: ComponentProps<"svg">) => (
   <svg
     width="410"
     height="404"
@@ -213,7 +213,7 @@ export const Vite = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const Nitro = (props: ComponentProps<'svg'>) => (
+export const Nitro = (props: ComponentProps<"svg">) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     fill="none"
@@ -230,7 +230,7 @@ export const Nitro = (props: ComponentProps<'svg'>) => (
       />
       <mask
         id="mask0_115_108"
-        style={{ maskType: 'alpha' }}
+        style={{ maskType: "alpha" }}
         maskUnits="userSpaceOnUse"
         x="0"
         y="0"
@@ -302,7 +302,7 @@ export const Nitro = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const SvelteKit = (props: ComponentProps<'svg'>) => (
+export const SvelteKit = (props: ComponentProps<"svg">) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     xmlnsXlink="http://www.w3.org/1999/xlink"
@@ -325,7 +325,7 @@ export const SvelteKit = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const SvelteKitGray = (props: ComponentProps<'svg'>) => (
+export const SvelteKitGray = (props: ComponentProps<"svg">) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     xmlnsXlink="http://www.w3.org/1999/xlink"
@@ -348,7 +348,7 @@ export const SvelteKitGray = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const Nuxt = (props: ComponentProps<'svg'>) => (
+export const Nuxt = (props: ComponentProps<"svg">) => (
   <svg
     viewBox="0 0 424 283"
     fill="none"
@@ -363,7 +363,7 @@ export const Nuxt = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const NuxtGray = (props: ComponentProps<'svg'>) => (
+export const NuxtGray = (props: ComponentProps<"svg">) => (
   <svg
     viewBox="0 0 424 283"
     fill="none"
@@ -378,7 +378,7 @@ export const NuxtGray = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const Hono = (props: ComponentProps<'svg'>) => (
+export const Hono = (props: ComponentProps<"svg">) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 98" {...props}>
     <title>Hono</title>
     <path
@@ -395,7 +395,7 @@ export const Hono = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const HonoGray = (props: ComponentProps<'svg'>) => (
+export const HonoGray = (props: ComponentProps<"svg">) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 98" {...props}>
     <title>Hono</title>
     <path
@@ -415,7 +415,7 @@ export const HonoGray = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const Bun = (props: ComponentProps<'svg'>) => (
+export const Bun = (props: ComponentProps<"svg">) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="Bun"
@@ -449,7 +449,7 @@ export const Bun = (props: ComponentProps<'svg'>) => (
         id="Top"
         d="M35.12,5.53A16.41,16.41,0,0,1,29.49,18c-.28.25-.06.73.3.59,3.37-1.31,7.92-5.23,6-13.14C35.71,5,35.12,5.12,35.12,5.53Zm2.27,0A16.24,16.24,0,0,1,39,19c-.12.35.31.65.55.36C41.74,16.56,43.65,11,37.93,5,37.64,4.74,37.19,5.14,37.39,5.49Zm2.76-.17A16.42,16.42,0,0,1,47,17.12a.33.33,0,0,0,.65.11c.92-3.49.4-9.44-7.17-12.53C40.08,4.54,39.82,5.08,40.15,5.32ZM21.69,15.76a16.94,16.94,0,0,0,10.47-9c.18-.36.75-.22.66.18-1.73,8-7.52,9.67-11.12,9.45C21.32,16.4,21.33,15.87,21.69,15.76Z"
         fill="#ccbea7"
-        style={{ fillRule: 'evenodd' }}
+        style={{ fillRule: "evenodd" }}
       />
       <path
         id="Outline"
@@ -504,19 +504,19 @@ export const Bun = (props: ComponentProps<'svg'>) => (
       <path
         id="Eyes"
         d="M25.7,38.8a5.51,5.51,0,1,0-5.5-5.51A5.51,5.51,0,0,0,25.7,38.8Zm24.77,0A5.51,5.51,0,1,0,45,33.29,5.5,5.5,0,0,0,50.47,38.8Z"
-        style={{ fillRule: 'evenodd' }}
+        style={{ fillRule: "evenodd" }}
       />
       <path
         id="Iris"
         d="M24,33.64a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,24,33.64Zm24.77,0a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,48.75,33.64Z"
-        style={{ fillRule: 'evenodd' }}
+        style={{ fillRule: "evenodd" }}
         fill="#fff"
       />
     </g>
   </svg>
 );
 
-export const BunGray = (props: ComponentProps<'svg'>) => (
+export const BunGray = (props: ComponentProps<"svg">) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="Bun"
@@ -553,7 +553,7 @@ export const BunGray = (props: ComponentProps<'svg'>) => (
         id="Top"
         d="M35.12,5.53A16.41,16.41,0,0,1,29.49,18c-.28.25-.06.73.3.59,3.37-1.31,7.92-5.23,6-13.14C35.71,5,35.12,5.12,35.12,5.53Zm2.27,0A16.24,16.24,0,0,1,39,19c-.12.35.31.65.55.36C41.74,16.56,43.65,11,37.93,5,37.64,4.74,37.19,5.14,37.39,5.49Zm2.76-.17A16.42,16.42,0,0,1,47,17.12a.33.33,0,0,0,.65.11c.92-3.49.4-9.44-7.17-12.53C40.08,4.54,39.82,5.08,40.15,5.32ZM21.69,15.76a16.94,16.94,0,0,0,10.47-9c.18-.36.75-.22.66.18-1.73,8-7.52,9.67-11.12,9.45C21.32,16.4,21.33,15.87,21.69,15.76Z"
         fill="var(--color-background)"
-        style={{ fillRule: 'evenodd' }}
+        style={{ fillRule: "evenodd" }}
       />
       <path
         id="Outline"
@@ -615,20 +615,20 @@ export const BunGray = (props: ComponentProps<'svg'>) => (
       <path
         id="Eyes"
         d="M25.7,38.8a5.51,5.51,0,1,0-5.5-5.51A5.51,5.51,0,0,0,25.7,38.8Zm24.77,0A5.51,5.51,0,1,0,45,33.29,5.5,5.5,0,0,0,50.47,38.8Z"
-        style={{ fillRule: 'evenodd' }}
+        style={{ fillRule: "evenodd" }}
         fill="var(--color-muted-foreground)"
       />
       <path
         id="Iris"
         d="M24,33.64a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,24,33.64Zm24.77,0a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,48.75,33.64Z"
-        style={{ fillRule: 'evenodd' }}
+        style={{ fillRule: "evenodd" }}
         fill="var(--color-background)"
       />
     </g>
   </svg>
 );
 
-export const Nest = (props: ComponentProps<'svg'>) => (
+export const Nest = (props: ComponentProps<"svg">) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="NestJS"
@@ -644,7 +644,7 @@ export const Nest = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const NestGray = (props: ComponentProps<'svg'>) => (
+export const NestGray = (props: ComponentProps<"svg">) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="NestJS"
@@ -660,7 +660,7 @@ export const NestGray = (props: ComponentProps<'svg'>) => (
   </svg>
 );
 
-export const Next = (props: ComponentProps<'svg'>) => (
+export const Next = (props: ComponentProps<"svg">) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" {...props}>
     <title>Next.js</title>
     <circle cx="64" cy="64" r="62" strokeWidth="4" className="stroke-border" />
@@ -699,110 +699,97 @@ export const Next = (props: ComponentProps<'svg'>) => (
 );
 
 export const Frameworks = () => {
-  const handleRequest = (framework: string) => {
-    track('Framework requested', { framework: framework.toLowerCase() });
-    toast.success('Request received', {
-      description: `Thanks for expressing interest in ${framework}. We will be adding support for it soon.`,
+  const handleRequest = () => {
+    track("Framework requested", { framework: "tanstack" });
+    toast.success("Request received", {
+      description:
+        "Thanks for expressing interest in TanStack. We will be adding support for it soon.",
     });
   };
 
   return (
-    <div className="grid gap-12 px-4 py-8 sm:py-12 sm:px-12 items-start">
-      <div className="flex flex-col gap-2">
-        <h2 className="font-medium text-xl tracking-tight sm:text-2xl text-muted-foreground">
-          <span className="text-foreground">Universally compatible</span>. Works
-          with the frameworks you already use with more coming soon.
+    <div className="flex flex-col items-center gap-8 px-4 py-12 sm:py-16 sm:px-12 text-center">
+      <div className="flex flex-col gap-3 max-w-xl">
+        <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl">
+          Universally Compatible
         </h2>
+        <p className="text-muted-foreground sm:text-lg">
+          Works with the frameworks you already use with more coming soon.
+        </p>
       </div>
-      <div className="space-y-10 w-fit">
-        <div className="flex flex-wrap gap-6 items-center">
-          <Link
-            href="/docs/getting-started/next"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Next className="size-[56px] relative z-10" />
-            <Next className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/vite"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Vite className="size-[56px] relative z-10" />
-            <Vite className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/astro"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <AstroDark className="size-[52px] relative z-10 hidden dark:block" />
-            <AstroLight className="size-[56px] relative z-10 dark:hidden" />
-            <AstroDark className="size-[60px] absolute top-0 left-0 opacity-10 blur-md hidden dark:block" />
-            <AstroLight className="size-[64px] absolute top-0 left-0 opacity-10 blur-md dark:hidden" />
-          </Link>
-          <Link
-            href="/docs/getting-started/express"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Express className="size-[64px] dark:invert relative z-10" />
-            <Express className="size-[72px] absolute top-0 left-0 opacity-10 blur-md dark:invert" />
-          </Link>
-          <Link href="/docs/getting-started/fastify">
-            <Fastify className="size-[64px] dark:invert" />
-            <Fastify className="size-[72px] absolute top-0 left-0 opacity-10 blur-md dark:invert" />
-          </Link>
-          <Link
-            href="/docs/getting-started/hono"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Hono className="size-[56px] relative z-10" />
-            <Hono className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/nitro"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Nitro className="size-[56px] relative z-10" />
-            <Nitro className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/nuxt"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Nuxt className="size-[56px] relative z-10" />
-            <Nuxt className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/sveltekit"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <SvelteKit className="size-[56px] relative z-10" />
-            <SvelteKit className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-          <Link
-            href="/docs/getting-started/nestjs"
-            className="relative opacity-100 hover:opacity-70 transition-opacity duration-200 ease-out"
-          >
-            <Nest className="size-[56px] relative z-10" />
-            <Nest className="size-[64px] absolute top-0 left-0 opacity-10 blur-md" />
-          </Link>
-        </div>
-        <div>
-          <Badge
-            variant="secondary"
-            className="rounded-full py-0.5 px-2 col-span-4"
-          >
+      <div className="flex flex-wrap justify-center gap-6 items-center max-w-xl">
+        <Link
+          href="/docs/getting-started/next"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <Next className="size-[56px] dark:invert" />
+        </Link>
+        <Link
+          href="/docs/getting-started/vite"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <Vite className="size-[56px]" />
+        </Link>
+        <Link
+          href="/docs/getting-started/astro"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <AstroLight className="size-[56px] dark:hidden" />
+          <AstroDark className="size-[52px] hidden dark:block" />
+        </Link>
+        <Link
+          href="/docs/getting-started/express"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <Express className="size-[56px] dark:invert" />
+        </Link>
+        <Link
+          href="/docs/getting-started/fastify"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <Fastify className="size-[64px] dark:invert" />
+        </Link>
+        <Link
+          href="/docs/getting-started/hono"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <Hono className="size-[56px]" />
+        </Link>
+        <Link
+          href="/docs/getting-started/nitro"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <Nitro className="size-[56px]" />
+        </Link>
+        <Link
+          href="/docs/getting-started/nuxt"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <Nuxt className="size-[56px]" />
+        </Link>
+        <Link
+          href="/docs/getting-started/sveltekit"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <SvelteKit className="size-[56px]" />
+        </Link>
+        <Link
+          href="/docs/getting-started/nestjs"
+          className="hover:opacity-70 transition-opacity duration-200"
+        >
+          <Nest className="size-[56px]" />
+        </Link>
+        <div className="w-px h-12 bg-gray-alpha-200 mx-2 self-center" />
+        <button
+          type="button"
+          onClick={handleRequest}
+          className="relative cursor-pointer bg-transparent border-none p-0 hover:opacity-70 transition-opacity duration-200"
+        >
+          <TanStackGray className="size-[48px] text-gray-700" />
+          <span className="absolute -bottom-7 left-1/2 -translate-x-1/2 text-xs text-muted-foreground whitespace-nowrap">
             Coming soon
-          </Badge>
-          <div className="flex flex-wrap gap-6 items-center mt-4">
-            <div
-              className="group relative cursor-pointer"
-              onClick={() => handleRequest('TanStack')}
-            >
-              <TanStackGray className="size-[56px] opacity-70 transition-all duration-200 group-hover:opacity-0 ease-out" />
-              <TanStack className="size-[56px] absolute inset-0 opacity-0 transition-all duration-200 group-hover:opacity-100 dark:invert ease-out" />
-            </div>
-          </div>
-        </div>
+          </span>
+        </button>
       </div>
     </div>
   );

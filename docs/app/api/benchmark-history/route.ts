@@ -1,6 +1,5 @@
 import type { NextRequest } from 'next/server';
 import { NextResponse } from 'next/server';
-import { unstable_cache } from 'next/cache';
 
 const GITHUB_API = 'https://api.github.com';
 const REPO = 'vercel/workflow';
@@ -135,26 +134,37 @@ async function fetchBenchmarkFile(
 }
 
 /**
+ * Slim snapshot stored in the cache — only the worlds/metrics map, no raw
+ * CIResultsData metadata. This keeps the serialised size well under the
+ * Next.js unstable_cache 2 MB limit.
+ */
+interface SnapshotEntry {
+  mainCommitSha: string;
+  timestamp: string;
+  worlds: CIResultsData['worlds'];
+}
+
+/**
  * Build a map of main commit SHA -> benchmark snapshot data by reading
  * the full gh-pages history. Returns a plain object (for cache serialization).
+ *
+ * Only the `worlds` map (metric numbers per world) is retained in each entry
+ * so the total payload stays small enough for unstable_cache.
  */
 async function _buildSnapshotMap(): Promise<
-  Record<
-    string,
-    { mainCommitSha: string; timestamp: string; data: CIResultsData }
-  >
+  Record<string, SnapshotEntry>
 > {
-  const snapshots: Record<
-    string,
-    { mainCommitSha: string; timestamp: string; data: CIResultsData }
-  > = {};
+  const snapshots: Record<string, SnapshotEntry> = {};
 
-  // Paginate through all gh-pages commits that modified the benchmark file
+  // Paginate through gh-pages commits that modified the benchmark file.
+  // We only need ~MAX_ITEMS matches, so cap the fetch to avoid hundreds of
+  // unnecessary requests on repos with long histories.
+  const MAX_SNAPSHOTS = MAX_ITEMS * 3;
   let ghPagesCommits: GitHubCommit[] = [];
   let url: string | null =
     `${GITHUB_API}/repos/${REPO}/commits?sha=gh-pages&path=${FILE_PATH}&per_page=100`;
 
-  while (url) {
+  while (url && ghPagesCommits.length < MAX_SNAPSHOTS) {
     const res = await fetch(url, {
       headers: githubHeaders(),
       cache: 'force-cache',
@@ -177,8 +187,12 @@ async function _buildSnapshotMap(): Promise<
     url = getNextPageUrl(res.headers.get('Link'));
   }
 
+  if (ghPagesCommits.length >= MAX_SNAPSHOTS) {
+    console.warn(`Benchmark history: hit pagination cap at ${MAX_SNAPSHOTS} gh-pages commits — older snapshots may be missing`);
+  }
+
   // Fetch benchmark data for each gh-pages commit in batches
-  const BATCH_SIZE = 10;
+  const BATCH_SIZE = 30;
   for (let i = 0; i < ghPagesCommits.length; i += BATCH_SIZE) {
     const batch = ghPagesCommits.slice(i, i + BATCH_SIZE);
     const results = await Promise.all(
@@ -188,7 +202,7 @@ async function _buildSnapshotMap(): Promise<
         return {
           mainCommitSha: data.commit,
           timestamp: data.lastUpdated,
-          data,
+          worlds: data.worlds,
         };
       })
     );
@@ -204,16 +218,24 @@ async function _buildSnapshotMap(): Promise<
 }
 
 /**
- * Cached snapshot map — the expensive part (200+ GitHub fetches) is computed
- * once and reused for 1 hour across all parameter combinations.
+ * In-memory cache for the snapshot map. Individual fetch() calls inside
+ * _buildSnapshotMap already use Next.js fetch caching, so we only need to
+ * avoid re-assembling the map on every request. An in-memory cache has no
+ * serialization size limit (unlike unstable_cache's 2 MB cap).
  */
-const buildSnapshotMap = unstable_cache(
-  _buildSnapshotMap,
-  ['benchmark-snapshot-map'],
-  {
-    revalidate: 3600,
+let _snapshotMapCache: {
+  data: Record<string, SnapshotEntry>;
+  expiry: number;
+} | null = null;
+
+async function buildSnapshotMap(): Promise<Record<string, SnapshotEntry>> {
+  if (_snapshotMapCache && Date.now() < _snapshotMapCache.expiry) {
+    return _snapshotMapCache.data;
   }
-);
+  const data = await _buildSnapshotMap();
+  _snapshotMapCache = { data, expiry: Date.now() + 3600 * 1000 };
+  return data;
+}
 
 /**
  * Fetch all workflow@ tags from GitHub (paginated).
@@ -245,13 +267,16 @@ async function _fetchWorkflowTags(): Promise<GitHubTag[]> {
   return workflowTags;
 }
 
-const fetchWorkflowTags = unstable_cache(
-  _fetchWorkflowTags,
-  ['benchmark-workflow-tags'],
-  {
-    revalidate: 3600,
+let _tagsCache: { data: GitHubTag[]; expiry: number } | null = null;
+
+async function fetchWorkflowTags(): Promise<GitHubTag[]> {
+  if (_tagsCache && Date.now() < _tagsCache.expiry) {
+    return _tagsCache.data;
   }
-);
+  const data = await _fetchWorkflowTags();
+  _tagsCache = { data, expiry: Date.now() + 3600 * 1000 };
+  return data;
+}
 
 async function fetchCommitsHistory(
   worldId: string,
@@ -288,7 +313,7 @@ async function fetchCommitsHistory(
       const snapshot = snapshots[mainCommit.sha];
       if (!snapshot) continue;
 
-      const worldData = snapshot.data.worlds[worldId];
+      const worldData = snapshot.worlds[worldId];
       const metric = findMetric(worldData, metricName);
       if (!metric) continue;
 
@@ -327,7 +352,10 @@ async function fetchReleasesHistory(
     return [];
   }
 
-  // Get commit details for tags to get timestamps
+  // Use the snapshot's existing timestamp (data.lastUpdated = when CI ran)
+  // instead of fetching commitData.commit.committer.date (when tag was committed)
+  // per tag. These can differ by minutes but are functionally equivalent for
+  // chart display. This eliminates up to MAX_ITEMS serial API requests.
   const historyPoints: BenchmarkHistoryPoint[] = [];
 
   for (const tag of workflowTags) {
@@ -336,43 +364,26 @@ async function fetchReleasesHistory(
     const snapshot = snapshots[tag.commit.sha];
     if (!snapshot) continue;
 
-    const worldData = snapshot.data.worlds[worldId];
+    const worldData = snapshot.worlds[worldId];
     const metric = findMetric(worldData, metricName);
     if (!metric) continue;
 
-    // Get timestamp for the tag
-    try {
-      const commitRes = await fetch(
-        `${GITHUB_API}/repos/${REPO}/commits/${tag.commit.sha}`,
-        {
-          headers: githubHeaders(),
-          cache: 'force-cache',
-          next: { revalidate: 86400 },
-        }
-      );
+    const version = tag.name.replace('workflow@', '');
 
-      if (!commitRes.ok) continue;
-
-      const commitData = (await commitRes.json()) as GitHubCommit;
-      const version = tag.name.replace('workflow@', '');
-
-      historyPoints.push({
-        label: version,
-        commit: tag.commit.sha.slice(0, 7),
-        timestamp: commitData.commit.committer.date,
-        mean: metric.mean,
-        min: metric.min,
-        max: metric.max,
-        samples: metric.samples,
-        workflowTime: metric.workflowTime,
-        workflowMin: metric.workflowMin,
-        workflowMax: metric.workflowMax,
-        ttfb: metric.ttfb,
-        slurp: metric.slurp,
-      });
-    } catch {
-      continue;
-    }
+    historyPoints.push({
+      label: version,
+      commit: tag.commit.sha.slice(0, 7),
+      timestamp: snapshot.timestamp,
+      mean: metric.mean,
+      min: metric.min,
+      max: metric.max,
+      samples: metric.samples,
+      workflowTime: metric.workflowTime,
+      workflowMin: metric.workflowMin,
+      workflowMax: metric.workflowMax,
+      ttfb: metric.ttfb,
+      slurp: metric.slurp,
+    });
   }
 
   return historyPoints;
