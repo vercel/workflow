@@ -7,7 +7,11 @@ const Layout = async ({
 }: LayoutProps<'/[lang]/cookbook'>) => {
   const { lang } = await params;
 
-  return <DocsLayout tree={getCookbookTree(lang)}>{children}</DocsLayout>;
+  return (
+    <div className="bg-background-100">
+      <DocsLayout tree={getCookbookTree(lang)}>{children}</DocsLayout>
+    </div>
+  );
 };
 
 export default Layout;

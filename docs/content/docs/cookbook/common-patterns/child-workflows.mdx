@@ -140,7 +140,7 @@ async function checkStatuses(
 
     if (status === "completed") completed += 1;
     else if (status === "failed" || status === "cancelled") failed += 1;
-    else running += 1; // queued, starting, running
+    else running += 1; // pending, running
   }
 
   return { running, completed, failed };

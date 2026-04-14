@@ -2,7 +2,7 @@
 title: Custom Serialization
 description: Make class instances serializable across workflow boundaries using the WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE symbol protocol.
 type: guide
-summary: Implement the serde symbol protocol on classes so instances survive serialization when passed between workflow and step functions, and register them in the global class registry.
+summary: Implement the WORKFLOW_SERIALIZE and WORKFLOW_DESERIALIZE symbol protocol on classes so instances survive serialization when passed between workflow and step functions.
 ---
 
 <Callout>
@@ -11,7 +11,7 @@ This is an advanced guide. It dives into workflow internals and is not required 
 
 ## The Problem
 
-Workflow functions run inside a sandboxed VM. Every value that crosses a function boundary — step arguments, step return values, workflow inputs — must be serializable. Plain objects, strings, and numbers work automatically, but **class instances** lose their prototype chain and methods during serialization.
+Workflow functions run inside a sandboxed VM. Every value that crosses a function boundary — step arguments, step return values, workflow inputs — must be [serializable](/docs/foundations/serialization). Plain objects, strings, numbers, and many built-in types (`Date`, `Map`, `Set`, `RegExp`, etc.) work automatically, but **class instances** that don't implement the custom class serialization protocol will throw a serialization error.
 
 ```typescript lineNumbers
 class StorageClient {
@@ -25,17 +25,17 @@ class StorageClient {
 export async function processFile(client: StorageClient) {
   "use workflow";
 
-  // client is no longer a StorageClient here — it's a plain object
-  // client.upload() throws: "client.upload is not a function"
+  // client fails to serialize — StorageClient doesn't implement custom class serialization
+  // The runtime throws a serialization error
   await uploadStep(client, "output.json", data);
 }
 ```
 
-The [step-as-factory pattern](/docs/cookbook/advanced/serializable-steps) solves this by deferring object construction into steps. But sometimes you need the object itself to cross boundaries — for example, when a class instance is passed as a workflow input, returned from a step, or stored in workflow state. That's where custom serialization comes in.
+Custom class serialization solves this by teaching the runtime how to convert your class instances to plain data and back.
 
 ## The WORKFLOW_SERIALIZE / WORKFLOW_DESERIALIZE Protocol
 
-The `@workflow/serde` package exports two symbols that act as a serialization protocol. When the workflow runtime encounters a class instance with these symbols, it knows how to convert it to plain data and back.
+The `@workflow/serde` package exports two symbols that act as a custom class serialization protocol. When the workflow runtime encounters a class instance with these symbols, it knows how to convert it to plain data and back.
 
 {/* @skip-typecheck - @workflow/serde is not mapped in the type-checker */}
 ```typescript lineNumbers
@@ -48,11 +48,11 @@ class Point {
     return Math.sqrt((this.x - other.x) ** 2 + (this.y - other.y) ** 2);
   }
 
-  static [WORKFLOW_SERIALIZE](instance: Point) {
+  static [WORKFLOW_SERIALIZE](instance: Point) { // [!code highlight]
     return { x: instance.x, y: instance.y };
   }
 
-  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) {
+  static [WORKFLOW_DESERIALIZE](data: { x: number; y: number }) { // [!code highlight]
     return new Point(data.x, data.y);
   }
 }
@@ -61,7 +61,7 @@ class Point {
 Both methods must be **static**. `WORKFLOW_SERIALIZE` receives an instance and returns plain serializable data. `WORKFLOW_DESERIALIZE` receives that same data and reconstructs a new instance.
 
 <Callout type="warn">
-Both serde methods run inside the workflow VM. They must not use Node.js APIs, non-deterministic operations, or network calls. Keep them focused on extracting and reconstructing data.
+Both serialization methods run inside the workflow VM. They must not use Node.js APIs, non-deterministic operations, or network calls. Keep them focused on extracting and reconstructing data.
 </Callout>
 
 ## Automatic Class Registration
@@ -71,41 +71,8 @@ For the runtime to deserialize a class, the class must be registered in a global
 This means you only need to implement the two symbol methods. The compiler assigns a deterministic `classId` based on the file path and class name, and registers it in the global `Symbol.for("workflow-class-registry")` registry.
 
 <Callout type="info">
-No manual registration is required for classes defined in your workflow files. The SWC plugin detects the serde symbols and generates the registration automatically at build time.
+No manual registration is required for classes defined in your workflow files. The SWC plugin detects the serialization symbols and generates the registration automatically at build time.
 </Callout>
-
-### Manual Registration for Library Authors
-
-If you're a library author whose classes are defined **outside** the workflow build pipeline (e.g., in a published npm package), the SWC plugin won't process your code. In that case, you need to register classes manually using the same global registry the runtime uses:
-
-```typescript lineNumbers
-const WORKFLOW_CLASS_REGISTRY = Symbol.for("workflow-class-registry");
-
-function registerSerializableClass(classId: string, cls: Function) {
-  const g = globalThis as any;
-  let registry = g[WORKFLOW_CLASS_REGISTRY] as Map<string, Function> | undefined;
-  if (!registry) {
-    registry = new Map();
-    g[WORKFLOW_CLASS_REGISTRY] = registry;
-  }
-  registry.set(classId, cls);
-  Object.defineProperty(cls, "classId", {
-    value: classId,
-    writable: false,
-    enumerable: false,
-    configurable: false,
-  });
-}
-```
-
-Then call it after your class definition:
-
-{/* @skip-typecheck - references variables from prior code block */}
-```typescript lineNumbers
-registerSerializableClass("WorkflowStorageClient", WorkflowStorageClient);
-```
-
-The `classId` is a string identifier stored alongside the serialized data. When the runtime encounters serialized data tagged with that ID, it looks up the registry to find the class and calls `WORKFLOW_DESERIALIZE`.
 
 ## Full Example: A Workflow-Safe Storage Client
 
@@ -156,9 +123,9 @@ export class WorkflowStorageClient {
     return getSignedUrl(client, new GetObjectCommand({ Bucket: this.bucket, Key: key }));
   }
 
-  // --- Serde protocol ---
+  // --- Serialization protocol ---
 
-  static [WORKFLOW_SERIALIZE](instance: WorkflowStorageClient): StorageClientOptions {
+  static [WORKFLOW_SERIALIZE](instance: WorkflowStorageClient): StorageClientOptions { // [!code highlight]
     return {
       region: instance.region,
       bucket: instance.bucket,
@@ -167,11 +134,10 @@ export class WorkflowStorageClient {
     };
   }
 
-  static [WORKFLOW_DESERIALIZE](
-    this: typeof WorkflowStorageClient,
+  static [WORKFLOW_DESERIALIZE]( // [!code highlight]
     data: StorageClientOptions
   ): WorkflowStorageClient {
-    return new this(data);
+    return new WorkflowStorageClient(data);
   }
 }
 ```
@@ -188,64 +154,11 @@ export async function processUpload(
   "use workflow";
 
   // client is a real WorkflowStorageClient with working methods
-  await client.upload("output/result.json", data);
-  const url = await client.getSignedUrl("output/result.json");
+  await client.upload("output/result.json", data); // [!code highlight]
+  const url = await client.getSignedUrl("output/result.json"); // [!code highlight]
   return { url };
 }
 ```
-
-## When to Use Custom Serde vs Step-as-Factory
-
-Both patterns solve the same root problem — non-serializable objects can't cross workflow boundaries — but they work differently and suit different situations.
-
-### Step-as-Factory
-
-The [step-as-factory pattern](/docs/cookbook/advanced/serializable-steps) passes a **factory function** instead of an object. The real object is constructed inside a step at execution time.
-
-```typescript lineNumbers
-// Factory: returns a step function, not an object
-export function createS3Client(region: string) {
-  return async () => {
-    "use step";
-    const { S3Client } = await import("@aws-sdk/client-s3");
-    return new S3Client({ region });
-  };
-}
-```
-
-**Best when:**
-- The object has no serializable state (e.g., AI SDK model providers that are pure configuration)
-- You don't need to pass the object back out of a step
-- The object is only used inside a single step
-
-### Custom Serde
-
-Custom serde makes the **object itself** serializable. It can be passed as a workflow input, stored in workflow state, returned from steps, and used across multiple steps.
-
-```typescript lineNumbers
-// Serde: the object survives serialization
-class WorkflowStorageClient {
-  static [WORKFLOW_SERIALIZE](instance) { /* ... */ }
-  static [WORKFLOW_DESERIALIZE](data) { /* ... */ }
-}
-```
-
-**Best when:**
-- The object has meaningful state that must survive serialization (credentials, configuration, accumulated data)
-- The object is passed as a workflow input by the caller
-- Multiple steps need the same object instance
-- You're a library author shipping classes that workflow users will pass around
-
-### Decision Guide
-
-| Scenario | Recommended pattern |
-|---|---|
-| AI SDK model provider (`openai("gpt-4o")`) | Step-as-factory |
-| Database/HTTP client with no config state | Step-as-factory |
-| Storage client with region + credentials | Custom serde |
-| Domain object passed as workflow input | Custom serde |
-| Object returned from one step, used in another | Custom serde |
-| Library class that users instantiate and pass to `start()` | Custom serde |
 
 ## Key APIs
 

@@ -1,7 +1,7 @@
 'use client';
 
 import DynamicLink from 'fumadocs-core/dynamic-link';
-import { ExternalLinkIcon } from 'lucide-react';
+import { IconArrowUpRightSmall } from '@/components/geistcn-fallbacks/geistcn-assets/icons/icon-arrow-up-right-small';
 import {
   NavigationMenu,
   NavigationMenuItem,
@@ -11,32 +11,32 @@ import {
 import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
 
-type DesktopMenuProps = {
-  items: { label: string; href: string }[];
+interface DesktopMenuProps {
   className?: string;
-};
+  items: { label: string; href: string }[];
+}
 
 export const DesktopMenu = ({ items, className }: DesktopMenuProps) => {
   const isMobile = useIsMobile();
 
   return (
     <NavigationMenu viewport={isMobile}>
-      <NavigationMenuList className={cn('gap-px', className)}>
+      <NavigationMenuList className={cn('h-14 gap-4', className)}>
         {items.map((item) => (
           <NavigationMenuItem key={item.href}>
             <NavigationMenuLink
               asChild
-              className="rounded-md px-3 font-medium text-sm"
+              className="flex items-center text-gray-900 text-sm transition-colors duration-100 hover:text-gray-1000"
             >
               {item.href.startsWith('http') ? (
                 <a
-                  className="flex flex-row items-center gap-2"
+                  className="flex flex-row items-center gap-1"
                   href={item.href}
                   rel="noopener"
                   target="_blank"
                 >
                   {item.label}
-                  <ExternalLinkIcon className="size-3.5" />
+                  <IconArrowUpRightSmall aria-hidden="true" size={12} />
                 </a>
               ) : (
                 <DynamicLink href={`/[lang]${item.href}`}>

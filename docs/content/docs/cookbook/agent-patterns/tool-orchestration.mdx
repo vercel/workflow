@@ -15,7 +15,7 @@ Tools marked with `"use step"` get automatic retries and full Node.js access but
 
 | Capability | Step (`"use step"`) | Workflow Level |
 |------------|---------------------|----------------|
-| `getWritable()` | Yes | No |
+| `getWritable()` | Yes | Yes |
 | Automatic retries | Yes | No |
 | Side effects (fetch, DB) | Yes | No |
 | `sleep()` | No | Yes |
@@ -39,14 +39,14 @@ async function fetchWeather({ city }: { city: string }) {
 // Workflow-level tool: uses sleep()
 async function scheduleReminder({ delayMs }: { delayMs: number }) {
   // No "use step" — sleep() requires workflow context
-  await sleep(delayMs);
+  await sleep(delayMs); // [!code highlight]
   return { message: `Reminder fired after ${delayMs}ms` };
 }
 
 // Combined: workflow-level orchestration calling into steps
 async function fetchWithDelay({ url, delayMs }: { url: string; delayMs: number }) {
-  const result = await doFetch(url);   // Step handles I/O
-  await sleep(delayMs);                // Workflow handles sleep
+  const result = await doFetch(url);   // Step handles I/O // [!code highlight]
+  await sleep(delayMs);                // Workflow handles sleep // [!code highlight]
   return result;
 }
 
@@ -80,7 +80,7 @@ export async function assistantAgent(userMessage: string) {
     },
   });
 
-  await agent.stream({
+  await agent.stream({ // [!code highlight]
     messages: [{ role: "user", content: userMessage }],
     writable: getWritable<UIMessageChunk>(),
   });
@@ -132,7 +132,7 @@ async function waitThenCheck({
   endpoint: string;
 }) {
   // No "use step" — workflow context needed for sleep()
-  await sleep(delayMs);
+  await sleep(delayMs); // [!code highlight]
   // Delegate I/O to a step
   return pollEndpoint(endpoint);
 }
@@ -147,11 +147,11 @@ async function pollEndpoint(endpoint: string) {
 
 async function waitForCallback({ description }: { description: string }) {
   // No "use step" — webhooks are workflow primitives
-  const webhook = createWebhook<{ status: string }>();
+  const webhook = createWebhook(); // [!code highlight]
   // Log the URL so external systems can call it
   console.log(`Waiting for callback at: ${webhook.url}`);
 
-  const result = await Promise.race([
+  const result = await Promise.race([ // [!code highlight]
     webhook.then((req) => req.json()),
     sleep("1h").then(() => ({ status: "timeout" })),
   ]);
@@ -172,7 +172,7 @@ async function retryWithCooldown({
     const result = await attemptFetch(url);
     if (result.success) return result;
     if (i < maxAttempts - 1) {
-      await sleep(`${(i + 1) * 5}s`); // Increasing cooldown between attempts
+      await sleep(`${(i + 1) * 5}s`); // Increasing cooldown between attempts // [!code highlight]
     }
   }
   return { success: false, error: "All attempts failed" };
@@ -238,7 +238,7 @@ export async function orchestrationAgent(userMessage: string) {
     },
   });
 
-  await agent.stream({
+  await agent.stream({ // [!code highlight]
     messages: [{ role: "user", content: userMessage }],
     writable,
   });

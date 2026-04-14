@@ -36,7 +36,7 @@ export async function searchAgent(userMessage: string) {
     },
   });
 
-  await agent.stream({
+  await agent.stream({ // [!code highlight]
     messages: [{ role: "user", content: userMessage }],
     writable: getWritable<UIMessageChunk>(),
   });
@@ -68,7 +68,7 @@ async function searchWithProgress(
 ) {
   "use step";
 
-  const writable = getWritable<UIMessageChunk>();
+  const writable = getWritable<UIMessageChunk>(); // [!code highlight]
   const writer = writable.getWriter();
 
   try {
@@ -84,7 +84,7 @@ async function searchWithProgress(
       await new Promise((resolve) => setTimeout(resolve, 800));
 
       // Stream each result to the UI as it's found
-      await writer.write({
+      await writer.write({ // [!code highlight]
         type: "data-found-item",
         id: `${toolCallId}-${item.title}`,
         data: item,
@@ -109,7 +109,7 @@ async function getItemDetails({ itemId }: { itemId: string }) {
 
   try {
     // Emit a transient progress message
-    await writer.write({
+    await writer.write({ // [!code highlight]
       type: "data-progress",
       data: { message: `Loading details for ${itemId}...` },
       transient: true,
@@ -149,7 +149,7 @@ export async function searchAgent(userMessage: string) {
     },
   });
 
-  await agent.stream({
+  await agent.stream({ // [!code highlight]
     messages: [{ role: "user", content: userMessage }],
     writable,
   });

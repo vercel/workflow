@@ -43,7 +43,7 @@ import { openai as openaiProvider } from "@ai-sdk/openai";
 export function openai(...args: Parameters<typeof openaiProvider>) {
   return async () => {
     "use step";
-    return openaiProvider(...args);
+    return openaiProvider(...args); // [!code highlight]
   };
 }
 ```
@@ -61,7 +61,7 @@ import { anthropic as anthropicProvider } from "@ai-sdk/anthropic";
 export function anthropic(...args: Parameters<typeof anthropicProvider>) {
   return async () => {
     "use step";
-    return anthropicProvider(...args);
+    return anthropicProvider(...args); // [!code highlight]
   };
 }
 ```
@@ -69,7 +69,7 @@ export function anthropic(...args: Parameters<typeof anthropicProvider>) {
 This means you import from `@workflow/ai` instead of `@ai-sdk/*` directly:
 
 ```typescript lineNumbers
-import { anthropic } from "@workflow/ai/providers/anthropic";
+import { anthropic } from "@workflow/ai/anthropic";
 import { DurableAgent } from "@workflow/ai/agent";
 import { getWritable } from "workflow";
 import type { UIMessageChunk } from "ai";
@@ -79,7 +79,7 @@ export async function chatAgent(prompt: string) {
 
   const writable = getWritable<UIMessageChunk>();
   const agent = new DurableAgent({
-    model: anthropic("claude-sonnet-4-20250514"),
+    model: anthropic("claude-sonnet-4-20250514"), // [!code highlight]
   });
 
   await agent.stream({ messages: [{ role: "user", content: prompt }], writable });
@@ -106,7 +106,7 @@ export function createS3Client(region: string) {
 export async function processUpload(region: string, key: string) {
   "use workflow";
 
-  const getClient = createS3Client(region);
+  const getClient = createS3Client(region); // [!code highlight]
   // getClient is a serializable step reference, not an S3Client
   await uploadFile(getClient, key);
 }
@@ -116,7 +116,7 @@ async function uploadFile(
   key: string
 ) {
   "use step";
-  const client = await getClient();
+  const client = await getClient(); // [!code highlight]
   // Now you have a real S3Client with full Node.js access
   await client.send(/* ... */);
 }
@@ -127,20 +127,6 @@ async function uploadFile(
 1. **Compiler transformation**: `"use step"` tells the SWC plugin to extract the function into a separate bundle. The workflow VM only sees a serializable reference (function ID + captured arguments).
 2. **Closure tracking**: The compiler tracks which variables the step function closes over. Only serializable values (strings, numbers, plain objects) can be captured.
 3. **Deferred construction**: The actual provider/client is only constructed when the step executes in the Node.js runtime — never in the sandboxed workflow VM.
-
-## Bundle optimization with dynamic imports
-
-Step functions run in full Node.js, so they can use `await import()` to load heavy dependencies on demand. This keeps the workflow bundle light -- the sandboxed workflow VM never needs to parse or load these libraries.
-
-```typescript
-async function processWithHeavyLib(data: string) {
-  "use step";
-  const { parse } = await import("heavy-parser-lib");
-  return parse(data);
-}
-```
-
-This is especially useful for large SDKs (AWS, Google Cloud, parser libraries) that would bloat the workflow bundle unnecessarily. The `createS3Client` example [above](#writing-your-own-serializable-wrapper) already uses this pattern with `await import("@aws-sdk/client-s3")`.
 
 ## Key APIs
 

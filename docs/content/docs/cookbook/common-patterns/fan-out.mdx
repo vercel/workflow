@@ -26,12 +26,12 @@ declare function sendPagerDutyAlert(incidentId: string, message: string): Promis
 export async function incidentFanOut(incidentId: string, message: string) {
   "use workflow";
 
-  const settled = await Promise.allSettled([
+  const settled = await Promise.allSettled([ // [!code highlight]
     sendSlackAlert(incidentId, message),
     sendEmailAlert(incidentId, message),
     sendSmsAlert(incidentId, message),
     sendPagerDutyAlert(incidentId, message),
-  ]);
+  ]); // [!code highlight]
 
   const ok = settled.filter((r) => r.status === "fulfilled").length;
   return { incidentId, delivered: ok, failed: settled.length - ok };
@@ -101,9 +101,9 @@ export async function alertByRecipientList(
 
   const matched = RULES.filter((r) => r.match(severity)).map((r) => r.channel);
 
-  const settled = await Promise.allSettled(
+  const settled = await Promise.allSettled( // [!code highlight]
     matched.map((channel) => deliverToChannel(channel, alertId, message))
-  );
+  ); // [!code highlight]
 
   const delivered = settled.filter((r) => r.status === "fulfilled").length;
   return { alertId, severity, matched, delivered, failed: matched.length - delivered };
@@ -136,9 +136,9 @@ export async function publishEvent(topic: string, payload: string) {
   const subscribers = await loadSubscribers();
   const matched = subscribers.filter((sub) => sub.topics.includes(topic));
 
-  await Promise.allSettled(
+  await Promise.allSettled( // [!code highlight]
     matched.map((sub) => deliverToSubscriber(sub.id, topic, payload))
-  );
+  ); // [!code highlight]
 
   return { topic, delivered: matched.length, total: subscribers.length };
 }
@@ -179,14 +179,14 @@ export async function onboardUser(userId: string, data: Record<string, string>) 
   "use workflow";
 
   // Start report generation in the background
-  const reportPromise = generateReport(data);
+  const reportPromise = generateReport(data); // [!code highlight]
 
   // Do other work while the report generates
   await sendNotification(userId, "Processing started");
   await updateDashboard(userId);
 
   // Now await the report when we actually need it
-  const report = await reportPromise;
+  const report = await reportPromise; // [!code highlight]
   return { userId, report };
 }
 ```

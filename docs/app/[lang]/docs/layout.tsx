@@ -5,7 +5,11 @@ const Layout = async ({ children, params }: LayoutProps<'/[lang]/docs'>) => {
   const { lang } = await params;
 
   return (
-    <DocsLayout tree={getDocsTreeWithoutCookbook(lang)}>{children}</DocsLayout>
+    <div className="bg-background-100">
+      <DocsLayout tree={getDocsTreeWithoutCookbook(lang)}>
+        {children}
+      </DocsLayout>
+    </div>
   );
 };
 

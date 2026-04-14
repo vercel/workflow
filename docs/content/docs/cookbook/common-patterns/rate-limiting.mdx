@@ -43,9 +43,9 @@ async function fetchFromCrm(contactId: string) {
 
   const res = await fetch(`https://crm.example.com/contacts/${contactId}`);
 
-  if (res.status === 429) {
+  if (res.status === 429) { // [!code highlight]
     const retryAfter = res.headers.get("Retry-After");
-    throw new RetryableError("Rate limited by CRM", {
+    throw new RetryableError("Rate limited by CRM", { // [!code highlight]
       retryAfter: retryAfter ? parseInt(retryAfter) * 1000 : "1m",
     });
   }
@@ -73,12 +73,12 @@ import { RetryableError, getStepMetadata } from "workflow";
 async function callFlakeyApi(endpoint: string) {
   "use step";
 
-  const { attempt } = getStepMetadata();
+  const { attempt } = getStepMetadata(); // [!code highlight]
   const res = await fetch(endpoint);
 
   if (res.status === 429 || res.status >= 500) {
-    throw new RetryableError(`Request failed (${res.status})`, {
-      retryAfter: (attempt ** 2) * 1000, // 1s, 4s, 9s...
+    throw new RetryableError(`Request failed (${res.status})`, { // [!code highlight]
+      retryAfter: (attempt ** 2) * 1000, // 1s, 4s, 9s... // [!code highlight]
     });
   }
 
@@ -102,7 +102,7 @@ export async function circuitBreaker(maxRequests: number = 10) {
 
   for (let i = 1; i <= maxRequests; i++) {
     if (state === "open") {
-      await sleep("30s"); // Durable cooldown
+      await sleep("30s"); // Durable cooldown // [!code highlight]
       state = "half-open";
     }
 
@@ -147,7 +147,7 @@ async function fetchWithRetries(url: string) {
 }
 
 // Allow up to 10 retry attempts
-fetchWithRetries.maxRetries = 10;
+fetchWithRetries.maxRetries = 10; // [!code highlight]
 ```
 
 ## Application-level retry
@@ -197,7 +197,7 @@ declare function downloadFile(url: string): Promise<any>; // @setup
 export async function downloadWithRetry(url: string) {
   "use workflow";
 
-  const result = await withRetry(() => downloadFile(url), {
+  const result = await withRetry(() => downloadFile(url), { // [!code highlight]
     maxRetries: 5,
     shouldRetry: (error) => error.message.includes("Timeout"),
   });
