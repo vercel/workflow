@@ -43,8 +43,8 @@ const Home = () => (
       <div className="grid divide-y border-y sm:border-x">
         <Intro />
         <Implementation />
-        <FeatureGridExtended />
         <Frameworks />
+        <FeatureGridExtended />
         <RunAnywhere />
         <UseCases />
         <Templates />
