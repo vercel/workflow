@@ -6,7 +6,6 @@ import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useToast } from '../../lib/toast';
 import { isEncryptedMarker } from '../../lib/hydration';
-import { DecryptButton } from '../ui/decrypt-button';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -212,17 +211,6 @@ export function EntityDetailPanel({
   const error = spanDetailError ?? undefined;
   const loading = spanDetailLoading ?? false;
 
-  const hasEncryptedFields = useMemo(() => {
-    if (!spanDetailData) return false;
-    const d = spanDetailData as Record<string, unknown>;
-    return (
-      isEncryptedMarker(d.input) ||
-      isEncryptedMarker(d.output) ||
-      isEncryptedMarker(d.error) ||
-      isEncryptedMarker(d.metadata)
-    );
-  }, [spanDetailData]);
-
   // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
   const hookToken = useMemo(() => {
     if (resource !== 'hook' || !resourceId) return undefined;
@@ -356,15 +344,6 @@ export function EntityDetailPanel({
 
   return (
     <div className="flex h-full flex-col">
-      {(hasEncryptedFields || hasEncryptedData || encryptionKey) &&
-        onDecrypt && (
-          <DecryptButton
-            decrypted={!!encryptionKey}
-            loading={isDecrypting}
-            onClick={onDecrypt}
-          />
-        )}
-
       <div className="flex-1 overflow-y-auto px-3 pt-3 pb-8">
         {hasPendingActions && (
           <div

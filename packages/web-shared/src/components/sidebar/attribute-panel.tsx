@@ -5,7 +5,7 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import type { ModelMessage } from 'ai';
 import { Lock } from 'lucide-react';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useContext, useMemo, useState } from 'react';
 import { isEncryptedMarker, isExpiredMarker } from '../../lib/hydration';
 import { useToast } from '../../lib/toast';
 import { extractConversation, isDoStreamStep } from '../../lib/utils';
