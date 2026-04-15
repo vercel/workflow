@@ -23,29 +23,9 @@ const globalSymbols: typeof globalThis & {
   [StubbedWorldCachePromise]?: Promise<World>;
 } = globalThis;
 
-/**
- * Hides dynamic imports behind `new Function` so eager step bundles do not
- * statically trace world implementations into generated routes.
- *
- * Custom worlds still need a parameterized form because the specifier comes
- * from user configuration. Built-in worlds use literal specifiers so runtime
- * environments like Turbopack dev can execute a concrete import expression
- * without analyzing package imports at build time.
- */
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string
 ) => Promise<any>;
-const dynamicImportLocalWorld = new Function(
-  'return import("@workflow/world-local")'
-) as () => Promise<any>;
-const dynamicImportVercelWorld = new Function(
-  'return import("@workflow/world-vercel")'
-) as () => Promise<any>;
-const dynamicRequire = new Function(
-  'requireFn',
-  'specifier',
-  'return requireFn(specifier)'
-) as (requireFn: typeof require, specifier: string) => any;
 
 function getProjectRequire() {
   return createRequire(
@@ -105,16 +85,16 @@ async function loadBundledWorldModule(
 ): Promise<any> {
   if (specifier === '@workflow/world-local') {
     try {
-      return await dynamicImportLocalWorld();
+      return await import('@workflow/world-local');
     } catch {
-      return dynamicRequire(require, '@workflow/world-local');
+      return require('@workflow/world-local');
     }
   }
 
   try {
-    return await dynamicImportVercelWorld();
+    return await import('@workflow/world-vercel');
   } catch {
-    return dynamicRequire(require, '@workflow/world-vercel');
+    return require('@workflow/world-vercel');
   }
 }
 

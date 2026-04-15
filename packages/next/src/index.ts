@@ -7,6 +7,13 @@ import {
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
 
+const WORKFLOW_SERVER_EXTERNAL_PACKAGES = [
+  'workflow',
+  '@workflow/core',
+  '@workflow/world-local',
+  '@workflow/world-vercel',
+] as const;
+
 function resolveNextVersion(workingDir: string): string {
   const errors: unknown[] = [];
 
@@ -106,6 +113,13 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
+    const serverExternalPackages = [
+      ...new Set([
+        ...WORKFLOW_SERVER_EXTERNAL_PACKAGES,
+        ...(nextConfig.serverExternalPackages || []),
+      ]),
+    ];
+    nextConfig.serverExternalPackages = serverExternalPackages;
 
     // configure the loader if turbopack is being used
     if (!nextConfig.turbopack) {
@@ -152,7 +166,7 @@ export function withWorkflow(
               // See: https://nextjs.org/docs/app/getting-started/server-and-client-components
               'server-only',
               'client-only',
-              ...(nextConfig.serverExternalPackages || []),
+              ...serverExternalPackages,
             ],
           });
         })();
