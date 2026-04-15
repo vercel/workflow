@@ -31,6 +31,18 @@ const {
 
 vi.mock('./builder.js', () => ({
   getNextBuilder: getNextBuilderMock,
+  parseEnvironmentFlag: (rawValue: string | undefined) => {
+    const normalizedValue = rawValue?.trim().toLowerCase();
+    if (!normalizedValue) {
+      return undefined;
+    }
+
+    if (normalizedValue === '0' || normalizedValue === 'false') {
+      return false;
+    }
+
+    return true;
+  },
   shouldUseDeferredBuilder: shouldUseDeferredBuilderMock,
   WORKFLOW_DEFERRED_ENTRIES: [
     '/.well-known/workflow/v1/flow',
@@ -136,5 +148,35 @@ describe('withWorkflow builder config', () => {
       distDir: 'build-output',
       diagnosticsDir: 'build-output/diagnostics',
     });
+  });
+
+  it('preserves an explicit lazyDiscovery disable override', () => {
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '0';
+
+    withWorkflow(
+      {},
+      {
+        workflows: {
+          lazyDiscovery: true,
+        },
+      }
+    );
+
+    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('0');
+  });
+
+  it('treats an empty lazyDiscovery env override as unset', () => {
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '';
+
+    withWorkflow(
+      {},
+      {
+        workflows: {
+          lazyDiscovery: true,
+        },
+      }
+    );
+
+    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
   });
 });

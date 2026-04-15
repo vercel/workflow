@@ -19,6 +19,25 @@ function splitArgs(raw: string): string[] {
   return value.split(/\s+/);
 }
 
+function parseBooleanEnvFlag(
+  rawValue: string | undefined
+): boolean | undefined {
+  const normalizedValue = rawValue?.trim().toLowerCase();
+  if (!normalizedValue) {
+    return undefined;
+  }
+
+  if (normalizedValue === '0' || normalizedValue === 'false') {
+    return false;
+  }
+
+  return true;
+}
+
+export function isNextLazyDiscoveryEnabledForTest(): boolean {
+  return parseBooleanEnvFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY) ?? true;
+}
+
 export function getWorkbenchAppPath(overrideAppName?: string): string {
   const explicitWorkbenchPath = process.env.WORKBENCH_APP_PATH;
   const appName = process.env.APP_NAME ?? overrideAppName;

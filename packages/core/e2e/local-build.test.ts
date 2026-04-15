@@ -2,7 +2,11 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { getWorkbenchAppPath } from './utils';
+import { usesVercelWorld } from '../../utils/src/world-target';
+import {
+  getWorkbenchAppPath,
+  isNextLazyDiscoveryEnabledForTest,
+} from './utils';
 
 interface CommandResult {
   stdout: string;
@@ -124,7 +128,10 @@ describe.each([
 
     expect(result.output).not.toContain('Error:');
 
-    if (DEFERRED_BUILD_MODE_PROJECTS.has(project)) {
+    if (
+      DEFERRED_BUILD_MODE_PROJECTS.has(project) &&
+      isNextLazyDiscoveryEnabledForTest()
+    ) {
       const deferredBuildSupported = !result.output.includes(
         DEFERRED_BUILD_UNSUPPORTED_WARNING
       );
@@ -133,7 +140,9 @@ describe.each([
       }
     }
 
-    const diagnosticsManifestPath = DIAGNOSTICS_MANIFEST_PATHS[project];
+    const diagnosticsManifestPath = usesVercelWorld()
+      ? '.vercel/output/diagnostics/workflows-manifest.json'
+      : DIAGNOSTICS_MANIFEST_PATHS[project];
     if (diagnosticsManifestPath) {
       const resolvedDiagnosticsManifestPath = path.join(
         getWorkbenchAppPath(project),

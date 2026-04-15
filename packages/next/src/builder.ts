@@ -12,8 +12,24 @@ export const WORKFLOW_DEFERRED_ENTRIES = [
 
 let warnedAboutFlagAndVersion = false;
 
+export function parseEnvironmentFlag(
+  rawValue: string | undefined
+): boolean | undefined {
+  const normalizedValue = rawValue?.trim().toLowerCase();
+  if (!normalizedValue) {
+    return undefined;
+  }
+
+  if (normalizedValue === '0' || normalizedValue === 'false') {
+    return false;
+  }
+
+  return true;
+}
+
 export function shouldUseDeferredBuilder(nextVersion: string): boolean {
-  const flagEnabled = Boolean(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY);
+  const flagEnabled =
+    parseEnvironmentFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY) ?? false;
   const versionCompatible = semver.gte(
     nextVersion,
     DEFERRED_BUILDER_MIN_VERSION
