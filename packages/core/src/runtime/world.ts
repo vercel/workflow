@@ -89,10 +89,18 @@ function resolveWorldFactory(
 async function loadBundledWorldModule(
   specifier: '@workflow/world-local' | '@workflow/world-vercel'
 ): Promise<any> {
+  if (specifier === '@workflow/world-local') {
+    try {
+      return await import('@workflow/world-local');
+    } catch {
+      return require('@workflow/world-local');
+    }
+  }
+
   try {
-    return await dynamicImport(specifier);
+    return await import('@workflow/world-vercel');
   } catch {
-    return require(specifier);
+    return require('@workflow/world-vercel');
   }
 }
 
