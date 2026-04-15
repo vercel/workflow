@@ -59,7 +59,7 @@ jobs:
       - name: Configure opencode
         if: steps.cherry-pick.outputs.status == 'conflict'
         env:
-          AI_GATEWAY_TOKEN: ${{ secrets.AI_GATEWAY_TOKEN }}
+          AI_GATEWAY_TOKEN: ${{ secrets.AI_GATEWAY_API_KEY }}
         run: |
           mkdir -p ~/.local/share/opencode
           jq -n --arg key "$AI_GATEWAY_TOKEN" '{vercel:{type:"api",key:$key}}' > ~/.local/share/opencode/auth.json
