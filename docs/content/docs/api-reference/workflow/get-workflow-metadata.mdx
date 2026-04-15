@@ -30,6 +30,40 @@ async function testWorkflow() {
 }
 ```
 
+### Detecting Workflow Runtime
+
+You can use `getWorkflowMetadata` to detect whether your code is running inside a workflow context. This is useful when building shared utilities that need to behave differently inside and outside of workflows.
+
+Since `getWorkflowMetadata` throws when called outside a workflow, you can wrap it in a try-catch:
+
+```typescript lineNumbers
+import { getWorkflowMetadata } from "workflow"
+
+function isInWorkflow(): boolean {
+    try {
+        getWorkflowMetadata()
+        return true
+    } catch {
+        return false
+    }
+}
+```
+
+For example, a logging utility could include the workflow run ID when available:
+
+```typescript lineNumbers
+import { getWorkflowMetadata } from "workflow"
+
+function log(message: string) {
+    try {
+        const { workflowRunId } = getWorkflowMetadata()
+        console.log(`[workflow:${workflowRunId}] ${message}`)
+    } catch {
+        console.log(message)
+    }
+}
+```
+
 ### Detecting Encryption
 
 The `features` object indicates which capabilities are active for the current run. Library authors can use `features.encryption` to control whether sensitive data is included in step return values, which are serialized to the event log:
