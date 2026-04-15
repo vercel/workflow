@@ -55,6 +55,7 @@ Migration collapses the SDK abstraction into plain async functions. Business log
 
 Start with the shell of a function. Inngest wraps it in `createFunction`; Workflow SDK marks it with a directive.
 
+{/* @skip-typecheck: Inngest SDK types not available */}
 ```typescript title="inngest/functions/order.ts"
 export const processOrder = inngest.createFunction(
   {
@@ -96,7 +97,7 @@ Inngest dispatches via `inngest.send({ name: 'order/created', data: { orderId } 
 
 ```typescript title="app/api/orders/route.ts"
 import { start } from 'workflow/api';
-import { processOrder } from '@/workflow/workflows/order';
+import { processOrder } from '@/workflows/order';
 
 const run = await start(processOrder, [orderId]); // [!code highlight]
 ```
@@ -115,6 +116,7 @@ const approval = await step.waitForEvent('wait-for-approval', {
 });
 ```
 
+{/* @skip-typecheck: snippet without imports */}
 ```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
 using approval = createHook<{ approved: boolean }>({ // [!code highlight]
   token: `refund:${refundId}:approval`,
@@ -143,6 +145,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ ref
 
 Inngest's `timeout: '7d'` option maps to a `Promise.race()` with `sleep()`:
 
+{/* @skip-typecheck: continuation snippet */}
 ```typescript title="workflow/workflows/refund.ts"
 const result = await Promise.race([
   approval.then((p) => ({ type: 'decision' as const, approved: p.approved })),
@@ -162,6 +165,7 @@ Event matching disappears. A hook's token encodes the routing (for example, `ref
 
 `step.invoke()` splits into two steps: spawn and collect. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Return the `Run` object from the spawn step so observability can deep-link into the child run.
 
+{/* @skip-typecheck: snippet without imports */}
 ```typescript title="workflow/workflows/parent.ts"
 async function spawnChild(item: string) {
   'use step';
@@ -171,6 +175,7 @@ async function spawnChild(item: string) {
 
 Await the result in a second step, then orchestrate both from the parent:
 
+{/* @skip-typecheck: snippet without imports */}
 ```typescript title="workflow/workflows/parent.ts"
 async function collectResult(runId: string) {
   'use step';

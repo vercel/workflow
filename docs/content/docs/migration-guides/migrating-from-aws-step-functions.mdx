@@ -180,6 +180,7 @@ In ASL, branching after the wait requires a Choice state. In TypeScript, it's ju
 }
 ```
 
+{/* @skip-typecheck: continuation snippet */}
 ```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
 const { approved } = await approval;
 if (approved) return { refundId, status: 'approved' }; // [!code highlight]

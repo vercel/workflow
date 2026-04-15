@@ -99,7 +99,7 @@ trigger.dev dispatches with `tasks.trigger<typeof processOrder>('process-order',
 
 ```typescript title="app/api/orders/route.ts"
 import { start } from 'workflow/api';
-import { processOrder } from '@/workflow/workflows/order';
+import { processOrder } from '@/workflows/order';
 
 export async function POST(request: Request) {
   const { orderId } = (await request.json()) as { orderId: string };
@@ -114,6 +114,7 @@ No id lookup, no API key, no separate worker. `start()` returns a handle immedia
 
 `wait.forToken()` becomes `createHook()` plus `await`.
 
+{/* @skip-typecheck: trigger.dev SDK types not available */}
 ```typescript title="workflow/workflows/refund.ts (trigger.dev, abbreviated)"
 // import { wait } from '@trigger.dev/sdk/v3';
 const token = await wait.createToken({ timeout: '7d' });
@@ -121,6 +122,7 @@ const approval = await wait.forToken<{ approved: boolean }>(token.id).unwrap();
 // External system resumes with: await wait.completeToken(token.id, { approved: true });
 ```
 
+{/* @skip-typecheck: snippet without imports */}
 ```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
 using approval = createHook<{ approved: boolean }>({ // [!code highlight]
   token: `refund:${refundId}:approval`,
@@ -149,6 +151,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ ref
 
 trigger.dev's `timeout: '7d'` option maps to a `Promise.race()` with `sleep()`:
 
+{/* @skip-typecheck: continuation snippet */}
 ```typescript title="workflow/workflows/refund.ts"
 const result = await Promise.race([
   approval.then((p) => ({ type: 'decision' as const, approved: p.approved })),
