@@ -1,7 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeAll, describe, expect, test } from 'vitest';
-import { getWorkbenchAppPath } from './utils';
+import {
+  getWorkbenchAppPath,
+  isNextLazyDiscoveryEnabledForTest,
+} from './utils';
 
 export interface DevTestConfig {
   generatedStepPath: string;
@@ -44,9 +47,11 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
-    const supportsDeferredStepCopies = generatedStep.includes(
-      path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
-    );
+    const supportsDeferredStepCopies =
+      isNextLazyDiscoveryEnabledForTest() &&
+      generatedStep.includes(
+        path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
+      );
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     const fetchWithTimeout = (pathname: string) => {

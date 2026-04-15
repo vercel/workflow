@@ -695,11 +695,15 @@ export default function workflowLoader(
 
     // Detect workflow patterns in the source code.
     const patterns = await detectPatterns(sourceForTransform);
-    // Always notify discovery tracking, even for `false/false`, so files that
-    // previously had workflow/step usage are removed from the tracked sets.
-    // Deferred step copy files must report using their original source path so
-    // deferred rebuilds can react to source edits outside generated artifacts.
-    if (!isDeferredStepCopyFile || deferredStepSourceMetadata?.absolutePath) {
+    const shouldTrackDeferredDiscovery =
+      process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1';
+
+    // Discovery tracking is only needed for deferred builds. Eager builds
+    // discover inputs up front and should ignore any stale socket metadata.
+    if (
+      shouldTrackDeferredDiscovery &&
+      (!isDeferredStepCopyFile || deferredStepSourceMetadata?.absolutePath)
+    ) {
       const hasSerde = patterns.hasSerde;
       const nextPatternState: DiscoveredPatternState = {
         hasWorkflow: patterns.hasUseWorkflow,
