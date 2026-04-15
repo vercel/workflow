@@ -421,21 +421,24 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               chunkData: Uint8Array;
               chunkId: string;
             }) => {
-              deliveredChunkIds.add(event.chunkId);
-
               // Skip empty chunks to maintain consistency with disk reading behavior
               if (event.chunkData.byteLength === 0) {
+                deliveredChunkIds.add(event.chunkId);
                 return;
               }
 
               if (isReadingFromDisk) {
+                deliveredChunkIds.add(event.chunkId);
                 // Buffer chunks that arrive during disk reading to maintain order
                 // Create a copy to prevent ArrayBuffer detachment when enqueued later
                 bufferedEventChunks.push({
                   chunkId: event.chunkId,
                   chunkData: Uint8Array.from(event.chunkData),
                 });
-              } else {
+              } else if (!deliveredChunkIds.has(event.chunkId)) {
+                // Guard against duplicates: polling may have already claimed this
+                // chunk between its has() check and readBuffer() yield.
+                deliveredChunkIds.add(event.chunkId);
                 // After disk reading is complete, deliver chunks immediately
                 // Create a copy to prevent ArrayBuffer detachment
                 controller.enqueue(Uint8Array.from(event.chunkData));
@@ -620,8 +623,12 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
                     controller.enqueue(Uint8Array.from(chunk.chunk));
                   }
                 }
-              } catch {
-                // Ignore transient filesystem errors during polling
+              } catch (err: unknown) {
+                // Silently ignore transient filesystem errors (ENOENT, EACCES, etc.)
+                // Surface unexpected errors so bugs aren't hidden
+                if (!(err instanceof Error && 'code' in err)) {
+                  console.error('[world-local] Unexpected polling error:', err);
+                }
               } finally {
                 isPolling = false;
               }
