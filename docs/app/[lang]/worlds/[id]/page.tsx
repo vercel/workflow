@@ -93,9 +93,12 @@ export default async function WorldDetailPage({ params }: PageProps) {
             Tabs,
             Tab,
             FluidComputeCallout,
-            // MDX-usable component for Testing & Performance section
+            // MDX-usable component for Testing & Compatibility section
             WorldTestingPerformance: (props: Record<string, unknown>) => (
-              <WorldTestingPerformanceMDX {...props} showBenchmarks={isPreview} />
+              <WorldTestingPerformanceMDX
+                {...props}
+                showBenchmarks={isPreview}
+              />
             ),
           })}
         />
@@ -105,7 +108,7 @@ export default async function WorldDetailPage({ params }: PageProps) {
     // Community worlds use hardcoded TOC
     tocItems = [
       { id: 'installation', title: 'Installation & Usage' },
-      { id: 'testing', title: 'Testing & Performance' },
+      { id: 'testing', title: 'Testing & Compatibility' },
     ];
   }
 
