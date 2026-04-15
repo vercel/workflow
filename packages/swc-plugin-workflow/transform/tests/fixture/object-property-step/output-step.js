@@ -11,6 +11,10 @@ var weatherTool$execute = async function({ location }) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "weatherTool$execute",
+        configurable: true
+    });
 })(weatherTool$execute, "step//./input//weatherTool/execute");
 var timeTool$execute = async function timeToolImpl() {
     return {
@@ -21,6 +25,10 @@ var timeTool$execute = async function timeToolImpl() {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "timeTool$execute",
+        configurable: true
+    });
 })(timeTool$execute, "step//./input//timeTool/execute");
 var weatherTool2$execute = async function({ location }) {
     return {
@@ -32,6 +40,10 @@ var weatherTool2$execute = async function({ location }) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "weatherTool2$execute",
+        configurable: true
+    });
 })(weatherTool2$execute, "step//./input//weatherTool2/execute");
 export const weatherTool = tool({
     description: 'Get the weather in a location',

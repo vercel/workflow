@@ -30,6 +30,10 @@ export const sendRecipientEmail = async ({ recipientEmail, cardImage, cardText, 
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "sendRecipientEmail",
+        configurable: true
+    });
 })(sendRecipientEmail, "step//./input//sendRecipientEmail");
 export function normalFunction() {
     return 'this stays because it is exported';
