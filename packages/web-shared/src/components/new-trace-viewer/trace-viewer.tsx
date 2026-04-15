@@ -562,6 +562,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               <EntityDetailPanel
                 run={sidebar.run}
                 onStreamClick={sidebar.onStreamClick}
+                onRunClick={sidebar.onRunClick}
                 spanDetailData={sidebar.spanDetailData}
                 spanDetailError={sidebar.spanDetailError}
                 spanDetailLoading={sidebar.spanDetailLoading}
@@ -573,6 +574,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                 onDecrypt={sidebar.onDecrypt}
                 isDecrypting={sidebar.isDecrypting}
                 selectedSpan={selectedSpan}
+                hasEncryptedData={sidebar.hasEncryptedData}
               />
             </ErrorBoundary>
           </div>

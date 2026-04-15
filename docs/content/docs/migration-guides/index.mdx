@@ -1,23 +1,34 @@
 ---
 title: Migration Guides
-description: Move your existing durable workflow system to the Workflow SDK with side-by-side code comparisons and realistic migration examples.
+description: Move your existing durable workflow system to the Workflow SDK with side-by-side code comparisons and a realistic migration example.
 type: overview
-summary: Migrate from Temporal, Inngest, or AWS Step Functions to the Workflow SDK.
+summary: Migrate from Temporal, Inngest, AWS Step Functions, or trigger.dev to the Workflow SDK.
 related:
   - /docs/foundations/workflows-and-steps
   - /docs/getting-started
 ---
 
-Migrate your existing orchestration system to the Workflow SDK. Each guide includes concept mappings, side-by-side code comparisons, and a full end-to-end migration example.
+<Callout type="info">
+Install the Workflow SDK migration skill:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
+
+Move an existing orchestration system to the Workflow SDK. Each guide pairs a concept-mapping table with side-by-side code, so you can translate one piece of your codebase at a time.
 
 <Cards>
     <Card href="/docs/migration-guides/migrating-from-temporal" title="Migrating from Temporal">
-        Replace Activities, Workers, Signals, and Child Workflows with Workflows, Steps, Hooks, and start()/getRun().
+        Map Activities, Workers, Signals, and Child Workflows onto workflows, steps, hooks, and `start()` / `getRun()`.
     </Card>
     <Card href="/docs/migration-guides/migrating-from-inngest" title="Migrating from Inngest">
-        Replace createFunction, step.run(), step.sleep(), step.waitForEvent(), and step.invoke() with Workflows, Steps, and Hooks.
+        Map `createFunction`, `step.run`, `step.sleep`, `step.waitForEvent`, and `step.invoke` onto workflows, steps, and hooks.
     </Card>
     <Card href="/docs/migration-guides/migrating-from-aws-step-functions" title="Migrating from AWS Step Functions">
-        Replace JSON state definitions, Task/Choice/Wait/Parallel states, and .waitForTaskToken callbacks with idiomatic TypeScript.
+        Replace ASL JSON states, Task / Choice / Wait / Parallel states, and `.waitForTaskToken` callbacks with TypeScript.
+    </Card>
+    <Card href="/docs/migration-guides/migrating-from-trigger-dev" title="Migrating from trigger.dev">
+        Map `task()`, `schemaTask()`, `wait.for` / `wait.forToken`, `triggerAndWait`, and `metadata.stream` onto workflows, steps, hooks, and `start()` / `getRun()`.
     </Card>
 </Cards>

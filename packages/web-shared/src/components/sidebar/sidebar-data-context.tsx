@@ -12,6 +12,7 @@ export interface SidebarDataContextValue {
   spanDetailLoading?: boolean;
   onSpanSelect: (info: SpanSelectionInfo) => void;
   onStreamClick?: (streamId: string) => void;
+  onRunClick?: (runId: string) => void;
   onWakeUpSleep?: (
     runId: string,
     correlationId: string
@@ -28,6 +29,7 @@ export interface SidebarDataContextValue {
   encryptionKey?: Uint8Array;
   onDecrypt?: () => void;
   isDecrypting?: boolean;
+  hasEncryptedData?: boolean;
 }
 
 const SidebarDataContext = createContext<SidebarDataContextValue | null>(null);

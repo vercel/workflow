@@ -4,8 +4,10 @@ import type { Event, Hook, Step, WorkflowRun } from '@workflow/world';
 import clsx from 'clsx';
 import { Send, Zap } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { isEncryptedMarker } from '../../lib/hydration';
 import { useToast } from '../../lib/toast';
 import { DecryptClickContext } from '../ui/data-inspector';
+import { DecryptButton } from '../ui/decrypt-button';
 import { AttributePanel } from './attribute-panel';
 import { EventsList } from './events-list';
 import { ResolveHookModal } from './resolve-hook-modal';
@@ -55,6 +57,7 @@ export interface SelectedSpanInfo {
 export function EntityDetailPanel({
   run,
   onStreamClick,
+  onRunClick,
   spanDetailData,
   spanDetailError,
   spanDetailLoading,
@@ -66,10 +69,13 @@ export function EntityDetailPanel({
   onDecrypt,
   isDecrypting = false,
   selectedSpan,
+  hasEncryptedData = false,
 }: {
   run: WorkflowRun;
   /** Callback when a stream reference is clicked */
   onStreamClick?: (streamId: string) => void;
+  /** Callback when a run reference is clicked */
+  onRunClick?: (runId: string) => void;
   /** Pre-fetched span detail data for the selected span. */
   spanDetailData: WorkflowRun | Step | Hook | Event | null;
   /** Error from external span detail fetch. */
@@ -102,6 +108,8 @@ export function EntityDetailPanel({
   isDecrypting?: boolean;
   /** Info about the currently selected span from the trace viewer */
   selectedSpan: SelectedSpanInfo | null;
+  /** Run-level hint: the run contains encrypted data (from probe). */
+  hasEncryptedData?: boolean;
 }): React.JSX.Element | null {
   const toast = useToast();
   const [stoppingSleep, setStoppingSleep] = useState(false);
@@ -207,6 +215,17 @@ export function EntityDetailPanel({
 
   const error = spanDetailError ?? undefined;
   const loading = spanDetailLoading ?? false;
+  const hasEncryptedFields = useMemo(() => {
+    if (!spanDetailData) return false;
+    const detailData = spanDetailData as Record<string, unknown>;
+
+    return (
+      isEncryptedMarker(detailData.input) ||
+      isEncryptedMarker(detailData.output) ||
+      isEncryptedMarker(detailData.error) ||
+      isEncryptedMarker(detailData.metadata)
+    );
+  }, [spanDetailData]);
 
   // Get the hook token for resolving (prefer fetched data, then hooks array fallback)
   const hookToken = useMemo(() => {
@@ -338,9 +357,57 @@ export function EntityDetailPanel({
   const hasPendingActions =
     (resource === 'sleep' && canWakeUp) ||
     (resource === 'hook' && canResolveHook);
+  const resourceLabel = resource.charAt(0).toUpperCase() + resource.slice(1);
+  const runStateLabel = run.completedAt ? 'Completed' : 'Live';
 
   return (
     <div className="flex h-full flex-col">
+      <div
+        className="border-b px-3 py-3"
+        style={{ borderColor: 'var(--ds-gray-200)' }}
+      >
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-flex items-center rounded-full border px-2 py-0.5 text-[13px] font-medium"
+                style={{
+                  borderColor: 'var(--ds-gray-300)',
+                  color: 'var(--ds-gray-900)',
+                  backgroundColor: 'var(--ds-background-100)',
+                }}
+              >
+                {resourceLabel}
+              </span>
+              <span
+                className="text-[13px]"
+                style={{
+                  color: run.completedAt
+                    ? 'var(--ds-gray-700)'
+                    : 'var(--ds-green-800)',
+                }}
+              >
+                {runStateLabel}
+              </span>
+            </div>
+            <p
+              className="mt-1 truncate font-mono text-[13px]"
+              style={{ color: 'var(--ds-gray-700)' }}
+              title={resourceId}
+            >
+              {resourceId}
+            </p>
+          </div>
+          {(hasEncryptedFields || hasEncryptedData || encryptionKey) &&
+            onDecrypt && (
+              <DecryptButton
+                decrypted={!!encryptionKey}
+                loading={isDecrypting}
+                onClick={onDecrypt}
+              />
+            )}
+        </div>
+      </div>
       <DecryptClickContext.Provider
         value={onDecrypt ? { onDecrypt, isDecrypting } : undefined}
       >
@@ -424,6 +491,7 @@ export function EntityDetailPanel({
                 isLoading={loading}
                 error={error ?? undefined}
                 onStreamClick={onStreamClick}
+                onRunClick={onRunClick}
                 onDecrypt={onDecrypt}
                 isDecrypting={isDecrypting}
                 resource={resource}

@@ -1,11 +1,19 @@
 'use client';
 
-import { track } from '@vercel/analytics';
-import { CheckIcon, CopyIcon } from 'lucide-react';
-import Link from 'next/link';
-import { useState } from 'react';
-import { toast } from 'sonner';
-import { Button } from '@/components/ui/button';
+import {
+  CommandPromptContent,
+  CommandPromptCopy,
+  CommandPromptList,
+  CommandPromptPrefix,
+  CommandPromptRoot,
+  CommandPromptSurface,
+  CommandPromptTrigger,
+  CommandPromptTriggerDivider,
+  CommandPromptViewport,
+} from '@/components/ui/command-prompt';
+
+const COMMAND_FOR_HUMANS = 'npm install workflow';
+const COMMAND_FOR_AGENTS = 'npx skills add vercel/workflow@workflow-init';
 
 type HeroProps = {
   title: string;
@@ -13,28 +21,6 @@ type HeroProps = {
 };
 
 export const Hero = ({ title, description }: HeroProps) => {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = () => {
-    try {
-      navigator.clipboard.writeText('npm install workflow');
-      setCopied(true);
-      track('Copy installer command');
-      setTimeout(() => {
-        setCopied(false);
-      }, 2000);
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Failed to copy text to clipboard';
-
-      toast.error(message);
-    }
-  };
-
-  const Icon = copied ? CheckIcon : CopyIcon;
-
   return (
     <section className="mt-[var(--fd-nav-height)] space-y-6 px-4 pt-24 sm:pt-32 pb-32 text-center">
       <div className="mx-auto w-full max-w-4xl space-y-5">
@@ -50,24 +36,29 @@ export const Hero = ({ title, description }: HeroProps) => {
           with ease.
         </p>
       </div>
-      <div className="inline-flex w-fit mx-auto items-center gap-3">
-        <Button asChild size="lg" className="h-[44px] text-base">
-          <Link href="/docs/getting-started">Get Started</Link>
-        </Button>
-        <div className="relative bg-background border rounded-md overflow-hidden py-3 pl-4 pr-12 mx-auto inline-flex w-fit">
-          <pre className="text-sm">
-            <code>npm i workflow</code>
-          </pre>
-          <Button
-            onClick={handleCopy}
-            size="icon"
-            variant="ghost"
-            className="absolute right-1 top-1/2 -translate-y-1/2"
-          >
-            <Icon className="size-4 text-muted-foreground" />
-          </Button>
-        </div>
-      </div>
+      <CommandPromptRoot defaultValue="humans">
+        <CommandPromptList>
+          <CommandPromptTrigger value="humans" className="min-w-[90px]">
+            For humans
+          </CommandPromptTrigger>
+          <CommandPromptTriggerDivider />
+          <CommandPromptTrigger value="agents" className="min-w-[84px]">
+            For agents
+          </CommandPromptTrigger>
+        </CommandPromptList>
+        <CommandPromptSurface>
+          <CommandPromptPrefix>$</CommandPromptPrefix>
+          <CommandPromptViewport>
+            <CommandPromptContent value="humans" copyValue={COMMAND_FOR_HUMANS}>
+              {COMMAND_FOR_HUMANS}
+            </CommandPromptContent>
+            <CommandPromptContent value="agents" copyValue={COMMAND_FOR_AGENTS}>
+              {COMMAND_FOR_AGENTS}
+            </CommandPromptContent>
+          </CommandPromptViewport>
+          <CommandPromptCopy />
+        </CommandPromptSurface>
+      </CommandPromptRoot>
     </section>
   );
 };
