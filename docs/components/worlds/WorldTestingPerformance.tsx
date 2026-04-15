@@ -283,8 +283,9 @@ export function WorldTestingPerformance({
           )}
         </div>
 
-        {/* Benchmarks Subsection — preview deployments only */}
-        {showBenchmarks && <div className="space-y-4">
+        {/* Benchmarks — only visible on preview deployments */}
+        {showBenchmarks && (
+        <div className="space-y-4">
           <h3 className="font-semibold text-lg tracking-tight">Benchmarks</h3>
           {hasBenchmarks ? (
             <>
@@ -463,7 +464,8 @@ export function WorldTestingPerformance({
               No benchmark data is currently available for this world.
             </p>
           )}
-        </div>}
+        </div>
+        )}
 
         {/* Metadata */}
         <div className="text-sm text-muted-foreground border-t pt-4">

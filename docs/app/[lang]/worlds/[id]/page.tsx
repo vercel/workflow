@@ -17,6 +17,10 @@ import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
 const isPreview = process.env.VERCEL_ENV === 'preview';
 
+const WorldTestingPerformanceForMDX = (props: Record<string, unknown>) => (
+  <WorldTestingPerformanceMDX {...props} showBenchmarks={isPreview} />
+);
+
 // Map world IDs to their MDX doc slugs
 const officialWorldMdxSlugs: Record<string, string[]> = {
   local: ['deploying', 'world', 'local-world'],
@@ -93,13 +97,7 @@ export default async function WorldDetailPage({ params }: PageProps) {
             Tabs,
             Tab,
             FluidComputeCallout,
-            // MDX-usable component for Testing & Compatibility section
-            WorldTestingPerformance: (props: Record<string, unknown>) => (
-              <WorldTestingPerformanceMDX
-                {...props}
-                showBenchmarks={isPreview}
-              />
-            ),
+            WorldTestingPerformance: WorldTestingPerformanceForMDX,
           })}
         />
       );
