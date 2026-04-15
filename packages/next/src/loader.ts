@@ -3,7 +3,11 @@ import { readFile } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
-import { type SocketMessage, serializeMessage } from './socket-server.js';
+import {
+  parseMessage,
+  type SocketMessage,
+  serializeMessage,
+} from './socket-server.js';
 import {
   DEFERRED_STEP_SOURCE_METADATA_PREFIX,
   isDeferredStepCopyFilePath,
@@ -28,6 +32,16 @@ type LoaderStaticDependencies = {
 };
 let cachedLoaderStaticDependencies: LoaderStaticDependencies | null = null;
 
+type DiscoveredPatternState = {
+  hasWorkflow: boolean;
+  hasStep: boolean;
+  hasSerde: boolean;
+};
+const discoveredPatternStateByFilePath = new Map<
+  string,
+  DiscoveredPatternState
+>();
+
 // Cache socket connection to avoid reconnecting on every file.
 let socketClientPromise: Promise<Socket | null> | null = null;
 let socketClient: Socket | null = null;
@@ -38,12 +52,45 @@ type SocketCredentials = {
   authToken: string;
 };
 
+const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
+const ROUTE_STUB_BUILD_WAIT_TIMEOUT_MS = 120_000;
+let pendingDeferredRouteStubBuildPromise: Promise<void> | null = null;
+
 function registerFileDependency(
   loaderContext: WorkflowLoaderContext,
   dependencyPath: string
 ): void {
   loaderContext.addDependency?.(dependencyPath);
   loaderContext.addBuildDependency?.(dependencyPath);
+}
+
+function updateDiscoveredPatternState(
+  filePath: string,
+  nextState: DiscoveredPatternState
+): { shouldNotify: boolean; previousState?: DiscoveredPatternState } {
+  const previousState = discoveredPatternStateByFilePath.get(filePath);
+  const hasAnyPattern =
+    nextState.hasWorkflow || nextState.hasStep || nextState.hasSerde;
+
+  if (!hasAnyPattern) {
+    if (!previousState) {
+      return { shouldNotify: false };
+    }
+    discoveredPatternStateByFilePath.delete(filePath);
+    return { shouldNotify: true, previousState };
+  }
+
+  if (
+    previousState &&
+    previousState.hasWorkflow === nextState.hasWorkflow &&
+    previousState.hasStep === nextState.hasStep &&
+    previousState.hasSerde === nextState.hasSerde
+  ) {
+    return { shouldNotify: false, previousState };
+  }
+
+  discoveredPatternStateByFilePath.set(filePath, nextState);
+  return { shouldNotify: true, previousState };
 }
 
 function addIfExists(files: Set<string>, dependencyPath: string): void {
@@ -127,11 +174,32 @@ async function writeSocketMessage(
 
 function getSocketInfoFilePath(): string | null {
   const configuredPath = process.env.WORKFLOW_SOCKET_INFO_PATH;
-  if (!configuredPath) {
-    return null;
+  if (configuredPath) {
+    return configuredPath;
   }
 
-  return configuredPath;
+  // Fallback for worker processes that don't inherit dynamic env updates
+  // from the process that created the socket server.
+  const distDir = process.env.WORKFLOW_NEXT_DIST_DIR || '.next';
+  const cwdFallbackPath = join(
+    process.cwd(),
+    distDir,
+    'cache',
+    'workflow-socket.json'
+  );
+  const projectRoot = process.env.WORKFLOW_PROJECT_ROOT;
+  if (projectRoot) {
+    const projectRootFallbackPath = join(
+      projectRoot,
+      distDir,
+      'cache',
+      'workflow-socket.json'
+    );
+    if (existsSync(projectRootFallbackPath)) {
+      return projectRootFallbackPath;
+    }
+  }
+  return cwdFallbackPath;
 }
 
 function getSocketCredentialsFromEnv(): SocketCredentials | null {
@@ -145,7 +213,6 @@ function getSocketCredentialsFromEnv(): SocketCredentials | null {
   if (Number.isNaN(port)) {
     return null;
   }
-
   return { port, authToken };
 }
 
@@ -174,7 +241,6 @@ async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null>
     if (!authToken || Number.isNaN(numericPort)) {
       return null;
     }
-
     return {
       port: numericPort,
       authToken,
@@ -185,9 +251,11 @@ async function getSocketCredentialsFromFile(): Promise<SocketCredentials | null>
 }
 
 async function getSocketCredentials(): Promise<SocketCredentials | null> {
-  return (
-    getSocketCredentialsFromEnv() ?? (await getSocketCredentialsFromFile())
-  );
+  const envCredentials = getSocketCredentialsFromEnv();
+  if (envCredentials) {
+    return envCredentials;
+  }
+  return await getSocketCredentialsFromFile();
 }
 
 async function getSocketClient(): Promise<Socket | null> {
@@ -259,7 +327,6 @@ async function getSocketClient(): Promise<Socket | null> {
       }
     })();
   }
-
   return socketClientPromise;
 }
 
@@ -303,6 +370,127 @@ async function notifySocketServer(
   }
 }
 
+function isWorkflowRouteStubSource(source: string): boolean {
+  return source.includes(ROUTE_STUB_FILE_MARKER);
+}
+
+async function createSocketConnection(
+  socketCredentials: SocketCredentials,
+  timeoutMs = 1_000
+): Promise<Socket> {
+  return await new Promise<Socket>((resolve, reject) => {
+    const socket = connect({
+      port: socketCredentials.port,
+      host: '127.0.0.1',
+    });
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error('Socket connection timeout'));
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off('connect', onConnect);
+      socket.off('error', onError);
+    };
+    const onConnect = () => {
+      socket.setNoDelay(true);
+      cleanup();
+      resolve(socket);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      socket.destroy();
+      reject(error);
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('error', onError);
+  });
+}
+
+async function waitForDeferredBuildComplete(
+  socket: Socket,
+  authToken: string,
+  timeoutMs = ROUTE_STUB_BUILD_WAIT_TIMEOUT_MS
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let buffer = '';
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(
+        new Error('Timed out waiting for deferred route build completion')
+      );
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.off('data', onData);
+      socket.off('error', onError);
+      socket.off('close', onClose);
+      socket.off('end', onClose);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error('Socket closed before deferred route build completed'));
+    };
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString();
+      let newlineIndex = buffer.indexOf('\n');
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        newlineIndex = buffer.indexOf('\n');
+
+        const message = parseMessage(line, authToken);
+        if (message?.type === 'build-complete') {
+          cleanup();
+          resolve();
+          return;
+        }
+      }
+    };
+
+    socket.on('data', onData);
+    socket.on('error', onError);
+    socket.on('close', onClose);
+    socket.on('end', onClose);
+  });
+}
+
+async function triggerDeferredRouteStubBuildAndWait(): Promise<void> {
+  const socketCredentials = await getSocketCredentials();
+  if (!socketCredentials) {
+    return;
+  }
+  const socket = await createSocketConnection(socketCredentials);
+  try {
+    await writeSocketMessage(
+      socket,
+      serializeMessage({ type: 'trigger-build' }, socketCredentials.authToken)
+    );
+    await waitForDeferredBuildComplete(socket, socketCredentials.authToken);
+  } finally {
+    socket.destroy();
+  }
+}
+
+async function ensureDeferredRouteStubBuildAndWait(): Promise<void> {
+  if (pendingDeferredRouteStubBuildPromise) {
+    return pendingDeferredRouteStubBuildPromise;
+  }
+  const pendingPromise = triggerDeferredRouteStubBuildAndWait();
+  pendingDeferredRouteStubBuildPromise = pendingPromise.finally(() => {
+    if (pendingDeferredRouteStubBuildPromise === pendingPromise) {
+      pendingDeferredRouteStubBuildPromise = null;
+    }
+  });
+  return pendingDeferredRouteStubBuildPromise;
+}
+
 async function getBuildersModule(): Promise<
   typeof import('@workflow/builders')
 > {
@@ -343,11 +531,6 @@ async function detectPatterns(source: string): Promise<WorkflowPatternMatch> {
 async function checkGeneratedFile(filePath: string): Promise<boolean> {
   const { isGeneratedWorkflowFile } = await getBuildersModule();
   return isGeneratedWorkflowFile(filePath);
-}
-
-async function checkSdkFile(filePath: string): Promise<boolean> {
-  const { isWorkflowSdkFile } = await getBuildersModule();
-  return isWorkflowSdkFile(filePath);
 }
 
 async function checkShouldTransform(
@@ -478,8 +661,27 @@ export default function workflowLoader(
       registerFileDependency(this, deferredStepSourceMetadata.absolutePath);
     }
 
-    // Skip generated workflow route files to avoid re-processing them
-    if ((await checkGeneratedFile(filename)) && !isDeferredStepCopyFile) {
+    const isGeneratedWorkflowFile = await checkGeneratedFile(filename);
+    // Skip generated workflow route files to avoid re-processing them, except
+    // deferred route stubs which must wait for generated route output.
+    if (isGeneratedWorkflowFile && !isDeferredStepCopyFile) {
+      if (
+        process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1' &&
+        isWorkflowRouteStubSource(normalizedSource)
+      ) {
+        try {
+          await ensureDeferredRouteStubBuildAndWait();
+          const refreshedSource = await readFile(filename, 'utf8');
+          if (!isWorkflowRouteStubSource(refreshedSource)) {
+            return { code: refreshedSource, map: sourceMap };
+          }
+        } catch (error) {
+          console.warn(
+            `[workflow] Failed waiting for deferred route build for ${filename}, using stub output`,
+            error
+          );
+        }
+      }
       return { code: normalizedSource, map: sourceMap };
     }
 
@@ -490,26 +692,27 @@ export default function workflowLoader(
     // Deferred step copy files must report using their original source path so
     // deferred rebuilds can react to source edits outside generated artifacts.
     if (!isDeferredStepCopyFile || deferredStepSourceMetadata?.absolutePath) {
-      // For @workflow SDK packages, do not report serde-only matches for
-      // discovery, otherwise deferred mode can incorrectly treat SDK internals
-      // as app serde entrypoints.
-      const isSdkFile = await checkSdkFile(discoveryFilePath);
-      await notifySocketServer(
+      const hasSerde = patterns.hasSerde;
+      const nextPatternState: DiscoveredPatternState = {
+        hasWorkflow: patterns.hasUseWorkflow,
+        hasStep: patterns.hasUseStep,
+        hasSerde,
+      };
+      const { shouldNotify } = updateDiscoveredPatternState(
         discoveryFilePath,
-        patterns.hasUseWorkflow,
-        patterns.hasUseStep,
-        patterns.hasSerde && !isSdkFile
+        nextPatternState
       );
+      if (shouldNotify) {
+        await notifySocketServer(
+          discoveryFilePath,
+          nextPatternState.hasWorkflow,
+          nextPatternState.hasStep,
+          nextPatternState.hasSerde
+        );
+      }
     }
 
     if (!isDeferredStepCopyFile) {
-      // For @workflow SDK packages, only transform files with actual directives,
-      // not files that just match serde patterns (which are internal SDK implementation files)
-      const isSdkFile = await checkSdkFile(filename);
-      if (isSdkFile && !patterns.hasDirective) {
-        return { code: normalizedSource, map: sourceMap };
-      }
-
       // Check if file needs transformation based on patterns and path
       if (!(await checkShouldTransform(filename, patterns))) {
         return { code: normalizedSource, map: sourceMap };

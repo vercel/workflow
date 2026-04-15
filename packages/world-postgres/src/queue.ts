@@ -1,5 +1,5 @@
 import * as Stream from 'node:stream';
-import { JsonTransport } from '@vercel/queue';
+import type { Transport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import {
   MessageId,
@@ -81,7 +81,39 @@ export function createQueue(
   const port = process.env.PORT ? Number(process.env.PORT) : undefined;
   const localWorld = createLocalWorld({ dataDir: undefined, port });
 
-  const transport = new JsonTransport();
+  // JSON transport that preserves Uint8Array values via a tagged
+  // envelope ({ __type: 'Uint8Array', data: '<base64>' }).  Required
+  // for the resilient start path where runInput.input (a Uint8Array)
+  // is sent through the queue.
+  const transport: Transport<unknown> = {
+    contentType: 'application/json',
+    serialize(value: unknown): Buffer {
+      return Buffer.from(
+        JSON.stringify(value, (_key, v) =>
+          v instanceof Uint8Array
+            ? { __type: 'Uint8Array', data: Buffer.from(v).toString('base64') }
+            : v
+        )
+      );
+    },
+    async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+      const chunks: Uint8Array[] = [];
+      const reader = stream.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) chunks.push(value);
+      }
+      return JSON.parse(Buffer.concat(chunks).toString(), (_key, v) =>
+        v !== null &&
+        typeof v === 'object' &&
+        v.__type === 'Uint8Array' &&
+        typeof v.data === 'string'
+          ? new Uint8Array(Buffer.from(v.data, 'base64'))
+          : v
+      );
+    },
+  };
   const generateMessageId = monotonicFactory();
 
   const prefix = config.jobPrefix || 'workflow_';
@@ -320,7 +352,7 @@ export function createQueue(
   const queue: Queue['queue'] = async (queue, message, opts) => {
     await start();
     const [queuePrefix, queueId] = parseQueueName(queue);
-    const body = transport.serialize(message);
+    const body = transport.serialize(message) as Buffer;
     const messageId = MessageId.parse(`msg_${generateMessageId()}`);
     await addGraphileJob({
       queuePrefix,

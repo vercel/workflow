@@ -1,5 +1,5 @@
 import { setTimeout } from 'node:timers/promises';
-import { JsonTransport } from '@vercel/queue';
+import type { Transport } from '@vercel/queue';
 import { MessageId, type Queue, ValidQueueName } from '@workflow/world';
 import { Sema } from 'async-sema';
 import { monotonicFactory } from 'ulid';
@@ -7,7 +7,33 @@ import { Agent } from 'undici';
 import { z } from 'zod/v4';
 import type { Config } from './config.js';
 import { resolveBaseUrl } from './config.js';
+import { jsonReplacer, jsonReviver } from './fs.js';
 import { getPackageInfo } from './init.js';
+
+/**
+ * JSON transport that preserves Uint8Array values using the same
+ * replacer/reviver that world-local uses for filesystem storage.
+ * Uint8Array → { __type: 'Uint8Array', data: '<base64>' } in JSON.
+ */
+class TypedJsonTransport implements Transport<unknown> {
+  readonly contentType = 'application/json';
+
+  serialize(value: unknown): Buffer {
+    return Buffer.from(JSON.stringify(value, jsonReplacer));
+  }
+
+  async deserialize(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+    const chunks: Uint8Array[] = [];
+    const reader = stream.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+    const text = Buffer.concat(chunks).toString();
+    return JSON.parse(text, jsonReviver);
+  }
+}
 
 // For local queue, there is no technical limit on the message visibility lifespan,
 // but the environment variable can be used for testing purposes to set a max visibility limit.
@@ -64,7 +90,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
     connections: 1000,
     keepAliveTimeout: 30_000,
   });
-  const transport = new JsonTransport();
+  const transport = new TypedJsonTransport();
   const generateId = monotonicFactory();
   const semaphore = new Sema(WORKFLOW_LOCAL_QUEUE_CONCURRENCY);
 
@@ -255,7 +281,7 @@ export function createQueue(config: Partial<Config>): LocalQueue {
         return Response.json({ error: 'Unhandled queue' }, { status: 400 });
       }
 
-      const body = await new JsonTransport().deserialize(req.body);
+      const body = await new TypedJsonTransport().deserialize(req.body);
       try {
         const result = await handler(body, { attempt, queueName, messageId });
 

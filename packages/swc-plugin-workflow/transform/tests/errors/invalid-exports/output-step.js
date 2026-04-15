@@ -1,16 +1,42 @@
-import { registerStepFunction } from "workflow/internal/private";
-/**__internal_workflows{"steps":{"input.js":{"validStep":{"stepId":"step//./input//validStep"}}}}*/;
-// These should all error - only async functions allowed
+/**__internal_workflows{"steps":{"input.js":{"arrowStep":{"stepId":"step//./input//arrowStep"},"asyncArrow":{"stepId":"step//./input//asyncArrow"},"syncFunc":{"stepId":"step//./input//syncFunc"},"validStep":{"stepId":"step//./input//validStep"}}}}*/;
+// These should all error - not functions
 export const value = 42;
-export function syncFunc() {
-    return 'not allowed';
-}
 export class MyClass {
     method() {}
 }
 export * from './other';
-// This is ok
+export let uninitVar;
+// Local named exports also error (can't verify binding is a function)
+const helper = 'not a function';
+export { helper };
+// Re-export with specifiers also errors
+export { something } from './re-export';
+// These are ok - sync and async functions are allowed in "use step" files
+export function syncFunc() {
+    return 'allowed';
+}
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(syncFunc, "step//./input//syncFunc");
 export async function validStep() {
     return 'allowed';
 }
-registerStepFunction("step//./input//validStep", validStep);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(validStep, "step//./input//validStep");
+export const arrowStep = ()=>'allowed';
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(arrowStep, "step//./input//arrowStep");
+export const asyncArrow = async ()=>'allowed';
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(asyncArrow, "step//./input//asyncArrow");

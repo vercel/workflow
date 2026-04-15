@@ -59,13 +59,13 @@ const proxy = (request: NextRequest, context: NextFetchEvent) => {
   // AI agent detection — rewrite docs pages to markdown for agents
   // so they always get structured content without needing .md URLs or Accept headers
   if (
-    (pathname === "/docs" || pathname.startsWith("/docs/")) &&
-    !pathname.includes("/llms.mdx/")
+    (pathname === '/docs' || pathname.startsWith('/docs/')) &&
+    !pathname.includes('/llms.mdx/')
   ) {
     const agentResult = isAIAgent(request);
     if (agentResult.detected && !isMarkdownPreferred(request)) {
       const result =
-        pathname === "/docs"
+        pathname === '/docs'
           ? `/${i18n.defaultLanguage}/llms.mdx`
           : rewriteLLM(pathname);
 
@@ -73,10 +73,10 @@ const proxy = (request: NextRequest, context: NextFetchEvent) => {
         context.waitUntil(
           trackMdRequest({
             path: pathname,
-            userAgent: request.headers.get("user-agent"),
-            referer: request.headers.get("referer"),
-            acceptHeader: request.headers.get("accept"),
-            requestType: "agent-rewrite",
+            userAgent: request.headers.get('user-agent'),
+            referer: request.headers.get('referer'),
+            acceptHeader: request.headers.get('accept'),
+            requestType: 'agent-rewrite',
             detectionMethod: agentResult.method,
           })
         );

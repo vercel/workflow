@@ -55,9 +55,25 @@ The returned `Webhook` object has:
 
 - `url`: The HTTP endpoint URL that external systems can call
 - `token`: The unique token identifying this webhook
-- Implements `AsyncIterable<RequestWithResponse>` for handling multiple requests
+- Implements `AsyncIterable<T>` for handling multiple requests, where `T` is `Request` (default) or `RequestWithResponse` (manual mode)
 
-The `RequestWithResponse` type extends the standard `Request` interface with a `respondWith(response: Response)` method for sending custom responses back to the caller.
+When using `createWebhook({ respondWith: 'manual' })`, the resolved request type is `RequestWithResponse`, which extends the standard `Request` interface with a `respondWith(response: Response): Promise<void>` method for sending custom responses back to the caller.
+
+<Callout type="info">
+Use the simplest option that satisfies the prompt:
+
+- `createWebhook()` — generated callback URL, and the default `202 Accepted` response is fine
+- `createWebhook({ respondWith: 'manual' })` — generated callback URL, but you must send a custom body, status, or headers
+- `createHook()` + `resumeHook()` — the app resumes from server-side code with a deterministic business token instead of a generated callback URL
+</Callout>
+
+<details>
+<summary>Common wrong turns</summary>
+
+- Do not use `respondWith: 'manual'` just because the flow has a callback URL.
+- Do not use `RequestWithResponse` unless you chose manual mode.
+- Do not invent a custom callback route when `webhook.url` is the intended callback surface.
+</details>
 
 ## Examples
 
@@ -84,27 +100,29 @@ export async function basicWebhookWorkflow() {
 }
 ```
 
-### Responding to Webhook Requests
+### Responding to Webhook Requests (Manual Mode)
 
-Use the `respondWith()` method to send custom HTTP responses. Note that `respondWith()` must be called from within a step function:
+Use this section only when the caller requires a non-default HTTP response. If `202 Accepted` is acceptable, use `createWebhook()` without `respondWith: "manual"`.
+
+Pass `{ respondWith: "manual" }` to get a `RequestWithResponse` object with a `respondWith()` method. Note that `respondWith()` must be called from within a step function:
 
 ```typescript lineNumbers
 import { createWebhook, type RequestWithResponse } from "workflow"
 
-async function sendResponse(request: RequestWithResponse) { // [!code highlight]
-  "use step"; // [!code highlight]
-  await request.respondWith( // [!code highlight]
-    new Response(JSON.stringify({ success: true, message: "Received!" }), { // [!code highlight]
-      status: 200, // [!code highlight]
-      headers: { "Content-Type": "application/json" } // [!code highlight]
-    }) // [!code highlight]
-  ); // [!code highlight]
-} // [!code highlight]
+async function sendResponse(request: RequestWithResponse): Promise<void> {
+  "use step";
+  await request.respondWith(
+    new Response(JSON.stringify({ success: true, message: "Received!" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" }
+    })
+  );
+}
 
 export async function respondingWebhookWorkflow() {
   "use workflow";
 
-  using webhook = createWebhook();
+  using webhook = createWebhook({ respondWith: "manual" });
   console.log("Webhook URL:", webhook.url);
 
   const request = await webhook;
@@ -117,7 +135,7 @@ export async function respondingWebhookWorkflow() {
   await processData(data);
 }
 
-async function processData(data: any) {
+async function processData(data: any): Promise<void> {
   "use step";
   // Process the webhook data
   console.log("Processing:", data);
@@ -165,6 +183,7 @@ export async function eventCollectorWorkflow() {
 
 ## Related Functions
 
-- [`createHook()`](/docs/api-reference/workflow/create-hook) - Lower-level hook primitive for arbitrary payloads
-- [`defineHook()`](/docs/api-reference/workflow/define-hook) - Type-safe hook helper
-- [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) - Resume a webhook from an API route
+- [`createHook()`](/docs/api-reference/workflow/create-hook) — Use when the app resumes from server-side code with a deterministic business token.
+- [`resumeHook()`](/docs/api-reference/workflow-api/resume-hook) — Pairs with `createHook()` for deterministic server-side resume.
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) — Type-safe hook helper.
+- [`resumeWebhook()`](/docs/api-reference/workflow-api/resume-webhook) — Low-level runtime API. Most integrations should call `webhook.url` directly instead of adding a custom callback route.

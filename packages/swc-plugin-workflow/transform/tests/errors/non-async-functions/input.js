@@ -1,29 +1,10 @@
-// Error: sync function with use step
-export function syncStep() {
-  'use step';
-  return 42;
-}
-
-// Error: sync arrow function with use workflow
+// Error: sync arrow function with use workflow (workflow functions must be async)
 export const syncWorkflow = () => {
   'use workflow';
   return 'test';
 };
 
-// Error: sync method with use step
-const obj = {
-  syncMethod() {
-    'use step';
-    return true;
-  },
-};
-
-// These are ok
-export async function validStep() {
-  'use step';
-  return 42;
-}
-
+// This is ok
 export const validWorkflow = async () => {
   'use workflow';
   return 'test';

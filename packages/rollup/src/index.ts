@@ -3,7 +3,6 @@ import { transform } from '@swc/core';
 import {
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
-  isWorkflowSdkFile,
   resolveModuleSpecifier,
   shouldTransformFile,
 } from '@workflow/builders';
@@ -43,12 +42,6 @@ export function workflowTransformPlugin(
       }
 
       const patterns = detectWorkflowPatterns(code);
-
-      // For @workflow SDK packages, only transform files with actual directives,
-      // not files that just match serde patterns (which are internal SDK implementation files)
-      if (isWorkflowSdkFile(id) && !patterns.hasDirective) {
-        return null;
-      }
 
       if (!shouldTransformFile(id, patterns)) {
         return null;

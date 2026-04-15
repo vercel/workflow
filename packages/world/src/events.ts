@@ -223,9 +223,22 @@ const RunCreatedEventSchema = BaseEventSchema.extend({
 /**
  * Event created when a workflow run starts executing.
  * Updates the run entity to status 'running'.
+ *
+ * The optional eventData carries run creation data for the resilient start path:
+ * when the run_created event failed (e.g., storage outage during start()), the
+ * runtime passes the run input through the queue so the server can create the run
+ * on the run_started call if it doesn't exist yet.
  */
 const RunStartedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_started'),
+  eventData: z
+    .object({
+      input: SerializedDataSchema.optional(),
+      deploymentId: z.string().optional(),
+      workflowName: z.string().optional(),
+      executionContext: z.record(z.string(), z.any()).optional(),
+    })
+    .optional(),
 });
 
 /**

@@ -127,7 +127,7 @@ flowchart TD
 
 Unlike other entities, hooks don't have a `status` field—the states above are conceptual. An "active" hook is one that exists in storage, while "disposed" means the hook has been deleted. When a `hook_disposed` event is created, the hook record is removed rather than updated.
 
-While a hook is active, its token is reserved and cannot be used by other workflows. If a workflow attempts to create a hook with a token that is already in use by another active hook, a `hook_conflict` event is recorded instead of `hook_created`. This causes the hook's promise to reject with a `WorkflowRuntimeError`, failing the workflow gracefully. See the [hook-conflict error](/docs/errors/hook-conflict) documentation for more details.
+While a hook is active, its token is reserved and cannot be used by other workflows. If a workflow attempts to create a hook with a token that is already in use by another active hook, a `hook_conflict` event is recorded instead of `hook_created`. This causes the hook's promise to reject with a `HookConflictError`, which you can detect with `HookConflictError.is(error)`. See the [hook-conflict error](/docs/errors/hook-conflict) documentation for more details.
 
 When a hook is disposed (either explicitly or when its workflow completes), the token is released and can be claimed by future workflows. Hooks are automatically disposed when a workflow reaches a terminal state (`completed`, `failed`, or `cancelled`). The `hook_disposed` event is only needed for explicit disposal before workflow completion.
 
@@ -188,7 +188,7 @@ Events are categorized by the entity type they affect. Each event contains metad
 | Event | Description |
 |-------|-------------|
 | `hook_created` | Creates a new hook in `active` state. Contains the hook token and optional metadata. |
-| `hook_conflict` | Records that hook creation failed because the token is already in use by another active hook. The hook is not created, and the workflow will fail with a `WorkflowRuntimeError` when the hook is awaited. |
+| `hook_conflict` | Records that hook creation failed because the token is already in use by another active hook. The hook is not created, and awaiting the hook will reject with a `HookConflictError`. |
 | `hook_received` | Records that a payload was delivered to the hook. The hook remains `active` and can receive more payloads. |
 | `hook_disposed` | Deletes the hook from storage (conceptually transitioning to `disposed` state). The token is released for reuse by future workflows. |
 
@@ -240,6 +240,23 @@ This correlation enables:
 - Querying all events for a specific step, hook, or wait
 - Building timelines of entity lifecycle transitions
 - Debugging by tracing the complete history of any entity
+
+### Request ID Correlation
+
+Some `World` implementations also attach a `requestId` to events for platform-log correlation. This is different from `correlationId`:
+
+- `correlationId` links together events for the same entity lifecycle
+- `requestId` tells you which inbound platform request created or updated the event
+
+On Vercel, `requestId` is the platform request ID when available. Other worlds are not expected to provide a `requestId`.
+
+```json
+{
+  "eventType": "step_started",
+  "correlationId": "step_01JQEXAMPLE1234567890",
+  "requestId": "iad1::abc123-1712345678901-xyz987"
+}
+```
 
 ## Entity IDs
 

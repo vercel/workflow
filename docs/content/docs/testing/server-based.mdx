@@ -48,8 +48,24 @@ import type { ChildProcess } from "node:child_process";
 let server: ChildProcess | null = null;
 const PORT = "4000";
 
+function emitSetupLog(event: string, fields: Record<string, unknown> = {}) {
+  console.log(
+    JSON.stringify({
+      scope: "workflow-server-test",
+      event,
+      port: PORT,
+      ...fields,
+    })
+  );
+}
+
 export async function setup() { // [!code highlight]
-  console.log("Starting server for workflow execution...");
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+
+  emitSetupLog("server_starting", {
+    command: `npx nitro dev --port ${PORT}`,
+  });
 
   server = spawn("npx", ["nitro", "dev", "--port", PORT], {
     stdio: "pipe",
@@ -57,13 +73,14 @@ export async function setup() { // [!code highlight]
     env: process.env,
   });
 
-  // Wait for the server to be ready
   const ready = await new Promise<boolean>((resolve) => {
     const timeout = setTimeout(() => resolve(false), 15_000);
 
     server?.stdout?.on("data", (data) => {
       const output = data.toString();
-      console.log("[server]", output);
+      stdout.push(output);
+      emitSetupLog("server_stdout", { message: output.trim() });
+
       if (output.includes("listening") || output.includes("ready")) {
         clearTimeout(timeout);
         resolve(true);
@@ -71,39 +88,65 @@ export async function setup() { // [!code highlight]
     });
 
     server?.stderr?.on("data", (data) => {
-      console.error("[server]", data.toString());
+      const output = data.toString();
+      stderr.push(output);
+      emitSetupLog("server_stderr", { message: output.trim() });
     });
 
     server?.on("error", (error) => {
-      console.error("Failed to start server:", error);
+      emitSetupLog("server_process_error", {
+        name: error.name,
+        message: error.message,
+      });
       clearTimeout(timeout);
       resolve(false);
+    });
+
+    server?.on("exit", (code, signal) => {
+      emitSetupLog("server_exit", { code, signal });
     });
   });
 
   if (!ready) {
-    throw new Error("Server failed to start within 15 seconds");
+    const recentStdout = stdout.join("").trim().slice(-2000);
+    const recentStderr = stderr.join("").trim().slice(-2000);
+
+    throw new Error(
+      [
+        "Server failed to start within 15 seconds.",
+        `Command: npx nitro dev --port ${PORT}`,
+        `WORKFLOW_LOCAL_BASE_URL: http://localhost:${PORT}`,
+        `Recent stdout:\n${recentStdout || "(empty)"}`,
+        `Recent stderr:\n${recentStderr || "(empty)"}`,
+      ].join("\n\n")
+    );
   }
 
-  await delay(2_000); // Allow full initialization
+  await delay(2_000);
 
-  // Point the workflow runtime at the local server
   process.env.WORKFLOW_LOCAL_BASE_URL = `http://localhost:${PORT}`; // [!code highlight]
 
-  console.log("Server ready for workflow execution");
+  emitSetupLog("server_ready", {
+    baseUrl: process.env.WORKFLOW_LOCAL_BASE_URL,
+  });
 }
 
 export async function teardown() { // [!code highlight]
-  if (server) {
-    console.log("Stopping server...");
-    server.kill("SIGTERM");
-    await delay(1_000);
-    if (!server.killed) {
-      server.kill("SIGKILL");
-    }
+  if (!server) return;
+
+  emitSetupLog("server_stopping");
+
+  server.kill("SIGTERM");
+  await delay(1_000);
+
+  if (!server.killed) {
+    emitSetupLog("server_force_kill");
+    server.kill("SIGKILL");
   }
 }
 ```
+
+These JSON log lines are intentional. They give CI jobs, local tooling, and agents stable events to watch for (`server_starting`, `server_stdout`, `server_stderr`, `server_ready`, `server_exit`), and the thrown timeout error includes the command, expected `WORKFLOW_LOCAL_BASE_URL`, and buffered stdout/stderr so a failed setup is actionable without interactive debugging.
 
 The setup script sets `WORKFLOW_LOCAL_BASE_URL` so the workflow runtime sends step execution requests to the running server.
 

@@ -1,5 +1,83 @@
 # @workflow/cli
 
+## 5.0.0-beta.1
+
+### Major Changes
+
+- [#1293](https://github.com/vercel/workflow/pull/1293) [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **BREAKING CHANGE**: Restructure stream methods on World interface to use `world.streams.*` namespace with `runId` as the first parameter. `writeToStream(name, runId, chunk)` → `streams.write(runId, name, chunk)`, `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get(runId, name, startIndex?)`, `listStreamsByRunId` → `streams.list(runId)`.
+
+- [#1293](https://github.com/vercel/workflow/pull/1293) [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Require `runId` argument for `world.steps.get`.
+
+### Patch Changes
+
+- [#1562](https://github.com/vercel/workflow/pull/1562) [`e436242`](https://github.com/vercel/workflow/commit/e4362421abf9c864c9c1064866ddfc16560649cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Switch Vercel Build Output API and standalone builder output from CJS to ESM. Step bundles, workflow bundles, and webhook bundles now emit ESM format by default, preserving native `import.meta.url` support and eliminating the need for CJS polyfills. Fully-bundled ESM output includes a `createRequire` banner to support CJS dependencies that use `require()` for Node.js builtins. The intermediate workflow bundle (which runs inside `vm.runInContext`) remains CJS as required by the VM execution model.
+
+- [#942](https://github.com/vercel/workflow/pull/942) [`873b4e2`](https://github.com/vercel/workflow/commit/873b4e2bb451e0a4d28e0a96671c25e1db4932db) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **BREAKING CHANGE**: Make `getWorld` and `createWorld` asynchronous to support ESM dynamic imports for custom world modules. All callers must now `await getWorld()`.
+
+- Updated dependencies [[`d040182`](https://github.com/vercel/workflow/commit/d0401829320c2880a0a5c2404ed9dede94eb17a0), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`dc0c0dc`](https://github.com/vercel/workflow/commit/dc0c0dce7f4ef1a0919d7ecc7efe076564871d0c), [`e436242`](https://github.com/vercel/workflow/commit/e4362421abf9c864c9c1064866ddfc16560649cb), [`ec517fa`](https://github.com/vercel/workflow/commit/ec517fa2254131f47cc878177c4d2aa163d584a5), [`a5c90ce`](https://github.com/vercel/workflow/commit/a5c90cefba01070aa4bc12a696334ee4c1061f92), [`ea97bd6`](https://github.com/vercel/workflow/commit/ea97bd600711f67649509b21c7af5808fb13479f), [`68cf25e`](https://github.com/vercel/workflow/commit/68cf25e83bdc8bf912fb30cb8f9ba4cb9a30f087), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d), [`32a17b4`](https://github.com/vercel/workflow/commit/32a17b4033dea3d9fd496e77142c675b06f0e016), [`71d39d2`](https://github.com/vercel/workflow/commit/71d39d2f8d5739c22fb9d777e70d003b07d05987), [`873b4e2`](https://github.com/vercel/workflow/commit/873b4e2bb451e0a4d28e0a96671c25e1db4932db), [`66585fd`](https://github.com/vercel/workflow/commit/66585fd46723604a632d08b6c973d5a95582b1af), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d), [`89d242f`](https://github.com/vercel/workflow/commit/89d242fae2233c52153315d63e1eacb4c0ca5527), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`ebb0a4a`](https://github.com/vercel/workflow/commit/ebb0a4a4e366eb1be1d385bf1eedbbe27371c9a9), [`9513a81`](https://github.com/vercel/workflow/commit/9513a8160cc13ac2b3923a0d9500cd80eb477109)]:
+  - @workflow/swc-plugin@5.0.0-beta.1
+  - @workflow/world@5.0.0-beta.1
+  - @workflow/world-local@5.0.0-beta.1
+  - @workflow/world-vercel@5.0.0-beta.1
+  - @workflow/core@5.0.0-beta.1
+  - @workflow/web@5.0.0-beta.1
+  - @workflow/builders@5.0.0-beta.1
+  - @workflow/errors@5.0.0-beta.0
+
+## 5.0.0-beta.0
+
+### Major Changes
+
+- [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
+
+### Patch Changes
+
+- Updated dependencies [[`35b539b`](https://github.com/vercel/workflow/commit/35b539b146015fd63ad71e0d08614de96d34aa45), [`372abba`](https://github.com/vercel/workflow/commit/372abba55fc6d3d9ba8f6926d38e05d7a6d99011), [`bab8cdd`](https://github.com/vercel/workflow/commit/bab8cddf98e1d4ca897fbfc9cc1fb51a3333c695), [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd)]:
+  - @workflow/builders@5.0.0-beta.0
+  - @workflow/swc-plugin@5.0.0-beta.0
+  - @workflow/core@5.0.0-beta.0
+  - @workflow/errors@5.0.0-beta.0
+  - @workflow/utils@5.0.0-beta.0
+  - @workflow/web@5.0.0-beta.0
+  - @workflow/world@5.0.0-beta.0
+  - @workflow/world-local@5.0.0-beta.0
+  - @workflow/world-vercel@5.0.0-beta.0
+
+## 4.2.0-beta.78
+
+### Patch Changes
+
+- [#1552](https://github.com/vercel/workflow/pull/1552) [`f5d2aef`](https://github.com/vercel/workflow/commit/f5d2aef58ff6d655989d00e4b9a8712d856bdca0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `workflow transform` command for inspecting SWC transform output with optional serde compliance analysis
+
+- [#1552](https://github.com/vercel/workflow/pull/1552) [`f5d2aef`](https://github.com/vercel/workflow/commit/f5d2aef58ff6d655989d00e4b9a8712d856bdca0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Implement serde compliance checks in `workflow validate`
+
+- [#1629](https://github.com/vercel/workflow/pull/1629) [`a6bcea9`](https://github.com/vercel/workflow/commit/a6bcea9d2827731040cb20f1615c5127530fc310) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - CLI `start` command probes deployment specVersion via health check before choosing queue transport. Health check always uses JSON transport for compatibility with old deployments.
+
+- [#1414](https://github.com/vercel/workflow/pull/1414) [`2680a42`](https://github.com/vercel/workflow/commit/2680a427f0f15182ce559bdab620a1c6d463c3f3) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `Request` and `Response` revivers to web and CLI hydration so serialized Request/Response objects display correctly in the observability UI and CLI inspect output.
+
+- Updated dependencies [[`f5d2aef`](https://github.com/vercel/workflow/commit/f5d2aef58ff6d655989d00e4b9a8712d856bdca0), [`5f138f2`](https://github.com/vercel/workflow/commit/5f138f2ceedcc96c9d043fa36378c4de781ab55b), [`a6bcea9`](https://github.com/vercel/workflow/commit/a6bcea9d2827731040cb20f1615c5127530fc310), [`7e70d18`](https://github.com/vercel/workflow/commit/7e70d1823add7930d6df7f84e1a6a77d888eb851), [`ba916e1`](https://github.com/vercel/workflow/commit/ba916e1566acc56533e7f5fcebbb8466360e0581), [`c9b3038`](https://github.com/vercel/workflow/commit/c9b30381f4e219fdd67bb3ef358f41697ed8c3e5), [`3308701`](https://github.com/vercel/workflow/commit/3308701b341f5b4d7007d5bca97cbbb6e4af222f), [`c8dce52`](https://github.com/vercel/workflow/commit/c8dce5260627a2f349618976e8478ce03e656536), [`ab872cc`](https://github.com/vercel/workflow/commit/ab872cc9fb6c24091c8c0eeb0efa7d0cbbdf20d8), [`5b9eb40`](https://github.com/vercel/workflow/commit/5b9eb406a8e5b778739fd4f49f5b017e0680fa6d)]:
+  - @workflow/builders@4.0.1-beta.69
+  - @workflow/world-vercel@4.1.0-beta.49
+  - @workflow/world@4.1.0-beta.17
+  - @workflow/core@4.2.0-beta.78
+  - @workflow/world-local@4.1.0-beta.51
+  - @workflow/web@4.1.0-beta.47
+  - @workflow/errors@4.1.0-beta.20
+
+## 4.2.0-beta.77
+
+### Patch Changes
+
+- Updated dependencies [[`b30b0dc`](https://github.com/vercel/workflow/commit/b30b0dcab68a8cc37735ea6c1fb8cb4f06efbe8b), [`760ebf1`](https://github.com/vercel/workflow/commit/760ebf161b0382cd430657cd1d172e8861660c30), [`d1330cf`](https://github.com/vercel/workflow/commit/d1330cfebca1b2f552bd80c06e37bff4fba1b79e), [`d8aaf27`](https://github.com/vercel/workflow/commit/d8aaf27c7913a1a44561325c9a08f50b4340100d), [`5d22e61`](https://github.com/vercel/workflow/commit/5d22e61446d5146887f8c268d305ea42e3f67b09), [`047c01b`](https://github.com/vercel/workflow/commit/047c01bc1545845b4251a58a380e627ef164e6d5), [`7c996a7`](https://github.com/vercel/workflow/commit/7c996a76c59cb88fa58d15942218b308d1cd100f), [`443a9e6`](https://github.com/vercel/workflow/commit/443a9e62f938b91cd818106155d384329cf5c82c)]:
+  - @workflow/world@4.1.0-beta.16
+  - @workflow/world-local@4.1.0-beta.50
+  - @workflow/world-vercel@4.1.0-beta.48
+  - @workflow/builders@4.0.1-beta.68
+  - @workflow/core@4.2.0-beta.77
+  - @workflow/swc-plugin@4.1.0-beta.22
+  - @workflow/errors@4.1.0-beta.20
+  - @workflow/web@4.1.0-beta.47
+
 ## 4.2.0-beta.76
 
 ### Patch Changes

@@ -37,7 +37,7 @@ export abstract class BaseCommand extends Command {
    */
   async finally(err: Error | undefined): Promise<void> {
     try {
-      const world = getWorld();
+      const world = await getWorld();
       await world.close?.();
     } catch (closeErr) {
       this.warn(

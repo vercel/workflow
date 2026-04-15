@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { World } from '@workflow/world';
-import { reenqueueActiveRuns } from '@workflow/world';
+import { reenqueueActiveRuns, SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { Config } from './config.js';
 import { config } from './config.js';
 import {
@@ -29,7 +29,7 @@ export {
   parseVersion,
 } from './init.js';
 
-export { type DirectHandler } from './queue.js';
+export type { DirectHandler } from './queue.js';
 
 export type LocalWorld = World & {
   /** Register a direct in-process handler for a queue prefix, bypassing HTTP. */
@@ -64,12 +64,15 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const queue = createQueue(mergedConfig);
   const storage = createStorage(mergedConfig.dataDir, tag);
   return {
+    specVersion: SPEC_VERSION_CURRENT,
     ...queue,
-    ...storage,
-    ...instrumentObject(
-      'world.streams',
-      createStreamer(mergedConfig.dataDir, tag)
-    ),
+    ...createStorage(mergedConfig.dataDir, tag),
+    ...instrumentObject('world.streams', {
+      ...createStreamer(mergedConfig.dataDir, tag),
+      ...(mergedConfig.streamFlushIntervalMs !== undefined && {
+        streamFlushIntervalMs: mergedConfig.streamFlushIntervalMs,
+      }),
+    }),
     async start() {
       await initDataDir(mergedConfig.dataDir);
       await reenqueueActiveRuns(storage.runs, queue.queue, 'world-local');

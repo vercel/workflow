@@ -20,9 +20,9 @@ export type StepContext = {
  * `contextStorage.getStore()` in user code (via getWorkflowMetadata /
  * getStepMetadata) can reference different AsyncLocalStorage instances,
  * causing the store to appear empty.
- * 
+ *
  * Note that we were unable to reproduce this issue. This is a fix for the only synthetic way
- * way in which we could get the builder to break with the reported error message, and 
+ * way in which we could get the builder to break with the reported error message, and
  * serves as defense-in-depth, since the change is otherwise safe.
  *
  * See: https://github.com/vercel/workflow/issues/1577

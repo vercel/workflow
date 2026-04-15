@@ -91,6 +91,7 @@ export function createContext(options: CreateContextOptions) {
   };
 
   // Stateless + synchronous Web APIs that are made available inside the sandbox
+  g.DOMException = globalThis.DOMException;
   g.Headers = globalThis.Headers;
   g.TextEncoder = globalThis.TextEncoder;
   g.TextDecoder = globalThis.TextDecoder;

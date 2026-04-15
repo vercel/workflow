@@ -8,6 +8,7 @@ import {
   type Hook,
   isLegacySpecVersion,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
   type WorkflowInvokePayload,
   type WorkflowRun,
 } from '@workflow/world';
@@ -34,7 +35,7 @@ async function getHookByTokenWithKey(token: string): Promise<{
   run: WorkflowRun;
   encryptionKey: CryptoKey | undefined;
 }> {
-  const world = getWorld();
+  const world = await getWorld();
   const hook = await world.hooks.getByToken(token);
   const run = await world.runs.get(hook.runId);
   const rawKey = await world.getEncryptionKeyForRun?.(run);
@@ -97,7 +98,7 @@ export async function resumeHook<T = any>(
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
-      const world = getWorld();
+      const world = await getWorld();
 
       try {
         let hook: Hook;
@@ -194,6 +195,7 @@ export async function resumeHook<T = any>(
           } satisfies WorkflowInvokePayload,
           {
             deploymentId: workflowRun.deploymentId,
+            specVersion: workflowRun.specVersion ?? SPEC_VERSION_LEGACY,
           }
         );
 

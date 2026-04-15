@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getRun, start } from 'workflow/api';
+import { getRun, Run, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -246,6 +246,7 @@ export async function workflowAndStepMetadataWorkflow() {
       workflowRunId: workflowMetadata.workflowRunId,
       workflowStartedAt: workflowMetadata.workflowStartedAt,
       url: workflowMetadata.url,
+      features: workflowMetadata.features,
     },
     stepMetadata,
     innerWorkflowMetadata,
@@ -696,6 +697,40 @@ export async function spawnWorkflowFromStepWorkflow(inputValue: number) {
   return {
     parentInput: inputValue,
     childRunId,
+    childResult,
+  };
+}
+
+async function spawnChildWorkflowRun(value: number) {
+  'use step';
+  return await start(childWorkflow, [value]);
+}
+
+async function getRunIdFromRun(run: Run<unknown>) {
+  'use step';
+  return run.runId;
+}
+
+async function awaitRunFromRun<T>(run: Run<T>) {
+  'use step';
+  return await run.returnValue;
+}
+
+export async function runClassSerializationWorkflow(inputValue: number) {
+  'use workflow';
+
+  const childRun = await spawnChildWorkflowRun(inputValue);
+  const isRunInWorkflow = childRun instanceof Run;
+  const runIdFromStep = await getRunIdFromRun(childRun);
+  const childResult = await awaitRunFromRun<{
+    childResult: number;
+    originalValue: number;
+  }>(childRun);
+
+  return {
+    childRunId: childRun.runId,
+    runIdFromStep,
+    isRunInWorkflow,
     childResult,
   };
 }
@@ -1549,4 +1584,74 @@ export async function metadataFromHelperWorkflow(label: string): Promise<{
   'use workflow';
 
   return await metadataHelperStep(label);
+}
+
+//////////////////////////////////////////////////////////
+// Getter Step Tests
+//////////////////////////////////////////////////////////
+
+/**
+ * A class with a getter method marked as a step.
+ * This tests the "use step" support for getter functions.
+ * The class uses custom serialization so the `this` value can be
+ * serialized across the workflow/step boundary.
+ */
+export class Sensor {
+  constructor(
+    public baseValue: number,
+    public multiplier: number
+  ) {}
+
+  static [Symbol.for('workflow-serialize')](instance: Sensor) {
+    return { baseValue: instance.baseValue, multiplier: instance.multiplier };
+  }
+
+  static [Symbol.for('workflow-deserialize')](data: {
+    baseValue: number;
+    multiplier: number;
+  }) {
+    return new Sensor(data.baseValue, data.multiplier);
+  }
+
+  /** Getter step: accessing this property triggers a step invocation */
+  get reading() {
+    'use step';
+    return this.baseValue * this.multiplier;
+  }
+
+  /** Regular instance method step for comparison */
+  async calibrate(offset: number): Promise<number> {
+    'use step';
+    return this.baseValue * this.multiplier + offset;
+  }
+}
+
+/**
+ * Workflow that tests getter steps on a class instance.
+ * Uses `await instance.prop` to trigger step invocations via getters.
+ */
+export async function getterStepWorkflow(
+  base: number,
+  multiplier: number,
+  offset: number
+) {
+  'use workflow';
+
+  const sensor = new Sensor(base, multiplier);
+
+  // Getter step: `await sensor.reading` triggers a step invocation
+  const reading = await sensor.reading;
+
+  // Regular instance method step for comparison
+  const calibrated = await sensor.calibrate(offset);
+
+  // Second sensor to verify different instances work
+  const sensor2 = new Sensor(100, 2);
+  const reading2 = await sensor2.reading;
+
+  return {
+    reading, // base * multiplier
+    calibrated, // base * multiplier + offset
+    reading2, // 100 * 2 = 200
+  };
 }

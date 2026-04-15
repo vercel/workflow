@@ -128,7 +128,7 @@ export const setupCliWorld = async (
       },
     });
   } else {
-    world = createWorld();
+    world = await createWorld();
   }
 
   // Store in the global cache so BaseCommand.finally() can find and close it.

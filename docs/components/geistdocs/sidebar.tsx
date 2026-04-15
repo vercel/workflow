@@ -63,7 +63,7 @@ export const Sidebar = () => {
         <Fragment key={root.$id}>{renderSidebarList(root.children)}</Fragment>
       </div>
       <Sheet onOpenChange={setIsOpen} open={isOpen}>
-        <SheetContent className="gap-0">
+        <SheetContent className="gap-0" side="left">
           <SheetHeader className="mt-8">
             <SheetTitle className="sr-only">Mobile Menu</SheetTitle>
             <SheetDescription className="sr-only">

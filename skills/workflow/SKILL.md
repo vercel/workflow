@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.6'
+  version: '1.7'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -617,7 +617,7 @@ await resumeWebhook(hook.token, new Request("https://example.com/webhook", {
 
 ## Observability & World SDK
 
-Use `getWorld()` to build observability dashboards, admin panels, and inspect workflow state.
+Use `await getWorld()` to build observability dashboards, admin panels, and inspect workflow state. `getWorld()` is asynchronous and returns `Promise<World>` (dynamic import / env-based setup).
 
 **Key imports:**
 ```typescript
@@ -634,7 +634,7 @@ import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowN
 ⚠️ Pagination is nested: `{ pagination: { cursor } }` — NOT `{ cursor }` directly.
 
 ```typescript
-const world = getWorld();
+const world = await getWorld();
 
 // Runs
 const { data, cursor } = await world.runs.list({ pagination: { cursor }, resolveData: 'all' | 'none' });
@@ -654,12 +654,14 @@ await world.events.create(runId, { eventType: 'run_cancelled' });
 const hook = await world.hooks.get(hookId);
 const hook = await world.hooks.getByToken(token);
 
-// Streams (methods live directly on world, not nested)
-await world.writeToStream(name, runId, chunk);
-const readable = await world.readFromStream(name);
-const chunks = await world.getStreamChunks(name, runId, { limit, cursor });
-const info = await world.getStreamInfo(name, runId);
-const streams = await world.listStreamsByRunId(runId);
+// Streams (methods on world.streams)
+await world.streams.write(runId, name, chunk);
+await world.streams.writeMulti?.(runId, name, chunks);
+const readable = await world.streams.get(runId, name, startIndex);
+await world.streams.close(runId, name);
+const streamNames = await world.streams.list(runId);
+const chunks = await world.streams.getChunks(runId, name, { limit, cursor });
+const info = await world.streams.getInfo(runId, name);
 
 // Queue (methods live directly on world — internal SDK infrastructure)
 await world.queue(queueName, payload, opts);

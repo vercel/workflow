@@ -1,0 +1,10 @@
+{
+  "title": "Advanced",
+  "pages": [
+    "serializable-steps",
+    "durable-objects",
+    "isomorphic-packages",
+    "custom-serialization",
+    "publishing-libraries"
+  ]
+}

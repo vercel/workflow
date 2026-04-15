@@ -4,11 +4,11 @@ import { Hono } from 'hono';
 import { getHookByToken, getRun, resumeHook, start } from 'workflow/api';
 import { getWorld } from 'workflow/runtime';
 import * as z from 'zod';
-import flow from '../.well-known/workflow/v1/flow.js';
+import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
   type: 'json',
 };
-import step from '../.well-known/workflow/v1/step.js';
+import { POST as stepPOST } from '../.well-known/workflow/v1/step.mjs';
 
 if (!process.env.WORKFLOW_TARGET_WORLD) {
   console.error(
@@ -44,10 +44,10 @@ const Invoke = z
 
 const app = new Hono()
   .post('/.well-known/workflow/v1/flow', (ctx) => {
-    return flow.POST(ctx.req.raw);
+    return flowPOST(ctx.req.raw);
   })
   .post('/.well-known/workflow/v1/step', (ctx) => {
-    return step.POST(ctx.req.raw);
+    return stepPOST(ctx.req.raw);
   })
   .get('/_manifest', (ctx) => ctx.json(manifest))
   .post('/invoke', async (ctx) => {
@@ -65,7 +65,8 @@ const app = new Hono()
     return ctx.json({ runId, hookId: hook.hookId });
   })
   .get('/runs/:runId', async (ctx) => {
-    const run = await getWorld().runs.get(ctx.req.param('runId'));
+    const world = await getWorld();
+    const run = await world.runs.get(ctx.req.param('runId'));
     // Custom JSON serialization to handle Uint8Array as base64
     const json = JSON.stringify(run, (_key, value) => {
       if (value instanceof Uint8Array) {
@@ -112,7 +113,7 @@ serve(
       }
     }
 
-    const world = getWorld();
+    const world = await getWorld();
     if (world.start) {
       console.log(`starting background tasks...`);
       await world.start().then(

@@ -1,4 +1,3 @@
-import { registerStepFunction } from "workflow/internal/private";
 // Test anonymous default class export with serde and step methods.
 // The plugin should rewrite to:
 //   const __DefaultClass = class __DefaultClass { ... };
@@ -25,7 +24,11 @@ const __DefaultClass = class __DefaultClass {
     }
 };
 export default __DefaultClass;
-registerStepFunction("step//./input//__DefaultClass#process", __DefaultClass.prototype["process"]);
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(__DefaultClass.prototype["process"], "step//./input//__DefaultClass#process");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_cls);

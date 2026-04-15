@@ -53,7 +53,8 @@ Create an `instrumentation.ts` file in your project root:
 export async function register() {
   if (process.env.NEXT_RUNTIME !== "edge") {
     const { getWorld } = await import("workflow/runtime");
-    await getWorld().start?.();
+    const world = await getWorld();
+    await world.start?.();
   }
 }
 ```
@@ -73,7 +74,8 @@ import type { ServerInit } from "@sveltejs/kit";
 
 export const init: ServerInit = async () => {
   const { getWorld } = await import("workflow/runtime");
-  await getWorld().start?.();
+  const world = await getWorld();
+  await world.start?.();
 };
 ```
 
@@ -92,7 +94,8 @@ import { defineNitroPlugin } from "nitro/~internal/runtime/plugin";
 
 export default defineNitroPlugin(async () => {
   const { getWorld } = await import("workflow/runtime");
-  await getWorld().start?.();
+  const world = await getWorld();
+  await world.start?.();
 });
 ```
 
@@ -168,7 +171,8 @@ For higher worker concurrency, Graphile Worker recommends setting `maxPoolSize` 
 
 ### Programmatic configuration
 
-{/* @skip-typecheck: incomplete code sample */}
+{/*@skip-typecheck: incomplete code sample*/}
+
 ```typescript title="workflow.config.ts" lineNumbers
 import { createWorld } from "@workflow/world-postgres";
 
@@ -200,6 +204,7 @@ Deploy your application to any cloud that supports long-running servers:
 - Platform-as-a-Service providers (Railway, Render, Fly.io, etc.)
 
 Ensure your deployment has:
+
 1. Network access to your PostgreSQL database
 2. Environment variables configured correctly
 3. The `start()` function called on server initialization

@@ -1,49 +1,124 @@
-import { __private_getClosureVars, registerStepFunction } from "workflow/internal/private";
 // https://github.com/vercel/workflow/issues/1365
 import { MockLanguageModelV3 } from 'ai/test';
 import { xai as xaiProvider } from '@ai-sdk/xai';
 /**__internal_workflows{"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep10":{"stepId":"step//./input//_anonymousStep10"},"_anonymousStep11":{"stepId":"step//./input//_anonymousStep11"},"_anonymousStep12":{"stepId":"step//./input//_anonymousStep12"},"_anonymousStep13":{"stepId":"step//./input//_anonymousStep13"},"_anonymousStep14":{"stepId":"step//./input//_anonymousStep14"},"_anonymousStep15":{"stepId":"step//./input//_anonymousStep15"},"_anonymousStep16":{"stepId":"step//./input//_anonymousStep16"},"_anonymousStep17":{"stepId":"step//./input//_anonymousStep17"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"_anonymousStep5":{"stepId":"step//./input//_anonymousStep5"},"_anonymousStep6":{"stepId":"step//./input//_anonymousStep6"},"_anonymousStep7":{"stepId":"step//./input//_anonymousStep7"},"_anonymousStep8":{"stepId":"step//./input//_anonymousStep8"},"_anonymousStep9":{"stepId":"step//./input//_anonymousStep9"}}}}*/;
 var mockModel$_anonymousStep0 = async ()=>{
-    const { args } = __private_getClosureVars();
+    const { args } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return new MockLanguageModelV3(...args);
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(mockModel$_anonymousStep0, "step//./input//mockModel/_anonymousStep0");
 var xai$_anonymousStep1 = async ()=>{
-    const { args } = __private_getClosureVars();
+    const { args } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return xaiProvider(...args);
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(xai$_anonymousStep1, "step//./input//xai/_anonymousStep1");
 var mockModelWrapped$_anonymousStep2 = async ()=>{
-    const { args } = __private_getClosureVars();
+    const { args } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return mockProvider(...args);
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(mockModelWrapped$_anonymousStep2, "step//./input//mockModelWrapped/_anonymousStep2");
 var configuredStep$_anonymousStep3 = async ()=>{
-    const { url } = __private_getClosureVars();
+    const { url } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return {
         url,
         config: CONFIG
     };
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(configuredStep$_anonymousStep3, "step//./input//configuredStep/_anonymousStep3");
 var withOptionalChaining$_anonymousStep4 = async ()=>{
-    const { client } = __private_getClosureVars();
+    const { client } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return client?.query();
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withOptionalChaining$_anonymousStep4, "step//./input//withOptionalChaining/_anonymousStep4");
 var withSequenceExpr$_anonymousStep5 = async ()=>{
-    const { a, b } = __private_getClosureVars();
+    const { a, b } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return a, b;
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withSequenceExpr$_anonymousStep5, "step//./input//withSequenceExpr/_anonymousStep5");
 var withTryCatch$_anonymousStep6 = async ()=>{
-    const { fallback, fn } = __private_getClosureVars();
+    const { fallback, fn } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     try {
         return fn();
     } catch (err) {
         return fallback;
     }
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withTryCatch$_anonymousStep6, "step//./input//withTryCatch/_anonymousStep6");
 var withThrow$_anonymousStep7 = async ()=>{
-    const { message } = __private_getClosureVars();
+    const { message } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     throw message;
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withThrow$_anonymousStep7, "step//./input//withThrow/_anonymousStep7");
 var withSwitch$_anonymousStep8 = async ()=>{
-    const { a, b, mode } = __private_getClosureVars();
+    const { a, b, mode } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     switch(mode){
         case 'add':
             return a + b;
@@ -51,24 +126,51 @@ var withSwitch$_anonymousStep8 = async ()=>{
             return a - b;
     }
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withSwitch$_anonymousStep8, "step//./input//withSwitch/_anonymousStep8");
 var withForOf$_anonymousStep9 = async ()=>{
-    const { items, transform } = __private_getClosureVars();
+    const { items, transform } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     const results = [];
     for (const item of items){
         results.push(transform(item));
     }
     return results;
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withForOf$_anonymousStep9, "step//./input//withForOf/_anonymousStep9");
 var withForIn$_anonymousStep10 = async ()=>{
-    const { obj } = __private_getClosureVars();
+    const { obj } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     const keys = [];
     for(const key in obj){
         keys.push(key);
     }
     return keys;
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withForIn$_anonymousStep10, "step//./input//withForIn/_anonymousStep10");
 var withDoWhile$_anonymousStep11 = async ()=>{
-    const { getNext } = __private_getClosureVars();
+    const { getNext } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     const results = [];
     let val;
     do {
@@ -77,22 +179,49 @@ var withDoWhile$_anonymousStep11 = async ()=>{
     }while (val !== null)
     return results;
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withDoWhile$_anonymousStep11, "step//./input//withDoWhile/_anonymousStep11");
 var withShorthandProps$_anonymousStep12 = async ()=>{
-    const { name, value } = __private_getClosureVars();
+    const { name, value } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return {
         name,
         value,
         extra: 'literal'
     };
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withShorthandProps$_anonymousStep12, "step//./input//withShorthandProps/_anonymousStep12");
 var withComputedKey$_anonymousStep13 = async ()=>{
-    const { key, value } = __private_getClosureVars();
+    const { key, value } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return {
         [key]: value
     };
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withComputedKey$_anonymousStep13, "step//./input//withComputedKey/_anonymousStep13");
 var mockTextModel$_anonymousStep14 = async ()=>{
-    const { text } = __private_getClosureVars();
+    const { text } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return mockProvider({
         doStream: async ()=>({
                 stream: new ReadableStream({
@@ -109,28 +238,60 @@ var mockTextModel$_anonymousStep14 = async ()=>{
             })
     });
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(mockTextModel$_anonymousStep14, "step//./input//mockTextModel/_anonymousStep14");
 var withClassExpr$_anonymousStep15 = async ()=>{
-    const { baseUrl } = __private_getClosureVars();
+    const { baseUrl } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return new class {
         getUrl() {
             return baseUrl + '/api';
         }
     };
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withClassExpr$_anonymousStep15, "step//./input//withClassExpr/_anonymousStep15");
 var withClassSuper$_anonymousStep16 = async ()=>{
-    const { Base } = __private_getClosureVars();
+    const { Base } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return class extends Base {
         getValue() {
             return 42;
         }
     };
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withClassSuper$_anonymousStep16, "step//./input//withClassSuper/_anonymousStep16");
 var withClassProp$_anonymousStep17 = async ()=>{
-    const { defaultValue } = __private_getClosureVars();
+    const { defaultValue } = function() {
+        var __wf_ctx = globalThis[Symbol.for("WORKFLOW_STEP_CONTEXT_STORAGE")], __wf_store = __wf_ctx && __wf_ctx.getStore();
+        if (!__wf_store) throw new Error("Closure variables can only be accessed inside a step function");
+        return __wf_store.closureVars || {};
+    }();
     return new class {
         value = defaultValue;
     };
 };
+(function(__wf_fn, __wf_id) {
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
+    __wf_reg.set(__wf_id, __wf_fn);
+    __wf_fn.stepId = __wf_id;
+})(withClassProp$_anonymousStep17, "step//./input//withClassProp/_anonymousStep17");
 // Bug 1: `new` expressions should have their arguments captured as closure vars
 export function mockModel(...args) {
     return async ()=>{
@@ -306,21 +467,3 @@ export function withClassProp(defaultValue) {
         };
     };
 }
-registerStepFunction("step//./input//mockModel/_anonymousStep0", mockModel$_anonymousStep0);
-registerStepFunction("step//./input//xai/_anonymousStep1", xai$_anonymousStep1);
-registerStepFunction("step//./input//mockModelWrapped/_anonymousStep2", mockModelWrapped$_anonymousStep2);
-registerStepFunction("step//./input//configuredStep/_anonymousStep3", configuredStep$_anonymousStep3);
-registerStepFunction("step//./input//withOptionalChaining/_anonymousStep4", withOptionalChaining$_anonymousStep4);
-registerStepFunction("step//./input//withSequenceExpr/_anonymousStep5", withSequenceExpr$_anonymousStep5);
-registerStepFunction("step//./input//withTryCatch/_anonymousStep6", withTryCatch$_anonymousStep6);
-registerStepFunction("step//./input//withThrow/_anonymousStep7", withThrow$_anonymousStep7);
-registerStepFunction("step//./input//withSwitch/_anonymousStep8", withSwitch$_anonymousStep8);
-registerStepFunction("step//./input//withForOf/_anonymousStep9", withForOf$_anonymousStep9);
-registerStepFunction("step//./input//withForIn/_anonymousStep10", withForIn$_anonymousStep10);
-registerStepFunction("step//./input//withDoWhile/_anonymousStep11", withDoWhile$_anonymousStep11);
-registerStepFunction("step//./input//withShorthandProps/_anonymousStep12", withShorthandProps$_anonymousStep12);
-registerStepFunction("step//./input//withComputedKey/_anonymousStep13", withComputedKey$_anonymousStep13);
-registerStepFunction("step//./input//mockTextModel/_anonymousStep14", mockTextModel$_anonymousStep14);
-registerStepFunction("step//./input//withClassExpr/_anonymousStep15", withClassExpr$_anonymousStep15);
-registerStepFunction("step//./input//withClassSuper/_anonymousStep16", withClassSuper$_anonymousStep16);
-registerStepFunction("step//./input//withClassProp/_anonymousStep17", withClassProp$_anonymousStep17);

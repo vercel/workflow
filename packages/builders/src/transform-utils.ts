@@ -27,18 +27,6 @@ export const workflowSerdeComputedPropertyPattern =
 export const generatedWorkflowPathPattern =
   /[/\\]\.well-known[/\\]workflow[/\\]/;
 
-// Pattern to detect @workflow SDK packages that should be excluded from transformation
-// These are internal SDK packages that should not be treated as user entry points.
-// Matches:
-// - node_modules/@workflow/*
-// - node_modules/workflow/*
-// - node_modules/.pnpm/.../node_modules/@workflow/* (pnpm virtual store)
-// - node_modules/.pnpm/.../node_modules/workflow/* (pnpm virtual store)
-// - monorepo packages/*/dist paths
-// User npm packages with workflows/steps/serde SHOULD still be discovered.
-export const workflowSdkPathPattern =
-  /[/\\](?:node_modules[/\\](?:@workflow[/\\]|workflow[/\\]|\.pnpm[/\\][^/\\]+[/\\]node_modules[/\\](?:@workflow[/\\]|workflow[/\\]))|packages[/\\](?:builders|core|rollup|vite|next|nitro|serde|workflow|swc-plugin-workflow)[/\\])/;
-
 /**
  * Detects workflow-related patterns in source code.
  */
@@ -90,22 +78,14 @@ export function isGeneratedWorkflowFile(filePath: string): boolean {
 }
 
 /**
- * Determines if a file path is part of the @workflow SDK.
- * @param filePath - The file path to check
- * @returns true if the file is part of the @workflow SDK
- */
-export function isWorkflowSdkFile(filePath: string): boolean {
-  return workflowSdkPathPattern.test(filePath);
-}
-
-/**
  * Determines if a file should be transformed based on its path and content patterns.
  *
  * Logic:
  * - Generated workflow route files are never transformed
  * - Files with directives ('use workflow' or 'use step') are always transformed
- * - Files with serde patterns are transformed, unless they're @workflow SDK files
- *   (SDK files with serde patterns are internal implementation, not user code)
+ * - Files with serde patterns are always transformed; the SWC plugin performs
+ *   AST-level extraction/filtering to determine whether they actually define
+ *   serde classes
  *
  * @param filePath - The file path to check
  * @param patterns - The detected patterns from detectWorkflowPatterns()
@@ -120,17 +100,7 @@ export function shouldTransformFile(
     return false;
   }
 
-  // Always transform files with directives
-  if (patterns.hasDirective) {
-    return true;
-  }
-
-  // Transform files with serde patterns, unless they're @workflow SDK files
-  if (patterns.hasSerde) {
-    return !isWorkflowSdkFile(filePath);
-  }
-
-  return false;
+  return patterns.hasDirective || patterns.hasSerde;
 }
 
 /**
