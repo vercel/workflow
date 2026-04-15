@@ -35,6 +35,7 @@ import {
   getWorkflowMetadata,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
+  isLocalDeployment,
   setupRunTracking,
   setupWorld,
   trackRun,
@@ -1552,7 +1553,9 @@ describe('e2e', () => {
     }
   );
 
-  test(
+  // Skipped on Vercel: deployment protection / VQS proxy rewrites response
+  // headers (Content-Type becomes text/html or is stripped entirely).
+  test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
     { timeout: 30_000 },
     async () => {
