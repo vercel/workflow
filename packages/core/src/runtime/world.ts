@@ -6,12 +6,8 @@ import {
   resolveWorkflowTargetWorld,
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
-import { createLocalWorld } from '@workflow/world-local';
-import { createVercelWorld } from '@workflow/world-vercel';
 
-const require = createRequire(
-  pathToFileURL(process.cwd() + '/package.json').href
-);
+const require = createRequire(import.meta.url);
 
 const WorldCache = Symbol.for('@workflow/world//cache');
 const StubbedWorldCache = Symbol.for('@workflow/world//stubbedCache');
@@ -37,6 +33,14 @@ const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string
 ) => Promise<any>;
 
+function getProjectRequire() {
+  return createRequire(
+    pathToFileURL(
+      resolve(/* turbopackIgnore: true */ process.cwd(), 'package.json')
+    ).href
+  );
+}
+
 function resolveModulePath(specifier: string): string {
   // Already a file:// URL
   if (specifier.startsWith('file://')) {
@@ -48,13 +52,60 @@ function resolveModulePath(specifier: string): string {
   }
   // Relative path - resolve relative to cwd and convert to file:// URL
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
-    return pathToFileURL(resolve(process.cwd(), specifier)).href;
+    return pathToFileURL(
+      resolve(/* turbopackIgnore: true */ process.cwd(), specifier)
+    ).href;
   }
   // Package specifier - use require.resolve to find the package
   try {
-    return pathToFileURL(require.resolve(specifier)).href;
+    return pathToFileURL(getProjectRequire().resolve(specifier)).href;
   } catch {
     return specifier;
+  }
+}
+
+function resolveWorldFactory(
+  mod: any,
+  preferredNamedExport?: string
+): ((...args: any[]) => World) | undefined {
+  if (
+    preferredNamedExport &&
+    typeof mod?.[preferredNamedExport] === 'function'
+  ) {
+    return mod[preferredNamedExport] as (...args: any[]) => World;
+  }
+  if (typeof mod === 'function') {
+    return mod as (...args: any[]) => World;
+  }
+  if (typeof mod?.default === 'function') {
+    return mod.default as (...args: any[]) => World;
+  }
+  if (typeof mod?.createWorld === 'function') {
+    return mod.createWorld as (...args: any[]) => World;
+  }
+  return undefined;
+}
+
+async function loadBundledWorldModule(
+  specifier: '@workflow/world-local' | '@workflow/world-vercel'
+): Promise<any> {
+  try {
+    return await dynamicImport(specifier);
+  } catch {
+    return require(specifier);
+  }
+}
+
+async function loadCustomWorldModule(specifier: string): Promise<any> {
+  try {
+    const resolvedPath = resolveModulePath(specifier);
+    return await dynamicImport(resolvedPath);
+  } catch {
+    try {
+      return getProjectRequire()(specifier);
+    } catch {
+      return require(specifier);
+    }
   }
 }
 
@@ -93,11 +144,25 @@ export const createWorld = async (): Promise<World> => {
       );
     }
 
-    return createVercelWorld();
+    const mod = await loadBundledWorldModule('@workflow/world-vercel');
+    const create = resolveWorldFactory(mod, 'createVercelWorld');
+    if (!create) {
+      throw new Error(
+        'Invalid built-in world module "@workflow/world-vercel": expected createVercelWorld/default export.'
+      );
+    }
+    return create();
   }
 
   if (targetWorld === 'local') {
-    return createLocalWorld({
+    const mod = await loadBundledWorldModule('@workflow/world-local');
+    const create = resolveWorldFactory(mod, 'createLocalWorld');
+    if (!create) {
+      throw new Error(
+        'Invalid built-in world module "@workflow/world-local": expected createLocalWorld/default export.'
+      );
+    }
+    return create({
       dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
     });
   }
@@ -105,19 +170,10 @@ export const createWorld = async (): Promise<World> => {
   // Try dynamic import() first — ESM-first since this PR's purpose is ESM support.
   // Fall back to require() for environments where `new Function`-based import()
   // is unavailable (e.g. CJS test runners).
-  let mod: any;
-  try {
-    const resolvedPath = resolveModulePath(targetWorld);
-    mod = await dynamicImport(resolvedPath);
-  } catch {
-    mod = require(targetWorld);
-  }
-  if (typeof mod === 'function') {
-    return mod() as World;
-  } else if (typeof mod.default === 'function') {
-    return mod.default() as World;
-  } else if (typeof mod.createWorld === 'function') {
-    return mod.createWorld() as World;
+  const mod = await loadCustomWorldModule(targetWorld);
+  const create = resolveWorldFactory(mod);
+  if (create) {
+    return create();
   }
 
   throw new Error(
