@@ -520,6 +520,14 @@
   @apply font-mono font-normal text-[13px] leading-[18px];
 }
 
+@utility text-label-14-mono {
+  @apply font-mono font-normal text-[14px] leading-[20px];
+}
+
+@utility text-label-16-mono {
+  @apply font-mono font-normal text-[16px] leading-[20px];
+}
+
 @utility text-body-16 {
   @apply font-mono font-normal text-[16px] leading-[24px];
 }
