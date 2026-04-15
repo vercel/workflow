@@ -59,7 +59,7 @@ function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
             {description}
           </p>
         </div>
-        <div className="flex items-center gap-3 mt-10">
+        <div className="flex flex-col sm:flex-row items-center gap-3 mt-10">
           <Button
             asChild
             size="lg"
