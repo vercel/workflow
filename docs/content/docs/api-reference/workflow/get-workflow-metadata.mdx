@@ -19,11 +19,22 @@ You may want to use this function when you need to:
 If you need to access step context, take a look at [`getStepMetadata`](/docs/api-reference/workflow/get-step-metadata).
 </Callout>
 
+```typescript lineNumbers
+import { getWorkflowMetadata } from "workflow"
+
+async function testWorkflow() {
+    "use workflow"
+
+    const ctx = getWorkflowMetadata() // [!code highlight]
+    console.log(ctx.workflowRunId)
+}
+```
+
 ### Detecting Workflow Runtime
 
-You can use `getWorkflowMetadata` to detect whether your code is running inside a workflow context. This is useful when building libraries or utilities that need to behave differently inside and outside of workflows.
+You can use `getWorkflowMetadata` to detect whether your code is running inside a workflow context. This is useful when building shared utilities that need to behave differently inside and outside of workflows.
 
-Since `getWorkflowMetadata` throws an error when called outside a workflow, you can use a try-catch pattern:
+Since `getWorkflowMetadata` throws when called outside a workflow, you can wrap it in a try-catch:
 
 ```typescript lineNumbers
 import { getWorkflowMetadata } from "workflow"
@@ -36,27 +47,20 @@ function isInWorkflow(): boolean {
         return false
     }
 }
-
-// Example: Warn when a function that requires special handling is called inside a workflow
-function getServerSession() {
-    if (isInWorkflow()) {
-        console.warn(
-            "getServerSession called inside a workflow. " +
-            "Make sure you're using an async local storage provider."
-        )
-    }
-    // ... rest of implementation
-}
 ```
+
+For example, a logging utility could include the workflow run ID when available:
 
 ```typescript lineNumbers
 import { getWorkflowMetadata } from "workflow"
 
-async function testWorkflow() {
-    "use workflow"
-
-    const ctx = getWorkflowMetadata() // [!code highlight]
-    console.log(ctx.workflowRunId)
+function log(message: string) {
+    try {
+        const { workflowRunId } = getWorkflowMetadata()
+        console.log(`[workflow:${workflowRunId}] ${message}`)
+    } catch {
+        console.log(message)
+    }
 }
 ```
 
