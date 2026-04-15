@@ -17,6 +17,7 @@ import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
   MAX_QUEUE_DELIVERIES,
+  REPLAY_TIMEOUT_MAX_RETRIES,
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
 import {
@@ -181,9 +182,18 @@ export function workflowEntrypoint(
           runtimeLogger.error('Workflow replay exceeded timeout', {
             workflowRunId: runId,
             timeoutMs: REPLAY_TIMEOUT_MS,
+            attempt: metadata.attempt,
+            maxRetries: REPLAY_TIMEOUT_MAX_RETRIES,
           });
+
+          // Allow a few retries before permanently failing the run.
+          // On early attempts, just exit so the queue retries the message.
+          if (metadata.attempt <= REPLAY_TIMEOUT_MAX_RETRIES) {
+            process.exit(1);
+          }
+
           try {
-            const world = getWorld();
+            const world = await getWorld();
             await world.events.create(
               runId,
               {
@@ -191,7 +201,7 @@ export function workflowEntrypoint(
                 specVersion: SPEC_VERSION_CURRENT,
                 eventData: {
                   error: {
-                    message: `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s)`,
+                    message: `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s) after ${metadata.attempt} attempts`,
                   },
                   errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
                 },
@@ -201,7 +211,7 @@ export function workflowEntrypoint(
           } catch {
             // Best effort — process exits regardless
           }
-          // Note that this also prevents the runtime to acking the queue message,
+          // Note that this also prevents the runtime from acking the queue message,
           // so the queue will call back once, after which a 410 will get it to exit early.
           process.exit(1);
         }, REPLAY_TIMEOUT_MS);
