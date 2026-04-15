@@ -1553,8 +1553,10 @@ describe('e2e', () => {
     }
   );
 
-  // Skipped on Vercel: deployment protection / VQS proxy rewrites response
-  // headers (Content-Type becomes text/html or is stripped entirely).
+  // This test requires direct HTTP access and works when running locally.
+  // For production use on Vercel with Deployment Protection enabled, use the
+  // queue-based `healthCheck(world, endpoint, options)` function instead, which
+  // bypasses protection by sending messages through the Queue infrastructure.
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
     { timeout: 30_000 },
