@@ -14,9 +14,7 @@ function Tabs({
   className,
   variant = 'default',
   ...props
-}: React.ComponentProps<typeof TabsPrimitive.Root> & {
-  variant?: TabsVariant;
-}) {
+}: React.ComponentProps<typeof TabsPrimitive.Root> & { variant?: TabsVariant }) {
   return (
     <TabsVariantContext value={variant}>
       <TabsPrimitive.Root
