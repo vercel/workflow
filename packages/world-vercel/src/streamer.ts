@@ -365,7 +365,7 @@ export function createStreamer(config?: APIConfig): Streamer {
             if (!result.done) {
               // Append new data to tail buffer, forward everything except
               // the last STREAM_CONTROL_FRAME_SIZE bytes.
-              const combined = concatUint8Arrays(tailBuffer, result.value);
+              const combined = concatUint8Arrays(tailBuffer, result.value!);
               const holdBack = Math.min(
                 STREAM_CONTROL_FRAME_SIZE,
                 combined.length
