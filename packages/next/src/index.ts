@@ -1,8 +1,8 @@
 import type { NextConfig } from 'next';
 import semver from 'semver';
+import { parseEnvironmentFlag } from './environment-flag.js';
 import {
   getNextBuilder,
-  parseEnvironmentFlag,
   shouldUseDeferredBuilder,
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';

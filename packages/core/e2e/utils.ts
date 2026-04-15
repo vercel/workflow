@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createVercelWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
+import { parseEnvironmentFlag } from '../../next/src/environment-flag.js';
 import type { Run } from '../src/runtime';
 import { getWorld, setWorld } from '../src/runtime';
 
@@ -19,23 +20,8 @@ function splitArgs(raw: string): string[] {
   return value.split(/\s+/);
 }
 
-function parseBooleanEnvFlag(
-  rawValue: string | undefined
-): boolean | undefined {
-  const normalizedValue = rawValue?.trim().toLowerCase();
-  if (!normalizedValue) {
-    return undefined;
-  }
-
-  if (normalizedValue === '0' || normalizedValue === 'false') {
-    return false;
-  }
-
-  return true;
-}
-
 export function isNextLazyDiscoveryEnabledForTest(): boolean {
-  return parseBooleanEnvFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY) ?? true;
+  return parseEnvironmentFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY) ?? true;
 }
 
 export function getWorkbenchAppPath(overrideAppName?: string): string {

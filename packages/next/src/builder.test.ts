@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { shouldUseDeferredBuilder } from './builder.js';
+import { parseEnvironmentFlag } from './environment-flag.js';
 
 const originalLazyDiscoveryEnv = process.env.WORKFLOW_NEXT_LAZY_DISCOVERY;
 
@@ -21,6 +22,15 @@ describe('shouldUseDeferredBuilder', () => {
   it('treats WORKFLOW_NEXT_LAZY_DISCOVERY=false as disabled', () => {
     process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = 'false';
 
+    expect(shouldUseDeferredBuilder('16.2.1')).toBe(false);
+  });
+
+  it('treats WORKFLOW_NEXT_LAZY_DISCOVERY=off as disabled', () => {
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = 'off';
+
+    expect(parseEnvironmentFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY)).toBe(
+      false
+    );
     expect(shouldUseDeferredBuilder('16.2.1')).toBe(false);
   });
 
