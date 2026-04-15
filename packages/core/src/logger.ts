@@ -1,11 +1,65 @@
-import debug from 'debug';
 import { getActiveSpan } from './telemetry.js';
 
+type DebugLogger = ((
+  message: string,
+  metadata?: Record<string, unknown>
+) => void) & {
+  enabled?: boolean;
+  extend(suffix: string): DebugLogger;
+};
+
+type DebugFactory =
+  | ((namespace: string) => DebugLogger)
+  | {
+      default?: (namespace: string) => DebugLogger;
+    };
+
+let cachedDebugEnv: string | undefined;
+let cachedDebugFactory: ((namespace: string) => DebugLogger) | null = null;
+
+function loadDebugFactory(): ((namespace: string) => DebugLogger) | null {
+  const currentDebugEnv = process.env.DEBUG;
+  if (!currentDebugEnv) {
+    cachedDebugEnv = undefined;
+    cachedDebugFactory = null;
+    return null;
+  }
+
+  if (cachedDebugEnv === currentDebugEnv) {
+    return cachedDebugFactory;
+  }
+
+  cachedDebugEnv = currentDebugEnv;
+
+  try {
+    const getRuntimeRequire = new Function(
+      'return typeof require !== "undefined" ? require : undefined;'
+    ) as () => ((specifier: string) => unknown) | undefined;
+    const runtimeRequire = getRuntimeRequire();
+
+    if (!runtimeRequire) {
+      cachedDebugFactory = null;
+      return null;
+    }
+
+    const loadedModule = runtimeRequire('debug') as DebugFactory;
+    const debugFactory =
+      typeof loadedModule === 'function' ? loadedModule : loadedModule.default;
+
+    cachedDebugFactory =
+      typeof debugFactory === 'function' ? debugFactory : null;
+  } catch {
+    cachedDebugFactory = null;
+  }
+
+  return cachedDebugFactory;
+}
+
 function createLogger(namespace: string) {
-  const baseDebug = debug(`workflow:${namespace}`);
+  const baseDebug = loadDebugFactory()?.(`workflow:${namespace}`);
 
   const logger = (level: string) => {
-    const levelDebug = baseDebug.extend(level);
+    const levelDebug = baseDebug?.extend(level);
 
     return (message: string, metadata?: Record<string, any>) => {
       // Always output error/warn to console so users see critical issues
@@ -17,9 +71,9 @@ function createLogger(namespace: string) {
       }
 
       // Also log to debug library for verbose output when DEBUG is enabled
-      levelDebug(message, metadata);
+      levelDebug?.(message, metadata);
 
-      if (levelDebug.enabled) {
+      if (levelDebug?.enabled) {
         getActiveSpan()
           .then((span) => {
             span?.addEvent(`${level}.${namespace}`, { message, ...metadata });
