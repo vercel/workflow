@@ -401,6 +401,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
       async get(_runId: string, name: string, startIndex = 0) {
         const chunksDir = path.join(basedir, 'streams', 'chunks');
         let removeListeners = () => {};
+        let pollInterval: ReturnType<typeof setInterval> | null = null;
 
         return new ReadableStream<Uint8Array>({
           async start(controller) {
@@ -450,6 +451,10 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               // Remove listeners before closing
               streamEmitter.off(`chunk:${name}` as const, chunkListener);
               streamEmitter.off(`close:${name}` as const, closeListener);
+              if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+              }
               try {
                 controller.close();
               } catch {
@@ -514,6 +519,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
                 isComplete = true;
                 break;
               }
+              // Track as handled so polling doesn't re-deliver
+              deliveredChunkIds.add(chunkId);
               if (chunk.chunk.byteLength) {
                 // Create a copy to prevent ArrayBuffer detachment
                 controller.enqueue(Uint8Array.from(chunk.chunk));
@@ -551,11 +558,82 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               } catch {
                 // Ignore if controller is already closed
               }
+              return;
             }
+
+            // Track pre-startIndex chunks so polling doesn't re-deliver them
+            for (
+              let i = 0;
+              i < resolvedStartIndex && i < chunkFiles.length;
+              i++
+            ) {
+              const file = chunkFiles[i];
+              const rawChunkId = file.substring(name.length + 1);
+              const chunkId = tag
+                ? rawChunkId.replace(`.${tag}`, '')
+                : rawChunkId;
+              deliveredChunkIds.add(chunkId);
+            }
+
+            // Start filesystem polling for cross-process streaming support.
+            // The EventEmitter only works in-process; when the writer is in a
+            // separate process (e.g. e2e test runner ↔ workbench app), polling
+            // the shared filesystem is the fallback delivery mechanism.
+            let isPolling = false;
+            pollInterval = setInterval(async () => {
+              if (isPolling) return;
+              isPolling = true;
+              try {
+                const { files: currentFiles, extMap: currentExtMap } =
+                  await listChunkFilesForStream(chunksDir, name, tag);
+
+                for (const file of currentFiles) {
+                  const rawChunkId = file.substring(name.length + 1);
+                  const chunkId = tag
+                    ? rawChunkId.replace(`.${tag}`, '')
+                    : rawChunkId;
+
+                  if (deliveredChunkIds.has(chunkId)) continue;
+                  deliveredChunkIds.add(chunkId);
+
+                  const ext = currentExtMap.get(file) ?? '.bin';
+                  const chunk = deserializeChunk(
+                    await readBuffer(path.join(chunksDir, `${file}${ext}`))
+                  );
+
+                  if (chunk?.eof === true) {
+                    if (pollInterval) {
+                      clearInterval(pollInterval);
+                      pollInterval = null;
+                    }
+                    streamEmitter.off(`chunk:${name}` as const, chunkListener);
+                    streamEmitter.off(`close:${name}` as const, closeListener);
+                    try {
+                      controller.close();
+                    } catch {
+                      // Ignore if controller is already closed
+                    }
+                    return;
+                  }
+
+                  if (chunk.chunk.byteLength) {
+                    controller.enqueue(Uint8Array.from(chunk.chunk));
+                  }
+                }
+              } catch {
+                // Ignore transient filesystem errors during polling
+              } finally {
+                isPolling = false;
+              }
+            }, 100);
           },
 
           cancel() {
             removeListeners();
+            if (pollInterval) {
+              clearInterval(pollInterval);
+              pollInterval = null;
+            }
           },
         });
       },
