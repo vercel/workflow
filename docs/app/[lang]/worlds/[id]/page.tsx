@@ -17,6 +17,7 @@ import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
 const isPreview = process.env.VERCEL_ENV === 'preview';
 
+/** MDX wrapper — passes preview gate to benchmark section */
 const WorldTestingPerformanceForMDX = (props: Record<string, unknown>) => (
   <WorldTestingPerformanceMDX {...props} showBenchmarks={isPreview} />
 );
