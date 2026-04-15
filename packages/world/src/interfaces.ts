@@ -43,22 +43,6 @@ export interface Streamer {
    */
   streamFlushIntervalMs?: number;
 
-  /**
-   * Read from a stream with automatic reconnection support.
-   *
-   * Unlike `streams.get`, this method handles stream control frames
-   * (timeout/done signals) and transparently reconnects when the server
-   * indicates a timeout, resuming from the correct chunk index.
-   *
-   * @param name - The stream name/ID
-   * @param startIndex - Optional chunk index to start reading from
-   * @returns A ReadableStream that transparently reconnects on timeouts
-   */
-  readFromStream?(
-    name: string,
-    startIndex?: number
-  ): Promise<ReadableStream<Uint8Array>>;
-
   streams: {
     write(
       runId: string,

@@ -395,7 +395,7 @@ describe('streams.get', () => {
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
-    expect(url.pathname).toBe('/v2/runs/run-123/stream/my-stream');
+    expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
   });
 
   it('passes startIndex as a query parameter', async () => {
@@ -409,7 +409,7 @@ describe('streams.get', () => {
     await streamer.streams.get('run-123', 'my-stream', 5);
 
     const url = new URL(fetchSpy.mock.calls[0][0] as string);
-    expect(url.pathname).toBe('/v2/runs/run-123/stream/my-stream');
+    expect(url.pathname).toBe('/v3/runs/run-123/stream/my-stream');
     expect(url.searchParams.get('startIndex')).toBe('5');
   });
 });

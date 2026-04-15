@@ -90,9 +90,14 @@ function concatUint8Arrays(a: Uint8Array, b: Uint8Array): Uint8Array {
   return result;
 }
 
-function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
+function getStreamUrl(
+  name: string,
+  runId: string,
+  httpConfig: HttpConfig,
+  version = 'v2'
+) {
   return new URL(
-    `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+    `${httpConfig.baseUrl}/${version}/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
   );
 }
 
@@ -255,7 +260,7 @@ export function createStreamer(config?: APIConfig): Streamer {
           ReadableStreamDefaultReader<Uint8Array>
         > => {
           const httpConfig = await getHttpConfig(config);
-          const url = getStreamUrl(name, runId, httpConfig);
+          const url = getStreamUrl(name, runId, httpConfig, 'v3');
           url.searchParams.set('startIndex', String(currentStartIndex));
           const response = await fetch(url, {
             headers: httpConfig.headers,

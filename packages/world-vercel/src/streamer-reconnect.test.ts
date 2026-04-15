@@ -66,7 +66,7 @@ vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: () => Promise.resolve('test-token'),
 }));
 
-describe('readFromStream reconnection (integration)', () => {
+describe('streams.get reconnection (integration)', () => {
   let fetchMock: Mock;
   const originalFetch = globalThis.fetch;
 
@@ -101,7 +101,9 @@ describe('readFromStream reconnection (integration)', () => {
     fetchMock.mockResolvedValueOnce(streamResponse(data, control));
 
     const streamer = await getStreamer();
-    const result = await drain(await streamer.readFromStream('strm_test'));
+    const result = await drain(
+      await streamer.streams.get('run_test', 'strm_test')
+    );
 
     expect(result).toEqual(data);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -119,7 +121,9 @@ describe('readFromStream reconnection (integration)', () => {
     fetchMock.mockResolvedValueOnce(streamResponse(chunk2, done));
 
     const streamer = await getStreamer();
-    const result = await drain(await streamer.readFromStream('strm_test'));
+    const result = await drain(
+      await streamer.streams.get('run_test', 'strm_test')
+    );
 
     // Should have received both chunks' data
     const expected = new Uint8Array([...chunk1, ...chunk2]);
@@ -152,7 +156,9 @@ describe('readFromStream reconnection (integration)', () => {
       );
 
     const streamer = await getStreamer();
-    const result = await drain(await streamer.readFromStream('strm_test'));
+    const result = await drain(
+      await streamer.streams.get('run_test', 'strm_test')
+    );
 
     const expected = new Uint8Array([...chunks[0], ...chunks[1], ...chunks[2]]);
     expect(result).toEqual(expected);
@@ -174,7 +180,7 @@ describe('readFromStream reconnection (integration)', () => {
     );
 
     const streamer = await getStreamer();
-    await drain(await streamer.readFromStream('strm_test', 5));
+    await drain(await streamer.streams.get('run_test', 'strm_test', 5));
 
     const url = (fetchMock.mock.calls[0][0] as URL).toString();
     expect(url).toContain('startIndex=5');
@@ -193,7 +199,9 @@ describe('readFromStream reconnection (integration)', () => {
     );
 
     const streamer = await getStreamer();
-    const result = await drain(await streamer.readFromStream('strm_test'));
+    const result = await drain(
+      await streamer.streams.get('run_test', 'strm_test')
+    );
 
     expect(result).toEqual(data);
   });
@@ -208,7 +216,9 @@ describe('readFromStream reconnection (integration)', () => {
     fetchMock.mockResolvedValueOnce(streamResponse(combined));
 
     const streamer = await getStreamer();
-    const result = await drain(await streamer.readFromStream('strm_test'));
+    const result = await drain(
+      await streamer.streams.get('run_test', 'strm_test')
+    );
 
     expect(result).toEqual(data);
   });
@@ -218,7 +228,9 @@ describe('readFromStream reconnection (integration)', () => {
     fetchMock.mockResolvedValueOnce(streamResponse(control));
 
     const streamer = await getStreamer();
-    const result = await drain(await streamer.readFromStream('strm_test'));
+    const result = await drain(
+      await streamer.streams.get('run_test', 'strm_test')
+    );
 
     expect(result.length).toBe(0);
   });
@@ -233,7 +245,9 @@ describe('readFromStream reconnection (integration)', () => {
       .mockResolvedValueOnce(streamResponse(data, done));
 
     const streamer = await getStreamer();
-    const result = await drain(await streamer.readFromStream('strm_test'));
+    const result = await drain(
+      await streamer.streams.get('run_test', 'strm_test')
+    );
 
     expect(result).toEqual(data);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -246,7 +260,9 @@ describe('readFromStream reconnection (integration)', () => {
     fetchMock.mockResolvedValueOnce(streamResponse(data));
 
     const streamer = await getStreamer();
-    const result = await drain(await streamer.readFromStream('strm_test'));
+    const result = await drain(
+      await streamer.streams.get('run_test', 'strm_test')
+    );
 
     expect(result).toEqual(data);
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -271,7 +287,9 @@ describe('readFromStream reconnection (integration)', () => {
     fetchMock.mockResolvedValueOnce(new Response(errorStream, { status: 200 }));
 
     const streamer = await getStreamer();
-    const result = await drain(await streamer.readFromStream('strm_test'));
+    const result = await drain(
+      await streamer.streams.get('run_test', 'strm_test')
+    );
 
     // Should get the partial data that was enqueued before the error
     // The hold-back buffer may hold some bytes
@@ -283,8 +301,8 @@ describe('readFromStream reconnection (integration)', () => {
     fetchMock.mockResolvedValueOnce(new Response('not found', { status: 404 }));
 
     const streamer = await getStreamer();
-    await expect(streamer.readFromStream('strm_missing')).rejects.toThrow(
-      'Failed to fetch stream: 404'
-    );
+    await expect(
+      streamer.streams.get('run_test', 'strm_missing')
+    ).rejects.toThrow('Failed to fetch stream: 404');
   });
 });
