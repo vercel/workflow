@@ -66,6 +66,12 @@ const config: NextConfig = {
 
   async redirects() {
     return [
+      // Strip .md extension from any route
+      {
+        source: '/:path*.md',
+        destination: '/:path*',
+        permanent: true,
+      },
       {
         source: '/docs',
         destination: '/docs/getting-started',
