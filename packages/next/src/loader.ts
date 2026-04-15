@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
+import { parseEnvironmentFlag } from './environment-flag.js';
 import {
   parseMessage,
   type SocketMessage,
@@ -688,7 +689,7 @@ export default function workflowLoader(
     // Detect workflow patterns in the source code.
     const patterns = await detectPatterns(sourceForTransform);
     const shouldTrackDeferredDiscovery =
-      process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1';
+      parseEnvironmentFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY) ?? false;
 
     // Discovery tracking is only needed for deferred builds. Eager builds
     // discover inputs up front and should ignore any stale socket metadata.

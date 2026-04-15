@@ -31,18 +31,6 @@ const {
 
 vi.mock('./builder.js', () => ({
   getNextBuilder: getNextBuilderMock,
-  parseEnvironmentFlag: (rawValue: string | undefined) => {
-    const normalizedValue = rawValue?.trim().toLowerCase();
-    if (!normalizedValue) {
-      return undefined;
-    }
-
-    if (normalizedValue === '0' || normalizedValue === 'false') {
-      return false;
-    }
-
-    return true;
-  },
   shouldUseDeferredBuilder: shouldUseDeferredBuilderMock,
   WORKFLOW_DEFERRED_ENTRIES: [
     '/.well-known/workflow/v1/flow',
