@@ -90,17 +90,10 @@ function concatUint8Arrays(a: Uint8Array, b: Uint8Array): Uint8Array {
   return result;
 }
 
-function getStreamUrl(
-  name: string,
-  runId: string | undefined,
-  httpConfig: HttpConfig
-) {
-  if (runId) {
-    return new URL(
-      `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
-    );
-  }
-  return new URL(`${httpConfig.baseUrl}/v2/stream/${encodeURIComponent(name)}`);
+function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
+  return new URL(
+    `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
+  );
 }
 
 /**
@@ -256,21 +249,105 @@ export function createStreamer(config?: APIConfig): Streamer {
       },
 
       async get(runId: string, name: string, startIndex?: number) {
-        const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, runId, httpConfig);
-        if (typeof startIndex === 'number') {
-          url.searchParams.set('startIndex', String(startIndex));
-        }
-        const response = await fetch(url, {
-          headers: httpConfig.headers,
+        let currentStartIndex = startIndex ?? 0;
+
+        const connect = async (): Promise<
+          ReadableStreamDefaultReader<Uint8Array>
+        > => {
+          const httpConfig = await getHttpConfig(config);
+          const url = getStreamUrl(name, runId, httpConfig);
+          url.searchParams.set('startIndex', String(currentStartIndex));
+          const response = await fetch(url, {
+            headers: httpConfig.headers,
+          });
+          if (!response.ok) {
+            throw new Error(`Failed to fetch stream: ${response.status}`);
+          }
+          if (!response.body) {
+            throw new Error('No response body for stream');
+          }
+          return (response.body as ReadableStream<Uint8Array>).getReader();
+        };
+
+        let reader = await connect();
+
+        // Hold back the last STREAM_CONTROL_FRAME_SIZE bytes at all times
+        // so we can detect the control frame when the stream closes.
+        let tailBuffer = new Uint8Array(0);
+
+        return new ReadableStream<Uint8Array>({
+          pull: async (controller) => {
+            for (;;) {
+              let result: { done: boolean; value?: Uint8Array };
+              try {
+                result = await reader.read();
+              } catch {
+                // Network error — not a clean close. Forward any buffered data
+                // and propagate the error so consumers can handle it.
+                if (tailBuffer.length > 0) {
+                  controller.enqueue(tailBuffer);
+                  tailBuffer = new Uint8Array(0);
+                }
+                controller.close();
+                return;
+              }
+
+              if (!result.done) {
+                // Append new data to tail buffer, forward everything except
+                // the last STREAM_CONTROL_FRAME_SIZE bytes.
+                const combined = concatUint8Arrays(tailBuffer, result.value!);
+                const holdBack = Math.min(
+                  STREAM_CONTROL_FRAME_SIZE,
+                  combined.length
+                );
+                if (combined.length > holdBack) {
+                  controller.enqueue(combined.subarray(0, -holdBack));
+                  tailBuffer = combined.slice(-holdBack);
+                  return;
+                }
+                // Everything fits in the holdback buffer — nothing to enqueue
+                // yet. Keep reading so we don't rely on the ReadableStream
+                // re-invoking pull when no chunk was enqueued.
+                tailBuffer = new Uint8Array(combined);
+                continue;
+              }
+
+              // Stream closed — check tail for control frame.
+              const control = parseStreamControlFrame(tailBuffer);
+
+              if (control) {
+                // Forward any data bytes that preceded the control frame.
+                const dataLen = tailBuffer.length - control.totalLength;
+                if (dataLen > 0) {
+                  controller.enqueue(tailBuffer.subarray(0, dataLen));
+                }
+                tailBuffer = new Uint8Array(0);
+
+                if (control.done) {
+                  controller.close();
+                  return;
+                }
+
+                // Timeout — reconnect from the next chunk index.
+                currentStartIndex = control.nextIndex;
+                reader = await connect();
+                continue;
+              }
+
+              // No control frame (older server or connection error).
+              // Forward remaining bytes and close.
+              if (tailBuffer.length > 0) {
+                controller.enqueue(tailBuffer);
+                tailBuffer = new Uint8Array(0);
+              }
+              controller.close();
+              return;
+            }
+          },
+          cancel: async () => {
+            await reader.cancel();
+          },
         });
-        if (!response.ok) {
-          throw new Error(`Failed to fetch stream: ${response.status}`);
-        }
-        if (!response.body) {
-          throw new Error('No response body for stream');
-        }
-        return response.body as ReadableStream<Uint8Array>;
       },
 
       async getChunks(
@@ -316,108 +393,6 @@ export function createStreamer(config?: APIConfig): Streamer {
         }
         return (await response.json()) as string[];
       },
-    },
-
-    async readFromStream(name: string, startIndex?: number) {
-      let currentStartIndex = startIndex ?? 0;
-
-      const connect = async (): Promise<
-        ReadableStreamDefaultReader<Uint8Array>
-      > => {
-        const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, undefined, httpConfig);
-        url.searchParams.set('startIndex', String(currentStartIndex));
-        const response = await fetch(url, {
-          headers: httpConfig.headers,
-        });
-        if (!response.ok) {
-          throw new Error(`Failed to fetch stream: ${response.status}`);
-        }
-        if (!response.body) {
-          throw new Error('No response body for stream');
-        }
-        return (response.body as ReadableStream<Uint8Array>).getReader();
-      };
-
-      let reader = await connect();
-
-      // Hold back the last STREAM_CONTROL_FRAME_SIZE bytes at all times
-      // so we can detect the control frame when the stream closes.
-      let tailBuffer = new Uint8Array(0);
-
-      return new ReadableStream<Uint8Array>({
-        pull: async (controller) => {
-          for (;;) {
-            let result: { done: boolean; value?: Uint8Array };
-            try {
-              result = await reader.read();
-            } catch {
-              // Network error — not a clean close. Forward any buffered data
-              // and propagate the error so consumers can handle it.
-              if (tailBuffer.length > 0) {
-                controller.enqueue(tailBuffer);
-                tailBuffer = new Uint8Array(0);
-              }
-              controller.close();
-              return;
-            }
-
-            if (!result.done) {
-              // Append new data to tail buffer, forward everything except
-              // the last STREAM_CONTROL_FRAME_SIZE bytes.
-              const combined = concatUint8Arrays(tailBuffer, result.value!);
-              const holdBack = Math.min(
-                STREAM_CONTROL_FRAME_SIZE,
-                combined.length
-              );
-              if (combined.length > holdBack) {
-                controller.enqueue(combined.subarray(0, -holdBack));
-                tailBuffer = combined.slice(-holdBack);
-                return;
-              }
-              // Everything fits in the holdback buffer — nothing to enqueue
-              // yet. Keep reading so we don't rely on the ReadableStream
-              // re-invoking pull when no chunk was enqueued.
-              tailBuffer = new Uint8Array(combined);
-              continue;
-            }
-
-            // Stream closed — check tail for control frame.
-            const control = parseStreamControlFrame(tailBuffer);
-
-            if (control) {
-              // Forward any data bytes that preceded the control frame.
-              const dataLen = tailBuffer.length - control.totalLength;
-              if (dataLen > 0) {
-                controller.enqueue(tailBuffer.subarray(0, dataLen));
-              }
-              tailBuffer = new Uint8Array(0);
-
-              if (control.done) {
-                controller.close();
-                return;
-              }
-
-              // Timeout — reconnect from the next chunk index.
-              currentStartIndex = control.nextIndex;
-              reader = await connect();
-              continue;
-            }
-
-            // No control frame (older server or connection error).
-            // Forward remaining bytes and close.
-            if (tailBuffer.length > 0) {
-              controller.enqueue(tailBuffer);
-              tailBuffer = new Uint8Array(0);
-            }
-            controller.close();
-            return;
-          }
-        },
-        cancel: async () => {
-          await reader.cancel();
-        },
-      });
     },
   };
 }

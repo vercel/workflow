@@ -257,7 +257,7 @@ describe('parseStreamControlFrame', () => {
   });
 });
 
-describe('readFromStream reconnection', () => {
+describe('streams.get reconnection', () => {
   /**
    * Helper to create a ReadableStream from chunks, optionally appending
    * a control frame to the last chunk or as a separate chunk.
