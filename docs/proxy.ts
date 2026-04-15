@@ -48,7 +48,7 @@ function getMarkdownRewrite(pathname: string): string | null {
     return `/${i18n.defaultLanguage}/llms.mdx/cookbook`;
   }
 
-  return rewriteDocsLLM(pathname) ?? rewriteCookbookLLM(pathname);
+  return rewriteDocsLLM(pathname) || rewriteCookbookLLM(pathname) || null;
 }
 
 const internationalizer = createI18nMiddleware(i18n);
