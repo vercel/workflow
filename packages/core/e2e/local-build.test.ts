@@ -3,7 +3,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
 import { usesVercelWorld } from '../../utils/src/world-target';
-import { getWorkbenchAppPath } from './utils';
+import {
+  getWorkbenchAppPath,
+  isNextLazyDiscoveryEnabledForTest,
+} from './utils';
 
 interface CommandResult {
   stdout: string;
@@ -119,7 +122,10 @@ describe.each([
 
     expect(result.output).not.toContain('Error:');
 
-    if (DEFERRED_BUILD_MODE_PROJECTS.has(project)) {
+    if (
+      DEFERRED_BUILD_MODE_PROJECTS.has(project) &&
+      isNextLazyDiscoveryEnabledForTest()
+    ) {
       const deferredBuildSupported = !result.output.includes(
         DEFERRED_BUILD_UNSUPPORTED_WARNING
       );

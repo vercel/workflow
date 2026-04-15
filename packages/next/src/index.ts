@@ -2,6 +2,7 @@ import type { NextConfig } from 'next';
 import semver from 'semver';
 import {
   getNextBuilder,
+  parseEnvironmentFlag,
   shouldUseDeferredBuilder,
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
@@ -61,8 +62,17 @@ export function withWorkflow(
     };
   } = {}
 ) {
-  if (workflows?.lazyDiscovery) {
-    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
+  const lazyDiscoveryOverride = parseEnvironmentFlag(
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY
+  );
+  if (lazyDiscoveryOverride === undefined) {
+    if (workflows?.lazyDiscovery) {
+      process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '1';
+    }
+  } else {
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = lazyDiscoveryOverride
+      ? '1'
+      : '0';
   }
 
   if (!process.env.VERCEL_DEPLOYMENT_ID) {

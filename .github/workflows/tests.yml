@@ -253,6 +253,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.canary != true && (matrix.app.name == 'nextjs-turbopack' || matrix.app.name == 'nextjs-webpack') && '0' || '' }}
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
@@ -332,7 +333,7 @@ jobs:
         run: echo "matrix=$(node ./scripts/create-test-matrix.mjs)" >> $GITHUB_OUTPUT
 
   e2e-local-dev:
-    name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
+    name: E2E Local Dev Tests (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
@@ -345,6 +346,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -382,7 +384,7 @@ jobs:
           cd "${{ steps.prepare-workbench.outputs.workbench_app_path }}" && pnpm dev &
           echo "starting tests in 10 seconds" && sleep 10
           pnpm vitest run packages/core/e2e/dev.test.ts; sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
@@ -393,19 +395,19 @@ jobs:
 
       - name: Generate E2E summary
         if: always()
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Dev (${{ matrix.app.name }})" >> $GITHUB_STEP_SUMMARY || true
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Dev (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}
-          path: e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          name: e2e-results-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
+          path: e2e-local-dev-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
           retention-days: 7
           if-no-files-found: ignore
 
   e2e-local-prod:
-    name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
+    name: E2E Local Prod Tests (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
@@ -418,6 +420,7 @@ jobs:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
       WORKFLOW_PUBLIC_MANIFEST: '1'
+      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -460,7 +463,7 @@ jobs:
         run: |
           cd "${{ steps.prepare-workbench.outputs.workbench_app_path }}" && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
@@ -470,19 +473,19 @@ jobs:
 
       - name: Generate E2E summary
         if: always()
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Prod (${{ matrix.app.name }})" >> $GITHUB_STEP_SUMMARY || true
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Prod (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}
-          path: e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          name: e2e-results-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
+          path: e2e-local-prod-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
           retention-days: 7
           if-no-files-found: ignore
 
   e2e-local-postgres:
-    name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.canary && 'canary' || 'stable' }})
+    name: E2E Local Postgres Tests (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
@@ -512,6 +515,7 @@ jobs:
       WORKFLOW_PUBLIC_MANIFEST: '1'
       WORKFLOW_TARGET_WORLD: "@workflow/world-postgres"
       WORKFLOW_POSTGRES_URL: "postgres://world:world@localhost:5432/world"
+      WORKFLOW_NEXT_LAZY_DISCOVERY: ${{ matrix.app.lazyDiscovery == false && '0' || matrix.app.lazyDiscovery == true && '1' || '' }}
 
     steps:
       - name: Checkout Repo
@@ -557,7 +561,7 @@ jobs:
         run: |
           cd "${{ steps.prepare-workbench.outputs.workbench_app_path }}" && pnpm start &
           echo "starting tests in 10 seconds" && sleep 10
-          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ matrix.app.name }}
@@ -567,14 +571,14 @@ jobs:
 
       - name: Generate E2E summary
         if: always()
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Postgres (${{ matrix.app.name }})" >> $GITHUB_STEP_SUMMARY || true
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Local Postgres (${{ matrix.app.name }} - ${{ matrix.app.runLabel }})" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}
-          path: e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.canary && 'canary' || 'stable' }}.json
+          name: e2e-results-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}
+          path: e2e-local-postgres-${{ matrix.app.name }}-${{ matrix.app.artifactSuffix }}.json
           retention-days: 7
           if-no-files-found: ignore
 

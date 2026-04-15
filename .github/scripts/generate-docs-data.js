@@ -144,7 +144,7 @@ function parseE2EResults(files) {
       // Extract framework from filename for detailed breakdown
       const basename = path.basename(file, '.json');
       const frameworkMatch = basename.match(
-        /-(nextjs-turbopack|nextjs-webpack|nitro|nuxt|sveltekit|vite|hono|express|fastify|astro)(?:-(canary|stable))?$/
+        /-(nextjs-turbopack|nextjs-webpack|nitro|nuxt|sveltekit|vite|hono|express|fastify|astro)(?:-(?:canary|stable(?:-lazy-discovery-(?:enabled|disabled))?))?$/
       );
       if (frameworkMatch) {
         const framework = frameworkMatch[1];
