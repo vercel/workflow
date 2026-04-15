@@ -3,14 +3,20 @@ import type { WorkflowRun } from '@workflow/core/runtime';
 import type { Event } from '@workflow/world';
 import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
 import { NewTraceViewer as NewTraceViewerComponent } from './new-trace-viewer/trace-viewer';
+import {
+  SidebarDataProvider,
+  type SidebarDataContextValue,
+} from './sidebar/sidebar-data-context';
 import type { Trace } from './trace-viewer/types';
 
 const NewTraceViewer = ({
   run,
   events,
+  sidebarData,
 }: {
   run: WorkflowRun;
   events: Event[];
+  sidebarData: SidebarDataContextValue;
 }) => {
   // Build trace only when actual data changes — no timer-driven rebuilds.
   // Active span widths are animated imperatively by useLiveTick at 60fps.
@@ -32,9 +38,11 @@ const NewTraceViewer = ({
   }
 
   return (
-    <div className="relative w-full h-full flex">
-      <NewTraceViewerComponent trace={trace as Trace} />
-    </div>
+    <SidebarDataProvider value={sidebarData}>
+      <div className="relative w-full h-full flex">
+        <NewTraceViewerComponent trace={trace as Trace} />
+      </div>
+    </SidebarDataProvider>
   );
 };
 
