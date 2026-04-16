@@ -25,7 +25,9 @@ const aliasPrefix =
   aliasPrefixFlagIndex === -1 ? undefined : args[aliasPrefixFlagIndex + 1];
 const nonFlagArgs = args.filter((arg, index) => {
   if (arg === '--alias-prefix') return false;
-  if (index === aliasPrefixFlagIndex + 1) return false;
+  if (aliasPrefixFlagIndex !== -1 && index === aliasPrefixFlagIndex + 1) {
+    return false;
+  }
   return !arg.startsWith('--');
 });
 
