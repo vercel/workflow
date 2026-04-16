@@ -1,5 +1,19 @@
 # @workflow/ai
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1707](https://github.com/vercel/workflow/pull/1707) [`86ebe9f`](https://github.com/vercel/workflow/commit/86ebe9fe9f17d36819bafef427a51f81e6045307) Thanks [@craze3](https://github.com/craze3)! - Preserve malformed streamed tool-call input until repair hooks can run
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+- Updated dependencies [[`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352)]:
+  - @workflow/serde@5.0.0-beta.1
+  - workflow@5.0.0-beta.2
+
 ## 5.0.0-beta.1
 
 ### Patch Changes

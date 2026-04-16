@@ -1,5 +1,16 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1742](https://github.com/vercel/workflow/pull/1742) [`340c085`](https://github.com/vercel/workflow/commit/340c0856813b23e9be966a2022933d6040a3b062) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use custom stream close control frame to decide whether to reconnect to stream
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- Updated dependencies [[`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352)]:
+  - @workflow/errors@5.0.0-beta.1
+
 ## 5.0.0-beta.1
 
 ### Major Changes
