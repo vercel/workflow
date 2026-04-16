@@ -462,8 +462,10 @@ describe('readFromStream reconnection', () => {
     );
 
     const streamer = await getStreamer();
-    const stream = await streamer.readFromStream('strm_test');
-
-    await expect(drain(stream)).rejects.toThrow('connection reset');
+    // readFromStream reads the full response via arrayBuffer(), so
+    // a mid-stream error rejects the readFromStream promise itself.
+    await expect(streamer.readFromStream('strm_test')).rejects.toThrow(
+      'connection reset'
+    );
   });
 });
