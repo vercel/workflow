@@ -51,31 +51,12 @@ function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
   return (
     <div className="flex flex-col items-center gap-8 md:gap-12 px-4 py-8 sm:py-12 sm:px-12">
       <div className="flex flex-col items-center max-w-[800px] text-center mx-auto">
-        <div className="grid gap-4">
-          <h3 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
-            {title}
-          </h3>
-          <p className="text-balance text-lg text-muted-foreground">
-            {description}
-          </p>
-        </div>
-        <div className="flex flex-col sm:flex-row items-center gap-3 mt-10">
-          <Button
-            asChild
-            size="lg"
-            className="rounded-full h-12 px-8 text-base"
-          >
-            <Link href="/docs/getting-started">Workflows on Vercel</Link>
-          </Button>
-          <Button
-            asChild
-            variant="outline"
-            size="lg"
-            className="rounded-full h-12 px-8 text-base"
-          >
-            <Link href="/worlds">Learn about self-hosting</Link>
-          </Button>
-        </div>
+        <h3 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
+          {title}
+        </h3>
+        <p className="text-balance text-lg text-muted-foreground mt-4">
+          {description}
+        </p>
       </div>
       <div className="@container w-full overflow-hidden">{visual}</div>
     </div>

@@ -45,11 +45,7 @@ export const Templates = () => (
       <p className="text-lg text-muted-foreground">
         See Workflow SDK in action with one of the example templates.
       </p>
-      <Button
-        asChild
-        size="lg"
-        className="rounded-full h-12 px-8 text-base w-fit mt-2"
-      >
+      <Button asChild size="lg" className="rounded-full h-10 px-6 w-fit mt-2">
         <Link href="/docs/examples">All examples</Link>
       </Button>
     </div>
