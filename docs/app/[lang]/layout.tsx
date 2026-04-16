@@ -10,7 +10,7 @@ import { cn } from '@/lib/utils';
 const getMetadataBase = () => {
   // Use VERCEL_URL for preview deployments, production URL for production
   if (process.env.VERCEL_ENV === 'production') {
-    return new URL('https://useworkflow.dev');
+    return new URL('https://workflow-sdk.dev');
   }
   if (process.env.VERCEL_URL) {
     return new URL(`https://${process.env.VERCEL_URL}`);

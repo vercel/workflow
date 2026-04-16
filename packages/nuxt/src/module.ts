@@ -15,7 +15,7 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
   meta: {
     name: 'workflow',
     configKey: 'workflow',
-    docs: 'https://useworkflow.dev/docs/getting-started/nuxt',
+    docs: 'https://workflow-sdk.dev/docs/getting-started/nuxt',
   },
   // Default configuration options of the Nuxt module
   defaults: {

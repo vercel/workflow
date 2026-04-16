@@ -12,6 +12,21 @@ type Tweet = {
 };
 
 const TWEETS: Tweet[] = [
+  // Left column (indices 0-2)
+  {
+    url: 'https://x.com/resend/status/1981494746347630976',
+    name: 'Resend',
+    username: 'resend',
+    image: `${BLOB_URL}/resend.jpg`,
+    tweet: (
+      <>
+        <span>
+          Resend + <InlineLink>@vercel</InlineLink> Workflow SDK
+        </span>
+        <span>A match made in heaven</span>
+      </>
+    ),
+  },
   {
     url: 'https://x.com/michaelcaaarter/status/1986078356325187762',
     name: 'Michael Carter',
@@ -62,7 +77,7 @@ const TWEETS: Tweet[] = [
         <span>
           Built a complete end-to-end workflow with{' '}
           <InlineLink>@ampcode</InlineLink> using{' '}
-          <InlineLink>@WorkflowDevKit</InlineLink> and{' '}
+          <InlineLink>@WorkflowSDK</InlineLink> and{' '}
           <InlineLink>@vercel</InlineLink> AI Gateway
         </span>
         <span>

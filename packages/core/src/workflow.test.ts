@@ -1505,7 +1505,7 @@ describe('runWorkflow', () => {
       }
       assert(error);
       expect(error.message).toContain(
-        'https://useworkflow.dev/err/timeout-in-workflow'
+        'https://workflow-sdk.dev/err/timeout-in-workflow'
       );
       expect(error.message).toContain(
         'Use the "sleep" function from "workflow"'
