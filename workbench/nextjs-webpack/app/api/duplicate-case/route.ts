@@ -2,7 +2,7 @@
 //       using it because webpack relies on esbuild's tree shaking
 
 import { start } from 'workflow/api';
-import { addTenWorkflow } from '@/workflows/98_duplicate_case';
+import { addTenWorkflow } from 'workflow-workbench/98_duplicate_case';
 
 export async function GET(_: Request) {
   const run = await start(addTenWorkflow, [10]);

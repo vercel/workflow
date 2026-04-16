@@ -49,7 +49,9 @@ function resolveImportPath(
   }
   // Relative path - resolve relative to cwd and convert to file:// URL
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
-    return pathToFileURL(resolve(process.cwd(), specifier)).href;
+    return pathToFileURL(
+      resolve(/* turbopackIgnore: true */ process.cwd(), specifier)
+    ).href;
   }
   // Package specifier - use require.resolve to find the package
   try {
@@ -70,7 +72,7 @@ function resolveRequirePath(
     return specifier;
   }
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
-    return resolve(process.cwd(), specifier);
+    return resolve(/* turbopackIgnore: true */ process.cwd(), specifier);
   }
   try {
     return requireFn.resolve(specifier);
@@ -125,6 +127,33 @@ function resolveWorldSpecifier(targetWorld: string): string {
   }
   return targetWorld;
 }
+
+/**
+ * Resolve the configured world package once at module load so bundlers/NFT can
+ * trace it into server deployments without eagerly loading the module itself.
+ *
+ * Keep the env access inline so Next/BaseBuilder can replace it with a literal
+ * package name in generated bundles.
+ */
+function traceConfiguredWorldPackage(): void {
+  if (!process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE) {
+    return;
+  }
+
+  try {
+    const requireFn =
+      isLocalWorldTarget(process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE) ||
+      isVercelWorldTarget(process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE)
+        ? getCoreRuntimeRequire()
+        : getProjectRequire();
+
+    requireFn.resolve(process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE);
+  } catch {
+    // Actual module loading still happens lazily in createWorld().
+  }
+}
+
+traceConfiguredWorldPackage();
 
 function warnForStaleVercelEnvVars(): void {
   // Warn if WORKFLOW_VERCEL_* env vars are set inside a Vercel serverless

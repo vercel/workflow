@@ -5,11 +5,11 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
+import { getBaseUrl } from './base-url.js';
 import type { CryptoKey } from './encryption.js';
 import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
@@ -97,10 +97,9 @@ export async function runWorkflow(
       );
     }
 
-    // Get the port before creating VM context to avoid async operations
-    // affecting the deterministic timestamp
-    const isVercel = process.env.VERCEL_URL !== undefined;
-    const port = isVercel ? undefined : await getPort();
+    // Resolve the runtime base URL before creating the VM context so async
+    // work does not affect the deterministic timestamp.
+    const url = await getBaseUrl();
 
     const {
       context,
@@ -199,12 +198,6 @@ export async function runWorkflow(
     // @ts-expect-error - `@types/node` says symbol is not valid, but it does work
     vmGlobalThis[WORKFLOW_GET_STREAM_ID] = (namespace?: string) =>
       getWorkflowRunStreamId(workflowRun.runId, namespace);
-
-    // TODO: there should be a getUrl method on the world interface itself. This
-    // solution only works for vercel + local worlds.
-    const url = isVercel
-      ? `https://${process.env.VERCEL_URL}`
-      : `http://localhost:${port ?? 3000}`;
 
     // For the workflow VM, we store the context in a symbol on the `globalThis` object
     const ctx: WorkflowMetadata = {

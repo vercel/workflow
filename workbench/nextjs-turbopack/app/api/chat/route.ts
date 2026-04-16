@@ -1,12 +1,12 @@
 // Keep existing imports so HMR discovery still works
 import * as wellKnownAgentSteps from '@/app/.well-known/agent/v1/steps';
-import * as _workflows from '@/workflows/3_streams';
+import * as _workflows from 'workflow-workbench/3_streams';
 void wellKnownAgentSteps;
 void _workflows;
 
 import { createUIMessageStreamResponse, type UIMessage } from 'ai';
 import { start } from 'workflow/api';
-import { chat } from '@/workflows/agent_chat';
+import { chat } from 'workflow-workbench/agent_chat';
 
 export async function POST(req: Request) {
   const { messages, model }: { messages: UIMessage[]; model?: string } =

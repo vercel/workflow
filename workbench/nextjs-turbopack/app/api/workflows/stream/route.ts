@@ -5,7 +5,10 @@ import { getRun } from 'workflow/api';
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { runId } = body as { runId: string };
+    const { runId, namespace } = body as {
+      runId: string;
+      namespace?: string;
+    };
 
     if (!runId) {
       return NextResponse.json({ error: 'runId is required' }, { status: 400 });
@@ -21,7 +24,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const readable = run.getReadable();
+    const readable = run.getReadable({ namespace });
     return new Response(readable, {
       headers: {
         'Content-Type': 'text/event-stream',

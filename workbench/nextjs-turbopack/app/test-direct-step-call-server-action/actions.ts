@@ -1,6 +1,6 @@
 'use server';
 
-import { getFormattedStepResult } from '@/workflows/server_action_step_imports';
+import { getFormattedStepResult } from 'workflow-workbench/server_action_step_imports';
 
 export type DirectImportedStepActionState = {
   error: string | null;

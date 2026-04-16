@@ -4,12 +4,13 @@
   "private": true,
   "license": "Apache-2.0",
   "scripts": {
-    "generate:workflows": "node ../scripts/generate-workflows-registry.js",
-    "predev": "pnpm generate:workflows",
-    "prebuild": "pnpm generate:workflows",
+    "sync:workflows": "node ../scripts/sync-workflows.js ./workflows ./.generated/workflows",
+    "generate:workflows": "node ../scripts/generate-workflows-registry.js ./workflows ./_workflows.ts --alias-prefix workflow-workbench",
+    "predev": "pnpm sync:workflows && pnpm generate:workflows",
+    "prebuild": "pnpm sync:workflows && pnpm generate:workflows",
     "dev": "next dev --webpack",
     "build": "next build --webpack",
-    "clean": "rm -rf .next .swc app/.well-known/workflow _workflows.ts",
+    "clean": "rm -rf .next .swc .generated app/.well-known/workflow _workflows.ts",
     "start": "next start",
     "lint": "next lint"
   },

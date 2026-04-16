@@ -1,10 +1,28 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getRun, start } from 'workflow/api';
-import {
-  WorkflowRunFailedError,
-  WorkflowRunNotCompletedError,
-} from 'workflow/internal/errors';
-import { allWorkflows } from '@/_workflows';
+
+function getBaseUrl(req: NextApiRequest): string {
+  const protoHeader = req.headers['x-forwarded-proto'];
+  const proto = Array.isArray(protoHeader)
+    ? protoHeader[0]
+    : protoHeader || 'http';
+  const host = req.headers.host;
+  if (!host) {
+    throw new Error('Missing host header');
+  }
+  return `${proto}://${host}`;
+}
+
+async function proxyJson(
+  req: NextApiRequest,
+  path: string,
+  body: unknown
+): Promise<Response> {
+  return fetch(new URL(path, getBaseUrl(req)), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
 
 export default async function handler(
   req: NextApiRequest,
@@ -26,29 +44,9 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
   if (!workflowFile) {
     return res.status(400).send('No workflowFile query parameter provided');
   }
-  const workflows = allWorkflows[workflowFile as keyof typeof allWorkflows];
-  if (!workflows) {
-    return res.status(400).send(`Workflow file "${workflowFile}" not found`);
-  }
-
   const workflowFn = (req.query.workflowFn as string) || 'simple';
   if (!workflowFn) {
     return res.status(400).send('No workflow query parameter provided');
-  }
-
-  // Handle static method lookups (e.g., "Calculator.calculate")
-  let workflow: unknown;
-  if (workflowFn.includes('.')) {
-    const [className, methodName] = workflowFn.split('.');
-    const cls = workflows[className as keyof typeof workflows];
-    if (cls && typeof cls === 'function') {
-      workflow = (cls as Record<string, unknown>)[methodName];
-    }
-  } else {
-    workflow = workflows[workflowFn as keyof typeof workflows];
-  }
-  if (!workflow) {
-    return res.status(400).send(`Workflow "${workflowFn}" not found`);
   }
 
   let args: any[] = [];
@@ -69,9 +67,17 @@ async function handlePost(req: NextApiRequest, res: NextApiResponse) {
   console.log(`Starting "${workflowFn}" workflow with args: ${args}`);
 
   try {
-    const run = await start(workflow as any, args as any);
-    console.log('Run', run.runId);
-    return res.status(200).json(run);
+    const response = await proxyJson(req, '/api/workflows/start', {
+      workflowFile,
+      workflowFn,
+      args,
+      responseMode: 'run',
+    });
+    const text = await response.text();
+    return res
+      .status(response.status)
+      .setHeader('Content-Type', 'application/json')
+      .send(text);
   } catch (err) {
     console.error(`Failed to start!!`, err);
     throw err;
@@ -87,23 +93,27 @@ async function handleGet(req: NextApiRequest, res: NextApiResponse) {
   const outputStreamParam = req.query['output-stream'] as string | undefined;
   if (outputStreamParam) {
     const namespace = outputStreamParam === '1' ? undefined : outputStreamParam;
-    const run = getRun(runId);
-    const stream = run.getReadable({
+    const response = await proxyJson(req, '/api/workflows/stream', {
+      runId,
       namespace,
     });
+    if (!response.ok || !response.body) {
+      return res.status(response.status).send(await response.text());
+    }
 
-    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader(
+      'Content-Type',
+      response.headers.get('Content-Type') || 'application/octet-stream'
+    );
 
-    const reader = stream.getReader();
+    const reader = response.body.getReader();
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const data =
-          value instanceof Uint8Array
-            ? { data: Buffer.from(value).toString('base64') }
-            : value;
-        res.write(`${JSON.stringify(data)}\n`);
+        if (value) {
+          res.write(value);
+        }
       }
     } finally {
       reader.releaseLock();
@@ -112,65 +122,13 @@ async function handleGet(req: NextApiRequest, res: NextApiResponse) {
   }
 
   try {
-    const run = getRun(runId);
-    const returnValue = await run.returnValue;
-    console.log('Return value:', returnValue);
-
-    // Include run metadata in headers
-    const [createdAt, startedAt, completedAt] = await Promise.all([
-      run.createdAt,
-      run.startedAt,
-      run.completedAt,
-    ]);
-
-    res.setHeader('X-Workflow-Run-Created-At', createdAt?.toISOString() || '');
-    res.setHeader('X-Workflow-Run-Started-At', startedAt?.toISOString() || '');
-    res.setHeader(
-      'X-Workflow-Run-Completed-At',
-      completedAt?.toISOString() || ''
-    );
-
-    if (returnValue instanceof ReadableStream) {
-      res.setHeader('Content-Type', 'application/octet-stream');
-      const reader = returnValue.getReader();
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(value);
-        }
-      } finally {
-        reader.releaseLock();
-      }
-      return res.end();
+    const response = await proxyJson(req, '/api/workflows/await', { runId });
+    const result = await response.json();
+    if (!response.ok) {
+      return res.status(response.status).json(result);
     }
-
-    return res.status(200).json(returnValue);
+    return res.status(200).json(result.result);
   } catch (error) {
-    if (error instanceof Error) {
-      if (WorkflowRunNotCompletedError.is(error)) {
-        return res.status(202).json({
-          ...error,
-          name: error.name,
-          message: error.message,
-        });
-      }
-
-      if (WorkflowRunFailedError.is(error)) {
-        const cause = error.cause;
-        return res.status(400).json({
-          ...error,
-          name: error.name,
-          message: error.message,
-          cause: {
-            message: cause.message,
-            stack: cause.stack,
-            code: cause.code,
-          },
-        });
-      }
-    }
-
     console.error(
       'Unexpected error while getting workflow return value:',
       error

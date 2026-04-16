@@ -3,7 +3,7 @@
 /**
  * Auto-generates _workflows.ts registry file for workbenches
  *
- * Usage: node generate-workflows-registry.js [workflowsDir] [outputPath] [--esm]
+ * Usage: node generate-workflows-registry.js [workflowsDir] [outputPath] [--esm] [--alias-prefix <prefix>]
  *
  * Defaults:
  *   workflowsDir: ./workflows
@@ -11,6 +11,7 @@
  *
  * Options:
  *   --esm: Add .js extension to imports (required for ESM with NodeNext moduleResolution)
+ *   --alias-prefix: Use an import prefix instead of relative file paths
  */
 
 const fs = require('node:fs');
@@ -19,7 +20,14 @@ const path = require('node:path');
 // Parse arguments
 const args = process.argv.slice(2);
 const esmMode = args.includes('--esm');
-const nonFlagArgs = args.filter((arg) => !arg.startsWith('--'));
+const aliasPrefixFlagIndex = args.indexOf('--alias-prefix');
+const aliasPrefix =
+  aliasPrefixFlagIndex === -1 ? undefined : args[aliasPrefixFlagIndex + 1];
+const nonFlagArgs = args.filter((arg, index) => {
+  if (arg === '--alias-prefix') return false;
+  if (index === aliasPrefixFlagIndex + 1) return false;
+  return !arg.startsWith('--');
+});
 
 // Get arguments or use defaults
 const workflowsDir = nonFlagArgs[0] || './workflows';
@@ -77,7 +85,12 @@ function generateRegistry() {
       // Use relative path from output directory to workflows directory
       let importPath;
       const baseName = file.replace(/\.tsx?$/, '');
-      if (relativeWorkflowsPath && relativeWorkflowsPath !== 'workflows') {
+      if (aliasPrefix) {
+        importPath = `${aliasPrefix}/${baseName}${importExtension}`;
+      } else if (
+        relativeWorkflowsPath &&
+        relativeWorkflowsPath !== 'workflows'
+      ) {
         importPath = `${relativeWorkflowsPath}/${baseName}${importExtension}`;
       } else {
         importPath = `./workflows/${baseName}${importExtension}`;

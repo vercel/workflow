@@ -53,6 +53,10 @@ function resolveConfiguredWorldExternalPackage(
   return resolvePackageName(targetWorld);
 }
 
+function isBuiltInWorldPackage(pkg: string | undefined): boolean {
+  return pkg === '@workflow/world-local' || pkg === '@workflow/world-vercel';
+}
+
 function toTracingGlob(rootDir: string, targetDir: string): string {
   let relativePath = relative(rootDir, targetDir).replace(/\\/g, '/');
 
@@ -266,11 +270,15 @@ export function withWorkflow(
       nextConfig.serverExternalPackages = [...serverExternalPackages];
     }
 
-    const configuredWorldTraceIncludes = resolveConfiguredWorldTraceIncludes(
-      configuredWorldExternalPackage,
-      process.cwd(),
-      nextConfig.outputFileTracingRoot
-    );
+    const configuredWorldTraceIncludes = isBuiltInWorldPackage(
+      configuredWorldExternalPackage
+    )
+      ? undefined
+      : resolveConfiguredWorldTraceIncludes(
+          configuredWorldExternalPackage,
+          process.cwd(),
+          nextConfig.outputFileTracingRoot
+        );
     if (configuredWorldTraceIncludes?.length) {
       const routePattern = '/.well-known/workflow/v1/**';
       const outputFileTracingIncludes = {

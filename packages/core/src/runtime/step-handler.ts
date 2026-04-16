@@ -11,8 +11,8 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
+import { getBaseUrl } from '../base-url.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -141,11 +141,10 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
         // Extract the step name from the topic name
         const stepName = metadata.queueName.slice('__wkf_step_'.length);
         const world = await getWorld();
-        const isVercel = process.env.VERCEL_URL !== undefined;
 
         // Resolve local async values concurrently before entering the trace span
-        const [port, spanKind] = await Promise.all([
-          isVercel ? undefined : getPort(),
+        const [baseUrl, spanKind] = await Promise.all([
+          getBaseUrl(),
           getSpanKind('CONSUMER'),
         ]);
 
@@ -513,11 +512,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       workflowName,
                       workflowRunId,
                       workflowStartedAt: new Date(+workflowStartedAt),
-                      // TODO: there should be a getUrl method on the world interface itself. This
-                      // solution only works for vercel + local worlds.
-                      url: isVercel
-                        ? `https://${process.env.VERCEL_URL}`
-                        : `http://localhost:${port ?? 3000}`,
+                      url: baseUrl,
                       features: { encryption: !!encryptionKey },
                     },
                     ops,
