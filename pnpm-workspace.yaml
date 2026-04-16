@@ -2,7 +2,6 @@ packages:
   - workbench/*
   - "!workbench/nitro"
   - packages/*
-  - docs
 
 catalog:
   "@biomejs/biome": ^2.4.4
