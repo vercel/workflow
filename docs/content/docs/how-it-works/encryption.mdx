@@ -1,6 +1,6 @@
 ---
 title: Encryption
-description: Learn how Workflow DevKit encrypts user data end-to-end in the event log.
+description: Learn how Workflow SDK encrypts user data end-to-end in the event log.
 type: conceptual
 summary: Understand how workflow and step data is encrypted at rest.
 prerequisites:
@@ -11,10 +11,10 @@ related:
 ---
 
 <Callout>
-This guide explains how Workflow DevKit encrypts user data in the event log. Understanding these details is not required to use workflows — encryption is automatic and requires no code changes. For getting started, see the [getting started](/docs/getting-started) guides for your framework.
+This guide explains how Workflow SDK encrypts user data in the event log. Understanding these details is not required to use workflows — encryption is automatic and requires no code changes. For getting started, see the [getting started](/docs/getting-started) guides for your framework.
 </Callout>
 
-Workflow DevKit supports automatic end-to-end encryption of all user data before it is written to the event log. When a `World` implementation provides encryption support, it is safe to pass sensitive data — such as API keys, tokens, or user credentials — as workflow inputs, step arguments, and return values. The storage backend only ever sees ciphertext.
+Workflow SDK supports automatic end-to-end encryption of all user data before it is written to the event log. When a `World` implementation provides encryption support, it is safe to pass sensitive data — such as API keys, tokens, or user credentials — as workflow inputs, step arguments, and return values. The storage backend only ever sees ciphertext.
 
 Encryption support varies by `World` implementation. See the [Worlds](/worlds) page to check which worlds support this feature. `World` implementations opt into encryption by providing a `getEncryptionKeyForRun()` method — the core runtime will use it automatically when present.
 
@@ -82,12 +82,49 @@ Without `--decrypt`, encrypted fields display as `🔒 Encrypted` placeholders.
 
 ## Custom World Implementations
 
-The core runtime encrypts data automatically when the `World` implementation provides a `getEncryptionKeyForRun()` method. This method receives the run ID and returns the raw encryption key bytes.
+The core runtime encrypts data automatically when the `World` implementation provides a `getEncryptionKeyForRun()` method. The core runtime can call this method in two forms:
+
+{/* @skip-typecheck - interface signature, not runnable code */}
+```typescript
+getEncryptionKeyForRun?(run: WorkflowRun): Promise<Uint8Array | undefined>;
+getEncryptionKeyForRun?(
+  runId: string,
+  context?: Record<string, unknown>
+): Promise<Uint8Array | undefined>;
+```
+
+Use `getEncryptionKeyForRun(run)` when the run entity already exists. Use `getEncryptionKeyForRun(runId, context?)` in runtime paths like `start()` where the run has not been created yet but the world may still need context such as `deploymentId`.
 
 To add encryption support to a custom `World`:
 
-1. Implement `getEncryptionKeyForRun(runId: string)` on your `World` class
+1. Implement `getEncryptionKeyForRun()` on your `World` class, handling both call shapes
 2. Return the raw 32-byte key as a `Uint8Array` — the core runtime uses it for AES-256-GCM operations
 3. Ensure the same key is returned for the same run ID across invocations (for decryption during replay)
+
+```typescript
+import type { WorkflowRun, World } from "@workflow/world";
+
+export const getEncryptionKeyForRun: World["getEncryptionKeyForRun"] = async (
+  run,
+  context
+) => {
+  const runId = typeof run === "string" ? run : run.runId;
+  const deploymentId =
+    typeof run === "string"
+      ? (context?.deploymentId as string | undefined)
+      : run.deploymentId;
+
+  return await lookupRunKey(runId, deploymentId);
+};
+
+async function lookupRunKey(
+  runId: string,
+  deploymentId?: string
+): Promise<Uint8Array | undefined> {
+  // Look up or derive the encryption key for this run
+  // Return undefined to skip encryption
+  return new Uint8Array(32);
+}
+```
 
 The [Vercel World](/docs/deploying/world/vercel-world) implementation uses HKDF derivation from a deployment-scoped key, but any consistent key management scheme will work.

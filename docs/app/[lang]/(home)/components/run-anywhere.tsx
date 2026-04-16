@@ -1,5 +1,7 @@
+import Link from 'next/link';
 import type { ComponentProps } from 'react';
 import { CodeBlock } from '@/app/[lang]/(home)/components/code-block';
+import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 const DigitalOcean = (props: ComponentProps<'svg'>) => (
@@ -98,31 +100,45 @@ const Vercel = (props: ComponentProps<'svg'>) => (
 
 const code = `export async function welcome(userId: string) {
   "use workflow";
-  
+
   const user = await getUser(userId);
   const { subject, body } = await generateEmail({
     name: user.name, plan: user.plan
   });
-  
+
   const { status } = await sendEmail({
     to: user.email,
     subject,
     body,
   });
-  
+
   return { status, subject, body };
 }`;
 
 export const RunAnywhere = () => (
   <div className="px-4 py-8 sm:py-12 sm:px-12 grid gap-10 items-center overflow-hidden">
-    <div className="grid gap-4 max-w-lg text-center mx-auto">
-      <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
-        Run anywhere, no lock‑in
-      </h2>
-      <p className="text-balance text-lg text-muted-foreground">
-        The same code runs locally on your laptop, in Docker, on Vercel or any
-        other cloud. Open source and portable by design.
-      </p>
+    <div className="space-y-4">
+      <div className="grid gap-4 max-w-lg text-center mx-auto">
+        <h2 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
+          Run anywhere, no lock‑in
+        </h2>
+        <p className="text-lg text-muted-foreground">
+          Run locally, self-host, or swap every component — Workflow SDK is
+          fully portable. For zero-config, secure, and scalable workflows,
+          deploy on Vercel.
+        </p>
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-3 mt-2">
+          <Button asChild className="rounded-full h-10">
+            <Link href="https://vercel.com/workflows" target="_blank">
+              Workflows on Vercel
+            </Link>
+          </Button>
+          {/* Outline variant appears smaller due to inset border — h-[42px] compensates to match the filled button visually */}
+          <Button asChild variant="outline" className="rounded-full h-[42px]">
+            <Link href="/worlds">Learn about self-hosting</Link>
+          </Button>
+        </div>
+      </div>
     </div>
     <div className="relative isolate">
       <div className="absolute -left-32 top-1/2 -translate-y-1/2 hidden md:flex items-center gap-2">

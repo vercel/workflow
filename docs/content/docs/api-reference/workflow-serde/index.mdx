@@ -2,7 +2,7 @@
 title: "@workflow/serde"
 ---
 
-Serialization symbols for custom class serialization in Workflow DevKit.
+Serialization symbols for custom class serialization in Workflow SDK.
 
 ## Installation
 
@@ -12,7 +12,7 @@ npm i @workflow/serde
 
 ## Overview
 
-By default, Workflow DevKit can serialize standard JavaScript types like primitives, objects, arrays, `Date`, `Map`, `Set`, and more. However, custom class instances are not serializable by default because the serialization system doesn't know how to reconstruct them.
+By default, Workflow SDK can serialize standard JavaScript types like primitives, objects, arrays, `Date`, `Map`, `Set`, and more. However, custom class instances are not serializable by default because the serialization system doesn't know how to reconstruct them.
 
 The `@workflow/serde` package provides two symbols that allow you to define custom serialization and deserialization logic for your classes, enabling them to be passed between workflow and step functions.
 

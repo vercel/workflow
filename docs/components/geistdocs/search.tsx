@@ -18,10 +18,10 @@ import { cn } from '@/lib/utils';
 import { Button } from '../ui/button';
 import { Kbd } from '../ui/kbd';
 
-type SearchButtonProps = {
+interface SearchButtonProps {
   className?: string;
   onClick?: () => void;
-};
+}
 
 export const SearchDialog = ({
   basePath,
@@ -48,7 +48,7 @@ export const SearchDialog = ({
           <SearchDialogInput />
           <SearchDialogClose />
         </SearchDialogHeader>
-        <SearchDialogList items={query.data !== 'empty' ? query.data : null} />
+        <SearchDialogList items={query.data === 'empty' ? null : query.data} />
       </SearchDialogContent>
     </FumadocsSearchDialog>
   );
@@ -60,7 +60,11 @@ export const SearchButton = ({ className, onClick }: SearchButtonProps) => {
   return (
     <Button
       className={cn(
-        'justify-between gap-8 pr-1.5 font-normal text-muted-foreground shadow-none',
+        // desktop styling
+        'group justify-between gap-8 pr-1.5 font-normal text-muted-foreground shadow-none lg:h-8 lg:w-[150px] lg:bg-background-200 hover:lg:bg-background-200',
+
+        // mobile styling
+        'h-10',
         className
       )}
       onClick={() => {
@@ -72,7 +76,9 @@ export const SearchButton = ({ className, onClick }: SearchButtonProps) => {
       variant="outline"
     >
       <span>Search...</span>
-      <Kbd className="border bg-background font-medium">⌘K</Kbd>
+      <Kbd className="border bg-background font-medium transition-colors group-hover:text-gray-1000">
+        ⌘K
+      </Kbd>
     </Button>
   );
 };

@@ -44,7 +44,7 @@ Use the `Run` object's `readable` property to consume the stream from your API r
 
 ```typescript title="app/api/stream/route.ts" lineNumbers
 import { start } from "workflow/api";
-import { simpleStreamingWorkflow } from "./workflows/simple";
+import { simpleStreamingWorkflow } from "./workflows/simple-streaming";
 
 export async function POST() {
   const run = await start(simpleStreamingWorkflow);
@@ -105,7 +105,7 @@ Because streams are live and continue receiving chunks, negative `startIndex` va
 
 ## Streams as Data Types
 
-[`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow DevKit makes serializable. These are not custom types - they follow the web standard - but Workflow DevKit adds the ability to pass them between functions while maintaining their streaming capabilities.
+[`ReadableStream`](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) and [`WritableStream`](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) are standard Web Streams API types that Workflow SDK makes serializable. These are not custom types - they follow the web standard - but Workflow SDK adds the ability to pass them between functions while maintaining their streaming capabilities.
 
 Unlike regular values that are fully serialized to the [event log](/docs/how-it-works/event-sourcing), streams maintain their streaming capabilities when passed between functions.
 
@@ -117,7 +117,7 @@ Unlike regular values that are fully serialized to the [event log](/docs/how-it-
 <Callout type="info">
 **How Streams Persist Across Workflow Suspensions**
 
-Streams in Workflow DevKit are backed by persistent, resumable storage provided by the "world" implementation. This is what enables streams to maintain their state even when workflows suspend and resume:
+Streams in Workflow SDK are backed by persistent, resumable storage provided by the "world" implementation. This is what enables streams to maintain their state even when workflows suspend and resume:
 
 - **Vercel deployments**: Streams are backed by a performant Redis-based stream
 - **Local development**: Stream chunks are stored in the filesystem
@@ -593,6 +593,7 @@ Stream errors don't trigger automatic retries for the producer step. Design your
 - [`sleep()` API Reference](/docs/api-reference/workflow/sleep) - Pause workflow execution for a duration
 - [`start()` API Reference](/docs/api-reference/workflow-api/start) - Start workflows and access the `Run` object
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Retrieve runs and their streams later
+- [world.streams](/docs/api-reference/workflow-api/world/streams) - Low-level stream read/write/close via World SDK
 - [DurableAgent](/docs/api-reference/workflow-ai/durable-agent) - AI agents with built-in streaming support
 - [Errors and Retries](/docs/foundations/errors-and-retries) - Understanding error handling and retry behavior
 - [Serialization](/docs/foundations/serialization) - Understanding what data types can be passed in workflows

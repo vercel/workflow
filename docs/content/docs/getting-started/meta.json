@@ -9,7 +9,8 @@
     "nitro",
     "nuxt",
     "sveltekit",
-    "vite"
+    "vite",
+    "python"
   ],
   "defaultOpen": true
 }

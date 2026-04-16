@@ -1,5 +1,126 @@
 # @workflow/core
 
+## 5.0.0-beta.1
+
+### Major Changes
+
+- [#1293](https://github.com/vercel/workflow/pull/1293) [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **BREAKING CHANGE**: Restructure stream methods on World interface to use `world.streams.*` namespace with `runId` as the first parameter. `writeToStream(name, runId, chunk)` → `streams.write(runId, name, chunk)`, `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get(runId, name, startIndex?)`, `listStreamsByRunId` → `streams.list(runId)`.
+
+- [#1632](https://github.com/vercel/workflow/pull/1632) [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `@workflow/core/private` and `workflow/internal/private` public subpath exports. The SWC compiler plugin no longer generates imports from these paths.
+
+- [#1293](https://github.com/vercel/workflow/pull/1293) [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Require `runId` argument for `world.steps.get`.
+
+### Minor Changes
+
+- [#1652](https://github.com/vercel/workflow/pull/1652) [`ec517fa`](https://github.com/vercel/workflow/commit/ec517fa2254131f47cc878177c4d2aa163d584a5) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `features.encryption` to `WorkflowMetadata` returned by `getWorkflowMetadata()`
+
+- [#1616](https://github.com/vercel/workflow/pull/1616) [`71d39d2`](https://github.com/vercel/workflow/commit/71d39d2f8d5739c22fb9d777e70d003b07d05987) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use custom class serialization for `Run` across runtime and workflow VM contexts, and add e2e coverage for `Run` instance boundary roundtrips
+
+- [#1677](https://github.com/vercel/workflow/pull/1677) [`9513a81`](https://github.com/vercel/workflow/commit/9513a8160cc13ac2b3923a0d9500cd80eb477109) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add serialization support for workflow function references
+
+### Patch Changes
+
+- [#1658](https://github.com/vercel/workflow/pull/1658) [`a5c90ce`](https://github.com/vercel/workflow/commit/a5c90cefba01070aa4bc12a696334ee4c1061f92) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix community world E2E tests by adding `specVersion` to the World interface so `start()` uses the safe baseline (v2) for worlds that don't declare their supported version
+
+- [#1678](https://github.com/vercel/workflow/pull/1678) [`ea97bd6`](https://github.com/vercel/workflow/commit/ea97bd600711f67649509b21c7af5808fb13479f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Remove redundant `hc_` prefix from health check correlationId that caused doubled `hc_hc_` in the derived runId and stream name.
+
+- [#942](https://github.com/vercel/workflow/pull/942) [`873b4e2`](https://github.com/vercel/workflow/commit/873b4e2bb451e0a4d28e0a96671c25e1db4932db) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **BREAKING CHANGE**: Make `getWorld` and `createWorld` asynchronous to support ESM dynamic imports for custom world modules. All callers must now `await getWorld()`.
+
+- Updated dependencies [[`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`a5c90ce`](https://github.com/vercel/workflow/commit/a5c90cefba01070aa4bc12a696334ee4c1061f92), [`68cf25e`](https://github.com/vercel/workflow/commit/68cf25e83bdc8bf912fb30cb8f9ba4cb9a30f087), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77)]:
+  - @workflow/world@5.0.0-beta.1
+  - @workflow/world-local@5.0.0-beta.1
+  - @workflow/world-vercel@5.0.0-beta.1
+  - @workflow/errors@5.0.0-beta.0
+
+## 5.0.0-beta.0
+
+### Major Changes
+
+- [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
+
+### Patch Changes
+
+- Updated dependencies [[`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd)]:
+  - @workflow/errors@5.0.0-beta.0
+  - @workflow/serde@5.0.0-beta.0
+  - @workflow/utils@5.0.0-beta.0
+  - @workflow/world@5.0.0-beta.0
+  - @workflow/world-local@5.0.0-beta.0
+  - @workflow/world-vercel@5.0.0-beta.0
+
+## 4.2.0-beta.78
+
+### Patch Changes
+
+- [#1627](https://github.com/vercel/workflow/pull/1627) [`5f138f2`](https://github.com/vercel/workflow/commit/5f138f2ceedcc96c9d043fa36378c4de781ab55b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Bump specVersion to 3 and gate CBOR queue transport on spec version. Old deployments (specVersion < 3) receive JSON queue messages; new deployments receive CBOR. Handler uses dual transport to deserialize both formats. Fixes replay/reenqueue from dashboard to older deployments.
+
+- [#1629](https://github.com/vercel/workflow/pull/1629) [`a6bcea9`](https://github.com/vercel/workflow/commit/a6bcea9d2827731040cb20f1615c5127530fc310) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - CLI `start` command probes deployment specVersion via health check before choosing queue transport. Health check always uses JSON transport for compatibility with old deployments.
+
+- [#1533](https://github.com/vercel/workflow/pull/1533) [`7e70d18`](https://github.com/vercel/workflow/commit/7e70d1823add7930d6df7f84e1a6a77d888eb851) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Add `streamFlushIntervalMs` option to `Streamer` interface, optional for worlds to allow overwriting the default of 10ms in low-latency environments.
+
+- [#1512](https://github.com/vercel/workflow/pull/1512) [`ba916e1`](https://github.com/vercel/workflow/commit/ba916e1566acc56533e7f5fcebbb8466360e0581) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `DOMException` to the workflow VM context and add first-class serialization support, preserving `message`, `name`, and derived `code` across serialization boundaries
+
+- [#1618](https://github.com/vercel/workflow/pull/1618) [`c9b3038`](https://github.com/vercel/workflow/commit/c9b30381f4e219fdd67bb3ef358f41697ed8c3e5) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - fix(core): properly propagate stream cancellation on disconnect
+
+- [#1537](https://github.com/vercel/workflow/pull/1537) [`c8dce52`](https://github.com/vercel/workflow/commit/c8dce5260627a2f349618976e8478ce03e656536) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Allow workflow invocation to create run if initial storage call in `start` did not succeed. Send run input through queue to enable this. Allow creating run_created and run_started events together in World, and skip first event list call by returning events directly.
+
+- [#1606](https://github.com/vercel/workflow/pull/1606) [`ab872cc`](https://github.com/vercel/workflow/commit/ab872cc9fb6c24091c8c0eeb0efa7d0cbbdf20d8) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Make registeredSteps a global singleton to protect against module duplication and caching issues
+
+- Updated dependencies [[`5f138f2`](https://github.com/vercel/workflow/commit/5f138f2ceedcc96c9d043fa36378c4de781ab55b), [`7e70d18`](https://github.com/vercel/workflow/commit/7e70d1823add7930d6df7f84e1a6a77d888eb851), [`c8dce52`](https://github.com/vercel/workflow/commit/c8dce5260627a2f349618976e8478ce03e656536), [`5b9eb40`](https://github.com/vercel/workflow/commit/5b9eb406a8e5b778739fd4f49f5b017e0680fa6d)]:
+  - @workflow/world-vercel@4.1.0-beta.49
+  - @workflow/world@4.1.0-beta.17
+  - @workflow/world-local@4.1.0-beta.51
+  - @workflow/errors@4.1.0-beta.20
+
+## 4.2.0-beta.77
+
+### Patch Changes
+
+- [#1591](https://github.com/vercel/workflow/pull/1591) [`d8aaf27`](https://github.com/vercel/workflow/commit/d8aaf27c7913a1a44561325c9a08f50b4340100d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix step `contextStorage` global _potentially_ seeing dual-instance issues when bundlers create multiple copies of the module.
+
+- [#1367](https://github.com/vercel/workflow/pull/1367) [`047c01b`](https://github.com/vercel/workflow/commit/047c01bc1545845b4251a58a380e627ef164e6d5) Thanks [@pranaygp](https://github.com/pranaygp)! - Make `start()` return `Run<unknown>` with `unknown[]` args when `deploymentId` is provided, since the deployed workflow version may have different types
+
+- Updated dependencies [[`b30b0dc`](https://github.com/vercel/workflow/commit/b30b0dcab68a8cc37735ea6c1fb8cb4f06efbe8b), [`760ebf1`](https://github.com/vercel/workflow/commit/760ebf161b0382cd430657cd1d172e8861660c30)]:
+  - @workflow/world@4.1.0-beta.16
+  - @workflow/world-local@4.1.0-beta.50
+  - @workflow/world-vercel@4.1.0-beta.48
+  - @workflow/errors@4.1.0-beta.20
+
+## 4.2.0-beta.76
+
+### Patch Changes
+
+- Updated dependencies [[`ef2218a`](https://github.com/vercel/workflow/commit/ef2218ab22310afa04e4e1709906a86969126e52)]:
+  - @workflow/world-local@4.1.0-beta.49
+  - @workflow/world-vercel@4.1.0-beta.47
+
+## 4.2.0-beta.75
+
+### Patch Changes
+
+- [#1569](https://github.com/vercel/workflow/pull/1569) [`a98f8de`](https://github.com/vercel/workflow/commit/a98f8de53f1af222cccea6d091b68d544957b4e3) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Combine initial run fetch, event fetch, and run_started event creation
+
+- [#1572](https://github.com/vercel/workflow/pull/1572) [`d38114b`](https://github.com/vercel/workflow/commit/d38114bff1c0a786e103b3da8c2d9afc93b41fbe) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `resumeHook()`/`resumeWebhook()` failing on workflow runs from pre-encryption deployments by checking the target run's `workflowCoreVersion` capabilities before encoding the payload
+
+- [#1567](https://github.com/vercel/workflow/pull/1567) [`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Increase flow route limit to max fluid duration and fail run if a single replay takes too long
+
+- Updated dependencies [[`a98f8de`](https://github.com/vercel/workflow/commit/a98f8de53f1af222cccea6d091b68d544957b4e3), [`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff), [`329cdb3`](https://github.com/vercel/workflow/commit/329cdb3e1b55e3a2e8eb6b5befff598d7184bd78)]:
+  - @workflow/world@4.1.0-beta.15
+  - @workflow/world-local@4.1.0-beta.48
+  - @workflow/errors@4.1.0-beta.20
+  - @workflow/world-vercel@4.1.0-beta.46
+
+## 4.2.0-beta.74
+
+### Patch Changes
+
+- [#1546](https://github.com/vercel/workflow/pull/1546) [`62ff600`](https://github.com/vercel/workflow/commit/62ff6004f6f5c1b7b93099470a0097d8a81a42ee) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Remove `Buffer` global from workflow VM context
+
+- [#1547](https://github.com/vercel/workflow/pull/1547) [`4f646e3`](https://github.com/vercel/workflow/commit/4f646e3d58d27a5777922519a72e352814a7ef12) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Polyfill TC39 `Uint8Array` base64/hex methods in workflow VM context
+
+- Updated dependencies [[`bd1f7e4`](https://github.com/vercel/workflow/commit/bd1f7e4b4c45750f9b8a3f37057076f2e69a5c07)]:
+  - @workflow/world-local@4.1.0-beta.47
+
 ## 4.2.0-beta.73
 
 ### Patch Changes

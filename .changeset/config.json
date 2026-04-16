@@ -11,6 +11,10 @@
     [
       "workflow",
       "@workflow/core"
+    ],
+    [
+      "@workflow/web",
+      "@workflow/web-shared"
     ]
   ],
   "linked": [],
@@ -21,7 +25,7 @@
     "docs",
     "nextjs-turbopack",
     "nextjs-webpack",
-    "workflow-devkit-compiler-playground",
+    "workflow-sdk-compiler-playground",
     "@workflow/docs-typecheck",
     "@workflow/example-*",
     "@workflow/vitest-workbench"

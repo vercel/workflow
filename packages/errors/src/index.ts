@@ -2,7 +2,7 @@ import { parseDurationToDate } from '@workflow/utils';
 import type { StructuredError } from '@workflow/world';
 import type { StringValue } from 'ms';
 
-const BASE_URL = 'https://useworkflow.dev/err';
+const BASE_URL = 'https://workflow-sdk.dev/err';
 
 /**
  * @internal
@@ -49,8 +49,8 @@ interface WorkflowErrorOptions extends ErrorOptions {
 /**
  * The base class for all Workflow-related errors.
  *
- * This error is thrown by the Workflow DevKit when internal operations fail.
- * You can use this class with `instanceof` to catch any Workflow DevKit error.
+ * This error is thrown by the Workflow SDK when internal operations fail.
+ * You can use this class with `instanceof` to catch any Workflow SDK error.
  *
  * @example
  * ```ts
@@ -58,7 +58,7 @@ interface WorkflowErrorOptions extends ErrorOptions {
  *   await getRun(runId);
  * } catch (error) {
  *   if (error instanceof WorkflowError) {
- *     console.error('Workflow DevKit error:', error.message);
+ *     console.error('Workflow SDK error:', error.message);
  *   }
  * }
  * ```

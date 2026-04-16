@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
 import { listStreams } from '~/lib/client/workflow-streams';
 
@@ -15,9 +15,12 @@ export function useWorkflowStreams(
   const [streams, setStreams] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<Error | null>(null);
+  const hasFetchedRef = useRef(false);
 
   const fetchData = useCallback(async () => {
-    setLoading(true);
+    if (!hasFetchedRef.current) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const result = await listStreams(env, runId);
@@ -25,12 +28,14 @@ export function useWorkflowStreams(
     } catch (err) {
       setError(err instanceof Error ? err : new Error(String(err)));
     } finally {
+      hasFetchedRef.current = true;
       setLoading(false);
     }
   }, [env, runId]);
 
   // Initial load
   useEffect(() => {
+    hasFetchedRef.current = false;
     fetchData();
   }, [fetchData]);
 

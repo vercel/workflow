@@ -38,7 +38,7 @@ export async function toolsToModelTools(
           type: 'provider' as const,
           name,
           id: tool.id,
-          args: tool.args,
+          args: tool.args ?? {},
         });
         break;
       default: {

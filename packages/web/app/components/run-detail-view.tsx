@@ -243,8 +243,9 @@ export function RunDetailView({
 
   const setActiveTab = useCallback(
     (tab: Tab) => {
-      // When switching to trace or graph tab, clear streamId
-      if (tab === 'trace' || tab === 'graph') {
+      // When switching away from streams tab, clear streamId so
+      // useStreamReader stops fetching/polling in the background.
+      if (tab !== 'streams') {
         updateSearchParams({ tab, streamId: null });
       } else {
         updateSearchParams({ tab });
@@ -266,6 +267,15 @@ export function RunDetailView({
       updateSearchParams({ tab: 'streams', streamId });
     },
     [updateSearchParams]
+  );
+
+  const handleRunRefClick = useCallback(
+    (targetRunId: string) => {
+      // Navigate to the target run with a clean URL (no search params)
+      // so the sidebar panel resets
+      navigate(`/run/${encodeURIComponent(targetRunId)}`);
+    },
+    [navigate]
   );
 
   const handleWakeUpSleep = useCallback(
@@ -340,6 +350,7 @@ export function RunDetailView({
     loadMoreTraceData,
     hasMoreTraceData,
     isLoadingMoreTraceData,
+    hasEncryptedData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
   const run = runData ?? ({} as WorkflowRun);
@@ -428,7 +439,7 @@ export function RunDetailView({
     chunks: streamChunks,
     isLive: streamIsLive,
     error: streamError,
-  } = useStreamReader(env, selectedStreamId, runId, encryptionKey);
+  } = useStreamReader(env, selectedStreamId, runId, encryptionKey, run.status);
 
   const handleCancelClick = () => {
     setShowCancelDialog(true);
@@ -750,6 +761,7 @@ export function RunDetailView({
                     spanDetailError={spanDetailError}
                     onSpanSelect={handleSpanSelect}
                     onStreamClick={handleStreamClick}
+                    onRunClick={handleRunRefClick}
                     onWakeUpSleep={handleWakeUpSleep}
                     onResolveHook={handleResolveHook}
                     onLoadEventData={handleLoadSidebarEventData}
@@ -759,6 +771,7 @@ export function RunDetailView({
                     encryptionKey={encryptionKey ?? undefined}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
+                    hasEncryptedData={hasEncryptedData}
                   />
                 </div>
               </ErrorBoundary>
@@ -780,6 +793,7 @@ export function RunDetailView({
                     onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
+                    hasEncryptedData={hasEncryptedData}
                   />
                 </div>
               </ErrorBoundary>

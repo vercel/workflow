@@ -1,5 +1,101 @@
 # @workflow/builders
 
+## 5.0.0-beta.1
+
+### Major Changes
+
+- [#1662](https://github.com/vercel/workflow/pull/1662) [`89d242f`](https://github.com/vercel/workflow/commit/89d242fae2233c52153315d63e1eacb4c0ca5527) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `isWorkflowSdkFile` path-based serde exclusion. Serde discovery now uses AST-level verification via SWC detect mode across all integration paths (esbuild plugin, Next.js deferred builder, Next.js loader). This allows class definitions with serde symbols in SDK packages like `@workflow/core` to be discovered and bundled correctly.
+
+### Patch Changes
+
+- [#1669](https://github.com/vercel/workflow/pull/1669) [`dc0c0dc`](https://github.com/vercel/workflow/commit/dc0c0dce7f4ef1a0919d7ecc7efe076564871d0c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix step bundle discovery and externalization for SDK serde classes
+  - Broaden `importParents` tracking to all imports (not just file extensions) so `parentHasChild()` works through bare specifier imports
+  - Include `workflow/runtime` in discovery inputs so SDK serde classes like `Run` are always discovered
+  - Bundle node_modules deps instead of externalizing with broken relative paths
+
+- [#1562](https://github.com/vercel/workflow/pull/1562) [`e436242`](https://github.com/vercel/workflow/commit/e4362421abf9c864c9c1064866ddfc16560649cb) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Switch Vercel Build Output API and standalone builder output from CJS to ESM. Step bundles, workflow bundles, and webhook bundles now emit ESM format by default, preserving native `import.meta.url` support and eliminating the need for CJS polyfills. Fully-bundled ESM output includes a `createRequire` banner to support CJS dependencies that use `require()` for Node.js builtins. The intermediate workflow bundle (which runs inside `vm.runInContext`) remains CJS as required by the VM execution model.
+
+- [#1670](https://github.com/vercel/workflow/pull/1670) [`32a17b4`](https://github.com/vercel/workflow/commit/32a17b4033dea3d9fd496e77142c675b06f0e016) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix lazy discovery bare specifier resolution in copied step files
+  - Use `enhanced-resolve` with ESM conditions to resolve bare specifiers from the original source file's location
+  - Only rewrite specifiers that can't resolve from the app directory (transitive SDK deps)
+  - Add `enhanced-resolve` to pnpm catalog and use `catalog:` in both packages
+
+- Updated dependencies [[`d040182`](https://github.com/vercel/workflow/commit/d0401829320c2880a0a5c2404ed9dede94eb17a0), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`ec517fa`](https://github.com/vercel/workflow/commit/ec517fa2254131f47cc878177c4d2aa163d584a5), [`a5c90ce`](https://github.com/vercel/workflow/commit/a5c90cefba01070aa4bc12a696334ee4c1061f92), [`ea97bd6`](https://github.com/vercel/workflow/commit/ea97bd600711f67649509b21c7af5808fb13479f), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d), [`71d39d2`](https://github.com/vercel/workflow/commit/71d39d2f8d5739c22fb9d777e70d003b07d05987), [`873b4e2`](https://github.com/vercel/workflow/commit/873b4e2bb451e0a4d28e0a96671c25e1db4932db), [`66585fd`](https://github.com/vercel/workflow/commit/66585fd46723604a632d08b6c973d5a95582b1af), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`ebb0a4a`](https://github.com/vercel/workflow/commit/ebb0a4a4e366eb1be1d385bf1eedbbe27371c9a9), [`9513a81`](https://github.com/vercel/workflow/commit/9513a8160cc13ac2b3923a0d9500cd80eb477109)]:
+  - @workflow/swc-plugin@5.0.0-beta.1
+  - @workflow/core@5.0.0-beta.1
+  - @workflow/errors@5.0.0-beta.0
+
+## 5.0.0-beta.0
+
+### Major Changes
+
+- [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
+
+### Patch Changes
+
+- [#1641](https://github.com/vercel/workflow/pull/1641) [`35b539b`](https://github.com/vercel/workflow/commit/35b539b146015fd63ad71e0d08614de96d34aa45) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `detect` mode to SWC plugin and use it during discovery to filter false positive directive detections
+
+- [#1644](https://github.com/vercel/workflow/pull/1644) [`372abba`](https://github.com/vercel/workflow/commit/372abba55fc6d3d9ba8f6926d38e05d7a6d99011) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix Node.js builtin imports being relativized in step bundles
+
+- Updated dependencies [[`35b539b`](https://github.com/vercel/workflow/commit/35b539b146015fd63ad71e0d08614de96d34aa45), [`bab8cdd`](https://github.com/vercel/workflow/commit/bab8cddf98e1d4ca897fbfc9cc1fb51a3333c695), [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd)]:
+  - @workflow/swc-plugin@5.0.0-beta.0
+  - @workflow/core@5.0.0-beta.0
+  - @workflow/errors@5.0.0-beta.0
+  - @workflow/utils@5.0.0-beta.0
+
+## 4.0.1-beta.69
+
+### Patch Changes
+
+- [#1552](https://github.com/vercel/workflow/pull/1552) [`f5d2aef`](https://github.com/vercel/workflow/commit/f5d2aef58ff6d655989d00e4b9a8712d856bdca0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add serde compliance checker (`analyzeSerdeCompliance`) and build-time warnings for classes with Node.js imports in workflow bundle
+
+- [#1613](https://github.com/vercel/workflow/pull/1613) [`3308701`](https://github.com/vercel/workflow/commit/3308701b341f5b4d7007d5bca97cbbb6e4af222f) Thanks [@matchai](https://github.com/matchai)! - Resolve path aliases when externalizing non-step imports
+
+- Updated dependencies [[`5f138f2`](https://github.com/vercel/workflow/commit/5f138f2ceedcc96c9d043fa36378c4de781ab55b), [`a6bcea9`](https://github.com/vercel/workflow/commit/a6bcea9d2827731040cb20f1615c5127530fc310), [`7e70d18`](https://github.com/vercel/workflow/commit/7e70d1823add7930d6df7f84e1a6a77d888eb851), [`ba916e1`](https://github.com/vercel/workflow/commit/ba916e1566acc56533e7f5fcebbb8466360e0581), [`c9b3038`](https://github.com/vercel/workflow/commit/c9b30381f4e219fdd67bb3ef358f41697ed8c3e5), [`c8dce52`](https://github.com/vercel/workflow/commit/c8dce5260627a2f349618976e8478ce03e656536), [`ab872cc`](https://github.com/vercel/workflow/commit/ab872cc9fb6c24091c8c0eeb0efa7d0cbbdf20d8)]:
+  - @workflow/core@4.2.0-beta.78
+  - @workflow/errors@4.1.0-beta.20
+
+## 4.0.1-beta.68
+
+### Patch Changes
+
+- [#1554](https://github.com/vercel/workflow/pull/1554) [`d1330cf`](https://github.com/vercel/workflow/commit/d1330cfebca1b2f552bd80c06e37bff4fba1b79e) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix node-module-error plugin pointing at multi-line comments instead of code usage
+
+- [#1598](https://github.com/vercel/workflow/pull/1598) [`443a9e6`](https://github.com/vercel/workflow/commit/443a9e62f938b91cd818106155d384329cf5c82c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Override `"sideEffects": false` from `package.json` for discovered workflow/step/serde entries so esbuild does not drop their bare imports from the virtual entry
+
+- Updated dependencies [[`d8aaf27`](https://github.com/vercel/workflow/commit/d8aaf27c7913a1a44561325c9a08f50b4340100d), [`5d22e61`](https://github.com/vercel/workflow/commit/5d22e61446d5146887f8c268d305ea42e3f67b09), [`047c01b`](https://github.com/vercel/workflow/commit/047c01bc1545845b4251a58a380e627ef164e6d5), [`7c996a7`](https://github.com/vercel/workflow/commit/7c996a76c59cb88fa58d15942218b308d1cd100f)]:
+  - @workflow/core@4.2.0-beta.77
+  - @workflow/swc-plugin@4.1.0-beta.22
+  - @workflow/errors@4.1.0-beta.20
+
+## 4.0.1-beta.67
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.2.0-beta.76
+
+## 4.0.1-beta.66
+
+### Patch Changes
+
+- [#1567](https://github.com/vercel/workflow/pull/1567) [`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Increase flow route limit to max fluid duration and fail run if a single replay takes too long
+
+- Updated dependencies [[`a98f8de`](https://github.com/vercel/workflow/commit/a98f8de53f1af222cccea6d091b68d544957b4e3), [`d38114b`](https://github.com/vercel/workflow/commit/d38114bff1c0a786e103b3da8c2d9afc93b41fbe), [`6dc1b78`](https://github.com/vercel/workflow/commit/6dc1b785822af5c1dc3b4a2a9b1dcb7f626cf5ff)]:
+  - @workflow/core@4.2.0-beta.75
+  - @workflow/errors@4.1.0-beta.20
+
+## 4.0.1-beta.65
+
+### Patch Changes
+
+- [#1560](https://github.com/vercel/workflow/pull/1560) [`a3b7c48`](https://github.com/vercel/workflow/commit/a3b7c480e058e9070d2ecb8b84b38bbf2081840a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Only rewrite .ts extensions to .js in externalized step imports when targeting Node's native ESM loader (vitest), preserving original extensions for framework bundlers (Next.js, SvelteKit, etc.)
+
+- [#1509](https://github.com/vercel/workflow/pull/1509) [`d119c74`](https://github.com/vercel/workflow/commit/d119c740d095ae601598bc2a62e6269e06f70f3e) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix import.meta.url being undefined when using CJS builds
+
+- Updated dependencies [[`62ff600`](https://github.com/vercel/workflow/commit/62ff6004f6f5c1b7b93099470a0097d8a81a42ee), [`4f646e3`](https://github.com/vercel/workflow/commit/4f646e3d58d27a5777922519a72e352814a7ef12)]:
+  - @workflow/core@4.2.0-beta.74
+
 ## 4.0.1-beta.64
 
 ### Patch Changes

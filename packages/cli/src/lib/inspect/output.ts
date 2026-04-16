@@ -276,7 +276,7 @@ const formatIdField = (
   return idStr;
 };
 
-const formatTableValue = (
+export const formatTableValue = (
   prop: string,
   value: unknown,
   opts: InspectCLIOptions = {},
@@ -318,8 +318,12 @@ const formatTableValue = (
   }
 
   if (prop === 'output' || prop === 'input' || prop === 'error') {
-    // Check if data has expired
-    if (item && 'expiredAt' in item && item.expiredAt != null) {
+    if (
+      item &&
+      'expiredAt' in item &&
+      item.expiredAt != null &&
+      new Date(item.expiredAt as string | number | Date) < new Date()
+    ) {
       return EXPIRED_DATA_MESSAGE;
     }
     return inlineFormatIO(value);
@@ -490,10 +494,15 @@ const showInspectInfoBox = (resource: string) => {
 const EXPIRED_DATA_MESSAGE = chalk.gray('<data expired>');
 
 /**
- * Checks if a run has expired data storage (run-level expiredAt field)
+ * Checks if a run has expired data storage (run-level expiredAt field).
+ * Only returns true when `expiredAt` is in the past.
  */
-const hasExpiredData = (run: WorkflowRun): boolean => {
-  return 'expiredAt' in run && run.expiredAt != null;
+export const hasExpiredData = (run: WorkflowRun): boolean => {
+  return (
+    'expiredAt' in run &&
+    run.expiredAt != null &&
+    new Date(run.expiredAt) < new Date()
+  );
 };
 
 /**
@@ -849,7 +858,10 @@ export const showStream = async (
       'Filtering by step-id is not supported when showing a stream, ignoring filter.'
     );
   }
-  const rawStream = await world.readFromStream(streamId);
+  if (!opts.runId) {
+    throw new Error('--run is required when showing a stream');
+  }
+  const rawStream = await world.streams.get(opts.runId, streamId);
 
   // Only resolve the encryption key when --decrypt is passed and --run is provided.
   // We fetch the full WorkflowRun object so that getEncryptionKeyForRun has
@@ -921,7 +933,7 @@ export const listStreamsByRunId = async (
   }
 
   try {
-    const streamIds = await world.listStreamsByRunId(runId);
+    const streamIds = await world.streams.list(runId);
     const matchingStreams = streamIds.map((streamId) => ({
       runId,
       streamId,

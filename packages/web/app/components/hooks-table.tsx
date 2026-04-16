@@ -142,7 +142,11 @@ export function HooksTable({
           setInvocationData((prev) => {
             const updated = new Map(prev);
             for (const hook of hooks) {
-              updated.set(hook.hookId, { count: 0, hasMore: false, loading: false });
+              updated.set(hook.hookId, {
+                count: 0,
+                hasMore: false,
+                loading: false,
+              });
             }
             return updated;
           });
@@ -182,7 +186,11 @@ export function HooksTable({
         setInvocationData((prev) => {
           const updated = new Map(prev);
           for (const hook of hooks) {
-            updated.set(hook.hookId, { count: 0, hasMore: false, loading: false });
+            updated.set(hook.hookId, {
+              count: 0,
+              hasMore: false,
+              loading: false,
+            });
           }
           return updated;
         });
@@ -270,7 +278,7 @@ export function HooksTable({
       ) : !loading && (!hooks || hooks.length === 0) ? (
         <div className="text-center py-8 text-muted-foreground">
           No active hooks found. <br />
-          <DocsLink href="https://useworkflow.dev/docs/api-reference/workflow/create-hook">
+          <DocsLink href="https://workflow-sdk.dev/docs/api-reference/workflow/create-hook">
             Learn how to create a hook
           </DocsLink>
         </div>

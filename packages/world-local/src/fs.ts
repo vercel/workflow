@@ -161,7 +161,7 @@ interface WriteOptions {
  * Custom JSON replacer that encodes Uint8Array as base64 strings.
  * Format: { __type: 'Uint8Array', data: '<base64>' }
  */
-function jsonReplacer(_key: string, value: unknown): unknown {
+export function jsonReplacer(_key: string, value: unknown): unknown {
   if (value instanceof Uint8Array) {
     return {
       __type: 'Uint8Array',
@@ -174,7 +174,7 @@ function jsonReplacer(_key: string, value: unknown): unknown {
 /**
  * Custom JSON reviver that decodes base64 strings back to Uint8Array.
  */
-function jsonReviver(_key: string, value: unknown): unknown {
+export function jsonReviver(_key: string, value: unknown): unknown {
   if (
     value !== null &&
     typeof value === 'object' &&

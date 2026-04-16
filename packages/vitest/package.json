@@ -1,7 +1,7 @@
 {
   "name": "@workflow/vitest",
-  "version": "4.0.1-beta.10",
-  "description": "Vitest plugin for testing Workflow DevKit workflows",
+  "version": "5.0.0-beta.1",
+  "description": "Vitest plugin for testing Workflow SDK workflows",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -38,7 +38,7 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "vite": "7.1.12"
+    "vite": "7.3.2"
   },
   "peerDependencies": {
     "vite": ">=6.0.0",

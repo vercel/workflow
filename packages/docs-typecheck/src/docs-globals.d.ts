@@ -64,6 +64,10 @@ declare global {
   function makeCardText(...args: any[]): Promise<any>;
   function transform(...args: any[]): any;
   function follow(...args: any[]): Promise<any>;
+  function loadOrder(...args: any[]): Promise<any>;
+  function reserveInventory(...args: any[]): Promise<any>;
+  function reviewManually(...args: any[]): Promise<any>;
+  function spawnChild(...args: any[]): Promise<any>;
 
   // Streaming helpers
   function startStream(...args: any[]): Promise<void>;
@@ -166,13 +170,95 @@ declare global {
     respondWith(response: Response): Promise<void>;
   }
 
+  // Observability utilities (workflow/observability)
+  function getEncryptionKeyForRun(runId: string): Promise<any>;
+  function hydrateResourceIOWithKey(resource: any, key: any): any;
+
   // Constants used in examples
   const FLIGHT_ASSISTANT_PROMPT: string;
   const flightBookingTools: any;
   const MAX_STEPS: number;
   const reportId: string;
   const userId: string;
+  const runId: string;
+  const stepId: string;
+  const world: {
+    runs: {
+      get: (...args: any[]) => Promise<any>;
+      list: (...args: any[]) => Promise<any>;
+    };
+    steps: {
+      get: (...args: any[]) => Promise<any>;
+      list: (...args: any[]) => Promise<any>;
+    };
+    hooks: {
+      get: (...args: any[]) => Promise<any>;
+      getByToken: (...args: any[]) => Promise<any>;
+      list: (...args: any[]) => Promise<any>;
+    };
+    events: {
+      create: (...args: any[]) => Promise<any>;
+      get: (...args: any[]) => Promise<any>;
+      list: (...args: any[]) => Promise<any>;
+      listByCorrelationId: (...args: any[]) => Promise<any>;
+    };
+    // Stream methods live on world.streams (Streamer interface)
+    streams: {
+      write: (
+        runId: string,
+        name: string,
+        chunk: string | Uint8Array
+      ) => Promise<void>;
+      writeMulti?: (
+        runId: string,
+        name: string,
+        chunks: (string | Uint8Array)[]
+      ) => Promise<void>;
+      get: (
+        runId: string,
+        name: string,
+        startIndex?: number
+      ) => Promise<ReadableStream<Uint8Array>>;
+      close: (runId: string, name: string) => Promise<void>;
+      list: (runId: string) => Promise<string[]>;
+      getChunks: (
+        runId: string,
+        name: string,
+        options?: { limit?: number; cursor?: string }
+      ) => Promise<any>;
+      getInfo: (
+        runId: string,
+        name: string
+      ) => Promise<{ tailIndex: number; done: boolean }>;
+    };
+    // Queue methods live directly on world (Queue interface)
+    getDeploymentId: (...args: any[]) => Promise<any>;
+    queue: (...args: any[]) => Promise<any>;
+    createQueueHandler: (...args: any[]) => any;
+  };
+  /** Resolves the configured World (async — may perform dynamic import / env-based setup). */
+  function getWorld(): Promise<typeof world>;
+
+  const streamId: string;
+  const streamName: string;
+  const hookId: string;
+  const eventId: string;
+  const cursor: string | undefined;
+  const name: string;
+  const chunk: any;
+  const chunk1: any;
+  const chunk2: any;
+  const step: any;
+  const message: any;
+  const opts: any;
+  const prefix: string;
+  const callback: (...args: any[]) => any;
+  const token: string;
+  const queueName: any;
+  const payload: any;
 
   // Workflow placeholders used in examples
   const myWorkflow: (...args: any[]) => Promise<any>;
+  const childWorkflow: (...args: any[]) => Promise<any>;
+  const orderId: string;
 }

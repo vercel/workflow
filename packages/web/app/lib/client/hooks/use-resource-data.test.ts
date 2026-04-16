@@ -16,11 +16,7 @@ vi.mock('~/lib/rpc-client', () => ({
 
 import { waitEventsToWaitEntity } from '@workflow/web-shared';
 import type { WorkflowRun } from '@workflow/world';
-import {
-  fetchEvents,
-  fetchHook,
-  fetchRun,
-} from '~/lib/rpc-client';
+import { fetchEvents, fetchHook, fetchRun } from '~/lib/rpc-client';
 
 const env = { SOME_VAR: 'test' };
 
@@ -116,8 +112,18 @@ describe('useWorkflowResourceData', () => {
 
   it('shows sleep entity constructed from events', async () => {
     const events = [
-      { eventId: 'e1', type: 'sleep_scheduled', correlationId: 'sleep-corr-1', data: {} },
-      { eventId: 'e2', type: 'other_event', correlationId: 'other-id', data: {} },
+      {
+        eventId: 'e1',
+        type: 'sleep_scheduled',
+        correlationId: 'sleep-corr-1',
+        data: {},
+      },
+      {
+        eventId: 'e2',
+        type: 'other_event',
+        correlationId: 'other-id',
+        data: {},
+      },
     ];
     vi.mocked(fetchEvents).mockResolvedValue({
       success: true,

@@ -4,3 +4,10 @@
 next-env.d.ts
 node_modules
 tsconfig.tsbuildinfo
+
+# WASM build artifacts
+wasm/pkg/
+public/wasm/
+
+# Auto-generated Monaco type definitions
+lib/generated-types.ts

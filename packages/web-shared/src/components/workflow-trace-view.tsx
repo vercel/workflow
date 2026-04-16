@@ -767,6 +767,7 @@ export const WorkflowTraceViewer = ({
   onResolveHook,
   onCancelRun,
   onStreamClick,
+  onRunClick,
   onSpanSelect,
   onLoadEventData,
   onLoadMoreSpans,
@@ -775,6 +776,7 @@ export const WorkflowTraceViewer = ({
   encryptionKey,
   onDecrypt,
   isDecrypting = false,
+  hasEncryptedData = false,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -796,6 +798,8 @@ export const WorkflowTraceViewer = ({
   onCancelRun?: (runId: string) => Promise<void>;
   /** Callback when a stream reference is clicked in the detail panel */
   onStreamClick?: (streamId: string) => void;
+  /** Callback when a run reference is clicked in the detail panel */
+  onRunClick?: (runId: string) => void;
   /** Callback when a span is selected. */
   onSpanSelect?: (info: SpanSelectionInfo) => void;
   /** Callback to load event data for a specific event (lazy loading in sidebar) */
@@ -815,6 +819,8 @@ export const WorkflowTraceViewer = ({
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched */
   isDecrypting?: boolean;
+  /** Run-level hint: the run contains encrypted data (from probe). */
+  hasEncryptedData?: boolean;
 }) => {
   const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
@@ -902,6 +908,12 @@ export const WorkflowTraceViewer = ({
       };
     });
   }, [events, selectedSpan?.spanId]);
+
+  // Reset selected span when navigating to a different run
+  useEffect(() => {
+    setSelectedSpan(null);
+    setDeselectTrigger((n) => n + 1);
+  }, [run?.runId]);
 
   const handleClose = useCallback(() => {
     setSelectedSpan(null);
@@ -1140,6 +1152,7 @@ export const WorkflowTraceViewer = ({
               <EntityDetailPanel
                 run={run}
                 onStreamClick={onStreamClick}
+                onRunClick={onRunClick}
                 spanDetailData={spanDetailData ?? null}
                 spanDetailError={spanDetailError}
                 spanDetailLoading={spanDetailLoading}
@@ -1151,6 +1164,7 @@ export const WorkflowTraceViewer = ({
                 onDecrypt={onDecrypt}
                 isDecrypting={isDecrypting}
                 selectedSpan={selectedSpan}
+                hasEncryptedData={hasEncryptedData}
               />
             </ErrorBoundary>
           </div>

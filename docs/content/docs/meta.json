@@ -10,6 +10,7 @@
     "testing",
     "deploying",
     "errors",
+    "migration-guides",
     "api-reference"
   ]
 }

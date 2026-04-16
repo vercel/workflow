@@ -7,17 +7,14 @@ export type {
   WorkflowRun,
 } from '@workflow/core/runtime';
 
+export { Run } from '@workflow/core/runtime/run';
+
 const workflowStub = (item: string) => {
   throw new Error(
     `The workflow environment doesn't allow this runtime usage of ${item}. Move this call to a step function ("use step") or call it outside the workflow context.`
   );
 };
 
-export class Run {
-  constructor() {
-    workflowStub('Run');
-  }
-}
 export const getRun = () => workflowStub('getRun');
 export const getHookByToken = () => workflowStub('getHookByToken');
 export const resumeHook = () => workflowStub('resumeHook');

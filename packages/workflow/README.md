@@ -1,11 +1,11 @@
 <div align="center">
-  <a href="https://useworkflow.dev">
+  <a href="https://workflow-sdk.dev">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://useworkflow.dev/workflow-circle-symbol-dark.svg">
-      <img alt="Workflow DevKit logo" src="https://useworkflow.dev/workflow-circle-symbol-light.svg" height="128">
+      <source media="(prefers-color-scheme: dark)" srcset="https://workflow-sdk.dev/workflow-circle-symbol-dark.svg">
+      <img alt="Workflow SDK logo" src="https://workflow-sdk.dev/workflow-circle-symbol-light.svg" height="128">
     </picture>
   </a>
-  <h1>Workflow Development Kit</h1>
+  <h1>Workflow SDK</h1>
 
 <a href="https://vercel.com"><img alt="Vercel logo" src="https://img.shields.io/badge/MADE%20BY%20Vercel-000000.svg?style=for-the-badge&logo=Vercel&labelColor=000"></a>
 <a href="https://www.npmjs.com/package/workflow"><img alt="NPM version" src="https://img.shields.io/npm/v/workflow?style=for-the-badge&labelColor=000000"></a>
@@ -16,21 +16,21 @@
 
 ## Getting Started
 
-The **Workflow Development Kit** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI agents that can suspend, resume, and maintain state with ease.
+The **Workflow SDK** lets you easily add durability, reliability, and observability to async JavaScript. Build apps and AI agents that can suspend, resume, and maintain state with ease.
 
-Visit [https://useworkflow.dev](https://useworkflow.dev) to view the full documentation.
+Visit [https://workflow-sdk.dev](https://workflow-sdk.dev) to view the full documentation.
 
 ## Community
 
-The Workflow DevKit community can be found on [GitHub Discussions](https://github.com/vercel/workflow/discussions), where you can ask questions, voice ideas, and share your projects with other people.
+The Workflow SDK community can be found on [GitHub Discussions](https://github.com/vercel/workflow/discussions), where you can ask questions, voice ideas, and share your projects with other people.
 
 ## Contributing
 
-Contributions to Workflow DevKit are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and wider community.
+Contributions to Workflow SDK are welcome and highly appreciated. Please use GitHub [issues](https://github.com/vercel/workflow/issues) and [discussions](https://github.com/vercel/workflow/discussions) to collaborate with the team and wider community.
 
 ## Author list
 
-Workflow DevKit was built by engineers at [Vercel](https://vercel.com) and the [Open Source Community](https://github.com/vercel/workflow/graphs/contributors).
+Workflow SDK was built by engineers at [Vercel](https://vercel.com) and the [Open Source Community](https://github.com/vercel/workflow/graphs/contributors).
 
 The initial core contributing engineers are:
 
@@ -42,12 +42,12 @@ The initial core contributing engineers are:
 - Peter Wielander ([@VaguelySerious](https://github.com/VaguelySerious))
 - Pranay Prakash ([@pranaygp](https://github.com/pranaygp))
 
-The Workflow DevKit logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com/ceciliorz)
+The Workflow SDK logo was designed by Cecilio Ruiz [@ceciliorz](https://x.com/ceciliorz)
 
 ---
 
 ## Security
 
-If you believe you have found a security vulnerability in Workflow DevKit, we encourage you to **_responsibly disclose this and not open a public issue_**.
+If you believe you have found a security vulnerability in Workflow SDK, we encourage you to **_responsibly disclose this and not open a public issue_**.
 
 To participate in our Open Source Software Bug Bounty program, please email [responsible.disclosure@vercel.com](mailto:responsible.disclosure@vercel.com). We will add you to the program and provide further instructions for submitting your report.

@@ -1,5 +1,17 @@
 # @workflow/typescript-plugin
 
+## 5.0.0-beta.1
+
+### Minor Changes
+
+- [#1633](https://github.com/vercel/workflow/pull/1633) [`d040182`](https://github.com/vercel/workflow/commit/d0401829320c2880a0a5c2404ed9dede94eb17a0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Allow synchronous functions to use `"use step"` directive. This enables using `"use step"` as a mechanism to strip Node.js-dependent code from the workflow VM bundle without requiring the function to be async.
+
+## 5.0.0-beta.0
+
+### Major Changes
+
+- [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
+
 ## 4.0.1-beta.5
 
 ### Patch Changes

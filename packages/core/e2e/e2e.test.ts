@@ -4,7 +4,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
+  WorkflowWorldError,
 } from '@workflow/errors';
+import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
 import {
   afterAll,
   assert,
@@ -270,43 +272,36 @@ describe('e2e', () => {
     }
   );
 
-  // ReadableStream return values use the world's streaming infrastructure which
-  // requires in-process access. The local world's streamer uses an in-process EventEmitter
-  // that doesn't work cross-process (test runner ↔ workbench app).
-  test.skipIf(isLocalDeployment())(
-    'readableStreamWorkflow',
-    { timeout: 120_000 },
-    async () => {
-      const run = await start(await e2e('readableStreamWorkflow'), []);
-      const returnValue = await run.returnValue;
-      expect(returnValue).toBeInstanceOf(ReadableStream);
+  test('readableStreamWorkflow', { timeout: 120_000 }, async () => {
+    const run = await start(await e2e('readableStreamWorkflow'), []);
+    const returnValue = await run.returnValue;
+    expect(returnValue).toBeInstanceOf(ReadableStream);
 
-      const expected = '0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n';
-      const decoder = new TextDecoder();
-      let contents = '';
-      // Read chunks until we have all expected content or hit a timeout.
-      // On Vercel, the stream close event can be delayed even after all
-      // chunks are delivered, so we stop once we have the expected data
-      // rather than waiting for the stream to end.
-      const reader = returnValue.getReader();
-      const readDeadline = Date.now() + 60_000;
-      try {
-        while (Date.now() < readDeadline) {
-          const { done, value } = await Promise.race([
-            reader.read(),
-            sleep(30_000).then(() => ({ done: true, value: undefined })),
-          ]);
-          if (value) {
-            contents += decoder.decode(value, { stream: true });
-          }
-          if (done || contents.length >= expected.length) break;
+    const expected = '0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n';
+    const decoder = new TextDecoder();
+    let contents = '';
+    // Read chunks until we have all expected content or hit a timeout.
+    // On Vercel, the stream close event can be delayed even after all
+    // chunks are delivered, so we stop once we have the expected data
+    // rather than waiting for the stream to end.
+    const reader = returnValue.getReader();
+    const readDeadline = Date.now() + 60_000;
+    try {
+      while (Date.now() < readDeadline) {
+        const { done, value } = await Promise.race([
+          reader.read(),
+          sleep(30_000).then(() => ({ done: true, value: undefined })),
+        ]);
+        if (value) {
+          contents += decoder.decode(value, { stream: true });
         }
-      } finally {
-        reader.releaseLock();
+        if (done || contents.length >= expected.length) break;
       }
-      expect(contents).toBe(expected);
+    } finally {
+      reader.releaseLock();
     }
-  );
+    expect(contents).toBe(expected);
+  });
 
   test('hookWorkflow', { timeout: 60_000 }, async () => {
     const token = Math.random().toString(36).slice(2);
@@ -409,7 +404,7 @@ describe('e2e', () => {
     // Poll until all 3 webhooks are registered.
     // On Vercel, webhook registration can be slow due to cold starts and
     // queue processing latency, so we allow up to 60s.
-    const world = getWorld();
+    const world = await getWorld();
     const hooks = await (async () => {
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
@@ -594,6 +589,16 @@ describe('e2e', () => {
     );
     expect(returnValue.stepMetadata.url).toBeUndefined();
 
+    // workflow context should have features and stepMetadata shouldn't
+    expect(returnValue.workflowMetadata.features).toBeDefined();
+    expect(typeof returnValue.workflowMetadata.features.encryption).toBe(
+      'boolean'
+    );
+    expect(returnValue.innerWorkflowMetadata.features).toStrictEqual(
+      returnValue.workflowMetadata.features
+    );
+    expect(returnValue.stepMetadata.features).toBeUndefined();
+
     // workflow context shouldn't have stepId, stepStartedAt, or attempt
     expect(returnValue.workflowMetadata.stepId).toBeUndefined();
     expect(returnValue.workflowMetadata.stepStartedAt).toBeUndefined();
@@ -611,17 +616,13 @@ describe('e2e', () => {
     expect(returnValue.stepMetadata.stepStartedAt).toBeDefined();
   });
 
-  // Output stream tests use run.getReadable() which requires in-process streaming
-  // infrastructure. The local world's streamer uses an EventEmitter that doesn't work
-  // cross-process (test runner ↔ workbench app).
-  //
   // outputStreamWorkflow writes 2 chunks to the default stream:
   //   chunk 0: binary "Hello, world!"
   //   chunk 1: object { foo: 'test' }
   // and 2 chunks to the "test" named stream:
   //   chunk 0: binary "Hello, named stream!"
   //   chunk 1: object { foo: 'bar' }
-  describe.skipIf(isLocalDeployment())('outputStreamWorkflow', () => {
+  describe('outputStreamWorkflow', () => {
     const startIndexCases = [
       {
         name: 'no startIndex (reads all chunks)',
@@ -705,88 +706,85 @@ describe('e2e', () => {
     }
   });
 
-  describe.skipIf(isLocalDeployment())(
-    'outputStreamWorkflow - getTailIndex and getStreamChunks',
-    () => {
-      test(
-        'getTailIndex returns correct index after stream completes',
-        {
-          timeout: 60_000,
-        },
-        async () => {
-          const run = await start(await e2e('outputStreamWorkflow'), []);
-          await run.returnValue;
+  describe('outputStreamWorkflow - getTailIndex and getChunks', () => {
+    test(
+      'getTailIndex returns correct index after stream completes',
+      {
+        timeout: 60_000,
+      },
+      async () => {
+        const run = await start(await e2e('outputStreamWorkflow'), []);
+        await run.returnValue;
 
-          const readable = run.getReadable();
-          const tailIndex = await readable.getTailIndex();
+        const readable = run.getReadable();
+        const tailIndex = await readable.getTailIndex();
 
-          // outputStreamWorkflow writes 2 chunks to the default stream
-          expect(tailIndex).toBe(1);
+        // outputStreamWorkflow writes 2 chunks to the default stream
+        expect(tailIndex).toBe(1);
+      }
+    );
+
+    test(
+      'getTailIndex returns -1 before any chunks are written',
+      {
+        timeout: 60_000,
+      },
+      async () => {
+        const run = await start(await e2e('outputStreamWorkflow'), []);
+
+        // Don't await returnValue — check immediately while stream is
+        // still being written (or hasn't started yet). The world should
+        // report tailIndex = -1 for streams with no data.
+        const readable = run.getReadable({ namespace: 'nonexistent' });
+        const tailIndex = await readable.getTailIndex();
+        expect(tailIndex).toBe(-1);
+      }
+    );
+
+    test(
+      'getChunks returns same content as reading the stream',
+      {
+        timeout: 60_000,
+      },
+      async () => {
+        const run = await start(await e2e('outputStreamWorkflow'), []);
+        await run.returnValue;
+
+        // Read all chunks via the stream
+        const reader = run.getReadable().getReader();
+        const streamChunks: unknown[] = [];
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          streamChunks.push(value);
         }
-      );
 
-      test(
-        'getTailIndex returns -1 before any chunks are written',
-        {
-          timeout: 60_000,
-        },
-        async () => {
-          const run = await start(await e2e('outputStreamWorkflow'), []);
-
-          // Don't await returnValue — check immediately while stream is
-          // still being written (or hasn't started yet). The world should
-          // report tailIndex = -1 for streams with no data.
-          const readable = run.getReadable({ namespace: 'nonexistent' });
-          const tailIndex = await readable.getTailIndex();
-          expect(tailIndex).toBe(-1);
-        }
-      );
-
-      test(
-        'getStreamChunks returns same content as reading the stream',
-        {
-          timeout: 60_000,
-        },
-        async () => {
-          const run = await start(await e2e('outputStreamWorkflow'), []);
-          await run.returnValue;
-
-          // Read all chunks via the stream
-          const reader = run.getReadable().getReader();
-          const streamChunks: unknown[] = [];
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            streamChunks.push(value);
+        // Read all chunks via getChunks pagination
+        const world = await getWorld();
+        const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
+        const paginatedChunks: Uint8Array[] = [];
+        let cursor: string | null = null;
+        do {
+          const page = await world.streams.getChunks(run.runId, streamName, {
+            limit: 1, // small page size to exercise pagination
+            ...(cursor ? { cursor } : {}),
+          });
+          for (const chunk of page.data) {
+            paginatedChunks.push(chunk.data);
           }
+          cursor = page.cursor;
+          if (!page.hasMore) {
+            expect(page.done).toBe(true);
+          }
+        } while (cursor);
 
-          // Read all chunks via getStreamChunks pagination
-          const world = getWorld();
-          const streamName = `${run.runId.replace('wrun_', 'strm_')}_user`;
-          const paginatedChunks: Uint8Array[] = [];
-          let cursor: string | null = null;
-          do {
-            const page = await world.getStreamChunks(streamName, run.runId, {
-              limit: 1, // small page size to exercise pagination
-              ...(cursor ? { cursor } : {}),
-            });
-            for (const chunk of page.data) {
-              paginatedChunks.push(chunk.data);
-            }
-            cursor = page.cursor;
-            if (!page.hasMore) {
-              expect(page.done).toBe(true);
-            }
-          } while (cursor);
+        // Both methods should return the same number of chunks
+        expect(paginatedChunks).toHaveLength(streamChunks.length);
+      }
+    );
+  });
 
-          // Both methods should return the same number of chunks
-          expect(paginatedChunks).toHaveLength(streamChunks.length);
-        }
-      );
-    }
-  );
-
-  test.skipIf(isLocalDeployment())(
+  test(
     'outputStreamInsideStepWorkflow - getWritable() called inside step functions',
     { timeout: 60_000 },
     async () => {
@@ -924,11 +922,11 @@ describe('e2e', () => {
             // Workflow catches the error and returns it
             expect(result.caught).toBe(true);
             expect(result.message).toContain('Step error message');
-            // Stack trace can show either the original step function or its transformed wrapper name
-            expect(result.stack).toMatch(/errorStepFn|registerStepFunction/);
+            // Stack trace should contain the original step function name
+            expect(result.stack).toContain('errorStepFn');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('99_e2e.ts');
@@ -946,13 +944,11 @@ describe('e2e', () => {
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.message).toContain('Step error message');
 
-            // Step error stack can show either the original step function or its transformed wrapper name
-            expect(failedStep.error.stack).toMatch(
-              /errorStepFn|registerStepFunction/
-            );
+            // Step error stack should contain the original step function name
+            expect(failedStep.error.stack).toContain('errorStepFn');
             expect(failedStep.error.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('99_e2e.ts');
@@ -980,12 +976,10 @@ describe('e2e', () => {
             );
             // Stack trace propagates to caught error with function names and source file
             expect(result.stack).toContain('throwErrorFromStep');
-            expect(result.stack).toMatch(
-              /stepThatThrowsFromHelper|registerStepFunction/
-            );
+            expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
 
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('helpers.ts');
@@ -1002,11 +996,11 @@ describe('e2e', () => {
             );
             expect(failedStep.status).toBe('failed');
             expect(failedStep.error.stack).toContain('throwErrorFromStep');
-            expect(failedStep.error.stack).toMatch(
-              /stepThatThrowsFromHelper|registerStepFunction/
+            expect(failedStep.error.stack).toContain(
+              'stepThatThrowsFromHelper'
             );
             expect(failedStep.error.stack).not.toContain('evalmachine');
-            // Source maps are not supported everyhwere. Check the definition
+            // Source maps are not supported everywhere. Check the definition
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('helpers.ts');
@@ -1520,18 +1514,53 @@ describe('e2e', () => {
     }
   );
 
-  // Skipped for Vercel since VQS doesn't support direct HTTP calls
+  test(
+    'runClassSerializationWorkflow - Run instances serialize across workflow/step boundaries',
+    { timeout: 120_000 },
+    async () => {
+      const inputValue = 21;
+      const run = await start(await e2e('runClassSerializationWorkflow'), [
+        inputValue,
+      ]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toHaveProperty('isRunInWorkflow', true);
+      expect(returnValue).toHaveProperty('childRunId');
+      expect(returnValue).toHaveProperty('runIdFromStep');
+      expect(returnValue).toHaveProperty('childResult');
+
+      expect(typeof returnValue.childRunId).toBe('string');
+      expect(returnValue.childRunId.startsWith('wrun_')).toBe(true);
+      expect(returnValue.runIdFromStep).toBe(returnValue.childRunId);
+      expect(returnValue.childResult).toEqual({
+        childResult: inputValue * 2,
+        originalValue: inputValue,
+      });
+
+      const { json: parentRunData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(parentRunData.status).toBe('completed');
+
+      const { json: childRunData } = await cliInspectJson(
+        `runs ${returnValue.childRunId} --withData`
+      );
+      expect(childRunData.status).toBe('completed');
+      expect(childRunData.output).toEqual({
+        childResult: inputValue * 2,
+        originalValue: inputValue,
+      });
+    }
+  );
+
+  // This test requires direct HTTP access and works when running locally.
+  // For production use on Vercel with Deployment Protection enabled, use the
+  // queue-based `healthCheck(world, endpoint, options)` function instead, which
+  // bypasses protection by sending messages through the Queue infrastructure.
   test.skipIf(!isLocalDeployment())(
     'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
     { timeout: 30_000 },
     async () => {
-      // NOTE: This tests the HTTP-based health check using the `?__health` query parameter.
-      // This approach requires direct HTTP access and works when running locally (for port detection)
-      //
-      // For production use on Vercel with Deployment Protection enabled, use the
-      // queue-based `healthCheck(world, endpoint, options)` function instead, which
-      // bypasses protection by sending messages through the Queue infrastructure.
-
       // Test the flow endpoint health check
       const flowHealthUrl = new URL(
         '/.well-known/workflow/v1/flow?__health',
@@ -1542,11 +1571,17 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(flowRes.status).toBe(200);
-      expect(flowRes.headers.get('Content-Type')).toBe('text/plain');
-      const flowBody = await flowRes.text();
-      expect(flowBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/flow" endpoint is healthy'
-      );
+      expect(flowRes.headers.get('Content-Type')).toBe('application/json');
+      const flowBody = await flowRes.json();
+      expect(flowBody).toEqual({
+        healthy: true,
+        endpoint: '/.well-known/workflow/v1/flow',
+        // specVersion comes from the World's declared specVersion (e.g. 3
+        // for world-vercel) or falls back to SPEC_VERSION_CURRENT (2).
+        specVersion: expect.any(Number),
+        workflowCoreVersion: expect.any(String),
+      });
+      expect(flowBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
 
       // Test the step endpoint health check
       const stepHealthUrl = new URL(
@@ -1558,11 +1593,15 @@ describe('e2e', () => {
         headers: getProtectionBypassHeaders(),
       });
       expect(stepRes.status).toBe(200);
-      expect(stepRes.headers.get('Content-Type')).toBe('text/plain');
-      const stepBody = await stepRes.text();
-      expect(stepBody).toBe(
-        'Workflow DevKit "/.well-known/workflow/v1/step" endpoint is healthy'
-      );
+      expect(stepRes.headers.get('Content-Type')).toBe('application/json');
+      const stepBody = await stepRes.json();
+      expect(stepBody).toEqual({
+        healthy: true,
+        endpoint: '/.well-known/workflow/v1/step',
+        specVersion: expect.any(Number),
+        workflowCoreVersion: expect.any(String),
+      });
+      expect(stepBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
     }
   );
 
@@ -1573,7 +1612,7 @@ describe('e2e', () => {
       // Tests the queue-based health check using healthCheck() directly.
       // This bypasses Vercel Deployment Protection by sending messages
       // through the Queue infrastructure rather than direct HTTP.
-      const world = getWorld();
+      const world = await getWorld();
 
       // Test workflow endpoint health check
       const workflowResult = await healthCheck(world, 'workflow', {
@@ -1970,7 +2009,7 @@ describe('e2e', () => {
       // This exercises the same cancelRun code path that the CLI uses
       // (the CLI delegates directly to this function).
       const { cancelRun } = await import('../src/runtime');
-      await cancelRun(getWorld(), run.runId);
+      await cancelRun(await getWorld(), run.runId);
 
       // Verify the run was cancelled - returnValue should throw WorkflowRunCancelledError
       const error = await run.returnValue.catch((e: unknown) => e);
@@ -2140,6 +2179,122 @@ describe('e2e', () => {
 
       const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
       expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
+    'importMetaUrlWorkflow - import.meta.url is available in step bundles',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('importMetaUrlWorkflow'), []);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        isDefined: true,
+        type: 'string',
+        isFileUrl: true,
+      });
+    }
+  );
+
+  test(
+    'metadataFromHelperWorkflow - getWorkflowMetadata/getStepMetadata work from module-level helper (#1577)',
+    { timeout: 60_000 },
+    async () => {
+      const run = await start(await e2e('metadataFromHelperWorkflow'), [
+        'smoke-test',
+      ]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue.label).toBe('smoke-test');
+      expect(typeof returnValue.workflowRunId).toBe('string');
+      expect(typeof returnValue.stepId).toBe('string');
+      expect(returnValue.attempt).toBeGreaterThanOrEqual(1);
+    }
+  );
+
+  // ============================================================
+  // Resilient start: run completes even when run_created fails
+  // ============================================================
+  // TODO: Switch this to a stream-based workflow (e.g. readableStreamWorkflow)
+  // to also verify that serialization, flushing, and binary data work correctly
+  // over the queue boundary.
+  test(
+    'resilient start: addTenWorkflow completes when run_created returns 500',
+    { timeout: 60_000 },
+    async () => {
+      // Get the real world and wrap it so the first events.create call
+      // (run_created) throws a 500 server error. The queue should still
+      // be dispatched with runInput, and the runtime should bootstrap
+      // the run via the run_started fallback path.
+      const realWorld = await getWorld();
+      let createCallCount = 0;
+      const stubbedWorld: World = {
+        ...realWorld,
+        events: {
+          ...realWorld.events,
+          create: (async (...args: Parameters<World['events']['create']>) => {
+            createCallCount++;
+            if (createCallCount === 1) {
+              // Fail the very first call (run_created from start())
+              throw new WorkflowWorldError('Simulated storage outage', {
+                status: 500,
+              });
+            }
+            return realWorld.events.create(...args);
+          }) as World['events']['create'],
+        },
+      };
+
+      const run = await start(await e2e('addTenWorkflow'), [123], {
+        world: stubbedWorld,
+      });
+
+      // Verify the stub intercepted the run_created call (only call
+      // through the stubbed world — the server-side runtime uses its
+      // own world instance for run_started and subsequent events).
+      expect(createCallCount).toBe(1);
+
+      // The run should still complete despite run_created failing.
+      // The runtime's resilient start path creates the run from
+      // run_started, so returnValue polling may initially get
+      // WorkflowRunNotFoundError before the queue delivers.
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe(133);
+    }
+  );
+
+  test(
+    'getterStepWorkflow - getter functions with "use step" directive',
+    { timeout: 60_000 },
+    async () => {
+      // This workflow tests getter functions marked with "use step".
+      // The Sensor class has custom serialization so the `this` context
+      // can be serialized across the workflow/step boundary.
+      //
+      // getterStepWorkflow(5, 3, 7) should:
+      // 1. Create Sensor(5, 3)
+      // 2. await sensor.reading -> 5 * 3 = 15 (getter step)
+      // 3. await sensor.calibrate(7) -> 5 * 3 + 7 = 22 (instance method step)
+      // 4. Create Sensor(100, 2), await sensor2.reading -> 100 * 2 = 200
+      const run = await start(await e2e('getterStepWorkflow'), [5, 3, 7]);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue).toEqual({
+        reading: 15, // 5 * 3
+        calibrated: 22, // 5 * 3 + 7
+        reading2: 200, // 100 * 2
+      });
+
+      // Verify the run completed successfully
+      const { json: runData } = await cliInspectJson(
+        `runs ${run.runId} --withData`
+      );
+      expect(runData.status).toBe('completed');
+      expect(runData.output).toEqual({
+        reading: 15,
+        calibrated: 22,
+        reading2: 200,
+      });
     }
   );
 });
