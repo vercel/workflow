@@ -39,9 +39,10 @@ jobs:
             echo "status=clean" >> "$GITHUB_OUTPUT"
             echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
-            # The docs/ directory is not maintained on the stable branch.
-            # Auto-resolve any docs/ conflicts by deleting the files.
-            git diff --name-only --diff-filter=U | grep '^docs/' | while IFS= read -r file; do
+            # The docs app is not maintained on the stable branch (only
+            # docs/content/ is kept for npm prepack scripts). Auto-resolve
+            # any non-content docs/ conflicts by deleting the files.
+            git diff --name-only --diff-filter=U | grep '^docs/' | grep -v '^docs/content/' | while IFS= read -r file; do
               echo "Auto-resolving docs conflict (deleting): $file"
               git rm -f -- "$file"
             done
@@ -105,9 +106,11 @@ jobs:
           PR title: $PR_TITLE
           Commit message: $COMMIT_MSG
 
-          IMPORTANT: The docs/ directory does NOT exist on the stable branch.
-          If any remaining conflicts involve files under docs/, resolve them by
-          deleting the file with "git rm".
+          IMPORTANT: Only docs/content/ exists on the stable branch (the rest
+          of the docs app is removed). If any remaining conflicts involve files
+          under docs/ that are NOT in docs/content/, resolve them by deleting
+          the file with "git rm". Conflicts in docs/content/ should be resolved
+          normally (these are markdown files bundled into npm packages).
 
           Resolve all merge conflicts in the working tree. The content between
           <<<<<<< HEAD and ======= is the current stable branch. The content between
