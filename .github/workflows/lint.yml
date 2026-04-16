@@ -36,6 +36,29 @@ jobs:
             exit 1
           fi
 
+  knip:
+    name: Knip
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-workflow-dev
+        with:
+          install-args: '--ignore-scripts'
+          build-packages: 'false'
+
+      - name: Run Knip
+        if: github.event_name != 'pull_request'
+        run: pnpm knip:ci
+
+      - name: Run Knip with GitHub annotations
+        if: github.event_name == 'pull_request'
+        run: pnpm knip:ci:github
+
   docs-links:
     name: Docs Links
     runs-on: ubuntu-latest

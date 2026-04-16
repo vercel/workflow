@@ -62,7 +62,6 @@
     "@testcontainers/postgresql": "11.12.0",
     "@types/node": "catalog:",
     "@types/pg": "8.20.0",
-    "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "@workflow/world-testing": "workspace:*",
     "drizzle-kit": "0.31.9",

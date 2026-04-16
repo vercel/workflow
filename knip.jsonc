@@ -1,0 +1,171 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema-jsonc.json",
+  "entry": [
+    "scripts/**/*.{js,cjs,mjs,ts,cts,mts}",
+    ".github/actions/*/src/**/*.{js,cjs,mjs,ts,cts,mts}",
+    "docs/content/**/*.mdx",
+    "docs/app/**/*.{js,jsx,ts,tsx}",
+    "docs/components/**/*.{js,jsx,ts,tsx}",
+    "docs/hooks/**/*.{js,jsx,ts,tsx}",
+    "docs/lib/**/*.{js,jsx,ts,tsx}",
+    "workbench/**/app/**/*.{js,jsx,ts,tsx}",
+    "workbench/**/pages/**/*.{js,jsx,ts,tsx}",
+    "workbench/**/components/**/*.{js,jsx,ts,tsx}",
+    "workbench/**/hooks/**/*.{js,jsx,ts,tsx}",
+    "workbench/**/lib/**/*.{js,jsx,ts,tsx}",
+    "workbench/**/src/**/*.{js,jsx,ts,tsx,mjs}",
+    "workbench/**/workflows/**/*.{js,jsx,ts,tsx,mjs}",
+    "packages/cli/src/**/*.ts",
+    "packages/world-testing/workflows/**/*.{ts,tsx,mts}"
+  ],
+  "ignoreFiles": [
+    "**/dist/**",
+    "**/.svelte-kit/**",
+    "**/.nuxt/**",
+    "**/.react-router/**",
+    "packages/swc-plugin-workflow/examples/**",
+    "packages/swc-plugin-workflow/transform/tests/**",
+    "packages/swc-playground-wasm/pkg/**",
+    "workbench/**/app/.well-known/**"
+  ],
+  "ignoreUnresolved": [
+    "@/_workflows",
+    "@/lib/generated-types",
+    "../_workflows.js",
+    "./+types/api.rpc",
+    "./+types/api.stream.$streamId",
+    "./+types/root",
+    "/wasm/swc_playground_wasm.js",
+    "../types/client",
+    "../../types/cache",
+    "./cache"
+  ],
+  "ignoreIssues": {
+    "scripts/**/*": [
+      "files"
+    ],
+    ".github/actions/**/*": [
+      "files"
+    ],
+    "docs/app/**/*": [
+      "files"
+    ],
+    "docs/components/**/*": [
+      "files"
+    ],
+    "docs/hooks/**/*": [
+      "files"
+    ],
+    "docs/lib/**/*": [
+      "files"
+    ],
+    "workbench/**/app/**/*": [
+      "files"
+    ],
+    "workbench/**/pages/**/*": [
+      "files"
+    ],
+    "workbench/**/components/**/*": [
+      "files"
+    ],
+    "workbench/**/hooks/**/*": [
+      "files"
+    ],
+    "workbench/**/lib/**/*": [
+      "files"
+    ],
+    "workbench/**/src/**/*": [
+      "files"
+    ],
+    "workbench/**/workflows/**/*": [
+      "files"
+    ],
+    "workbench/**/package.json": [
+      "dependencies",
+      "devDependencies"
+    ],
+    "workbench/example/api/**/*": [
+      "files"
+    ],
+    "workbench/example/instrumentation.ts": [
+      "files"
+    ],
+    "workbench/sveltekit/vite.config.ts": [
+      "files"
+    ],
+    "workbench/vitest/**/*": [
+      "files"
+    ],
+    "docs/package.json": [
+      "dependencies",
+      "devDependencies"
+    ],
+    "packages/docs-typecheck/package.json": [
+      "dependencies",
+      "devDependencies"
+    ],
+    "packages/docs-typecheck/**/*": [
+      "files"
+    ],
+    "packages/core/runtime.d.ts": [
+      "files"
+    ],
+    "packages/core/runtime.js": [
+      "files"
+    ],
+    "packages/core/e2e/github-reporter.ts": [
+      "files"
+    ],
+    "packages/world-testing/workflows/**/*": [
+      "files"
+    ],
+    "packages/vitest/src/**/*": [
+      "files"
+    ],
+    "packages/cli/src/**/*": [
+      "files"
+    ],
+    "packages/web/app/**/*": [
+      "files"
+    ],
+    "packages/web/server/**/*": [
+      "files"
+    ],
+    "packages/nuxt/src/module.ts": [
+      "files"
+    ],
+    "packages/web/app/routes/api.rpc.tsx": [
+      "unresolved"
+    ],
+    "packages/web/app/routes/api.stream.$streamId.tsx": [
+      "unresolved"
+    ],
+    "packages/web/app/root.tsx": [
+      "unresolved"
+    ],
+    "packages/next/src/builder-deferred.ts": [
+      "unlisted"
+    ],
+    "workbench/nextjs-turbopack/postcss.config.mjs": [
+      "unlisted"
+    ],
+    "workbench/nextjs-webpack/postcss.config.mjs": [
+      "unlisted"
+    ],
+    "workbench/nuxt/app.vue": [
+      "unlisted"
+    ],
+    "workbench/swc-playground/postcss.config.mjs": [
+      "unlisted"
+    ],
+    "packages/world/src/ulid.ts": [
+      "duplicates"
+    ]
+  },
+  "workspaces": {
+    "workbench/sveltekit": {
+      "vite": false,
+      "svelte": false
+    }
+  }
+}

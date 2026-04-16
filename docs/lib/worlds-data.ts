@@ -205,11 +205,6 @@ export const getWorldsData = unstable_cache(
 );
 
 /**
- * Alias for backwards compatibility
- */
-export const getWorldsDataWithArtifacts = getWorldsData;
-
-/**
  * Get data for a single world by ID
  */
 export async function getWorldData(id: string): Promise<{

@@ -47,23 +47,18 @@
     "format": "biome format --write"
   },
   "dependencies": {
-    "@tailwindcss/postcss": "4",
     "@workflow/core": "workspace:*",
     "@workflow/utils": "workspace:*",
     "@workflow/world": "workspace:*",
-    "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
-    "date-fns": "4.1.0",
     "lucide-react": "0.575.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-inspector": "9.0.0",
     "react-virtuoso": "4.18.1",
-    "shiki": "4.0.0",
     "sonner": "2.0.7",
     "streamdown": "2.3.0",
-    "tailwind-merge": "3.5.0",
-    "tailwindcss": "4"
+    "tailwind-merge": "3.5.0"
   },
   "devDependencies": {
     "@biomejs/biome": "catalog:",
