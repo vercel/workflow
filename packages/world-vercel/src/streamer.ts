@@ -267,9 +267,11 @@ export function createStreamer(config?: APIConfig): Streamer {
         ReadableStreamDefaultReader<Uint8Array>
       > => {
         const httpConfig = await getHttpConfig(config);
-        const url = getStreamUrl(name, undefined, httpConfig);
+        // Use v3 to receive the stream control frame for reconnection.
+        const url = new URL(
+          `${httpConfig.baseUrl}/v3/stream/${encodeURIComponent(name)}`
+        );
         url.searchParams.set('startIndex', String(currentStartIndex));
-        url.searchParams.set('controlFrame', '1');
         const response = await fetch(url, {
           headers: httpConfig.headers,
         });
