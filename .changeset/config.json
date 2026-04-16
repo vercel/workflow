@@ -22,6 +22,7 @@
   "baseBranch": "stable",
   "updateInternalDependencies": "patch",
   "ignore": [
+    "docs",
     "nextjs-turbopack",
     "nextjs-webpack",
     "workflow-sdk-compiler-playground",

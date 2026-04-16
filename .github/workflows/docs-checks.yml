@@ -1,7 +1,8 @@
-# The docs/ directory does not exist on the stable branch.
-# Docs are deployed only from main. This workflow is kept as a
-# no-op on stable so that any branch protection rules referencing
-# these job names still pass.
+# On stable, docs/ is a minimal placeholder that only builds a
+# blank Next.js app and packs per-deployment SDK tarballs. The real
+# docs site is deployed from main. This workflow is kept as a no-op
+# on stable so that any branch protection rules referencing these
+# job names still pass.
 name: Docs Checks
 
 on:

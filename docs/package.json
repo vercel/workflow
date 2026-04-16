@@ -1,0 +1,21 @@
+{
+  "name": "docs",
+  "version": "4.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "next build",
+    "prebuild": "node scripts/pack.ts"
+  },
+  "dependencies": {
+    "next": "16.2.1",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "catalog:"
+  }
+}
