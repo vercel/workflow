@@ -224,7 +224,7 @@ export async function runWorkflow(
     //       For now `fetch` must be explicitly imported from `workflow`.
     vmGlobalThis.fetch = () => {
       throw new vmGlobalThis.Error(
-        `Global "fetch" is unavailable in workflow functions. Use the "fetch" step function from "workflow" to make HTTP requests.\n\nLearn more: https://useworkflow.dev/err/${ERROR_SLUGS.FETCH_IN_WORKFLOW_FUNCTION}`
+        `Global "fetch" is unavailable in workflow functions. Use the "fetch" step function from "workflow" to make HTTP requests.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.FETCH_IN_WORKFLOW_FUNCTION}`
       );
     };
 
