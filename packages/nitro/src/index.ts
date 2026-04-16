@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { workflowTransformPlugin } from '@workflow/rollup';
 import type { Nitro, NitroModule, RollupConfig } from 'nitro/types';
 import { join } from 'pathe';
@@ -98,10 +99,12 @@ export default {
                 );
               if (isWorkflowPkg) {
                 // Strip file:// protocol if present — Rollup needs
-                // a plain filesystem path to load the module
+                // a plain filesystem path to load the module.
+                // `fileURLToPath` correctly handles Windows paths
+                // (e.g., file:///C:/... -> C:\...) and percent-decoding.
                 let resolvedId = resolved.id;
                 if (resolvedId.startsWith('file://')) {
-                  resolvedId = new URL(resolvedId).pathname;
+                  resolvedId = fileURLToPath(resolvedId);
                 }
                 return { id: resolvedId, external: false };
               }

@@ -38,11 +38,28 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
     // externalizing them. This ensures the SWC transform plugin processes
     // files containing workflow patterns and adds classId registration
     // IIFEs needed for serialization.
+    //
+    // `ssr.noExternal` may be `true`, a string, a RegExp, or an array.
+    // If it's already `true`, everything is bundled and we don't need
+    // to add anything. Otherwise, normalize to an array while preserving
+    // any existing matchers, then append the workflow matchers.
     nuxt.options.vite ||= {};
     nuxt.options.vite.ssr ||= {};
-    nuxt.options.vite.ssr.noExternal ||= [];
-    if (Array.isArray(nuxt.options.vite.ssr.noExternal)) {
-      nuxt.options.vite.ssr.noExternal.push('workflow', /@workflow\//);
+    const workflowSsrMatchers: (string | RegExp)[] = [
+      'workflow',
+      /@workflow\//,
+    ];
+    const existingNoExternal = nuxt.options.vite.ssr.noExternal;
+    if (existingNoExternal !== true) {
+      const normalized: (string | RegExp)[] = Array.isArray(existingNoExternal)
+        ? [...existingNoExternal]
+        : existingNoExternal
+          ? [existingNoExternal]
+          : [];
+      nuxt.options.vite.ssr.noExternal = [
+        ...normalized,
+        ...workflowSsrMatchers,
+      ];
     }
   },
 });
