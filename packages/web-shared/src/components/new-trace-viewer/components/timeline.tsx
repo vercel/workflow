@@ -273,7 +273,9 @@ const TimelineBar = memo(function TimelineBar({
             <div
               className="absolute h-6 top-1.5 rounded-sm"
               style={{
-                left: `${leftPct}%`,
+                left: isCompressed
+                  ? `min(${leftPct}%, calc(100% - ${FIXED_BAR_WIDTH_PX}px))`
+                  : `${leftPct}%`,
                 width: isCompressed
                   ? `${FIXED_BAR_WIDTH_PX}px`
                   : `max(${widthPct}%, 4px)`,
@@ -299,7 +301,9 @@ const TimelineBar = memo(function TimelineBar({
         <div
           className="absolute h-6 top-1.5 rounded-sm"
           style={{
-            left: `${leftPct}%`,
+            left: isCompressed
+              ? `min(${leftPct}%, calc(100% - ${FIXED_BAR_WIDTH_PX}px))`
+              : `${leftPct}%`,
             width: isCompressed
               ? `${FIXED_BAR_WIDTH_PX}px`
               : `max(${widthPct}%, 4px)`,

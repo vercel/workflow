@@ -860,7 +860,7 @@ export const AttributePanel = ({
             {/* Basic attributes in a vertical layout with border */}
             {visibleBasicAttributes.length > 0 && (
               <div
-                className="mb-3 flex flex-col overflow-hidden rounded-lg border"
+                className="mb-3 flex flex-col overflow-hidden rounded-md border"
                 style={{
                   borderColor: 'var(--ds-gray-300)',
                 }}
