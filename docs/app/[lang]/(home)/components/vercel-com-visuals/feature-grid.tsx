@@ -1,12 +1,10 @@
+import Link from 'next/link';
 import type { JSX, ReactNode } from 'react';
 
+import { Button } from '@/components/ui/button';
 import { AgentsVisual } from './agents-visual';
 import { AiSdkVisual } from './ai-sdk-visual';
-import { DowntimeVisual } from './downtime-visual';
-import { InfraVisual } from './infra-visual';
 import { O11yVisual } from './o11y-visual';
-import { TimeoutVisual } from './timeout-visual';
-import { UsageVisual } from './usage-visual';
 
 interface Feature {
   title: string;
@@ -30,31 +28,8 @@ const features: Feature[] = [
   {
     title: 'Inspect every run end\u2011to\u2011end.',
     description:
-      'When deploying workflow on Vercel, deep workflow observability is built into the Vercel dashboard with no configuration or storage.',
+      'Observability is built into the SDK and works anywhere you run it. When using workflow on Vercel, observability is built into the Vercel dashboard with no configuration or storage.',
     visual: <O11yVisual />,
-  },
-  {
-    title: 'Zero infrastructure management.',
-    description:
-      'Fluid compute, serverless functions, queues and persistence work out of the box.',
-    visual: <InfraVisual />,
-  },
-  {
-    title: 'Deploy confidently.',
-    description:
-      'Running workflows continue on their original version while new executions use the latest code.',
-    visual: <DowntimeVisual />,
-  },
-  {
-    title: 'No timeout limits.',
-    description:
-      'Write long-running workflows without worrying about execution limits.',
-    visual: <TimeoutVisual />,
-  },
-  {
-    title: 'Pay for what you use.',
-    description: 'Only pay for actual execution time, not idle resources.',
-    visual: <UsageVisual />,
   },
 ];
 
@@ -75,11 +50,11 @@ function FeatureCard({ title, description, visual }: Feature): JSX.Element {
 function FeatureCardWide({ title, description, visual }: Feature): JSX.Element {
   return (
     <div className="flex flex-col items-center gap-8 md:gap-12 px-4 py-8 sm:py-12 sm:px-12">
-      <div className="flex flex-col items-center gap-4 max-w-[640px] text-center">
-        <h3 className="text-[24px] leading-[32px] tracking-[-0.96px] font-semibold text-gray-1000 md:text-[32px] md:leading-[40px] md:tracking-[-1.28px]">
+      <div className="flex flex-col items-center max-w-[800px] text-center mx-auto">
+        <h3 className="font-semibold text-xl tracking-tight sm:text-2xl md:text-3xl lg:text-[40px]">
           {title}
         </h3>
-        <p className="text-[16px] leading-[24px] tracking-normal text-gray-900 md:text-[18px] md:leading-[28px]">
+        <p className="text-balance text-lg text-muted-foreground mt-4">
           {description}
         </p>
       </div>
@@ -110,18 +85,6 @@ export function FeatureGridExtended(): JSX.Element {
       {/* Observability — full width */}
       <div>
         <FeatureCardWide {...features[2]} />
-      </div>
-      {/* Infra + Deploy — 2 col */}
-      <div className="grid lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x">
-        {features.slice(3, 5).map((feature) => (
-          <FeatureCard key={feature.title} {...feature} />
-        ))}
-      </div>
-      {/* Timeout + Usage — 2 col */}
-      <div className="grid lg:grid-cols-2 divide-y lg:divide-y-0 lg:divide-x">
-        {features.slice(5, 7).map((feature) => (
-          <FeatureCard key={feature.title} {...feature} />
-        ))}
       </div>
     </>
   );

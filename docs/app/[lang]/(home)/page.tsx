@@ -10,6 +10,7 @@ import { Templates } from './components/templates';
 import { TweetWall } from './components/tweet-wall';
 import { UseCases } from './components/use-cases-server';
 import { FeatureGridExtended } from './components/vercel-com-visuals/feature-grid';
+import { VercelSection } from './components/vercel-com-visuals/vercel-section';
 
 const title = 'Make any TypeScript Function Durable';
 const description =
@@ -46,6 +47,7 @@ const Home = () => (
         <Frameworks />
         <FeatureGridExtended />
         <RunAnywhere />
+        <VercelSection />
         <UseCases />
         <Templates />
         <TweetWall />
