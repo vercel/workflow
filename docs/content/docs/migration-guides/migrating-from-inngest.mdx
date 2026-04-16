@@ -171,7 +171,7 @@ Event matching disappears. A hook's token encodes the routing (for example, `ref
 
 `step.invoke()` splits into two steps: spawn and collect. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Return the `Run` object from the spawn step so observability can deep-link into the child run.
 
-You can return either the full `Run` object (enables deep-linking) or just `run.runId` (simpler). The runtime serializes `Run` to its `runId` in the event log either way.
+You can return either the full `Run` object (enables deep-linking) or just `run.runId` (simpler).
 
 {/* @skip-typecheck: snippet without imports */}
 ```typescript title="workflow/workflows/parent.ts"
