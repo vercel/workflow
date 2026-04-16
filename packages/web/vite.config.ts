@@ -4,7 +4,19 @@ import { defineConfig } from 'vite';
 
 export default defineConfig(({ command, isSsrBuild }) => ({
   build: {
-    rollupOptions: isSsrBuild ? { input: './server/app.ts' } : undefined,
+    // Use Express server entry for self-hosting (node server.js).
+    // On Vercel, the React Router preset handles the server entry.
+    rollupOptions:
+      isSsrBuild && !process.env.VERCEL
+        ? { input: './server/app.ts' }
+        : undefined,
+    // Disable minification so the published npm package contains readable
+    // code. Without this, Vite's esbuild minifier produces single-line
+    // mega-bundles that supply-chain security scanners (e.g. Socket) flag
+    // as "obfuscated code". The app is a self-hosted observability tool
+    // where the unminified size difference is negligible — gzip/brotli at
+    // the serving layer compresses the wire payload regardless.
+    minify: false,
   },
   // Bundle all dependencies into the server build so that @workflow/web
   // can be installed and run without needing any of the UI dependencies
