@@ -297,7 +297,7 @@ Remove the Worker process, `@temporalio/*` dependencies, and the Temporal Server
 ## Features without a 1:1 equivalent
 
 - **Search attributes / visibility queries.** Temporal's search attribute system has no direct analog. Filter runs by status and timestamps via `getRun()` / observability UI.
-- **Event history archival.** Temporal archives histories to S3/GCS for long-term retention. Workflow SDK event logs are durable but not archival-tier.
+- **Event history archival.** Temporal archives histories to S3/GCS for long-term retention. Workflow SDK event logs are durable, but retention depends on the integration you are using. For example, see [Vercel Workflow Storage Retention](https://vercel.com/docs/workflows/pricing#storage-retention) for Vercel.
 - **Per-activity timeouts (`startToCloseTimeout`, `scheduleToCloseTimeout`, `heartbeatTimeout`).** Implement deadlines inside the step with `AbortSignal.timeout(ms)`, or wrap the call in `Promise.race(step(), sleep(...))` from the workflow.
 - **Rich retry policy (`initialInterval`, `backoffCoefficient`, `maximumInterval`, `nonRetryableErrorTypes`).** Only `maxRetries` is configurable. Classify retryability with `RetryableError`/`FatalError`; control delay between attempts via `new RetryableError(msg, { retryAfter: '5s' })`.
 - **Workers + task queues.** Managed deployments replace workers; self-hosted deployments still need a `World` implementation (see [/docs/deploying/world](/docs/deploying/world)).
