@@ -25,7 +25,8 @@ const config: NextConfig = {
       beforeFiles: [
         {
           source: '/sitemap.xml',
-          destination: 'https://crawled-sitemap.vercel.sh/useworkflow.dev-.xml',
+          destination:
+            'https://crawled-sitemap.vercel.sh/workflow-sdk.dev-.xml',
         },
         {
           source: '/docs/:path*',
