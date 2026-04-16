@@ -6,7 +6,7 @@
 | --- | --- |
 | `task({ id, run })` | `"use workflow"` or `"use step"` |
 | `schemaTask({ schema, run })` | `"use workflow"` with plain typed args |
-| `wait.for({ seconds })` | `sleep()` |
+| `wait.for({ seconds \| minutes \| hours \| days })` | `sleep()` |
 | `wait.until({ date })` | `sleep()` until target date |
 | `wait.forToken({ timeout })` | `createHook()` or `createWebhook()` |
 | `task.triggerAndWait()` | step-wrapped `start()` + `getRun().returnValue` |
@@ -45,9 +45,11 @@
   - See `references/shared-patterns.md` -> `## Generated callback URL (manual response)`
 - Durable progress writes with `getWritable()` (replaces `metadata.stream()`)
 - Idempotency keys on external writes via `getStepMetadata().stepId`
-- Step-level `RetryableError` + `maxRetries` (replaces `retry.onThrow` and `retry.fetch`; exponential backoff moves to `maxRetries` config)
+- Step-level `RetryableError` + `maxRetries` (replaces `retry.onThrow` and `retry.fetch`). Retry count lives on the step via `myStep.maxRetries = N` (default 3). Control delay between attempts by throwing `new RetryableError(msg, { retryAfter: '5s' })` — there is no built-in exponential helper; compute the delay yourself based on `getStepMetadata().attempt` if you need one.
 - `FatalError` at step boundaries (replaces `AbortTaskRunError`)
 - Step-wrapped `start()` / `getRun()` for child runs (replaces `task.triggerAndWait()` and `batch.triggerAndWait()`)
 - Parallel fan-out via `Promise.all()` over step-wrapped `start()` calls (replaces `batch.triggerAndWait()`)
 - App-boundary `start()` from `workflow/api` in API routes / server actions (replaces `tasks.trigger()`)
-- Rollback stack for compensation-heavy flows (replaces per-task `onFailure` hooks)
+- Rollback stack for compensation-heavy flows (use instead of `onFailure` when the cleanup needs to undo prior successful steps)
+
+<!-- Verified against workflow@5.0.0-beta.1 and @trigger.dev/sdk v3 on 2026-04-16 -->

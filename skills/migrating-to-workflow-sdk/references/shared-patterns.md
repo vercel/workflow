@@ -355,6 +355,8 @@ export async function badWorkflow() {
 
 **Expected output:** The migration may obtain `getWritable()` in workflow context, but every `getWriter()`, `write()`, and `close()` call remains inside a `"use step"` function.
 
+> Obtaining `getWritable()` inside a step is also valid and is often cleaner for step-local publishing. The only hard rule is that `getWriter()`, `write()`, and `close()` never run directly in workflow context.
+
 ## Rollback stack
 
 ```ts
