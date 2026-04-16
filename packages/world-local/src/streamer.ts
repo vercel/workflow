@@ -403,6 +403,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
     async readFromStream(name: string, startIndex = 0) {
       const chunksDir = path.join(basedir, 'streams', 'chunks');
       let removeListeners = () => {};
+      let pollInterval: ReturnType<typeof setInterval> | null = null;
 
       return new ReadableStream<Uint8Array>({
         async start(controller) {
@@ -416,28 +417,33 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
           let isReadingFromDisk = true;
           // Buffer close event if it arrives during disk reading
           let pendingClose = false;
+          // Set when the controller is closed; guards against enqueue-after-close
+          // in the polling callback when closeListener fires mid-iteration.
+          let streamClosed = false;
 
           const chunkListener = (event: {
             streamName: string;
             chunkData: Uint8Array;
             chunkId: string;
           }) => {
-            deliveredChunkIds.add(event.chunkId);
-
             // Skip empty chunks to maintain consistency with disk reading behavior
-            // Empty chunks are not enqueued when read from disk (see line 184-186)
             if (event.chunkData.byteLength === 0) {
+              deliveredChunkIds.add(event.chunkId);
               return;
             }
 
             if (isReadingFromDisk) {
+              deliveredChunkIds.add(event.chunkId);
               // Buffer chunks that arrive during disk reading to maintain order
               // Create a copy to prevent ArrayBuffer detachment when enqueued later
               bufferedEventChunks.push({
                 chunkId: event.chunkId,
                 chunkData: Uint8Array.from(event.chunkData),
               });
-            } else {
+            } else if (!deliveredChunkIds.has(event.chunkId)) {
+              // Guard against duplicates: polling may have already claimed this
+              // chunk between its has() check and readBuffer() yield.
+              deliveredChunkIds.add(event.chunkId);
               // After disk reading is complete, deliver chunks immediately
               // Create a copy to prevent ArrayBuffer detachment
               controller.enqueue(Uint8Array.from(event.chunkData));
@@ -451,8 +457,13 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               return;
             }
             // Remove listeners before closing
+            streamClosed = true;
             streamEmitter.off(`chunk:${name}` as const, chunkListener);
             streamEmitter.off(`close:${name}` as const, closeListener);
+            if (pollInterval) {
+              clearInterval(pollInterval);
+              pollInterval = null;
+            }
             try {
               controller.close();
             } catch {
@@ -517,6 +528,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
               isComplete = true;
               break;
             }
+            // Track as handled so polling doesn't re-deliver
+            deliveredChunkIds.add(chunkId);
             if (chunk.chunk.byteLength) {
               // Create a copy to prevent ArrayBuffer detachment
               controller.enqueue(Uint8Array.from(chunk.chunk));
@@ -554,11 +567,91 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             } catch {
               // Ignore if controller is already closed
             }
+            return;
           }
+
+          // Track pre-startIndex chunks so polling doesn't re-deliver them
+          for (
+            let i = 0;
+            i < resolvedStartIndex && i < chunkFiles.length;
+            i++
+          ) {
+            const file = chunkFiles[i];
+            const rawChunkId = file.substring(name.length + 1);
+            const chunkId = tag
+              ? rawChunkId.replace(`.${tag}`, '')
+              : rawChunkId;
+            deliveredChunkIds.add(chunkId);
+          }
+
+          // Start filesystem polling for cross-process streaming support.
+          // The EventEmitter only works in-process; when the writer is in a
+          // separate process (e.g. e2e test runner ↔ workbench app), polling
+          // the shared filesystem is the fallback delivery mechanism.
+          let isPolling = false;
+          pollInterval = setInterval(async () => {
+            if (isPolling) return;
+            isPolling = true;
+            try {
+              const { files: currentFiles, extMap: currentExtMap } =
+                await listChunkFilesForStream(chunksDir, name, tag);
+
+              for (const file of currentFiles) {
+                const rawChunkId = file.substring(name.length + 1);
+                const chunkId = tag
+                  ? rawChunkId.replace(`.${tag}`, '')
+                  : rawChunkId;
+
+                if (deliveredChunkIds.has(chunkId)) continue;
+                deliveredChunkIds.add(chunkId);
+
+                const ext = currentExtMap.get(file) ?? '.bin';
+                const chunk = deserializeChunk(
+                  await readBuffer(path.join(chunksDir, `${file}${ext}`))
+                );
+
+                if (chunk?.eof === true) {
+                  streamClosed = true;
+                  if (pollInterval) {
+                    clearInterval(pollInterval);
+                    pollInterval = null;
+                  }
+                  streamEmitter.off(`chunk:${name}` as const, chunkListener);
+                  streamEmitter.off(`close:${name}` as const, closeListener);
+                  try {
+                    controller.close();
+                  } catch {
+                    // Ignore if controller is already closed
+                  }
+                  return;
+                }
+
+                // Guard against enqueue-after-close: closeListener may have
+                // fired between our readBuffer() yield and this point.
+                if (streamClosed) return;
+
+                if (chunk.chunk.byteLength) {
+                  controller.enqueue(Uint8Array.from(chunk.chunk));
+                }
+              }
+            } catch (err: unknown) {
+              // Silently ignore transient filesystem errors (ENOENT, EACCES, etc.)
+              // Surface unexpected errors so bugs aren't hidden
+              if (!(err instanceof Error && 'code' in err)) {
+                console.error('[world-local] Unexpected polling error:', err);
+              }
+            } finally {
+              isPolling = false;
+            }
+          }, 100);
         },
 
         cancel() {
           removeListeners();
+          if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+          }
         },
       });
     },

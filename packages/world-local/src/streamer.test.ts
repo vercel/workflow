@@ -530,6 +530,92 @@ describe('streamer', () => {
       });
     });
 
+    describe('cross-process polling', () => {
+      it('should deliver chunks via filesystem polling when EventEmitter is bypassed', async () => {
+        // Simulate cross-process streaming: write chunk files directly to
+        // disk (bypassing streamer.writeToStream and thus the EventEmitter)
+        // and verify the polling-based reader picks them up.
+        const testDir = await fs.mkdtemp(
+          path.join(os.tmpdir(), 'streamer-poll-test-')
+        );
+        onTestFinished(async (ctx) => {
+          if (!ctx.task.result?.errors?.length) {
+            await fs.rm(testDir, { recursive: true, force: true });
+          }
+        });
+
+        const streamer = createStreamer(testDir);
+        const streamName = 'poll-test';
+        const chunksDir = path.join(testDir, 'streams', 'chunks');
+        await fs.mkdir(chunksDir, { recursive: true });
+
+        // Start reading — sets up EventEmitter listeners + polling interval
+        const stream = await streamer.readFromStream(streamName);
+        const reader = stream.getReader();
+        const chunks: string[] = [];
+
+        const readPromise = (async () => {
+          let done = false;
+          while (!done) {
+            const result = await reader.read();
+            done = result.done;
+            if (result.value) {
+              chunks.push(Buffer.from(result.value).toString());
+            }
+          }
+        })();
+
+        // Let polling start
+        await new Promise((resolve) => setTimeout(resolve, 50));
+
+        // Write chunk files directly — no EventEmitter involved
+        const chunk1 = serializeChunk({
+          eof: false,
+          chunk: Buffer.from('hello'),
+        });
+        await fs.writeFile(
+          path.join(
+            chunksDir,
+            `${streamName}-chnk_01ARZ3NDEKTSV4RRFFQ69G5FAV.bin`
+          ),
+          chunk1
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        const chunk2 = serializeChunk({
+          eof: false,
+          chunk: Buffer.from(' world'),
+        });
+        await fs.writeFile(
+          path.join(
+            chunksDir,
+            `${streamName}-chnk_01ARZ3NDEKTSV4RRFFQ69G5FAW.bin`
+          ),
+          chunk2
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 200));
+
+        // Write EOF chunk to close the stream
+        const eofChunk = serializeChunk({
+          eof: true,
+          chunk: Buffer.from([]),
+        });
+        await fs.writeFile(
+          path.join(
+            chunksDir,
+            `${streamName}-chnk_01ARZ3NDEKTSV4RRFFQ69G5FAX.bin`
+          ),
+          eofChunk
+        );
+
+        await readPromise;
+
+        expect(chunks.join('')).toBe('hello world');
+      }, 10000);
+    });
+
     describe('integration scenarios', () => {
       it('should handle complete write-close-read cycle', async () => {
         const { streamer } = await setupStreamer();
