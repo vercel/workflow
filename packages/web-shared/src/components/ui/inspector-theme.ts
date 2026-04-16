@@ -1,17 +1,16 @@
 /**
  * Shared theme configuration for react-inspector's ObjectInspector.
  *
- * Color choices are inspired by Node.js `util.inspect()` ANSI stylizing:
- *   - property names: unstyled (default foreground — dark text on light, light text on dark)
- *   - strings / symbols: green
- *   - numbers / booleans / bigint: yellow
- *   - null: bold (foreground)
- *   - undefined: grey
- *   - regexp: red
- *   - functions (special): cyan
- *   - date: magenta
+ * Colors follow Geist's Shiki JSON palette so the inspector reads the same
+ * as highlighted code blocks across the product:
+ *   - property names / punctuation: --ds-gray-1000 (default foreground)
+ *   - strings / numbers / booleans: --ds-green-900
+ *   - null / undefined: --ds-gray-900 (muted)
+ *   - regexp / function: --ds-purple-900
+ *   - date: --ds-pink-900
  *
- * See: https://github.com/nodejs/node/blob/main/lib/internal/util/inspect.js
+ * Because the `--ds-*` tokens adapt to theme automatically, the light and
+ * dark objects are intentionally identical.
  */
 
 // ---------------------------------------------------------------------------
@@ -25,11 +24,11 @@ export interface InspectorThemeExtended {
 }
 
 export const inspectorThemeExtendedLight: InspectorThemeExtended = {
-  OBJECT_VALUE_DATE_COLOR: '#a21caf', // fuchsia-700
+  OBJECT_VALUE_DATE_COLOR: 'var(--ds-pink-900)',
 };
 
 export const inspectorThemeExtendedDark: InspectorThemeExtended = {
-  OBJECT_VALUE_DATE_COLOR: '#e879f9', // fuchsia-400
+  OBJECT_VALUE_DATE_COLOR: 'var(--ds-pink-900)',
 };
 
 // ---------------------------------------------------------------------------
@@ -57,96 +56,55 @@ const shared = {
 // Light theme
 // ---------------------------------------------------------------------------
 
-export const inspectorThemeLight = {
+const geistTheme = {
   ...shared,
 
   // Base text
   BASE_COLOR: 'var(--ds-gray-1000)',
 
-  // Property names — unstyled, same as base foreground (Node: no style)
-  OBJECT_NAME_COLOR: 'var(--ds-gray-900)',
+  // Property names — default foreground (matches JSON key color in Geist Shiki)
+  OBJECT_NAME_COLOR: 'var(--ds-gray-1000)',
 
-  // Strings & symbols — green (Node: 'green')
-  OBJECT_VALUE_STRING_COLOR: '#16a34a', // green-600
-  OBJECT_VALUE_SYMBOL_COLOR: '#16a34a',
+  // Strings & symbols — green
+  OBJECT_VALUE_STRING_COLOR: 'var(--ds-green-900)',
+  OBJECT_VALUE_SYMBOL_COLOR: 'var(--ds-green-900)',
 
-  // Numbers & booleans — yellow/amber (Node: 'yellow')
-  OBJECT_VALUE_NUMBER_COLOR: '#b45309', // amber-700 (readable on white)
-  OBJECT_VALUE_BOOLEAN_COLOR: '#b45309',
+  // Numbers & booleans — green (Geist JSON tokens)
+  OBJECT_VALUE_NUMBER_COLOR: 'var(--ds-green-900)',
+  OBJECT_VALUE_BOOLEAN_COLOR: 'var(--ds-green-900)',
 
-  // null — bold foreground (Node: 'bold')
+  // null — muted foreground
   OBJECT_VALUE_NULL_COLOR: 'var(--ds-gray-900)',
 
-  // undefined — grey (Node: 'grey')
-  OBJECT_VALUE_UNDEFINED_COLOR: 'var(--ds-gray-500)',
+  // undefined — muted foreground
+  OBJECT_VALUE_UNDEFINED_COLOR: 'var(--ds-gray-900)',
 
-  // RegExp — red (Node regexp base uses green/red/yellow palette)
-  OBJECT_VALUE_REGEXP_COLOR: '#dc2626', // red-600
+  // RegExp — purple
+  OBJECT_VALUE_REGEXP_COLOR: 'var(--ds-purple-900)',
 
-  // Functions — cyan (Node: 'special' → 'cyan')
-  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: '#0891b2', // cyan-600
+  // Functions — purple
+  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: 'var(--ds-purple-900)',
 
-  // HTML (less relevant for data inspection, but reasonable defaults)
-  HTML_TAG_COLOR: 'var(--ds-gray-500)',
-  HTML_TAGNAME_COLOR: '#0891b2',
-  HTML_ATTRIBUTE_NAME_COLOR: '#b45309',
-  HTML_ATTRIBUTE_VALUE_COLOR: '#16a34a',
-  HTML_COMMENT_COLOR: 'var(--ds-gray-400)',
-  HTML_DOCTYPE_COLOR: 'var(--ds-gray-400)',
+  // HTML (rarely used here, kept consistent with the palette)
+  HTML_TAG_COLOR: 'var(--ds-gray-900)',
+  HTML_TAGNAME_COLOR: 'var(--ds-blue-900)',
+  HTML_ATTRIBUTE_NAME_COLOR: 'var(--ds-amber-900)',
+  HTML_ATTRIBUTE_VALUE_COLOR: 'var(--ds-green-900)',
+  HTML_COMMENT_COLOR: 'var(--ds-gray-700)',
+  HTML_DOCTYPE_COLOR: 'var(--ds-gray-700)',
 
   // Structural
-  ARROW_COLOR: 'var(--ds-gray-500)',
+  ARROW_COLOR: 'var(--ds-gray-700)',
   TABLE_BORDER_COLOR: 'var(--ds-gray-300)',
   TABLE_TH_BACKGROUND_COLOR: 'var(--ds-gray-100)',
   TABLE_TH_HOVER_COLOR: 'var(--ds-gray-200)',
-  TABLE_SORT_ICON_COLOR: 'var(--ds-gray-500)',
+  TABLE_SORT_ICON_COLOR: 'var(--ds-gray-700)',
 };
+
+export const inspectorThemeLight = geistTheme;
 
 // ---------------------------------------------------------------------------
 // Dark theme
 // ---------------------------------------------------------------------------
 
-export const inspectorThemeDark = {
-  ...shared,
-
-  // Base text
-  BASE_COLOR: 'var(--ds-gray-1000)',
-
-  // Property names — white/light foreground (Node: unstyled = white in dark terminal)
-  OBJECT_NAME_COLOR: 'var(--ds-gray-900)',
-
-  // Strings & symbols — green (Node: 'green')
-  OBJECT_VALUE_STRING_COLOR: '#4ade80', // green-400
-  OBJECT_VALUE_SYMBOL_COLOR: '#4ade80',
-
-  // Numbers & booleans — yellow (Node: 'yellow')
-  OBJECT_VALUE_NUMBER_COLOR: '#facc15', // yellow-400
-  OBJECT_VALUE_BOOLEAN_COLOR: '#facc15',
-
-  // null — bold foreground / white (Node: 'bold')
-  OBJECT_VALUE_NULL_COLOR: 'var(--ds-gray-1000)',
-
-  // undefined — grey (Node: 'grey')
-  OBJECT_VALUE_UNDEFINED_COLOR: 'var(--ds-gray-500)',
-
-  // RegExp — red (Node regexp palette)
-  OBJECT_VALUE_REGEXP_COLOR: '#f87171', // red-400
-
-  // Functions — cyan (Node: 'special' → 'cyan')
-  OBJECT_VALUE_FUNCTION_PREFIX_COLOR: '#22d3ee', // cyan-400
-
-  // HTML
-  HTML_TAG_COLOR: 'var(--ds-gray-500)',
-  HTML_TAGNAME_COLOR: '#22d3ee',
-  HTML_ATTRIBUTE_NAME_COLOR: '#facc15',
-  HTML_ATTRIBUTE_VALUE_COLOR: '#4ade80',
-  HTML_COMMENT_COLOR: 'var(--ds-gray-500)',
-  HTML_DOCTYPE_COLOR: 'var(--ds-gray-500)',
-
-  // Structural
-  ARROW_COLOR: 'var(--ds-gray-500)',
-  TABLE_BORDER_COLOR: 'var(--ds-gray-300)',
-  TABLE_TH_BACKGROUND_COLOR: 'var(--ds-gray-100)',
-  TABLE_TH_HOVER_COLOR: 'var(--ds-gray-200)',
-  TABLE_SORT_ICON_COLOR: 'var(--ds-gray-500)',
-};
+export const inspectorThemeDark = geistTheme;
