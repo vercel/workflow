@@ -1,5 +1,19 @@
 # @workflow/world-vercel
 
+## 4.1.1
+
+### Patch Changes
+
+- [#1726](https://github.com/vercel/workflow/pull/1726) [`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Embed source content in published sourcemaps.
+
+- [`2ece7ba`](https://github.com/vercel/workflow/commit/2ece7ba25f4c76a01a3c900f7620af1c64d5fe85) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix community world E2E tests by adding `specVersion` to the World interface so `start()` uses the safe baseline (v2) for worlds that don't declare their supported version
+
+- [#1766](https://github.com/vercel/workflow/pull/1766) [`3737caa`](https://github.com/vercel/workflow/commit/3737caab090a8047b393ad49bfb271553a36e17b) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use stream control frame to transparently reconnect on server timeout
+
+- Updated dependencies [[`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812), [`2ece7ba`](https://github.com/vercel/workflow/commit/2ece7ba25f4c76a01a3c900f7620af1c64d5fe85)]:
+  - @workflow/errors@4.1.1
+  - @workflow/world@4.1.1
+
 ## 4.1.0
 
 ### Patch Changes

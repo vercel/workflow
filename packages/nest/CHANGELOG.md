@@ -1,5 +1,12 @@
 # @workflow/nest
 
+## 0.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812)]:
+  - @workflow/builders@4.0.4
+
 ## 0.0.2
 
 ### Patch Changes

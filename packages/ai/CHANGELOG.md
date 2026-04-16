@@ -1,5 +1,17 @@
 # @workflow/ai
 
+## 4.1.2
+
+### Patch Changes
+
+- [#1726](https://github.com/vercel/workflow/pull/1726) [`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Embed source content in published sourcemaps.
+
+- [#1726](https://github.com/vercel/workflow/pull/1726) [`3aad64d`](https://github.com/vercel/workflow/commit/3aad64dbe9e24105d810337c16394d521f61a97c) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Preserve malformed streamed tool-call input until repair hooks can run
+
+- Updated dependencies [[`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812)]:
+  - @workflow/serde@4.1.1
+  - workflow@4.2.3
+
 ## 4.1.1
 
 ### Patch Changes

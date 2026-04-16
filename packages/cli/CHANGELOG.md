@@ -1,5 +1,21 @@
 # @workflow/cli
 
+## 4.2.3
+
+### Patch Changes
+
+- [#1726](https://github.com/vercel/workflow/pull/1726) [`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Embed source content in published sourcemaps.
+
+- Updated dependencies [[`5bc4191`](https://github.com/vercel/workflow/commit/5bc419179ef362150a4f1d5b83ef3b99361a548a), [`c556da3`](https://github.com/vercel/workflow/commit/c556da32d711c95a7e27b9d6848cb5a7f3bbb62e), [`fb3c118`](https://github.com/vercel/workflow/commit/fb3c1188500a650c3681b253715b1cec707a6667), [`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812), [`2ece7ba`](https://github.com/vercel/workflow/commit/2ece7ba25f4c76a01a3c900f7620af1c64d5fe85), [`7aab36b`](https://github.com/vercel/workflow/commit/7aab36b329055e5b3da4d9327e4546af06a7a9b4), [`3737caa`](https://github.com/vercel/workflow/commit/3737caab090a8047b393ad49bfb271553a36e17b)]:
+  - @workflow/world-local@4.1.1
+  - @workflow/web@4.1.4
+  - @workflow/core@4.2.3
+  - @workflow/builders@4.0.4
+  - @workflow/errors@4.1.1
+  - @workflow/utils@4.1.1
+  - @workflow/world-vercel@4.1.1
+  - @workflow/world@4.1.1
+
 ## 4.2.2
 
 ### Patch Changes

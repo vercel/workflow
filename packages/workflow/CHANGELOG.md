@@ -1,5 +1,25 @@
 # workflow
 
+## 4.2.3
+
+### Patch Changes
+
+- [#1726](https://github.com/vercel/workflow/pull/1726) [`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Embed source content in published sourcemaps.
+
+- Updated dependencies [[`fb3c118`](https://github.com/vercel/workflow/commit/fb3c1188500a650c3681b253715b1cec707a6667), [`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812), [`2ece7ba`](https://github.com/vercel/workflow/commit/2ece7ba25f4c76a01a3c900f7620af1c64d5fe85), [`7aab36b`](https://github.com/vercel/workflow/commit/7aab36b329055e5b3da4d9327e4546af06a7a9b4)]:
+  - @workflow/core@4.2.3
+  - @workflow/astro@4.0.3
+  - @workflow/cli@4.2.3
+  - @workflow/errors@4.1.1
+  - @workflow/next@4.0.4
+  - @workflow/nitro@4.0.4
+  - @workflow/nuxt@4.0.4
+  - @workflow/rollup@4.0.3
+  - @workflow/sveltekit@4.0.3
+  - @workflow/typescript-plugin@4.0.2
+  - @workflow/utils@4.1.1
+  - @workflow/nest@0.0.3
+
 ## 4.2.2
 
 ### Patch Changes

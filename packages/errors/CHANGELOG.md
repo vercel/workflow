@@ -1,5 +1,14 @@
 # @workflow/errors
 
+## 4.1.1
+
+### Patch Changes
+
+- [#1726](https://github.com/vercel/workflow/pull/1726) [`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Embed source content in published sourcemaps.
+
+- Updated dependencies [[`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812)]:
+  - @workflow/utils@4.1.1
+
 ## 4.1.0
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@workflow/world-testing",
-  "version": "4.1.2",
+  "version": "4.1.3",
   "description": "Testing utilities and World implementation for Workflow SDK",
   "main": "dist/src/index.mjs",
   "files": [

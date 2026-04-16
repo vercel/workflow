@@ -1,6 +1,6 @@
 {
   "name": "@workflow/next",
-  "version": "4.0.3",
+  "version": "4.0.4",
   "description": "Next.js integration for Workflow SDK",
   "type": "commonjs",
   "main": "dist/index.js",

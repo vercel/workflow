@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 4.1.4
+
+### Patch Changes
+
+- [#1776](https://github.com/vercel/workflow/pull/1776) [`c556da3`](https://github.com/vercel/workflow/commit/c556da32d711c95a7e27b9d6848cb5a7f3bbb62e) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Disable Vite minification so the published build contains readable code, reducing false-positive obfuscation flags from supply chain security scanners (Socket).
+
 ## 4.1.1
 
 ### Patch Changes

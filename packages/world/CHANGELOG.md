@@ -1,5 +1,11 @@
 # @workflow/world
 
+## 4.1.1
+
+### Patch Changes
+
+- [`2ece7ba`](https://github.com/vercel/workflow/commit/2ece7ba25f4c76a01a3c900f7620af1c64d5fe85) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix community world E2E tests by adding `specVersion` to the World interface so `start()` uses the safe baseline (v2) for worlds that don't declare their supported version
+
 ## 4.1.0
 
 ### Patch Changes

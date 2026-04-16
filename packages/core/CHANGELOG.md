@@ -1,5 +1,25 @@
 # @workflow/core
 
+## 4.2.3
+
+### Patch Changes
+
+- [#1758](https://github.com/vercel/workflow/pull/1758) [`fb3c118`](https://github.com/vercel/workflow/commit/fb3c1188500a650c3681b253715b1cec707a6667) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - When runtime replays exceed 240s, re-try them up to three times, instead of failing immediately
+
+- [#1726](https://github.com/vercel/workflow/pull/1726) [`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Embed source content in published sourcemaps.
+
+- [`2ece7ba`](https://github.com/vercel/workflow/commit/2ece7ba25f4c76a01a3c900f7620af1c64d5fe85) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix community world E2E tests by adding `specVersion` to the World interface so `start()` uses the safe baseline (v2) for worlds that don't declare their supported version
+
+- [#1726](https://github.com/vercel/workflow/pull/1726) [`7aab36b`](https://github.com/vercel/workflow/commit/7aab36b329055e5b3da4d9327e4546af06a7a9b4) Thanks [@workflow-devkit-release-bot](https://github.com/apps/workflow-devkit-release-bot)! - Fix false-positive unconsumed `step_created` errors when replay resumes a `for await` hook loop and appends more async work after the first promise-queue drain.
+
+- Updated dependencies [[`5bc4191`](https://github.com/vercel/workflow/commit/5bc419179ef362150a4f1d5b83ef3b99361a548a), [`6f48e9e`](https://github.com/vercel/workflow/commit/6f48e9e778d73d42ade3762ba3fff0e46877a812), [`2ece7ba`](https://github.com/vercel/workflow/commit/2ece7ba25f4c76a01a3c900f7620af1c64d5fe85), [`3737caa`](https://github.com/vercel/workflow/commit/3737caab090a8047b393ad49bfb271553a36e17b)]:
+  - @workflow/world-local@4.1.1
+  - @workflow/errors@4.1.1
+  - @workflow/serde@4.1.1
+  - @workflow/utils@4.1.1
+  - @workflow/world-vercel@4.1.1
+  - @workflow/world@4.1.1
+
 ## 4.2.2
 
 ### Patch Changes
