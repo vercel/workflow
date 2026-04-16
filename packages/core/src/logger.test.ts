@@ -1,21 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const originalDebug = process.env.DEBUG;
-const originalRequire = (globalThis as Record<string, unknown>).require;
 
 describe('logger', () => {
   beforeEach(() => {
     vi.resetModules();
+    vi.doUnmock('./package-require.js');
   });
 
   afterEach(() => {
     process.env.DEBUG = originalDebug;
-
-    if (originalRequire === undefined) {
-      delete (globalThis as Record<string, unknown>).require;
-    } else {
-      (globalThis as Record<string, unknown>).require = originalRequire;
-    }
 
     vi.restoreAllMocks();
   });
@@ -33,7 +27,9 @@ describe('logger', () => {
     });
     const debugFactory = vi.fn(() => baseLogger);
     const runtimeRequire = vi.fn(() => ({ default: debugFactory }));
-    (globalThis as Record<string, unknown>).require = runtimeRequire;
+    vi.doMock('./package-require.js', () => ({
+      getCoreRuntimeRequire: () => runtimeRequire,
+    }));
     process.env.DEBUG = 'workflow:';
 
     const { runtimeLogger } = await import('./logger.js');
@@ -47,7 +43,11 @@ describe('logger', () => {
   });
 
   it('does not throw when runtime require is unavailable', async () => {
-    delete (globalThis as Record<string, unknown>).require;
+    vi.doMock('./package-require.js', () => ({
+      getCoreRuntimeRequire: () => {
+        throw new Error('runtime require unavailable');
+      },
+    }));
     process.env.DEBUG = 'workflow:';
 
     const { runtimeLogger } = await import('./logger.js');
