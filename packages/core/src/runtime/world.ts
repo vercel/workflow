@@ -1,13 +1,15 @@
-import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   isVercelWorldTarget,
   resolveWorkflowTargetWorld,
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
-
-const require = createRequire(import.meta.url);
+import {
+  getCoreRuntimeRequire,
+  getProjectRequire,
+  type RuntimeRequire,
+} from '../package-require.js';
 
 const WorldCache = Symbol.for('@workflow/world//cache');
 const StubbedWorldCache = Symbol.for('@workflow/world//stubbedCache');
@@ -23,19 +25,20 @@ const globalSymbols: typeof globalThis & {
   [StubbedWorldCachePromise]?: Promise<World>;
 } = globalThis;
 
+/**
+ * Hides the dynamic import behind `new Function` to prevent bundlers from
+ * trying to resolve it at build time, since the world module may not exist
+ * at build time. Falls back to `require()` in environments where
+ * `new Function`-based `import()` is unavailable (e.g. CJS test runners).
+ */
 const dynamicImport = new Function('specifier', 'return import(specifier)') as (
   specifier: string
 ) => Promise<any>;
 
-function getProjectRequire() {
-  return createRequire(
-    pathToFileURL(
-      resolve(/* turbopackIgnore: true */ process.cwd(), 'package.json')
-    ).href
-  );
-}
-
-function resolveModulePath(specifier: string): string {
+function resolveImportPath(
+  specifier: string,
+  requireFn: RuntimeRequire
+): string {
   // Already a file:// URL
   if (specifier.startsWith('file://')) {
     return specifier;
@@ -46,15 +49,44 @@ function resolveModulePath(specifier: string): string {
   }
   // Relative path - resolve relative to cwd and convert to file:// URL
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
-    return pathToFileURL(
-      resolve(/* turbopackIgnore: true */ process.cwd(), specifier)
-    ).href;
+    return pathToFileURL(resolve(process.cwd(), specifier)).href;
   }
   // Package specifier - use require.resolve to find the package
   try {
-    return pathToFileURL(getProjectRequire().resolve(specifier)).href;
+    return pathToFileURL(requireFn.resolve(specifier)).href;
   } catch {
     return specifier;
+  }
+}
+
+function resolveRequirePath(
+  specifier: string,
+  requireFn: RuntimeRequire
+): string {
+  if (specifier.startsWith('file://')) {
+    return fileURLToPath(specifier);
+  }
+  if (specifier.startsWith('/')) {
+    return specifier;
+  }
+  if (specifier.startsWith('./') || specifier.startsWith('../')) {
+    return resolve(process.cwd(), specifier);
+  }
+  try {
+    return requireFn.resolve(specifier);
+  } catch {
+    return specifier;
+  }
+}
+
+async function loadWorldModule(
+  specifier: string,
+  requireFn: RuntimeRequire
+): Promise<any> {
+  try {
+    return await dynamicImport(resolveImportPath(specifier, requireFn));
+  } catch {
+    return requireFn(resolveRequirePath(specifier, requireFn));
   }
 }
 
@@ -80,35 +112,86 @@ function resolveWorldFactory(
   return undefined;
 }
 
-async function loadBundledWorldModule(
-  specifier: '@workflow/world-local' | '@workflow/world-vercel'
-): Promise<any> {
-  if (specifier === '@workflow/world-local') {
-    try {
-      return await import('@workflow/world-local');
-    } catch {
-      return require('@workflow/world-local');
-    }
-  }
+function isLocalWorldTarget(targetWorld: string): boolean {
+  return targetWorld === 'local' || targetWorld === '@workflow/world-local';
+}
 
-  try {
-    return await import('@workflow/world-vercel');
-  } catch {
-    return require('@workflow/world-vercel');
+function resolveWorldSpecifier(targetWorld: string): string {
+  if (isVercelWorldTarget(targetWorld)) {
+    return '@workflow/world-vercel';
+  }
+  if (isLocalWorldTarget(targetWorld)) {
+    return '@workflow/world-local';
+  }
+  return targetWorld;
+}
+
+function warnForStaleVercelEnvVars(): void {
+  // Warn if WORKFLOW_VERCEL_* env vars are set inside a Vercel serverless
+  // function (VERCEL=1) — they have no effect at runtime and likely indicate
+  // a misconfiguration (user manually added them as Vercel project env vars,
+  // which is not needed). We gate on VERCEL=1 so the warning does not fire
+  // when the CLI or web observability app sets these env vars intentionally.
+  const staleEnvVars = [
+    'WORKFLOW_VERCEL_PROJECT',
+    'WORKFLOW_VERCEL_TEAM',
+    'WORKFLOW_VERCEL_AUTH_TOKEN',
+    'WORKFLOW_VERCEL_ENV',
+  ].filter((key) => process.env[key]);
+  if (staleEnvVars.length > 0 && process.env.VERCEL === '1') {
+    console.warn(
+      `[workflow] Warning: ${staleEnvVars.join(', ')} env var(s) ` +
+        'are set but have no effect at runtime. These are only used by the Workflow CLI. ' +
+        'Remove them from your Vercel project environment variables.'
+    );
   }
 }
 
-async function loadCustomWorldModule(specifier: string): Promise<any> {
-  try {
-    const resolvedPath = resolveModulePath(specifier);
-    return await dynamicImport(resolvedPath);
-  } catch {
-    try {
-      return getProjectRequire()(specifier);
-    } catch {
-      return require(specifier);
-    }
+async function createConfiguredVercelWorld(): Promise<World> {
+  warnForStaleVercelEnvVars();
+
+  const mod = await loadWorldModule(
+    '@workflow/world-vercel',
+    getCoreRuntimeRequire()
+  );
+  const create = resolveWorldFactory(mod, 'createVercelWorld');
+  if (!create) {
+    throw new Error(
+      'Invalid built-in world module "@workflow/world-vercel": expected createVercelWorld/default export.'
+    );
   }
+  return create();
+}
+
+async function createConfiguredLocalWorld(): Promise<World> {
+  const mod = await loadWorldModule(
+    '@workflow/world-local',
+    getCoreRuntimeRequire()
+  );
+  const create = resolveWorldFactory(mod, 'createLocalWorld');
+  if (!create) {
+    throw new Error(
+      'Invalid built-in world module "@workflow/world-local": expected createLocalWorld/default export.'
+    );
+  }
+  return create({
+    dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
+  });
+}
+
+async function createConfiguredCustomWorld(
+  specifier: string,
+  targetWorldForErrors: string
+): Promise<World> {
+  const mod = await loadWorldModule(specifier, getProjectRequire());
+  const create = resolveWorldFactory(mod);
+  if (create) {
+    return create();
+  }
+
+  throw new Error(
+    `Invalid target world module: ${targetWorldForErrors}, must export a default function or createWorld function that returns a World instance.`
+  );
 }
 
 /**
@@ -124,63 +207,35 @@ async function loadCustomWorldModule(specifier: string): Promise<any> {
  * use setWorld() to inject the instance.
  */
 export const createWorld = async (): Promise<World> => {
+  const configuredWorldPackage = process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE;
+
+  if (configuredWorldPackage === '@workflow/world-vercel') {
+    return createConfiguredVercelWorld();
+  }
+
+  if (configuredWorldPackage === '@workflow/world-local') {
+    return createConfiguredLocalWorld();
+  }
+
+  if (configuredWorldPackage) {
+    return createConfiguredCustomWorld(
+      configuredWorldPackage,
+      configuredWorldPackage
+    );
+  }
+
   const targetWorld = resolveWorkflowTargetWorld();
+  const worldSpecifier = resolveWorldSpecifier(targetWorld);
 
-  if (isVercelWorldTarget(targetWorld)) {
-    // Warn if WORKFLOW_VERCEL_* env vars are set inside a Vercel serverless
-    // function (VERCEL=1) — they have no effect at runtime and likely indicate
-    // a misconfiguration (user manually added them as Vercel project env vars,
-    // which is not needed). We gate on VERCEL=1 so the warning does not fire
-    // when the CLI or web observability app sets these env vars intentionally.
-    const staleEnvVars = [
-      'WORKFLOW_VERCEL_PROJECT',
-      'WORKFLOW_VERCEL_TEAM',
-      'WORKFLOW_VERCEL_AUTH_TOKEN',
-      'WORKFLOW_VERCEL_ENV',
-    ].filter((key) => process.env[key]);
-    if (staleEnvVars.length > 0 && process.env.VERCEL === '1') {
-      console.warn(
-        `[workflow] Warning: ${staleEnvVars.join(', ')} env var(s) ` +
-          'are set but have no effect at runtime. These are only used by the Workflow CLI. ' +
-          'Remove them from your Vercel project environment variables.'
-      );
-    }
-
-    const mod = await loadBundledWorldModule('@workflow/world-vercel');
-    const create = resolveWorldFactory(mod, 'createVercelWorld');
-    if (!create) {
-      throw new Error(
-        'Invalid built-in world module "@workflow/world-vercel": expected createVercelWorld/default export.'
-      );
-    }
-    return create();
+  if (worldSpecifier === '@workflow/world-vercel') {
+    return createConfiguredVercelWorld();
   }
 
-  if (targetWorld === 'local') {
-    const mod = await loadBundledWorldModule('@workflow/world-local');
-    const create = resolveWorldFactory(mod, 'createLocalWorld');
-    if (!create) {
-      throw new Error(
-        'Invalid built-in world module "@workflow/world-local": expected createLocalWorld/default export.'
-      );
-    }
-    return create({
-      dataDir: process.env.WORKFLOW_LOCAL_DATA_DIR,
-    });
+  if (worldSpecifier === '@workflow/world-local') {
+    return createConfiguredLocalWorld();
   }
 
-  // Try dynamic import() first — ESM-first since this PR's purpose is ESM support.
-  // Fall back to require() for environments where `new Function`-based import()
-  // is unavailable (e.g. CJS test runners).
-  const mod = await loadCustomWorldModule(targetWorld);
-  const create = resolveWorldFactory(mod);
-  if (create) {
-    return create();
-  }
-
-  throw new Error(
-    `Invalid target world module: ${targetWorld}, must export a default function or createWorld function that returns a World instance.`
-  );
+  return createConfiguredCustomWorld(worldSpecifier, targetWorld);
 };
 
 export type WorldHandlers = Pick<World, 'createQueueHandler' | 'specVersion'>;

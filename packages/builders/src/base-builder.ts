@@ -124,6 +124,18 @@ export abstract class BaseBuilder {
     };
   }
 
+  private getConfiguredWorldDefine(): Record<string, string> {
+    if (!this.config.configuredWorldPackage) {
+      return {};
+    }
+
+    return {
+      'process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE': JSON.stringify(
+        this.config.configuredWorldPackage
+      ),
+    };
+  }
+
   /**
    * When outputting fully-bundled ESM, CJS dependencies that call require()
    * for Node.js builtins (e.g. debug → require('tty')) break because esbuild's
@@ -495,16 +507,6 @@ export abstract class BaseBuilder {
     // Include serde-only files for class registration side effects
     const serdeImports = serdeOnlyFiles.map(createImport).join('\n');
 
-    const entryContent = `
-    // Built in steps
-    import '${builtInSteps}';
-    // User steps
-    ${stepImports}
-    // Serde files for cross-context class registration
-    ${serdeImports}
-    // API entrypoint
-    export { stepEntrypoint as POST } from 'workflow/runtime';`;
-
     // Bundle with esbuild and our custom SWC plugin
     const entriesToBundle = externalizeNonSteps
       ? [
@@ -526,6 +528,16 @@ export abstract class BaseBuilder {
     const { banner: importMetaBanner, define: importMetaDefine } =
       this.getCjsImportMetaPolyfill(format);
     const esmRequireBanner = this.getEsmRequireBanner(format);
+
+    const entryContent = `
+    // Built in steps
+    import '${builtInSteps}';
+    // User steps
+    ${stepImports}
+    // Serde files for cross-context class registration
+    ${serdeImports}
+    // API entrypoint
+    export { stepEntrypoint as POST } from 'workflow/runtime';`;
 
     const esbuildCtx = await esbuild.context({
       banner: {
@@ -553,7 +565,10 @@ export abstract class BaseBuilder {
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
-      define: importMetaDefine,
+      define: {
+        ...importMetaDefine,
+        ...this.getConfiguredWorldDefine(),
+      },
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -953,6 +968,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
           write: true,
           keepNames: true,
           minify: false,
+          define: this.getConfiguredWorldDefine(),
           external: ['@aws-sdk/credential-provider-web-identity'],
         });
 
@@ -1203,6 +1219,7 @@ export const OPTIONS = handler;`;
       treeShaking: true,
       keepNames: true,
       minify: false,
+      define: this.getConfiguredWorldDefine(),
       resolveExtensions: [
         '.ts',
         '.tsx',

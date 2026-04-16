@@ -27,6 +27,7 @@ interface BaseWorkflowConfig {
   clientBundlePath?: string;
 
   externalPackages?: string[];
+  configuredWorldPackage?: string;
 
   workflowManifestPath?: string;
 

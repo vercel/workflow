@@ -1,3 +1,6 @@
+import { existsSync, realpathSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join, relative } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { parseEnvironmentFlag } from './environment-flag.js';
@@ -7,12 +10,139 @@ import {
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
 
-const WORKFLOW_SERVER_EXTERNAL_PACKAGES = [
-  'workflow',
-  '@workflow/core',
-  '@workflow/world-local',
-  '@workflow/world-vercel',
-] as const;
+function isPathLikeWorldTarget(targetWorld: string): boolean {
+  return (
+    targetWorld.startsWith('./') ||
+    targetWorld.startsWith('../') ||
+    targetWorld.startsWith('/') ||
+    targetWorld.startsWith('file:') ||
+    /^[A-Za-z]:[\\/]/.test(targetWorld) ||
+    targetWorld.startsWith('\\\\')
+  );
+}
+
+function resolvePackageName(specifier: string): string | undefined {
+  if (!specifier || isPathLikeWorldTarget(specifier)) {
+    return undefined;
+  }
+
+  if (specifier.startsWith('@')) {
+    const [scope, name] = specifier.split('/');
+    return scope && name ? `${scope}/${name}` : undefined;
+  }
+
+  const [name] = specifier.split('/');
+  return name || undefined;
+}
+
+function resolveConfiguredWorldExternalPackage(
+  env: NodeJS.ProcessEnv = process.env
+): string | undefined {
+  const targetWorld =
+    env.WORKFLOW_TARGET_WORLD ??
+    (env.VERCEL_DEPLOYMENT_ID ? 'vercel' : 'local');
+
+  if (targetWorld === 'vercel') {
+    return '@workflow/world-vercel';
+  }
+
+  if (targetWorld === 'local' || targetWorld === '@workflow/world-local') {
+    return '@workflow/world-local';
+  }
+
+  return resolvePackageName(targetWorld);
+}
+
+function toTracingGlob(rootDir: string, targetDir: string): string {
+  let relativePath = relative(rootDir, targetDir).replace(/\\/g, '/');
+
+  if (!relativePath) {
+    return './**/*';
+  }
+
+  if (!relativePath.startsWith('./') && !relativePath.startsWith('../')) {
+    relativePath = `./${relativePath}`;
+  }
+
+  return `${relativePath}/**/*`;
+}
+
+function findPackageRoot(startPath: string): string | undefined {
+  let currentPath = startPath;
+
+  while (true) {
+    if (existsSync(join(currentPath, 'package.json'))) {
+      return currentPath;
+    }
+
+    const parentPath = dirname(currentPath);
+    if (parentPath === currentPath) {
+      return undefined;
+    }
+    currentPath = parentPath;
+  }
+}
+
+function resolveConfiguredWorldTraceIncludes(
+  configuredWorldPackage: string | undefined,
+  workingDir: string,
+  outputFileTracingRoot?: string
+): string[] | undefined {
+  if (!configuredWorldPackage) {
+    return undefined;
+  }
+
+  try {
+    const resolvedWorkingDir = realpathSync(workingDir);
+    const tracingRoot = realpathSync(
+      outputFileTracingRoot ?? resolvedWorkingDir
+    );
+    const appRequire = createRequire(join(resolvedWorkingDir, 'package.json'));
+
+    try {
+      const worldEntryPath = realpathSync(
+        appRequire.resolve(configuredWorldPackage)
+      );
+      const worldPackageRoot = findPackageRoot(dirname(worldEntryPath));
+      return worldPackageRoot
+        ? [toTracingGlob(tracingRoot, worldPackageRoot)]
+        : undefined;
+    } catch {
+      const workflowRuntimePath = realpathSync(
+        appRequire.resolve('workflow/runtime')
+      );
+      const workflowRequire = createRequire(workflowRuntimePath);
+      const coreRuntimePath = realpathSync(
+        workflowRequire.resolve('@workflow/core/runtime')
+      );
+      const coreRequire = createRequire(coreRuntimePath);
+      const worldEntryPath = realpathSync(
+        coreRequire.resolve(configuredWorldPackage)
+      );
+      const worldPackageRoot = findPackageRoot(dirname(worldEntryPath));
+      return worldPackageRoot
+        ? [toTracingGlob(tracingRoot, worldPackageRoot)]
+        : undefined;
+    }
+  } catch {
+    try {
+      const tracingRoot = realpathSync(outputFileTracingRoot ?? workingDir);
+      const coreRuntimePath = realpathSync(
+        require.resolve('@workflow/core/runtime')
+      );
+      const coreRequire = createRequire(coreRuntimePath);
+      const worldEntryPath = realpathSync(
+        coreRequire.resolve(configuredWorldPackage)
+      );
+      const worldPackageRoot = findPackageRoot(dirname(worldEntryPath));
+      return worldPackageRoot
+        ? [toTracingGlob(tracingRoot, worldPackageRoot)]
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+}
 
 function resolveNextVersion(workingDir: string): string {
   const errors: unknown[] = [];
@@ -97,6 +227,16 @@ export function withWorkflow(
     }
   }
 
+  const configuredWorldExternalPackage = resolveConfiguredWorldExternalPackage(
+    process.env
+  );
+  if (configuredWorldExternalPackage) {
+    process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE =
+      configuredWorldExternalPackage;
+  } else {
+    delete process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE;
+  }
+
   return async function buildConfig(
     phase: string,
     ctx: { defaultConfig: NextConfig }
@@ -113,13 +253,54 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
-    const serverExternalPackages = [
-      ...new Set([
-        ...WORKFLOW_SERVER_EXTERNAL_PACKAGES,
-        ...(nextConfig.serverExternalPackages || []),
-      ]),
-    ];
-    nextConfig.serverExternalPackages = serverExternalPackages;
+
+    const serverExternalPackages = new Set(
+      Array.isArray(nextConfig.serverExternalPackages)
+        ? nextConfig.serverExternalPackages
+        : []
+    );
+    if (configuredWorldExternalPackage) {
+      serverExternalPackages.add(configuredWorldExternalPackage);
+    }
+    if (serverExternalPackages.size > 0) {
+      nextConfig.serverExternalPackages = [...serverExternalPackages];
+    }
+
+    const configuredWorldTraceIncludes = resolveConfiguredWorldTraceIncludes(
+      configuredWorldExternalPackage,
+      process.cwd(),
+      nextConfig.outputFileTracingRoot
+    );
+    if (configuredWorldTraceIncludes?.length) {
+      const routePattern = '/.well-known/workflow/v1/**';
+      const outputFileTracingIncludes = {
+        ...(nextConfig.outputFileTracingIncludes as
+          | Record<string, string[]>
+          | undefined),
+      };
+      outputFileTracingIncludes[routePattern] = [
+        ...new Set([
+          ...(outputFileTracingIncludes[routePattern] || []),
+          ...configuredWorldTraceIncludes,
+        ]),
+      ];
+      nextConfig.outputFileTracingIncludes = outputFileTracingIncludes;
+    }
+
+    const nextEnv = {
+      ...nextConfig.env,
+    } as Record<string, string>;
+    if (configuredWorldExternalPackage) {
+      nextEnv.WORKFLOW_CONFIGURED_WORLD_PACKAGE =
+        configuredWorldExternalPackage;
+    } else {
+      delete nextEnv.WORKFLOW_CONFIGURED_WORLD_PACKAGE;
+    }
+    if (Object.keys(nextEnv).length > 0) {
+      nextConfig.env = nextEnv;
+    } else {
+      delete nextConfig.env;
+    }
 
     // configure the loader if turbopack is being used
     if (!nextConfig.turbopack) {
@@ -159,6 +340,7 @@ export function withWorkflow(
             suppressCreateWorkflowsBundleWarnings: useDeferredBuilder,
             suppressCreateWebhookBundleLogs: useDeferredBuilder,
             suppressCreateManifestLogs: useDeferredBuilder,
+            configuredWorldPackage: configuredWorldExternalPackage,
             externalPackages: [
               // server-only and client-only are pseudo-packages handled by Next.js
               // during its build process. We mark them as external to prevent esbuild
@@ -166,7 +348,7 @@ export function withWorkflow(
               // See: https://nextjs.org/docs/app/getting-started/server-and-client-components
               'server-only',
               'client-only',
-              ...serverExternalPackages,
+              ...(nextConfig.serverExternalPackages || []),
             ],
           });
         })();

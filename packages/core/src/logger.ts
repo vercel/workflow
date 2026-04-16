@@ -1,3 +1,4 @@
+import { getCoreRuntimeRequire } from './package-require.js';
 import { getActiveSpan } from './telemetry.js';
 
 type DebugLogger = ((
@@ -8,55 +9,28 @@ type DebugLogger = ((
   extend(suffix: string): DebugLogger;
 };
 
-type DebugFactory =
-  | ((namespace: string) => DebugLogger)
-  | {
-      default?: (namespace: string) => DebugLogger;
-    };
+type DebugFactory = (namespace: string) => DebugLogger;
 
-let cachedDebugEnv: string | undefined;
-let cachedDebugFactory: ((namespace: string) => DebugLogger) | null = null;
-
-function loadDebugFactory(): ((namespace: string) => DebugLogger) | null {
-  const currentDebugEnv = process.env.DEBUG;
-  if (!currentDebugEnv) {
-    cachedDebugEnv = undefined;
-    cachedDebugFactory = null;
-    return null;
+function loadDebugLogger(namespace: string): DebugLogger | undefined {
+  if (!process.env.DEBUG) {
+    return undefined;
   }
-
-  if (cachedDebugEnv === currentDebugEnv) {
-    return cachedDebugFactory;
-  }
-
-  cachedDebugEnv = currentDebugEnv;
 
   try {
-    const getRuntimeRequire = new Function(
-      'return typeof require !== "undefined" ? require : undefined;'
-    ) as () => ((specifier: string) => unknown) | undefined;
-    const runtimeRequire = getRuntimeRequire();
-
-    if (!runtimeRequire) {
-      cachedDebugFactory = null;
-      return null;
-    }
-
-    const loadedModule = runtimeRequire('debug') as DebugFactory;
-    const debugFactory =
+    const loadedModule = getCoreRuntimeRequire()(['de', 'bug'].join('')) as
+      | DebugFactory
+      | { default?: DebugFactory };
+    const createDebug =
       typeof loadedModule === 'function' ? loadedModule : loadedModule.default;
 
-    cachedDebugFactory =
-      typeof debugFactory === 'function' ? debugFactory : null;
+    return createDebug?.(`workflow:${namespace}`);
   } catch {
-    cachedDebugFactory = null;
+    return undefined;
   }
-
-  return cachedDebugFactory;
 }
 
 function createLogger(namespace: string) {
-  const baseDebug = loadDebugFactory()?.(`workflow:${namespace}`);
+  const baseDebug = loadDebugLogger(namespace);
 
   const logger = (level: string) => {
     const levelDebug = baseDebug?.extend(level);

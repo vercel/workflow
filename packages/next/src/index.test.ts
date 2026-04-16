@@ -57,6 +57,8 @@ describe('withWorkflow outputFileTracingRoot', () => {
     WORKFLOW_LOCAL_DATA_DIR: process.env.WORKFLOW_LOCAL_DATA_DIR,
     WORKFLOW_NEXT_LAZY_DISCOVERY: process.env.WORKFLOW_NEXT_LAZY_DISCOVERY,
     WORKFLOW_NEXT_PRIVATE_BUILT: process.env.WORKFLOW_NEXT_PRIVATE_BUILT,
+    WORKFLOW_CONFIGURED_WORLD_PACKAGE:
+      process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE,
     WORKFLOW_TARGET_WORLD: process.env.WORKFLOW_TARGET_WORLD,
   };
 
@@ -75,6 +77,7 @@ describe('withWorkflow outputFileTracingRoot', () => {
     delete process.env.WORKFLOW_LOCAL_DATA_DIR;
     delete process.env.WORKFLOW_NEXT_LAZY_DISCOVERY;
     delete process.env.WORKFLOW_NEXT_PRIVATE_BUILT;
+    delete process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE;
     delete process.env.WORKFLOW_TARGET_WORLD;
   });
 
@@ -138,5 +141,82 @@ describe('withWorkflow outputFileTracingRoot', () => {
     );
 
     expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
+  });
+
+  it('externalizes only the configured local world package by default', async () => {
+    const config = withWorkflow({});
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.serverExternalPackages).toEqual([
+      '@workflow/world-local',
+    ]);
+    expect(nextConfig.outputFileTracingIncludes).toMatchObject({
+      '/.well-known/workflow/v1/**': ['./packages/world-local/**/*'],
+    });
+    expect(nextConfig.env?.WORKFLOW_CONFIGURED_WORLD_PACKAGE).toBe(
+      '@workflow/world-local'
+    );
+    expect(process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE).toBe(
+      '@workflow/world-local'
+    );
+    expect(builderConfigs).toHaveLength(1);
+    expect(builderConfigs[0]).toMatchObject({
+      configuredWorldPackage: '@workflow/world-local',
+      externalPackages: ['server-only', 'client-only', '@workflow/world-local'],
+    });
+    expect(nextConfig.serverExternalPackages).not.toContain('workflow');
+    expect(nextConfig.serverExternalPackages).not.toContain('@workflow/core');
+  });
+
+  it('externalizes the configured world package root alongside existing externals', async () => {
+    process.env.WORKFLOW_TARGET_WORLD = '@workflow/world-postgres/subpath';
+
+    const config = withWorkflow({
+      serverExternalPackages: ['sharp'],
+    });
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.serverExternalPackages).toEqual([
+      'sharp',
+      '@workflow/world-postgres',
+    ]);
+    expect(nextConfig.env?.WORKFLOW_CONFIGURED_WORLD_PACKAGE).toBe(
+      '@workflow/world-postgres'
+    );
+    expect(builderConfigs).toHaveLength(1);
+    expect(builderConfigs[0]).toMatchObject({
+      configuredWorldPackage: '@workflow/world-postgres',
+      externalPackages: [
+        'server-only',
+        'client-only',
+        'sharp',
+        '@workflow/world-postgres',
+      ],
+    });
+  });
+
+  it('does not add path-based custom worlds to serverExternalPackages', async () => {
+    process.env.WORKFLOW_TARGET_WORLD = './src/world.ts';
+
+    const config = withWorkflow({});
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.serverExternalPackages).toBeUndefined();
+    expect(nextConfig.env?.WORKFLOW_CONFIGURED_WORLD_PACKAGE).toBeUndefined();
+    expect(process.env.WORKFLOW_CONFIGURED_WORLD_PACKAGE).toBeUndefined();
+    expect(builderConfigs).toHaveLength(1);
+    expect(builderConfigs[0]).toMatchObject({
+      configuredWorldPackage: undefined,
+      externalPackages: ['server-only', 'client-only'],
+    });
   });
 });
