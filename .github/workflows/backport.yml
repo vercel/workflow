@@ -28,6 +28,16 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
       - name: Cherry-pick to stable
         id: cherry-pick
         run: |
@@ -35,22 +45,42 @@ jobs:
           git config user.name "$(git log -1 --format='%an' "$MERGE_SHA")"
           git config user.email "$(git log -1 --format='%ae' "$MERGE_SHA")"
           git checkout stable
-          if git cherry-pick "$MERGE_SHA" --no-edit; then
+          if git cherry-pick "$MERGE_SHA" --no-edit --signoff; then
             echo "status=clean" >> "$GITHUB_OUTPUT"
             echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
-            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            # The docs app is not maintained on the stable branch (only
+            # docs/content/ is kept for npm prepack scripts). Auto-resolve
+            # any non-content docs/ conflicts by deleting the files.
+            git diff --name-only --diff-filter=U | grep '^docs/' | grep -v '^docs/content/' | while IFS= read -r file; do
+              echo "Auto-resolving docs conflict (deleting): $file"
+              git rm -f -- "$file"
+            done || true
+
+            # Lockfile conflicts can be resolved by re-running pnpm install,
+            # but only when no other conflicts remain (to avoid pnpm choking
+            # on conflict markers in other files).
+            REMAINING_BEFORE_LOCKFILE=$(git diff --name-only --diff-filter=U | grep -v '^pnpm-lock.yaml$' || true)
+            if [ -z "$REMAINING_BEFORE_LOCKFILE" ] && git diff --name-only --diff-filter=U | grep -q '^pnpm-lock.yaml$'; then
+              echo "Auto-resolving pnpm-lock.yaml conflict"
+              pnpm install --no-frozen-lockfile
+              git add pnpm-lock.yaml
+            fi
+
+            # Check if all conflicts are now resolved
+            REMAINING=$(git diff --name-only --diff-filter=U || true)
+            if [ -z "$REMAINING" ]; then
+              GIT_EDITOR=true git cherry-pick --continue
+              echo "status=clean" >> "$GITHUB_OUTPUT"
+              echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=conflict" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Push clean backport
         if: steps.cherry-pick.outputs.status == 'clean'
         run: git push origin stable
-
-      - name: Setup Node.js
-        if: steps.cherry-pick.outputs.status == 'conflict'
-        uses: actions/setup-node@v4
-        with:
-          node-version: 'lts/*'
 
       - name: Install opencode
         if: steps.cherry-pick.outputs.status == 'conflict'
@@ -81,6 +111,12 @@ jobs:
 
           PR title: $PR_TITLE
           Commit message: $COMMIT_MSG
+
+          IMPORTANT: Only docs/content/ exists on the stable branch (the rest
+          of the docs app is removed). If any remaining conflicts involve files
+          under docs/ that are NOT in docs/content/, resolve them by deleting
+          the file with "git rm". Conflicts in docs/content/ should be resolved
+          normally (these are markdown files bundled into npm packages).
 
           Resolve all merge conflicts in the working tree. The content between
           <<<<<<< HEAD and ======= is the current stable branch. The content between
