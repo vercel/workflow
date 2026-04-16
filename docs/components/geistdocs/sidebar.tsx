@@ -24,10 +24,14 @@ import { Badge } from '@/components/ui/badge';
 import { useSidebarContext } from '@/hooks/geistdocs/use-sidebar';
 import { SearchButton } from './search';
 
-// Map of URLs to badges shown inline next to the sidebar item name.
-const SIDEBAR_ITEM_BADGES: Record<string, string> = {
-  '/docs/getting-started/python': 'Beta',
-};
+// Map of URL suffixes to badges shown inline next to the sidebar item name.
+const SIDEBAR_ITEM_BADGES: Array<{ suffix: string; label: string }> = [
+  { suffix: '/docs/getting-started/python', label: 'Beta' },
+];
+
+function getSidebarBadge(url: string): string | undefined {
+  return SIDEBAR_ITEM_BADGES.find((b) => url.endsWith(b.suffix))?.label;
+}
 
 export const Sidebar = () => {
   const { root } = useTreeContext();
@@ -116,7 +120,7 @@ export const Folder: SidebarPageTreeComponents['Folder'] = ({
 };
 
 export const Item: SidebarPageTreeComponents['Item'] = ({ item }) => {
-  const badgeLabel = SIDEBAR_ITEM_BADGES[item.url];
+  const badgeLabel = getSidebarBadge(item.url);
 
   return (
     <SidebarItem
