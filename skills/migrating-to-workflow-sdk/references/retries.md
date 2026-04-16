@@ -25,7 +25,7 @@ chargePayment.maxRetries = 5;
 
 ## 2. Delay between attempts — `new RetryableError(msg, { retryAfter })`
 
-Push the next retry into the future by throwing `RetryableError` with a `retryAfter` value (seconds). Use this when the source framework specified exponential backoff, a fixed delay, or a custom backoff policy.
+Push the next retry into the future by throwing `RetryableError` with a `retryAfter` value (milliseconds, duration string, or Date). Use this when the source framework specified exponential backoff, a fixed delay, or a custom backoff policy.
 
 ```ts
 import { RetryableError } from 'workflow';
@@ -34,14 +34,14 @@ async function callRateLimitedApi(orderId: string) {
   'use step';
   const response = await fetch(`https://api.example.com/orders/${orderId}`);
   if (response.status === 429) {
-    const retryAfter = Number(response.headers.get('retry-after') ?? 30);
-    throw new RetryableError('rate limited', { retryAfter });
+    const retryAfterSeconds = Number(response.headers.get('retry-after') ?? 30);
+    throw new RetryableError('rate limited', { retryAfter: retryAfterSeconds * 1000 });
   }
 }
 callRateLimitedApi.maxRetries = 10;
 ```
 
-- `retryAfter` is in seconds.
+- `retryAfter` accepts milliseconds (number), a duration string (e.g. `'30s'`, `'2m'`), or a `Date` object.
 - There is no built-in exponential-backoff helper. If the source used one, compute the delay in userland and pass it as `retryAfter`.
 - Automatic VQS scheduling handles the default retry cadence when `retryAfter` is not provided.
 
