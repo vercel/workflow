@@ -415,6 +415,9 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
             let isReadingFromDisk = true;
             // Buffer close event if it arrives during disk reading
             let pendingClose = false;
+            // Set when the controller is closed; guards against enqueue-after-close
+            // in the polling callback when closeListener fires mid-iteration.
+            let streamClosed = false;
 
             const chunkListener = (event: {
               streamName: string;
@@ -452,6 +455,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
                 return;
               }
               // Remove listeners before closing
+              streamClosed = true;
               streamEmitter.off(`chunk:${name}` as const, chunkListener);
               streamEmitter.off(`close:${name}` as const, closeListener);
               if (pollInterval) {
@@ -605,6 +609,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
                   );
 
                   if (chunk?.eof === true) {
+                    streamClosed = true;
                     if (pollInterval) {
                       clearInterval(pollInterval);
                       pollInterval = null;
@@ -618,6 +623,10 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
                     }
                     return;
                   }
+
+                  // Guard against enqueue-after-close: closeListener may have
+                  // fired between our readBuffer() yield and this point.
+                  if (streamClosed) return;
 
                   if (chunk.chunk.byteLength) {
                     controller.enqueue(Uint8Array.from(chunk.chunk));
