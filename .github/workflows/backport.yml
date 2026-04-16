@@ -35,7 +35,7 @@ jobs:
           git config user.name "$(git log -1 --format='%an' "$MERGE_SHA")"
           git config user.email "$(git log -1 --format='%ae' "$MERGE_SHA")"
           git checkout stable
-          if git cherry-pick "$MERGE_SHA" --no-edit; then
+          if git cherry-pick "$MERGE_SHA" --no-edit --signoff; then
             echo "status=clean" >> "$GITHUB_OUTPUT"
             echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
