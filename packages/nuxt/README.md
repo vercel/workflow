@@ -1,4 +1,4 @@
 # @workflow/nuxt
 
-Nuxt module for [Workflow SDK](https://useworkflow.dev).
+Nuxt module for [Workflow SDK](https://workflow-sdk.dev).
 

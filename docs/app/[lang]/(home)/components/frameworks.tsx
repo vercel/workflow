@@ -1,11 +1,11 @@
-"use client";
+'use client';
 
-import { track } from "@vercel/analytics";
-import Link from "next/link";
-import type { ComponentProps } from "react";
-import { toast } from "sonner";
+import { track } from '@vercel/analytics';
+import Link from 'next/link';
+import type { ComponentProps } from 'react';
+import { toast } from 'sonner';
 
-export const Express = (props: ComponentProps<"svg">) => (
+export const Express = (props: ComponentProps<'svg'>) => (
   <svg
     width="999"
     height="223"
@@ -22,7 +22,7 @@ export const Express = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Fastify = (props: ComponentProps<"svg">) => (
+export const Fastify = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 1000 1000"
     fill="none"
@@ -37,7 +37,7 @@ export const Fastify = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const AstroDark = (props: ComponentProps<"svg">) => (
+export const AstroDark = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 85 107"
     fill="none"
@@ -78,7 +78,7 @@ export const AstroDark = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const AstroLight = (props: ComponentProps<"svg">) => (
+export const AstroLight = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 85 107"
     fill="none"
@@ -104,7 +104,7 @@ export const AstroLight = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const AstroGray = (props: ComponentProps<"svg">) => (
+export const AstroGray = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 85 107"
     fill="none"
@@ -130,7 +130,7 @@ export const AstroGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const TanStack = (props: ComponentProps<"svg">) => (
+export const TanStack = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 410 413"
     fill="none"
@@ -152,7 +152,7 @@ export const TanStack = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const TanStackGray = (props: ComponentProps<"svg">) => (
+export const TanStackGray = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 409 413"
     fill="none"
@@ -167,7 +167,7 @@ export const TanStackGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Vite = (props: ComponentProps<"svg">) => (
+export const Vite = (props: ComponentProps<'svg'>) => (
   <svg
     width="410"
     height="404"
@@ -213,7 +213,7 @@ export const Vite = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Nitro = (props: ComponentProps<"svg">) => (
+export const Nitro = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     fill="none"
@@ -230,7 +230,7 @@ export const Nitro = (props: ComponentProps<"svg">) => (
       />
       <mask
         id="mask0_115_108"
-        style={{ maskType: "alpha" }}
+        style={{ maskType: 'alpha' }}
         maskUnits="userSpaceOnUse"
         x="0"
         y="0"
@@ -302,7 +302,7 @@ export const Nitro = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const SvelteKit = (props: ComponentProps<"svg">) => (
+export const SvelteKit = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     xmlnsXlink="http://www.w3.org/1999/xlink"
@@ -325,7 +325,7 @@ export const SvelteKit = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const SvelteKitGray = (props: ComponentProps<"svg">) => (
+export const SvelteKitGray = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     xmlnsXlink="http://www.w3.org/1999/xlink"
@@ -348,7 +348,7 @@ export const SvelteKitGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Nuxt = (props: ComponentProps<"svg">) => (
+export const Nuxt = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 424 283"
     fill="none"
@@ -363,7 +363,7 @@ export const Nuxt = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const NuxtGray = (props: ComponentProps<"svg">) => (
+export const NuxtGray = (props: ComponentProps<'svg'>) => (
   <svg
     viewBox="0 0 424 283"
     fill="none"
@@ -378,7 +378,7 @@ export const NuxtGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Hono = (props: ComponentProps<"svg">) => (
+export const Hono = (props: ComponentProps<'svg'>) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 98" {...props}>
     <title>Hono</title>
     <path
@@ -395,7 +395,7 @@ export const Hono = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const HonoGray = (props: ComponentProps<"svg">) => (
+export const HonoGray = (props: ComponentProps<'svg'>) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 76 98" {...props}>
     <title>Hono</title>
     <path
@@ -415,7 +415,7 @@ export const HonoGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Bun = (props: ComponentProps<"svg">) => (
+export const Bun = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="Bun"
@@ -449,7 +449,7 @@ export const Bun = (props: ComponentProps<"svg">) => (
         id="Top"
         d="M35.12,5.53A16.41,16.41,0,0,1,29.49,18c-.28.25-.06.73.3.59,3.37-1.31,7.92-5.23,6-13.14C35.71,5,35.12,5.12,35.12,5.53Zm2.27,0A16.24,16.24,0,0,1,39,19c-.12.35.31.65.55.36C41.74,16.56,43.65,11,37.93,5,37.64,4.74,37.19,5.14,37.39,5.49Zm2.76-.17A16.42,16.42,0,0,1,47,17.12a.33.33,0,0,0,.65.11c.92-3.49.4-9.44-7.17-12.53C40.08,4.54,39.82,5.08,40.15,5.32ZM21.69,15.76a16.94,16.94,0,0,0,10.47-9c.18-.36.75-.22.66.18-1.73,8-7.52,9.67-11.12,9.45C21.32,16.4,21.33,15.87,21.69,15.76Z"
         fill="#ccbea7"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
       />
       <path
         id="Outline"
@@ -504,19 +504,19 @@ export const Bun = (props: ComponentProps<"svg">) => (
       <path
         id="Eyes"
         d="M25.7,38.8a5.51,5.51,0,1,0-5.5-5.51A5.51,5.51,0,0,0,25.7,38.8Zm24.77,0A5.51,5.51,0,1,0,45,33.29,5.5,5.5,0,0,0,50.47,38.8Z"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
       />
       <path
         id="Iris"
         d="M24,33.64a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,24,33.64Zm24.77,0a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,48.75,33.64Z"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
         fill="#fff"
       />
     </g>
   </svg>
 );
 
-export const BunGray = (props: ComponentProps<"svg">) => (
+export const BunGray = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="Bun"
@@ -553,7 +553,7 @@ export const BunGray = (props: ComponentProps<"svg">) => (
         id="Top"
         d="M35.12,5.53A16.41,16.41,0,0,1,29.49,18c-.28.25-.06.73.3.59,3.37-1.31,7.92-5.23,6-13.14C35.71,5,35.12,5.12,35.12,5.53Zm2.27,0A16.24,16.24,0,0,1,39,19c-.12.35.31.65.55.36C41.74,16.56,43.65,11,37.93,5,37.64,4.74,37.19,5.14,37.39,5.49Zm2.76-.17A16.42,16.42,0,0,1,47,17.12a.33.33,0,0,0,.65.11c.92-3.49.4-9.44-7.17-12.53C40.08,4.54,39.82,5.08,40.15,5.32ZM21.69,15.76a16.94,16.94,0,0,0,10.47-9c.18-.36.75-.22.66.18-1.73,8-7.52,9.67-11.12,9.45C21.32,16.4,21.33,15.87,21.69,15.76Z"
         fill="var(--color-background)"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
       />
       <path
         id="Outline"
@@ -615,20 +615,20 @@ export const BunGray = (props: ComponentProps<"svg">) => (
       <path
         id="Eyes"
         d="M25.7,38.8a5.51,5.51,0,1,0-5.5-5.51A5.51,5.51,0,0,0,25.7,38.8Zm24.77,0A5.51,5.51,0,1,0,45,33.29,5.5,5.5,0,0,0,50.47,38.8Z"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
         fill="var(--color-muted-foreground)"
       />
       <path
         id="Iris"
         d="M24,33.64a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,24,33.64Zm24.77,0a2.07,2.07,0,1,0-2.06-2.07A2.07,2.07,0,0,0,48.75,33.64Z"
-        style={{ fillRule: "evenodd" }}
+        style={{ fillRule: 'evenodd' }}
         fill="var(--color-background)"
       />
     </g>
   </svg>
 );
 
-export const Nest = (props: ComponentProps<"svg">) => (
+export const Nest = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="NestJS"
@@ -644,7 +644,7 @@ export const Nest = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const NestGray = (props: ComponentProps<"svg">) => (
+export const NestGray = (props: ComponentProps<'svg'>) => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
     id="NestJS"
@@ -660,7 +660,43 @@ export const NestGray = (props: ComponentProps<"svg">) => (
   </svg>
 );
 
-export const Next = (props: ComponentProps<"svg">) => (
+export const Python = (props: ComponentProps<'svg'>) => (
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 255" {...props}>
+    <title>Python</title>
+    <defs>
+      <linearGradient
+        id="pythonLogoA"
+        x1="12.959%"
+        x2="79.639%"
+        y1="12.039%"
+        y2="78.201%"
+      >
+        <stop offset="0%" stopColor="#387EB8" />
+        <stop offset="100%" stopColor="#366994" />
+      </linearGradient>
+      <linearGradient
+        id="pythonLogoB"
+        x1="19.128%"
+        x2="90.742%"
+        y1="20.579%"
+        y2="88.429%"
+      >
+        <stop offset="0%" stopColor="#FFE052" />
+        <stop offset="100%" stopColor="#FFC331" />
+      </linearGradient>
+    </defs>
+    <path
+      fill="url(#pythonLogoA)"
+      d="M126.916.072c-64.832 0-60.784 28.115-60.784 28.115l.072 29.128h61.868v8.745H41.631S.145 61.355.145 126.77c0 65.417 36.21 63.097 36.21 63.097h21.61v-30.356s-1.165-36.21 35.632-36.21h61.362s34.475.557 34.475-33.319V33.97S194.67.072 126.916.072zM92.802 19.66a11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13 11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.13z"
+    />
+    <path
+      fill="url(#pythonLogoB)"
+      d="M128.757 254.126c64.832 0 60.784-28.115 60.784-28.115l-.072-29.127H127.6v-8.745h86.441s41.486 4.705 41.486-60.712c0-65.416-36.21-63.096-36.21-63.096h-21.61v30.355s1.165 36.21-35.632 36.21h-61.362s-34.475-.557-34.475 33.32v56.013s-5.235 33.897 62.518 33.897zm34.114-19.586a11.12 11.12 0 0 1-11.13-11.13 11.12 11.12 0 0 1 11.13-11.131 11.12 11.12 0 0 1 11.13 11.13 11.12 11.12 0 0 1-11.13 11.13z"
+    />
+  </svg>
+);
+
+export const Next = (props: ComponentProps<'svg'>) => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" {...props}>
     <title>Next.js</title>
     <circle cx="64" cy="64" r="62" strokeWidth="4" className="stroke-border" />
@@ -700,10 +736,10 @@ export const Next = (props: ComponentProps<"svg">) => (
 
 export const Frameworks = () => {
   const handleRequest = () => {
-    track("Framework requested", { framework: "tanstack" });
-    toast.success("Request received", {
+    track('Framework requested', { framework: 'tanstack' });
+    toast.success('Request received', {
       description:
-        "Thanks for expressing interest in TanStack. We will be adding support for it soon.",
+        'Thanks for expressing interest in TanStack. We will be adding support for it soon.',
     });
   };
 

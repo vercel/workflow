@@ -23,7 +23,7 @@ describe('getHoverInfo', () => {
       expect(hoverInfo?.documentation).toBeDefined();
       expect(hoverInfo?.documentation?.[0].text).toContain('use workflow');
       expect(hoverInfo?.documentation?.[0].text).toContain(
-        'https://useworkflow.dev/docs'
+        'https://workflow-sdk.dev/docs'
       );
     });
 
@@ -59,7 +59,7 @@ describe('getHoverInfo', () => {
       const hoverInfo = getHoverInfo('test.ts', directivePos, program, ts);
 
       expect(hoverInfo?.documentation?.[0].text).toContain(
-        'https://useworkflow.dev/docs/foundations/workflows-and-steps#workflow-functions'
+        'https://workflow-sdk.dev/docs/foundations/workflows-and-steps#workflow-functions'
       );
     });
   });

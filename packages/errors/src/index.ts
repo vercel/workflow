@@ -2,7 +2,7 @@ import { parseDurationToDate } from '@workflow/utils';
 import type { StructuredError } from '@workflow/world';
 import type { StringValue } from 'ms';
 
-const BASE_URL = 'https://useworkflow.dev/err';
+const BASE_URL = 'https://workflow-sdk.dev/err';
 
 /**
  * @internal

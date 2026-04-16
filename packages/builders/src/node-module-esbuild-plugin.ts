@@ -440,8 +440,8 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
 
               // Different messages for built-in modules vs npm packages that use them
               const text = isBuiltinModule
-                ? `You are attempting to use "${violation.packageName}" which is a ${moduleType} module. ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://useworkflow.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`
-                : `You are attempting to use "${violation.packageName}" which depends on ${moduleType} modules. Packages that depend on ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://useworkflow.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`;
+                ? `You are attempting to use "${violation.packageName}" which is a ${moduleType} module. ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`
+                : `You are attempting to use "${violation.packageName}" which depends on ${moduleType} modules. Packages that depend on ${moduleType} modules are not available in workflow functions.\n\nLearn more: https://workflow-sdk.dev/err/${ERROR_SLUGS.NODE_JS_MODULE_IN_WORKFLOW}`;
 
               return {
                 text,

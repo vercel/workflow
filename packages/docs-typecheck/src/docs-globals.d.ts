@@ -64,6 +64,10 @@ declare global {
   function makeCardText(...args: any[]): Promise<any>;
   function transform(...args: any[]): any;
   function follow(...args: any[]): Promise<any>;
+  function loadOrder(...args: any[]): Promise<any>;
+  function reserveInventory(...args: any[]): Promise<any>;
+  function reviewManually(...args: any[]): Promise<any>;
+  function spawnChild(...args: any[]): Promise<any>;
 
   // Streaming helpers
   function startStream(...args: any[]): Promise<void>;
@@ -255,4 +259,6 @@ declare global {
 
   // Workflow placeholders used in examples
   const myWorkflow: (...args: any[]) => Promise<any>;
+  const childWorkflow: (...args: any[]) => Promise<any>;
+  const orderId: string;
 }

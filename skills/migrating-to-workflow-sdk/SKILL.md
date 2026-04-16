@@ -1,9 +1,9 @@
 ---
 name: migrating-to-workflow-sdk
-description: Migrates Temporal, Inngest, and AWS Step Functions workflows to the Workflow SDK. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows.
+description: Migrates Temporal, Inngest, Trigger.dev, and AWS Step Functions workflows to the Workflow SDK. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), Trigger.dev tasks / wait.forToken / triggerAndWait, ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows.
 metadata:
   author: Vercel Inc.
-  version: '0.1.9'
+  version: '0.1.10'
 ---
 
 # Migrating to the Workflow SDK
@@ -15,6 +15,7 @@ Use this skill when converting an existing orchestration system to the Workflow 
 1. Identify the source system:
    - Temporal
    - Inngest
+   - Trigger.dev
    - AWS Step Functions
 2. Identify the target runtime:
    - Managed hosting -> keep examples focused on `start()`, `getRun()`, hooks/webhooks, and route handlers.
@@ -72,6 +73,7 @@ Before drafting `## Migrated Code`, write the selected route keys in `## Migrati
 
 - Temporal -> `references/temporal.md`
 - Inngest -> `references/inngest.md`
+- Trigger.dev -> `references/trigger-dev.md`
 - AWS Step Functions -> `references/aws-step-functions.md`
 
 ## Shared references

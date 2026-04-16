@@ -7,9 +7,13 @@ import { WorldTestingPerformance } from './WorldTestingPerformance';
  * MDX-usable wrapper for WorldTestingPerformance.
  * Uses WorldDataContext to get the world data, so it must be used within a WorldDataProvider.
  */
-export function WorldTestingPerformanceMDX() {
+export function WorldTestingPerformanceMDX({
+  showBenchmarks = false,
+}: {
+  showBenchmarks?: boolean;
+}) {
   const { worldId, world, meta } = useWorldData();
   return (
-    <WorldTestingPerformance worldId={worldId} world={world} meta={meta} />
+    <WorldTestingPerformance worldId={worldId} world={world} meta={meta} showBenchmarks={showBenchmarks} />
   );
 }

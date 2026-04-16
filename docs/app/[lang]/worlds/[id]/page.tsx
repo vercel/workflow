@@ -15,6 +15,13 @@ import { WorldTestingPerformanceMDX } from '@/components/worlds/WorldTestingPerf
 import { source } from '@/lib/geistdocs/source';
 import { getWorldData, getWorldIds } from '@/lib/worlds-data';
 
+const isPreview = process.env.VERCEL_ENV === 'preview';
+
+/** MDX wrapper — passes preview gate to benchmark section */
+const WorldTestingPerformanceForMDX = (props: Record<string, unknown>) => (
+  <WorldTestingPerformanceMDX {...props} showBenchmarks={isPreview} />
+);
+
 // Map world IDs to their MDX doc slugs
 const officialWorldMdxSlugs: Record<string, string[]> = {
   local: ['deploying', 'world', 'local-world'],
@@ -91,8 +98,7 @@ export default async function WorldDetailPage({ params }: PageProps) {
             Tabs,
             Tab,
             FluidComputeCallout,
-            // MDX-usable component for Testing & Performance section
-            WorldTestingPerformance: WorldTestingPerformanceMDX,
+            WorldTestingPerformance: WorldTestingPerformanceForMDX,
           })}
         />
       );
@@ -101,7 +107,7 @@ export default async function WorldDetailPage({ params }: PageProps) {
     // Community worlds use hardcoded TOC
     tocItems = [
       { id: 'installation', title: 'Installation & Usage' },
-      { id: 'testing', title: 'Testing & Performance' },
+      { id: 'testing', title: 'Testing & Compatibility' },
     ];
   }
 
@@ -131,6 +137,7 @@ export default async function WorldDetailPage({ params }: PageProps) {
                     worldId={id}
                     world={world}
                     meta={meta}
+                    showBenchmarks={isPreview}
                   />
                 </>
               )}

@@ -73,7 +73,7 @@ const SlurpColumnHeader = () => (
 // The main benchmark used for the PERF metric
 const PERF_BENCHMARK_NAME = "workflow with 10 sequential steps";
 
-interface WorldTestingPerformanceProps {
+export interface WorldTestingPerformanceProps {
   worldId: string;
   world: World;
   meta: {
@@ -81,6 +81,7 @@ interface WorldTestingPerformanceProps {
     commit: string | null;
     branch: string | null;
   };
+  showBenchmarks?: boolean;
 }
 
 const statusConfig = {
@@ -110,6 +111,7 @@ export function WorldTestingPerformance({
   worldId,
   world,
   meta,
+  showBenchmarks = false,
 }: WorldTestingPerformanceProps) {
   const [selectedMetric, setSelectedMetric] = useState<string | null>(null);
 
@@ -281,7 +283,8 @@ export function WorldTestingPerformance({
           )}
         </div>
 
-        {/* Benchmarks Subsection */}
+        {/* Benchmarks — only visible on preview deployments */}
+        {showBenchmarks && (
         <div className="space-y-4">
           <h3 className="font-semibold text-lg tracking-tight">Benchmarks</h3>
           {hasBenchmarks ? (
@@ -462,6 +465,7 @@ export function WorldTestingPerformance({
             </p>
           )}
         </div>
+        )}
 
         {/* Metadata */}
         <div className="text-sm text-muted-foreground border-t pt-4">

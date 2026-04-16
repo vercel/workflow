@@ -2,7 +2,7 @@
 title: Migrating from AWS Step Functions
 description: Move an AWS Step Functions state machine to the Workflow SDK by replacing JSON state definitions, Task states, Choice/Wait/Parallel states, Retry/Catch blocks, and .waitForTaskToken callbacks with Workflows, Steps, Hooks, and idiomatic TypeScript control flow.
 type: guide
-summary: Translate an AWS Step Functions state machine into the Workflow SDK with side-by-side code and a realistic order-processing saga.
+summary: Translate an AWS Step Functions state machine into the Workflow SDK with side-by-side code examples.
 prerequisites:
   - /docs/getting-started/next
   - /docs/foundations/workflows-and-steps
@@ -14,503 +14,298 @@ related:
   - /docs/deploying/world/vercel-world
 ---
 
+Move an AWS Step Functions state machine to the Workflow SDK by replacing JSON state definitions with TypeScript functions. This guide shows the direct mapping between ASL states and Workflow SDK primitives.
+
+<Callout type="info">
+Install the Workflow SDK migration skill:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
+
+## Why migrate to the Workflow SDK
+
+- Orchestration code is TypeScript, not JSON ASL. Transitions are `await`, branches are `if`/`switch`, and parallelism is `Promise.all`.
+- Streaming is built in. Write durable progress from steps with `getWritable()` and named streams. No DynamoDB or SNS glue to surface status to clients.
+- Infrastructure lives in one deployment. No separate state machine, per-task Lambda, IAM role wiring, or callback SQS queues.
+- Error handling is TypeScript-native: step-level retries, `RetryableError`, and `FatalError` replace per-state Retry/Catch blocks.
+- Agent-first tooling: the `npx workflow` CLI, `@workflow/ai` integration, and the Claude skill are available out of the box.
+
 ## What changes when you leave Step Functions?
 
-With AWS Step Functions, you define workflows as JSON state machines using Amazon States Language (ASL). Each state — Task, Choice, Wait, Parallel, Map — is a node in a declarative graph. You wire Lambda functions as task handlers, configure Retry/Catch blocks per state, and manage callback patterns through `.waitForTaskToken`. The execution engine is powerful, but the authoring experience is configuration-heavy and detached from your application code.
+AWS Step Functions defines workflows as JSON state machines using Amazon States Language (ASL). Each state (Task, Choice, Wait, Parallel, Map) is a node in a declarative graph. Lambda functions handle tasks, Retry/Catch blocks configure per-state error handling, and `.waitForTaskToken` manages callbacks.
 
-With the Workflow SDK, you write `"use workflow"` functions that orchestrate `"use step"` functions — all in the same file, all plain TypeScript. Branching is `if`/`else`, waiting is `sleep()`, parallelism is `Promise.all()`, and retries are step-level configuration. There is no state-machine JSON to maintain, no Lambda function wiring, and no IAM roles to configure between orchestrator and compute.
+The Workflow SDK replaces that JSON DSL with TypeScript. `"use workflow"` functions orchestrate `"use step"` functions in the same file. Branching is `if`/`else`. Waiting is `sleep()`. Parallelism is `Promise.all()`. Retries move down to the step level.
 
-The migration path is mostly about **replacing declarative configuration with idiomatic TypeScript** and **collapsing the orchestrator/compute split**, not rewriting business logic.
+The migration replaces declarative configuration with idiomatic TypeScript and collapses the orchestrator and compute split. Business logic stays the same.
 
 ## Concept mapping
 
 | AWS Step Functions | Workflow SDK | Migration note |
 | --- | --- | --- |
-| State machine (ASL JSON) | `"use workflow"` function | The workflow function _is_ the state machine — expressed as async TypeScript. |
-| Task state / Lambda | `"use step"` function | Put side effects and Node.js access in steps. No separate Lambda deployment. |
-| Choice state | `if` / `else` / `switch` | Use native TypeScript control flow instead of JSON condition rules. |
-| Wait state | `sleep()` | Import `sleep` from `workflow` and call it in your workflow function. |
-| Parallel state | `Promise.all()` | Run steps concurrently with standard JavaScript concurrency primitives. |
-| Map state | Loop + `Promise.all()` or batched child workflows | Iterate over items with `for`/`map` and parallelize as needed. |
-| Retry / Catch | Step retries, `RetryableError`, `FatalError`, `maxRetries` | Retry logic moves down to the step level with `try`/`catch` for error handling. |
-| `.waitForTaskToken` | `createHook()` or `createWebhook()` | Use hooks for typed resume signals; webhooks for HTTP callbacks. |
-| Child state machine (`StartExecution`) | `"use step"` wrappers around `start()` / `getRun()` | Start the child from a step, return its `runId`, then poll or await the child result from another step. |
-| Execution event history | Workflow event log / run timeline | Same durable replay idea, fewer surfaces to manage directly. |
+| State machine (ASL JSON) | `"use workflow"` function | The workflow function is the state machine. |
+| Task state / Lambda | `"use step"` function | Side effects go in steps. No separate Lambda. |
+| Choice state | `if` / `else` / `switch` | Native TypeScript control flow. |
+| Wait state | `sleep()` | Import `sleep` from `workflow`. |
+| Parallel state | `Promise.all()` | Standard concurrency primitives. |
+| Map state | Loop + `Promise.all()` or child workflows | Iterate with `for`/`map`. |
+| Retry / Catch | Step retries, `RetryableError`, `FatalError` | Retry logic moves to step boundaries. |
+| `.waitForTaskToken` | `createHook()` or `createWebhook()` | Hooks for typed signals; webhooks for HTTP. |
+| Child state machine (`StartExecution`) | `"use step"` around `start()` / `getRun()` | Return the `Run` object, await its result from another step. |
+| Execution event history | Workflow event log | Same durable replay model. |
+| Progress via DynamoDB / SNS for client polling | `getWritable()` + named streams | Stream durable updates; clients read from the stream. |
 
-## Side-by-side: hello workflow
+<Callout type="info">
+`.waitForTaskToken` becomes `createHook()` or `createWebhook()`. Choice states become `if`/`else`. Map states become `Promise.all()`. Retry policies move from per-state configuration to step-level defaults.
+</Callout>
 
-### AWS Step Functions
+## Translate your first workflow
 
-State machine definition (ASL):
+Start with a single Task state. In ASL, even "call one Lambda" requires a state machine shell:
 
-```json
-{
-  "StartAt": "LoadOrder",
-  "States": {
-    "LoadOrder": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:loadOrder",
-      "Next": "ReserveInventory"
-    },
-    "ReserveInventory": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:reserveInventory",
-      "Next": "ChargePayment"
-    },
-    "ChargePayment": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:chargePayment",
-      "End": true
-    }
-  }
+```json title="stateMachine.asl.json (Step Functions)"
+"LoadOrder": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::lambda:invoke",
+  "Parameters": { "FunctionName": "loadOrder", "Payload.$": "$" },
+  "End": true
 }
 ```
 
-Plus three separate Lambda functions:
-
-{/* @skip-typecheck */}
-```typescript
-// lambda/loadOrder.ts
-export const handler = async (event: { orderId: string }) => {
-  const res = await fetch(
-    `https://example.com/api/orders/${event.orderId}`
-  );
-  return res.json() as Promise<{ id: string }>;
-};
-
-// lambda/reserveInventory.ts
-export const handler = async (event: { id: string }) => {
-  await fetch(`https://example.com/api/orders/${event.id}/reserve`, {
-    method: 'POST',
-  });
-  return event;
-};
-
-// lambda/chargePayment.ts
-export const handler = async (event: { id: string }) => {
-  await fetch(`https://example.com/api/orders/${event.id}/charge`, {
-    method: 'POST',
-  });
-  return { orderId: event.id, status: 'completed' };
-};
-```
-
-### Workflow SDK
-
-```typescript
-// workflow/workflows/order.ts
+```typescript title="workflow/workflows/order.ts (Workflow SDK)"
 export async function processOrder(orderId: string) {
-  'use workflow';
-
-  const order = await loadOrder(orderId);
-  await reserveInventory(order.id);
-  await chargePayment(order.id);
-  return { orderId: order.id, status: 'completed' };
+  'use workflow'; // [!code highlight]
+  return await loadOrder(orderId);
 }
 
 async function loadOrder(orderId: string) {
-  'use step';
+  'use step'; // [!code highlight]
   const res = await fetch(`https://example.com/api/orders/${orderId}`);
   return res.json() as Promise<{ id: string }>;
 }
+```
 
-async function reserveInventory(orderId: string) {
-  'use step';
-  await fetch(`https://example.com/api/orders/${orderId}/reserve`, {
-    method: 'POST',
-  });
-}
+What changed: the ASL state machine and its Lambda collapse into two directive-tagged functions in one file.
 
-async function chargePayment(orderId: string) {
-  'use step';
-  await fetch(`https://example.com/api/orders/${orderId}/charge`, {
-    method: 'POST',
-  });
+### Adding a second step
+
+In ASL, a second Task means a new state and a `"Next"` transition. In the Workflow SDK, it's another `await`:
+
+```typescript
+export async function processOrder(orderId: string) {
+  'use workflow';
+  const order = await loadOrder(orderId);
+  await reserveInventory(order.id); // [!code highlight]
+  return { orderId: order.id, status: 'reserved' };
 }
 ```
 
-The JSON state machine, three Lambda deployments, and IAM wiring collapse into a single TypeScript file. The orchestration reads as the async control flow it always was — `await` replaces `"Next"` transitions, and each step is a function instead of a separately deployed Lambda.
+`await` replaces `"Next"`. Each new step is a new function with `"use step"`; no additional deployment.
 
-## Side-by-side: waiting for external approval
+### Starting from an API route
 
-### AWS Step Functions
+Step Functions starts a run via `StartExecution` (AWS SDK or API Gateway integration). The Workflow SDK starts a run with `start()` from a route handler:
 
-```json
-{
-  "StartAt": "WaitForApproval",
-  "States": {
-    "WaitForApproval": {
-      "Type": "Task",
-      "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
-      "Parameters": {
-        "QueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789/approvals",
-        "MessageBody": {
-          "refundId.$": "$.refundId",
-          "taskToken.$": "$$.Task.Token"
-        }
-      },
-      "Next": "CheckApproval"
-    },
-    "CheckApproval": {
-      "Type": "Choice",
-      "Choices": [
-        {
-          "Variable": "$.approved",
-          "BooleanEquals": true,
-          "Next": "Approved"
-        }
-      ],
-      "Default": "Rejected"
-    },
-    "Approved": {
-      "Type": "Pass",
-      "Result": { "status": "approved" },
-      "End": true
-    },
-    "Rejected": {
-      "Type": "Pass",
-      "Result": { "status": "rejected" },
-      "End": true
+```typescript title="app/api/orders/route.ts"
+import { start } from 'workflow/api';
+import { processOrder } from '@/workflows/order';
+
+export async function POST(request: Request) {
+  const { orderId } = (await request.json()) as { orderId: string };
+  const run = await start(processOrder, [orderId]); // [!code highlight]
+  return Response.json({ runId: run.runId });
+}
+```
+
+## Wait for an external signal
+
+The minimal ASL for a callback is a Task with `.waitForTaskToken`:
+
+```json title="approval.asl.json (Step Functions)"
+"WaitForApproval": {
+  "Type": "Task",
+  "Resource": "arn:aws:states:::sqs:sendMessage.waitForTaskToken",
+  "Parameters": {
+    "QueueUrl": "https://sqs.us-east-1.amazonaws.com/123456789012/approvals",
+    "MessageBody": {
+      "refundId.$": "$.refundId",
+      "TaskToken.$": "$$.Task.Token"
     }
-  }
+  },
+  "End": true
 }
 ```
 
-The callback handler calls `SendTaskSuccess` with the task token:
-
-```typescript
-// lambda/approveRefund.ts
-import { SFNClient, SendTaskSuccessCommand } from '@aws-sdk/client-sfn';
-
-const sfn = new SFNClient({});
-
-export const handler = async (event: {
-  taskToken: string;
-  approved: boolean;
-}) => {
-  await sfn.send(
-    new SendTaskSuccessCommand({
-      taskToken: event.taskToken,
-      output: JSON.stringify({ approved: event.approved }),
-    })
-  );
-};
-```
-
-### Workflow SDK
-
-```typescript
-// workflow/workflows/refund.ts
+```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
 import { createHook } from 'workflow';
 
 export async function refundWorkflow(refundId: string) {
   'use workflow';
-
-  using approval = createHook<{ approved: boolean }>({
+  using approval = createHook<{ approved: boolean }>({ // [!code highlight]
     token: `refund:${refundId}:approval`,
   });
-
-  const { approved } = await approval;
-
-  if (!approved) {
-    return { refundId, status: 'rejected' };
-  }
-
-  return { refundId, status: 'approved' };
+  return await approval;
 }
 ```
 
-### Resuming the hook from an API route
+What changed: no SQS queue, no task token, no callback Lambda. The hook suspends the workflow durably until it is resumed.
 
-```typescript
-// app/api/refunds/[refundId]/approve/route.ts
+### Resuming the hook
+
+Step Functions resumes by calling `SendTaskSuccess` with the task token. The Workflow SDK resumes by calling `resumeHook` with the hook's token:
+
+```typescript title="app/api/refunds/[refundId]/approve/route.ts"
 import { resumeHook } from 'workflow/api';
 
-export async function POST(
-  request: Request,
-  { params }: { params: Promise<{ refundId: string }> }
-) {
+export async function POST(req: Request, { params }: { params: Promise<{ refundId: string }> }) {
   const { refundId } = await params;
-  const body = (await request.json()) as { approved: boolean };
-
-  await resumeHook(`refund:${refundId}:approval`, {
-    approved: body.approved,
-  });
-
+  const { approved } = (await req.json()) as { approved: boolean };
+  await resumeHook(`refund:${refundId}:approval`, { approved }); // [!code highlight]
   return Response.json({ ok: true });
 }
 ```
 
-Step Functions' `.waitForTaskToken` pattern requires SQS (or another service) to deliver the task token, a separate Lambda to call `SendTaskSuccess`/`SendTaskFailure`, and a Choice state to branch on the result. With Workflow, `createHook()` suspends durably until resumed — no queue, no task token plumbing, no separate callback handler.
+### Branching on the result
 
-### Child workflows: keep `start()` and `getRun()` in steps
+In ASL, branching after the wait requires a Choice state. In TypeScript, it's just `if`/`else`:
 
-When you need an independent child run, the important migration detail is the **step boundary**. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions and pass serializable `runId` values through the workflow:
-
-```typescript
-import { getRun, start } from 'workflow/api';
-
-async function processItem(item: string): Promise<string> {
-  'use step';
-  return `processed-${item}`;
+```json title="approval.asl.json (Step Functions)"
+"CheckApproval": {
+  "Type": "Choice",
+  "Choices": [
+    { "Variable": "$.approved", "BooleanEquals": true, "Next": "Approved" }
+  ],
+  "Default": "Rejected"
 }
+```
 
-export async function childWorkflow(item: string) {
-  'use workflow';
-  const result = await processItem(item);
-  return { item, result };
-}
+{/* @skip-typecheck: continuation snippet */}
+```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
+const { approved } = await approval;
+if (approved) return { refundId, status: 'approved' }; // [!code highlight]
+return { refundId, status: 'rejected' };
+```
 
-async function spawnChild(item: string): Promise<string> {
-  'use step';
-  const run = await start(childWorkflow, [item]);
-  return run.runId;
-}
+## Spawn a child workflow
 
-async function collectResult(
-  runId: string
-): Promise<{ item: string; result: string }> {
-  'use step';
-  const run = getRun(runId);
-  const value = await run.returnValue;
-  return value as { item: string; result: string };
+In ASL, a parent machine calls `StartExecution` (usually via `.sync` or `.waitForTaskToken`) to launch a child. In the Workflow SDK, `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Returning the `Run` object from the spawn step lets workflow observability deep-link to the child run.
+
+### Parent starts a child
+
+```typescript title="workflow/workflows/parent.ts"
+import { start } from 'workflow/api';
+
+async function spawnChild(item: string) {
+  'use step'; // [!code highlight]
+  return start(childWorkflow, [item]);
 }
 
 export async function parentWorkflow(item: string) {
   'use workflow';
-  const runId = await spawnChild(item);
-  const result = await collectResult(runId);
-  return { childRunId: runId, result };
+  const run = await spawnChild(item);
+  return { childRunId: run.runId };
 }
 ```
 
-## End-to-end migration: order processing saga
+### Awaiting the child's result
 
-This example exercises compensation (rollbacks), idempotency keys, retry semantics, and progress streaming — the patterns that matter most in a real migration.
-
-### AWS Step Functions version
-
-A Step Functions saga requires explicit Catch blocks on each state to trigger compensation states, resulting in a large ASL graph:
-
-```json
-{
-  "StartAt": "LoadOrder",
-  "States": {
-    "LoadOrder": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:loadOrder",
-      "Next": "ReserveInventory",
-      "Retry": [{ "ErrorEquals": ["States.ALL"], "MaxAttempts": 3 }],
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "FailOrder" }]
-    },
-    "ReserveInventory": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:reserveInventory",
-      "Next": "ChargePayment",
-      "Retry": [{ "ErrorEquals": ["States.ALL"], "MaxAttempts": 3 }],
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "ReleaseInventory" }]
-    },
-    "ChargePayment": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:chargePayment",
-      "Next": "CreateShipment",
-      "Retry": [{ "ErrorEquals": ["States.ALL"], "MaxAttempts": 3 }],
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "RefundPayment" }]
-    },
-    "CreateShipment": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:createShipment",
-      "End": true,
-      "Retry": [{ "ErrorEquals": ["States.ALL"], "MaxAttempts": 3 }],
-      "Catch": [{ "ErrorEquals": ["States.ALL"], "Next": "CancelShipmentCompensation" }]
-    },
-    "CancelShipmentCompensation": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:cancelShipment",
-      "Next": "RefundPayment"
-    },
-    "RefundPayment": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:refundPayment",
-      "Next": "ReleaseInventory"
-    },
-    "ReleaseInventory": {
-      "Type": "Task",
-      "Resource": "arn:aws:lambda:us-east-1:123456789:function:releaseInventory",
-      "Next": "FailOrder"
-    },
-    "FailOrder": {
-      "Type": "Fail",
-      "Error": "OrderProcessingFailed"
-    }
-  }
-}
-```
-
-Each Task state maps to a separate Lambda function, and the compensation chain (CancelShipment → RefundPayment → ReleaseInventory → Fail) must be wired explicitly in the state machine.
-
-### Workflow SDK version
+Add a second step that wraps `getRun()` and awaits `returnValue`:
 
 ```typescript
-import { FatalError, getStepMetadata, getWritable } from 'workflow';
+import { getRun } from 'workflow/api';
 
-type Order = { id: string; customerId: string; total: number };
-type Reservation = { reservationId: string };
-type Charge = { chargeId: string };
-type Shipment = { shipmentId: string };
-
-export async function processOrderSaga(orderId: string) {
-  'use workflow';
-
-  const rollbacks: Array<() => Promise<void>> = [];
-
-  try {
-    const order = await loadOrder(orderId);
-    await emitProgress({ stage: 'loaded', orderId: order.id });
-
-    const inventory = await reserveInventory(order);
-    rollbacks.push(() => releaseInventory(inventory.reservationId));
-    await emitProgress({ stage: 'inventory_reserved', orderId: order.id });
-
-    const payment = await chargePayment(order);
-    rollbacks.push(() => refundPayment(payment.chargeId));
-    await emitProgress({ stage: 'payment_captured', orderId: order.id });
-
-    const shipment = await createShipment(order);
-    rollbacks.push(() => cancelShipment(shipment.shipmentId));
-    await emitProgress({ stage: 'shipment_created', orderId: order.id });
-
-    return {
-      orderId: order.id,
-      reservationId: inventory.reservationId,
-      chargeId: payment.chargeId,
-      shipmentId: shipment.shipmentId,
-      status: 'completed',
-    };
-  } catch (error) {
-    while (rollbacks.length > 0) {
-      await rollbacks.pop()!();
-    }
-    throw error;
-  }
-}
-
-async function loadOrder(orderId: string): Promise<Order> {
-  'use step';
-  const res = await fetch(`https://example.com/api/orders/${orderId}`);
-  if (!res.ok) throw new FatalError('Order not found');
-  return res.json() as Promise<Order>;
-}
-
-async function reserveInventory(order: Order): Promise<Reservation> {
-  'use step';
-  const { stepId } = getStepMetadata();
-  const res = await fetch('https://example.com/api/inventory/reservations', {
-    method: 'POST',
-    headers: {
-      'Idempotency-Key': stepId,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ orderId: order.id }),
-  });
-  if (!res.ok) throw new Error('Inventory reservation failed');
-  return res.json() as Promise<Reservation>;
-}
-
-async function releaseInventory(reservationId: string): Promise<void> {
-  'use step';
-  await fetch(
-    `https://example.com/api/inventory/reservations/${reservationId}`,
-    { method: 'DELETE' }
-  );
-}
-
-async function chargePayment(order: Order): Promise<Charge> {
-  'use step';
-  const { stepId } = getStepMetadata();
-  const res = await fetch('https://example.com/api/payments/charges', {
-    method: 'POST',
-    headers: {
-      'Idempotency-Key': stepId,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      orderId: order.id,
-      customerId: order.customerId,
-      amount: order.total,
-    }),
-  });
-  if (!res.ok) throw new Error('Payment charge failed');
-  return res.json() as Promise<Charge>;
-}
-
-async function refundPayment(chargeId: string): Promise<void> {
-  'use step';
-  await fetch(`https://example.com/api/payments/charges/${chargeId}/refund`, {
-    method: 'POST',
-  });
-}
-
-async function createShipment(order: Order): Promise<Shipment> {
-  'use step';
-  const res = await fetch('https://example.com/api/shipments', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ orderId: order.id }),
-  });
-  if (!res.ok) throw new Error('Shipment creation failed');
-  return res.json() as Promise<Shipment>;
-}
-
-async function cancelShipment(shipmentId: string): Promise<void> {
-  'use step';
-  await fetch(`https://example.com/api/shipments/${shipmentId}`, {
-    method: 'DELETE',
-  });
-}
-
-async function emitProgress(update: { stage: string; orderId: string }) {
-  'use step';
-  const writable = getWritable<{ stage: string; orderId: string }>();
-  const writer = writable.getWriter();
-  try {
-    await writer.write(update);
-  } finally {
-    writer.releaseLock();
-  }
+async function collectResult(runId: string) {
+  'use step'; // [!code highlight]
+  const run = getRun(runId);
+  return (await run.returnValue) as { item: string; result: string };
 }
 ```
 
-- Step Functions compensation requires explicit Catch-to-compensation-state wiring for every state in the graph. With Workflow, a rollback stack in the workflow function handles compensation for any number of steps without duplicating graph nodes.
-- Use `getStepMetadata().stepId` as the idempotency key for payment and inventory APIs — no manual token management required.
-- Stream user-visible progress from steps with `getWritable()` instead of adding a separate progress transport. Step Functions has no built-in equivalent; you would typically write to DynamoDB or SNS and poll from the client.
+Then in the workflow: `const result = await collectResult(run.runId);`. The child workflow itself (`childWorkflow`) is defined elsewhere with `"use workflow"`.
 
-## Why teams usually simplify infrastructure in this move
+## What you stop operating
 
-Step Functions requires you to define state machines in JSON (Amazon States Language), deploy each task as a separate Lambda function, manage IAM roles between the orchestrator and every Lambda, and configure CloudWatch, X-Ray, or third-party tooling for observability. These are powerful primitives when you need visual workflow editing or cross-service AWS orchestration — but for TypeScript-first teams, they are overhead without a corresponding benefit.
+Moving off Step Functions removes these surfaces from the application:
 
-With the Workflow SDK:
+- ASL state machine JSON and its reference syntax.
+- Per-task Lambda functions, their IAM roles, and CloudFormation/CDK wiring.
+- Task-token delivery infrastructure (SQS queues, callback Lambdas).
+- Separate progress channels (DynamoDB, SNS) for client-visible updates.
+- CloudWatch and X-Ray configuration for orchestrator observability.
 
-- **No state machine JSON.** The workflow function _is_ the state machine. Branching, looping, and error handling are TypeScript — not a JSON DSL with its own type system and reference syntax.
-- **No Lambda function wiring.** Steps run in the same deployment as your app. There are no separate functions to deploy, version, or connect with IAM policies.
-- **No infrastructure to provision.** There is no CloudFormation/CDK stack for the orchestrator, no Lambda concurrency limits to tune, and no pricing tiers to navigate.
-- **TypeScript all the way down.** Workflow and step functions are regular TypeScript with directive annotations. State transitions are `await` calls, not `"Next"` pointers.
-- **Durable streaming built in.** `getWritable()` lets you push progress updates from steps without adding DynamoDB, SNS, or a WebSocket API Gateway.
-- **Efficient resource usage.** When a workflow is suspended on `sleep()` or a hook, it pauses cleanly instead of keeping a worker process alive.
+Workflow and step functions live in the same deployment as the application. State transitions are `await` calls. Progress streaming, retries, and observability are built in.
 
-This is not about replacing every Step Functions feature. It is about recognizing that most TypeScript teams use a fraction of Step Functions' state-language surface and pay for the rest in configuration complexity and AWS service sprawl.
+## Step-by-step first migration
+
+Pick one state machine and migrate it end-to-end before touching the rest. The steps below describe the smallest viable path.
+
+### Step 1: Install the Workflow SDK
+
+Add the `workflow` runtime package.
+
+```bash
+pnpm add workflow
+```
+
+### Step 2: Rewrite the state machine as a `"use workflow"` function
+
+Transitions become `await` calls. Control flow (`Choice`, `Wait`, `Parallel`, `Map`) becomes `if`/`switch`, `sleep`, `Promise.all`, and loops.
+
+```ts title="workflows/order.ts"
+export async function processOrder(orderId: string) {
+  "use workflow"; // [!code highlight]
+  const order = await loadOrder(orderId);
+  if (order.total > 1000) await reviewManually(order);
+  await chargePayment(order);
+}
+```
+
+### Step 3: Move each Lambda into a step function
+
+Inline the Lambda body into a function with `"use step"` on the first line. Step functions keep full Node.js access, so existing SDK calls work unchanged.
+
+```ts
+async function loadOrder(id: string) {
+  "use step"; // [!code highlight]
+  return fetch(`/api/orders/${id}`).then((r) => r.json());
+}
+```
+
+### Step 4: Replace `.waitForTaskToken` with a hook
+
+Swap the task-token callback Lambda for `createHook()`. Callers `resumeHook(token, payload)` instead of `SendTaskSuccess`.
+
+### Step 5: Start runs from an API route
+
+Delete the `StartExecution` call and IAM wiring. Launch runs directly from a route handler:
+
+```ts title="app/api/orders/route.ts"
+import { start } from "workflow/api";
+import { processOrder } from "@/workflows/order";
+
+export async function POST(req: Request) {
+  const { orderId } = await req.json();
+  const run = await start(processOrder, [orderId]);
+  return Response.json({ runId: run.runId });
+}
+```
+
+### Step 6: Retire the Step Functions infrastructure
+
+Delete the ASL JSON, per-task Lambda deployments, IAM roles, and callback queues. Remove CloudWatch and X-Ray wiring used for orchestrator observability. Verify the run in `npx workflow web` before shipping.
 
 ## Quick-start checklist
 
-- Replace your ASL state machine JSON with a single `"use workflow"` function. State transitions become `await` calls.
-- Convert each Task state / Lambda function into a `"use step"` function in the same file.
-- Replace Choice states with `if`/`else`/`switch` in your workflow function.
-- Replace Wait states with `sleep()` imported from `workflow`.
-- Replace Parallel states with `Promise.all()` over concurrent step calls.
-- Replace Map states with loops or `Promise.all()` over arrays, using `"use step"` wrappers around `start()` for large fan-outs.
-- Replace child state machines (`StartExecution`) with `"use step"` wrappers around `start()` and `getRun()` when you need independent child runs.
-- Replace `.waitForTaskToken` callback patterns with `createHook()` or `createWebhook()` depending on whether the caller is internal or HTTP-based.
-- Move Retry/Catch configuration down to step boundaries using default retries, `maxRetries`, `RetryableError`, and `FatalError`, with standard `try`/`catch` for error handling.
-- Add idempotency keys to external side effects using `getStepMetadata().stepId`.
-- Stream user-visible progress from steps with `getWritable()` when you previously polled DynamoDB or used SNS notifications.
-- Deploy your app and verify workflows run end-to-end with built-in observability.
+- Replace the ASL state machine with a single `"use workflow"` function. Transitions become `await` calls.
+- Convert each Task / Lambda into a `"use step"` function in the same file.
+- Replace Choice states with `if`/`else`/`switch`.
+- Replace Wait states with `sleep()` from `workflow`.
+- Replace Parallel states with `Promise.all()`.
+- Replace Map states with loops or `Promise.all()`. For large fan-outs, wrap `start()` in a step.
+- Replace `StartExecution` child machines with `"use step"` wrappers around `start()` and `getRun()`.
+- Replace `.waitForTaskToken` with `createHook()` (internal callers) or `createWebhook()` (HTTP callers).
+- Move Retry/Catch to step boundaries using `maxRetries`, `RetryableError`, and `FatalError`.
+- Use `getStepMetadata().stepId` as the idempotency key for external side effects.
+- Stream progress from steps with `getWritable()` instead of polling DynamoDB or SNS.
+- Deploy and verify runs end-to-end with built-in observability.

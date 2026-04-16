@@ -3,6 +3,7 @@
   "pages": [
     "migrating-from-temporal",
     "migrating-from-inngest",
-    "migrating-from-aws-step-functions"
+    "migrating-from-aws-step-functions",
+    "migrating-from-trigger-dev"
   ]
 }
