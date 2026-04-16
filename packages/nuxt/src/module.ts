@@ -28,7 +28,21 @@ const module: NuxtModule<ModuleOptions> = defineNuxtModule({
     if (!nuxt.options.nitro.modules.includes('@workflow/nitro')) {
       nuxt.options.nitro.workflow ||= {} as NitroModuleOptions;
       nuxt.options.nitro.workflow.typescriptPlugin = options.typescriptPlugin;
+      // Signal to @workflow/nitro that Vite handles SSR externalization,
+      // so the Nitro module should not override Nitro externals config.
+      nuxt.options.nitro.workflow._vite = true;
       nuxt.options.nitro.modules.push('@workflow/nitro');
+    }
+
+    // Force Vite to bundle workflow SDK packages in SSR mode rather than
+    // externalizing them. This ensures the SWC transform plugin processes
+    // files containing workflow patterns and adds classId registration
+    // IIFEs needed for serialization.
+    nuxt.options.vite ||= {};
+    nuxt.options.vite.ssr ||= {};
+    nuxt.options.vite.ssr.noExternal ||= [];
+    if (Array.isArray(nuxt.options.vite.ssr.noExternal)) {
+      nuxt.options.vite.ssr.noExternal.push('workflow', /@workflow\//);
     }
   },
 });
