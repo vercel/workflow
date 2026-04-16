@@ -63,7 +63,6 @@ jobs:
             REMAINING_BEFORE_LOCKFILE=$(git diff --name-only --diff-filter=U | grep -v '^pnpm-lock.yaml$' || true)
             if [ -z "$REMAINING_BEFORE_LOCKFILE" ] && git diff --name-only --diff-filter=U | grep -q '^pnpm-lock.yaml$'; then
               echo "Auto-resolving pnpm-lock.yaml conflict"
-              git checkout --theirs -- pnpm-lock.yaml
               pnpm install --no-frozen-lockfile
               git add pnpm-lock.yaml
             fi
