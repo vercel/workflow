@@ -1,6 +1,6 @@
 ---
 title: Python
-description: Get started with the Workflow Python SDK for building durable, long-running workflows.
+description: Build durable workflows and AI agents in Python with the Vercel SDK.
 type: guide
 summary: Set up the Workflow Python SDK in your Python application.
 prerequisites:
@@ -11,23 +11,45 @@ related:
 ---
 
 <Callout type="warn">
-The Python SDK is currently in **beta**. APIs and behavior may change. For the latest documentation and updates, see the [official Vercel Workflow Python documentation](https://vercel.com/docs/workflow/concepts?language=py).
+The Python SDK is currently in **beta**. APIs and behavior may change. For the latest documentation and updates, see the [official Vercel Workflow Python documentation](https://vercel.com/docs/workflow/python).
 </Callout>
 
-The Workflow Python SDK brings durable, long-running workflows to Python applications. Using `@wf.workflow` and `@wf.step` decorators, you can build workflows that survive restarts, pause for external events, and coordinate multi-step logic over time.
+You can build durable workflows in Python using the [`vercel` Python SDK](https://pypi.org/project/vercel/). Your workflow code can pause, resume, and maintain state, just like the JavaScript and TypeScript Workflow SDK.
 
-## Core Concepts
+## Getting Started
 
-### Workflow
+Install the `vercel` package:
 
-A workflow is a stateful function that coordinates multi-step logic over time. In Python, the `@wf.workflow` decorator marks a function as durable.
+```bash filename="Terminal"
+pip install vercel
+```
 
-Use a workflow when your logic needs to pause, resume, or span minutes to months:
+Configure `experimentalServices` in your `vercel.json`:
 
-```python
+```json filename="vercel.json"
+{
+  "experimentalServices": {
+    "ai_content_workflow": {
+      "type": "worker",
+      "entrypoint": "app/workflows/ai_content_workflow.py",
+      "topics": ["__wkf_*"]
+    }
+  }
+}
+```
+
+## Workflows
+
+A workflow is a stateful function that coordinates multi-step logic over time. Create a `Workflows` instance and use the `@wf.workflow` decorator to mark a function as durable:
+
+```python filename="app/workflow.py" {3}
 from vercel import workflow
 
 wf = workflow.Workflows()
+```
+
+```python filename="app/workflows/ai_content_workflow.py" {3}
+from app.workflow import wf
 
 @wf.workflow
 async def ai_content_workflow(*, topic: str):
@@ -42,13 +64,11 @@ async def ai_content_workflow(*, topic: str):
 
 Under the hood, the workflow compiles into a route that orchestrates execution. All inputs and outputs are recorded in an event log. If a deploy or crash happens, the system replays execution deterministically from where it stopped.
 
-### Step
+## Steps
 
-A step is a stateless function that runs a unit of durable work inside a workflow. In Python, the `@wf.step` decorator marks a function as a step.
+A step is a stateless function that runs a unit of durable work inside a workflow. Use `@wf.step` to mark a function as a step:
 
-Use a step when calling external APIs or performing isolated operations:
-
-```python
+```python filename="app/steps/generate_draft.py" {4,8}
 import random
 from app.workflow import wf
 
@@ -69,13 +89,12 @@ async def summarize_draft(*, draft: str):
 
 Each step compiles into an isolated route. While the step executes, the workflow suspends without consuming resources. When the step completes, the workflow resumes automatically where it left off.
 
-### Sleep
+## Sleep
 
-Sleep pauses a workflow for a specified duration without consuming compute resources. Use it when you need to wait for hours or days before continuing, such as sending a follow-up email or delaying a reward.
+Sleep pauses a workflow for a specified duration without consuming compute resources:
 
-```python
+```python filename="app/workflows/ai_refine.py" {7}
 from vercel import workflow
-from app.workflow import wf
 
 @wf.workflow
 async def ai_refine_workflow(*, draft_id: str):
@@ -93,20 +112,19 @@ async def ai_refine_workflow(*, draft_id: str):
 
 The sleep call pauses the workflow and consumes no resources. The workflow resumes automatically when the time expires.
 
-### Hook
+## Hooks
 
-A hook lets a workflow wait for external events such as user actions, webhooks, or third-party API responses. This is useful for human-in-the-loop workflows where you need to pause until someone approves, confirms, or provides input.
+A hook lets a workflow wait for external events such as user actions, webhooks, or third-party API responses.
 
-```python
-import typing
-from pydantic import BaseModel
+Define a hook model with Pydantic and `workflow.BaseHook`:
+
+```python filename="app/workflows/approval.py" {3,14}
 from vercel import workflow
-from app.workflow import wf
 
 class Approval(BaseModel, workflow.BaseHook):
     """Human approval for AI-generated drafts"""
 
-    decision: typing.Literal["approved", "changes"]
+    decision: Literal["approved", "changes"]
     notes: str | None = None
 
 @wf.workflow
@@ -125,12 +143,7 @@ async def ai_approval_workflow(*, topic: str):
 
 Resume the workflow when data arrives:
 
-```python
-from fastapi import FastAPI
-from app.workflows.approval import Approval
-
-app = FastAPI()
-
+```python filename="app/api/resume.py" {5}
 @app.post("/api/resume")
 async def resume(approval: Approval):
     """Resume the workflow when an approval is received"""
@@ -141,13 +154,9 @@ async def resume(approval: Approval):
 
 When a hook receives data, the workflow resumes automatically. You don&apos;t need polling, message queues, or manual state management.
 
-### Skew Protection
-
-Skew protection keeps a workflow run pinned to the deployment where it started. That means you can ship newer versions of your workflow code without changing the logic for runs that are already in progress.
-
 ## Learn More
 
-For comprehensive documentation, examples, and the latest updates, visit the [official Vercel Workflow documentation](https://vercel.com/docs/workflow/concepts?language=py).
+For comprehensive documentation, examples, and the latest updates, visit the [official Vercel Workflow Python documentation](https://vercel.com/docs/workflow/python).
 
 ## Next Steps
 
