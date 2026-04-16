@@ -115,16 +115,28 @@ export const Folder: SidebarPageTreeComponents['Folder'] = ({
   );
 };
 
-export const Item: SidebarPageTreeComponents['Item'] = ({ item }) => (
-  <SidebarItem
-    className="block w-full truncate text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground data-[active=true]:text-foreground"
-    external={item.external}
-    href={item.url}
-    icon={item.icon}
-  >
-    {item.name}
-  </SidebarItem>
-);
+export const Item: SidebarPageTreeComponents['Item'] = ({ item }) => {
+  const badgeLabel = SIDEBAR_ITEM_BADGES[item.url];
+
+  return (
+    <SidebarItem
+      className="flex w-full items-center gap-2 text-pretty py-1.5 text-muted-foreground text-sm transition-colors hover:text-foreground data-[active=true]:text-foreground"
+      external={item.external}
+      href={item.url}
+      icon={item.icon}
+    >
+      <span className="truncate">{item.name}</span>
+      {badgeLabel ? (
+        <Badge
+          variant="secondary"
+          className="shrink-0 px-1.5 py-0 text-[10px] leading-4"
+        >
+          {badgeLabel}
+        </Badge>
+      ) : null}
+    </SidebarItem>
+  );
+};
 
 export const Separator: SidebarPageTreeComponents['Separator'] = ({ item }) => (
   <SidebarSeparator className="mt-4 mb-2 flex items-center gap-2 px-0 font-medium text-sm first-child:mt-0">
