@@ -20,8 +20,14 @@ import {
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet';
+import { Badge } from '@/components/ui/badge';
 import { useSidebarContext } from '@/hooks/geistdocs/use-sidebar';
 import { SearchButton } from './search';
+
+// Map of URLs to badges shown inline next to the sidebar item name.
+const SIDEBAR_ITEM_BADGES: Record<string, string> = {
+  '/docs/getting-started/python': 'Beta',
+};
 
 export const Sidebar = () => {
   const { root } = useTreeContext();
