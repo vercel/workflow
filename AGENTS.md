@@ -173,6 +173,8 @@ This repository uses a dual-branch release model with [changesets](https://githu
 
 Both branches trigger the release workflow (`.github/workflows/release.yml`) on push. The changesets action creates a "Version Packages" PR on each branch when there are pending changesets.
 
+**Important:** The `docs/` directory is **not maintained on the `stable` branch**. Documentation is deployed only from `main`. When backporting changes to `stable`, any conflicts involving files under `docs/` should be resolved by deleting the conflicting files. The backport GitHub Action handles this automatically.
+
 ### Changesets
 
 - `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy — they always have the same version number
@@ -190,7 +192,7 @@ Both branches trigger the release workflow (`.github/workflows/release.yml`) on 
 
 To backport a change from `main` to `stable`, add the `backport-stable` label to the PR on `main`. A GitHub Action (`.github/workflows/backport.yml`) will automatically cherry-pick the squashed commit to `stable`. The label can be added before or after merging — the action triggers on both merge and label events. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
 
-If the cherry-pick fails due to conflicts, the action will attempt to resolve them automatically using [opencode](https://opencode.ai) (AI-powered conflict resolution). If successful, it creates a PR targeting `stable` for human review instead of pushing directly. If the AI cannot resolve the conflicts, the action will comment on the original PR with instructions for manual resolution.
+If the cherry-pick fails due to conflicts, the action first auto-resolves any `docs/` conflicts (since docs are not maintained on `stable`) and `pnpm-lock.yaml` conflicts (by re-running `pnpm install`). If those resolve everything, the cherry-pick is pushed directly to `stable`. Otherwise, it attempts to resolve remaining conflicts using [opencode](https://opencode.ai) (AI-powered conflict resolution). If successful, it creates a PR targeting `stable` for human review instead of pushing directly. If the AI cannot resolve the conflicts, the action will comment on the original PR with instructions for manual resolution.
 
 ### Pre-release Lifecycle
 

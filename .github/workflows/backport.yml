@@ -39,7 +39,30 @@ jobs:
             echo "status=clean" >> "$GITHUB_OUTPUT"
             echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
-            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            # The docs/ directory is not maintained on the stable branch.
+            # Auto-resolve any docs/ conflicts by deleting the files.
+            git diff --name-only --diff-filter=U | grep '^docs/' | while IFS= read -r file; do
+              echo "Auto-resolving docs conflict (deleting): $file"
+              git rm -f -- "$file"
+            done
+
+            # Lockfile conflicts can be resolved by re-running pnpm install.
+            if git diff --name-only --diff-filter=U | grep -q '^pnpm-lock.yaml$'; then
+              echo "Auto-resolving pnpm-lock.yaml conflict"
+              git checkout --theirs -- pnpm-lock.yaml
+              npx corepack pnpm install --no-frozen-lockfile
+              git add pnpm-lock.yaml
+            fi
+
+            # Check if all conflicts are now resolved
+            REMAINING=$(git diff --name-only --diff-filter=U || true)
+            if [ -z "$REMAINING" ]; then
+              GIT_EDITOR=true git cherry-pick --continue
+              echo "status=clean" >> "$GITHUB_OUTPUT"
+              echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            else
+              echo "status=conflict" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Push clean backport
@@ -81,6 +104,10 @@ jobs:
 
           PR title: $PR_TITLE
           Commit message: $COMMIT_MSG
+
+          IMPORTANT: The docs/ directory does NOT exist on the stable branch.
+          If any remaining conflicts involve files under docs/, resolve them by
+          deleting the file with "git rm".
 
           Resolve all merge conflicts in the working tree. The content between
           <<<<<<< HEAD and ======= is the current stable branch. The content between
