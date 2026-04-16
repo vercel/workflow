@@ -290,7 +290,7 @@ Remove the `inngest` client, the `serve()` route, event schemas, and the Inngest
 ## Features without a 1:1 equivalent
 
 - **Cron / scheduled functions (`triggers: { cron: '...' }`).** The SDK has no built-in scheduler. Trigger runs from Vercel Cron or a system cron calling `start()` from an API route.
-- **Concurrency, throttling, rate limiting, debounce, singleton, priority, and `batchEvents`.** These function-level knobs have no direct analog. Enforce limits inside steps (semaphores, external rate-limiter service) or debounce at the publisher before calling `start()`.
+- **Concurrency, throttling, rate limiting, debounce, singleton, priority, and `batchEvents`.** These function-level settings have no direct analog. Enforce limits inside steps (semaphores, external rate-limiter service) or debounce at the publisher before calling `start()`.
 - **`EventSchemas` / typed events.** The event-bus indirection goes away; publishers import the workflow function directly, giving the same type safety through a different mechanism.
 - **Event-bus fan-out by name match.** `inngest.send()` that triggered multiple functions by event name must be replaced by explicit `start()` calls for each target workflow.
 
