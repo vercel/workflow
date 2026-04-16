@@ -1,4 +1,5 @@
 import { registerOTel } from '@vercel/otel';
+import './instrumentation-workflows/101_instrumentation_only';
 
 registerOTel({ serviceName: 'example-nextjs-workflow' });
 

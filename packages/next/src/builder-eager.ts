@@ -404,6 +404,14 @@ export async function getNextBuilderEager() {
         if (item.match(/[/\\](pages|src[/\\]pages)[/\\]/)) {
           return true;
         }
+        // Match server instrumentation entrypoints: instrumentation.ts/js and src/instrumentation.ts/js
+        if (
+          item.match(
+            /(^|.*[/\\])(instrumentation|src[/\\]instrumentation)\.[cm]?[jt]sx?$/
+          )
+        ) {
+          return true;
+        }
         return false;
       });
     }

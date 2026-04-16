@@ -250,6 +250,40 @@ describe.each([
   );
 });
 
+describe.each([
+  'nextjs-webpack',
+  'nextjs-turbopack',
+])('Next instrumentation discovery', (project) => {
+  test(
+    `${project}: discovers workflows imported only from instrumentation.ts`,
+    { timeout: 30_000 },
+    async () => {
+      if (process.env.APP_NAME && project !== process.env.APP_NAME) {
+        return;
+      }
+
+      const manifest = await tryReadManifest(project);
+      if (!manifest) return;
+
+      const workflowFiles = Object.keys(manifest.workflows);
+      const instrumentationWorkflowFile = workflowFiles.find((filePath) =>
+        filePath.includes('101_instrumentation_only')
+      );
+
+      expect(
+        instrumentationWorkflowFile,
+        `Expected an instrumentation-only workflow file in manifest workflows. Available: ${workflowFiles.join(', ')}`
+      ).toBeDefined();
+
+      const fileWorkflows = manifest.workflows[instrumentationWorkflowFile!];
+      expect(fileWorkflows.instrumentationOnlyWorkflow).toBeDefined();
+      expect(fileWorkflows.instrumentationOnlyWorkflow.workflowId).toContain(
+        'instrumentationOnlyWorkflow'
+      );
+    }
+  );
+});
+
 /**
  * Tests for single-statement control flow extraction.
  * These verify that steps inside if/while/for without braces are extracted.
