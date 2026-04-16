@@ -13,6 +13,11 @@ const nextConfig: NextConfig = {
   /* config options here */
   outputFileTracingRoot: turbopackRoot,
   serverExternalPackages: ['@node-rs/xxhash'],
+  experimental: {
+    // Deferred step routes rely on runtime stack traces in prod E2E. Turbopack
+    // minification currently strips original function names from those stacks.
+    turbopackMinify: false,
+  },
   turbopack: {
     // Keep Turbopack root aligned with repo root so @repo/* path aliases can
     // resolve files outside the app directory in both monorepo and staged temp layouts.
