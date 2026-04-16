@@ -574,7 +574,6 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                 onDecrypt={sidebar.onDecrypt}
                 isDecrypting={sidebar.isDecrypting}
                 selectedSpan={selectedSpan}
-                hasEncryptedData={sidebar.hasEncryptedData}
               />
             </ErrorBoundary>
           </div>
