@@ -3521,7 +3521,7 @@ impl StepTransform {
     //     __wf_reg.set(__wf_id, __wf_fn);
     //     __wf_fn.stepId = __wf_id;
     //   })(fnRef, "step//module_path//fnName");
-    fn create_inline_step_registration(&self, step_id: &str, fn_ref: Expr) -> Stmt {
+    fn create_inline_step_registration(&self, step_id: &str, fn_ref: Expr, fn_name: &str) -> Stmt {
         // Helper to create an identifier
         let ident =
             |name: &str| -> Ident { Ident::new(name.into(), DUMMY_SP, SyntaxContext::empty()) };
@@ -3652,7 +3652,69 @@ impl StepTransform {
             })),
         });
 
-        // The function body: var decls + set + stepId assignment
+        // Object.defineProperty(__wf_fn, "name", { value: "originalName", configurable: true })
+        // This preserves the original function name in stack traces even after bundler minification.
+        let define_name = Stmt::Expr(ExprStmt {
+            span: DUMMY_SP,
+            expr: Box::new(Expr::Call(CallExpr {
+                span: DUMMY_SP,
+                ctxt: SyntaxContext::empty(),
+                callee: Callee::Expr(Box::new(Expr::Member(MemberExpr {
+                    span: DUMMY_SP,
+                    obj: ident_expr("Object"),
+                    prop: MemberProp::Ident(IdentName {
+                        span: DUMMY_SP,
+                        sym: "defineProperty".into(),
+                    }),
+                }))),
+                args: vec![
+                    ExprOrSpread {
+                        spread: None,
+                        expr: ident_expr("__wf_fn"),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Lit(Lit::Str(Str {
+                            span: DUMMY_SP,
+                            value: "name".into(),
+                            raw: None,
+                        }))),
+                    },
+                    ExprOrSpread {
+                        spread: None,
+                        expr: Box::new(Expr::Object(ObjectLit {
+                            span: DUMMY_SP,
+                            props: vec![
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "value".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Str(Str {
+                                        span: DUMMY_SP,
+                                        value: fn_name.into(),
+                                        raw: None,
+                                    }))),
+                                }))),
+                                PropOrSpread::Prop(Box::new(Prop::KeyValue(KeyValueProp {
+                                    key: PropName::Ident(IdentName {
+                                        span: DUMMY_SP,
+                                        sym: "configurable".into(),
+                                    }),
+                                    value: Box::new(Expr::Lit(Lit::Bool(Bool {
+                                        span: DUMMY_SP,
+                                        value: true,
+                                    }))),
+                                }))),
+                            ],
+                        })),
+                    },
+                ],
+                type_args: None,
+            })),
+        });
+
+        // The function body: var decls + set + stepId assignment + name preservation
         let function_body = BlockStmt {
             span: DUMMY_SP,
             ctxt: SyntaxContext::empty(),
@@ -3666,6 +3728,7 @@ impl StepTransform {
                 }))),
                 set_call,
                 step_id_assignment,
+                define_name,
             ],
         };
 
@@ -4146,7 +4209,7 @@ impl StepTransform {
             TransformMode::Step => {
                 let fn_ref =
                     Expr::Ident(Ident::new(fn_name.into(), DUMMY_SP, SyntaxContext::empty()));
-                self.create_inline_step_registration(&step_id, fn_ref)
+                self.create_inline_step_registration(&step_id, fn_ref, fn_name)
             }
             _ => self.create_step_id_assignment_with_id(fn_name, &step_id),
         }
@@ -5033,11 +5096,11 @@ impl VisitMut for StepTransform {
                             self.create_step_id_assignment_with_id(&hoisted_name, &step_id)
                         } else {
                             let fn_ref = Expr::Ident(Ident::new(
-                                hoisted_name.into(),
+                                hoisted_name.clone().into(),
                                 DUMMY_SP,
                                 SyntaxContext::empty(),
                             ));
-                            self.create_inline_step_registration(&step_id, fn_ref)
+                            self.create_inline_step_registration(&step_id, fn_ref, &hoisted_name)
                         };
                         module
                             .body
@@ -5108,11 +5171,11 @@ impl VisitMut for StepTransform {
                             self.create_step_id_assignment_with_id(&hoist_var_name, &step_id)
                         } else {
                             let fn_ref = Expr::Ident(Ident::new(
-                                hoist_var_name.into(),
+                                hoist_var_name.clone().into(),
                                 DUMMY_SP,
                                 SyntaxContext::empty(),
                             ));
-                            self.create_inline_step_registration(&step_id, fn_ref)
+                            self.create_inline_step_registration(&step_id, fn_ref, &hoist_var_name)
                         };
                         module
                             .body
@@ -5131,10 +5194,13 @@ impl VisitMut for StepTransform {
                                 DUMMY_SP,
                                 SyntaxContext::empty(),
                             ))),
-                            prop: MemberProp::Ident(IdentName::new(method_name.into(), DUMMY_SP)),
+                            prop: MemberProp::Ident(IdentName::new(
+                                method_name.clone().into(),
+                                DUMMY_SP,
+                            )),
                         });
                         let registration_call =
-                            self.create_inline_step_registration(&step_id, fn_ref);
+                            self.create_inline_step_registration(&step_id, fn_ref, &method_name);
                         module.body.push(ModuleItem::Stmt(registration_call));
                     }
 
@@ -5161,13 +5227,13 @@ impl VisitMut for StepTransform {
                                 span: DUMMY_SP,
                                 expr: Box::new(Expr::Lit(Lit::Str(Str {
                                     span: DUMMY_SP,
-                                    value: method_name.into(),
+                                    value: method_name.clone().into(),
                                     raw: None,
                                 }))),
                             }),
                         });
                         let registration_call =
-                            self.create_inline_step_registration(&step_id, fn_ref);
+                            self.create_inline_step_registration(&step_id, fn_ref, &method_name);
                         module.body.push(ModuleItem::Stmt(registration_call));
                     }
 
@@ -5221,7 +5287,7 @@ impl VisitMut for StepTransform {
                                         spread: None,
                                         expr: Box::new(Expr::Lit(Lit::Str(Str {
                                             span: DUMMY_SP,
-                                            value: getter_name.into(),
+                                            value: getter_name.clone().into(),
                                             raw: None,
                                         }))),
                                     },
@@ -5231,8 +5297,11 @@ impl VisitMut for StepTransform {
                             prop: MemberProp::Ident(IdentName::new("get".into(), DUMMY_SP)),
                         });
 
-                        let registration_call =
-                            self.create_inline_step_registration(&step_id, getter_ref);
+                        let registration_call = self.create_inline_step_registration(
+                            &step_id,
+                            getter_ref,
+                            &getter_name,
+                        );
                         module.body.push(ModuleItem::Stmt(registration_call));
                     }
 
@@ -5278,7 +5347,7 @@ impl VisitMut for StepTransform {
                                         spread: None,
                                         expr: Box::new(Expr::Lit(Lit::Str(Str {
                                             span: DUMMY_SP,
-                                            value: getter_name.into(),
+                                            value: getter_name.clone().into(),
                                             raw: None,
                                         }))),
                                     },
@@ -5288,8 +5357,11 @@ impl VisitMut for StepTransform {
                             prop: MemberProp::Ident(IdentName::new("get".into(), DUMMY_SP)),
                         });
 
-                        let registration_call =
-                            self.create_inline_step_registration(&step_id, getter_ref);
+                        let registration_call = self.create_inline_step_registration(
+                            &step_id,
+                            getter_ref,
+                            &getter_name,
+                        );
                         module.body.push(ModuleItem::Stmt(registration_call));
                     }
 
