@@ -460,7 +460,7 @@ const attributeToDisplayFn: Record<
   // Dates — wrapped with TimestampTooltip showing UTC/local + relative time
   createdAt: timestampWithTooltipOrNull,
   startedAt: timestampWithTooltipOrNull,
-  updatedAt: timestampWithTooltipOrNull,
+  updatedAt: (_value: unknown) => null,
   completedAt: timestampWithTooltipOrNull,
   expiredAt: (_value: unknown) => null,
   retryAfter: timestampWithTooltipOrNull,
@@ -662,13 +662,11 @@ export const AttributeBlock = ({
   context?: DisplayContext;
 }) => {
   const isExpandableLoadingTarget =
-    attribute === 'input' ||
-    attribute === 'output' ||
-    attribute === 'eventData';
+    attribute === 'input' || attribute === 'eventData';
   if (isLoading && isExpandableLoadingTarget && !hasDisplayContent(value)) {
     return (
       <div
-        className={`my-2 flex flex-col ${attribute === 'input' || attribute === 'output' ? 'gap-2 my-3.5' : 'gap-0'}`}
+        className={`my-2 flex flex-col ${attribute === 'input' ? 'gap-2 my-3.5' : 'gap-0'}`}
       >
         <span className="text-label-14 text-gray-1000 font-medium first-letter:uppercase">
           {attribute}
@@ -787,9 +785,9 @@ export const AttributePanel = ({
 
     if (!isLoading) return present;
 
-    // During loading, ensure input/output appear so their skeletons render
+    // During loading, ensure input appears so its skeleton renders
     // in the correct position (above the events section).
-    const loadingDefaults = ['input', 'output'];
+    const loadingDefaults = ['input'];
     for (const key of loadingDefaults) {
       if (!present.includes(key)) {
         present.push(key);

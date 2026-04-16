@@ -59,25 +59,7 @@ export function DetailCard({
           {summary}
         </span>
       </summary>
-      {/* Expanded content with connecting line */}
-      <div className={`relative pl-6 mt-3 ${contentClassName ?? ''}`}>
-        {/* Curved connecting line - vertical part from summary */}
-        <div
-          className="absolute left-3 -top-3 w-px h-3"
-          style={{ backgroundColor: 'var(--ds-gray-400)' }}
-        />
-        {/* Curved corner */}
-        <div
-          className="absolute left-3 top-0 w-3 h-3 border-l border-b rounded-bl-lg"
-          style={{ borderColor: 'var(--ds-gray-400)' }}
-        />
-        {/* Horizontal part to content */}
-        <div
-          className="absolute left-6 top-3 w-0 h-px -translate-y-px"
-          style={{ backgroundColor: 'var(--ds-gray-400)' }}
-        />
-        <div>{children}</div>
-      </div>
+      <div className={`mt-2 ${contentClassName ?? ''}`}>{children}</div>
     </details>
   );
 }
