@@ -256,6 +256,12 @@ export function createStreamer(config?: APIConfig): Streamer {
       async get(runId: string, name: string, startIndex?: number) {
         let currentStartIndex = startIndex ?? 0;
 
+        // Cap reconnections to prevent infinite loops if the server
+        // never completes the stream. 50 reconnects at 2-min server
+        // timeout ≈ 100 minutes of streaming, which is generous.
+        const MAX_RECONNECTS = 50;
+        let reconnectCount = 0;
+
         const connect = async (): Promise<
           ReadableStreamDefaultReader<Uint8Array>
         > => {
@@ -286,14 +292,15 @@ export function createStreamer(config?: APIConfig): Streamer {
               let result: { done: boolean; value?: Uint8Array };
               try {
                 result = await reader.read();
-              } catch {
-                // Network error — not a clean close. Forward any buffered data
-                // and propagate the error so consumers can handle it.
+              } catch (err) {
+                // Network error — not a clean close. Forward any buffered
+                // data and propagate the error so consumers know the stream
+                // was truncated.
                 if (tailBuffer.length > 0) {
                   controller.enqueue(tailBuffer);
                   tailBuffer = new Uint8Array(0);
                 }
-                controller.close();
+                controller.error(err);
                 return;
               }
 
@@ -334,6 +341,15 @@ export function createStreamer(config?: APIConfig): Streamer {
                 }
 
                 // Timeout — reconnect from the next chunk index.
+                reconnectCount++;
+                if (reconnectCount > MAX_RECONNECTS) {
+                  controller.error(
+                    new Error(
+                      `Stream exceeded maximum reconnection attempts (${MAX_RECONNECTS})`
+                    )
+                  );
+                  return;
+                }
                 currentStartIndex = control.nextIndex;
                 reader = await connect();
                 continue;

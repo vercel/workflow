@@ -268,7 +268,7 @@ describe('streams.get reconnection (integration)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('closes stream on network error without retrying', async () => {
+  it('propagates network error to consumer without retrying', async () => {
     const data = new TextEncoder().encode('partial');
 
     // Create a stream that errors mid-read
@@ -287,12 +287,11 @@ describe('streams.get reconnection (integration)', () => {
     fetchMock.mockResolvedValueOnce(new Response(errorStream, { status: 200 }));
 
     const streamer = await getStreamer();
-    const result = await drain(
-      await streamer.streams.get('run_test', 'strm_test')
-    );
+    const stream = await streamer.streams.get('run_test', 'strm_test');
 
-    // Should get the partial data that was enqueued before the error
-    // The hold-back buffer may hold some bytes
+    // The error should propagate to the consumer rather than silently closing
+    await expect(drain(stream)).rejects.toThrow('connection reset');
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
     // Should NOT have attempted a second fetch (no reconnection on error)
   });
