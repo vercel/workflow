@@ -414,12 +414,6 @@ export function EntityDetailPanel({
 
           <div className="space-y-4">
             <section>
-              <h3
-                className="mb-2 text-[13px] font-medium uppercase tracking-wide"
-                style={{ color: 'var(--ds-gray-700)' }}
-              >
-                Details
-              </h3>
               <AttributePanel
                 data={displayData}
                 moduleSpecifier={moduleSpecifier}

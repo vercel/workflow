@@ -186,7 +186,11 @@ const TimelineBar = memo(function TimelineBar({
   const fallbackColor = isErrored
     ? (colors.errorBar ?? 'var(--ds-red-700)')
     : colors.bar;
-  const compressedSegmentStatus = isErrored ? 'failed' : finalSegment?.status;
+  const compressedSegmentStatus = isErrored
+    ? 'failed'
+    : span.resource === 'hook'
+      ? 'received'
+      : finalSegment?.status;
   const compressedSegmentStyle =
     compressedSegmentStatus === 'queued'
       ? { background: 'var(--ds-gray-500)' }
@@ -197,6 +201,9 @@ const TimelineBar = memo(function TimelineBar({
     ? SEGMENT_CONFIG[compressedSegmentStatus].className
     : undefined;
 
+  const hasCompressedStatus = Boolean(
+    compressedSegmentClassName || compressedSegmentStyle
+  );
   const barContent = isCompressed ? (
     <div
       className={cn(
@@ -205,7 +212,7 @@ const TimelineBar = memo(function TimelineBar({
       )}
       style={{
         width: '100%',
-        background: compressedSegmentStyle ? undefined : fallbackColor,
+        background: hasCompressedStatus ? undefined : fallbackColor,
         ...compressedSegmentStyle,
       }}
     />
@@ -345,7 +352,7 @@ export function TimelineHeader({
         {markers.map((m, i) => (
           <span
             key={i}
-            className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap -translate-x-1/2"
+            className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap"
             style={{ left: `${m.position * 100}%` }}
           >
             {m.label}

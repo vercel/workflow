@@ -2,7 +2,7 @@
 
 import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import { Copy, Search, X } from 'lucide-react';
+import { Search, X } from 'lucide-react';
 import {
   type ReactNode,
   useCallback,
@@ -19,6 +19,7 @@ import {
 import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
 import type { Trace } from '../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
+import { CopyButton } from './components/copy-button';
 import { SplitPane } from './components/split-pane';
 import EventList from './components/event-list';
 import { Timeline, TimelineHeader } from './components/timeline';
@@ -30,7 +31,7 @@ interface NewTraceViewerProps {
   trace: Trace;
 }
 
-const MAX_ZOOM = 20;
+const MIN_VIEWPORT_MS = 0.001;
 const TIMELINE_PADDING = 16;
 
 interface Viewport {
@@ -228,15 +229,14 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         return;
       }
 
-      const padding = Math.max(spanDuration * 0.2, rootD / MAX_ZOOM / 2);
+      const padding = Math.max(spanDuration * 0.2, MIN_VIEWPORT_MS / 2);
       let newStart = spanStart - padding;
       let newEnd = spanEnd + padding;
 
-      const minViewport = Math.max(10, rootD / MAX_ZOOM);
-      if (newEnd - newStart < minViewport) {
+      if (newEnd - newStart < MIN_VIEWPORT_MS) {
         const center = (spanStart + spanEnd) / 2;
-        newStart = center - minViewport / 2;
-        newEnd = center + minViewport / 2;
+        newStart = center - MIN_VIEWPORT_MS / 2;
+        newEnd = center + MIN_VIEWPORT_MS / 2;
       }
 
       if (newStart < rootS) {
@@ -354,9 +354,8 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         setViewport((prev) => {
           const prevDuration = prev.end - prev.start;
           const cursorTime = prev.start + cursorFraction * prevDuration;
-          const minViewport = Math.max(10, rootD / MAX_ZOOM);
           const newDuration = Math.max(
-            minViewport,
+            MIN_VIEWPORT_MS,
             Math.min(rootD, prevDuration * scaleFactor)
           );
 
@@ -443,13 +442,16 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       >
         <SplitPane
           startHeader={
-            <div className="bg-background-100 border rounded-md border-gray-alpha-400 h-10 min-h-10 flex items-center px-2 gap-1.5">
+            <div className="bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-center px-2 gap-1.5">
               <Search className="w-3.5 h-3.5 shrink-0 text-gray-800" />
               <input
+                id="trace-viewer-search"
+                name="trace-viewer-search"
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search spans..."
+                aria-label="Search spans"
                 className="flex-1 min-w-0 bg-transparent text-sm text-gray-1000 placeholder:text-gray-800 outline-none"
               />
               {searchQuery && (
@@ -529,21 +531,17 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                           selectedResource.slice(1)}
                       </span>
                     )}
-                    <button
-                      type="button"
-                      className="flex items-center gap-1 text-[13px] font-mono text-gray-700 hover:text-gray-1000 transition-colors group truncate"
-                      onClick={() => {
-                        navigator.clipboard.writeText(selectedResourceId);
-                      }}
+                    <div
+                      className="flex items-center gap-1 text-[13px] font-mono text-gray-700 min-w-0"
                       title={selectedResourceId}
                     >
-                      <span className="truncate">
-                        {selectedResourceId.length > 20
-                          ? `${selectedResourceId.slice(0, 8)} ... ${selectedResourceId.slice(-6)}`
-                          : selectedResourceId}
-                      </span>
-                      <Copy className="w-3 h-3 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    </button>
+                      <span className="truncate">{selectedResourceId}</span>
+                      <CopyButton
+                        copyText={selectedResourceId}
+                        ariaLabel="Copy ID"
+                        className="shrink-0"
+                      />
+                    </div>
                   </div>
                 )}
               </div>

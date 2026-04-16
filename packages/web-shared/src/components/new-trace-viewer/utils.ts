@@ -437,7 +437,6 @@ function computeRunSegmentsFromSpan(
   }
 
   const failedEvent = sorted.find((e) => e.name === 'run_failed');
-  const completedEvent = sorted.find((e) => e.name === 'run_completed');
 
   let cursor = 0;
   if (activeStartMs !== undefined && activeStartMs > startMs) {
@@ -452,45 +451,11 @@ function computeRunSegmentsFromSpan(
     }
   }
 
-  if (failedEvent) {
-    const failedFrac = timeToFraction(failedEvent.time, startMs, duration);
-    if (failedFrac > cursor + 0.001) {
-      segments.push({
-        startFraction: cursor,
-        endFraction: failedFrac,
-        status: 'running',
-      });
-    }
-    segments.push({
-      startFraction: failedFrac,
-      endFraction: 1,
-      status: 'failed',
-    });
-  } else if (completedEvent) {
-    const completedFrac = timeToFraction(
-      completedEvent.time,
-      startMs,
-      duration
-    );
-    if (completedFrac > cursor + 0.001) {
-      segments.push({
-        startFraction: cursor,
-        endFraction: completedFrac,
-        status: 'running',
-      });
-    }
-    segments.push({
-      startFraction: completedFrac,
-      endFraction: 1,
-      status: 'succeeded',
-    });
-  } else {
-    segments.push({
-      startFraction: cursor,
-      endFraction: 1,
-      status: 'running',
-    });
-  }
+  segments.push({
+    startFraction: cursor,
+    endFraction: 1,
+    status: failedEvent ? 'failed' : 'running',
+  });
 
   return segments;
 }
@@ -516,21 +481,11 @@ function computeV1RunSegments(
     }
   }
 
-  if (runStatus === 'failed') {
-    segments.push({ startFraction: cursor, endFraction: 1, status: 'failed' });
-  } else if (runStatus === 'completed' || runStatus === 'cancelled') {
-    segments.push({
-      startFraction: cursor,
-      endFraction: 1,
-      status: 'succeeded',
-    });
-  } else {
-    segments.push({
-      startFraction: cursor,
-      endFraction: 1,
-      status: 'running',
-    });
-  }
+  segments.push({
+    startFraction: cursor,
+    endFraction: 1,
+    status: runStatus === 'failed' ? 'failed' : 'running',
+  });
 
   return segments;
 }
