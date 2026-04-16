@@ -28,6 +28,16 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v3
+        with:
+          version: 10.14.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
       - name: Cherry-pick to stable
         id: cherry-pick
         run: |
@@ -45,13 +55,16 @@ jobs:
             git diff --name-only --diff-filter=U | grep '^docs/' | grep -v '^docs/content/' | while IFS= read -r file; do
               echo "Auto-resolving docs conflict (deleting): $file"
               git rm -f -- "$file"
-            done
+            done || true
 
-            # Lockfile conflicts can be resolved by re-running pnpm install.
-            if git diff --name-only --diff-filter=U | grep -q '^pnpm-lock.yaml$'; then
+            # Lockfile conflicts can be resolved by re-running pnpm install,
+            # but only when no other conflicts remain (to avoid pnpm choking
+            # on conflict markers in other files).
+            REMAINING_BEFORE_LOCKFILE=$(git diff --name-only --diff-filter=U | grep -v '^pnpm-lock.yaml$' || true)
+            if [ -z "$REMAINING_BEFORE_LOCKFILE" ] && git diff --name-only --diff-filter=U | grep -q '^pnpm-lock.yaml$'; then
               echo "Auto-resolving pnpm-lock.yaml conflict"
               git checkout --theirs -- pnpm-lock.yaml
-              npx corepack pnpm install --no-frozen-lockfile
+              pnpm install --no-frozen-lockfile
               git add pnpm-lock.yaml
             fi
 
