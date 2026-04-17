@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.1.2
+
+### Patch Changes
+
+- [#1788](https://github.com/vercel/workflow/pull/1788) [`7be05b9`](https://github.com/vercel/workflow/commit/7be05b9253ccde7f50ade103bc31ab12ec114d37) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Revert "Use stream control frame for transparent reconnection"
+
 ## 4.1.1
 
 ### Patch Changes

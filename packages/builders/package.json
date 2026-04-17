@@ -1,6 +1,6 @@
 {
   "name": "@workflow/builders",
-  "version": "4.0.4",
+  "version": "4.0.5",
   "description": "Shared builder infrastructure for Workflow SDK",
   "type": "module",
   "main": "./dist/index.js",

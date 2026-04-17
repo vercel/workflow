@@ -1,5 +1,12 @@
 # @workflow/core
 
+## 4.2.4
+
+### Patch Changes
+
+- Updated dependencies [[`7be05b9`](https://github.com/vercel/workflow/commit/7be05b9253ccde7f50ade103bc31ab12ec114d37)]:
+  - @workflow/world-vercel@4.1.2
+
 ## 4.2.3
 
 ### Patch Changes
