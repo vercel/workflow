@@ -56,11 +56,13 @@ jobs:
             # version (discarding the incoming change from main).
             git diff --name-only --diff-filter=U | grep '^docs/' | grep -v '^docs/content/' | while IFS= read -r file; do
               echo "Auto-resolving docs conflict (keeping stable version): $file"
-              if git ls-files --error-unmatch -- "$file" >/dev/null 2>&1; then
+              # Check for a stage-2 ("ours") entry in the index, which means
+              # the file exists on the stable side of the conflict. Otherwise
+              # the file was newly added on main and we drop it.
+              if git show ":2:$file" >/dev/null 2>&1; then
                 git checkout --ours -- "$file"
                 git add -- "$file"
               else
-                # File doesn't exist on stable; incoming addition from main is dropped.
                 git rm -f -- "$file"
               fi
             done || true
