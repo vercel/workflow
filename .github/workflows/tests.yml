@@ -160,9 +160,7 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10.14.0
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
@@ -601,9 +599,7 @@ jobs:
           target: wasm32-unknown-unknown
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v3
-        with:
-          version: 10.14.0
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4
