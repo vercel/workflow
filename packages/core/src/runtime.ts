@@ -205,6 +205,11 @@ export function workflowEntrypoint(
             // Arm a hard exit deadline so that if the run_failed write hangs
             // (e.g. workflow-server is unresponsive), the process still exits
             // instead of running until the platform's maxDuration SIGTERM.
+            // This _will_ be re-tried by the queue up to max retries, since only run_failed
+            // counts as an early exit + queue ack for the replay.
+            // It's hard to measure whether this is an improvement over going to maxDuration on
+            // a single call, since early-exit causes more request pressure, but a retry might also
+            // aid recovery.
             const exitDeadline = setTimeout(
               () => process.exit(1),
               REPLAY_TIMEOUT_EXIT_DEADLINE_MS
