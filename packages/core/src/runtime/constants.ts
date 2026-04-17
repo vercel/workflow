@@ -26,3 +26,9 @@ export const REPLAY_TIMEOUT_MS = 240_000;
 // handler exits without writing run_failed so the queue retries the message.
 // On the next attempt the run is marked as failed.
 export const REPLAY_TIMEOUT_MAX_RETRIES = 3;
+
+// Hard deadline (in ms) for the process to exit after the replay timeout fires.
+// If the run_failed event write hangs (e.g. workflow-server is unresponsive),
+// this ensures process.exit() is called regardless, preventing the function
+// from running until the platform's maxDuration SIGTERM.
+export const REPLAY_TIMEOUT_EXIT_DEADLINE_MS = 30_000;
