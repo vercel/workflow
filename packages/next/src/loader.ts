@@ -8,12 +8,6 @@ import {
   type SocketMessage,
   serializeMessage,
 } from './socket-server.js';
-import {
-  DEFERRED_STEP_SOURCE_METADATA_PREFIX,
-  isDeferredStepCopyFilePath,
-  parseDeferredStepSourceMetadata,
-  parseInlineSourceMapComment,
-} from './step-copy-utils.js';
 
 type DecoratorOptionsWithConfigPath =
   import('@workflow/builders').DecoratorOptionsWithConfigPath;
@@ -121,7 +115,6 @@ function resolveLoaderStaticDependencies(): LoaderStaticDependencies {
   const files = new Set<string>([
     __filename,
     require.resolve('./socket-server'),
-    require.resolve('./step-copy-utils'),
     swcPluginPath,
     swcPluginBuildHashPath,
     workflowBuildersPath,
@@ -608,15 +601,9 @@ async function getRelativeFilenameForSwc(
   return relativeFilename;
 }
 
-function stripDeferredStepSourceMetadataComment(source: string): string {
-  const metadataPattern = new RegExp(
-    `^\\s*//\\s*${DEFERRED_STEP_SOURCE_METADATA_PREFIX}[A-Za-z0-9+/=]+\\s*\\r?\\n?`
-  );
-  return source.replace(metadataPattern, '');
-}
-
 // This loader applies the "use workflow"/"use step" transform.
-// Deferred step-copy files are transformed in step mode; all other files also use step mode.
+// All files use step mode; the SWC plugin decides per-function whether
+// to emit workflow or step bindings based on the source's directives.
 type WorkflowLoaderContext = {
   resourcePath: string;
   async?: () => (
@@ -639,32 +626,13 @@ export default function workflowLoader(
     const normalizedSource = source.toString();
     const workingDir = process.cwd();
     const swcPluginPath = registerTransformDependencies(this);
-    const isDeferredStepCopyFile = isDeferredStepCopyFilePath(filename);
-    const deferredStepSourceMetadata = isDeferredStepCopyFile
-      ? parseDeferredStepSourceMetadata(normalizedSource)
-      : null;
-    const sourceWithoutDeferredMetadata = isDeferredStepCopyFile
-      ? stripDeferredStepSourceMetadataComment(normalizedSource)
-      : normalizedSource;
-    const deferredSourceMapResult = isDeferredStepCopyFile
-      ? parseInlineSourceMapComment(sourceWithoutDeferredMetadata)
-      : {
-          sourceWithoutMapComment: sourceWithoutDeferredMetadata,
-          sourceMap: null,
-        };
-    const sourceForTransform = deferredSourceMapResult.sourceWithoutMapComment;
-    const discoveryFilePath =
-      deferredStepSourceMetadata?.absolutePath || filename;
-
-    if (deferredStepSourceMetadata?.absolutePath) {
-      // Ensure edits to the original source invalidate deferred step copies.
-      registerFileDependency(this, deferredStepSourceMetadata.absolutePath);
-    }
+    const sourceForTransform = normalizedSource;
 
     const isGeneratedWorkflowFile = await checkGeneratedFile(filename);
-    // Skip generated workflow route files to avoid re-processing them, except
-    // deferred route stubs which must wait for generated route output.
-    if (isGeneratedWorkflowFile && !isDeferredStepCopyFile) {
+    // Skip generated workflow route files to avoid re-processing them.
+    // Deferred route stubs are a special case: wait for the generated route
+    // output to become available before returning.
+    if (isGeneratedWorkflowFile) {
       if (
         process.env.WORKFLOW_NEXT_LAZY_DISCOVERY === '1' &&
         isWorkflowRouteStubSource(normalizedSource)
@@ -689,34 +657,27 @@ export default function workflowLoader(
     const patterns = await detectPatterns(sourceForTransform);
     // Always notify discovery tracking, even for `false/false`, so files that
     // previously had workflow/step usage are removed from the tracked sets.
-    // Deferred step copy files must report using their original source path so
-    // deferred rebuilds can react to source edits outside generated artifacts.
-    if (!isDeferredStepCopyFile || deferredStepSourceMetadata?.absolutePath) {
-      const hasSerde = patterns.hasSerde;
-      const nextPatternState: DiscoveredPatternState = {
-        hasWorkflow: patterns.hasUseWorkflow,
-        hasStep: patterns.hasUseStep,
-        hasSerde,
-      };
-      const { shouldNotify } = updateDiscoveredPatternState(
-        discoveryFilePath,
-        nextPatternState
+    const nextPatternState: DiscoveredPatternState = {
+      hasWorkflow: patterns.hasUseWorkflow,
+      hasStep: patterns.hasUseStep,
+      hasSerde: patterns.hasSerde,
+    };
+    const { shouldNotify } = updateDiscoveredPatternState(
+      filename,
+      nextPatternState
+    );
+    if (shouldNotify) {
+      await notifySocketServer(
+        filename,
+        nextPatternState.hasWorkflow,
+        nextPatternState.hasStep,
+        nextPatternState.hasSerde
       );
-      if (shouldNotify) {
-        await notifySocketServer(
-          discoveryFilePath,
-          nextPatternState.hasWorkflow,
-          nextPatternState.hasStep,
-          nextPatternState.hasSerde
-        );
-      }
     }
 
-    if (!isDeferredStepCopyFile) {
-      // Check if file needs transformation based on patterns and path
-      if (!(await checkShouldTransform(filename, patterns))) {
-        return { code: normalizedSource, map: sourceMap };
-      }
+    // Check if file needs transformation based on patterns and path
+    if (!(await checkShouldTransform(filename, patterns))) {
+      return { code: normalizedSource, map: sourceMap };
     }
 
     const isTypeScript =
@@ -727,9 +688,10 @@ export default function workflowLoader(
 
     // Calculate relative filename for SWC plugin
     // The SWC plugin uses filename to generate workflowId, so it must be relative
-    const relativeFilename =
-      deferredStepSourceMetadata?.relativeFilename ||
-      (await getRelativeFilenameForSwc(filename, workingDir));
+    const relativeFilename = await getRelativeFilenameForSwc(
+      filename,
+      workingDir
+    );
 
     // Get decorator options from tsconfig (cached per working directory)
     const { options: decoratorOptions, configPath } =
@@ -739,10 +701,7 @@ export default function workflowLoader(
     }
 
     // Resolve module specifier for packages (node_modules or workspace packages)
-    const moduleSpecifier = await getModuleSpecifier(
-      deferredStepSourceMetadata?.absolutePath || filename,
-      workingDir
-    );
+    const moduleSpecifier = await getModuleSpecifier(filename, workingDir);
     const mode = 'step';
 
     // Transform with SWC
@@ -775,9 +734,7 @@ export default function workflowLoader(
         },
       },
       minify: false,
-      inputSourceMap: isDeferredStepCopyFile
-        ? deferredSourceMapResult.sourceMap || sourceMap
-        : sourceMap,
+      inputSourceMap: sourceMap,
       sourceMaps: true,
       inlineSourcesContent: true,
     });
