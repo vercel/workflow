@@ -214,9 +214,8 @@ export async function myNewStep() {
             return;
           }
 
-          // The deferred builder no longer copies step sources; it regenerates
-          // manifest.json on every rebuild. Check the manifest for the new
-          // step function name.
+          // The deferred builder regenerates manifest.json on every rebuild.
+          // Check the manifest for the new step function name.
           if (usesDeferredBuilder) {
             const manifestFunctionNames = await readManifestStepFunctionNames();
             expect(manifestFunctionNames).toContain('myNewStep');
