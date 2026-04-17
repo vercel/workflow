@@ -27,10 +27,6 @@ export async function processData(input) {
 function internalHelper(value) {
     return value * 2;
 }
-// This is not used anywhere
-function unusedFunction() {
-    return internalHelper(10);
-}
 // This exported function uses the internal helper
 export function calculate(x) {
     return internalHelper(x);

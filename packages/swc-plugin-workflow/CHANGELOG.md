@@ -1,5 +1,13 @@
 # @workflow/swc-plugin
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1743](https://github.com/vercel/workflow/pull/1743) [`136bd35`](https://github.com/vercel/workflow/commit/136bd35a98a40a5dc55b2fbf838924c0af001ba7) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Preserve original step function names in stack traces by setting `Object.defineProperty(fn, "name", ...)` in the IIFE registration
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
 ## 5.0.0-beta.1
 
 ### Major Changes

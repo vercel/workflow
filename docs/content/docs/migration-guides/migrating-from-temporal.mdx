@@ -27,7 +27,7 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 - Streaming is built in. Durable progress writes go to named streams via `getWritable({ namespace })`, and clients read them directly. No separate WebSocket, SSE, or progress-polling layer to operate.
 - Infrastructure and orchestration live in a single deployment. There is no separate Worker fleet or Temporal Server to run. The runtime, step logic, and orchestration share the app's observability and log aggregation.
 - TypeScript-first developer experience. Workflows and steps live in the same file with plain `await` control flow, `try/catch`, and `Promise.all`.
-- Agent-first tooling. A first-class CLI (`npx workflow`), `@workflow/ai` integration for durable AI agents, and a bundled Claude skill for AI-assisted authoring.
+- Agent-first tooling. A first-class CLI (`npx workflow`), [`@workflow/ai` integration for durable AI agents](/docs/ai), and a bundled Claude skill for AI-assisted authoring.
 - Per-step retry controls. `RetryableError`, `FatalError`, and `maxRetries` live at the step boundary instead of an Activity-level retry policy configured elsewhere.
 
 ## What changes when you leave Temporal
@@ -35,6 +35,8 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 Temporal requires operating a control plane (Temporal Server or Cloud), a Worker fleet, Activity modules wired through `proxyActivities`, and Task Queues. The workflow code is durable; the surrounding infrastructure is substantial.
 
 The Workflow SDK runs on managed infrastructure. Write `"use workflow"` functions that orchestrate `"use step"` functions in the same file, in plain TypeScript. There are no Workers, Task Queues, or separate Activity modules. Durable replay, automatic retries, and event history are handled by the runtime.
+
+Workflow functions must still be deterministic — no `Date.now()`, `Math.random()`, direct network I/O, or wall-clock branches inside `"use workflow"`. Move any such logic into a step, as you do today with Activities.
 
 Migration removes infrastructure and collapses indirection. Business logic stays as regular async TypeScript.
 
@@ -47,10 +49,10 @@ Migration removes infrastructure and collapses indirection. Business logic stays
 | Worker + Task Queue | Managed execution | No worker fleet or polling loop to operate. |
 | Signal | `createHook()` or `createWebhook()` | Use hooks for typed resume signals; webhooks for HTTP callbacks. |
 | Query | `getWritable({ namespace: 'status' })` stream | Durably stream status updates from the workflow. Clients read from the stream instead of polling a database. |
-| Update | `createHook()` + `resumeHook()` | Writes go through hooks. |
+| Update | `createHook()` + `resumeHook()` (one-way) | Temporal Updates return a value to the caller; hooks do not. If the Update returns data, either write the result to a named stream via `getWritable()` and have the caller read from it, or keep an HTTP read route that fetches the workflow's current state. |
 | Child Workflow | `"use step"` wrappers around `start()` / `getRun()` | Spawn from a step and return the `Run` object so observability can deep-link into child runs. |
 | Activity retry policy | Step retries, `RetryableError`, `FatalError`, `maxRetries` | Retries live at the step boundary. |
-| Event History | Workflow event log / run timeline | Same durable replay, fewer surfaces to manage. |
+| Event History | Workflow event log / run timeline | Same durable replay; built-in observability UI replaces Temporal Web. Search attributes and visibility APIs have no direct equivalent — filter by run status and timestamps instead. |
 
 ## Translate your first workflow
 
@@ -60,6 +62,9 @@ Start with the directive change. The Temporal definition proxies activities thro
 
 {/* @skip-typecheck: Temporal SDK types not available */}
 ```typescript title="workflows/order.ts (Temporal)"
+import * as wf from '@temporalio/workflow';
+import type * as activities from './activities';
+
 const { chargePayment } = wf.proxyActivities<typeof activities>({
   startToCloseTimeout: '5 minutes',
 });
@@ -143,6 +148,8 @@ export async function refundWorkflow(refundId: string) {
 
 The workflow suspends durably at `await approval` until resumed. No polling, no handler registration.
 
+Requires TypeScript 5.2+ for the `using` keyword. On older TypeScript, assign the hook to a `const` and call `resumeHook()` from the consuming code path.
+
 ### Resuming from an API route
 
 Any HTTP caller can resume by token:
@@ -201,6 +208,22 @@ Call both steps from the parent in sequence: `const result = await collectResult
 
 <Callout type="warn">
 Activity retry policy moves to the step boundary. Use `maxRetries`, `RetryableError`, and `FatalError` on each step instead of a single workflow-wide retry block.
+
+Temporal's per-activity timeouts (`startToCloseTimeout`, `scheduleToCloseTimeout`, `heartbeatTimeout`) have no direct Workflow SDK equivalent. Enforce per-step deadlines inside the step using `AbortSignal.timeout(ms)` (e.g. on `fetch`), or wrap the call from the workflow in `Promise.race(step(), sleep('5m'))` to bail out after a bounded duration.
+
+Temporal's retry policy knobs (`initialInterval`, `backoffCoefficient`, `maximumInterval`, `nonRetryableErrorTypes`) don't port 1:1 — only `maxRetries` is configurable at the step boundary. Classify retryability with `RetryableError` (retryable) and `FatalError` (terminal) instead of listing error types, and control the delay between attempts with `new RetryableError(msg, { retryAfter: '5s' })`.
+
+Set `maxRetries` as a property assignment on the step function:
+
+```typescript
+async function chargePayment(orderId: string) {
+  "use step";
+  // ...
+}
+chargePayment.maxRetries = 5;
+```
+
+See [/docs/foundations/errors-and-retries](/docs/foundations/errors-and-retries) for full retry docs.
 </Callout>
 
 ## What you stop operating
@@ -250,7 +273,7 @@ export async function processOrder(orderId: string) {
 
 ### Step 4: Replace Signals with hooks
 
-Swap `defineSignal` + `setHandler` for `createHook()`. Callers `resumeHook(token, payload)` instead of `client.workflow.signal(...)`.
+Swap `defineSignal` + `setHandler` for `createHook()`. Callers `resumeHook(token, payload)` instead of `handle.signal(signalDef, payload)` on a `WorkflowHandle` obtained from `client.workflow.getHandle(workflowId)`.
 
 ### Step 5: Start runs from an API route or server action
 
@@ -271,6 +294,14 @@ export async function POST(req: Request) {
 
 Remove the Worker process, `@temporalio/*` dependencies, and the Temporal Server or Cloud connection. Verify the run in the built-in observability UI (`npx workflow web`) before shipping.
 
+## Features without a 1:1 equivalent
+
+- **Search attributes / visibility queries.** Temporal's search attribute system has no direct analog. Filter runs by status and timestamps via `getRun()` / observability UI.
+- **Event history archival.** Temporal archives histories to S3/GCS for long-term retention. Workflow SDK event logs are durable, but retention depends on the integration you are using. For example, see [Vercel Workflow Storage Retention](https://vercel.com/docs/workflows/pricing#storage-retention) for Vercel.
+- **Per-activity timeouts (`startToCloseTimeout`, `scheduleToCloseTimeout`, `heartbeatTimeout`).** Implement deadlines inside the step with `AbortSignal.timeout(ms)`, or wrap the call in `Promise.race(step(), sleep(...))` from the workflow.
+- **Rich retry policy (`initialInterval`, `backoffCoefficient`, `maximumInterval`, `nonRetryableErrorTypes`).** Only `maxRetries` is configurable. Classify retryability with `RetryableError`/`FatalError`; control delay between attempts via `new RetryableError(msg, { retryAfter: '5s' })`.
+- **Workers + task queues.** Managed deployments replace workers; self-hosted deployments still need a `World` implementation (see [/docs/deploying/world](/docs/deploying/world)).
+
 ## Quick-start checklist
 
 - Move orchestration into a `"use workflow"` function.
@@ -282,3 +313,6 @@ Remove the Worker process, `@temporalio/*` dependencies, and the Temporal Server
 - Use `getStepMetadata().stepId` as the idempotency key for external side effects.
 - Stream status and progress from steps with `getWritable({ namespace: 'status' })`, and have clients read from the stream instead of polling.
 - Deploy the app and verify runs end-to-end in the built-in observability UI.
+
+---
+*Verified against `workflow@5.0.0-beta.1` and `@temporalio/workflow@1.16` on 2026-04-16.*

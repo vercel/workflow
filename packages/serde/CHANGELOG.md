@@ -1,5 +1,11 @@
 # @workflow/serde
 
+## 5.0.0-beta.1
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
 ## 5.0.0-beta.0
 
 ### Major Changes

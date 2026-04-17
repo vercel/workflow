@@ -36,7 +36,6 @@ struct TransformOutput {
 struct BatchOutput {
     workflow: TransformOutput,
     step: TransformOutput,
-    client: TransformOutput,
 }
 
 /// Custom emitter that silently consumes diagnostics.
@@ -150,12 +149,12 @@ pub fn transform(source: &str, config_json: &str) -> String {
     serde_json::to_string(&output).unwrap()
 }
 
-/// Transform source code in all three modes at once (workflow, step, client).
+/// Transform source code in both modes at once (workflow, step).
 ///
 /// `config_json` should be a JSON string like:
 /// `{"moduleSpecifier": "my-package@1.0.0", "filename": "input.ts"}`
 ///
-/// Returns a JSON string with `{"workflow": {...}, "step": {...}, "client": {...}}`.
+/// Returns a JSON string with `{"workflow": {...}, "step": {...}}`.
 #[wasm_bindgen(js_name = "transformAll")]
 pub fn transform_all(source: &str, config_json: &str) -> String {
     #[derive(Deserialize)]
@@ -176,19 +175,14 @@ pub fn transform_all(source: &str, config_json: &str) -> String {
             };
             let output = BatchOutput {
                 workflow: error_output.clone(),
-                step: error_output.clone(),
-                client: error_output,
+                step: error_output,
             };
             return serde_json::to_string(&output).unwrap();
         }
     };
 
-    let modes = [
-        TransformMode::Workflow,
-        TransformMode::Step,
-        TransformMode::Client,
-    ];
-    let mut results = Vec::with_capacity(3);
+    let modes = [TransformMode::Workflow, TransformMode::Step];
+    let mut results = Vec::with_capacity(2);
 
     for mode in &modes {
         let config = TransformConfig {
@@ -202,7 +196,6 @@ pub fn transform_all(source: &str, config_json: &str) -> String {
     let output = BatchOutput {
         workflow: results.remove(0),
         step: results.remove(0),
-        client: results.remove(0),
     };
 
     serde_json::to_string(&output).unwrap()

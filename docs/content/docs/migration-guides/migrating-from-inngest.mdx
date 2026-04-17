@@ -1,6 +1,6 @@
 ---
 title: Migrating from Inngest
-description: Move an Inngest TypeScript app to the Workflow SDK by replacing createFunction, step.run(), step.sleep(), step.waitForEvent(), and step.invoke() with Workflows, Steps, Hooks, and start()/getRun().
+description: Move an Inngest TypeScript SDK v3 or v4 app to the Workflow SDK by replacing createFunction, step.run(), step.sleep(), step.waitForEvent(), and step.invoke() with Workflows, Steps, Hooks, and start()/getRun().
 type: guide
 summary: Translate an Inngest app into the Workflow SDK with side-by-side code examples.
 prerequisites:
@@ -29,6 +29,8 @@ npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-
 - TypeScript-first DX. Steps are named async functions marked with `"use step"`. No inline closures tied to a framework-specific lifecycle.
 - Agent-first tooling: the `npx workflow` CLI, `@workflow/ai` integration for durable AI agents, and a Claude skill for generating workflows.
 
+Inngest code samples in this guide use the v4 two-argument `createFunction({ id, triggers }, handler)` shape. If the app is still on Inngest v3, treat the three-argument form `createFunction({ id }, { event: '...' }, handler)` as equivalent — the `triggers` option in v4 replaces the second argument in v3.
+
 ## What changes when you leave Inngest
 
 Inngest defines functions with `inngest.createFunction()`, registers them through a `serve()` handler, and breaks work into steps with `step.run()`, `step.sleep()`, and `step.waitForEvent()`. The platform routes events, schedules steps, and applies retries.
@@ -37,13 +39,17 @@ The Workflow SDK replaces that with `"use workflow"` functions that orchestrate 
 
 Migration collapses the SDK abstraction into plain async functions. Business logic stays the same.
 
+<Callout type="info">
+Inngest's event-bus model is loosely coupled — publishers don't know consumers. `start()` requires the caller to import the workflow function directly, giving stronger type safety but tighter coupling. For event-bus-like fan-out, wrap `start()` in a shared publisher module.
+</Callout>
+
 ## Concept mapping
 
 | Inngest | Workflow SDK | Migration note |
 | --- | --- | --- |
 | `inngest.createFunction()` | `"use workflow"` function started with `start()` | No wrapper needed. |
 | `step.run()` | `"use step"` function | Standalone async function with Node.js access. |
-| `step.sleep()` / `step.sleepUntil()` | `sleep()` | Import from `workflow`. |
+| `step.sleep()` / `step.sleepUntil()` | `sleep()` | `sleep('5m')` for a duration; `sleep(date)` for sleep-until. |
 | `step.waitForEvent()` | `createHook()` or `createWebhook()` | Hooks for typed signals, webhooks for HTTP. |
 | `step.invoke()` | `"use step"` wrappers around `start()` / `getRun()` | Spawn a child run, pass `runId` forward. |
 | `inngest.send()` / event triggers | `start()` from your app boundary | Start workflows directly. |
@@ -60,7 +66,7 @@ Start with the shell of a function. Inngest wraps it in `createFunction`; Workfl
 export const processOrder = inngest.createFunction(
   {
     id: 'process-order',
-    triggers: [{ event: 'order/created' }],
+    triggers: { event: 'order/created' },
   },
   async ({ event, step }) => {
     return { orderId: event.data.orderId, status: 'completed' };
@@ -165,6 +171,8 @@ Event matching disappears. A hook's token encodes the routing (for example, `ref
 
 `step.invoke()` splits into two steps: spawn and collect. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Return the `Run` object from the spawn step so observability can deep-link into the child run.
 
+You can return either the full `Run` object (enables deep-linking) or just `run.runId` (simpler).
+
 {/* @skip-typecheck: snippet without imports */}
 ```typescript title="workflow/workflows/parent.ts"
 async function spawnChild(item: string) {
@@ -206,7 +214,7 @@ Pick one Inngest function and migrate it end-to-end before touching the rest. Th
 
 ### Step 1: Install the Workflow SDK
 
-Add the runtime and the framework integration that matches the app.
+Install the SDK. Framework integrations (`workflow/next`, `workflow/nitro`, `workflow/nuxt`, etc.) are subpath exports of the same `workflow` package — no additional install needed.
 
 ```bash
 pnpm add workflow
@@ -219,7 +227,7 @@ Replace the factory call with a plain async export. Move the handler body up. Th
 ```ts title="workflows/order.ts"
 // Before (Inngest)
 // export const processOrder = inngest.createFunction(
-//   { id: "process-order", triggers: [{ event: "order.created" }] },
+//   { id: "process-order", triggers: { event: "order/created" } },
 //   async ({ event, step }) => { ... }
 // );
 
@@ -237,9 +245,22 @@ Each inline callback becomes a named function with `"use step"` on the first lin
 ```ts
 async function loadOrder(id: string) {
   "use step"; // [!code highlight]
-  return fetch(`/api/orders/${id}`).then((r) => r.json());
+  return fetch(`https://example.com/api/orders/${id}`).then((r) => r.json());
 }
 ```
+
+Configure per-step retry counts by assigning `maxRetries` as a function property:
+
+```ts
+async function callApi(endpoint: string) {
+  "use step";
+  const response = await fetch(endpoint);
+  return response.json();
+}
+callApi.maxRetries = 5;
+```
+
+See [Errors and retries](/docs/foundations/errors-and-retries) for full retry docs.
 
 ### Step 4: Replace `waitForEvent`, `sleep`, and `invoke`
 
@@ -266,6 +287,13 @@ export async function POST(req: Request) {
 
 Remove the `inngest` client, the `serve()` route, event schemas, and the Inngest Dev Server from the app. Verify the run in `npx workflow web` before shipping.
 
+## Features without a 1:1 equivalent
+
+- **Cron / scheduled functions (`triggers: { cron: '...' }`).** The SDK has no built-in scheduler. Trigger runs from Vercel Cron or a system cron calling `start()` from an API route.
+- **Concurrency, throttling, rate limiting, debounce, singleton, priority, and `batchEvents`.** These function-level settings have no direct analog. Enforce limits inside steps (semaphores, external rate-limiter service) or debounce at the publisher before calling `start()`.
+- **`EventSchemas` / typed events.** The event-bus indirection goes away; publishers import the workflow function directly, giving the same type safety through a different mechanism.
+- **Event-bus fan-out by name match.** `inngest.send()` that triggered multiple functions by event name must be replaced by explicit `start()` calls for each target workflow.
+
 ## Quick-start checklist
 
 - Replace `inngest.createFunction()` with a `"use workflow"` function; launch it with `start()`.
@@ -280,3 +308,7 @@ Remove the `inngest` client, the `serve()` route, event schemas, and the Inngest
 - Use `getStepMetadata().stepId` as the idempotency key for external side effects.
 - Replace `step.realtime.publish()` with `getWritable()`.
 - Deploy and verify end-to-end with the built-in observability UI.
+
+---
+
+*Verified against `workflow@5.0.0-beta.1` and Inngest TypeScript SDK v4 on 2026-04-16.*

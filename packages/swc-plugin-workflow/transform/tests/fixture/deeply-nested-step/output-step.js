@@ -17,9 +17,7 @@ export const config = createConfig({
     level1: {
         level2: {
             level3: {
-                myStep: async (input)=>{
-                    return input * 2;
-                }
+                myStep: config$level1$level2$level3$myStep
             }
         }
     }

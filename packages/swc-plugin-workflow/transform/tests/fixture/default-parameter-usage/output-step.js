@@ -7,7 +7,7 @@ async function defaultDownload(request) {
 }
 // This function uses createDefaultDownloadFunction in a default parameter value
 // DCE must NOT remove createDefaultDownloadFunction
-async function convertToLanguageModelPrompt({ prompt, supportedUrls, download = createDefaultDownloadFunction() }) {
+export async function convertToLanguageModelPrompt({ prompt, supportedUrls, download = createDefaultDownloadFunction() }) {
     return {
         prompt,
         supportedUrls,

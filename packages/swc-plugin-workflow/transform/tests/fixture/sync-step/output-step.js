@@ -39,9 +39,7 @@ export const syncArrow = ()=>{
     });
 })(syncArrow, "step//./input//syncArrow");
 export const obj = {
-    syncMethod () {
-        return true;
-    }
+    syncMethod: obj$syncMethod
 };
 // Async steps still work as before
 export async function asyncStep(a, b) {
