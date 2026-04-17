@@ -27,7 +27,7 @@ jobs:
           target: wasm32-unknown-unknown
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@v5
 
       - name: Setup Node.js 22.x
         uses: actions/setup-node@v4

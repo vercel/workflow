@@ -33,7 +33,7 @@ runs:
         toolchain: stable
 
     - name: Setup pnpm
-      uses: pnpm/action-setup@v6
+      uses: pnpm/action-setup@v5
 
     - name: Setup Node.js ${{ inputs.node-version }}
       uses: actions/setup-node@v4
