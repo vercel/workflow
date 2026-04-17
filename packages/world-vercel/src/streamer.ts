@@ -23,66 +23,6 @@ export const MAX_CHUNKS_PER_REQUEST = 1000;
 // (partial writes, long-lived reads), and duplex streams are incompatible
 // with undici's experimental H2 support.
 
-/**
- * Stream control frame constants, mirroring workflow-server's format.
- *
- * Control frame (13 bytes):
- *   [0-3]  Zero-frame marker (0x00 0x00 0x00 0x00)
- *   [4]    Flags — bit 0: done (1 = complete, 0 = timeout/reconnect)
- *   [5-8]  nextIndex — big-endian uint32, chunk index to resume from
- *   [9-12] Magic footer — "WFCT" (0x57 0x46 0x43 0x54)
- */
-export const STREAM_CONTROL_FRAME_SIZE = 13;
-const STREAM_CONTROL_MAGIC = new Uint8Array([0x57, 0x46, 0x43, 0x54]);
-
-export interface StreamControlFrame {
-  done: boolean;
-  nextIndex: number;
-}
-
-/**
- * Try to parse a stream control frame from the tail of a buffer.
- * Returns the parsed frame and the byte length of the control data,
- * or null if no valid control frame is present.
- */
-export function parseStreamControlFrame(
-  buffer: Uint8Array
-): (StreamControlFrame & { totalLength: number }) | null {
-  if (buffer.length < STREAM_CONTROL_FRAME_SIZE) return null;
-
-  const offset = buffer.length - STREAM_CONTROL_FRAME_SIZE;
-
-  // Check zero-frame marker (bytes 0-3 must be 0x00)
-  if (
-    buffer[offset] !== 0 ||
-    buffer[offset + 1] !== 0 ||
-    buffer[offset + 2] !== 0 ||
-    buffer[offset + 3] !== 0
-  ) {
-    return null;
-  }
-
-  // Check magic footer at bytes 9-12
-  if (
-    buffer[offset + 9] !== STREAM_CONTROL_MAGIC[0] ||
-    buffer[offset + 10] !== STREAM_CONTROL_MAGIC[1] ||
-    buffer[offset + 11] !== STREAM_CONTROL_MAGIC[2] ||
-    buffer[offset + 12] !== STREAM_CONTROL_MAGIC[3]
-  ) {
-    return null;
-  }
-
-  const flags = buffer[offset + 4];
-  const view = new DataView(buffer.buffer, buffer.byteOffset + offset + 5, 4);
-  const nextIndex = view.getUint32(0, false);
-
-  return {
-    done: (flags & 1) === 1,
-    nextIndex,
-    totalLength: STREAM_CONTROL_FRAME_SIZE,
-  };
-}
-
 function getStreamUrl(
   name: string,
   runId: string | undefined,
@@ -248,90 +188,21 @@ export function createStreamer(config?: APIConfig): Streamer {
     },
 
     async readFromStream(name: string, startIndex?: number) {
-      let currentStartIndex = startIndex ?? 0;
-
-      // Cap reconnections to prevent infinite loops if the server
-      // never completes the stream. 50 reconnects at 2-min server
-      // timeout ≈ 100 minutes of streaming.
-      const MAX_RECONNECTS = 50;
-      let reconnectCount = 0;
-
-      const connect = async (): Promise<Response> => {
-        const httpConfig = await getHttpConfig(config);
-        // Use v3 to receive the stream control frame for reconnection.
-        const url = new URL(
-          `${httpConfig.baseUrl}/v3/stream/${encodeURIComponent(name)}`
-        );
-        url.searchParams.set('startIndex', String(currentStartIndex));
-        const response = await fetch(url, {
-          headers: httpConfig.headers,
-        });
-        if (!response.ok) {
-          throw new Error(`Failed to fetch stream: ${response.status}`);
-        }
-        if (!response.body) {
-          throw new Error('No response body for stream');
-        }
-        return response;
-      };
-
-      // Read the entire response as bytes, then strip any trailing
-      // control frame. This avoids the complexity of hold-back buffering
-      // inside a ReadableStream pull loop, which interacts poorly with
-      // the proxy and byte-stream wrappers in production.
-      const readFull = async (): Promise<{
-        data: Uint8Array;
-        control: (StreamControlFrame & { totalLength: number }) | null;
-      }> => {
-        const response = await connect();
-        const buffer = new Uint8Array(await response.arrayBuffer());
-        const control = parseStreamControlFrame(buffer);
-        if (control) {
-          const dataLen = buffer.length - control.totalLength;
-          return {
-            data: dataLen > 0 ? buffer.subarray(0, dataLen) : new Uint8Array(0),
-            control,
-          };
-        }
-        return { data: buffer, control: null };
-      };
-
-      // Collect all data, transparently reconnecting on server timeout.
-      const parts: Uint8Array[] = [];
-      for (;;) {
-        const { data, control } = await readFull();
-        if (data.length > 0) {
-          parts.push(data);
-        }
-
-        if (!control || control.done) {
-          // Stream complete or no control frame (older server).
-          break;
-        }
-
-        // Timeout — reconnect from the next chunk index.
-        reconnectCount++;
-        if (reconnectCount > MAX_RECONNECTS) {
-          throw new Error(
-            `Stream exceeded maximum reconnection attempts (${MAX_RECONNECTS})`
-          );
-        }
-        currentStartIndex = control.nextIndex;
+      const httpConfig = await getHttpConfig(config);
+      const url = getStreamUrl(name, undefined, httpConfig);
+      if (typeof startIndex === 'number') {
+        url.searchParams.set('startIndex', String(startIndex));
       }
-
-      // Return a ReadableStream that emits the collected data.
-      let emitted = false;
-      return new ReadableStream<Uint8Array>({
-        pull(controller) {
-          if (!emitted) {
-            emitted = true;
-            for (const part of parts) {
-              controller.enqueue(part);
-            }
-          }
-          controller.close();
-        },
+      const response = await fetch(url, {
+        headers: httpConfig.headers,
       });
+      if (!response.ok) {
+        throw new Error(`Failed to fetch stream: ${response.status}`);
+      }
+      if (!response.body) {
+        throw new Error('No response body for stream');
+      }
+      return response.body as ReadableStream<Uint8Array>;
     },
 
     async getStreamChunks(
