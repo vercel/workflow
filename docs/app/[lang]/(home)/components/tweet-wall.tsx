@@ -21,7 +21,7 @@ const TWEETS: Tweet[] = [
     tweet: (
       <>
         <span>
-          Resend + <InlineLink>@vercel</InlineLink> Workflow Dev Kit
+          Resend + <InlineLink>@vercel</InlineLink> Workflow SDK
         </span>
         <span>A match made in heaven</span>
       </>
@@ -78,7 +78,7 @@ const TWEETS: Tweet[] = [
         <span>
           Built a complete end-to-end workflow with{' '}
           <InlineLink>@ampcode</InlineLink> using{' '}
-          <InlineLink>@WorkflowDevKit</InlineLink> and{' '}
+          <InlineLink>@WorkflowSDK</InlineLink> and{' '}
           <InlineLink>@vercel</InlineLink> AI Gateway
         </span>
         <span>

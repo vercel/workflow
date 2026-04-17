@@ -26,6 +26,10 @@ export var syncFnExpr = function process(data) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "syncFnExpr",
+        configurable: true
+    });
 })(syncFnExpr, "step//./input//syncFnExpr");
 // Sync function expression with let
 export let syncFnExprLet = function transform(input) {
@@ -35,16 +39,28 @@ export let syncFnExprLet = function transform(input) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "syncFnExprLet",
+        configurable: true
+    });
 })(syncFnExprLet, "step//./input//syncFnExprLet");
 (function(__wf_fn, __wf_id) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "getConfig",
+        configurable: true
+    });
 })(Service.getConfig, "step//./input//Service.getConfig");
 (function(__wf_fn, __wf_id) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "fetchData",
+        configurable: true
+    });
 })(Service.fetchData, "step//./input//Service.fetchData");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());

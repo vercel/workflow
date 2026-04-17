@@ -818,30 +818,6 @@ export async function getNextBuilderDeferred() {
       }
     }
 
-    /**
-     * Check if a file belongs to a package (has a package.json ancestor
-     * with a name field that isn't the project root). This catches workspace
-     * packages that getImportPath doesn't detect as packages (e.g.
-     * transitive workspace dependencies under strict package managers).
-     */
-    private isFileInsidePackage(filePath: string): boolean {
-      const projectRoot = resolve(this.config.workingDir);
-      let dir = dirname(filePath);
-      while (dir !== dirname(dir)) {
-        if (resolve(dir) === projectRoot) return false;
-        try {
-          const pkgPath = join(dir, 'package.json');
-          const content = require('node:fs').readFileSync(pkgPath, 'utf-8');
-          const pkg = JSON.parse(content);
-          if (typeof pkg.name === 'string') return true;
-        } catch {
-          // No package.json here, keep walking up
-        }
-        dir = dirname(dir);
-      }
-      return false;
-    }
-
     private getManifestStepResolveBaseDirs(): string[] {
       if (this.manifestStepResolveBaseDirs) {
         return this.manifestStepResolveBaseDirs;
@@ -2152,35 +2128,14 @@ export async function getNextBuilderDeferred() {
       // Copy all discovered step sources so they are transformed in step mode.
       // Importing raw node_modules files directly can bypass loader transforms,
       // which prevents step registrars from being emitted.
-      //
-      // Exception: package files that are also serde files (define classes with
-      // WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE) must NOT be copied — copying
-      // creates a duplicate class with JS native private field (#) brand
-      // checks. These files are imported directly in the step route instead;
-      // the loader transforms them in step mode because it detects their
-      // step/serde patterns.
-      const allStepSourceFiles = Array.from(
+      const copiedStepSourceFiles = Array.from(
         new Set([
           ...stepFilesWithManifestSources,
           ...manifestDiscoveredStepFiles,
         ])
       ).sort();
-      const serdeFileSet = new Set(serdeFiles);
-      const filesToCopy: string[] = [];
-      const packageSerdeFiles: string[] = [];
-      for (const file of allStepSourceFiles) {
-        const normalized = this.normalizeDiscoveredFilePath(file);
-        if (
-          serdeFileSet.has(normalized) &&
-          this.isFileInsidePackage(normalized)
-        ) {
-          packageSerdeFiles.push(normalized);
-        } else {
-          filesToCopy.push(file);
-        }
-      }
       const copiedDiscoveredStepFiles = await this.copyDiscoveredStepFiles({
-        stepFiles: filesToCopy,
+        stepFiles: copiedStepSourceFiles,
         stepsRouteDir,
         preserveFileNames: [basename(responseBuiltinsStepFilePath)],
       });
@@ -2195,17 +2150,6 @@ export async function getNextBuilderDeferred() {
           const importSpecifier = this.getRelativeImportSpecifier(
             stepRouteFile,
             copiedStepFile
-          );
-          return `import '${importSpecifier}';`;
-        })
-        .join('\n');
-      // Import package serde+step files directly (not copied) — the loader
-      // will transform them in step mode because it detects their patterns.
-      const packageSerdeImports = packageSerdeFiles
-        .map((file) => {
-          const importSpecifier = this.getRelativeImportSpecifier(
-            stepRouteFile,
-            file
           );
           return `import '${importSpecifier}';`;
         })
@@ -2233,9 +2177,6 @@ export async function getNextBuilderDeferred() {
         '// biome-ignore-all lint: generated file',
         '/* eslint-disable */',
         copiedStepImports,
-        packageSerdeImports
-          ? `// Package serde+step files (imported directly, transformed in step mode by loader)\n${packageSerdeImports}`
-          : '',
         serdeImports
           ? `// Serde files for cross-context class registration\n${serdeImports}`
           : '',

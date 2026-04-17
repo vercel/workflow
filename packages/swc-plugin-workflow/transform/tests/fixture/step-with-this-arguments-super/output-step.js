@@ -7,6 +7,10 @@ export async function stepWithThis() {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "stepWithThis",
+        configurable: true
+    });
 })(stepWithThis, "step//./input//stepWithThis");
 export async function stepWithArguments() {
     // `arguments` is allowed in step functions
@@ -16,6 +20,10 @@ export async function stepWithArguments() {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "stepWithArguments",
+        configurable: true
+    });
 })(stepWithArguments, "step//./input//stepWithArguments");
 class TestClass extends BaseClass {
     async stepMethod() {
@@ -27,6 +35,10 @@ class TestClass extends BaseClass {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "stepMethod",
+        configurable: true
+    });
 })(TestClass.prototype["stepMethod"], "step//./input//TestClass#stepMethod");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());

@@ -14,6 +14,10 @@ var mockModel$_anonymousStep0 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "mockModel$_anonymousStep0",
+        configurable: true
+    });
 })(mockModel$_anonymousStep0, "step//./input//mockModel/_anonymousStep0");
 var xai$_anonymousStep1 = async ()=>{
     const { args } = function() {
@@ -27,6 +31,10 @@ var xai$_anonymousStep1 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "xai$_anonymousStep1",
+        configurable: true
+    });
 })(xai$_anonymousStep1, "step//./input//xai/_anonymousStep1");
 var mockModelWrapped$_anonymousStep2 = async ()=>{
     const { args } = function() {
@@ -40,6 +48,10 @@ var mockModelWrapped$_anonymousStep2 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "mockModelWrapped$_anonymousStep2",
+        configurable: true
+    });
 })(mockModelWrapped$_anonymousStep2, "step//./input//mockModelWrapped/_anonymousStep2");
 var configuredStep$_anonymousStep3 = async ()=>{
     const { url } = function() {
@@ -56,6 +68,10 @@ var configuredStep$_anonymousStep3 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "configuredStep$_anonymousStep3",
+        configurable: true
+    });
 })(configuredStep$_anonymousStep3, "step//./input//configuredStep/_anonymousStep3");
 var withOptionalChaining$_anonymousStep4 = async ()=>{
     const { client } = function() {
@@ -69,6 +85,10 @@ var withOptionalChaining$_anonymousStep4 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withOptionalChaining$_anonymousStep4",
+        configurable: true
+    });
 })(withOptionalChaining$_anonymousStep4, "step//./input//withOptionalChaining/_anonymousStep4");
 var withSequenceExpr$_anonymousStep5 = async ()=>{
     const { a, b } = function() {
@@ -82,6 +102,10 @@ var withSequenceExpr$_anonymousStep5 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withSequenceExpr$_anonymousStep5",
+        configurable: true
+    });
 })(withSequenceExpr$_anonymousStep5, "step//./input//withSequenceExpr/_anonymousStep5");
 var withTryCatch$_anonymousStep6 = async ()=>{
     const { fallback, fn } = function() {
@@ -99,6 +123,10 @@ var withTryCatch$_anonymousStep6 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withTryCatch$_anonymousStep6",
+        configurable: true
+    });
 })(withTryCatch$_anonymousStep6, "step//./input//withTryCatch/_anonymousStep6");
 var withThrow$_anonymousStep7 = async ()=>{
     const { message } = function() {
@@ -112,6 +140,10 @@ var withThrow$_anonymousStep7 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withThrow$_anonymousStep7",
+        configurable: true
+    });
 })(withThrow$_anonymousStep7, "step//./input//withThrow/_anonymousStep7");
 var withSwitch$_anonymousStep8 = async ()=>{
     const { a, b, mode } = function() {
@@ -130,6 +162,10 @@ var withSwitch$_anonymousStep8 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withSwitch$_anonymousStep8",
+        configurable: true
+    });
 })(withSwitch$_anonymousStep8, "step//./input//withSwitch/_anonymousStep8");
 var withForOf$_anonymousStep9 = async ()=>{
     const { items, transform } = function() {
@@ -147,6 +183,10 @@ var withForOf$_anonymousStep9 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withForOf$_anonymousStep9",
+        configurable: true
+    });
 })(withForOf$_anonymousStep9, "step//./input//withForOf/_anonymousStep9");
 var withForIn$_anonymousStep10 = async ()=>{
     const { obj } = function() {
@@ -164,6 +204,10 @@ var withForIn$_anonymousStep10 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withForIn$_anonymousStep10",
+        configurable: true
+    });
 })(withForIn$_anonymousStep10, "step//./input//withForIn/_anonymousStep10");
 var withDoWhile$_anonymousStep11 = async ()=>{
     const { getNext } = function() {
@@ -183,6 +227,10 @@ var withDoWhile$_anonymousStep11 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withDoWhile$_anonymousStep11",
+        configurable: true
+    });
 })(withDoWhile$_anonymousStep11, "step//./input//withDoWhile/_anonymousStep11");
 var withShorthandProps$_anonymousStep12 = async ()=>{
     const { name, value } = function() {
@@ -200,6 +248,10 @@ var withShorthandProps$_anonymousStep12 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withShorthandProps$_anonymousStep12",
+        configurable: true
+    });
 })(withShorthandProps$_anonymousStep12, "step//./input//withShorthandProps/_anonymousStep12");
 var withComputedKey$_anonymousStep13 = async ()=>{
     const { key, value } = function() {
@@ -215,6 +267,10 @@ var withComputedKey$_anonymousStep13 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withComputedKey$_anonymousStep13",
+        configurable: true
+    });
 })(withComputedKey$_anonymousStep13, "step//./input//withComputedKey/_anonymousStep13");
 var mockTextModel$_anonymousStep14 = async ()=>{
     const { text } = function() {
@@ -242,6 +298,10 @@ var mockTextModel$_anonymousStep14 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "mockTextModel$_anonymousStep14",
+        configurable: true
+    });
 })(mockTextModel$_anonymousStep14, "step//./input//mockTextModel/_anonymousStep14");
 var withClassExpr$_anonymousStep15 = async ()=>{
     const { baseUrl } = function() {
@@ -259,6 +319,10 @@ var withClassExpr$_anonymousStep15 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withClassExpr$_anonymousStep15",
+        configurable: true
+    });
 })(withClassExpr$_anonymousStep15, "step//./input//withClassExpr/_anonymousStep15");
 var withClassSuper$_anonymousStep16 = async ()=>{
     const { Base } = function() {
@@ -276,6 +340,10 @@ var withClassSuper$_anonymousStep16 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withClassSuper$_anonymousStep16",
+        configurable: true
+    });
 })(withClassSuper$_anonymousStep16, "step//./input//withClassSuper/_anonymousStep16");
 var withClassProp$_anonymousStep17 = async ()=>{
     const { defaultValue } = function() {
@@ -291,6 +359,10 @@ var withClassProp$_anonymousStep17 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withClassProp$_anonymousStep17",
+        configurable: true
+    });
 })(withClassProp$_anonymousStep17, "step//./input//withClassProp/_anonymousStep17");
 // Bug 1: `new` expressions should have their arguments captured as closure vars
 export function mockModel(...args) {

@@ -195,12 +195,12 @@ This test server acts as a stand-in consumer app. Point your test runner at it t
 Use a dedicated Vitest config for integration tests that run against the Workflow SDK runtime:
 
 ```typescript lineNumbers
-// vitest.workflowdevkit.config.ts
+// vitest.workflowsdk.config.ts
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["tests/integration/**/*.workflowdevkit.test.ts"],
+    include: ["tests/integration/**/*.workflowsdk.test.ts"],
     testTimeout: 120_000, // Workflows may take time to complete
     setupFiles: ["./tests/setup.ts"],
   },
@@ -214,7 +214,7 @@ Run these tests separately from your unit tests:
 pnpm vitest run tests/unit
 
 # Integration tests (requires workflow runtime)
-pnpm vitest run --config vitest.workflowdevkit.config.ts
+pnpm vitest run --config vitest.workflowsdk.config.ts
 ```
 
 ### What to Test

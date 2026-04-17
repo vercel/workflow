@@ -3,7 +3,6 @@ import { readFile } from 'node:fs/promises';
 import { connect, type Socket } from 'node:net';
 import { dirname, join, relative } from 'node:path';
 import { transform } from '@swc/core';
-
 import {
   parseMessage,
   type SocketMessage,
@@ -617,7 +616,7 @@ function stripDeferredStepSourceMetadataComment(source: string): string {
 }
 
 // This loader applies the "use workflow"/"use step" transform.
-// Deferred step-copy files are transformed in step mode; all other files use client mode.
+// Deferred step-copy files are transformed in step mode; all other files also use step mode.
 type WorkflowLoaderContext = {
   resourcePath: string;
   async?: () => (
@@ -744,15 +743,8 @@ export default function workflowLoader(
       deferredStepSourceMetadata?.absolutePath || filename,
       workingDir
     );
-    // Use step mode for files that have step directives or serde patterns.
-    // This ensures step functions are registered in the global step registry
-    // even when the file is imported directly (not via a deferred step copy).
-    // Step mode is a superset of client mode — the only addition is the step
-    // registry IIFEs, which are harmless side effects for non-step consumers.
-    const mode =
-      isDeferredStepCopyFile || patterns.hasUseStep || patterns.hasSerde
-        ? 'step'
-        : 'client';
+    const mode = 'step';
+
     // Transform with SWC
     const result = await transform(sourceForTransform, {
       filename: relativeFilename,

@@ -11,8 +11,10 @@ import {
   hydrateResourceIO as hydrateResourceIOGeneric,
   isEncryptedData,
   isExpiredStub,
+  isRunRef,
   observabilityRevivers,
   type Revivers,
+  serializedInstanceToRef,
 } from '@workflow/core/serialization-format';
 import { EVENT_DATA_REF_FIELDS } from '@workflow/world';
 
@@ -24,11 +26,15 @@ export {
   extractStreamIds,
   isClassInstanceRef,
   isEncryptedData,
+  isRunRef,
   isStreamId,
   isStreamRef,
   type Revivers,
+  RUN_REF_TYPE,
+  type RunRef,
   STREAM_REF_TYPE,
   type StreamRef,
+  serializedInstanceToRef,
   truncateId,
 } from '@workflow/core/serialization-format';
 
@@ -137,6 +143,11 @@ export function getWebRevivers(): Revivers {
     // react-inspector shows the class name (it reads constructor.name).
     Class: (value) => `<class:${extractClassName(value.classId)}>`,
     Instance: (value) => {
+      // Run instances are rendered as clickable RunRef badges
+      const runRef = serializedInstanceToRef(value);
+      if (isRunRef(runRef)) {
+        return runRef;
+      }
       const className = extractClassName(value.classId);
       const data = value.data;
       const props =

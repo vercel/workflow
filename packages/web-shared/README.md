@@ -1,6 +1,6 @@
 # @workflow/web-shared
 
-Workflow Observability UI primitives. See [Workflow SDK](https://useworkflow.dev/docs/observability) for more information.
+Workflow Observability UI primitives. See [Workflow SDK](https://workflow-sdk.dev/docs/observability) for more information.
 
 ## Usage
 

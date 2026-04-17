@@ -1,9 +1,9 @@
 ---
 name: migrating-to-workflow-sdk
-description: Migrates Temporal, Inngest, and AWS Step Functions workflows to the Workflow SDK. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows.
+description: Migrates Temporal, Inngest, Trigger.dev, and AWS Step Functions workflows to the Workflow SDK. Use when porting Activities, Workers, Signals, step.run(), step.waitForEvent(), Trigger.dev tasks / wait.forToken / triggerAndWait, ASL JSON state machines, Task/Choice/Wait/Parallel states, task tokens, or child workflows.
 metadata:
   author: Vercel Inc.
-  version: '0.1.9'
+  version: '0.2.0'
 ---
 
 # Migrating to the Workflow SDK
@@ -15,6 +15,7 @@ Use this skill when converting an existing orchestration system to the Workflow 
 1. Identify the source system:
    - Temporal
    - Inngest
+   - Trigger.dev
    - AWS Step Functions
 2. Identify the target runtime:
    - Managed hosting -> keep examples focused on `start()`, `getRun()`, hooks/webhooks, and route handlers.
@@ -72,6 +73,7 @@ Before drafting `## Migrated Code`, write the selected route keys in `## Migrati
 
 - Temporal -> `references/temporal.md`
 - Inngest -> `references/inngest.md`
+- Trigger.dev -> `references/trigger-dev.md`
 - AWS Step Functions -> `references/aws-step-functions.md`
 
 ## Shared references
@@ -79,6 +81,7 @@ Before drafting `## Migrated Code`, write the selected route keys in `## Migrati
 - `references/shared-patterns.md` — reusable code templates for hooks, child workflows, idempotency, streaming, and rollback.
 - `references/runtime-targets.md` — Managed vs custom `World` guidance.
 - `references/resume-routing.md` — route-key selection, obligations, and exact `## Migration Plan` shape.
+- `references/retries.md` — canonical retry mechanics: `stepFn.maxRetries`, `RetryableError({ retryAfter })`, `FatalError`.
 
 ## Required output shape
 
@@ -129,7 +132,7 @@ Additional fail conditions:
 - `resume/url/manual` output calls `request.respondWith(...)` outside a `"use step"` function
 - `resume/url/manual` output invents a user-authored callback route or `resumeWebhook()` wrapper when `webhook.url` is the intended resume surface
 - `createWebhook()` is paired with `resumeHook()`
-- self-hosted output omits `World extends Storage, Queue, Streamer`, `startWorkflowWorld()`, or the explicit note that the workflow and step code can stay the same while the app still needs a custom `World`
+- self-hosted output omits `World extends Queue, Streamer, Storage`, `startWorkflowWorld()`, or the explicit note that the workflow and step code can stay the same while the app still needs a custom `World`
 - named-framework output mixes framework syntax with plain `Request` / `Response` app-boundary code without a framework-agnostic override
 
 For concrete passing code, load:
