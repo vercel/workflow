@@ -137,7 +137,7 @@ jobs:
           Do NOT run git cherry-pick --continue or git commit.
           PROMPT
 
-          opencode run --model vercel/anthropic/claude-opus-4.6 "$(cat /tmp/backport-prompt.txt)"
+          opencode run --model vercel/anthropic/claude-opus-4.7 "$(cat /tmp/backport-prompt.txt)"
 
           # Verify all conflicts are resolved
           REMAINING=$(git diff --name-only --diff-filter=U || true)
