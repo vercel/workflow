@@ -47,23 +47,30 @@ jobs:
             echo "status=clean" >> "$GITHUB_OUTPUT"
             echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
-            # The docs app on the stable branch is a minimal placeholder —
-            # only docs/content/ is actively maintained (markdown files
-            # bundled into npm packages via prepack scripts). Auto-resolve
-            # any non-content docs/ conflicts by keeping the stable branch
-            # version (discarding the incoming change from main).
-            git diff --name-only --diff-filter=U | grep '^docs/' | grep -v '^docs/content/' | while IFS= read -r file; do
-              echo "Auto-resolving docs conflict (keeping stable version): $file"
-              # Check for a stage-2 ("ours") entry in the index, which means
-              # the file exists on the stable side of the conflict. Otherwise
-              # the file was newly added on main and we drop it.
-              if git show ":2:$file" >/dev/null 2>&1; then
-                git checkout --ours -- "$file"
-                git add -- "$file"
-              else
-                git rm -f -- "$file"
-              fi
-            done || true
+            # Auto-resolve conflicts in directories that are not maintained
+            # on the stable branch by keeping the stable side (discarding the
+            # incoming change from main):
+            #   - docs/ (except docs/content/): the docs app is a minimal
+            #     placeholder on stable; only docs/content/ is actively
+            #     maintained (markdown files bundled into npm packages via
+            #     prepack scripts).
+            #   - skills/: skill files are unrelated to npm packaging and
+            #     are not maintained on stable.
+            git diff --name-only --diff-filter=U \
+              | { grep -E '^(docs/|skills/)' || true; } \
+              | { grep -v '^docs/content/' || true; } \
+              | while IFS= read -r file; do
+                  echo "Auto-resolving conflict (keeping stable version): $file"
+                  # Check for a stage-2 ("ours") entry in the index, which means
+                  # the file exists on the stable side of the conflict. Otherwise
+                  # the file was newly added on main and we drop it.
+                  if git show ":2:$file" >/dev/null 2>&1; then
+                    git checkout --ours -- "$file"
+                    git add -- "$file"
+                  else
+                    git rm -f -- "$file"
+                  fi
+                done
 
             # Lockfile conflicts can be resolved by re-running pnpm install,
             # but only when no other conflicts remain (to avoid pnpm choking
@@ -120,12 +127,19 @@ jobs:
           PR title: $PR_TITLE
           Commit message: $COMMIT_MSG
 
-          IMPORTANT: On the stable branch, only docs/content/ is actively
-          maintained (markdown files bundled into npm packages). The rest of
-          the docs app is a minimal placeholder. If any remaining conflicts
-          involve files under docs/ that are NOT in docs/content/, resolve
-          them by keeping the stable branch version (the <<<<<<< HEAD side)
-          and discarding the incoming change from main. If the file does not
+          IMPORTANT: Some directories are not fully maintained on the stable
+          branch and should be auto-resolved by keeping the stable side:
+
+          - docs/ (except docs/content/): the docs app is a minimal
+            placeholder on stable; only docs/content/ is actively maintained
+            (markdown files bundled into npm packages).
+          - skills/: skill files are unrelated to npm packaging and are not
+            maintained on stable.
+
+          If any remaining conflicts involve files under docs/ that are NOT
+          in docs/content/, or any files under skills/, resolve them by
+          keeping the stable branch version (the <<<<<<< HEAD side) and
+          discarding the incoming change from main. If the file does not
           exist on the stable side (HEAD side is empty), remove it with
           "git rm". Conflicts in docs/content/ should be resolved normally.
 
