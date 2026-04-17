@@ -4,6 +4,30 @@ import { extname, join, resolve } from 'node:path';
 import Watchpack from 'watchpack';
 
 let CachedNextBuilderEager: any;
+const INSTRUMENTATION_FILE_CANDIDATES = [
+  'instrumentation.ts',
+  'instrumentation.js',
+  'src/instrumentation.ts',
+  'src/instrumentation.js',
+] as const;
+
+async function findInstrumentationEntryFiles(
+  workingDir: string
+): Promise<string[]> {
+  const matches = await Promise.all(
+    INSTRUMENTATION_FILE_CANDIDATES.map(async (relativePath) => {
+      const absolutePath = resolve(workingDir, relativePath);
+      try {
+        await access(absolutePath, constants.F_OK);
+        return absolutePath;
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  return matches.filter((match): match is string => match !== null);
+}
 
 // Create the eager Next builder dynamically by extending the ESM BaseBuilder.
 // Exported as getNextBuilderEager() to allow CommonJS modules to import from
@@ -389,8 +413,7 @@ export async function getNextBuilderEager() {
     }
 
     protected async getInputFiles(): Promise<string[]> {
-      const inputFiles = await super.getInputFiles();
-      return inputFiles.filter((item) => {
+      const inputFiles = (await super.getInputFiles()).filter((item) => {
         // Match App Router entrypoints: route.ts, page.ts, layout.ts in app/ or src/app/ directories
         // Matches: /app/page.ts, /app/dashboard/page.ts, /src/app/route.ts, etc.
         if (
@@ -404,16 +427,14 @@ export async function getNextBuilderEager() {
         if (item.match(/[/\\](pages|src[/\\]pages)[/\\]/)) {
           return true;
         }
-        // Match server instrumentation entrypoints: instrumentation.ts/js and src/instrumentation.ts/js
-        if (
-          item.match(
-            /(^|.*[/\\])(instrumentation|src[/\\]instrumentation)\.[cm]?[jt]sx?$/
-          )
-        ) {
-          return true;
-        }
         return false;
       });
+
+      const instrumentationFiles = await findInstrumentationEntryFiles(
+        this.config.workingDir
+      );
+
+      return Array.from(new Set([...inputFiles, ...instrumentationFiles]));
     }
 
     private async writeFunctionsConfig(outputDir: string) {
