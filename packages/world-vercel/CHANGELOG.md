@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 4.1.3
+
+### Patch Changes
+
+- [#1790](https://github.com/vercel/workflow/pull/1790) [`5ef9ac2`](https://github.com/vercel/workflow/commit/5ef9ac2073660a0e14ccbef2d6228fad5155ac44) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Use stream control frame to transparently reconnect on server timeout
+
 ## 4.1.2
 
 ### Patch Changes

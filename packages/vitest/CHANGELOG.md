@@ -1,5 +1,14 @@
 # @workflow/vitest
 
+## 4.0.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/core@4.2.5
+  - @workflow/builders@4.0.6
+  - @workflow/rollup@4.0.5
+
 ## 4.0.5
 
 ### Patch Changes
