@@ -173,7 +173,7 @@ This repository uses a dual-branch release model with [changesets](https://githu
 
 Both branches trigger the release workflow (`.github/workflows/release.yml`) on push. The changesets action creates a "Version Packages" PR on each branch when there are pending changesets.
 
-**Important:** Some directories are not maintained on the `stable` branch and exist only on `main`:
+**Important:** Some directories are not fully maintained on the `stable` branch:
 
 - **`docs/`**: Only `docs/content/` is actively maintained on `stable` — the rest of the docs app is a minimal placeholder (documentation is deployed only from `main`). `docs/content/` is kept on `stable` because the markdown files are bundled into npm packages via `prepack` scripts.
 - **`skills/`**: Not maintained on `stable` at all. Skill files are unrelated to npm packaging, so there is no reason to keep them in sync on the release branch.
