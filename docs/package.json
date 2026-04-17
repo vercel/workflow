@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "next build",
-    "prebuild": "node scripts/pack.ts"
+    "prebuild": "pnpm -w run build && node scripts/pack.ts"
   },
   "dependencies": {
     "next": "16.2.1",
