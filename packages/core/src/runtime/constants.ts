@@ -13,10 +13,16 @@
 export const MAX_QUEUE_DELIVERIES = 48;
 
 // Maximum time allowed for a single workflow replay execution (in ms).
-// If a replay exceeds this duration, the run is failed and the process exits.
+// If a replay exceeds this duration, the process exits so the queue can retry.
 // This must be lower than the function's maxDuration to ensure the
 // timeout handler has time to post the run_failed event before the platform
 // kills the function.
 // Note that on hobby plan, the maxDuration is 60s, so this barrier will not be hit,
 // and the queue will re-try until the visibility window expires.
 export const REPLAY_TIMEOUT_MS = 240_000;
+
+// Number of queue delivery attempts to allow before permanently failing a run
+// due to a replay timeout. On attempts 1 through this value, the timeout
+// handler exits without writing run_failed so the queue retries the message.
+// On the next attempt the run is marked as failed.
+export const REPLAY_TIMEOUT_MAX_RETRIES = 3;

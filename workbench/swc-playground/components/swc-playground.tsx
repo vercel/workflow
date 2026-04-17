@@ -82,7 +82,7 @@ function getStoredVimMode(): boolean {
   return localStorage.getItem(VIM_MODE_STORAGE_KEY) === 'true';
 }
 
-type ViewMode = 'workflow' | 'step' | 'client';
+type ViewMode = 'workflow' | 'step';
 type PanelId = ViewMode | 'serde';
 
 interface CompilationResult {
@@ -108,14 +108,13 @@ export function SwcPlayground({
   const [results, setResults] = useState<Record<ViewMode, CompilationResult>>({
     workflow: { code: '' },
     step: { code: '' },
-    client: { code: '' },
   });
   const [isCompiling, setIsCompiling] = useState(false);
   const [serdeAnalysis, setSerdeAnalysis] = useState<SerdeAnalysis | null>(
     null
   );
   const [expandedPanels, setExpandedPanels] = useState<Set<PanelId>>(
-    new Set(['workflow', 'step', 'client', 'serde'])
+    new Set(['workflow', 'step', 'serde'])
   );
   const monacoConfigured = useRef(false);
 
@@ -236,7 +235,6 @@ export function SwcPlayground({
         setResults({
           workflow: { code: '', error: errorMessage },
           step: { code: '', error: errorMessage },
-          client: { code: '', error: errorMessage },
         });
         setSerdeAnalysis(null);
       } finally {
@@ -365,7 +363,7 @@ export function SwcPlayground({
           {/* Output Section - Collapsible Panels */}
           <ResizablePanel defaultSize={50} minSize={25}>
             <div className="h-full flex flex-col overflow-hidden bg-muted/10">
-              {(['workflow', 'step', 'client'] as const).map((mode) => {
+              {(['workflow', 'step'] as const).map((mode) => {
                 const isOpen = expandedPanels.has(mode);
                 return (
                   <div

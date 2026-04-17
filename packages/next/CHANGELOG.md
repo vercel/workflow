@@ -1,5 +1,40 @@
 # @workflow/next
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1701](https://github.com/vercel/workflow/pull/1701) [`fe13110`](https://github.com/vercel/workflow/commit/fe131105f237021d4146cce2b5324ee2d591162b) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix `next/package.json` resolution failure in npm workspaces monorepos
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+- Updated dependencies [[`df115fd`](https://github.com/vercel/workflow/commit/df115fde8cb4baa9a02477db043bf3d6d97259c8), [`0810b75`](https://github.com/vercel/workflow/commit/0810b75872e96d8d8aa6e3dbf4236304d57526a7), [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`e788e3b`](https://github.com/vercel/workflow/commit/e788e3b41cce49335f4a7b5bf12907e30f2fb5f0), [`b7d6595`](https://github.com/vercel/workflow/commit/b7d6595c25dab6fe902a47e699b1818ecf1efb86), [`ac09f40`](https://github.com/vercel/workflow/commit/ac09f407719413671b6feea4dca2360ebda9a51f), [`136bd35`](https://github.com/vercel/workflow/commit/136bd35a98a40a5dc55b2fbf838924c0af001ba7), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352)]:
+  - @workflow/core@5.0.0-beta.2
+  - @workflow/builders@5.0.0-beta.2
+  - @workflow/swc-plugin@5.0.0-beta.2
+
+## 5.0.0-beta.1
+
+### Major Changes
+
+- [#1662](https://github.com/vercel/workflow/pull/1662) [`89d242f`](https://github.com/vercel/workflow/commit/89d242fae2233c52153315d63e1eacb4c0ca5527) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `isWorkflowSdkFile` path-based serde exclusion. Serde discovery now uses AST-level verification via SWC detect mode across all integration paths (esbuild plugin, Next.js deferred builder, Next.js loader). This allows class definitions with serde symbols in SDK packages like `@workflow/core` to be discovered and bundled correctly.
+
+### Patch Changes
+
+- [#1670](https://github.com/vercel/workflow/pull/1670) [`32a17b4`](https://github.com/vercel/workflow/commit/32a17b4033dea3d9fd496e77142c675b06f0e016) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix lazy discovery bare specifier resolution in copied step files
+  - Use `enhanced-resolve` with ESM conditions to resolve bare specifiers from the original source file's location
+  - Only rewrite specifiers that can't resolve from the app directory (transitive SDK deps)
+  - Add `enhanced-resolve` to pnpm catalog and use `catalog:` in both packages
+
+- [#1646](https://github.com/vercel/workflow/pull/1646) [`644d6b8`](https://github.com/vercel/workflow/commit/644d6b8ada2c85f5c452f0e6b26a30a7f6724791) Thanks [@ijjk](https://github.com/ijjk)! - Stop eager input-graph directive discovery in deferred Next.js builds and rely on loader/socket-driven discovery with `onBeforeDeferredEntries`.
+
+- Updated dependencies [[`d040182`](https://github.com/vercel/workflow/commit/d0401829320c2880a0a5c2404ed9dede94eb17a0), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`dc0c0dc`](https://github.com/vercel/workflow/commit/dc0c0dce7f4ef1a0919d7ecc7efe076564871d0c), [`e436242`](https://github.com/vercel/workflow/commit/e4362421abf9c864c9c1064866ddfc16560649cb), [`ec517fa`](https://github.com/vercel/workflow/commit/ec517fa2254131f47cc878177c4d2aa163d584a5), [`a5c90ce`](https://github.com/vercel/workflow/commit/a5c90cefba01070aa4bc12a696334ee4c1061f92), [`ea97bd6`](https://github.com/vercel/workflow/commit/ea97bd600711f67649509b21c7af5808fb13479f), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d), [`32a17b4`](https://github.com/vercel/workflow/commit/32a17b4033dea3d9fd496e77142c675b06f0e016), [`71d39d2`](https://github.com/vercel/workflow/commit/71d39d2f8d5739c22fb9d777e70d003b07d05987), [`873b4e2`](https://github.com/vercel/workflow/commit/873b4e2bb451e0a4d28e0a96671c25e1db4932db), [`66585fd`](https://github.com/vercel/workflow/commit/66585fd46723604a632d08b6c973d5a95582b1af), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d), [`89d242f`](https://github.com/vercel/workflow/commit/89d242fae2233c52153315d63e1eacb4c0ca5527), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`ebb0a4a`](https://github.com/vercel/workflow/commit/ebb0a4a4e366eb1be1d385bf1eedbbe27371c9a9), [`9513a81`](https://github.com/vercel/workflow/commit/9513a8160cc13ac2b3923a0d9500cd80eb477109)]:
+  - @workflow/swc-plugin@5.0.0-beta.1
+  - @workflow/core@5.0.0-beta.1
+  - @workflow/builders@5.0.0-beta.1
+
 ## 5.0.0-beta.0
 
 ### Major Changes

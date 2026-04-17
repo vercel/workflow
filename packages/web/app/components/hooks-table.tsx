@@ -278,7 +278,7 @@ export function HooksTable({
       ) : !loading && (!hooks || hooks.length === 0) ? (
         <div className="text-center py-8 text-muted-foreground">
           No active hooks found. <br />
-          <DocsLink href="https://useworkflow.dev/docs/api-reference/workflow/create-hook">
+          <DocsLink href="https://workflow-sdk.dev/docs/api-reference/workflow/create-hook">
             Learn how to create a hook
           </DocsLink>
         </div>

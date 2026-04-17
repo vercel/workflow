@@ -25,11 +25,17 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup environment
-        uses: ./.github/actions/setup-workflow-dev
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
         with:
-          setup-rust: 'true'
-          build-packages: 'false'
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Build packages
         run: pnpm build
@@ -49,10 +55,17 @@ jobs:
       - name: Checkout Repo
         uses: actions/checkout@v4
 
-      - name: Setup environment
-        uses: ./.github/actions/setup-workflow-dev
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
         with:
-          build-packages: 'false'
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
 
       - name: Waiting for the Docs Vercel deployment
         id: waitForDocsDeployment

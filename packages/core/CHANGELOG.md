@@ -1,5 +1,60 @@
 # @workflow/core
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1716](https://github.com/vercel/workflow/pull/1716) [`df115fd`](https://github.com/vercel/workflow/commit/df115fde8cb4baa9a02477db043bf3d6d97259c8) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Make encrypted markers clickable to trigger decryption and detect encryption at run level before span selection. Persist `features.encryption` flag in `executionContext` at run creation so the UI can detect encryption without a probe fetch.
+
+- [#1740](https://github.com/vercel/workflow/pull/1740) [`0810b75`](https://github.com/vercel/workflow/commit/0810b75872e96d8d8aa6e3dbf4236304d57526a7) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - When runtime replays exceed 240s, re-try them up to three times, instead of failing immediately
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1778](https://github.com/vercel/workflow/pull/1778) [`b7d6595`](https://github.com/vercel/workflow/commit/b7d6595c25dab6fe902a47e699b1818ecf1efb86) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix false-positive unconsumed `step_created` errors when replay resumes a `for await` hook loop and appends more async work after the first promise-queue drain.
+
+- [#1681](https://github.com/vercel/workflow/pull/1681) [`ac09f40`](https://github.com/vercel/workflow/commit/ac09f407719413671b6feea4dca2360ebda9a51f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add clickable Run reference rendering in observability UI
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+- Updated dependencies [[`340c085`](https://github.com/vercel/workflow/commit/340c0856813b23e9be966a2022933d6040a3b062), [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`11cfb8f`](https://github.com/vercel/workflow/commit/11cfb8f3fb4c64bde92cf51a5990a7773c263f94), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352)]:
+  - @workflow/world-vercel@5.0.0-beta.2
+  - @workflow/errors@5.0.0-beta.1
+  - @workflow/serde@5.0.0-beta.1
+  - @workflow/utils@5.0.0-beta.1
+  - @workflow/world-local@5.0.0-beta.2
+
+## 5.0.0-beta.1
+
+### Major Changes
+
+- [#1293](https://github.com/vercel/workflow/pull/1293) [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **BREAKING CHANGE**: Restructure stream methods on World interface to use `world.streams.*` namespace with `runId` as the first parameter. `writeToStream(name, runId, chunk)` → `streams.write(runId, name, chunk)`, `writeToStreamMulti` → `streams.writeMulti`, `closeStream` → `streams.close`, `readFromStream` → `streams.get(runId, name, startIndex?)`, `listStreamsByRunId` → `streams.list(runId)`.
+
+- [#1632](https://github.com/vercel/workflow/pull/1632) [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `@workflow/core/private` and `workflow/internal/private` public subpath exports. The SWC compiler plugin no longer generates imports from these paths.
+
+- [#1293](https://github.com/vercel/workflow/pull/1293) [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Require `runId` argument for `world.steps.get`.
+
+### Minor Changes
+
+- [#1652](https://github.com/vercel/workflow/pull/1652) [`ec517fa`](https://github.com/vercel/workflow/commit/ec517fa2254131f47cc878177c4d2aa163d584a5) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `features.encryption` to `WorkflowMetadata` returned by `getWorkflowMetadata()`
+
+- [#1616](https://github.com/vercel/workflow/pull/1616) [`71d39d2`](https://github.com/vercel/workflow/commit/71d39d2f8d5739c22fb9d777e70d003b07d05987) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Use custom class serialization for `Run` across runtime and workflow VM contexts, and add e2e coverage for `Run` instance boundary roundtrips
+
+- [#1677](https://github.com/vercel/workflow/pull/1677) [`9513a81`](https://github.com/vercel/workflow/commit/9513a8160cc13ac2b3923a0d9500cd80eb477109) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add serialization support for workflow function references
+
+### Patch Changes
+
+- [#1658](https://github.com/vercel/workflow/pull/1658) [`a5c90ce`](https://github.com/vercel/workflow/commit/a5c90cefba01070aa4bc12a696334ee4c1061f92) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix community world E2E tests by adding `specVersion` to the World interface so `start()` uses the safe baseline (v2) for worlds that don't declare their supported version
+
+- [#1678](https://github.com/vercel/workflow/pull/1678) [`ea97bd6`](https://github.com/vercel/workflow/commit/ea97bd600711f67649509b21c7af5808fb13479f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Remove redundant `hc_` prefix from health check correlationId that caused doubled `hc_hc_` in the derived runId and stream name.
+
+- [#942](https://github.com/vercel/workflow/pull/942) [`873b4e2`](https://github.com/vercel/workflow/commit/873b4e2bb451e0a4d28e0a96671c25e1db4932db) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - **BREAKING CHANGE**: Make `getWorld` and `createWorld` asynchronous to support ESM dynamic imports for custom world modules. All callers must now `await getWorld()`.
+
+- Updated dependencies [[`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77), [`a5c90ce`](https://github.com/vercel/workflow/commit/a5c90cefba01070aa4bc12a696334ee4c1061f92), [`68cf25e`](https://github.com/vercel/workflow/commit/68cf25e83bdc8bf912fb30cb8f9ba4cb9a30f087), [`66d49c0`](https://github.com/vercel/workflow/commit/66d49c0db608b034c8fc1b4087a047e0be067b77)]:
+  - @workflow/world@5.0.0-beta.1
+  - @workflow/world-local@5.0.0-beta.1
+  - @workflow/world-vercel@5.0.0-beta.1
+  - @workflow/errors@5.0.0-beta.0
+
 ## 5.0.0-beta.0
 
 ### Major Changes

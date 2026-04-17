@@ -14,7 +14,7 @@ import {
 import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 
 export interface SwcPluginOptions {
-  mode: 'step' | 'workflow' | 'client';
+  mode: 'step' | 'workflow';
   entriesToBundle?: string[];
   outdir?: string;
   projectRoot?: string;

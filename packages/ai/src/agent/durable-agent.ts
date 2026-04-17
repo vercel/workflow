@@ -27,6 +27,7 @@ import {
 } from 'ai';
 import { convertToLanguageModelPrompt, standardizePrompt } from 'ai/internal';
 import { getErrorMessage } from '../get-error-message.js';
+import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 import { streamTextIterator } from './stream-text-iterator.js';
 import { recordSpan, runInContext } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
@@ -1133,7 +1134,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               type: 'tool-call' as const,
               toolCallId: tc.toolCallId,
               toolName: tc.toolName,
-              input: safeParseInput(tc.input),
+              input: safeParseToolCallInput(tc.input),
             }));
 
             // Build toolResults only for tools that were executed
@@ -1141,7 +1142,7 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
               type: 'tool-result' as const,
               toolCallId: r.toolCallId,
               toolName: r.toolName,
-              input: safeParseInput(
+              input: safeParseToolCallInput(
                 toolCalls.find((tc) => tc.toolCallId === r.toolCallId)?.input
               ),
               output: 'value' in r.output ? r.output.value : undefined,
@@ -1244,13 +1245,13 @@ export class DurableAgent<TBaseTools extends ToolSet = ToolSet> {
             type: 'tool-call' as const,
             toolCallId: tc.toolCallId,
             toolName: tc.toolName,
-            input: safeParseInput(tc.input),
+            input: safeParseToolCallInput(tc.input),
           }));
           lastStepToolResults = toolResults.map((r) => ({
             type: 'tool-result' as const,
             toolCallId: r.toolCallId,
             toolName: r.toolName,
-            input: safeParseInput(
+            input: safeParseToolCallInput(
               toolCalls.find((tc) => tc.toolCallId === r.toolCallId)?.input
             ),
             output: 'value' in r.output ? r.output.value : undefined,
@@ -1479,10 +1480,6 @@ async function convertChunksToUIMessages(
 }
 
 /**
- * Safely parse tool call input JSON. Returns the parsed value or the raw string
- * if parsing fails (e.g., for tool calls that were repaired).
- */
-/**
  * Valid `type` values for LanguageModelV3ToolResultOutput.
  * When a tool returns an object whose `type` matches one of these,
  * it is passed through as-is instead of being wrapped in json/text.
@@ -1503,11 +1500,35 @@ function isToolResultOutput(
   return TOOL_RESULT_OUTPUT_TYPES.has((result as { type?: string }).type ?? '');
 }
 
-function safeParseInput(input: string | undefined): unknown {
-  try {
-    return JSON.parse(input || '{}');
-  } catch {
-    return input;
+function patchToolCallInMessages(
+  messages: LanguageModelV3Prompt,
+  toolCall: LanguageModelV3ToolCall
+): void {
+  const repairedInput = safeParseToolCallInput(toolCall.input);
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) {
+      continue;
+    }
+
+    const toolCallPart = message.content.find(
+      (
+        part
+      ): part is {
+        type: 'tool-call';
+        toolCallId: string;
+        toolName: string;
+        input: unknown;
+      } => part.type === 'tool-call' && part.toolCallId === toolCall.toolCallId
+    );
+
+    if (toolCallPart) {
+      toolCallPart.toolName = toolCall.toolName;
+      toolCallPart.input = repairedInput;
+      return;
+    }
   }
 }
 
@@ -1589,6 +1610,9 @@ async function executeTool(
           messages,
         });
         if (repairedToolCall) {
+          toolCall.toolName = repairedToolCall.toolName;
+          toolCall.input = repairedToolCall.input;
+          patchToolCallInMessages(messages, repairedToolCall);
           // Retry with repaired tool call
           return executeTool(
             repairedToolCall,
@@ -1614,6 +1638,9 @@ async function executeTool(
         messages,
       });
       if (repairedToolCall) {
+        toolCall.toolName = repairedToolCall.toolName;
+        toolCall.input = repairedToolCall.input;
+        patchToolCallInMessages(messages, repairedToolCall);
         // Retry with repaired tool call
         return executeTool(
           repairedToolCall,

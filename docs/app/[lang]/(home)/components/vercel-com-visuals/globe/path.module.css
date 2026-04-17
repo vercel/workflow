@@ -1,0 +1,9 @@
+.gradient {
+  --color: var(--normal-color) !important;
+
+  @supports (color: oklch(0% 0% 0deg)) {
+    @media (color-gamut: p3) {
+      --color: var(--p3-color, var(--normal-color)) !important;
+    }
+  }
+}

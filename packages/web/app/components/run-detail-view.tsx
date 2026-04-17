@@ -269,6 +269,15 @@ export function RunDetailView({
     [updateSearchParams]
   );
 
+  const handleRunRefClick = useCallback(
+    (targetRunId: string) => {
+      // Navigate to the target run with a clean URL (no search params)
+      // so the sidebar panel resets
+      navigate(`/run/${encodeURIComponent(targetRunId)}`);
+    },
+    [navigate]
+  );
+
   const handleWakeUpSleep = useCallback(
     async (runId: string, correlationId: string) => {
       return wakeUpRun(env, runId, { correlationIds: [correlationId] });
@@ -341,6 +350,7 @@ export function RunDetailView({
     loadMoreTraceData,
     hasMoreTraceData,
     isLoadingMoreTraceData,
+    hasEncryptedData,
   } = useWorkflowTraceViewerData(env, runId, { live: true });
 
   const run = runData ?? ({} as WorkflowRun);
@@ -751,6 +761,7 @@ export function RunDetailView({
                     spanDetailError={spanDetailError}
                     onSpanSelect={handleSpanSelect}
                     onStreamClick={handleStreamClick}
+                    onRunClick={handleRunRefClick}
                     onWakeUpSleep={handleWakeUpSleep}
                     onResolveHook={handleResolveHook}
                     onLoadEventData={handleLoadSidebarEventData}
@@ -760,6 +771,7 @@ export function RunDetailView({
                     encryptionKey={encryptionKey ?? undefined}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
+                    hasEncryptedData={hasEncryptedData}
                   />
                 </div>
               </ErrorBoundary>
@@ -781,6 +793,7 @@ export function RunDetailView({
                     onSortOrderChange={setEventsSortOrder}
                     onDecrypt={handleDecrypt}
                     isDecrypting={isDecrypting}
+                    hasEncryptedData={hasEncryptedData}
                   />
                 </div>
               </ErrorBoundary>

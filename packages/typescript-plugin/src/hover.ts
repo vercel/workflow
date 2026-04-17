@@ -80,8 +80,8 @@ export function getHoverInfo(
 
   const isWorkflow = directive === 'use workflow';
   const docUrl = isWorkflow
-    ? 'https://useworkflow.dev/docs/foundations/workflows-and-steps#workflow-functions'
-    : 'https://useworkflow.dev/docs/foundations/workflows-and-steps#step-functions';
+    ? 'https://workflow-sdk.dev/docs/foundations/workflows-and-steps#workflow-functions'
+    : 'https://workflow-sdk.dev/docs/foundations/workflows-and-steps#step-functions';
   const directiveType = isWorkflow ? 'Workflow' : 'Step';
 
   return {

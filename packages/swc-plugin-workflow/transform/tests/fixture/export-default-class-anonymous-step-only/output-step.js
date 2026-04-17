@@ -25,11 +25,19 @@ export default __DefaultClass;
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "process",
+        configurable: true
+    });
 })(__DefaultClass.prototype["process"], "step//./input//__DefaultClass#process");
 (function(__wf_fn, __wf_id) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "validate",
+        configurable: true
+    });
 })(__DefaultClass.prototype["validate"], "step//./input//__DefaultClass#validate");
 (function(__wf_cls, __wf_id) {
     var __wf_sym = Symbol.for("workflow-class-registry"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
