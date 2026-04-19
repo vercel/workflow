@@ -13,6 +13,11 @@ import {
   parentWorkflow,
   childWorkflow,
 } from '../workflows/cookbook/child-workflows.js';
+import {
+  DistributedAbortController,
+  abortControllerWorkflow,
+  abortHook,
+} from '../workflows/cookbook/distributed-abort-controller.js';
 
 describe('saga', () => {
   it('should run compensations in reverse on FatalError', async () => {
@@ -138,5 +143,77 @@ describe('child-workflows', () => {
     const result = await run.returnValue;
     expect(result.childRunId).toMatch(/^wrun_/);
     expect(result.result).toEqual({ item: 'x', result: 'processed-x' });
+  });
+});
+
+describe('distributed-abort-controller', () => {
+  it('should abort via hook and emit message on stream', async () => {
+    const testId = `test-${Date.now()}`;
+
+    // Start the abort controller workflow directly
+    const run = await start(abortControllerWorkflow, [testId]);
+
+    // Wait for the hook to be registered
+    const hook = await waitForHook(run);
+    expect(hook.token).toBe(`abort:${testId}`);
+
+    // Trigger the abort via the hook
+    await abortHook.resume(`abort:${testId}`, { reason: 'User cancelled' });
+
+    // Verify the workflow completes with the expected result
+    const result = await run.returnValue;
+    expect(result).toEqual({ aborted: true, reason: 'User cancelled' });
+  });
+
+  it('should emit abort message on the readable stream', async () => {
+    const testId = `stream-test-${Date.now()}`;
+
+    // Start the workflow
+    const run = await start(abortControllerWorkflow, [testId]);
+
+    // Get the readable stream before triggering abort
+    const readable = run.getReadable<{ type: string; reason?: string }>();
+    const reader = readable.getReader();
+
+    // Wait for hook and trigger abort
+    await waitForHook(run);
+    await abortHook.resume(`abort:${testId}`, { reason: 'Stream test' });
+
+    // Read the abort message from the stream
+    const { value, done } = await reader.read();
+    expect(done).toBe(false);
+    expect(value).toEqual({ type: 'abort', reason: 'Stream test' });
+
+    reader.releaseLock();
+
+    // Verify workflow completes
+    const result = await run.returnValue;
+    expect(result.aborted).toBe(true);
+  });
+
+  it('should work with DistributedAbortController.getSignal', async () => {
+    const testId = `signal-test-${Date.now()}`;
+
+    // Create the controller
+    await DistributedAbortController.create(testId);
+
+    // Get the signal
+    const signal = await DistributedAbortController.getSignal(testId);
+    expect(signal.aborted).toBe(false);
+
+    // Set up a promise that resolves when aborted
+    const abortPromise = new Promise<string | undefined>((resolve) => {
+      signal.addEventListener('abort', () => {
+        resolve(signal.reason as string | undefined);
+      });
+    });
+
+    // Trigger the abort
+    await DistributedAbortController.abort(testId, 'Signal test reason');
+
+    // Verify the signal was triggered
+    const reason = await abortPromise;
+    expect(reason).toBe('Signal test reason');
+    expect(signal.aborted).toBe(true);
   });
 });

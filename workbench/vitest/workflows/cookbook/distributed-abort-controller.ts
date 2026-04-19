@@ -4,13 +4,16 @@
  * Demonstrates a distributed AbortController that uses a durable workflow
  * to coordinate cancellation signals across process boundaries.
  *
- * Uses a semantically meaningful ID (like a chat ID or task ID) to coordinate:
- * 1. `create(id)` — Starts a workflow that registers a hook using the provided ID
- * 2. `getSignal(id)` — Finds the run via the hook token and returns a signal listening to its stream
- * 3. `abort(id)` — Triggers the hook which writes a cancellation message to the stream
+ * Usage:
+ *   const controller = await DistributedAbortController.create("chat:123");
+ *   controller.signal.addEventListener("abort", () => console.log("Aborted!"));
+ *   await controller.abort("User cancelled");
  */
-import { defineHook, getWritable } from 'workflow';
+import { defineHook, getWritable, sleep } from 'workflow';
 import { getHookByToken, getRun, start } from 'workflow/api';
+
+// Default TTL: 24 hours in milliseconds
+const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 
 // Hook to trigger the abort signal
 export const abortHook = defineHook<{ reason?: string }>();
@@ -19,6 +22,7 @@ export const abortHook = defineHook<{ reason?: string }>();
 export type AbortMessage = {
   type: 'abort';
   reason?: string;
+  expired?: boolean;
 };
 
 // Helper to create a consistent hook token from the user ID
@@ -30,13 +34,13 @@ function getAbortToken(id: string): string {
  * Step function that writes the abort message to the stream.
  * Writing must happen inside a step, not directly in the workflow.
  */
-async function writeAbortSignal(reason?: string) {
+async function writeAbortSignal(reason?: string, expired?: boolean) {
   'use step';
 
   const writable = getWritable<AbortMessage>();
   const writer = writable.getWriter();
   try {
-    await writer.write({ type: 'abort', reason });
+    await writer.write({ type: 'abort', reason, expired });
   } finally {
     writer.releaseLock();
   }
@@ -44,20 +48,30 @@ async function writeAbortSignal(reason?: string) {
 }
 
 /**
- * Workflow that waits for the abort hook and writes to the stream.
+ * Workflow that waits for the abort hook or TTL expiration.
  * Accepts a user-provided ID to use as the hook token.
  */
-export async function abortControllerWorkflow(id: string) {
+export async function abortControllerWorkflow(id: string, ttlMs: number) {
   'use workflow';
 
-  // Use the user-provided ID for the hook token
   const hook = abortHook.create({ token: getAbortToken(id) });
-  const { reason } = await hook;
+
+  // Race: manual abort OR TTL expiration
+  const result = await Promise.race([
+    hook.then((payload) => ({
+      reason: payload.reason,
+      expired: false,
+    })),
+    sleep(`${ttlMs}ms`).then(() => ({
+      reason: 'Controller expired',
+      expired: true,
+    })),
+  ]);
 
   // Write the abort message inside a step
-  await writeAbortSignal(reason);
+  await writeAbortSignal(result.reason, result.expired);
 
-  return { aborted: true, reason };
+  return { aborted: true, reason: result.reason, expired: result.expired };
 }
 
 /**
@@ -66,41 +80,65 @@ export async function abortControllerWorkflow(id: string) {
  *
  * Unlike the standard AbortController which only works in a single process,
  * this version uses a durable workflow to coordinate the abort signal.
- * Any process with the same ID can create, abort, or listen to the signal.
+ * Any process with the same ID can create/reconnect, abort, or listen.
  */
 export class DistributedAbortController {
-  /**
-   * Creates a new distributed abort controller by starting a workflow.
-   * The ID should be semantically meaningful (e.g., "chat:123", "task:abc").
-   *
-   * @param id - A unique, semantically meaningful ID
-   */
-  static async create(id: string): Promise<void> {
-    await start(abortControllerWorkflow, { args: [id] });
+  private id: string;
+  private runId: string;
+
+  private constructor(id: string, runId: string) {
+    this.id = id;
+    this.runId = runId;
   }
 
   /**
-   * Triggers the abort signal for the given ID.
-   * Can be called from any process — resumes the hook registered with this ID.
+   * Creates or reconnects to a distributed abort controller.
+   * If a controller with this ID already exists, reconnects to it.
+   * Otherwise, starts a new workflow.
    *
-   * @param id - The same ID used when creating the controller
+   * @param id - A unique, semantically meaningful ID (e.g., "chat:123")
+   * @param options.ttlMs - Time-to-live in ms (default: 24 hours)
+   */
+  static async create(
+    id: string,
+    options: { ttlMs?: number } = {}
+  ): Promise<DistributedAbortController> {
+    const { ttlMs = DEFAULT_TTL_MS } = options;
+    const token = getAbortToken(id);
+
+    // Try to find an existing run with this hook token
+    const existingHook = await getHookByToken(token).catch(() => null);
+
+    if (existingHook) {
+      // Reconnect to existing controller
+      return new DistributedAbortController(id, existingHook.runId);
+    }
+
+    // Create a new workflow
+    const run = await start(abortControllerWorkflow, { args: [id, ttlMs] });
+    return new DistributedAbortController(id, run.id);
+  }
+
+  /**
+   * Triggers the abort signal.
+   * Can be called from any process with this controller instance.
+   *
    * @param reason - Optional reason for the cancellation
    */
-  static async abort(id: string, reason?: string): Promise<void> {
-    await abortHook.resume(getAbortToken(id), { reason });
+  async abort(reason?: string): Promise<void> {
+    await abortHook.resume(getAbortToken(this.id), { reason });
   }
 
   /**
-   * Returns an AbortSignal for the given ID.
-   * Finds the run via the hook token and listens to its stream.
-   *
-   * @param id - The same ID used when creating the controller
+   * Returns an AbortSignal that fires when abort() is called or TTL expires.
+   * The signal fires with a reason indicating what triggered it.
    */
-  static async getSignal(id: string): Promise<AbortSignal> {
-    // Find the run by looking up the hook token
-    const hook = await getHookByToken(getAbortToken(id));
-    const run = getRun<{ aborted: boolean; reason?: string }>(hook.runId);
-
+  get signal(): AbortSignal {
+    const run = getRun<{
+      aborted: boolean;
+      reason?: string;
+      expired?: boolean;
+    }>(this.runId);
     const controller = new AbortController();
     const readable = run.getReadable<AbortMessage>();
 
@@ -113,7 +151,10 @@ export class DistributedAbortController {
           const { done, value } = await reader.read();
           if (done) break;
           if (value.type === 'abort') {
-            controller.abort(value.reason);
+            const reason = value.expired
+              ? `${value.reason} (expired)`
+              : value.reason;
+            controller.abort(reason);
             break;
           }
         }
