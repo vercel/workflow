@@ -10,6 +10,7 @@
     "idempotency",
     "webhooks",
     "content-router",
-    "child-workflows"
+    "child-workflows",
+    "distributed-abort-controller"
   ]
 }
