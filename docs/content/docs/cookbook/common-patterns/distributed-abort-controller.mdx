@@ -42,25 +42,32 @@ export type AbortMessage = {
   reason?: string;
 };
 
+// Step function that writes the abort message to the stream
+async function writeAbortSignal(reason?: string) { // [!code highlight]
+  "use step"; // [!code highlight]
+
+  const writable = getWritable<AbortMessage>();
+  const writer = writable.getWriter();
+  try {
+    await writer.write({ type: "abort", reason });
+  } finally {
+    writer.releaseLock();
+  }
+  await writable.close();
+}
+
 // Workflow that waits for the abort signal and writes to the stream
 export async function abortControllerWorkflow() {
   "use workflow";
 
   const { workflowRunId } = getWorkflowMetadata();
-  const writable = getWritable<AbortMessage>();
 
   // Wait for the abort hook to be triggered
   const hook = abortHook.create({ token: `abort:${workflowRunId}` }); // [!code highlight]
   const { reason } = await hook; // [!code highlight]
 
-  // Write the abort message to the stream
-  const writer = writable.getWriter();
-  try {
-    await writer.write({ type: "abort", reason }); // [!code highlight]
-  } finally {
-    writer.releaseLock();
-  }
-  await writable.close();
+  // Write the abort message inside a step
+  await writeAbortSignal(reason); // [!code highlight]
 
   return { aborted: true, reason };
 }
@@ -245,11 +252,24 @@ export const abortHook = defineHook({
 
 export type AbortMessage = { type: "abort"; reason?: string };
 
+// Step function that writes the abort message
+async function writeAbortSignal(reason?: string) {
+  "use step";
+
+  const writable = getWritable<AbortMessage>();
+  const writer = writable.getWriter();
+  try {
+    await writer.write({ type: "abort", reason });
+  } finally {
+    writer.releaseLock();
+  }
+  await writable.close();
+}
+
 export async function timedAbortWorkflow(timeoutMs: number) {
   "use workflow";
 
   const { workflowRunId } = getWorkflowMetadata();
-  const writable = getWritable<AbortMessage>();
 
   const hook = abortHook.create({ token: `abort:${workflowRunId}` });
 
@@ -259,13 +279,8 @@ export async function timedAbortWorkflow(timeoutMs: number) {
     sleep(`${timeoutMs}ms`).then(() => ({ type: "timeout" as const, reason: "Operation timed out" })),
   ]);
 
-  const writer = writable.getWriter();
-  try {
-    await writer.write({ type: "abort", reason: result.reason });
-  } finally {
-    writer.releaseLock();
-  }
-  await writable.close();
+  // Write the abort message inside a step
+  await writeAbortSignal(result.reason); // [!code highlight]
 
   return { aborted: true, reason: result.reason, timedOut: result.type === "timeout" };
 }

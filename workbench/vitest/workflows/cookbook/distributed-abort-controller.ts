@@ -23,20 +23,13 @@ export type AbortMessage = {
 };
 
 /**
- * Workflow that waits for the abort hook and writes to the stream.
- * This workflow is the "coordinator" - it holds the abort state durably.
+ * Step function that writes the abort message to the stream.
+ * Writing must happen inside a step, not directly in the workflow.
  */
-export async function abortControllerWorkflow() {
-  'use workflow';
+async function writeAbortSignal(reason?: string) {
+  'use step';
 
-  const { workflowRunId } = getWorkflowMetadata();
   const writable = getWritable<AbortMessage>();
-
-  // Wait for the abort hook to be triggered
-  const hook = abortHook.create({ token: `abort:${workflowRunId}` });
-  const { reason } = await hook;
-
-  // Write the abort message to the stream
   const writer = writable.getWriter();
   try {
     await writer.write({ type: 'abort', reason });
@@ -44,6 +37,23 @@ export async function abortControllerWorkflow() {
     writer.releaseLock();
   }
   await writable.close();
+}
+
+/**
+ * Workflow that waits for the abort hook and writes to the stream.
+ * This workflow is the "coordinator" - it holds the abort state durably.
+ */
+export async function abortControllerWorkflow() {
+  'use workflow';
+
+  const { workflowRunId } = getWorkflowMetadata();
+
+  // Wait for the abort hook to be triggered
+  const hook = abortHook.create({ token: `abort:${workflowRunId}` });
+  const { reason } = await hook;
+
+  // Write the abort message inside a step
+  await writeAbortSignal(reason);
 
   return { aborted: true, reason };
 }
