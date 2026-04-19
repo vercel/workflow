@@ -14,6 +14,8 @@ import { getHookByToken, getRun, start } from 'workflow/api';
 
 // Default TTL: 24 hours in milliseconds
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+// Default grace period: 1 hour (keeps hook alive after abort for late subscribers)
+const DEFAULT_GRACE_MS = 60 * 60 * 1000;
 
 // Hook to trigger the abort signal
 export const abortHook = defineHook<{ reason?: string }>();
@@ -50,10 +52,17 @@ async function writeAbortSignal(reason?: string, expired?: boolean) {
 /**
  * Workflow that waits for the abort hook or TTL expiration.
  * Accepts a user-provided ID to use as the hook token.
+ * After abort/expiration, sleeps until TTL + grace period to keep hook
+ * alive for late subscribers.
  */
-export async function abortControllerWorkflow(id: string, ttlMs: number) {
+export async function abortControllerWorkflow(
+  id: string,
+  ttlMs: number,
+  graceMs: number
+) {
   'use workflow';
 
+  const startTime = Date.now();
   const hook = abortHook.create({ token: getAbortToken(id) });
 
   // Race: manual abort OR TTL expiration
@@ -70,6 +79,13 @@ export async function abortControllerWorkflow(id: string, ttlMs: number) {
 
   // Write the abort message inside a step
   await writeAbortSignal(result.reason, result.expired);
+
+  // Sleep until TTL + grace period to keep hook alive for late subscribers
+  const elapsed = Date.now() - startTime;
+  const remainingTime = ttlMs + graceMs - elapsed;
+  if (remainingTime > 0) {
+    await sleep(`${remainingTime}ms`);
+  }
 
   return { aborted: true, reason: result.reason, expired: result.expired };
 }
@@ -98,12 +114,13 @@ export class DistributedAbortController {
    *
    * @param id - A unique, semantically meaningful ID (e.g., "chat:123")
    * @param options.ttlMs - Time-to-live in ms (default: 24 hours)
+   * @param options.graceMs - Grace period after abort to keep hook alive (default: 1 hour)
    */
   static async create(
     id: string,
-    options: { ttlMs?: number } = {}
+    options: { ttlMs?: number; graceMs?: number } = {}
   ): Promise<DistributedAbortController> {
-    const { ttlMs = DEFAULT_TTL_MS } = options;
+    const { ttlMs = DEFAULT_TTL_MS, graceMs = DEFAULT_GRACE_MS } = options;
     const token = getAbortToken(id);
 
     // Try to find an existing run with this hook token
@@ -115,7 +132,9 @@ export class DistributedAbortController {
     }
 
     // Create a new workflow
-    const run = await start(abortControllerWorkflow, { args: [id, ttlMs] });
+    const run = await start(abortControllerWorkflow, {
+      args: [id, ttlMs, graceMs],
+    });
     return new DistributedAbortController(id, run.id);
   }
 
