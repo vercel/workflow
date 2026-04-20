@@ -103,7 +103,7 @@ export async function abortControllerWorkflow(
  */
 export class DistributedAbortController {
   private id: string;
-  private runId: string;
+  readonly runId: string;
 
   private constructor(id: string, runId: string) {
     this.id = id;

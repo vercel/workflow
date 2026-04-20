@@ -218,6 +218,9 @@ describe('distributed-abort-controller', () => {
       });
     });
 
+    // Wait for the workflow to register the hook before resuming it
+    await waitForHook(getRun(controller.runId));
+
     await controller.abort('Signal test reason');
 
     const reason = await abortPromise;
