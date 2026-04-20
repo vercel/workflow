@@ -1706,6 +1706,9 @@ export async function startFromWorkflow(inputValue: number) {
  */
 export async function fibonacciWorkflow(n: number): Promise<number> {
   'use workflow';
+  if (!Number.isFinite(n)) {
+    throw new FatalError(`fibonacciWorkflow requires a finite number for n`);
+  }
   if (n <= 1) return n;
 
   const [runA, runB] = await Promise.all([
