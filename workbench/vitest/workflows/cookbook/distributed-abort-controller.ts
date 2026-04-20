@@ -80,11 +80,14 @@ export async function abortControllerWorkflow(
   // Write the abort message inside a step
   await writeAbortSignal(result.reason, result.expired);
 
-  // Sleep until TTL + grace period to keep hook alive for late subscribers
-  const elapsed = Date.now() - startTime;
-  const remainingTime = ttlMs + graceMs - elapsed;
-  if (remainingTime > 0) {
-    await sleep(`${remainingTime}ms`);
+  // Only sleep through grace period on TTL expiration (keeps hook alive for late subscribers).
+  // Manual aborts complete immediately — no need to keep the workflow running.
+  if (result.expired) {
+    const elapsed = Date.now() - startTime;
+    const remainingTime = graceMs - (elapsed - ttlMs);
+    if (remainingTime > 0) {
+      await sleep(`${remainingTime}ms`);
+    }
   }
 
   return { aborted: true, reason: result.reason, expired: result.expired };
