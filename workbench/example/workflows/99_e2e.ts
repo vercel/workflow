@@ -1780,11 +1780,14 @@ export async function distributedAbortControllerWorkflow(
   // Write the abort signal to the stream
   await writeAbortSignal(result.reason, result.expired);
 
-  // Sleep until TTL + grace period to keep hook alive for late subscribers
-  const elapsed = Date.now() - startTime;
-  const remainingTime = ttlMs + graceMs - elapsed;
-  if (remainingTime > 0) {
-    await sleep(remainingTime);
+  // Only sleep through grace period on TTL expiration (keeps hook alive for late subscribers).
+  // Manual aborts complete immediately.
+  if (result.expired) {
+    const elapsed = Date.now() - startTime;
+    const remainingTime = graceMs - (elapsed - ttlMs);
+    if (remainingTime > 0) {
+      await sleep(remainingTime);
+    }
   }
 
   return { aborted: true, reason: result.reason, expired: result.expired };
