@@ -46,15 +46,17 @@ const testableWorlds = manifest.worlds.filter((world) => {
 // Build the matrix
 const matrix = {
   world: testableWorlds.map((world) => {
-    // Determine service type based on services array
+    // Determine service type based on services array.
+    // `mongodb` and `redis` have dedicated single-service CI steps; anything
+    // else (or any multi-service world) goes through the generic `docker`
+    // path driven by the manifest's `services` array.
     let serviceType = 'none';
     if (world.services && world.services.length > 0) {
-      // Use the first service's name as the service type
-      // mongodb and redis have dedicated CI steps; everything else
-      // is started generically via the manifest services definition
-      const serviceName = world.services[0].name;
-      if (['mongodb', 'redis'].includes(serviceName)) {
-        serviceType = serviceName;
+      if (world.services.length === 1) {
+        const serviceName = world.services[0].name;
+        serviceType = ['mongodb', 'redis'].includes(serviceName)
+          ? serviceName
+          : 'docker';
       } else {
         serviceType = 'docker';
       }

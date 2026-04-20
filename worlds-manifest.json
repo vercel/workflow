@@ -309,14 +309,12 @@
           },
           "healthCheck": {
             "cmd": "pg_isready -h localhost",
-            "interval": "10s",
-            "timeout": "5s",
             "retries": 5
           }
         },
         {
           "name": "platformatic-workflow",
-          "image": "platformatic/workflow:latest",
+          "image": "platformatic/workflow:0.8.1",
           "ports": ["3042:3042"],
           "env": {
             "DATABASE_URL": "postgres://wf:wf@localhost:5432/workflow",
@@ -324,8 +322,6 @@
           },
           "healthCheck": {
             "cmd": "curl -sf http://localhost:3042/status",
-            "interval": "10s",
-            "timeout": "5s",
             "retries": 10
           }
         }

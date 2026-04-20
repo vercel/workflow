@@ -90,7 +90,16 @@ jobs:
 
       - name: Start Docker services
         if: ${{ inputs.service-type == 'docker' }}
+        # Services start serially in manifest order. Each service's health check
+        # must pass before the next one starts, so any service that depends on
+        # another (e.g. a workflow service that needs postgres) must be listed
+        # AFTER its dependency in the manifest's `services` array.
+        #
+        # `healthCheck.cmd` is executed via `sh -c` below, which means the
+        # manifest is a shell-execution surface. Safe here because
+        # `worlds-manifest.json` is in-repo and PR-reviewed.
         run: |
+          set -euo pipefail
           SERVICES='${{ inputs.services }}'
           count=$(echo "$SERVICES" | jq '. | length')
           for idx in $(seq 0 $((count - 1))); do
@@ -100,18 +109,21 @@ jobs:
             health_cmd=$(echo "$svc" | jq -r '.healthCheck.cmd // empty')
             retries=$(echo "$svc" | jq -r '.healthCheck.retries // 10')
 
-            # Build docker run command with env flags
-            cmd="docker run -d --name $name --network host"
-            for key in $(echo "$svc" | jq -r '.env // {} | keys[]'); do
-              val=$(echo "$svc" | jq -r ".env[\"$key\"]")
-              cmd="$cmd -e $key=$val"
-            done
-            cmd="$cmd $image"
+            # Build docker run as an array so env values with spaces/quotes
+            # survive intact (no shell re-interpretation via eval).
+            args=(docker run -d --name "$name" --network host)
+            env_lines=$(echo "$svc" | jq -r '.env // {} | to_entries[] | "\(.key)=\(.value)"')
+            if [ -n "$env_lines" ]; then
+              while IFS= read -r line; do
+                args+=(-e "$line")
+              done <<< "$env_lines"
+            fi
+            args+=("$image")
 
             echo "Starting $name ($image)..."
-            eval "$cmd"
+            "${args[@]}"
 
-            # Health check runs on the host (--network host shares the network)
+            # Health check runs on the host (--network host shares the network).
             if [ -n "$health_cmd" ]; then
               echo "Waiting for $name to be ready..."
               for i in $(seq 1 "$retries"); do
@@ -120,7 +132,8 @@ jobs:
                   break
                 fi
                 if [ "$i" -eq "$retries" ]; then
-                  echo "WARNING: $name health check did not pass after $retries retries"
+                  echo "ERROR: $name health check did not pass after $retries retries"
+                  exit 1
                 fi
                 sleep 2
               done
