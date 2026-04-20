@@ -1,4 +1,13 @@
 {
   "title": "World SDK",
-  "pages": ["storage", "streams", "queue", "observability"]
+  "pages": [
+    "runs",
+    "steps",
+    "hooks",
+    "events",
+    "storage",
+    "streams",
+    "queue",
+    "observability"
+  ]
 }

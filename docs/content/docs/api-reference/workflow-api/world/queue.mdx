@@ -79,6 +79,49 @@ const handler = world.createQueueHandler(prefix, callback); // [!code highlight]
 
 **Returns:** `(req: Request) => Promise<Response>`
 
+## Examples
+
+### Enqueue a Workflow Run for Background Processing
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+export async function POST(req: Request) {
+  const { workflowName, input } = await req.json();
+
+  const world = getWorld();
+  const messageId = await world.queue.queue(workflowName, { // [!code highlight]
+    input,
+    priority: "normal",
+  }); // [!code highlight]
+
+  return Response.json({ messageId });
+}
+```
+
+### Create a Queue Handler for Processing
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+
+const handler = world.queue.createQueueHandler("my-workflows", async (message) => { // [!code highlight]
+  console.log("Processing:", message);
+  // Handle the queued workflow message
+}); // [!code highlight]
+```
+
+### Get Current Deployment ID
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+
+const world = getWorld();
+const deploymentId = await world.queue.getDeploymentId(); // [!code highlight]
+console.log("Running on deployment:", deploymentId);
+```
+
 ## Related
 
 - [start()](/docs/api-reference/workflow-api/start) — The standard way to start workflow runs

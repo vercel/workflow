@@ -186,6 +186,7 @@ declare global {
     runs: {
       get: (...args: any[]) => Promise<any>;
       list: (...args: any[]) => Promise<any>;
+      cancel: (...args: any[]) => Promise<any>;
     };
     steps: {
       get: (...args: any[]) => Promise<any>;

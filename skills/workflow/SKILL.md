@@ -627,6 +627,8 @@ import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowN
 
 **Key docs** (grep `node_modules/workflow/docs/` for full details):
 - `api-reference/workflow-api/world/storage.mdx` — events, runs, steps, hooks (events are source of truth; others are materialized views)
+- `api-reference/workflow-api/world/runs.mdx` — list/filter runs, pagination, status checks
+- `api-reference/workflow-api/world/steps.mdx` — step I/O inspection, duration calculation
 - `api-reference/workflow-api/world/observability.mdx` — hydration, parsing, encryption
 
 ### World SDK Method Signatures

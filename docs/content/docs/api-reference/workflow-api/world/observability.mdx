@@ -141,6 +141,78 @@ const hydrated = hydrateResourceIOWithKey(step, key); // [!code highlight]
 
 ## Examples
 
+### Hydrate Step Input and Output Data
+
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { // [!code highlight]
+  hydrateResourceIO, // [!code highlight]
+  observabilityRevivers, // [!code highlight]
+  parseStepName, // [!code highlight]
+} from "workflow/observability"; // [!code highlight]
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+  const stepId = url.searchParams.get("stepId");
+
+  if (!runId || !stepId) {
+    return Response.json({ error: "runId and stepId required" }, { status: 400 });
+  }
+
+  const world = getWorld();
+  const step = await world.steps.get(runId, stepId);
+
+  const hydrated = hydrateResourceIO(step, observabilityRevivers); // [!code highlight]
+  const parsed = parseStepName(step.stepName);
+
+  return Response.json({
+    displayName: parsed?.shortName ?? step.stepName,
+    input: hydrated.input, // [!code highlight]
+    output: hydrated.output, // [!code highlight]
+  });
+}
+```
+
+### Decrypt and Hydrate Encrypted Step Data
+
+For teams with encryption enabled, step data must be decrypted before hydration:
+
+{/* @expect-error:2305,2724 */}
+```typescript lineNumbers
+import { getWorld } from "workflow/runtime";
+import { // [!code highlight]
+  getEncryptionKeyForRun, // [!code highlight]
+  hydrateResourceIOWithKey, // [!code highlight]
+  parseStepName, // [!code highlight]
+} from "workflow/observability"; // [!code highlight]
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const runId = url.searchParams.get("runId");
+  const stepId = url.searchParams.get("stepId");
+
+  if (!runId || !stepId) {
+    return Response.json({ error: "runId and stepId required" }, { status: 400 });
+  }
+
+  const world = getWorld();
+  const step = await world.steps.get(runId, stepId);
+
+  // Decrypt then hydrate // [!code highlight]
+  const key = await getEncryptionKeyForRun(runId); // [!code highlight]
+  const hydrated = hydrateResourceIOWithKey(step, key); // [!code highlight]
+
+  const parsed = parseStepName(step.stepName);
+
+  return Response.json({
+    displayName: parsed?.shortName ?? step.stepName,
+    input: hydrated.input,
+    output: hydrated.output,
+  });
+}
+```
+
 ### Parse Display Names for a Run's Steps
 
 ```typescript lineNumbers
