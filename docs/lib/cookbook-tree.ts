@@ -37,6 +37,7 @@ export const slugToCategory: Record<string, string> = {
   webhooks: 'common-patterns',
   'content-router': 'common-patterns',
   'child-workflows': 'common-patterns',
+  'distributed-abort-controller': 'common-patterns',
 
   // Agent Patterns
   'durable-agent': 'agent-patterns',
@@ -122,6 +123,13 @@ export const recipes: Record<string, Recipe> = {
     title: 'Child Workflows',
     description:
       'Spawn and orchestrate child workflows from a parent, polling for completion and handling partial failures.',
+    category: 'common-patterns',
+  },
+  'distributed-abort-controller': {
+    slug: 'distributed-abort-controller',
+    title: 'Distributed Abort Controller',
+    description:
+      'Build a cross-process abort controller using workflow streams and hooks to coordinate cancellation by semantic ID.',
     category: 'common-patterns',
   },
 
