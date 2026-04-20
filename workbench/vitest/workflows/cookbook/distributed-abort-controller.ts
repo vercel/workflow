@@ -132,10 +132,8 @@ export class DistributedAbortController {
     }
 
     // Create a new workflow
-    const run = await start(abortControllerWorkflow, {
-      args: [id, ttlMs, graceMs],
-    });
-    return new DistributedAbortController(id, run.id);
+    const run = await start(abortControllerWorkflow, [id, ttlMs, graceMs]);
+    return new DistributedAbortController(id, run.runId);
   }
 
   /**
