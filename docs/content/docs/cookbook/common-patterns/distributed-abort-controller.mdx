@@ -235,6 +235,8 @@ anotherRef.signal.addEventListener("abort", (e) => {
 ### Custom TTL
 
 ```typescript lineNumbers
+import { DistributedAbortController } from "./distributed-abort-controller";
+
 // Short-lived controller for a quick operation (5 minutes)
 const shortLived = await DistributedAbortController.create("quick-task", {
   ttlMs: 5 * 60 * 1000,
