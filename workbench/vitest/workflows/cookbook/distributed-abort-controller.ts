@@ -139,11 +139,20 @@ export class DistributedAbortController {
   /**
    * Triggers the abort signal.
    * Can be called from any process with this controller instance.
+   * Idempotent: safe to call multiple times or after the workflow has completed.
    *
    * @param reason - Optional reason for the cancellation
    */
   async abort(reason?: string): Promise<void> {
-    await abortHook.resume(getAbortToken(this.id), { reason });
+    try {
+      await abortHook.resume(getAbortToken(this.id), { reason });
+    } catch (error) {
+      const msg = error instanceof Error ? error.message.toLowerCase() : '';
+      if (msg.includes('not found') || msg.includes('expired')) {
+        return;
+      }
+      throw error;
+    }
   }
 
   /**
@@ -159,8 +168,6 @@ export class DistributedAbortController {
     const controller = new AbortController();
     const readable = run.getReadable<AbortMessage>();
 
-    // Read from the stream in the background
-    // When an abort message arrives, trigger the local controller
     (async () => {
       const reader = readable.getReader();
       try {
@@ -174,6 +181,12 @@ export class DistributedAbortController {
             controller.abort(reason);
             break;
           }
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          controller.abort(
+            error instanceof Error ? error.message : 'Stream read failed'
+          );
         }
       } finally {
         reader.releaseLock();
