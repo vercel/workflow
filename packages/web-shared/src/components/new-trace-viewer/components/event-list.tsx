@@ -15,25 +15,22 @@ interface EventStyle {
 }
 
 const eventStyles: Record<string, EventStyle> = {
-  run: { icon: WorkflowIcon, className: 'bg-blue-200 text-blue-900' },
-  step: { icon: StepForwardIcon, className: 'bg-green-200 text-green-900' },
-  hook: { icon: WebhookIcon, className: 'bg-yellow-200 text-yellow-900' },
-  sleep: { icon: SleepIcon, className: 'bg-gray-200 text-gray-900' },
+  run: { icon: WorkflowIcon, className: 'text-blue-900' },
+  step: { icon: StepForwardIcon, className: 'text-green-900' },
+  hook: { icon: WebhookIcon, className: 'text-yellow-900' },
+  sleep: { icon: SleepIcon, className: 'text-gray-900' },
 };
 
 const defaultStyle: EventStyle = {
   icon: Circle,
-  className: 'bg-gray-200 text-gray-900',
+  className: 'text-gray-900',
 };
 
 function getEventStyle(resource: string, isErrored: boolean): EventStyle {
   const style = eventStyles[resource] ?? defaultStyle;
   return {
     icon: style.icon,
-    className: cn(
-      'rounded-sm p-1',
-      isErrored ? 'bg-red-200 text-red-900' : style.className
-    ),
+    className: cn(isErrored ? 'text-red-900' : style.className),
   };
 }
 
@@ -63,7 +60,7 @@ const EventRow = ({
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 rounded-sm px-2 h-9 py-1.5 flex">
+      <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 rounded-sm px-2 h-[34px] py-1.5 flex">
         <div className="flex items-center gap-2">
           <span className={tagClassName}>
             <Icon className="w-4 h-4" />

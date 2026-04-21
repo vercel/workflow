@@ -1,6 +1,5 @@
 'use client';
 
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
 import { Search, X } from 'lucide-react';
 import {
@@ -133,11 +132,9 @@ function useSelectedSpanInfo(): SelectedSpanInfo | null {
 
 export function NewTraceViewer({ trace }: NewTraceViewerProps): ReactNode {
   return (
-    <TooltipPrimitive.Provider delayDuration={0}>
-      <ActiveSpanProvider spans={trace.spans}>
-        <NewTraceViewerContent trace={trace} />
-      </ActiveSpanProvider>
-    </TooltipPrimitive.Provider>
+    <ActiveSpanProvider spans={trace.spans}>
+      <NewTraceViewerContent trace={trace} />
+    </ActiveSpanProvider>
   );
 }
 
@@ -556,7 +553,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           </div>
           {/* Panel body */}
           <div className="flex-1 overflow-y-auto">
-            <ErrorBoundary title="Failed to load entity details">
+            <ErrorBoundary>
               <EntityDetailPanel
                 run={sidebar.run}
                 onStreamClick={sidebar.onStreamClick}

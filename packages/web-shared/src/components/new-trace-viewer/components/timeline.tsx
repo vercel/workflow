@@ -1,12 +1,11 @@
 'use client';
 
-import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import type { ReactNode } from 'react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
-import type { Segment, SegmentStatus, TimeCompression } from '../utils';
+import type { SegmentStatus, TimeCompression } from '../utils';
 import {
   computeCompressedTimeMarkers,
   computeSpanGaps,
@@ -37,31 +36,10 @@ const SEGMENT_CONFIG: Record<
   received: { className: 'bg-blue-700' },
 };
 
-const SEGMENT_LABELS: Record<SegmentStatus, string> = {
-  queued: 'Queued',
-  retrying: 'Retrying',
-  waiting: 'Waiting',
-  running: 'Running',
-  failed: 'Failed',
-  succeeded: 'Succeeded',
-  sleeping: 'Sleeping',
-  received: 'Received',
-};
-
-const SEGMENT_DOT_COLORS: Record<SegmentStatus, string> = {
-  queued: 'bg-gray-500',
-  retrying: 'bg-gray-500',
-  waiting: 'bg-gray-500',
-  running: 'bg-blue-700',
-  failed: 'bg-red-700',
-  succeeded: 'bg-green-700',
-  sleeping: 'bg-amber-700',
-  received: 'bg-blue-700',
-};
-
 const FIXED_BAR_WIDTH_PX = 4;
 const SEGMENT_GAP_PX = 1;
-const ROW_HEIGHT = 36;
+// Keep this in sync with the rendered row height in the timeline/event list.
+const ROW_HEIGHT = 34;
 const CONTAINER_PAD_Y = 8;
 const END_CAP_HEIGHT = 8;
 
@@ -98,57 +76,6 @@ const DeltaIndicator = memo(function DeltaIndicator({
   );
 });
 
-function BarTooltipContent({
-  segments,
-  totalDurationMs,
-}: {
-  segments: Segment[];
-  totalDurationMs: number;
-}) {
-  const mergedSegments = useMemo(() => {
-    const merged: Segment[] = [];
-    for (const seg of segments) {
-      const last = merged[merged.length - 1];
-      if (last && last.status === seg.status) {
-        last.endFraction = seg.endFraction;
-      } else {
-        merged.push({ ...seg });
-      }
-    }
-    return merged;
-  }, [segments]);
-
-  return (
-    <div className="flex flex-col gap-1">
-      {mergedSegments.map((seg, i) => {
-        const segDuration =
-          (seg.endFraction - seg.startFraction) * totalDurationMs;
-        return (
-          <div
-            key={`${seg.status}-${i}`}
-            className="flex items-center justify-between gap-3"
-          >
-            <div className="flex items-center gap-1.5">
-              <span
-                className={cn(
-                  'w-1.5 h-1.5 rounded-full shrink-0',
-                  SEGMENT_DOT_COLORS[seg.status]
-                )}
-              />
-              <span className="text-label-12 font-medium">
-                {SEGMENT_LABELS[seg.status]}
-              </span>
-            </div>
-            <span className="text-label-12 font-mono font-medium text-gray-900 tabular-nums">
-              {formatDuration(segDuration)}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 const TimelineBar = memo(function TimelineBar({
   span,
   compression,
@@ -175,6 +102,7 @@ const TimelineBar = memo(function TimelineBar({
 
   const pixelWidth = widthFrac * containerWidth;
   const isCompressed = containerWidth > 0 && pixelWidth < FIXED_BAR_WIDTH_PX;
+  const [isRowHovered, setIsRowHovered] = useState(false);
 
   const segments = useMemo(() => computeSpanSegments(span), [span]);
   const finalSegment = segments[segments.length - 1];
@@ -204,10 +132,25 @@ const TimelineBar = memo(function TimelineBar({
   const hasCompressedStatus = Boolean(
     compressedSegmentClassName || compressedSegmentStyle
   );
+  const renderDurationLabel = (label: string) => (
+    <span
+      className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-white tabular-nums"
+      style={{ textShadow: '0 1px 1px rgba(0, 0, 0, 0.45)' }}
+    >
+      {label}
+    </span>
+  );
+  const getMinDurationLabelWidthPx = (label: string) =>
+    Math.max(40, label.length * 6 + 12);
+  const totalDurationLabel = formatDuration(totalDurationMs);
+  const showBarDurationLabel =
+    isRowHovered &&
+    pixelWidth >= getMinDurationLabelWidthPx(totalDurationLabel);
+
   const barContent = isCompressed ? (
     <div
       className={cn(
-        'h-4 rounded-[0.25rem] relative top-1',
+        'relative h-4 rounded-[0.25rem] top-[3px]',
         compressedSegmentClassName
       )}
       style={{
@@ -215,12 +158,20 @@ const TimelineBar = memo(function TimelineBar({
         background: hasCompressedStatus ? undefined : fallbackColor,
         ...compressedSegmentStyle,
       }}
-    />
+    >
+      {showBarDurationLabel ? renderDurationLabel(totalDurationLabel) : null}
+    </div>
   ) : segments.length > 0 ? (
-    <div className="relative w-full h-4 top-1">
+    <div className="relative w-full h-4 top-[3px]">
       {segments.map((seg, i) => {
         const segPixelWidth =
           (seg.endFraction - seg.startFraction) * pixelWidth;
+        const segDurationLabel = formatDuration(
+          (seg.endFraction - seg.startFraction) * totalDurationMs
+        );
+        const showSegmentDurationLabel =
+          isRowHovered &&
+          segPixelWidth >= getMinDurationLabelWidthPx(segDurationLabel);
         const segStyle =
           seg.status === 'queued' && segPixelWidth < 20
             ? { background: 'var(--ds-gray-500)' }
@@ -239,22 +190,26 @@ const TimelineBar = memo(function TimelineBar({
               minWidth: 1,
               ...segStyle,
             }}
-          />
+          >
+            {showSegmentDurationLabel
+              ? renderDurationLabel(segDurationLabel)
+              : null}
+          </div>
         );
       })}
     </div>
   ) : (
     <div
-      className="h-4 rounded-[0.25rem] relative top-1"
+      className="relative h-4 rounded-[0.25rem] top-[3px]"
       style={{
         width: '100%',
         minWidth: 4,
         background: fallbackColor,
       }}
-    />
+    >
+      {showBarDurationLabel ? renderDurationLabel(totalDurationLabel) : null}
+    </div>
   );
-
-  const hasTooltip = segments.length > 0;
 
   return (
     <div
@@ -263,55 +218,25 @@ const TimelineBar = memo(function TimelineBar({
       aria-expanded={isSelected}
       aria-level={1}
       className={cn(
-        'h-9 relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 rounded-sm aria-selected:hover:bg-gray-200'
+        'h-[34px] relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 rounded-sm aria-selected:hover:bg-gray-200'
       )}
+      onMouseEnter={() => setIsRowHovered(true)}
+      onMouseLeave={() => setIsRowHovered(false)}
       onClick={onClick}
     >
-      {hasTooltip ? (
-        <TooltipPrimitive.Root delayDuration={200}>
-          <TooltipPrimitive.Trigger asChild>
-            <div
-              className="absolute h-6 top-1.5 rounded-sm"
-              style={{
-                left: isCompressed
-                  ? `min(${leftPct}%, calc(100% - ${FIXED_BAR_WIDTH_PX}px))`
-                  : `${leftPct}%`,
-                width: isCompressed
-                  ? `${FIXED_BAR_WIDTH_PX}px`
-                  : `max(${widthPct}%, 4px)`,
-              }}
-            >
-              {barContent}
-            </div>
-          </TooltipPrimitive.Trigger>
-          <TooltipPrimitive.Portal>
-            <TooltipPrimitive.Content
-              side="top"
-              sideOffset={6}
-              className="z-50 rounded border border-gray-alpha-400 bg-background-100 shadow-md px-3 py-2 min-w-[160px] origin-[var(--radix-tooltip-content-transform-origin)] data-[state=delayed-open]:animate-[tooltip-enter_150ms_ease-out]"
-            >
-              <BarTooltipContent
-                segments={segments}
-                totalDurationMs={totalDurationMs}
-              />
-            </TooltipPrimitive.Content>
-          </TooltipPrimitive.Portal>
-        </TooltipPrimitive.Root>
-      ) : (
-        <div
-          className="absolute h-6 top-1.5 rounded-sm"
-          style={{
-            left: isCompressed
-              ? `min(${leftPct}%, calc(100% - ${FIXED_BAR_WIDTH_PX}px))`
-              : `${leftPct}%`,
-            width: isCompressed
-              ? `${FIXED_BAR_WIDTH_PX}px`
-              : `max(${widthPct}%, 4px)`,
-          }}
-        >
-          {barContent}
-        </div>
-      )}
+      <div
+        className="absolute top-1.5 h-[22px] rounded-sm"
+        style={{
+          left: isCompressed
+            ? `min(${leftPct}%, calc(100% - ${FIXED_BAR_WIDTH_PX}px))`
+            : `${leftPct}%`,
+          width: isCompressed
+            ? `${FIXED_BAR_WIDTH_PX}px`
+            : `max(${widthPct}%, 4px)`,
+        }}
+      >
+        {barContent}
+      </div>
     </div>
   );
 });

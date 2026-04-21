@@ -331,15 +331,15 @@ const attributeDisplayNames: Partial<Record<AttributeKey, string>> = {
   deploymentId: 'Deployment ID',
   specVersion: 'Spec Version',
   workflowCoreVersion: '@workflow/core version',
-  createdAt: 'Created At',
-  startedAt: 'Started At',
-  updatedAt: 'Updated At',
-  completedAt: 'Completed At',
-  expiredAt: 'Expired At',
+  createdAt: 'Created',
+  startedAt: 'Started',
+  updatedAt: 'Updated',
+  completedAt: 'Completed',
+  expiredAt: 'Expired',
   retryAfter: 'Retry After',
-  resumeAt: 'Resume At',
-  lastReceivedAt: 'Last Received At',
-  disposedAt: 'Disposed At',
+  resumeAt: 'Resume',
+  lastReceivedAt: 'Last Received',
+  disposedAt: 'Disposed',
   receivedCount: 'Times Resolved',
 };
 
@@ -429,8 +429,7 @@ const attributeToDisplayFn: Record<
   // Names that need pretty-printing
   workflowName: (_value: unknown) => null,
   moduleSpecifier: (value: unknown) => getModuleSpecifierFromName(value),
-  stepName: (value: unknown) =>
-    parseStepName(String(value))?.shortName ?? String(value),
+  stepName: (_value: unknown) => null,
   // IDs
   runId: (_value: unknown) => null,
   stepId: (_value: unknown) => null,
