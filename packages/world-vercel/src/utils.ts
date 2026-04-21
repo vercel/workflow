@@ -69,9 +69,6 @@ const WORKFLOW_SERVER_URL_OVERRIDE = '';
  * Without this, a hung workflow-server response would keep the caller
  * blocked until the platform's `maxDuration` SIGTERM — burning compute
  * and defeating upstream timeout handlers (e.g. the replay timeout).
- *
- * 60s is comfortably above observed p99 latencies (e.g. ~47s under load)
- * while still failing fast on truly wedged connections.
  */
 const REQUEST_TIMEOUT_MS = 60_000;
 
