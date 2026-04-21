@@ -4,7 +4,7 @@
   "tasks": {
     "build": {
       "env": ["WORKFLOW_WEB_VERCEL_BUILD"],
-      "outputs": ["build/**", ".vercel/**"]
+      "outputs": ["build/**", ".vercel/react-router-build-result.json"]
     }
   }
 }
