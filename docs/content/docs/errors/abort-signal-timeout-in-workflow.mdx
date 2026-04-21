@@ -2,6 +2,7 @@
 title: AbortSignal.timeout() in Workflow
 description: AbortSignal.timeout() cannot be used inside workflow functions because it relies on real timers which break deterministic replay.
 type: troubleshooting
+preRelease: true
 summary: Use sleep() with AbortController instead of AbortSignal.timeout() in workflow functions.
 prerequisites:
   - /docs/foundations/workflows-and-steps

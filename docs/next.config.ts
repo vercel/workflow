@@ -68,6 +68,11 @@ const config: NextConfig = {
         permanent: true,
       },
       {
+        source: '/v5/docs',
+        destination: '/v5/docs/getting-started',
+        permanent: false,
+      },
+      {
         source: '/docs/cookbook',
         destination: '/cookbook',
         permanent: true,

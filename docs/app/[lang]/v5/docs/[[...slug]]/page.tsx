@@ -3,10 +3,8 @@ import { Tab, Tabs } from 'fumadocs-ui/components/tabs';
 import { createRelativeLink } from 'fumadocs-ui/mdx';
 import type { Metadata } from 'next';
 import { notFound, permanentRedirect } from 'next/navigation';
-import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
 import { AgentTraces } from '@/components/custom/agent-traces';
 import { FluidComputeCallout } from '@/components/custom/fluid-compute-callout';
-import { PreviewInstallServer } from '@/components/preview-install-server';
 import { AskAI } from '@/components/geistdocs/ask-ai';
 import { CopyPage } from '@/components/geistdocs/copy-page';
 import {
@@ -21,17 +19,17 @@ import { getMDXComponents } from '@/components/geistdocs/mdx-components';
 import { MobileDocsBar } from '@/components/geistdocs/mobile-docs-bar';
 import { OpenInChat } from '@/components/geistdocs/open-in-chat';
 import { ScrollTop } from '@/components/geistdocs/scroll-top';
+import { PreviewInstallServer } from '@/components/preview-install-server';
 import * as AccordionComponents from '@/components/ui/accordion';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { rewriteCookbookUrl } from '@/lib/geistdocs/cookbook-source';
 import { getLLMText, getPageImage, source } from '@/lib/geistdocs/source';
 import { TSDoc } from '@/lib/tsdoc';
 
-// No-op component for world MDX files rendered outside /worlds/ context
-// These pages redirect to /worlds/[id] but still get statically generated
 const WorldTestingPerformanceNoop = () => null;
 
-const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
+const Page = async ({ params }: PageProps<'/[lang]/v5/docs/[[...slug]]'>) => {
   const { slug, lang } = await params;
 
   if (Array.isArray(slug) && slug[0] === 'cookbook') {
@@ -41,14 +39,7 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
   }
 
   const page = source.getPage(slug, lang);
-
   if (!page) {
-    notFound();
-  }
-
-  // preRelease pages are only reachable under /v5/docs/*. Block direct
-  // access via /docs/* so the v4 tree doesn't expose unreleased content.
-  if (page.data.preRelease) {
     notFound();
   }
 
@@ -82,8 +73,6 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
         <MDX
           components={getMDXComponents({
             a: createRelativeLink(source, page),
-
-            // Add your custom components here
             AgentTraces,
             FluidComputeCallout,
             Badge,
@@ -94,7 +83,6 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
             Tabs,
             Tab,
             PreviewInstall: PreviewInstallServer,
-            // No-op for world MDX files (they redirect to /worlds/[id])
             WorldTestingPerformance: WorldTestingPerformanceNoop,
           })}
         />
@@ -112,29 +100,28 @@ export const generateStaticParams = () =>
 
 export const generateMetadata = async ({
   params,
-}: PageProps<'/[lang]/docs/[[...slug]]'>) => {
+}: PageProps<'/[lang]/v5/docs/[[...slug]]'>): Promise<Metadata> => {
   const { slug, lang } = await params;
   const page = source.getPage(slug, lang);
-
-  if (!page) {
-    notFound();
-  }
-
-  const metadata: Metadata = {
-    title: page.data.title,
+  if (!page) notFound();
+  return {
+    title: `${page.data.title} · Pre-release`,
     description: page.data.description,
     openGraph: {
       images: getPageImage(page).url,
     },
+    // Pre-release pages are not canonical; point search engines at the
+    // latest URL (or self if this page is v5-only).
     alternates: {
-      canonical: page.url,
-      types: {
-        'text/markdown': `${page.url}.md`,
-      },
+      canonical: page.data.preRelease
+        ? `/${lang}/v5${page.url}`
+        : `/${lang}${page.url}`,
+    },
+    robots: {
+      index: false,
+      follow: true,
     },
   };
-
-  return metadata;
 };
 
 export default Page;
