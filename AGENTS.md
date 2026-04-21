@@ -102,7 +102,6 @@ DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest r
 # - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...) — see test matrix
 # - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug — see test matrix
 # - VERCEL_AUTOMATION_BYPASS_SECRET: Deployment-protection bypass for the project
-# - WORKFLOW_PUBLIC_MANIFEST: "1" (required so tests can fetch the manifest)
 #
 # Example (nextjs-turbopack preview deployment):
 NODE_OPTIONS="--enable-source-maps" \
@@ -115,7 +114,6 @@ WORKFLOW_VERCEL_TEAM="team_nO2mCG4W8IxPIeKoSsqwAxxB" \
 WORKFLOW_VERCEL_PROJECT="prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi" \
 WORKFLOW_VERCEL_PROJECT_SLUG="example-nextjs-workflow-turbopack" \
 VERCEL_AUTOMATION_BYPASS_SECRET="<bypass_secret>" \
-WORKFLOW_PUBLIC_MANIFEST="1" \
 pnpm run test:e2e
 ```
 
