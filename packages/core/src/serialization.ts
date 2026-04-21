@@ -950,7 +950,7 @@ function reduceAbortWithListener(
 
   if (!signal.aborted && signal.addEventListener) {
     const abortListener = () => {
-      const writable = new WorkflowServerWritableStream(streamName!, runId);
+      const writable = new WorkflowServerWritableStream(runId, streamName!);
       const writer = writable.getWriter();
       const packet = new TextEncoder().encode(
         JSON.stringify({ reason: signal.reason })
@@ -1290,6 +1290,12 @@ export function cancelAbortReaders(...values: unknown[]): void {
       for (const v of val) walk(v);
       return;
     }
+    // Request/Response expose `signal`/`body` as prototype getters, so
+    // Object.values() won't find them. Descend explicitly.
+    if (typeof Request !== 'undefined' && val instanceof Request) {
+      walk(val.signal);
+      return;
+    }
     for (const v of Object.values(val as Record<string, unknown>)) walk(v);
   }
   for (const v of values) walk(v);
@@ -1364,6 +1370,26 @@ function tagAbortPair(
   if (readerCancel) {
     taggedController[ABORT_READER_CANCEL] = readerCancel;
     taggedSignal[ABORT_READER_CANCEL] = readerCancel;
+  }
+}
+
+/**
+ * Propagate abort-internal symbols from one signal to another. Used by the
+ * Request reviver because `new Request(url, { signal })` copies the signal
+ * internally — the constructed `request.signal` is a fresh AbortSignal that
+ * doesn't carry symbols from the source.
+ */
+function copyAbortInternals(src: AbortSignal, dest: AbortSignal): void {
+  const s = src as AbortSignal & AbortInternals;
+  const d = dest as AbortSignal & AbortInternals;
+  if (s[ABORT_STREAM_NAME] !== undefined) {
+    d[ABORT_STREAM_NAME] = s[ABORT_STREAM_NAME];
+  }
+  if (s[ABORT_HOOK_TOKEN] !== undefined) {
+    d[ABORT_HOOK_TOKEN] = s[ABORT_HOOK_TOKEN];
+  }
+  if (s[ABORT_READER_CANCEL] !== undefined) {
+    d[ABORT_READER_CANCEL] = s[ABORT_READER_CANCEL];
   }
 }
 
@@ -1633,7 +1659,12 @@ export function getExternalRevivers(
         duplex: value.duplex,
       };
       if (value.signal) init.signal = value.signal;
-      return new global.Request(value.url, init);
+      const request = new global.Request(value.url, init);
+      // The Request constructor creates an internal signal copy, so the
+      // abort-internal symbols set by reviveAbortSignal don't propagate.
+      // Re-tag the request's own signal so cancelAbortReaders can find it.
+      if (value.signal) copyAbortInternals(value.signal, request.signal);
+      return request;
     },
     Response: (value) => {
       // Note: Response constructor only accepts status, statusText, and headers
@@ -1972,6 +2003,10 @@ function getStepRevivers(
       };
       if (value.signal) init.signal = value.signal;
       const request = new global.Request(value.url, init);
+      // The Request constructor creates an internal signal copy, so the
+      // abort-internal symbols set by reviveAbortSignal don't propagate.
+      // Re-tag the request's own signal so cancelAbortReaders can find it.
+      if (value.signal) copyAbortInternals(value.signal, request.signal);
       if (responseWritable) {
         request.respondWith = async (response: Response) => {
           const writer = responseWritable.getWriter();

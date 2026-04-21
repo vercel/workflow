@@ -6,6 +6,7 @@ import { registerSerializationClass } from './class-serialization.js';
 import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import {
+  cancelAbortReaders,
   decodeFormatPrefix,
   dehydrateStepArguments,
   dehydrateStepReturnValue,
@@ -27,6 +28,7 @@ import {
 } from './serialization.js';
 import {
   ABORT_HOOK_TOKEN,
+  ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
@@ -4798,6 +4800,124 @@ describe('AbortController serialization', () => {
         vmGlobalThis.AbortSignal = origAS;
       } catch (e) {
         throw e;
+      }
+    });
+
+    it('aborting the original signal after serialization fires the listener and writes the abort packet', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORTEXT00000000001';
+
+      const writeMock = vi.fn().mockResolvedValue(undefined);
+      const { getWorld } = await import('./runtime/world.js');
+      vi.mocked(getWorld).mockReturnValue({
+        streams: {
+          write: writeMock,
+          writeMulti: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+          get: vi.fn().mockResolvedValue(
+            new ReadableStream({
+              start(c) {
+                c.close();
+              },
+            })
+          ),
+          list: vi.fn().mockResolvedValue([]),
+          getInfo: vi.fn().mockResolvedValue(undefined),
+        },
+      } as any);
+
+      try {
+        // External (non-workflow) controller — native AbortController.
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        expect(controller.signal.aborted).toBe(false);
+        expect(writeMock).not.toHaveBeenCalled();
+
+        // Abort AFTER serialization. The reducer attached an `abort` listener
+        // that should fire here and push a stream-write op.
+        controller.abort('aborted-after-serialization');
+
+        await Promise.all(ops);
+
+        expect(writeMock).toHaveBeenCalled();
+        const [runIdArg, streamNameArg, chunks] = writeMock.mock.calls[0];
+        expect(runIdArg).toBe(mockRunId);
+        expect(String(streamNameArg)).toContain('_system_abort');
+        // writeMulti path flattens into chunks[]; write path passes a single
+        // Uint8Array. Normalize to a single decoded JSON object.
+        const decoded = Array.isArray(chunks)
+          ? new TextDecoder().decode(
+              new Uint8Array(chunks.flatMap((c: Uint8Array) => Array.from(c)))
+            )
+          : new TextDecoder().decode(chunks as Uint8Array);
+        expect(JSON.parse(decoded)).toEqual({
+          reason: 'aborted-after-serialization',
+        });
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+        vi.mocked(getWorld).mockReset();
+      }
+    });
+
+    it('cancelAbortReaders cancels the reader when the signal is nested inside a Request', async () => {
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORTREQ0000000001';
+
+      try {
+        // Build a Request whose signal is tagged as workflow-managed so the
+        // Request reducer serializes it (plain native signals are stripped).
+        // The Request constructor copies the signal internally, so tag the
+        // Request's own signal after construction.
+        const controller = new AbortController();
+        const request = new Request('https://example.com/api', {
+          method: 'POST',
+          signal: controller.signal,
+        });
+        (request.signal as any)[ABORT_STREAM_NAME] =
+          'strm_01ABORTREQ0000000001_system_abort';
+        (request.signal as any)[ABORT_HOOK_TOKEN] = 'abrt_01ABORTREQ0000000001';
+
+        const ops: Promise<void>[] = [];
+        // external → workflow reducer tags + attaches listener; step reviver
+        // (via hydrateStepArguments) installs the stream reader.
+        const serialized = await dehydrateWorkflowArguments(
+          request,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = (await hydrateStepArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        )) as Request;
+
+        expect(hydrated).toBeInstanceOf(Request);
+        expect(hydrated.signal.aborted).toBe(false);
+        const hydratedSignal = hydrated.signal as AbortSignal & {
+          [K in typeof ABORT_READER_CANCEL]?: AbortController;
+        };
+        const readerCancel = hydratedSignal[ABORT_READER_CANCEL];
+        expect(readerCancel).toBeInstanceOf(AbortController);
+        expect(readerCancel!.signal.aborted).toBe(false);
+
+        // Simulate step completion — cancelAbortReaders walks the step args.
+        // The Request wraps the signal, so the walker must descend into it.
+        cancelAbortReaders(hydrated);
+
+        expect(readerCancel!.signal.aborted).toBe(true);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
       }
     });
   });
