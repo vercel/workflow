@@ -17,7 +17,6 @@ import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
   MAX_QUEUE_DELIVERIES,
-  REPLAY_TIMEOUT_EXIT_DEADLINE_MS,
   REPLAY_TIMEOUT_MAX_RETRIES,
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
@@ -201,20 +200,6 @@ export function workflowEntrypoint(
             if (metadata.attempt <= REPLAY_TIMEOUT_MAX_RETRIES) {
               process.exit(1);
             }
-
-            // Arm a hard exit deadline so that if the run_failed write hangs
-            // (e.g. workflow-server is unresponsive), the process still exits
-            // instead of running until the platform's maxDuration SIGTERM.
-            // This _will_ be re-tried by the queue up to max retries, since only run_failed
-            // counts as an early exit + queue ack for the replay.
-            // It's hard to measure whether this is an improvement over going to maxDuration on
-            // a single call, since early-exit causes more request pressure, but a retry might also
-            // aid recovery.
-            const exitDeadline = setTimeout(
-              () => process.exit(1),
-              REPLAY_TIMEOUT_EXIT_DEADLINE_MS
-            );
-            exitDeadline.unref();
 
             try {
               const world = await getWorld();

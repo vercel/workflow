@@ -63,6 +63,18 @@ function httpLog(
  */
 const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
+/**
+ * Per-request timeout for HTTP calls to workflow-server (in ms).
+ *
+ * Without this, a hung workflow-server response would keep the caller
+ * blocked until the platform's `maxDuration` SIGTERM — burning compute
+ * and defeating upstream timeout handlers (e.g. the replay timeout).
+ *
+ * 60s is comfortably above observed p99 latencies (e.g. ~47s under load)
+ * while still failing fast on truly wedged connections.
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
@@ -316,12 +328,34 @@ export async function makeRequest<T>({
         ...options,
         body,
         headers,
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
       const fetchStart = Date.now();
-      const response = await fetch(request, {
-        dispatcher: getDispatcher(),
-      } as any);
+      let response: Response;
+      try {
+        response = await fetch(request, {
+          dispatcher: getDispatcher(),
+        } as any);
+      } catch (error) {
+        const elapsed = Date.now() - fetchStart;
+        // AbortSignal.timeout() surfaces as a DOMException with name
+        // 'TimeoutError'. Map to WorkflowWorldError so existing catch
+        // sites treat it like any other world transport failure.
+        if (
+          error instanceof Error &&
+          (error.name === 'TimeoutError' || error.name === 'AbortError')
+        ) {
+          const timeoutError = new WorkflowWorldError(
+            `${method} ${endpoint} timed out after ${elapsed}ms`,
+            { url, cause: error }
+          );
+          span?.setAttributes({ ...ErrorType('TIMEOUT') });
+          span?.recordException?.(timeoutError);
+          throw timeoutError;
+        }
+        throw error;
+      }
       const fetchMs = Date.now() - fetchStart;
 
       httpLog(method, endpoint, response.status, fetchMs);
