@@ -378,6 +378,116 @@ describe('workflow-node-module-error plugin', () => {
     }
   });
 
+  it('should not error when a shared module exposes a workflow-safe export alongside an unused Node.js-using export', async () => {
+    // Repro for https://github.com/vercel/workflow/issues/1817
+    //
+    // When a shared module has both a workflow-safe export and a Node.js-using
+    // export, and the workflow bundle only uses the workflow-safe one, esbuild
+    // should be able to tree-shake the Node.js-using export (and its imports)
+    // and the plugin should not emit a false-positive violation.
+    const tempDir = mkdtempSync(join(realTmpdir, 'node-module-plugin-test-'));
+    const sharedFile = join(tempDir, 'shared.ts');
+    const entryFile = join(tempDir, 'workflow.ts');
+
+    writeFileSync(
+      sharedFile,
+      `
+      import { readFile } from "node:fs/promises";
+      import path from "node:path";
+
+      export const isSupportedValue = (value) => value === "ok";
+
+      export async function readFixtureFile() {
+        return readFile(path.join(process.cwd(), "fixture.txt"), "utf8");
+      }
+      `
+    );
+    writeFileSync(
+      entryFile,
+      `
+      import { isSupportedValue } from "./shared.js";
+      export function workflow() {
+        return isSupportedValue("ok");
+      }
+      `
+    );
+
+    try {
+      const result = await esbuild.build({
+        entryPoints: [entryFile],
+        bundle: true,
+        write: false,
+        platform: 'neutral',
+        logLevel: 'silent',
+        plugins: [createNodeModuleErrorPlugin()],
+      });
+      expect(result.errors).toHaveLength(0);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("should still error when a shared module's Node.js-using export is actually referenced", async () => {
+    // Counterpart to the previous test: when the workflow really does pull in
+    // the Node.js-using export (directly or transitively), the plugin must
+    // still emit the violation.
+    const tempDir = mkdtempSync(join(realTmpdir, 'node-module-plugin-test-'));
+    const sharedFile = join(tempDir, 'shared.ts');
+    const entryFile = join(tempDir, 'workflow.ts');
+    const relativeShared = relative(process.cwd(), sharedFile);
+
+    writeFileSync(
+      sharedFile,
+      `
+      import { readFile } from "node:fs/promises";
+      import path from "node:path";
+
+      export const isSupportedValue = (value) => value === "ok";
+
+      export async function readFixtureFile() {
+        return readFile(path.join(process.cwd(), "fixture.txt"), "utf8");
+      }
+      `
+    );
+    writeFileSync(
+      entryFile,
+      `
+      import { isSupportedValue, readFixtureFile } from "./shared.js";
+      export async function workflow() {
+        if (!isSupportedValue("ok")) throw new Error("nope");
+        return readFixtureFile();
+      }
+      `
+    );
+
+    try {
+      await esbuild.build({
+        entryPoints: [entryFile],
+        bundle: true,
+        write: false,
+        platform: 'neutral',
+        logLevel: 'silent',
+        plugins: [createNodeModuleErrorPlugin()],
+      });
+      throw new Error('Expected build to fail');
+    } catch (error: any) {
+      if (error && typeof error === 'object' && 'errors' in error) {
+        const failure = error as esbuild.BuildFailure;
+        const paths = failure.errors.map((e) => e.text);
+        expect(paths.some((t) => t.includes('"node:fs/promises"'))).toBe(true);
+        expect(paths.some((t) => t.includes('"node:path"'))).toBe(true);
+        // Violations should be attributed to the shared module, not the entry.
+        for (const err of failure.errors) {
+          expect(err.location?.file).toBe(relativeShared);
+        }
+      } else {
+        throw error;
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it('should not point to JSDoc comments when finding usage', async () => {
     const testCode = `
       import { Writable } from "stream";
