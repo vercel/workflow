@@ -34,9 +34,10 @@ export const PRE_RELEASE_VERSION = VERSIONS.find((v) => v.preRelease)!;
  * prefix; everything else is v4.
  */
 export function getVersionFromPathname(pathname: string): DocsVersion {
+  // The v5 segment sits either at the root (default locale hidden) or right
+  // after a locale segment — both cases are covered by checking positions
+  // 0 and 1.
   const segments = pathname.split('/').filter(Boolean);
-  // segments[0] may be a locale (e.g. 'en'); the version prefix sits
-  // immediately after the optional locale segment.
   if (segments[0] === 'v5' || segments[1] === 'v5') {
     return PRE_RELEASE_VERSION;
   }
@@ -46,18 +47,25 @@ export function getVersionFromPathname(pathname: string): DocsVersion {
 /**
  * Build a URL for the same page under a different version. Preserves the
  * trailing path after `/docs/` and any locale prefix.
+ *
+ * `usePathname()` can return either `/docs/...` (default locale hidden by
+ * the i18n middleware) or `/<locale>/docs/...` (non-default locale shown).
+ * We detect the locale segment by checking whether segment 0 is a
+ * structural path token (`docs` or `v5`) rather than assuming position.
  */
 export function buildVersionUrl(
   pathname: string,
   targetVersion: DocsVersion
 ): string {
   const segments = pathname.split('/').filter(Boolean);
-  const locale = segments[0];
-  const rest =
-    segments[1] === 'v5'
-      ? segments.slice(2) // strip /<locale>/v5
-      : segments.slice(1); // strip /<locale>
-  const tail = rest.join('/');
-  const prefix = targetVersion.prefix;
-  return `/${locale}${prefix}/${tail}`.replace(/\/+$/, '');
+  const isStructural = (s: string | undefined) => s === 'docs' || s === 'v5';
+  const localeSegments =
+    segments[0] && !isStructural(segments[0]) ? segments.slice(0, 1) : [];
+  let rest = segments.slice(localeSegments.length);
+  if (rest[0] === 'v5') rest = rest.slice(1);
+  const prefixSegments = targetVersion.prefix
+    ? [targetVersion.prefix.replace(/^\//, '')]
+    : [];
+  const joined = [...localeSegments, ...prefixSegments, ...rest].join('/');
+  return `/${joined}`.replace(/\/+$/, '') || '/';
 }
