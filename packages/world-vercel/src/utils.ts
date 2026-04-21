@@ -55,13 +55,22 @@ function httpLog(
 }
 
 /**
- * Hard-coded workflow-server URL override for testing.
- * Set this to test against a different workflow-server version.
- * Leave empty string for production (uses default vercel-workflow.com).
+ * Workflow-server URL override. Read from the `VERCEL_WORKFLOW_SERVER_URL`
+ * env var at call time, so changes during a process lifetime (e.g. from
+ * tests that mutate `process.env`) are picked up.
  *
- * Example: 'https://workflow-server-git-branch-name.vercel.sh'
+ * When set, requests bypass the default production host
+ * (`https://vercel-workflow.com`). Useful for testing against a branch
+ * deployment of workflow-server (e.g.
+ * `https://workflow-server-git-branch-name.vercel.sh`).
+ *
+ * When using the proxy (`api.vercel.com/v1/workflow`), this value is
+ * forwarded via the `x-vercel-workflow-api-url` header so the proxy
+ * routes the request to the override URL.
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+function getWorkflowServerUrlOverride(): string {
+  return process.env.VERCEL_WORKFLOW_SERVER_URL ?? '';
+}
 
 export interface APIConfig {
   token?: string;
@@ -211,7 +220,7 @@ export const getHttpUrl = (
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
   const defaultHost =
-    WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    getWorkflowServerUrlOverride() || 'https://vercel-workflow.com';
   const customProxyUrl = process.env.WORKFLOW_VERCEL_BACKEND_URL;
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   // Use proxy when we have project config (for authentication via Vercel API)
@@ -246,8 +255,9 @@ export const getHeaders = (
   // Only set workflow-api-url header when using the proxy, since the proxy
   // forwards it to the workflow-server. When not using proxy, requests go
   // directly to the workflow-server so this header has no effect.
-  if (WORKFLOW_SERVER_URL_OVERRIDE && options.usingProxy) {
-    headers.set('x-vercel-workflow-api-url', WORKFLOW_SERVER_URL_OVERRIDE);
+  const workflowServerUrlOverride = getWorkflowServerUrlOverride();
+  if (workflowServerUrlOverride && options.usingProxy) {
+    headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
   // Include the Vercel Deployment Protection bypass secret when set.
   // Useful for testing against preview deployments that have protection enabled.
