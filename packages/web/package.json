@@ -54,6 +54,7 @@
     "@react-router/dev": "7.13.1",
     "@react-router/express": "7.13.1",
     "@react-router/node": "7.13.1",
+    "@vercel/react-router": "1.2.6",
     "@tailwindcss/vite": "4",
     "@types/express": "^5",
     "@types/node": "catalog:",
