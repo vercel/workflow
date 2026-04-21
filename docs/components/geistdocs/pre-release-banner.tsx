@@ -34,7 +34,7 @@ export const PreReleaseBanner = ({ pathname }: PreReleaseBannerProps) => {
           </span>
         </div>
         <Link
-          className="font-medium text-foreground underline underline-offset-4 decoration-foreground/40 hover:decoration-foreground"
+          className="font-medium text-blue-600 underline underline-offset-4 decoration-blue-600/40 transition-colors hover:text-blue-800 hover:decoration-blue-800 dark:text-blue-400 dark:decoration-blue-400/40 dark:hover:text-blue-200 dark:hover:decoration-blue-200"
           href={latestHref}
         >
           Go to Workflow {LATEST_VERSION.id.replace(/^v/, '')} (Latest)
