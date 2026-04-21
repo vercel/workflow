@@ -2,7 +2,7 @@
 title: World SDK
 description: Low-level API for inspecting and managing workflow runs, steps, events, hooks, streams, and queues.
 type: overview
-summary: Access workflow infrastructure directly via getWorld() for building observability dashboards, admin tools, and custom integrations.
+summary: Access workflow infrastructure via await getWorld() for building observability dashboards, admin tools, and custom integrations.
 prerequisites:
   - /docs/api-reference/workflow-api/get-world
 keywords:
@@ -19,7 +19,7 @@ The World SDK provides direct access to workflow infrastructure — runs, steps,
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld(); // [!code highlight]
+const world = await getWorld(); // [!code highlight]
 ```
 
 ## Interfaces

@@ -89,20 +89,21 @@ export async function createUser(email: string) {
 
 {/* @skip-typecheck: incomplete code sample */}
 ```typescript
-import { registerStepFunction } from "workflow/internal/private"; // [!code highlight]
-
 export async function createUser(email: string) {
   return { id: crypto.randomUUID(), email };
 }
-
-registerStepFunction("step//workflows/user.js//createUser", createUser); // [!code highlight]
+(function(__wf_fn, __wf_id) { // [!code highlight]
+    var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map()); // [!code highlight]
+    __wf_reg.set(__wf_id, __wf_fn); // [!code highlight]
+    __wf_fn.stepId = __wf_id; // [!code highlight]
+})(createUser, "step//workflows/user.js//createUser"); // [!code highlight]
 ```
 
 **What happens:**
 
 - The `"use step"` directive is removed
 - The function body is kept completely intact (no transformation)
-- The function is registered with the runtime using `registerStepFunction()`
+- The function is registered with the runtime via an inline IIFE (no imports needed)
 - Step functions run with full Node.js/Deno/Bun access
 
 **Why no transformation?** Step functions execute in your main runtime with full access to Node.js APIs, file system, databases, etc. They don't need any special handling—they just run normally.

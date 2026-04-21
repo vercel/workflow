@@ -26,9 +26,9 @@ export const getWorkflowConfig = (
     dirs: ['./workflows'],
     workingDir: resolveObservabilityCwd(),
     buildTarget: buildTarget as BuildTarget,
-    stepsBundlePath: './.well-known/workflow/v1/step.js',
-    workflowsBundlePath: './.well-known/workflow/v1/flow.js',
-    webhookBundlePath: './.well-known/workflow/v1/webhook.js',
+    stepsBundlePath: './.well-known/workflow/v1/step.mjs',
+    workflowsBundlePath: './.well-known/workflow/v1/flow.mjs',
+    webhookBundlePath: './.well-known/workflow/v1/webhook.mjs',
     workflowManifestPath: workflowManifest,
 
     // WIP: generate a client library to easily execute workflows/steps

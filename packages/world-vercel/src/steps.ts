@@ -212,25 +212,25 @@ export async function updateStep(
 }
 
 export async function getStep(
-  runId: string | undefined,
+  runId: string,
   stepId: string,
   params: GetStepParams & { resolveData: 'none' },
   config?: APIConfig
 ): Promise<StepWithoutData>;
 export async function getStep(
-  runId: string | undefined,
+  runId: string,
   stepId: string,
   params?: GetStepParams & { resolveData?: 'all' },
   config?: APIConfig
 ): Promise<Step>;
 export async function getStep(
-  runId: string | undefined,
+  runId: string,
   stepId: string,
   params?: GetStepParams,
   config?: APIConfig
 ): Promise<Step | StepWithoutData>;
 export async function getStep(
-  runId: string | undefined,
+  runId: string,
   stepId: string,
   params?: GetStepParams,
   config?: APIConfig
@@ -242,9 +242,7 @@ export async function getStep(
   searchParams.set('remoteRefBehavior', remoteRefBehavior);
 
   const queryString = searchParams.toString();
-  const endpoint = runId
-    ? `/v2/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}${queryString ? `?${queryString}` : ''}`
-    : `/v2/steps/${encodeURIComponent(stepId)}${queryString ? `?${queryString}` : ''}`;
+  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/steps/${encodeURIComponent(stepId)}${queryString ? `?${queryString}` : ''}`;
 
   const step = await makeRequest({
     endpoint,

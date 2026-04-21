@@ -35,17 +35,20 @@ import { createContext } from './vm/index.js';
 
 vi.mock('./runtime/world.js', () => ({
   getWorld: vi.fn(() => ({
-    writeToStream: vi.fn().mockResolvedValue(undefined),
-    writeToStreamMulti: vi.fn().mockResolvedValue(undefined),
-    closeStream: vi.fn().mockResolvedValue(undefined),
-    readFromStream: vi.fn().mockResolvedValue(
-      new ReadableStream({
-        start(c) {
-          c.close();
-        },
-      })
-    ),
-    listStreamsByRunId: vi.fn().mockResolvedValue([]),
+    streams: {
+      write: vi.fn().mockResolvedValue(undefined),
+      writeMulti: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      get: vi.fn().mockResolvedValue(
+        new ReadableStream({
+          start(c) {
+            c.close();
+          },
+        })
+      ),
+      list: vi.fn().mockResolvedValue([]),
+      getInfo: vi.fn().mockResolvedValue(undefined),
+    },
   })),
 }));
 
@@ -2209,7 +2212,9 @@ describe('step function serialization', () => {
     const stepName = 'step//workflows/test.ts//calculate';
 
     // Create a step function that accesses closure variables
-    const { __private_getClosureVars } = await import('./private.js');
+    const { __private_getClosureVars } = await import(
+      './step/get-closure-vars.js'
+    );
     const { contextStorage } = await import('./step/context-storage.js');
 
     const stepFn = async (x: number) => {
@@ -2285,6 +2290,7 @@ describe('step function serialization', () => {
           workflowRunId: 'test-run',
           workflowStartedAt: new Date(),
           url: 'http://localhost:3000',
+          features: { encryption: false },
         },
         ops: [],
       },
@@ -5013,5 +5019,119 @@ describe('AbortController serialization', () => {
         (globalThis as any)[STABLE_ULID] = originalStableUlid;
       }
     });
+  });
+});
+
+describe('WorkflowFunction serialization', () => {
+  it('should serialize a function with workflowId and hydrate as a function with workflowId', async () => {
+    const workflowFn = Object.assign(
+      async () => {
+        /* workflow body */
+      },
+      { workflowId: 'wf_myWorkflow' }
+    );
+    const dehydrated = await dehydrateStepReturnValue(
+      workflowFn,
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepReturnValue(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    // Deserialized as a function with .workflowId that throws on direct call
+    expect(typeof hydrated).toBe('function');
+    expect((hydrated as any).workflowId).toBe('wf_myWorkflow');
+    expect(() => (hydrated as any)()).toThrow(
+      'Workflow functions cannot be called directly'
+    );
+  });
+
+  it('should roundtrip through step arguments as a function with workflowId', async () => {
+    const workflowFn = Object.assign(
+      async () => {
+        /* workflow body */
+      },
+      { workflowId: 'wf_argTest' }
+    );
+    const dehydrated = await dehydrateStepArguments(
+      [workflowFn],
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepArguments(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    expect(typeof hydrated[0]).toBe('function');
+    expect((hydrated[0] as any).workflowId).toBe('wf_argTest');
+    expect(() => (hydrated[0] as any)()).toThrow(
+      'Workflow functions cannot be called directly'
+    );
+  });
+
+  it('should not match plain objects with workflowId (only functions)', async () => {
+    const workflowMeta = { workflowId: 'wf_otherWorkflow' };
+    const dehydrated = await dehydrateStepReturnValue(
+      workflowMeta,
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepReturnValue(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    expect(hydrated).toEqual({ workflowId: 'wf_otherWorkflow' });
+  });
+
+  it('should roundtrip workflow function reference through step arguments', async () => {
+    const workflowFn = Object.assign(
+      async () => {
+        /* workflow body */
+      },
+      { workflowId: 'wf_childWorkflow' }
+    );
+    const dehydrated = await dehydrateStepArguments(
+      [workflowFn, [42]],
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepArguments(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    expect(hydrated[0]).toHaveProperty('workflowId', 'wf_childWorkflow');
+    expect(hydrated[1]).toEqual([42]);
+  });
+
+  it('should not match objects without workflowId', async () => {
+    const plainObj = { name: 'test', value: 42 };
+    const dehydrated = await dehydrateStepReturnValue(
+      plainObj,
+      'wrun_test',
+      undefined
+    );
+    const hydrated = await hydrateStepReturnValue(
+      dehydrated,
+      'wrun_test',
+      undefined
+    );
+    expect(hydrated).toEqual({ name: 'test', value: 42 });
+  });
+
+  it('should not match functions without workflowId', async () => {
+    const plainFn = Object.assign(
+      async () => {
+        /* some function */
+      },
+      { someOtherProp: 'test' }
+    );
+    await expect(
+      dehydrateStepReturnValue(plainFn, 'wrun_test', undefined)
+    ).rejects.toThrow('Failed to serialize');
   });
 });

@@ -44,7 +44,7 @@ Use the `Run` object's `readable` property to consume the stream from your API r
 
 ```typescript title="app/api/stream/route.ts" lineNumbers
 import { start } from "workflow/api";
-import { simpleStreamingWorkflow } from "./workflows/simple";
+import { simpleStreamingWorkflow } from "./workflows/simple-streaming";
 
 export async function POST() {
   const run = await start(simpleStreamingWorkflow);

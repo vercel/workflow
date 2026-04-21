@@ -225,7 +225,7 @@ export function stepToSpan(stepEvents: Event[], maxEndTime: Date): Span | null {
 
   return {
     spanId: String(step.stepId),
-    name: parsedName?.shortName ?? '',
+    name: parsedName?.shortName ?? String(step.stepName),
     kind: 1, // INTERNAL span kind
     resource,
     library: WORKFLOW_LIBRARY,

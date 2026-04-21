@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getRun, start } from 'workflow/api';
+import { getHookByToken, getRun, resumeHook, Run, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -246,6 +246,7 @@ export async function workflowAndStepMetadataWorkflow() {
       workflowRunId: workflowMetadata.workflowRunId,
       workflowStartedAt: workflowMetadata.workflowStartedAt,
       url: workflowMetadata.url,
+      features: workflowMetadata.features,
     },
     stepMetadata,
     innerWorkflowMetadata,
@@ -696,6 +697,40 @@ export async function spawnWorkflowFromStepWorkflow(inputValue: number) {
   return {
     parentInput: inputValue,
     childRunId,
+    childResult,
+  };
+}
+
+async function spawnChildWorkflowRun(value: number) {
+  'use step';
+  return await start(childWorkflow, [value]);
+}
+
+async function getRunIdFromRun(run: Run<unknown>) {
+  'use step';
+  return run.runId;
+}
+
+async function awaitRunFromRun<T>(run: Run<T>) {
+  'use step';
+  return await run.returnValue;
+}
+
+export async function runClassSerializationWorkflow(inputValue: number) {
+  'use workflow';
+
+  const childRun = await spawnChildWorkflowRun(inputValue);
+  const isRunInWorkflow = childRun instanceof Run;
+  const runIdFromStep = await getRunIdFromRun(childRun);
+  const childResult = await awaitRunFromRun<{
+    childResult: number;
+    originalValue: number;
+  }>(childRun);
+
+  return {
+    childRunId: childRun.runId,
+    runIdFromStep,
+    isRunInWorkflow,
     childResult,
   };
 }
@@ -2006,4 +2041,300 @@ export async function metadataFromHelperWorkflow(label: string): Promise<{
   'use workflow';
 
   return await metadataHelperStep(label);
+}
+
+//////////////////////////////////////////////////////////
+// Getter Step Tests
+//////////////////////////////////////////////////////////
+
+/**
+ * A class with a getter method marked as a step.
+ * This tests the "use step" support for getter functions.
+ * The class uses custom serialization so the `this` value can be
+ * serialized across the workflow/step boundary.
+ */
+export class Sensor {
+  constructor(
+    public baseValue: number,
+    public multiplier: number
+  ) {}
+
+  static [Symbol.for('workflow-serialize')](instance: Sensor) {
+    return { baseValue: instance.baseValue, multiplier: instance.multiplier };
+  }
+
+  static [Symbol.for('workflow-deserialize')](data: {
+    baseValue: number;
+    multiplier: number;
+  }) {
+    return new Sensor(data.baseValue, data.multiplier);
+  }
+
+  /** Getter step: accessing this property triggers a step invocation */
+  get reading() {
+    'use step';
+    return this.baseValue * this.multiplier;
+  }
+
+  /** Regular instance method step for comparison */
+  async calibrate(offset: number): Promise<number> {
+    'use step';
+    return this.baseValue * this.multiplier + offset;
+  }
+}
+
+/**
+ * Workflow that tests getter steps on a class instance.
+ * Uses `await instance.prop` to trigger step invocations via getters.
+ */
+export async function getterStepWorkflow(
+  base: number,
+  multiplier: number,
+  offset: number
+) {
+  'use workflow';
+
+  const sensor = new Sensor(base, multiplier);
+
+  // Getter step: `await sensor.reading` triggers a step invocation
+  const reading = await sensor.reading;
+
+  // Regular instance method step for comparison
+  const calibrated = await sensor.calibrate(offset);
+
+  // Second sensor to verify different instances work
+  const sensor2 = new Sensor(100, 2);
+  const reading2 = await sensor2.reading;
+
+  return {
+    reading, // base * multiplier
+    calibrated, // base * multiplier + offset
+    reading2, // 100 * 2 = 200
+  };
+}
+
+//////////////////////////////////////////////////////////
+// start() inside workflow functions
+//////////////////////////////////////////////////////////
+
+/**
+ * Child workflow used by startFromWorkflow.
+ * Receives a hook token from its parent, processes a value,
+ * and signals the parent via resumeHook before completing.
+ */
+export async function childWorkflowWithHookSignal(
+  hookToken: string,
+  value: number
+) {
+  'use workflow';
+  const result = await processAndSignalParent(hookToken, value);
+  return result;
+}
+
+async function processAndSignalParent(hookToken: string, value: number) {
+  'use step';
+  const processed = value * 3;
+  await resumeHook(hookToken, { processed });
+  return { processed };
+}
+
+/**
+ * Parent workflow that calls start() directly to spawn a child workflow,
+ * then waits for a hook signal from the child.
+ */
+export async function startFromWorkflow(inputValue: number) {
+  'use workflow';
+  const hook = createHook<{ processed: number }>();
+  const childRun = await start(childWorkflowWithHookSignal, [
+    hook.token,
+    inputValue,
+  ]);
+  const signal = await hook;
+  return {
+    parentInput: inputValue,
+    childRunId: childRun.runId,
+    signalFromChild: signal,
+  };
+}
+
+/**
+ * Recursive Fibonacci workflow. start() is called directly to spawn
+ * child workflows for fib(n-1) and fib(n-2).
+ */
+export async function fibonacciWorkflow(n: number): Promise<number> {
+  'use workflow';
+  if (!Number.isFinite(n)) {
+    throw new FatalError(`fibonacciWorkflow requires a finite number for n`);
+  }
+  if (n <= 1) return n;
+
+  const [runA, runB] = await Promise.all([
+    start(fibonacciWorkflow, [n - 1]),
+    start(fibonacciWorkflow, [n - 2]),
+  ]);
+
+  const [a, b] = await Promise.all([runA.returnValue, runB.returnValue]);
+  return a + b;
+}
+
+//////////////////////////////////////////////////////////
+// Distributed Abort Controller
+//////////////////////////////////////////////////////////
+
+// Message type written to the stream when abort fires
+export type AbortMessage = {
+  type: 'abort';
+  reason?: string;
+  expired: boolean;
+};
+
+// Helper to derive abort hook token from user-provided ID
+function getAbortToken(id: string): string {
+  return `distributed-abort:${id}`;
+}
+
+// Step function that writes the abort message to the stream
+async function writeAbortSignal(reason?: string, expired = false) {
+  'use step';
+  const writable = getWritable<AbortMessage>();
+  const writer = writable.getWriter();
+  try {
+    await writer.write({ type: 'abort', reason, expired });
+  } finally {
+    writer.releaseLock();
+  }
+  await writable.close();
+}
+
+/**
+ * Workflow that backs the DistributedAbortController.
+ * Waits for either:
+ * 1. Manual abort via hook trigger
+ * 2. TTL expiration
+ *
+ * After abort, sleeps until TTL + grace period to keep hook alive
+ * for late subscribers.
+ */
+export async function distributedAbortControllerWorkflow(
+  id: string,
+  ttlMs: number,
+  graceMs: number
+) {
+  'use workflow';
+
+  const startTime = Date.now();
+  const hook = createHook<{ reason?: string }>({ token: getAbortToken(id) });
+
+  // Race: manual abort OR TTL expiration
+  const result = await Promise.race([
+    hook.then((payload) => ({
+      reason: payload.reason,
+      expired: false,
+    })),
+    sleep(ttlMs).then(() => ({
+      reason: 'Controller expired',
+      expired: true,
+    })),
+  ]);
+
+  // Write the abort signal to the stream
+  await writeAbortSignal(result.reason, result.expired);
+
+  // Only sleep through grace period on TTL expiration (keeps hook alive for late subscribers).
+  // Manual aborts complete immediately.
+  if (result.expired) {
+    const elapsed = Date.now() - startTime;
+    const remainingTime = graceMs - (elapsed - ttlMs);
+    if (remainingTime > 0) {
+      await sleep(remainingTime);
+    }
+  }
+
+  return { aborted: true, reason: result.reason, expired: result.expired };
+}
+
+/**
+ * DistributedAbortController - a cross-process abort controller backed by a durable workflow.
+ *
+ * Usage:
+ *   const controller = await DistributedAbortController.create('my-task-123');
+ *   // In any process:
+ *   controller.abort('User cancelled');
+ *   // In any other process:
+ *   const signal = await controller.signal;
+ *   signal.addEventListener('abort', () => console.log('Aborted!'));
+ */
+export class DistributedAbortController {
+  private constructor(
+    public readonly id: string,
+    public readonly runId: string
+  ) {}
+
+  /**
+   * Creates or reconnects to a distributed abort controller.
+   * If a controller with this ID already exists, reconnects to it.
+   * Otherwise, starts a new workflow.
+   */
+  static async create(
+    id: string,
+    options: { ttlMs?: number; graceMs?: number } = {}
+  ): Promise<DistributedAbortController> {
+    const { ttlMs = 24 * 60 * 60 * 1000, graceMs = 60 * 60 * 1000 } = options;
+    const token = getAbortToken(id);
+
+    // Try to find an existing run with this hook token
+    const existingHook = await getHookByToken(token).catch(() => null);
+
+    if (existingHook) {
+      // Reconnect to existing controller
+      return new DistributedAbortController(id, existingHook.runId);
+    }
+
+    // Create a new workflow
+    const run = await start(distributedAbortControllerWorkflow, [
+      id,
+      ttlMs,
+      graceMs,
+    ]);
+    return new DistributedAbortController(id, run.runId);
+  }
+
+  /**
+   * Triggers the abort signal across all processes.
+   */
+  async abort(reason?: string): Promise<void> {
+    const token = getAbortToken(this.id);
+    await resumeHook(token, { reason });
+  }
+
+  /**
+   * Returns an AbortSignal that fires when the controller is aborted.
+   * Listens to the workflow's output stream.
+   */
+  get signal(): Promise<AbortSignal> {
+    return (async () => {
+      const controller = new AbortController();
+      const run = getRun<AbortMessage>(this.runId);
+      const readable = await run.getReadable();
+      const reader = readable.getReader();
+
+      // Read from stream in background
+      (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value && value.type === 'abort') {
+              controller.abort(value.reason);
+              break;
+            }
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      })();
+
+      return controller.signal;
+    })();
+  }
 }

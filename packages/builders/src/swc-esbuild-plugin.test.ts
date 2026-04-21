@@ -122,6 +122,42 @@ describe('createSwcPlugin externalizeNonSteps', () => {
     expect(output).not.toContain('@/lib/config');
   });
 
+  it('does not relativize Node.js builtin imports', async () => {
+    const outdir = join(testRoot, 'out');
+    const srcDir = join(testRoot, 'src');
+    const stepFile = join(srcDir, 'step.ts');
+
+    writeFile(
+      stepFile,
+      `import { createHash } from 'crypto';\nimport { join } from 'node:path';\nconsole.log(createHash, join);`
+    );
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    // Builtins should remain as bare specifiers, not relativized paths
+    expect(output).toMatch(/from\s+["']crypto["']/);
+    expect(output).toMatch(/from\s+["']node:path["']/);
+    expect(output).not.toMatch(/from\s+["']\..*crypto["']/);
+    expect(output).not.toMatch(/from\s+["']\..*node:path["']/);
+  });
+
   it('does not externalize aliased imports that resolve into node_modules', async () => {
     const outdir = join(testRoot, 'out');
     const srcDir = join(testRoot, 'src');

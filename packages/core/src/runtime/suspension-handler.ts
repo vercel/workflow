@@ -236,14 +236,14 @@ export async function handleSuspension({
             // (abort hooks use token format `abrt_{id}`, stream is `strm_{id}_system_abort`)
             const abortId = queueItem.token.replace('abrt_', '');
             const streamName = `strm_${abortId}_system_abort`;
-            await world.writeToStream(
-              streamName,
+            await world.streams.write(
               runId,
+              streamName,
               new TextEncoder().encode(
                 JSON.stringify({ reason: queueItem.abortReason })
               )
             );
-            await world.closeStream(streamName, runId);
+            await world.streams.close(runId, streamName);
           } catch {
             // Best-effort stream write — hook event provides the durable fallback
             runtimeLogger.debug(
@@ -255,19 +255,15 @@ export async function handleSuspension({
             );
           }
         } catch (err) {
-          if (WorkflowAPIError.is(err)) {
-            if (err.status === 410) {
-              runtimeLogger.info(
-                'Workflow run already completed, skipping abort',
-                {
-                  workflowRunId: runId,
-                  correlationId: queueItem.correlationId,
-                  message: err.message,
-                }
-              );
-            } else {
-              throw err;
-            }
+          if (EntityConflictError.is(err) || RunExpiredError.is(err)) {
+            runtimeLogger.info(
+              'Workflow run already completed, skipping abort',
+              {
+                workflowRunId: runId,
+                correlationId: queueItem.correlationId,
+                message: err.message,
+              }
+            );
           } else {
             throw err;
           }

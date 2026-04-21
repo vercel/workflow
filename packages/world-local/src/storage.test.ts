@@ -413,14 +413,14 @@ describe('Storage', () => {
         expect(retrieved).toEqual(created);
       });
 
-      it('should retrieve a step with only stepId', async () => {
+      it('should retrieve a step with runId and stepId', async () => {
         const created = await createStep(storage, testRunId, {
           stepId: 'unique_step_123',
           stepName: 'test-step',
           input: new Uint8Array([1]),
         });
 
-        const retrieved = await storage.steps.get(undefined, 'unique_step_123');
+        const retrieved = await storage.steps.get(testRunId, 'unique_step_123');
 
         expect(retrieved).toEqual(created);
       });

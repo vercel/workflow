@@ -3,7 +3,6 @@ import { transform } from '@swc/core';
 import {
   detectWorkflowPatterns,
   isGeneratedWorkflowFile,
-  isWorkflowSdkFile,
   resolveModuleSpecifier,
   shouldTransformFile,
 } from '@workflow/builders';
@@ -26,7 +25,7 @@ export function workflowTransformPlugin(
   return {
     name: 'workflow:transform',
     // This transform applies the "use workflow"/"use step"
-    // client transformation
+    // step transformation
     async transform(code: string, id: string) {
       // Skip generated workflow route files to avoid re-processing them
       if (isGeneratedWorkflowFile(id)) {
@@ -43,12 +42,6 @@ export function workflowTransformPlugin(
       }
 
       const patterns = detectWorkflowPatterns(code);
-
-      // For @workflow SDK packages, only transform files with actual directives,
-      // not files that just match serde patterns (which are internal SDK implementation files)
-      if (isWorkflowSdkFile(id) && !patterns.hasDirective) {
-        return null;
-      }
 
       if (!shouldTransformFile(id, patterns)) {
         return null;
@@ -123,7 +116,7 @@ export function workflowTransformPlugin(
           },
           target: 'es2022',
           experimental: {
-            plugins: [[swcPlugin, { mode: 'client', moduleSpecifier }]],
+            plugins: [[swcPlugin, { mode: 'step', moduleSpecifier }]],
           },
           transform: {
             react: {

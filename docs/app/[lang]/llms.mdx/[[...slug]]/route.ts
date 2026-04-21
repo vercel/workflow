@@ -1,4 +1,5 @@
 import { notFound } from 'next/navigation';
+import { rewriteCookbookUrlsInText } from '@/lib/geistdocs/cookbook-source';
 import { getLLMText, source } from '@/lib/geistdocs/source';
 import { i18n } from '@/lib/geistdocs/i18n';
 
@@ -18,8 +19,10 @@ export async function GET(
   const sitemapPath =
     lang === i18n.defaultLanguage ? '/sitemap.md' : `/${lang}/sitemap.md`;
 
+  const text = await getLLMText(page);
+
   return new Response(
-    (await getLLMText(page)) +
+    rewriteCookbookUrlsInText(text) +
       `\n\n## Sitemap
 [Overview of all docs pages](${sitemapPath})\n`,
     {

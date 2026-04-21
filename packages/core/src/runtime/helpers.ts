@@ -7,12 +7,14 @@ import type {
 import {
   HealthCheckPayloadSchema,
   SPEC_VERSION_CURRENT,
+  SPEC_VERSION_LEGACY,
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
 import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
+import { version as workflowCoreVersion } from '../version.js';
 import { getWorld } from './world.js';
 
 /** Default timeout for health checks in milliseconds */
@@ -76,12 +78,13 @@ export function parseHealthCheckPayload(
 }
 
 /**
- * Generates a fake runId for health check streams.
- * This runId passes server validation but is not associated with a real run.
- * The server skips run validation for streams starting with `__health_check__`.
+ * Generates a deterministic fake runId for health check streams.
+ * Both the writer (handleHealthCheckMessage) and reader (healthCheck) derive
+ * the same runId from the correlationId so that implementations that scope
+ * stream reads by runId still work correctly.
  */
-function generateHealthCheckRunId(): string {
-  return `wrun_${generateId()}`;
+function generateHealthCheckRunId(correlationId: string): string {
+  return `wrun_hc_${correlationId}`;
 }
 
 /**
@@ -93,23 +96,24 @@ function generateHealthCheckRunId(): string {
  */
 export async function handleHealthCheckMessage(
   healthCheck: HealthCheckPayload,
-  endpoint: 'workflow' | 'step'
+  endpoint: 'workflow' | 'step',
+  worldSpecVersion?: number
 ): Promise<void> {
-  const world = getWorld();
+  const world = await getWorld();
   const streamName = getHealthCheckStreamName(healthCheck.correlationId);
   const response = JSON.stringify({
     healthy: true,
     endpoint,
     correlationId: healthCheck.correlationId,
-    specVersion: SPEC_VERSION_CURRENT,
+    specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
+    workflowCoreVersion,
     timestamp: Date.now(),
   });
-  // Use a fake runId that passes validation.
-  // The stream name includes the correlationId for identification.
-  // The server skips run validation for health check streams.
-  const fakeRunId = generateHealthCheckRunId();
-  await world.writeToStream(streamName, fakeRunId, response);
-  await world.closeStream(streamName, fakeRunId);
+  // Use a deterministic fake runId derived from the correlationId so that
+  // the reader side produces the same value.
+  const fakeRunId = generateHealthCheckRunId(healthCheck.correlationId);
+  await world.streams.write(fakeRunId, streamName, response);
+  await world.streams.close(fakeRunId, streamName);
 }
 
 export type HealthCheckEndpoint = 'workflow' | 'step';
@@ -117,6 +121,8 @@ export type HealthCheckEndpoint = 'workflow' | 'step';
 export interface HealthCheckOptions {
   /** Timeout in milliseconds to wait for health check response. Default: 30000 (30s) */
   timeout?: number;
+  /** Deployment ID to send the health check to. Falls back to process.env.VERCEL_DEPLOYMENT_ID. */
+  deploymentId?: string;
 }
 
 /**
@@ -189,6 +195,12 @@ function parseHealthCheckResponse(
   try {
     response = JSON.parse(responseText);
   } catch {
+    // Old deployments (specVersion < 3) return plain text like
+    // 'Workflow SDK "..." endpoint is healthy'. Treat any non-empty
+    // text response as a healthy deployment with unknown specVersion.
+    if (responseText.length > 0) {
+      return { healthy: true };
+    }
     return null;
   }
 
@@ -217,7 +229,7 @@ export async function healthCheck(
   options?: HealthCheckOptions
 ): Promise<HealthCheckResult> {
   const timeout = options?.timeout ?? DEFAULT_HEALTH_CHECK_TIMEOUT;
-  const correlationId = `hc_${generateId()}`;
+  const correlationId = generateId();
   const streamName = getHealthCheckStreamName(correlationId);
 
   const queueName: ValidQueueName =
@@ -228,14 +240,23 @@ export async function healthCheck(
   const startTime = Date.now();
 
   try {
-    await world.queue(queueName, {
-      __healthCheck: true,
-      correlationId,
-    });
+    await world.queue(
+      queueName,
+      { __healthCheck: true, correlationId },
+      {
+        // Use JSON transport so the health check works against both
+        // old (JSON-only) and new (dual) deployments.
+        specVersion: SPEC_VERSION_LEGACY,
+        deploymentId: options?.deploymentId,
+      }
+    );
 
     while (Date.now() - startTime < timeout) {
       try {
-        const stream = await world.readFromStream(streamName);
+        const stream = await world.streams.get(
+          generateHealthCheckRunId(correlationId),
+          streamName
+        );
         const reader = stream.getReader();
         const { chunks, timedOut } = await readStreamWithTimeout(
           reader,
@@ -299,7 +320,7 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
     let hasMore = true;
     let pagesLoaded = 0;
 
-    const world = getWorld();
+    const world = await getWorld();
     const loadStart = Date.now();
     while (hasMore) {
       // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
@@ -360,7 +381,8 @@ const HEALTH_CHECK_CORS_HEADERS = {
  * based on the presence of a `__health` query parameter.
  */
 export function withHealthCheck(
-  handler: (req: Request) => Promise<Response>
+  handler: (req: Request) => Promise<Response>,
+  worldSpecVersion?: number
 ): (req: Request) => Promise<Response> {
   return async (req: Request) => {
     const url = new URL(req.url);
@@ -377,7 +399,8 @@ export function withHealthCheck(
         JSON.stringify({
           healthy: true,
           endpoint: url.pathname,
-          specVersion: SPEC_VERSION_CURRENT,
+          specVersion: worldSpecVersion ?? SPEC_VERSION_CURRENT,
+          workflowCoreVersion,
         }),
         {
           status: 200,

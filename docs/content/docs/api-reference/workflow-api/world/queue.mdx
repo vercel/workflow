@@ -28,7 +28,7 @@ Queue methods live directly on the `world` object (not nested). They dispatch in
 ```typescript lineNumbers
 import { getWorld } from "workflow/runtime";
 
-const world = getWorld(); // [!code highlight]
+const world = await getWorld(); // [!code highlight]
 // Queue methods are called directly on world — e.g. world.queue()
 ```
 

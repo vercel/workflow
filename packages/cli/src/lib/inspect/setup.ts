@@ -39,8 +39,8 @@ export const setupCliWorld = async (
 
   const withAnsiLinks = flags.json ? false : true;
   const docsUrl = withAnsiLinks
-    ? terminalLink('https://useworkflow.dev/', 'https://useworkflow.dev/')
-    : 'https://useworkflow.dev/';
+    ? terminalLink('https://workflow-sdk.dev/', 'https://workflow-sdk.dev/')
+    : 'https://workflow-sdk.dev/';
 
   // Prepare showBox lines
   const boxLines = [
@@ -128,7 +128,7 @@ export const setupCliWorld = async (
       },
     });
   } else {
-    world = createWorld();
+    world = await createWorld();
   }
 
   // Store in the global cache so BaseCommand.finally() can find and close it.

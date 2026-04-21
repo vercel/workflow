@@ -14,7 +14,7 @@ import {
 import { resolveWorkflowAliasRelativePath } from './workflow-alias.js';
 
 export interface SwcPluginOptions {
-  mode: 'step' | 'workflow' | 'client';
+  mode: 'step' | 'workflow';
   entriesToBundle?: string[];
   outdir?: string;
   projectRoot?: string;
@@ -154,6 +154,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                 !!esbuildResult.path && !esbuildResult.errors.length;
               const isProjectLocalFile =
                 didResolve &&
+                !esbuildResult.external &&
                 !esbuildResult.path
                   .replace(/\\/g, '/')
                   .includes('/node_modules/');
@@ -209,6 +210,16 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
 
             let externalPath: string;
             if (shouldMakeRelative) {
+              // When the resolved file lives inside node_modules, let
+              // esbuild bundle it rather than externalizing with a deeply
+              // nested relative path. Downstream bundlers (Rollup/Vite)
+              // can't rewrite opaque `__require()` calls in CJS shims, so
+              // relative paths computed for `outdir` break once the output
+              // is rebundled to a different directory.
+              if (normalizedResolvedPath.includes('/node_modules/')) {
+                return null; // let esbuild bundle it
+              }
+
               externalPath = relative(
                 options.outdir || process.cwd(),
                 resolvedPath

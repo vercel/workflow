@@ -48,7 +48,8 @@ In **Next.js**, the `world.start()` call needs to be added to `instrumentation.t
 if (process.env.NEXT_RUNTIME !== "edge") {
   import("workflow/runtime").then(async ({ getWorld }) => {
     // start listening to the jobs.
-    await getWorld().start?.();
+    const world = await getWorld();
+    await world.start?.();
   });
 }
 ```

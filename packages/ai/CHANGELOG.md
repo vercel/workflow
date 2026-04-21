@@ -1,5 +1,53 @@
 # @workflow/ai
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1707](https://github.com/vercel/workflow/pull/1707) [`86ebe9f`](https://github.com/vercel/workflow/commit/86ebe9fe9f17d36819bafef427a51f81e6045307) Thanks [@craze3](https://github.com/craze3)! - Preserve malformed streamed tool-call input until repair hooks can run
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+- Updated dependencies [[`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352)]:
+  - @workflow/serde@5.0.0-beta.1
+  - workflow@5.0.0-beta.2
+
+## 5.0.0-beta.1
+
+### Patch Changes
+
+- [#1663](https://github.com/vercel/workflow/pull/1663) [`4d31619`](https://github.com/vercel/workflow/commit/4d31619eb724bf243b9775ef71a34f20668a9e2a) Thanks [@gr2m](https://github.com/gr2m)! - fix(ai): preserve provider tool identity across step boundaries
+
+  Provider tools (e.g. `anthropic.tools.webSearch`) were being converted to plain function tools in `toolsToModelTools`, stripping `type: 'provider'`, `id`, and `args`. This caused providers like Anthropic Gateway to not recognize them as provider-executed tools.
+
+- Updated dependencies [[`c6b630f`](https://github.com/vercel/workflow/commit/c6b630fc07335e1439752fc4f1122625515d17ce), [`71d39d2`](https://github.com/vercel/workflow/commit/71d39d2f8d5739c22fb9d777e70d003b07d05987), [`0a86de3`](https://github.com/vercel/workflow/commit/0a86de3afd1b51efff32e1c3cefd7f384d1b2d8d)]:
+  - workflow@5.0.0-beta.1
+
+## 5.0.0-beta.0
+
+### Major Changes
+
+- [#1642](https://github.com/vercel/workflow/pull/1642) [`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Initial v5 beta release
+
+### Patch Changes
+
+- Updated dependencies [[`c5cdfc0`](https://github.com/vercel/workflow/commit/c5cdfc00751c5bef36c4be748d819081b934fbcd)]:
+  - @workflow/serde@5.0.0-beta.0
+  - workflow@5.0.0-beta.0
+
+## 4.1.0-beta.61
+
+### Patch Changes
+
+- [#1444](https://github.com/vercel/workflow/pull/1444) [`e9ebe8f`](https://github.com/vercel/workflow/commit/e9ebe8faa3da673481a699d01c29a1726f15b042) Thanks [@gr2m](https://github.com/gr2m)! - Preserve reasoning content in DurableAgent conversation history across tool loop steps
+
+- [#1608](https://github.com/vercel/workflow/pull/1608) [`70e89bf`](https://github.com/vercel/workflow/commit/70e89bfc96ef96f88a2534c2eae0f93c3745188d) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - DurableAgent telemetry: emit full AI SDK-compatible attributes on spans
+
+- Updated dependencies []:
+  - workflow@4.2.0-beta.78
+
 ## 4.1.0-beta.60
 
 ### Patch Changes

@@ -41,20 +41,46 @@ cd my-workflow-app
 npm i workflow @workflow/nest
 ```
 
-### Configure NestJS for ESM
+### Choose Your Module Format
 
-NestJS with SWC uses ES modules. Add `"type": "module"` to your `package.json`:
+NestJS projects using `@workflow/nest` can compile as either ESM or CommonJS. Choose the setup that matches your SWC output instead of assuming ESM is required.
+
+#### ESM (default)
+
+Use this when your NestJS project is configured as an ES module app.
 
 ```json title="package.json" lineNumbers
 {
   "name": "my-workflow-app",
-  "type": "module",
-  // ... rest of your config
+  "type": "module"
 }
 ```
 
 <Callout>
 When using ESM with NestJS, local imports must include the `.js` extension (e.g., `import { AppModule } from './app.module.js'`). This applies even though your source files are `.ts`.
+</Callout>
+
+#### CommonJS
+
+Use this when your NestJS project compiles CommonJS via SWC.
+
+```typescript title="src/app.module.ts" lineNumbers
+import { Module } from '@nestjs/common';
+import { WorkflowModule } from '@workflow/nest';
+
+@Module({
+  imports: [
+    WorkflowModule.forRoot({
+      moduleType: 'commonjs',
+      distDir: 'dist',
+    }),
+  ],
+})
+export class AppModule {}
+```
+
+<Callout type="info">
+`distDir` should match the directory where NestJS writes compiled `.js` files. In the default SWC setup, that is `dist`.
 </Callout>
 
 ### Configure NestJS to use SWC
@@ -141,7 +167,7 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
 
 ## Import the WorkflowModule
 
-In your `app.module.ts`, import the `WorkflowModule`:
+In your `app.module.ts`, import the `WorkflowModule` and keep the module format you chose above.
 
 ```typescript title="src/app.module.ts" lineNumbers
 import { Module } from '@nestjs/common';
@@ -157,6 +183,20 @@ import { AppService } from './app.service.js';
 export class AppModule {}
 ```
 
+<Callout type="info">
+If you chose CommonJS above, keep the CommonJS options here as well:
+
+{/* @skip-typecheck - config snippet, full import shown above */}
+```typescript
+WorkflowModule.forRoot({
+  moduleType: 'commonjs',
+  distDir: 'dist',
+})
+```
+
+The `.js` local import specifiers in this example are the ESM form.
+</Callout>
+
 The `WorkflowModule` handles workflow bundle building and provides HTTP routing for workflow execution at `.well-known/workflow/v1/`.
 
 </Step>
@@ -169,6 +209,15 @@ Create a new file for our first workflow in the `src/workflows` directory:
 
 <Callout>
 Workflow files must be inside the `src/` directory so they get compiled with the SWC plugin that enables the `start()` function to work correctly.
+</Callout>
+
+<Callout type="info">
+If `start()` says it received an invalid workflow function, check both of these first:
+
+1. The workflow function includes `"use workflow"`.
+2. The workflow file lives inside `src/` so NestJS compiles it with the SWC plugin.
+
+See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function) for full examples and fixes.
 </Callout>
 
 ```typescript title="src/workflows/user-signup.ts" lineNumbers
@@ -269,6 +318,10 @@ export class AppController {
 }
 ```
 
+<Callout type="info">
+If you chose CommonJS above, use the same local import style as the rest of your NestJS app here too. The `.js` extension shown in this example is the ESM form.
+</Callout>
+
 This creates a `POST` endpoint at `/signup` that will trigger your workflow.
 
 </Step>
@@ -324,9 +377,34 @@ WorkflowModule.forRoot({
 
   // Skip building in production when bundles are pre-built
   skipBuild: false,
+
+  // SWC module type: 'es6' (default) or 'commonjs'
+  // Set to 'commonjs' if your NestJS project compiles to CJS via SWC
+  moduleType: 'es6',
+
+  // Directory where NestJS compiles .ts to .js (default: 'dist')
+  // Only used when moduleType is 'commonjs'
+  // Should match the outDir in your tsconfig.json
+  distDir: 'dist',
 });
 ```
 
+## Troubleshooting
+
+### `start()` says it received an invalid workflow function
+
+If you see this error:
+
+```
+'start' received an invalid workflow function. Ensure the Workflow Development Kit is configured correctly and the function includes a 'use workflow' directive.
+```
+
+Check both of these first:
+
+1. The workflow function includes `"use workflow"`.
+2. Your NestJS app imports and registers the `WorkflowModule`.
+
+See [start-invalid-workflow-function](/docs/errors/start-invalid-workflow-function) for full examples and fixes.
 ## Next Steps
 
 - Learn more about the [Foundations](/docs/foundations).

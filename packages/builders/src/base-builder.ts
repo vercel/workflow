@@ -46,9 +46,9 @@ async function withRealpaths(entries: string[]): Promise<string[]> {
 }
 
 export interface DiscoveredEntries {
-  discoveredSteps: string[];
-  discoveredWorkflows: string[];
-  discoveredSerdeFiles: string[];
+  discoveredSteps: Set<string>;
+  discoveredWorkflows: Set<string>;
+  discoveredSerdeFiles: Set<string>;
 }
 
 /**
@@ -125,6 +125,17 @@ export abstract class BaseBuilder {
   }
 
   /**
+   * When outputting fully-bundled ESM, CJS dependencies that call require()
+   * for Node.js builtins (e.g. debug → require('tty')) break because esbuild's
+   * CJS-to-ESM __require shim doesn't have access to a real require function.
+   * This banner provides one via createRequire so bundled CJS code works in ESM.
+   */
+  private getEsmRequireBanner(format: string): string {
+    if (format !== 'esm') return '';
+    return 'import { createRequire as __createRequire } from "node:module";\nvar require = __createRequire(import.meta.url);\n';
+  }
+
+  /**
    * Performs the complete build process for workflows.
    * Subclasses must implement this to define their specific build steps.
    */
@@ -187,14 +198,8 @@ export abstract class BaseBuilder {
    * This cache is invalidated automatically when the inputs array reference changes
    * (e.g., when files are added/removed during watch mode).
    */
-  private discoveredEntries: WeakMap<
-    string[],
-    {
-      discoveredSteps: string[];
-      discoveredWorkflows: string[];
-      discoveredSerdeFiles: string[];
-    }
-  > = new WeakMap();
+  private discoveredEntries: WeakMap<string[], DiscoveredEntries> =
+    new WeakMap();
 
   protected async discoverEntries(
     inputs: string[],
@@ -206,17 +211,30 @@ export abstract class BaseBuilder {
     if (previousResult) {
       return previousResult;
     }
-    const state: {
-      discoveredSteps: string[];
-      discoveredWorkflows: string[];
-      discoveredSerdeFiles: string[];
-    } = {
-      discoveredSteps: [],
-      discoveredWorkflows: [],
-      discoveredSerdeFiles: [],
+    const state: DiscoveredEntries = {
+      discoveredSteps: new Set(),
+      discoveredWorkflows: new Set(),
+      discoveredSerdeFiles: new Set(),
     };
 
     const discoverStart = Date.now();
+
+    // Resolve the SDK runtime entry point so that the discovery pass
+    // traces through it and discovers serde classes (like `Run`) that
+    // live inside SDK packages. Without this, files like `run.js` are
+    // only discovered when user code happens to import them.
+    // This is resolved here (rather than in callers) so that the original
+    // `inputs` array reference is preserved for WeakMap caching — callers
+    // like createWorkflowsBundle and createStepsBundle can share the same
+    // cache entry when they pass the same inputFiles array.
+    const resolvedWorkflowRuntime = await enhancedResolve(
+      outdir,
+      'workflow/runtime'
+    ).catch(() => undefined);
+    const entryPoints = resolvedWorkflowRuntime
+      ? [...inputs, resolvedWorkflowRuntime]
+      : inputs;
+
     const effectiveTsconfigPath =
       tsconfigPath ?? (await this.findTsConfigPath());
     const esbuildTsconfigOptions = await getEsbuildTsconfigOptions(
@@ -225,7 +243,7 @@ export abstract class BaseBuilder {
     try {
       await esbuild.build({
         treeShaking: true,
-        entryPoints: inputs,
+        entryPoints,
         plugins: [
           createDiscoverEntriesPlugin(state, this.transformProjectRoot),
         ],
@@ -377,7 +395,7 @@ export abstract class BaseBuilder {
    */
   protected async createStepsBundle({
     inputFiles,
-    format = 'cjs',
+    format = 'esm',
     outfile,
     externalizeNonSteps,
     rewriteTsExtensions,
@@ -395,8 +413,28 @@ export abstract class BaseBuilder {
     context: esbuild.BuildContext | undefined;
     manifest: WorkflowManifest;
   }> {
-    // These need to handle watching for dev to scan for
-    // new entries and changes to existing ones
+    const stepsBundleStart = Date.now();
+    const workflowManifest: WorkflowManifest = {};
+    const builtInSteps = 'workflow/internal/builtins';
+
+    const resolvedBuiltInSteps = await enhancedResolve(
+      dirname(outfile),
+      'workflow/internal/builtins'
+    ).catch((err) => {
+      throw new Error(
+        [
+          chalk.red('Failed to resolve built-in steps sources.'),
+          `${chalk.yellow.bold('hint:')} run \`${chalk.cyan.italic('npm install workflow')}\` to resolve this issue.`,
+          '',
+          `Caused by: ${chalk.red(String(err))}`,
+        ].join('\n')
+      );
+    });
+
+    // Discovery of workflow/step/serde entries. The SDK runtime entry point
+    // (workflow/runtime) is resolved inside discoverEntries() itself so that
+    // callers can pass the original inputFiles reference and benefit from
+    // WeakMap caching across createWorkflowsBundle / createStepsBundle calls.
     const discovered =
       discoveredEntries ??
       (await this.discoverEntries(inputFiles, dirname(outfile), tsconfigPath));
@@ -415,24 +453,6 @@ export abstract class BaseBuilder {
       stepFiles,
       workflowFiles,
       serdeOnlyFiles,
-    });
-
-    const stepsBundleStart = Date.now();
-    const workflowManifest: WorkflowManifest = {};
-    const builtInSteps = 'workflow/internal/builtins';
-
-    const resolvedBuiltInSteps = await enhancedResolve(
-      dirname(outfile),
-      'workflow/internal/builtins'
-    ).catch((err) => {
-      throw new Error(
-        [
-          chalk.red('Failed to resolve built-in steps sources.'),
-          `${chalk.yellow.bold('hint:')} run \`${chalk.cyan.italic('npm install workflow')}\` to resolve this issue.`,
-          '',
-          `Caused by: ${chalk.red(String(err))}`,
-        ].join('\n')
-      );
     });
 
     // Helper to create import statement from file path
@@ -505,10 +525,11 @@ export abstract class BaseBuilder {
       await getEsbuildTsconfigOptions(tsconfigPath);
     const { banner: importMetaBanner, define: importMetaDefine } =
       this.getCjsImportMetaPolyfill(format);
+    const esmRequireBanner = this.getEsmRequireBanner(format);
 
     const esbuildCtx = await esbuild.context({
       banner: {
-        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}`,
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${importMetaBanner}${esmRequireBanner}`,
       },
       stdin: {
         contents: entryContent,
@@ -633,7 +654,7 @@ export abstract class BaseBuilder {
    */
   protected async createWorkflowsBundle({
     inputFiles,
-    format = 'cjs',
+    format = 'esm',
     outfile,
     bundleFinalOutput = true,
     keepInterimBundleContext = this.config.watch,
@@ -909,9 +930,10 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
         // Now bundle this so we can resolve the @workflow/core dependency
         // we could remove this if we do nft tracing or similar instead
+        const finalEsmRequireBanner = this.getEsmRequireBanner(format);
         const finalWorkflowResult = await esbuild.build({
           banner: {
-            js: '// biome-ignore-all lint: generated file\n/* eslint-disable */\n',
+            js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${finalEsmRequireBanner}`,
           },
           stdin: {
             contents: workflowFunctionCode,
@@ -1012,7 +1034,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
     const inputFilesNormalized = new Set(
       inputFiles.map((f) => f.replace(/\\/g, '/'))
     );
-    const serdeOnlyFiles = discoveredSerdeFiles.filter(
+    const serdeOnlyFiles = [...discoveredSerdeFiles].filter(
       (f) => !inputFilesNormalized.has(f)
     );
 
@@ -1089,7 +1111,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
       ],
       plugins: [
         createSwcPlugin({
-          mode: 'client',
+          mode: 'step',
           projectRoot: this.transformProjectRoot,
           sideEffectEntries: normalizedClientSideEffectEntries,
         }),
@@ -1157,14 +1179,11 @@ export const OPTIONS = handler;`;
 
     // For Build Output API, bundle with esbuild to resolve imports
 
-    const webhookFormat = 'cjs' as const;
-    const { banner: webhookImportMetaBanner, define: webhookImportMetaDefine } =
-      this.getCjsImportMetaPolyfill(webhookFormat);
-
+    const webhookEsmRequireBanner = this.getEsmRequireBanner('esm');
     const webhookBundleStart = Date.now();
     const result = await esbuild.build({
       banner: {
-        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${webhookImportMetaBanner}`,
+        js: `// biome-ignore-all lint: generated file\n/* eslint-disable */\n${webhookEsmRequireBanner}`,
       },
       stdin: {
         contents: routeContent,
@@ -1176,7 +1195,7 @@ export const OPTIONS = handler;`;
       absWorkingDir: this.config.workingDir,
       bundle: true,
       jsx: 'preserve',
-      format: webhookFormat,
+      format: 'esm',
       platform: 'node',
       conditions: ['import', 'module', 'node', 'default'],
       target: 'es2022',
@@ -1184,7 +1203,6 @@ export const OPTIONS = handler;`;
       treeShaking: true,
       keepNames: true,
       minify: false,
-      define: webhookImportMetaDefine,
       resolveExtensions: [
         '.ts',
         '.tsx',
@@ -1247,7 +1265,7 @@ export const OPTIONS = handler;`;
   ): Promise<void> {
     const vcConfig = {
       runtime: config.runtime ?? 'nodejs22.x',
-      handler: config.handler ?? 'index.js',
+      handler: config.handler ?? 'index.mjs',
       launcherType: config.launcherType ?? 'Nodejs',
       architecture: config.architecture ?? 'arm64',
       shouldAddHelpers: config.shouldAddHelpers ?? true,

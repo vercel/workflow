@@ -130,7 +130,7 @@ export async function nodeModuleViolationWorkflow() {
 
       // Verify the error doc link is present
       expect(output).toContain(
-        'useworkflow.dev/err/node-js-module-in-workflow'
+        'workflow-sdk.dev/err/node-js-module-in-workflow'
       );
     }
   );
@@ -214,7 +214,7 @@ export async function blobViolationWorkflow() {
 
       // Verify the error doc link is present
       expect(output).toContain(
-        'useworkflow.dev/err/node-js-module-in-workflow'
+        'workflow-sdk.dev/err/node-js-module-in-workflow'
       );
     }
   );
