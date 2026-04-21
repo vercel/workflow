@@ -201,14 +201,14 @@ export interface HttpConfig {
 
 /**
  * Returns an object with the Vercel Deployment Protection bypass header
- * if the `WORKFLOW_VERCEL_PROTECTION_BYPASS` env var is set, otherwise
+ * if the `VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS` env var is set, otherwise
  * returns an empty object. Useful for spreading into a headers init object
  * for direct fetch() calls that don't go through `getHeaders()`.
  *
  * See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation
  */
 export function getProtectionBypassHeader(): Record<string, string> {
-  const bypassSecret = process.env.WORKFLOW_VERCEL_PROTECTION_BYPASS;
+  const bypassSecret = process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
   if (bypassSecret) {
     return { 'x-vercel-protection-bypass': bypassSecret };
   }
@@ -262,7 +262,7 @@ export const getHeaders = (
   // Include the Vercel Deployment Protection bypass secret when set.
   // Useful for testing against preview deployments that have protection enabled.
   // See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation
-  const bypassSecret = process.env.WORKFLOW_VERCEL_PROTECTION_BYPASS;
+  const bypassSecret = process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
   if (bypassSecret) {
     headers.set('x-vercel-protection-bypass', bypassSecret);
   }
