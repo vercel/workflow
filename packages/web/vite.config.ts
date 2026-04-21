@@ -6,7 +6,7 @@ import { defineConfig } from 'vite';
 // Vercel itself (as opposed to local development, publishing to npm, or being
 // packed as a tarball by the `docs` deployment — all of which produce the
 // standard self-hosted layout that `server.js` expects).
-const isVercelWebDeployment = Boolean(process.env.WORKFLOW_WEB_VERCEL_BUILD);
+const isVercelWebDeployment = process.env.WORKFLOW_WEB_VERCEL_BUILD === '1';
 
 export default defineConfig(({ command, isSsrBuild }) => ({
   build: {

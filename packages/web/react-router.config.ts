@@ -12,9 +12,8 @@ import { vercelPreset } from '@vercel/react-router/vite';
 // in that case we need the standard layout so the published tarball works.
 // Set `WORKFLOW_WEB_VERCEL_BUILD=1` in the web Vercel project's environment
 // variables to opt in.
-const presets: Config['presets'] = process.env.WORKFLOW_WEB_VERCEL_BUILD
-  ? [vercelPreset()]
-  : [];
+const presets: Config['presets'] =
+  process.env.WORKFLOW_WEB_VERCEL_BUILD === '1' ? [vercelPreset()] : [];
 
 export default {
   appDirectory: 'app',

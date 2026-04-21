@@ -1,5 +1,5 @@
 ---
-'@workflow/web': patch
+"@workflow/web": patch
 ---
 
 Configure `vercelPreset()` from `@vercel/react-router/vite` in `react-router.config.ts` when building the `packages/web` project for the Vercel deployment, enabling per-route bundle splitting, function-level configuration, and an accurate Deployment Summary.
