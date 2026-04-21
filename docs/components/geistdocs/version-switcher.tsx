@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, ChevronDown, Workflow } from 'lucide-react';
+import { Check, ChevronDown } from 'lucide-react';
 import { usePathname, useRouter } from 'next/navigation';
 import {
   DropdownMenu,
@@ -18,16 +18,29 @@ import { cn } from '@/lib/utils';
 
 const VersionIcon = ({ version }: { version: DocsVersion }) => {
   const palette = version.preRelease
-    ? 'bg-orange-100 text-orange-700 ring-orange-200 dark:bg-orange-950/40 dark:text-orange-300 dark:ring-orange-900/60'
-    : 'bg-blue-100 text-blue-700 ring-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:ring-blue-900/60';
+    ? 'bg-orange-100 border-orange-300 text-orange-900 dark:bg-orange-800 dark:border-orange-700 dark:text-orange-200'
+    : 'bg-blue-100 border-blue-300 text-blue-900 dark:bg-blue-800 dark:border-blue-700 dark:text-blue-200';
   return (
     <div
       className={cn(
-        'flex size-9 shrink-0 items-center justify-center rounded-md ring-1',
+        'flex size-8 shrink-0 items-center justify-center rounded-md border',
         palette
       )}
     >
-      <Workflow aria-hidden="true" className="size-5" />
+      <svg
+        aria-hidden="true"
+        height="16"
+        viewBox="0 0 16 16"
+        width="16"
+        xmlns="http://www.w3.org/2000/svg"
+      >
+        <path
+          clipRule="evenodd"
+          d="M1 1.5H1.75H14.25H15V2.25V6.25V7H14.25H8.75V14.25V15H7.25V14.25V7H1.75H1V6.25V2.25V1.5ZM2.5 5.5V3H13.5V5.5H2.5Z"
+          fill="currentColor"
+          fillRule="evenodd"
+        />
+      </svg>
     </div>
   );
 };
