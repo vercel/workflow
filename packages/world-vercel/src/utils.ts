@@ -53,25 +53,25 @@ function httpLog(
     );
   }
 }
+/**
+ * Inline workflow-server URL override. Must remain an empty string on
+ * `main` — rewritten by external CI for branch-deployment testing.
+ * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
+ */
+const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
- * Workflow-server URL override. Read from the `VERCEL_WORKFLOW_SERVER_URL`
- * env var at call time, so changes during a process lifetime (e.g. from
- * tests that mutate `process.env`) are picked up.
+ * Effective workflow-server URL override. The inline constant wins when
+ * set; otherwise falls back to the `VERCEL_WORKFLOW_SERVER_URL` env var.
  *
  * When set, requests bypass the default production host
- * (`https://vercel-workflow.com`). Useful for testing against a branch
- * deployment of workflow-server (e.g.
- * `https://workflow-server-git-branch-name.vercel.sh`).
- *
- * When using the proxy (`api.vercel.com/v1/workflow`), this value is
- * forwarded via the `x-vercel-workflow-api-url` header so the proxy
- * routes the request to the override URL.
+ * (`https://vercel-workflow.com`). When using the proxy
+ * (`api.vercel.com/v1/workflow`), this value is forwarded via the
+ * `x-vercel-workflow-api-url` header so the proxy routes the request to
+ * the override URL.
  */
-function getWorkflowServerUrlOverride(): string {
-  return process.env.VERCEL_WORKFLOW_SERVER_URL ?? '';
-}
-
+const getWorkflowServerUrlOverride = (): string =>
+  WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
