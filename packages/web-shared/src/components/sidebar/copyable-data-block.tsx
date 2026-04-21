@@ -24,7 +24,7 @@ export function CopyableDataBlock({ data }: { data: unknown }) {
   const toast = useToast();
   return (
     <div
-      className="relative overflow-x-auto rounded-md border p-3 pt-9"
+      className="relative overflow-x-auto rounded-md border p-3"
       style={{ borderColor: 'var(--ds-gray-300)' }}
     >
       <button
