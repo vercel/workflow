@@ -289,6 +289,10 @@ jobs:
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Point PRs at the protected workflow-server preview; unset on main
+          # so production runs hit the public vercel-workflow.com URL.
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref == 'refs/heads/main' && '' || secrets.VERCEL_WORKFLOW_SERVER_URL }}
+          VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS: ${{ github.ref == 'refs/heads/main' && '' || secrets.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS }}
 
       - name: Generate E2E summary
         if: always()
