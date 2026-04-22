@@ -73,6 +73,7 @@
     "fix-next-version-resolution",
     "fix-provider-tool-identity",
     "fix-stream-get-runid",
+    "fix-tools-to-model-tools",
     "getter-step-support",
     "inline-step-registration",
     "large-regions-talk",
@@ -84,14 +85,18 @@
     "old-towns-make",
     "preserve-step-fn-names",
     "private-member-dce",
+    "remove-client-mode",
     "remove-private-subpath",
     "remove-sdk-serde-exclusion",
     "rename-domain-urls",
+    "skip-community-worlds-main",
     "slow-bottles-pull",
+    "start-in-workflow",
     "step-run-required",
     "sync-step-followup",
     "tired-spiders-rhyme",
     "vast-oranges-fail",
-    "workflow-function-serialization"
+    "workflow-function-serialization",
+    "world-vercel-protection-bypass"
   ]
 }

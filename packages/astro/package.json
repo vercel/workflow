@@ -1,6 +1,6 @@
 {
   "name": "@workflow/astro",
-  "version": "5.0.0-beta.2",
+  "version": "5.0.0-beta.3",
   "description": "Astro integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",

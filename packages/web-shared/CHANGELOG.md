@@ -1,5 +1,12 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- Updated dependencies [[`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec)]:
+  - @workflow/core@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

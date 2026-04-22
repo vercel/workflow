@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web",
   "description": "Workflow Observability UI",
-  "version": "5.0.0-beta.2",
+  "version": "5.0.0-beta.3",
   "type": "module",
   "private": false,
   "files": [

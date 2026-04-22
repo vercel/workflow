@@ -1,5 +1,25 @@
 # workflow
 
+## 5.0.0-beta.3
+
+### Minor Changes
+
+- [#1491](https://github.com/vercel/workflow/pull/1491) [`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec) Thanks [@pranaygp](https://github.com/pranaygp)! - Allow `start()` to be called directly inside workflow functions
+
+### Patch Changes
+
+- Updated dependencies [[`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c), [`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec)]:
+  - @workflow/cli@5.0.0-beta.3
+  - @workflow/next@5.0.0-beta.3
+  - @workflow/rollup@5.0.0-beta.3
+  - @workflow/nest@5.0.0-beta.3
+  - @workflow/core@5.0.0-beta.3
+  - @workflow/astro@5.0.0-beta.3
+  - @workflow/nitro@5.0.0-beta.3
+  - @workflow/sveltekit@5.0.0-beta.3
+  - @workflow/typescript-plugin@5.0.0-beta.2
+  - @workflow/nuxt@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @workflow/core
 
+## 5.0.0-beta.3
+
+### Minor Changes
+
+- [#1491](https://github.com/vercel/workflow/pull/1491) [`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec) Thanks [@pranaygp](https://github.com/pranaygp)! - Allow `start()` to be called directly inside workflow functions
+
+### Patch Changes
+
+- Updated dependencies [[`354840e`](https://github.com/vercel/workflow/commit/354840e93b46e2eae29d4b1f936b04a92db1890e)]:
+  - @workflow/world-vercel@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes
