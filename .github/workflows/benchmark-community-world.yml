@@ -113,7 +113,7 @@ jobs:
 
       # Per-world setup. Hardcoded (not taken from the matrix) so a malicious
       # fork PR cannot smuggle arbitrary shell through matrix.world.setup-command.
-      - name: Run setup command
+      - name: Per-world setup
         env:
           APP_NAME: ${{ inputs.app-name }}
           WORLD_ID: ${{ inputs.world-id }}
