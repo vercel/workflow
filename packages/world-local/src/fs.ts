@@ -7,6 +7,58 @@ import { z } from 'zod';
 
 const ulid = monotonicFactory(() => Math.random());
 
+/**
+ * Error thrown when an entity ID contains characters that would escape the
+ * filesystem storage directory (path traversal) or otherwise produce an
+ * unsafe filename.
+ */
+export class UnsafeEntityIdError extends Error {
+  constructor(kind: string, value: string) {
+    super(
+      `Unsafe ${kind} "${value}": must not be empty, start with ".", or contain path separators, null bytes, or ".." segments`
+    );
+    this.name = 'UnsafeEntityIdError';
+  }
+}
+
+/**
+ * Validate that a string is safe to embed in a filesystem path as a single
+ * path component. Rejects:
+ *   - empty strings
+ *   - strings starting with `.` (hidden files, `.locks`, `.tmp`, etc.)
+ *   - strings equal to `.` or `..`
+ *   - strings containing `/`, `\`, or null bytes
+ *   - strings containing any `..` segment (e.g. `foo/../bar`, `foo\..\bar`)
+ *
+ * This is the primary defense against path-traversal attacks where a
+ * request body supplies a runId / stepId / correlationId that contains
+ * `../` sequences to read or write files outside the storage root.
+ *
+ * @param kind - Human-readable label used in the error message (e.g. "runId")
+ * @param value - The value to validate; throws UnsafeEntityIdError on failure
+ */
+export function assertSafeEntityId(kind: string, value: string): void {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.startsWith('.') ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('\0')
+  ) {
+    throw new UnsafeEntityIdError(kind, value);
+  }
+}
+
+/**
+ * Sanitize many IDs at once. Convenience wrapper over assertSafeEntityId.
+ */
+export function assertSafeEntityIds(ids: Record<string, string>): void {
+  for (const [kind, value] of Object.entries(ids)) {
+    assertSafeEntityId(kind, value);
+  }
+}
+
 const isWindows = process.platform === 'win32';
 
 /**
@@ -75,6 +127,10 @@ export function stripTag(fileId: string): string {
  * Build the file path for an entity, with optional tag embedded in the filename.
  * `taggedPath('runs', 'wrun_ABC', 'vitest-0')` → `runs/wrun_ABC.vitest-0.json`
  * `taggedPath('runs', 'wrun_ABC')` → `runs/wrun_ABC.json`
+ *
+ * The `fileId` and `tag` are validated with {@link assertSafeEntityId} to
+ * prevent path-traversal attacks when values are derived from untrusted
+ * request input.
  */
 export function taggedPath(
   basedir: string,
@@ -82,6 +138,8 @@ export function taggedPath(
   fileId: string,
   tag?: string
 ): string {
+  assertSafeEntityId('fileId', fileId);
+  if (tag !== undefined) assertSafeEntityId('tag', tag);
   const filename = tag ? `${fileId}.${tag}.json` : `${fileId}.json`;
   return path.join(basedir, entityDir, filename);
 }
@@ -98,6 +156,8 @@ export async function readJSONWithFallback<T>(
   schema: z.ZodType<T>,
   tag?: string
 ): Promise<T | null> {
+  assertSafeEntityId('fileId', fileId);
+  if (tag !== undefined) assertSafeEntityId('tag', tag);
   if (tag) {
     const result = await readJSON(
       path.join(basedir, entityDir, `${fileId}.${tag}.json`),
@@ -362,6 +422,12 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     getCreatedAt,
     getId,
   } = config;
+
+  // Validate filePrefix (typically `${runId}-`) to ensure request-supplied
+  // IDs can't escape the queried directory via path separators or traversal.
+  if (filePrefix !== undefined) {
+    assertSafeEntityId('filePrefix', filePrefix);
+  }
 
   // 1. Get all JSON files in directory
   const fileIds = await listJSONFiles(directory);
