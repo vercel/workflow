@@ -1,4 +1,4 @@
-import ts from 'typescript/lib/tsserverlibrary';
+import type ts from 'typescript/lib/tsserverlibrary';
 import { getDirective, WORKFLOW_HOOKS } from './utils';
 
 export function enhanceCompletions(
