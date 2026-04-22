@@ -124,7 +124,7 @@ export async function fetchRunKey(
     {
       method: 'GET',
       headers: {
-        authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
         ...getProtectionBypassHeader(),
       },
       // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit

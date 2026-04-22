@@ -56,7 +56,7 @@ describe('createResolveLatestDeploymentId', () => {
       expect.objectContaining({
         method: 'GET',
         headers: expect.objectContaining({
-          authorization: 'Bearer test-token',
+          Authorization: 'Bearer test-token',
         }),
       })
     );
@@ -114,7 +114,7 @@ describe('createResolveLatestDeploymentId', () => {
       expect.any(String),
       expect.objectContaining({
         headers: expect.objectContaining({
-          authorization: 'Bearer env-token-123',
+          Authorization: 'Bearer env-token-123',
         }),
       })
     );
@@ -152,7 +152,7 @@ describe('createResolveLatestDeploymentId', () => {
       expect.any(String),
       expect.objectContaining({
         headers: expect.objectContaining({
-          authorization: 'Bearer oidc-token-456',
+          Authorization: 'Bearer oidc-token-456',
         }),
       })
     );

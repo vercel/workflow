@@ -259,12 +259,8 @@ export const getHeaders = (
   if (workflowServerUrlOverride && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
-  // Include the Vercel Deployment Protection bypass secret when set.
-  // Useful for testing against preview deployments that have protection enabled.
-  // See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation
-  const bypassSecret = process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
-  if (bypassSecret) {
-    headers.set('x-vercel-protection-bypass', bypassSecret);
+  for (const [key, value] of Object.entries(getProtectionBypassHeader())) {
+    headers.set(key, value);
   }
   return headers;
 };
