@@ -87,37 +87,72 @@ jobs:
         with:
           build-packages: 'true'
 
+      - name: Validate inputs
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+          WORLD_ID: ${{ inputs.world-id }}
+          WORLD_PACKAGE: ${{ inputs.world-package }}
+        run: |
+          if [[ ! "$APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+            echo "Invalid app-name: $APP_NAME" >&2
+            exit 1
+          fi
+          if [[ ! "$WORLD_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+            echo "Invalid world-id: $WORLD_ID" >&2
+            exit 1
+          fi
+          if [[ ! "$WORLD_PACKAGE" =~ ^(@[a-zA-Z0-9][a-zA-Z0-9_.-]*/)?[a-zA-Z0-9][a-zA-Z0-9_.-]*(@[a-zA-Z0-9][a-zA-Z0-9_.+-]*)?$ ]]; then
+            echo "Invalid world-package: $WORLD_PACKAGE" >&2
+            exit 1
+          fi
+
       - name: Install ${{ inputs.world-name }} World
-        run: pnpm --filter ${{ inputs.app-name }} add ${{ inputs.world-package }}
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+          WORLD_PACKAGE: ${{ inputs.world-package }}
+        run: pnpm --filter "$APP_NAME" add "$WORLD_PACKAGE"
 
       - name: Run setup command
         if: ${{ inputs.setup-command != '' }}
-        run: ${{ inputs.setup-command }}
-        working-directory: workbench/${{ inputs.app-name }}
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        run: |
+          cd "workbench/$APP_NAME"
+          eval "$SETUP_COMMAND"
 
       - name: Resolve symlinks
-        run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+        run: ./scripts/resolve-symlinks.sh "workbench/$APP_NAME"
 
       - name: Set environment variables
+        env:
+          ENV_VARS_JSON: ${{ inputs.env-vars }}
         run: |
-          echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
+          printf '%s' "$ENV_VARS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
 
       - name: Run E2E Tests
-        run: |
-          cd workbench/${{ inputs.app-name }} && pnpm dev &
-          echo "Waiting for dev server to start..." && sleep 15
-          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}-dev.json || true
-          sleep 10
-          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-community-${{ inputs.world-id }}.json || true
         env:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: ${{ inputs.app-name }}
+          WORLD_ID: ${{ inputs.world-id }}
           DEPLOYMENT_URL: "http://localhost:3000"
-          DEV_TEST_CONFIG: '{"name":"${{ inputs.app-name }}","project":"workbench-${{ inputs.app-name }}-workflow","generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../.."}'
+        run: |
+          DEV_TEST_CONFIG="$(jq -nc --arg name "$APP_NAME" '{name:$name,project:"workbench-\($name)-workflow",generatedStepPath:"app/.well-known/workflow/v1/step/route.js",generatedWorkflowPath:"app/.well-known/workflow/v1/flow/route.js",apiFilePath:"app/api/chat/route.ts",apiFileImportPath:"../../.."}')"
+          export DEV_TEST_CONFIG
+          cd "workbench/$APP_NAME" && pnpm dev &
+          cd "$GITHUB_WORKSPACE"
+          echo "Waiting for dev server to start..." && sleep 15
+          pnpm vitest run packages/core/e2e/dev.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-community-$WORLD_ID-dev.json" || true
+          sleep 10
+          pnpm vitest run packages/core/e2e/e2e.test.ts --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts "--outputFile=e2e-community-$WORLD_ID.json" || true
 
       - name: Generate E2E summary
         if: always()
-        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Tests (${{ inputs.world-name }})" >> $GITHUB_STEP_SUMMARY || true
+        env:
+          WORLD_NAME: ${{ inputs.world-name }}
+        run: node .github/scripts/aggregate-e2e-results.js . --job-name "E2E Tests ($WORLD_NAME)" >> $GITHUB_STEP_SUMMARY || true
 
       - name: Upload E2E results
         uses: actions/upload-artifact@v4
