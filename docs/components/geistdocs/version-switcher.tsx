@@ -17,18 +17,22 @@ import {
 import { cn } from '@/lib/utils';
 
 const VersionIcon = ({ version }: { version: DocsVersion }) => {
-  const palette = version.preRelease
-    ? 'bg-orange-100 border-orange-300 text-orange-900 dark:bg-orange-800 dark:border-orange-700 dark:text-orange-200'
-    : 'bg-blue-100 border-blue-300 text-blue-900 dark:bg-blue-800 dark:border-blue-700 dark:text-blue-200';
+  const container = version.preRelease
+    ? 'bg-orange-100 border-orange-300 dark:bg-orange-800 dark:border-orange-700'
+    : 'bg-blue-100 border-blue-300 dark:bg-blue-200 dark:border-blue-700';
+  const iconColor = version.preRelease
+    ? 'text-orange-900 dark:text-orange-200'
+    : 'text-blue-900 dark:text-blue-900';
   return (
     <div
       className={cn(
         'flex size-8 shrink-0 items-center justify-center rounded-md border',
-        palette
+        container
       )}
     >
       <svg
         aria-hidden="true"
+        className={iconColor}
         height="16"
         viewBox="0 0 16 16"
         width="16"
@@ -96,7 +100,10 @@ export const VersionSwitcher = () => {
                 </span>
               </div>
               {isActive && (
-                <Check aria-hidden="true" className="size-4 text-fd-primary" />
+                <Check
+                  aria-hidden="true"
+                  className="size-4 text-green-900 dark:text-green-600"
+                />
               )}
             </DropdownMenuItem>
           );

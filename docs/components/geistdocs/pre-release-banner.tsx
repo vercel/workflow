@@ -30,7 +30,7 @@ export const PreReleaseBanner = ({ pathname }: PreReleaseBannerProps) => {
   return (
     <div className="border-b bg-blue-50 px-4 py-2 text-center text-sm dark:bg-blue-950/40">
       <div className="mx-auto flex max-w-[1448px] flex-wrap items-center justify-center gap-x-3 gap-y-1">
-        <div className="flex items-center gap-2 text-blue-700 dark:text-blue-300">
+        <div className="flex items-center gap-2 text-blue-700 dark:text-blue-900">
           <SparklesFilled className="size-4 shrink-0" />
           <span>
             Viewing Workflow {PRE_RELEASE_VERSION.id.replace(/^v/, '')}{' '}
@@ -38,7 +38,7 @@ export const PreReleaseBanner = ({ pathname }: PreReleaseBannerProps) => {
           </span>
         </div>
         <Link
-          className="font-medium text-foreground underline underline-offset-4 decoration-foreground/30 transition-colors hover:decoration-foreground/70"
+          className="font-medium text-blue-700 underline underline-offset-4 decoration-blue-700/40 transition-colors hover:decoration-blue-700 dark:text-blue-900 dark:decoration-blue-900/40 dark:hover:decoration-blue-900"
           href={latestHref}
         >
           Go to Workflow {LATEST_VERSION.id.replace(/^v/, '')} (Latest)
