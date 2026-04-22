@@ -9,7 +9,7 @@ Load this file when the source pauses for Signals, `step.waitForEvent()`, or `.w
 | App resumes the workflow from server-side code with a deterministic business token | `resume/internal` | `createHook()`, `resumeHook()`, deterministic `token` | `createWebhook()`, `webhook.url` |
 | External vendor needs a generated callback URL and the default `202 Accepted` response is fine | `resume/url/default` | `createWebhook()`, `webhook.url` | `resumeHook()`, `respondWith: 'manual'`, `RequestWithResponse`, invented callback route |
 | External vendor needs a generated callback URL and the prompt requires a custom response body, status, or headers | `resume/url/manual` | `createWebhook({ respondWith: 'manual' })`, `webhook.url`, `RequestWithResponse`, step-level `request.respondWith()` | `resumeHook()`, `token:` on `createWebhook()` |
-| Target is self-hosted | `runtime/self-hosted` | `World extends Storage, Queue, Streamer`, `startWorkflowWorld()` | claims of managed execution |
+| Target is self-hosted | `runtime/self-hosted` | `World extends Queue, Streamer, Storage`, `startWorkflowWorld()` | claims of managed execution |
 | Prompt explicitly names Hono, Express, Fastify, NestJS, or Next.js | `boundary/named-framework` | user-authored app-boundary code in that framework | plain `Request` / `Response` app-boundary code |
 | Prompt explicitly asks for framework-agnostic output | `boundary/framework-agnostic` | plain `Request` / `Response` app-boundary code | framework-specific route syntax |
 
@@ -52,7 +52,7 @@ Load this file when the source pauses for Signals, `step.waitForEvent()`, or `.w
 
 ### `runtime/self-hosted`
 
-- Include `interface World extends Storage, Queue, Streamer { start?(): Promise<void>; }`.
+- Include `interface World extends Queue, Streamer, Storage { start?(): Promise<void>; }`.
 - Include `startWorkflowWorld(): Promise<void>`.
 - Include the explicit note that workflow/step code can stay the same while deployment still needs a custom `World`.
 - Do not claim managed execution.
@@ -70,7 +70,7 @@ Load this file when the source pauses for Signals, `step.waitForEvent()`, or `.w
 
 ```md
 ## Migration Plan
-- Source: [Temporal | Inngest | AWS Step Functions]
+- Source: [Temporal | Inngest | AWS Step Functions | Trigger.dev]
 - Route keys: [comma-separated keys]
 - Why these route keys:
   - [route key]: [reason from the prompt]

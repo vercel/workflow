@@ -173,6 +173,13 @@ This repository uses a dual-branch release model with [changesets](https://githu
 
 Both branches trigger the release workflow (`.github/workflows/release.yml`) on push. The changesets action creates a "Version Packages" PR on each branch when there are pending changesets.
 
+**Important:** Some directories are not fully maintained on the `stable` branch:
+
+- **`docs/`**: Only `docs/content/` is actively maintained on `stable` — the rest of the docs app is a minimal placeholder (documentation is deployed only from `main`). `docs/content/` is kept on `stable` because the markdown files are bundled into npm packages via `prepack` scripts.
+- **`skills/`**: Not maintained on `stable` at all. Skill files are unrelated to npm packaging, so there is no reason to keep them in sync on the release branch.
+
+When backporting changes to `stable`, any conflicts involving docs app files (outside of `docs/content/`) or `skills/` files should be resolved by keeping the `stable` branch version (discarding the incoming change from `main`). Conflicts in `docs/content/` should be resolved normally. The backport GitHub Action handles this automatically.
+
 ### Changesets
 
 - `workflow` and `@workflow/core` use changesets' "fixed" versioning strategy — they always have the same version number
@@ -190,7 +197,7 @@ Both branches trigger the release workflow (`.github/workflows/release.yml`) on 
 
 To backport a change from `main` to `stable`, add the `backport-stable` label to the PR on `main`. A GitHub Action (`.github/workflows/backport.yml`) will automatically cherry-pick the squashed commit to `stable`. The label can be added before or after merging — the action triggers on both merge and label events. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
 
-If the cherry-pick fails due to conflicts, the action will attempt to resolve them automatically using [opencode](https://opencode.ai) (AI-powered conflict resolution). If successful, it creates a PR targeting `stable` for human review instead of pushing directly. If the AI cannot resolve the conflicts, the action will comment on the original PR with instructions for manual resolution.
+If the cherry-pick fails due to conflicts, the action first auto-resolves conflicts in directories that are not maintained on `stable` (docs app files under `docs/` except `docs/content/`, and any files under `skills/`) by keeping the `stable` branch version. It also auto-resolves `pnpm-lock.yaml` conflicts by re-running `pnpm install`. If those resolve everything, the cherry-pick is pushed directly to `stable`. Otherwise, it attempts to resolve remaining conflicts using [opencode](https://opencode.ai) (AI-powered conflict resolution). If successful, it creates a PR targeting `stable` for human review instead of pushing directly. If the AI cannot resolve the conflicts, the action will comment on the original PR with instructions for manual resolution.
 
 ### Pre-release Lifecycle
 

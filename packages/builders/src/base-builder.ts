@@ -1111,7 +1111,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
       ],
       plugins: [
         createSwcPlugin({
-          mode: 'client',
+          mode: 'step',
           projectRoot: this.transformProjectRoot,
           sideEffectEntries: normalizedClientSideEffectEntries,
         }),

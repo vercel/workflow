@@ -1553,6 +1553,40 @@ describe('e2e', () => {
     }
   );
 
+  test(
+    'startFromWorkflow - calling start() directly inside a workflow function with hook communication',
+    { timeout: 120_000 },
+    async () => {
+      const inputValue = 42;
+      const run = await start(await e2e('startFromWorkflow'), [inputValue]);
+      trackRun(run);
+      const returnValue = await run.returnValue;
+
+      expect(returnValue.parentInput).toBe(inputValue);
+      expect(typeof returnValue.childRunId).toBe('string');
+      expect(returnValue.childRunId.startsWith('wrun_')).toBe(true);
+      expect(returnValue.signalFromChild.processed).toBe(inputValue * 3);
+
+      // Verify child workflow also completed independently
+      const childRun = getRun(returnValue.childRunId);
+      trackRun(childRun);
+      const childResult = await childRun.returnValue;
+      expect(childResult.processed).toBe(inputValue * 3);
+    }
+  );
+
+  test(
+    'fibonacciWorkflow - recursive workflow composition via start()',
+    { timeout: 180_000 },
+    async () => {
+      // fib(6) = 8, spawns a tree of child workflow runs
+      const run = await start(await e2e('fibonacciWorkflow'), [6]);
+      trackRun(run);
+      const returnValue = await run.returnValue;
+      expect(returnValue).toBe(8);
+    }
+  );
+
   // This test requires direct HTTP access and works when running locally.
   // For production use on Vercel with Deployment Protection enabled, use the
   // queue-based `healthCheck(world, endpoint, options)` function instead, which
@@ -2295,6 +2329,111 @@ describe('e2e', () => {
         calibrated: 22,
         reading2: 200,
       });
+    }
+  );
+
+  // ============================================================
+  // Distributed Abort Controller
+  // ============================================================
+  test(
+    'distributedAbortController - manual abort triggers signal',
+    { timeout: 60_000 },
+    async () => {
+      const controllerId = `test-abort-${Math.random().toString(36).slice(2)}`;
+
+      // Start the abort controller workflow with short TTL for testing
+      const run = await start(
+        await e2e('distributedAbortControllerWorkflow'),
+        [controllerId, 60_000, 10_000] // 60s TTL, 10s grace
+      );
+
+      // Wait for the hook to be registered
+      await sleep(3_000);
+
+      // Get the abort signal (reads from stream)
+      const readable = await run.getReadable();
+      const reader = readable.getReader();
+
+      // Trigger abort via hook
+      const token = `distributed-abort:${controllerId}`;
+      const hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run.runId);
+      await resumeHook(token, { reason: 'User cancelled' });
+
+      // Read the abort message from the stream
+      const { value } = await reader.read();
+      reader.releaseLock();
+
+      expect(value).toEqual({
+        type: 'abort',
+        reason: 'User cancelled',
+        expired: false,
+      });
+    }
+  );
+
+  test(
+    'distributedAbortController - TTL expiration triggers signal',
+    { timeout: 30_000 },
+    async () => {
+      const controllerId = `test-expire-${Math.random().toString(36).slice(2)}`;
+
+      // Start with very short TTL (3 seconds)
+      const run = await start(
+        await e2e('distributedAbortControllerWorkflow'),
+        [controllerId, 3_000, 1_000] // 3s TTL, 1s grace
+      );
+
+      // Get the abort signal stream
+      const readable = await run.getReadable();
+      const reader = readable.getReader();
+
+      // Wait for TTL to expire and read the abort message
+      const { value } = await reader.read();
+      reader.releaseLock();
+
+      expect(value).toEqual({
+        type: 'abort',
+        reason: 'Controller expired',
+        expired: true,
+      });
+    }
+  );
+
+  test(
+    'distributedAbortController - reconnect to existing controller',
+    { timeout: 60_000 },
+    async () => {
+      const controllerId = `test-reconnect-${Math.random().toString(36).slice(2)}`;
+      const token = `distributed-abort:${controllerId}`;
+
+      // Start first controller
+      const run1 = await start(
+        await e2e('distributedAbortControllerWorkflow'),
+        [controllerId, 60_000, 10_000]
+      );
+
+      // Wait for hook to be registered
+      await sleep(3_000);
+
+      // Look up the hook - should find the same run
+      const hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run1.runId);
+
+      // A second lookup should still find the same run (hook persists)
+      const hook2 = await getHookByToken(token);
+      expect(hook2.runId).toBe(run1.runId);
+
+      // Abort the controller
+      await resumeHook(token, { reason: 'Test complete' });
+
+      // Workflow should still be running (grace period), so hook should still be findable
+      await sleep(1_000);
+      const hookAfterAbort = await getHookByToken(token).catch(() => null);
+      // Hook may or may not be disposed depending on timing, but run should complete
+      const returnValue = await run1.returnValue;
+      expect(returnValue.aborted).toBe(true);
+      expect(returnValue.reason).toBe('Test complete');
     }
   );
 });

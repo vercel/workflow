@@ -37,3 +37,5 @@
 - Idempotency keys on external writes via `getStepMetadata().stepId`
 - Rollback stack for compensation-heavy flows (replaces per-step try/catch compensation)
 - Step-wrapped `start()` / `getRun()` for child workflows (replaces `step.invoke()`)
+
+<!-- Verified against workflow@5.0.0-beta.1 and Inngest TypeScript SDK v4 on 2026-04-16 -->

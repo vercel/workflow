@@ -1,5 +1,15 @@
 # @workflow/rollup
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- Updated dependencies [[`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`e788e3b`](https://github.com/vercel/workflow/commit/e788e3b41cce49335f4a7b5bf12907e30f2fb5f0), [`136bd35`](https://github.com/vercel/workflow/commit/136bd35a98a40a5dc55b2fbf838924c0af001ba7), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352)]:
+  - @workflow/builders@5.0.0-beta.2
+  - @workflow/swc-plugin@5.0.0-beta.2
+
 ## 5.0.0-beta.1
 
 ### Major Changes
