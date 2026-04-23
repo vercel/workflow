@@ -1,4 +1,5 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
@@ -46,44 +47,83 @@ export class LocalBuilder extends BaseBuilder {
     this.#outDir = outDir;
   }
 
-  override async build(): Promise<void> {
+  // Serialize concurrent build() calls so overlapping dev rebuilds don't
+  // stomp on each other's temp files or partially overwrite output.
+  #buildQueue: Promise<void> = Promise.resolve();
+
+  override build(): Promise<void> {
+    const next = this.#buildQueue.then(
+      () => this.#buildOnce(),
+      () => this.#buildOnce()
+    );
+    // Swallow rejections on the queue itself so a failed build doesn't
+    // permanently reject all subsequent builds; each caller still sees
+    // its own rejection via the returned promise.
+    this.#buildQueue = next.catch(() => {});
+    return next;
+  }
+
+  async #buildOnce(): Promise<void> {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    const { manifest: workflowsManifest } = await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
-      bundleFinalOutput: false,
-      format: 'esm',
-      inputFiles,
-    });
+    // Build to temporary files first, then move them into place.
+    // This prevents leaving partial/inconsistent output when a build
+    // fails mid-way (e.g., a file was deleted between discovery and
+    // compilation during dev HMR). A per-build UUID guarantees uniqueness
+    // across concurrent invocations, in case the queue is bypassed.
+    const tmpSuffix = `.tmp.${randomUUID()}`;
+    const workflowsTmpFile = join(this.#outDir, `workflows${tmpSuffix}.mjs`);
+    const stepsTmpFile = join(this.#outDir, `steps${tmpSuffix}.mjs`);
+    const webhookTmpFile = join(this.#outDir, `webhook${tmpSuffix}.mjs`);
 
-    const { manifest: stepsManifest } = await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
-      externalizeNonSteps: true,
-      format: 'esm',
-      inputFiles,
-    });
+    try {
+      const { manifest: workflowsManifest } = await this.createWorkflowsBundle({
+        outfile: workflowsTmpFile,
+        bundleFinalOutput: false,
+        format: 'esm',
+        inputFiles,
+      });
 
-    const webhookRouteFile = join(this.#outDir, 'webhook.mjs');
+      const { manifest: stepsManifest } = await this.createStepsBundle({
+        outfile: stepsTmpFile,
+        externalizeNonSteps: true,
+        format: 'esm',
+        inputFiles,
+      });
 
-    await this.createWebhookBundle({
-      outfile: webhookRouteFile,
-      bundle: false,
-    });
+      await this.createWebhookBundle({
+        outfile: webhookTmpFile,
+        bundle: false,
+      });
 
-    // Merge manifests from both bundles
-    const manifest = {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
+      // All builds succeeded — atomically move files into place
+      await rename(workflowsTmpFile, join(this.#outDir, 'workflows.mjs'));
+      await rename(stepsTmpFile, join(this.#outDir, 'steps.mjs'));
+      await rename(webhookTmpFile, join(this.#outDir, 'webhook.mjs'));
 
-    // Generate manifest
-    const workflowBundlePath = join(this.#outDir, 'workflows.mjs');
-    await this.createManifest({
-      workflowBundlePath,
-      manifestDir: this.#outDir,
-      manifest,
-    });
+      // Merge manifests from both bundles
+      const manifest = {
+        steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
+        workflows: {
+          ...stepsManifest.workflows,
+          ...workflowsManifest.workflows,
+        },
+        classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
+      };
+
+      // Generate manifest
+      const workflowBundlePath = join(this.#outDir, 'workflows.mjs');
+      await this.createManifest({
+        workflowBundlePath,
+        manifestDir: this.#outDir,
+        manifest,
+      });
+    } finally {
+      // Clean up temporary files on success or failure
+      await unlink(workflowsTmpFile).catch(() => {});
+      await unlink(stepsTmpFile).catch(() => {});
+      await unlink(webhookTmpFile).catch(() => {});
+    }
   }
 }

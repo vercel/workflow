@@ -19,6 +19,10 @@ export function syncFunc() {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "syncFunc",
+        configurable: true
+    });
 })(syncFunc, "step//./input//syncFunc");
 export async function validStep() {
     return 'allowed';
@@ -27,16 +31,28 @@ export async function validStep() {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "validStep",
+        configurable: true
+    });
 })(validStep, "step//./input//validStep");
 export const arrowStep = ()=>'allowed';
 (function(__wf_fn, __wf_id) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "arrowStep",
+        configurable: true
+    });
 })(arrowStep, "step//./input//arrowStep");
 export const asyncArrow = async ()=>'allowed';
 (function(__wf_fn, __wf_id) {
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "asyncArrow",
+        configurable: true
+    });
 })(asyncArrow, "step//./input//asyncArrow");

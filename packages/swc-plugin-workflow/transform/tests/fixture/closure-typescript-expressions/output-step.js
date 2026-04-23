@@ -11,6 +11,10 @@ var withTsAs$_anonymousStep0 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withTsAs$_anonymousStep0",
+        configurable: true
+    });
 })(withTsAs$_anonymousStep0, "step//./input//withTsAs/_anonymousStep0");
 var withTsSatisfies$_anonymousStep1 = async ()=>{
     const { config } = function() {
@@ -24,6 +28,10 @@ var withTsSatisfies$_anonymousStep1 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withTsSatisfies$_anonymousStep1",
+        configurable: true
+    });
 })(withTsSatisfies$_anonymousStep1, "step//./input//withTsSatisfies/_anonymousStep1");
 var withTsNonNull$_anonymousStep2 = async ()=>{
     const { value } = function() {
@@ -37,6 +45,10 @@ var withTsNonNull$_anonymousStep2 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withTsNonNull$_anonymousStep2",
+        configurable: true
+    });
 })(withTsNonNull$_anonymousStep2, "step//./input//withTsNonNull/_anonymousStep2");
 var withTsTypeAssertion$_anonymousStep3 = async ()=>{
     const { data } = function() {
@@ -50,6 +62,10 @@ var withTsTypeAssertion$_anonymousStep3 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withTsTypeAssertion$_anonymousStep3",
+        configurable: true
+    });
 })(withTsTypeAssertion$_anonymousStep3, "step//./input//withTsTypeAssertion/_anonymousStep3");
 var withTsConstAssertion$_anonymousStep4 = async ()=>{
     const { label } = function() {
@@ -65,6 +81,10 @@ var withTsConstAssertion$_anonymousStep4 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withTsConstAssertion$_anonymousStep4",
+        configurable: true
+    });
 })(withTsConstAssertion$_anonymousStep4, "step//./input//withTsConstAssertion/_anonymousStep4");
 var withGenericCall$_anonymousStep5 = async ()=>{
     const { items, transform } = function() {
@@ -78,6 +98,10 @@ var withGenericCall$_anonymousStep5 = async ()=>{
     var __wf_sym = Symbol.for("@workflow/core//registeredSteps"), __wf_reg = globalThis[__wf_sym] || (globalThis[__wf_sym] = new Map());
     __wf_reg.set(__wf_id, __wf_fn);
     __wf_fn.stepId = __wf_id;
+    Object.defineProperty(__wf_fn, "name", {
+        value: "withGenericCall$_anonymousStep5",
+        configurable: true
+    });
 })(withGenericCall$_anonymousStep5, "step//./input//withGenericCall/_anonymousStep5");
 // TypeScript expression wrappers should not prevent closure variable detection.
 // The plugin must traverse through `as`, `satisfies`, `!`, type assertions,

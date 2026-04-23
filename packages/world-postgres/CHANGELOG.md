@@ -1,5 +1,16 @@
 # @workflow/world-postgres
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- Updated dependencies [[`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`11cfb8f`](https://github.com/vercel/workflow/commit/11cfb8f3fb4c64bde92cf51a5990a7773c263f94), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352)]:
+  - @workflow/errors@5.0.0-beta.1
+  - @workflow/utils@5.0.0-beta.1
+  - @workflow/world-local@5.0.0-beta.2
+
 ## 5.0.0-beta.1
 
 ### Major Changes

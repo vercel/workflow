@@ -9,9 +9,9 @@ import {
 import chalk from 'chalk';
 import { BaseCommand } from '../base.js';
 
-type TransformMode = 'workflow' | 'step' | 'client';
+type TransformMode = 'workflow' | 'step';
 
-const ALL_MODES: TransformMode[] = ['workflow', 'step', 'client'];
+const ALL_MODES: TransformMode[] = ['workflow', 'step'];
 
 export default class Transform extends BaseCommand {
   static description =
@@ -35,9 +35,9 @@ export default class Transform extends BaseCommand {
   static flags = {
     mode: Flags.string({
       char: 'm',
-      description: 'Transform mode (workflow, step, client, or all)',
+      description: 'Transform mode (workflow, step, or all)',
       default: 'all',
-      options: ['workflow', 'step', 'client', 'all'],
+      options: ['workflow', 'step', 'all'],
     }),
     'check-serde': Flags.boolean({
       description: 'Run serde compliance analysis on the transformed output',

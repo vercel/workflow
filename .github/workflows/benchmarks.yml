@@ -194,7 +194,9 @@ jobs:
           if_no_artifact_found: warn
 
       - name: Build workbench
-        run: pnpm turbo run build --filter='./workbench/${{ matrix.app }}'
+        env:
+          APP_NAME: ${{ matrix.app }}
+        run: pnpm turbo run build --filter="./workbench/$APP_NAME"
 
       - name: Run benchmarks
         env:
@@ -203,12 +205,12 @@ jobs:
           # Run full suite on nextjs-turbopack only (stress tests are too slow to run on all apps)
           BENCHMARK_FULL_SUITE: ${{ matrix.app == 'nextjs-turbopack' && ((github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test')) }}
         run: |
-          cd workbench/${{ matrix.app }}
+          cd "workbench/$APP_NAME"
           pnpm start &
           echo "Waiting for server to start..."
           sleep 15
-          cd ../..
-          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app }}-local.json
+          cd "$GITHUB_WORKSPACE"
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run "--outputJson=bench-results-$APP_NAME-local.json"
 
       - name: Render benchmark results
         uses: ./.github/actions/render-benchmarks
@@ -296,7 +298,9 @@ jobs:
 
       # Build workbench with postgres world (build output differs based on target world)
       - name: Build workbench for postgres
-        run: pnpm turbo run build --filter='./workbench/${{ matrix.app }}'
+        env:
+          APP_NAME: ${{ matrix.app }}
+        run: pnpm turbo run build --filter="./workbench/$APP_NAME"
 
       - name: Run benchmarks
         env:
@@ -305,12 +309,12 @@ jobs:
           # Run full suite on nextjs-turbopack only (stress tests are too slow to run on all apps)
           BENCHMARK_FULL_SUITE: ${{ matrix.app == 'nextjs-turbopack' && ((github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test')) }}
         run: |
-          cd workbench/${{ matrix.app }}
+          cd "workbench/$APP_NAME"
           pnpm start &
           echo "Waiting for server to start..."
           sleep 15
-          cd ../..
-          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app }}-postgres.json
+          cd "$GITHUB_WORKSPACE"
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run "--outputJson=bench-results-$APP_NAME-postgres.json"
 
       - name: Render benchmark results
         uses: ./.github/actions/render-benchmarks
@@ -404,7 +408,7 @@ jobs:
           # Run full suite on nextjs-turbopack only (stress tests are too slow to run on all apps)
           BENCHMARK_FULL_SUITE: ${{ matrix.app.name == 'nextjs-turbopack' && ((github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test')) }}
         run: |
-          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ matrix.app.name }}-vercel.json
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run "--outputJson=bench-results-$APP_NAME-vercel.json"
 
       - name: Render benchmark results
         uses: ./.github/actions/render-benchmarks
@@ -439,7 +443,9 @@ jobs:
           build-packages: 'false'
 
       - id: set-matrix
-        run: echo "matrix=$(node ./scripts/create-community-worlds-matrix.mjs)" >> $GITHUB_OUTPUT
+        run: |
+          MATRIX_JSON="$(node ./scripts/create-community-worlds-matrix.mjs | jq -c .)"
+          echo "matrix=$MATRIX_JSON" >> "$GITHUB_OUTPUT"
 
   benchmark-community:
     name: Benchmark Community World (${{ matrix.world.name }})

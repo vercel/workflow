@@ -9,7 +9,7 @@
 | Choice | `if` / `else` / `switch` |
 | Wait | `sleep()` |
 | Parallel | `Promise.all()` |
-| Map | loop or `Promise.all()` |
+| Map | Inline sequential → `for` loop; bounded parallel (`MaxConcurrency: N`) → batched `Promise.all` or a concurrency limiter like `p-limit`; Distributed Map / large fan-out → step-wrapped `start()` per item, then step-wrapped `getRun()` to collect. |
 | Retry / Catch | step retries + `try` / `catch`, `RetryableError`, `FatalError`, `maxRetries` |
 | `.waitForTaskToken` | `createHook()` or `createWebhook()` |
 | `StartExecution` (child state machine) | step-wrapped `start()` / `getRun()` |
@@ -45,9 +45,8 @@
 
 Use this when your app receives the approval in server-side code and can reconstruct a business token.
 
-```ts
+```ts title="workflows/approval.ts"
 import { createHook } from 'workflow';
-import { resumeHook } from 'workflow/api';
 
 export async function approvalWorkflow(orderId: string) {
   'use workflow';
@@ -60,6 +59,10 @@ export async function approvalWorkflow(orderId: string) {
     status: approved ? ('approved' as const) : ('rejected' as const),
   };
 }
+```
+
+```ts title="app/api/approvals/route.ts"
+import { resumeHook } from 'workflow/api';
 
 export async function POST(request: Request) {
   const body = (await request.json()) as {
@@ -199,7 +202,7 @@ async function sendApprovalRequest(
 Self-hosted runtime requirements:
 
 ```ts
-interface World extends Storage, Queue, Streamer {
+interface World extends Queue, Streamer, Storage {
   start?(): Promise<void>;
 }
 ```
@@ -244,3 +247,5 @@ Sample prompt and expected shape:
 
 - Input: `Migrate this Step Functions flow to the Workflow SDK for Hono on self-hosted Postgres. The vendor needs a callback URL. Default 202 is fine.`
 - Expected route keys: `resume/url/default`, `runtime/self-hosted`, `boundary/named-framework`
+
+<!-- Verified against workflow@5.0.0-beta.1 and AWS Step Functions ASL on 2026-04-16 -->

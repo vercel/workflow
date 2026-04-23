@@ -1,5 +1,25 @@
 # @workflow/cli
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1769](https://github.com/vercel/workflow/pull/1769) [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472) Thanks [@tomdale](https://github.com/tomdale)! - Embed source content in published sourcemaps.
+
+- [#1736](https://github.com/vercel/workflow/pull/1736) [`eba7df3`](https://github.com/vercel/workflow/commit/eba7df381c88df55f0a43c9c87f1f77f98ae78e2) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Fix false "data expired" warning for runs with future expiredAt
+
+- [#1759](https://github.com/vercel/workflow/pull/1759) [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Rename `useworkflow.dev` URLs to `workflow-sdk.dev`
+
+- Updated dependencies [[`c57eeff`](https://github.com/vercel/workflow/commit/c57eeff0ce37c86f58dad5c35c433b36fc9d3952), [`bcf818c`](https://github.com/vercel/workflow/commit/bcf818c2c7fc3f6650b2a9ad925bcbc0530e6ebb), [`340c085`](https://github.com/vercel/workflow/commit/340c0856813b23e9be966a2022933d6040a3b062), [`df115fd`](https://github.com/vercel/workflow/commit/df115fde8cb4baa9a02477db043bf3d6d97259c8), [`0810b75`](https://github.com/vercel/workflow/commit/0810b75872e96d8d8aa6e3dbf4236304d57526a7), [`5a42964`](https://github.com/vercel/workflow/commit/5a4296412f151c255a8d08c8870e511222c7c472), [`e788e3b`](https://github.com/vercel/workflow/commit/e788e3b41cce49335f4a7b5bf12907e30f2fb5f0), [`b7d6595`](https://github.com/vercel/workflow/commit/b7d6595c25dab6fe902a47e699b1818ecf1efb86), [`11cfb8f`](https://github.com/vercel/workflow/commit/11cfb8f3fb4c64bde92cf51a5990a7773c263f94), [`ac09f40`](https://github.com/vercel/workflow/commit/ac09f407719413671b6feea4dca2360ebda9a51f), [`136bd35`](https://github.com/vercel/workflow/commit/136bd35a98a40a5dc55b2fbf838924c0af001ba7), [`173756d`](https://github.com/vercel/workflow/commit/173756dc4d097fd90432e2c38c91ce1b959a6352)]:
+  - @workflow/web@5.0.0-beta.2
+  - @workflow/world-vercel@5.0.0-beta.2
+  - @workflow/core@5.0.0-beta.2
+  - @workflow/builders@5.0.0-beta.2
+  - @workflow/errors@5.0.0-beta.1
+  - @workflow/utils@5.0.0-beta.1
+  - @workflow/world-local@5.0.0-beta.2
+  - @workflow/swc-plugin@5.0.0-beta.2
+
 ## 5.0.0-beta.1
 
 ### Major Changes

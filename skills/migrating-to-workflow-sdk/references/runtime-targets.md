@@ -26,7 +26,7 @@ State this explicitly in the migration output:
 Minimum interface to mention:
 
 ```ts
-interface World extends Storage, Queue, Streamer {
+interface World extends Queue, Streamer, Storage {
   start?(): Promise<void>;
 }
 ```
@@ -96,7 +96,7 @@ export async function startWorkflowWorld(): Promise<void> {
 
 **Sample input:** `We are migrating a Temporal workflow to the Workflow SDK, but the app runs on Hono with self-hosted Postgres. Keep the migration examples framework-agnostic and do not assume managed execution.`
 
-**Expected output:** The migration explicitly says the workflow/step code can stay the same, includes `World extends Storage, Queue, Streamer`, shows `startWorkflowWorld(): Promise<void>`, and keeps the route example on plain `Request` / `Response` because the prompt explicitly asks for framework-agnostic app-boundary code.
+**Expected output:** The migration explicitly says the workflow/step code can stay the same, includes `World extends Queue, Streamer, Storage`, shows `startWorkflowWorld(): Promise<void>`, and keeps the route example on plain `Request` / `Response` because the prompt explicitly asks for framework-agnostic app-boundary code.
 
 ## Framework rule
 
