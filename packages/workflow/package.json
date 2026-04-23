@@ -11,7 +11,8 @@
   "files": [
     "dist",
     "bin",
-    "docs/**/*"
+    "docs/**/*",
+    "skills/**/*"
   ],
   "directories": {
     "doc": "./docs"
@@ -56,12 +57,12 @@
   },
   "scripts": {
     "build": "tsc && chmod +x bin/run.js",
-    "clean": "tsc --build --clean && rm -rf dist docs ||:",
+    "clean": "tsc --build --clean && rm -rf dist docs skills ||:",
     "dev": "tsc --watch",
     "test": "vitest run src",
     "typecheck": "tsc --noEmit",
-    "prepack": "cp -r ../../docs/content/docs ./docs",
-    "postpack": "rm -rf docs"
+    "prepack": "cp -r ../../docs/content/docs ./docs && cp -r ../../skills ./skills",
+    "postpack": "rm -rf docs skills"
   },
   "dependencies": {
     "@workflow/astro": "workspace:*",
