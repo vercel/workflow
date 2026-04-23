@@ -96,6 +96,7 @@ export function createBaseBuilderConfig(options: {
   watch?: boolean;
   externalPackages?: string[];
   runtime?: string;
+  sourcemap?: boolean | 'inline' | 'disabled';
 }): Omit<WorkflowConfig, 'buildTarget'> {
   return {
     dirs: options.dirs ?? ['workflows'],
@@ -107,5 +108,6 @@ export function createBaseBuilderConfig(options: {
     webhookBundlePath: '', // Not used by base builder methods
     externalPackages: options.externalPackages,
     runtime: options.runtime,
+    sourcemap: options.sourcemap,
   };
 }

@@ -24,7 +24,7 @@ const WORKFLOW_ROUTES = [
 ];
 
 export class LocalBuilder extends BaseBuilder {
-  constructor() {
+  constructor(options?: { sourcemap?: boolean | 'inline' | 'disabled' }) {
     super({
       dirs: ['src/pages', 'src/workflows'],
       buildTarget: 'astro' as const,
@@ -33,6 +33,7 @@ export class LocalBuilder extends BaseBuilder {
       webhookBundlePath: '', // unused in base
       workingDir: process.cwd(),
       debugFilePrefix: '_', // Prefix with underscore so Astro ignores debug files
+      sourcemap: options?.sourcemap,
     });
   }
 
@@ -232,6 +233,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         workingDir,
         dirs: ['src/pages', 'src/workflows'],
         runtime: config?.runtime,
+        sourcemap: config?.sourcemap,
       }),
       buildTarget: 'vercel-build-output-api',
       debugFilePrefix: '_',

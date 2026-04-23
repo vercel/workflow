@@ -63,6 +63,7 @@ export default withWorkflow(nextConfig, {
     local: {
       port: 4000,
     },
+    sourcemap: "inline",
   },
 });
 ```
@@ -71,6 +72,7 @@ export default withWorkflow(nextConfig, {
 | --- | --- | --- | --- |
 | `workflows.lazyDiscovery` | `boolean` | `false` | When `true`, defers workflow discovery until files are requested instead of scanning eagerly at startup. Useful for large projects where startup time matters. |
 | `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
+| `workflows.sourcemap` | `boolean \| 'inline' \| 'disabled'` | `'inline'` | Controls inline source maps on the step and workflow bundles. Set to `'disabled'` (or `false`) to omit them for smaller bundles, at the cost of workflow VM stack traces pointing at generated code instead of your source files. |
 
 <Callout type="info">
 The `workflows.local` options only affect local development. When deployed to Vercel, the runtime ignores `local` settings and uses the Vercel world automatically.

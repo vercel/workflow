@@ -4,8 +4,19 @@ import { workflowHotUpdatePlugin } from '@workflow/vite';
 import type { AstroIntegration, HookParameters } from 'astro';
 import { LocalBuilder, VercelBuilder } from './builder.js';
 
-export function workflowPlugin(): AstroIntegration {
-  const builder = new LocalBuilder();
+export interface WorkflowPluginOptions {
+  /**
+   * Controls whether inline source maps are emitted for workflow bundles.
+   * Defaults to `'inline'`. Set to `'disabled'` (or `false`) to omit source
+   * maps for smaller bundles at the cost of stack trace readability.
+   */
+  sourcemap?: boolean | 'inline' | 'disabled';
+}
+
+export function workflowPlugin(
+  options: WorkflowPluginOptions = {}
+): AstroIntegration {
+  const builder = new LocalBuilder({ sourcemap: options.sourcemap });
   const enqueue = createBuildQueue();
 
   return {
@@ -40,7 +51,9 @@ export function workflowPlugin(): AstroIntegration {
       },
       'astro:build:done': async () => {
         if (process.env.VERCEL_DEPLOYMENT_ID) {
-          const vercelBuilder = new VercelBuilder();
+          const vercelBuilder = new VercelBuilder({
+            sourcemap: options.sourcemap,
+          });
           await vercelBuilder.build();
         }
       },

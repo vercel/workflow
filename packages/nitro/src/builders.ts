@@ -15,6 +15,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         workingDir: nitro.options.rootDir,
         dirs: ['.'], // Different apps that use nitro have different directories
         runtime: nitro.options.workflow?.runtime,
+        sourcemap: nitro.options.workflow?.sourcemap,
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -41,6 +42,7 @@ export class LocalBuilder extends BaseBuilder {
         workingDir: nitro.options.rootDir,
         watch: nitro.options.dev,
         dirs: ['.'], // Different apps that use nitro have different directories
+        sourcemap: nitro.options.workflow?.sourcemap,
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });

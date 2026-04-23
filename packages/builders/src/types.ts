@@ -48,6 +48,18 @@ interface BaseWorkflowConfig {
 
   // Node.js runtime version for Vercel Functions (e.g., "nodejs22.x", "nodejs24.x")
   runtime?: string;
+
+  /**
+   * Controls whether inline source maps are emitted for the step bundle and
+   * the intermediate workflow bundle.
+   *
+   * - `true` / `'inline'` (default): emit inline source maps. Produces readable
+   *   stack traces for step errors and workflow VM errors.
+   * - `false` / `'disabled'`: omit source maps. Produces smaller bundles at the
+   *   cost of stack traces that reference generated code (e.g. the workflow VM
+   *   bundle will show `evalmachine.<anonymous>` instead of user file paths).
+   */
+  sourcemap?: boolean | 'inline' | 'disabled';
 }
 
 /**

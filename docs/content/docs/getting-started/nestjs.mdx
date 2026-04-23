@@ -386,6 +386,12 @@ WorkflowModule.forRoot({
   // Only used when moduleType is 'commonjs'
   // Should match the outDir in your tsconfig.json
   distDir: 'dist',
+
+  // Inline source maps on step and workflow bundles (default: 'inline').
+  // Set to 'disabled' (or false) to omit source maps for smaller bundles,
+  // at the cost of workflow VM stack traces pointing at generated code
+  // instead of your source files.
+  sourcemap: 'inline',
 });
 ```
 

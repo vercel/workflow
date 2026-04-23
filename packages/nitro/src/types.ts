@@ -21,6 +21,14 @@ export interface ModuleOptions {
    * @example "nodejs24.x"
    */
   runtime?: string;
+
+  /**
+   * Controls whether inline source maps are emitted for workflow bundles.
+   * Defaults to `'inline'`. Set to `'disabled'` (or `false`) to omit source
+   * maps in exchange for smaller bundles, at the cost of workflow VM stack
+   * traces pointing at generated code instead of user files.
+   */
+  sourcemap?: boolean | 'inline' | 'disabled';
 }
 
 declare module 'nitro/types' {

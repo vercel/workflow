@@ -51,6 +51,12 @@ export default defineConfig({
 });
 ```
 
+`workflow()` accepts an options object:
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sourcemap` | `boolean \| 'inline' \| 'disabled'` | `'inline'` | Controls inline source maps on the step and workflow bundles. Set to `'disabled'` (or `false`) to omit them for smaller bundles, at the cost of workflow VM stack traces pointing at generated code instead of your source files. |
+
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
     <AccordionTrigger className="text-sm">

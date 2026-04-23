@@ -58,6 +58,12 @@ export function withWorkflow(
       local?: {
         port?: number;
       };
+      /**
+       * Controls whether inline source maps are emitted for workflow bundles.
+       * Defaults to `'inline'`. Set to `'disabled'` (or `false`) to omit source
+       * maps for smaller bundles at the cost of stack trace readability.
+       */
+      sourcemap?: boolean | 'inline' | 'disabled';
     };
   } = {}
 ) {
@@ -131,6 +137,7 @@ export function withWorkflow(
             workflowsBundlePath: '', // not used in base
             stepsBundlePath: '', // not used in base
             webhookBundlePath: '', // node used in base
+            sourcemap: workflows?.sourcemap,
             suppressCreateWorkflowsBundleLogs: useDeferredBuilder,
             suppressCreateWorkflowsBundleWarnings: useDeferredBuilder,
             suppressCreateWebhookBundleLogs: useDeferredBuilder,

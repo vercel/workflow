@@ -27,6 +27,19 @@ const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
 
 /**
+ * Normalize the user-facing `sourcemap` config into a boolean indicating
+ * whether inline sourcemaps should be emitted. Undefined means "use the
+ * caller's default" and is returned as undefined so callers can decide.
+ */
+function resolveSourcemap(
+  sourcemap: boolean | 'inline' | 'disabled' | undefined
+): boolean | undefined {
+  if (sourcemap === undefined) return undefined;
+  if (sourcemap === true || sourcemap === 'inline') return true;
+  return false;
+}
+
+/**
  * Normalize an array of file paths by appending the `realpath()` of each entry
  * (to handle symlinks, e.g. pnpm/workspace layouts) and deduplicating.
  */
@@ -568,7 +581,8 @@ export abstract class BaseBuilder {
       // Steps execute in Node.js context and inline sourcemaps ensure we get
       // meaningful stack traces with proper file names and line numbers when errors
       // occur in deeply nested function calls across multiple files.
-      sourcemap: 'inline',
+      sourcemap:
+        (resolveSourcemap(this.config.sourcemap) ?? true) ? 'inline' : false,
       plugins: [
         // Handle pseudo-packages like 'server-only' and 'client-only' by providing
         // empty modules. Must run first to intercept these before other resolution.
@@ -772,7 +786,8 @@ export abstract class BaseBuilder {
       // Inline source maps for better stack traces in workflow VM execution.
       // This intermediate bundle is executed via runInContext() in a VM, so we need
       // inline source maps to get meaningful stack traces instead of "evalmachine.<anonymous>".
-      sourcemap: 'inline',
+      sourcemap:
+        (resolveSourcemap(this.config.sourcemap) ?? true) ? 'inline' : false,
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
@@ -944,7 +959,9 @@ export const POST = workflowEntrypoint(workflowCode);`;
           outfile,
           // Source maps for the final workflow bundle wrapper (not important since this code
           // doesn't run in the VM - only the intermediate bundle sourcemap is relevant)
-          sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+          sourcemap:
+            resolveSourcemap(this.config.sourcemap) ??
+            EMIT_SOURCEMAPS_FOR_DEBUGGING,
           absWorkingDir: this.config.workingDir,
           bundle: true,
           format,
@@ -1213,7 +1230,9 @@ export const OPTIONS = handler;`;
         '.mjs',
         '.cjs',
       ],
-      sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+      sourcemap:
+        resolveSourcemap(this.config.sourcemap) ??
+        EMIT_SOURCEMAPS_FOR_DEBUGGING,
       mainFields: ['module', 'main'],
       // Don't externalize anything - bundle everything including workflow packages
       external: [],
