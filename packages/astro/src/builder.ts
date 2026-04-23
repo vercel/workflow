@@ -24,7 +24,9 @@ const WORKFLOW_ROUTES = [
 ];
 
 export class LocalBuilder extends BaseBuilder {
-  constructor(options?: { sourcemap?: boolean | 'inline' | 'disabled' }) {
+  constructor(options?: {
+    sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
+  }) {
     super({
       dirs: ['src/pages', 'src/workflows'],
       buildTarget: 'astro' as const,

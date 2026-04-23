@@ -83,7 +83,10 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createPackageJson(stepsFuncDir, 'module');
     await this.createVcConfig(stepsFuncDir, {
       handler: 'index.mjs',
-      shouldAddSourcemapSupport: true,
+      // Skip the source-map-support runtime shim when sourcemaps are
+      // disabled — it's a meaningful chunk of the step function bundle
+      // and serves no purpose without maps.
+      shouldAddSourcemapSupport: this.sourcemapsEnabled,
       maxDuration: 'max',
       experimentalTriggers: [STEP_QUEUE_TRIGGER],
       runtime: this.config.runtime,

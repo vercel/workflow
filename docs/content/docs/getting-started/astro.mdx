@@ -55,7 +55,7 @@ export default defineConfig({
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `sourcemap` | `boolean \| 'inline' \| 'disabled'` | `'inline'` | Controls inline source maps on the step and workflow bundles. Set to `'disabled'` (or `false`) to omit them for smaller bundles, at the cost of workflow VM stack traces pointing at generated code instead of your source files. |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Set to `false` for smaller function bundles (useful for staying under the Vercel 250MB function size limit) at the cost of stack traces pointing at generated code. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
 
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">

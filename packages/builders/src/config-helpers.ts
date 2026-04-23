@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { findUp } from 'find-up';
 import JSON5 from 'json5';
-import type { WorkflowConfig } from './types.js';
+import type { SourcemapMode, WorkflowConfig } from './types.js';
 
 export interface DecoratorOptions {
   decorators: boolean;
@@ -96,7 +96,7 @@ export function createBaseBuilderConfig(options: {
   watch?: boolean;
   externalPackages?: string[];
   runtime?: string;
-  sourcemap?: boolean | 'inline' | 'disabled';
+  sourcemap?: SourcemapMode;
 }): Omit<WorkflowConfig, 'buildTarget'> {
   return {
     dirs: options.dirs ?? ['workflows'],
