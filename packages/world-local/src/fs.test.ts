@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { PaginatedResponse } from '@workflow/world';
 import ms from 'ms';
 import { monotonicFactory } from 'ulid';
@@ -18,6 +19,7 @@ import {
   assertSafeEntityId,
   paginatedFileSystemQuery,
   readJSONWithFallback,
+  resolveWithinBase,
   taggedPath,
   UnsafeEntityIdError,
   ulidToDate,
@@ -861,6 +863,49 @@ describe('fs utilities', () => {
       await expect(
         readJSONWithFallback(testDir, 'runs', '../package', schema)
       ).rejects.toThrow(UnsafeEntityIdError);
+    });
+
+    it('UnsafeEntityIdError extends WorkflowWorldError', () => {
+      const err = new UnsafeEntityIdError('runId', '../escape');
+      expect(err).toBeInstanceOf(WorkflowWorldError);
+      expect(err.name).toBe('UnsafeEntityIdError');
+      expect(UnsafeEntityIdError.is(err)).toBe(true);
+    });
+
+    it('UnsafeEntityIdError truncates long values in the message', () => {
+      const longValue = 'a'.repeat(500);
+      const err = new UnsafeEntityIdError('runId', `${longValue}/escape`);
+      expect(err.message.length).toBeLessThan(200);
+      expect(err.message).toContain('…');
+    });
+  });
+
+  describe('resolveWithinBase (containment check)', () => {
+    it('resolves safe segments inside the base directory', () => {
+      const result = resolveWithinBase(testDir, 'runs', 'wrun_ABC.json');
+      expect(result).toBe(path.join(testDir, 'runs', 'wrun_ABC.json'));
+    });
+
+    it('resolves to the base directory itself without error', () => {
+      expect(resolveWithinBase(testDir)).toBe(path.resolve(testDir));
+    });
+
+    it('throws when a segment escapes the base via ..', () => {
+      expect(() => resolveWithinBase(testDir, '..', 'etc', 'passwd')).toThrow(
+        UnsafeEntityIdError
+      );
+    });
+
+    it('throws when a segment is an absolute path', () => {
+      expect(() => resolveWithinBase(testDir, '/etc/passwd')).toThrow(
+        UnsafeEntityIdError
+      );
+    });
+
+    it('throws when joined path escapes via chained ..', () => {
+      expect(() =>
+        resolveWithinBase(testDir, 'runs', '..', '..', 'package.json')
+      ).toThrow(UnsafeEntityIdError);
     });
   });
 });

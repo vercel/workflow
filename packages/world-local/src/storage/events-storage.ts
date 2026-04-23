@@ -37,6 +37,7 @@ import {
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSONWithFallback,
+  resolveWithinBase,
   taggedPath,
   writeExclusive,
   writeJSON,
@@ -667,7 +668,7 @@ export function createEventsStorage(
           const lockName = tag
             ? `${stepCompositeKey}.terminal.${tag}`
             : `${stepCompositeKey}.terminal`;
-          const terminalLockPath = path.join(
+          const terminalLockPath = resolveWithinBase(
             basedir,
             '.locks',
             'steps',
@@ -705,7 +706,7 @@ export function createEventsStorage(
           const lockName = tag
             ? `${stepCompositeKey}.terminal.${tag}`
             : `${stepCompositeKey}.terminal`;
-          const terminalLockPath = path.join(
+          const terminalLockPath = resolveWithinBase(
             basedir,
             '.locks',
             'steps',
@@ -853,7 +854,12 @@ export function createEventsStorage(
         const hookLockName = tag
           ? `${data.correlationId}.disposed.${tag}`
           : `${data.correlationId}.disposed`;
-        const lockPath = path.join(basedir, '.locks', 'hooks', hookLockName);
+        const lockPath = resolveWithinBase(
+          basedir,
+          '.locks',
+          'hooks',
+          hookLockName
+        );
         const claimed = await writeExclusive(lockPath, '');
         if (!claimed) {
           throw new EntityConflictError(
@@ -920,7 +926,12 @@ export function createEventsStorage(
         const waitLockName = tag
           ? `${waitCompositeKey}.completed.${tag}`
           : `${waitCompositeKey}.completed`;
-        const lockPath = path.join(basedir, '.locks', 'waits', waitLockName);
+        const lockPath = resolveWithinBase(
+          basedir,
+          '.locks',
+          'waits',
+          waitLockName
+        );
         const claimed = await writeExclusive(lockPath, '');
         if (!claimed) {
           throw new EntityConflictError(
