@@ -191,7 +191,7 @@ When backporting changes to `stable`, any conflicts involving docs app files (ou
   - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
-- When writing changesets, use the `pnpm changeset` command from the root of the repo. Keep the changesets terse (see existing changesets for examples) — the description should be one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
+- When writing changesets (via `pnpm changeset add` from the repo root, as noted above), keep the description terse — one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
 
 ### Backporting to `stable`
 
