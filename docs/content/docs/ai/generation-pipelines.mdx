@@ -1,0 +1,387 @@
+---
+title: Generation Pipelines
+description: Build non-chat AI generation workflows for batch content creation, media generation, and multi-stage processing pipelines.
+type: guide
+summary: Patterns for batch generation, media creation, multi-stage pipelines, and AI error handling.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/ai
+  - /docs/foundations/streaming
+  - /docs/foundations/common-patterns
+  - /docs/foundations/errors-and-retries
+---
+
+AI workflows are not limited to chat interfaces. Many production use cases involve batch content generation, image and media creation, text analysis, and multi-stage processing pipelines. Workflow DevKit makes these pipelines durable, retryable, and observable using the same workflow and step primitives you already know.
+
+This guide covers patterns for building non-chat AI generation workflows.
+
+## Batch Content Generation
+
+Process multiple items through an AI pipeline by combining `Promise.all` with step functions. For batch scenarios where you do not need streaming, use AI SDK's `generateText` to get complete results from each call.
+
+```typescript title="workflows/batch-generate.ts" lineNumbers
+import { generateText } from "ai";
+import { gateway } from "@ai-sdk/gateway";
+
+async function generateContent(prompt: string) {
+  "use step";
+
+  const { text } = await generateText({ // [!code highlight]
+    model: gateway("openai/gpt-4o"),
+    prompt,
+  });
+
+  return text;
+}
+
+export async function batchGenerateWorkflow(prompts: string[]) {
+  "use workflow";
+
+  const results = await Promise.all( // [!code highlight]
+    prompts.map((prompt) => generateContent(prompt)) // [!code highlight]
+  ); // [!code highlight]
+
+  return results;
+}
+```
+
+Each call to `generateContent` runs as an independent step. If one fails, it retries without affecting the others. Results are persisted to the event log as they complete.
+
+## Image and Media Generation
+
+Workflows that call third-party generation services (image generators, video encoders, audio synthesis) need to wait for an external job to complete. There are two patterns depending on whether the service supports webhooks.
+
+### Webhooks (Preferred)
+
+If the service supports webhooks or callbacks, use [`createWebhook()`](/docs/api-reference/workflow/create-webhook) to pause the workflow until the external service reports completion. The workflow suspends without consuming resources and resumes when the webhook is called.
+
+```typescript title="workflows/image-generate-webhook.ts" lineNumbers
+import { createWebhook, sleep } from "workflow";
+
+async function submitImageJob(prompt: string, callbackUrl: string) {
+  "use step";
+
+  const response = await fetch("https://api.example.com/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt, callbackUrl }), // [!code highlight]
+  });
+  const { jobId } = await response.json() as { jobId: string };
+  return jobId;
+}
+
+export async function imageGenerationWorkflow(prompt: string) {
+  "use workflow";
+
+  const webhook = createWebhook<{ imageUrl: string }>(); // [!code highlight]
+  const jobId = await submitImageJob(prompt, webhook.url); // [!code highlight]
+
+  // Workflow suspends here — no compute used while waiting
+  const result = await Promise.race([ // [!code highlight]
+    webhook.then(async (req) => (await req.json()) as { imageUrl: string }), // [!code highlight]
+    sleep("10 minutes").then(() => ({ timedOut: true }) as const), // [!code highlight]
+  ]); // [!code highlight]
+
+  if ("timedOut" in result) {
+    throw new Error(`Image job ${jobId} timed out`);
+  }
+
+  return { imageUrl: result.imageUrl };
+}
+```
+
+The workflow hands the webhook URL to the external service and suspends. When the service calls the webhook with the result, the workflow resumes and returns the image URL. The `Promise.race` with `sleep` adds a timeout so the workflow does not wait indefinitely.
+
+### Workflow-Level Polling
+
+If the service does not support webhooks, poll at the **workflow level** using `sleep()` between steps. This lets the workflow suspend between each poll rather than holding a step open.
+
+```typescript title="workflows/image-generate-poll.ts" lineNumbers
+import { sleep } from "workflow";
+
+async function submitImageJob(prompt: string) {
+  "use step";
+
+  const response = await fetch("https://api.example.com/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+  const { jobId } = await response.json() as { jobId: string };
+  return jobId;
+}
+
+async function checkJobStatus(jobId: string) {
+  "use step";
+
+  const response = await fetch(`https://api.example.com/status/${jobId}`);
+  return response.json() as Promise<{ status: string; url?: string }>;
+}
+
+export async function imageGenerationWorkflow(prompt: string) {
+  "use workflow";
+
+  const jobId = await submitImageJob(prompt); // [!code highlight]
+
+  // Poll at the workflow level — workflow suspends between checks
+  const MAX_POLLS = 60; // 5 minutes at 5s intervals // [!code highlight]
+  let result: { status: string; url?: string };
+  for (let i = 0; i < MAX_POLLS; i++) { // [!code highlight]
+    await sleep("5 seconds"); // [!code highlight]
+    result = await checkJobStatus(jobId); // [!code highlight]
+    if (result.url) return { imageUrl: result.url };
+  } // [!code highlight]
+
+  throw new Error(`Image job ${jobId} timed out after polling`);
+}
+```
+
+Each `sleep()` suspends the workflow without consuming compute. Each `checkJobStatus` call runs as its own step, so failures are retried independently.
+
+## Multi-Stage Pipelines
+
+Chain AI steps to build processing pipelines where each stage transforms the output of the previous one. Each step is independently retryable and observable.
+
+```typescript title="workflows/analyze-pipeline.ts" lineNumbers
+import { generateText } from "ai";
+import { gateway } from "@ai-sdk/gateway";
+
+async function extractEntities(text: string) {
+  "use step";
+
+  const { text: entities } = await generateText({
+    model: gateway("openai/gpt-4o"),
+    system: "Extract all named entities from the text. Return as JSON array.",
+    prompt: text,
+  });
+
+  // For production use, prefer generateObject with a Zod schema
+  // to avoid fragile JSON.parse on raw LLM output
+  return JSON.parse(entities) as string[];
+}
+
+async function analyzeSentiment(text: string) {
+  "use step";
+
+  const { text: sentiment } = await generateText({
+    model: gateway("openai/gpt-4o"),
+    system: "Analyze the sentiment. Return: positive, negative, or neutral.",
+    prompt: text,
+  });
+
+  return sentiment.trim();
+}
+
+async function generateSummary(
+  text: string,
+  entities: string[],
+  sentiment: string
+) {
+  "use step";
+
+  const { text: summary } = await generateText({
+    model: gateway("openai/gpt-4o"),
+    system: "Write a brief summary incorporating the extracted entities and sentiment analysis.",
+    prompt: `Text: ${text}\nEntities: ${entities.join(", ")}\nSentiment: ${sentiment}`,
+  });
+
+  return summary;
+}
+
+export async function analysisPipelineWorkflow(document: string) {
+  "use workflow";
+
+  const [entities, sentiment] = await Promise.all([ // [!code highlight]
+    extractEntities(document), // [!code highlight]
+    analyzeSentiment(document), // [!code highlight]
+  ]); // [!code highlight]
+  const summary = await generateSummary(document, entities, sentiment); // [!code highlight]
+
+  return { entities, sentiment, summary };
+}
+```
+
+`extractEntities` and `analyzeSentiment` are independent, so they run in parallel. `generateSummary` depends on both results and runs sequentially after. If any step fails, only that step retries — the others are persisted and replayed from the event log.
+
+## Parallel Processing with Fan-Out
+
+Use `Promise.all` to process multiple documents through AI analysis concurrently. Each item runs as its own step, so failures are isolated.
+
+```typescript title="workflows/fan-out.ts" lineNumbers
+import { generateText } from "ai";
+import { gateway } from "@ai-sdk/gateway";
+
+type AnalysisResult = {
+  documentId: string;
+  summary: string;
+  topics: string[];
+};
+
+async function analyzeDocument(
+  documentId: string,
+  content: string
+): Promise<AnalysisResult> {
+  "use step";
+
+  const { text } = await generateText({
+    model: gateway("openai/gpt-4o"),
+    system: "Analyze this document. Return JSON with 'summary' (string) and 'topics' (string array).",
+    prompt: content,
+  });
+
+  const parsed = JSON.parse(text) as { summary: string; topics: string[] };
+  return { documentId, ...parsed };
+}
+
+export async function fanOutAnalysisWorkflow(
+  documents: Array<{ id: string; content: string }>
+) {
+  "use workflow";
+
+  const results = await Promise.all( // [!code highlight]
+    documents.map((doc) => analyzeDocument(doc.id, doc.content)) // [!code highlight]
+  ); // [!code highlight]
+
+  return results;
+}
+```
+
+All documents process in parallel. If one document's analysis fails and exhausts retries, the workflow fails - but all successful results are preserved in the event log. See [Common Patterns](/docs/foundations/common-patterns) for more on parallel execution.
+
+## Progress Streaming for Generation Tasks
+
+For long-running generation tasks, stream progress updates to clients using [`getWritable()`](/docs/api-reference/workflow/get-writable). This keeps users informed without waiting for the entire workflow to finish.
+
+```typescript title="workflows/progress-stream.ts" lineNumbers
+import { getWritable } from "workflow";
+
+type GenerationProgress = {
+  completed: number;
+  total: number;
+  currentItem: string;
+};
+
+async function processItem(item: string, index: number, total: number) {
+  "use step";
+
+  const writable = getWritable<GenerationProgress>();
+  const writer = writable.getWriter();
+
+  try {
+    // Report progress before processing
+    await writer.write({ // [!code highlight]
+      completed: index,
+      total,
+      currentItem: item,
+    });
+
+    // Do the actual work
+    const result = await fetch("https://api.example.com/process", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ item }),
+    });
+
+    return result.json();
+  } finally {
+    writer.releaseLock(); // [!code highlight]
+  }
+}
+
+async function closeProgressStream() {
+  "use step";
+
+  await getWritable().close();
+}
+
+export async function progressWorkflow(items: string[]) {
+  "use workflow";
+
+  const results: unknown[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const result = await processItem(items[i], i, items.length);
+    results.push(result);
+  }
+
+  await closeProgressStream();
+  return results;
+}
+```
+
+```typescript title="app/api/generate/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { progressWorkflow } from "@/workflows/progress-stream";
+
+type GenerationProgress = {
+  completed: number;
+  total: number;
+  currentItem: string;
+};
+
+export async function POST(request: Request) {
+  const { items } = await request.json() as { items: string[] };
+  const run = await start(progressWorkflow, [items]);
+
+  return new Response(run.readable, { // [!code highlight]
+    headers: { "Content-Type": "application/json" },
+  });
+}
+```
+
+To consume this stream on the client, read from the response body as a `ReadableStream`. For details on parsing workflow streams and connecting them to your UI, see the [Streaming](/docs/foundations/streaming) guide.
+
+## Error Handling for AI Services
+
+AI services have specific failure modes that benefit from targeted error handling. Use [`RetryableError`](/docs/api-reference/workflow/retryable-error) for transient failures like rate limits, and [`FatalError`](/docs/api-reference/workflow/fatal-error) for permanent failures like content policy violations.
+
+```typescript title="workflows/ai-with-retries.ts" lineNumbers
+import { FatalError, RetryableError, getStepMetadata } from "workflow";
+
+async function callAIService(prompt: string) {
+  "use step";
+
+  const metadata = getStepMetadata();
+
+  const response = await fetch("https://api.example.com/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt }),
+  });
+
+  if (response.status === 429) {
+    // Rate limited - retry with exponential backoff // [!code highlight]
+    throw new RetryableError("Rate limited", { // [!code highlight]
+      retryAfter: (metadata.attempt ** 2) * 1000, // [!code highlight]
+    }); // [!code highlight]
+  }
+
+  if (response.status === 400) {
+    const body = await response.json() as { error?: string };
+    // Content policy violation - do not retry // [!code highlight]
+    throw new FatalError(`Request rejected: ${body.error}`); // [!code highlight]
+  }
+
+  if (response.status >= 500) {
+    // Server error - use default retry behavior
+    throw new Error(`AI service error: ${response.status}`);
+  }
+
+  return response.json();
+}
+callAIService.maxRetries = 5; // Allow more retries for AI services // [!code highlight]
+```
+
+The `metadata.attempt` value starts at 1 and increments on each retry, enabling exponential backoff. For a full breakdown of retry semantics, see [Errors and Retries](/docs/foundations/errors-and-retries).
+
+<Callout type="info">
+When retrying AI generation steps, ensure your requests are idempotent. If your service does not deduplicate requests, retries may produce duplicate content. See [Idempotency](/docs/foundations/idempotency) for strategies.
+</Callout>
+
+## Related Documentation
+
+- [Building Durable AI Agents](/docs/ai) - Chat-based agent patterns with `DurableAgent`
+- [Streaming](/docs/foundations/streaming) - In-depth streaming guide
+- [Common Patterns](/docs/foundations/common-patterns) - Sequential, parallel, and composition patterns
+- [Errors and Retries](/docs/foundations/errors-and-retries) - Retry behavior and error types
+- [Serialization](/docs/foundations/serialization) - Data types that can be passed in workflows

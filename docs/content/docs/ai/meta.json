@@ -7,7 +7,8 @@
     "sleep-and-delays",
     "human-in-the-loop",
     "defining-tools",
-    "chat-session-modeling"
+    "chat-session-modeling",
+    "generation-pipelines"
   ],
   "defaultOpen": true
 }
