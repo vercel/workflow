@@ -44,7 +44,7 @@ vi.mock('./utils.js', () => ({
   getHeaders: vi.fn().mockReturnValue(new Map()),
 }));
 
-import { createQueue } from './queue.js';
+import { createQueue, MAX_DELAY_SECONDS } from './queue.js';
 
 describe('createQueue', () => {
   beforeEach(() => {
@@ -405,7 +405,7 @@ describe('createQueue', () => {
       }
     });
 
-    it('should clamp delaySeconds to max 23 hours for long sleeps', async () => {
+    it('should clamp delaySeconds to 1 hour less than 7 days for long sleeps', async () => {
       mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
 
       let capturedHandler: (
@@ -423,7 +423,7 @@ describe('createQueue', () => {
       try {
         const queue = createQueue();
         queue.createQueueHandler('__wkf_workflow_', async () => ({
-          timeoutSeconds: 100000,
+          timeoutSeconds: 700000,
         }));
 
         await capturedHandler!(
@@ -444,12 +444,122 @@ describe('createQueue', () => {
         expect(mockSend).toHaveBeenCalledTimes(1);
         // send(topicName, payload, options)
         const sendOpts = mockSend.mock.calls[0][2];
-        expect(sendOpts.delaySeconds).toBe(82800); // MAX_DELAY_SECONDS
+        expect(sendOpts.delaySeconds).toBe(MAX_DELAY_SECONDS);
       } finally {
         if (originalEnv !== undefined) {
           process.env.VERCEL_DEPLOYMENT_ID = originalEnv;
         } else {
           delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+      }
+    });
+
+    it('should fall back to the default max delay when the env override is invalid', async () => {
+      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+
+      const originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+      const originalMaxDelay = process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+      process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS = 'not-a-number';
+
+      try {
+        const queue = createQueue();
+        queue.createQueueHandler('__wkf_workflow_', async () => ({
+          timeoutSeconds: 700000,
+        }));
+
+        await capturedHandler!(
+          {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+            deploymentId: 'dpl_original',
+          },
+          {
+            messageId: 'msg-123',
+            deliveryCount: 1,
+            createdAt: new Date(),
+            topicName: '__wkf_workflow_test',
+            consumerGroup: 'test',
+          }
+        );
+
+        const sendOpts = mockSend.mock.calls[0][2];
+        expect(sendOpts.delaySeconds).toBe(MAX_DELAY_SECONDS);
+      } finally {
+        if (originalDeploymentId !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalDeploymentId;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+
+        if (originalMaxDelay !== undefined) {
+          process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS = originalMaxDelay;
+        } else {
+          delete process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS;
+        }
+      }
+    });
+
+    it('should clamp oversized env overrides to the default max delay', async () => {
+      mockSend.mockResolvedValue({ messageId: 'new-msg-123' });
+
+      let capturedHandler: (
+        message: unknown,
+        metadata: unknown
+      ) => Promise<void>;
+      mockHandleCallback.mockImplementation((handler) => {
+        capturedHandler = handler;
+        return async () => new Response('ok');
+      });
+
+      const originalDeploymentId = process.env.VERCEL_DEPLOYMENT_ID;
+      const originalMaxDelay = process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS;
+      process.env.VERCEL_DEPLOYMENT_ID = 'dpl_test';
+      process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS = `${MAX_DELAY_SECONDS + 1}`;
+
+      try {
+        const queue = createQueue();
+        queue.createQueueHandler('__wkf_workflow_', async () => ({
+          timeoutSeconds: 700000,
+        }));
+
+        await capturedHandler!(
+          {
+            payload: { runId: 'run-123' },
+            queueName: '__wkf_workflow_test',
+            deploymentId: 'dpl_original',
+          },
+          {
+            messageId: 'msg-123',
+            deliveryCount: 1,
+            createdAt: new Date(),
+            topicName: '__wkf_workflow_test',
+            consumerGroup: 'test',
+          }
+        );
+
+        const sendOpts = mockSend.mock.calls[0][2];
+        expect(sendOpts.delaySeconds).toBe(MAX_DELAY_SECONDS);
+      } finally {
+        if (originalDeploymentId !== undefined) {
+          process.env.VERCEL_DEPLOYMENT_ID = originalDeploymentId;
+        } else {
+          delete process.env.VERCEL_DEPLOYMENT_ID;
+        }
+
+        if (originalMaxDelay !== undefined) {
+          process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS = originalMaxDelay;
+        } else {
+          delete process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS;
         }
       }
     });

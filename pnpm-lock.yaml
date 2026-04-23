@@ -22,8 +22,8 @@ catalogs:
       specifier: 3.2.0
       version: 3.2.0
     '@vercel/queue':
-      specifier: 0.1.4
-      version: 0.1.4
+      specifier: 0.1.6
+      version: 0.1.6
     '@vitest/coverage-v8':
       specifier: ^4.0.18
       version: 4.0.18
@@ -1310,7 +1310,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.1.4
+        version: 0.1.6
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1356,7 +1356,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.1.4
+        version: 0.1.6
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1463,7 +1463,7 @@ importers:
         version: 3.2.0
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.1.4
+        version: 0.1.6
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -8274,8 +8274,8 @@ packages:
       '@opentelemetry/sdk-metrics': '>=1.19.0 <2.0.0'
       '@opentelemetry/sdk-trace-base': '>=1.19.0 <2.0.0'
 
-  '@vercel/queue@0.1.4':
-    resolution: {integrity: sha512-wo+jCycmCX078vQSbkX+RcLvySONDCK0f9aQp5UMKQD1+B+xKt3YVbIYbZukvoHQpbm5nnk6If+ADSeK/PmCgQ==}
+  '@vercel/queue@0.1.6':
+    resolution: {integrity: sha512-FUQ0ySYNm31ZO709lg6a2NPamzH5LpfU9QZwZVduxnOH0N/aNp+8rjKmYLDWQpdA/S+ihNexJV+NhbV3GFaumQ==}
     engines: {node: '>=20.0.0'}
 
   '@vercel/routing-utils@5.3.0':
@@ -22721,7 +22721,7 @@ snapshots:
       '@opentelemetry/sdk-metrics': 1.30.1(@opentelemetry/api@1.9.0)
       '@opentelemetry/sdk-trace-base': 1.30.1(@opentelemetry/api@1.9.0)
 
-  '@vercel/queue@0.1.4':
+  '@vercel/queue@0.1.6':
     dependencies:
       '@vercel/oidc': 3.2.0
       minimatch: 10.2.4

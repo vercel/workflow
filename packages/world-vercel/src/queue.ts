@@ -114,12 +114,12 @@ const MessageWrapper = z.object({
  * rather than using visibility timeouts on the same message.
  *
  * Benefits of this approach:
- * - Fresh 24-hour lifetime with each message (no message age tracking needed)
+ * - Fresh delay window with each message (no message age tracking needed)
  * - Messages fire at the scheduled time (no short-circuit + recheck pattern)
  * - Simpler conceptual model: messages are triggers with delivery schedules
  *
- * For sleeps > 24 hours (max delay), we use chaining:
- * 1. Schedule message with max delay (~23h, leaving buffer)
+ * For sleeps > 7 days (max delay), we use chaining:
+ * 1. Schedule message with max delay (~6d, leaving a 24h re-enqueue margin)
  * 2. When it fires, workflow checks if sleep is complete
  * 3. If not, another delayed message is queued for remaining time
  * 4. Process repeats until the full sleep duration has elapsed
@@ -130,9 +130,28 @@ const MessageWrapper = z.object({
  *
  * These constants can be overridden via environment variables for testing.
  */
-const MAX_DELAY_SECONDS = Number(
-  process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS || 82800 // 23 hours - leave 1h buffer before 24h retention limit
-);
+const SECONDS_PER_HOUR = 60 * 60;
+export const RE_ENQUEUE_MARGIN_SECONDS = 24 * SECONDS_PER_HOUR; // 24 hours
+export const MAX_QUEUE_DELAY_WINDOW_SECONDS = 7 * 24 * SECONDS_PER_HOUR; // 7 days
+export const MAX_DELAY_SECONDS =
+  MAX_QUEUE_DELAY_WINDOW_SECONDS - RE_ENQUEUE_MARGIN_SECONDS;
+
+function getMaxDelaySeconds(): number {
+  const rawMaxDelaySeconds = process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS;
+  if (
+    rawMaxDelaySeconds === undefined ||
+    rawMaxDelaySeconds.trim().length === 0
+  ) {
+    return MAX_DELAY_SECONDS;
+  }
+
+  const parsedMaxDelaySeconds = Number(rawMaxDelaySeconds);
+  if (!Number.isFinite(parsedMaxDelaySeconds) || parsedMaxDelaySeconds < 0) {
+    return MAX_DELAY_SECONDS;
+  }
+
+  return Math.min(Math.floor(parsedMaxDelaySeconds), MAX_DELAY_SECONDS);
+}
 
 /**
  * Extract known identifiers from a queue payload and return them as VQS headers.
@@ -278,11 +297,12 @@ export function createQueue(config?: APIConfig): Queue {
 
         if (typeof result?.timeoutSeconds === 'number') {
           // When timeoutSeconds is 0, skip delaySeconds entirely for immediate re-enqueue.
-          // Otherwise, clamp to max delay (23h) - for longer sleeps, the workflow will chain
-          // multiple delayed messages until the full sleep duration has elapsed.
+          // Otherwise, clamp to the queue delay window minus a 24h buffer (6d).
+          // For longer sleeps, the workflow will chain multiple delayed messages until
+          // the full sleep duration has elapsed.
           const delaySeconds =
             result.timeoutSeconds > 0
-              ? Math.min(result.timeoutSeconds, MAX_DELAY_SECONDS)
+              ? Math.min(result.timeoutSeconds, getMaxDelaySeconds())
               : undefined;
 
           // Send new message BEFORE acknowledging current message.
