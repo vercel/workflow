@@ -14,3 +14,4 @@
 - `WorkflowRunFailedError.cause` is now `unknown` (the hydrated thrown value with its original type identity, cause chain, and custom properties preserved) instead of a synthesized `Error`. A new `errorCode` property exposes the error classification.
 - Event payload for `step_failed`, `step_retrying`, and `run_failed` now contains `error: SerializedData` (was `{ message, stack? }` / `{ message, stack?, code? }`).
 - `@workflow/world-postgres` gains a new migration (`0010_add_error_code.sql`) adding an `error_code` column to `workflow.workflow_runs`. Legacy records in the deprecated `error` text column are surfaced as `undefined` on read (they cannot be hydrated into the original thrown value).
+- The o11y `hydrateResourceIO` helper (used by the CLI and web UI) now hydrates the `error` field on runs and steps in addition to `input`/`output`, so `--withData` output continues to surface readable error messages and stacks.

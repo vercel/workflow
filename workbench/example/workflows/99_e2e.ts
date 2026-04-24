@@ -961,6 +961,73 @@ export async function errorFatalCatchable() {
   }
 }
 
+/**
+ * Test: a step throws a FatalError; the workflow catches it and inspects
+ * the hydrated thrown value. Exercises the step error serialization
+ * pipeline (step throw → step_failed event → workflow catch).
+ */
+async function throwFatalErrorWithCause() {
+  'use step';
+  const root = new TypeError('underlying type error');
+  const wrapped = new FatalError('fatal with cause');
+  (wrapped as Error).cause = root;
+  throw wrapped;
+}
+
+export async function errorStepThrowFatalRoundTrip() {
+  'use workflow';
+  try {
+    await throwFatalErrorWithCause();
+    return { caught: false } as any;
+  } catch (err: any) {
+    return {
+      caught: true,
+      isFatal: FatalError.is(err),
+      isInstanceOf: err instanceof FatalError,
+      message: err.message,
+      name: err.name,
+      hasFatalProp: err.fatal === true,
+      causeIsTypeError: err.cause instanceof TypeError,
+      causeName: err.cause?.name,
+      causeMessage: err.cause?.message,
+    };
+  }
+}
+
+// ---
+
+/**
+ * Test: a workflow itself throws a FatalError with a cause chain.
+ * Exercises the run-error serialization pipeline (workflow throw →
+ * run_failed event → WorkflowRunFailedError.cause on the client side).
+ */
+export async function errorWorkflowThrowFatalRoundTrip() {
+  'use workflow';
+  const root = new RangeError('out of bounds');
+  const top = new FatalError('workflow exploded');
+  (top as Error).cause = root;
+  throw top;
+}
+
+// ---
+
+/**
+ * Test: a workflow throws a non-Error value (a plain object). The
+ * client-side hydrated `cause` on WorkflowRunFailedError should be
+ * exactly that object — not coerced into an Error.
+ */
+export async function errorWorkflowThrowNonErrorValue() {
+  'use workflow';
+  const value: Record<string, unknown> = {
+    kind: 'business-rule-violation',
+    code: 'INVOICE_LOCKED',
+    detail: { invoiceId: 'inv_123', userId: 'usr_456' },
+  };
+  // Throw a non-Error value (any JS value can be thrown). The serialization
+  // pipeline must round-trip this verbatim — not coerce it into an Error.
+  throw value;
+}
+
 // ------------------------------------------------------------
 // SECTION 4: NOT REGISTERED ERRORS
 // Tests for step/workflow not registered in the current deployment
