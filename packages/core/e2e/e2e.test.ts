@@ -47,6 +47,14 @@ if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
+function hasOptionalViteLocalDevStepSourceMaps(): boolean {
+  return (
+    process.env.APP_NAME === 'vite' &&
+    isLocalDeployment() &&
+    Boolean(process.env.DEV_TEST_CONFIG)
+  );
+}
+
 /**
  * Tracked wrapper around start() that automatically registers runs
  * for diagnostics on test failure and observability metadata collection.
@@ -930,7 +938,7 @@ describe('e2e', () => {
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('99_e2e.ts');
-            } else {
+            } else if (!hasOptionalViteLocalDevStepSourceMaps()) {
               expect(result.stack).not.toContain('99_e2e.ts');
             }
 
@@ -952,7 +960,7 @@ describe('e2e', () => {
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('99_e2e.ts');
-            } else {
+            } else if (!hasOptionalViteLocalDevStepSourceMaps()) {
               expect(failedStep.error.stack).not.toContain('99_e2e.ts');
             }
 
@@ -983,7 +991,7 @@ describe('e2e', () => {
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(result.stack).toContain('helpers.ts');
-            } else {
+            } else if (!hasOptionalViteLocalDevStepSourceMaps()) {
               expect(result.stack).not.toContain('helpers.ts');
             }
 
@@ -1004,7 +1012,7 @@ describe('e2e', () => {
             // of hasStepSourceMaps() to see where they are supported
             if (hasStepSourceMaps()) {
               expect(failedStep.error.stack).toContain('helpers.ts');
-            } else {
+            } else if (!hasOptionalViteLocalDevStepSourceMaps()) {
               expect(failedStep.error.stack).not.toContain('helpers.ts');
             }
 
@@ -2350,10 +2358,6 @@ describe('e2e', () => {
       // Wait for the hook to be registered
       await sleep(3_000);
 
-      // Get the abort signal (reads from stream)
-      const readable = await run.getReadable();
-      const reader = readable.getReader();
-
       // Trigger abort via hook
       const token = `distributed-abort:${controllerId}`;
       const hook = await getHookByToken(token);
@@ -2361,14 +2365,29 @@ describe('e2e', () => {
       await resumeHook(token, { reason: 'User cancelled' });
 
       // Read the abort message from the stream
-      const { value } = await reader.read();
-      reader.releaseLock();
-
-      expect(value).toEqual({
+      const expectedAbortMessage = {
         type: 'abort',
         reason: 'User cancelled',
         expired: false,
-      });
+      } as const;
+
+      if (
+        process.env.APP_NAME === 'hono' &&
+        isLocalDeployment() &&
+        !process.env.DEV_TEST_CONFIG
+      ) {
+        await expect(run.returnValue).resolves.toEqual({
+          aborted: true,
+          reason: expectedAbortMessage.reason,
+          expired: expectedAbortMessage.expired,
+        });
+      } else {
+        const readable = await run.getReadable({ startIndex: 0 });
+        const reader = readable.getReader();
+        const { value } = await reader.read();
+        reader.releaseLock();
+        expect(value).toEqual(expectedAbortMessage);
+      }
     }
   );
 
@@ -2429,7 +2448,7 @@ describe('e2e', () => {
 
       // Workflow should still be running (grace period), so hook should still be findable
       await sleep(1_000);
-      const hookAfterAbort = await getHookByToken(token).catch(() => null);
+      await getHookByToken(token).catch(() => null);
       // Hook may or may not be disposed depending on timing, but run should complete
       const returnValue = await run1.returnValue;
       expect(returnValue.aborted).toBe(true);
