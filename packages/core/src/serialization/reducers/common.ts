@@ -50,6 +50,54 @@ function revive(str: string) {
   return JSON.parse(str);
 }
 
+// ---- Error subclass helpers ----
+
+/**
+ * Creates a reducer for a built-in Error subclass. Each subclass reducer
+ * checks that the value is a native error with a matching constructor name,
+ * then serializes `message`, `stack`, and optionally `cause`.
+ *
+ * `types.isNativeError()` is used instead of `instanceof` for cross-VM safety:
+ * errors may originate from a different VM context, and `instanceof` fails
+ * across VM boundaries since each context has its own Error constructor.
+ * After the isNativeError gate, we use the constructor name to distinguish
+ * subclasses (since `instanceof` may fail across VM boundaries).
+ */
+function makeErrorSubclassReducer<K extends keyof SerializableSpecial>(
+  subclassName: K
+) {
+  return (value: any) => {
+    if (!types.isNativeError(value)) return false;
+    if (value.constructor?.name !== subclassName) return false;
+    const reduced: Record<string, unknown> = {
+      message: value.message,
+      stack: value.stack,
+    };
+    if ('cause' in value) reduced.cause = value.cause;
+    return reduced as SerializableSpecial[K];
+  };
+}
+
+/**
+ * Creates a reviver for a built-in Error subclass. Reconstructs the correct
+ * built-in Error type using the context's constructor. The `cause` option is
+ * only passed when the serialized data includes it, preserving the distinction
+ * between "no cause" and "cause is undefined".
+ */
+function makeErrorSubclassReviver<K extends keyof SerializableSpecial>(
+  global: Record<string, any>,
+  ctorName: string
+) {
+  return (value: SerializableSpecial[K]) => {
+    const v = value as { message: string; stack?: string; cause?: unknown };
+    const opts = 'cause' in v ? { cause: v.cause } : undefined;
+    const Ctor = global[ctorName];
+    const error: Error = new Ctor(v.message, opts);
+    if (v.stack !== undefined) error.stack = v.stack;
+    return error;
+  };
+}
+
 // ---- Reducers ----
 
 export function getCommonReducers(
@@ -88,85 +136,22 @@ export function getCommonReducers(
     // reducer because devalue uses first-match-wins. Subclass-specific reducers
     // must be checked first so that e.g. a TypeError is serialized as "TypeError"
     // rather than falling through to the generic "Error" reducer.
-    //
-    // Note: `types.isNativeError()` is used instead of `instanceof` for cross-VM
-    // safety. Errors may originate from a different VM context (e.g. FatalError
-    // from the host context passed into a VM-context workflow). `instanceof`
-    // checks fail across VM boundaries since each context has its own Error
-    // constructor, but `isNativeError()` uses V8's internal type tag which
-    // works across all contexts. After the isNativeError gate, we use the
-    // constructor name to distinguish subclasses since `instanceof` may fail
-    // across VM boundaries.
-    EvalError: (value) => {
-      if (!types.isNativeError(value)) return false;
-      if (value.constructor?.name !== 'EvalError') return false;
-      const reduced: SerializableSpecial['EvalError'] = {
-        message: value.message,
-        stack: value.stack,
-      };
-      if ('cause' in value) reduced.cause = value.cause;
-      return reduced;
-    },
-    RangeError: (value) => {
-      if (!types.isNativeError(value)) return false;
-      if (value.constructor?.name !== 'RangeError') return false;
-      const reduced: SerializableSpecial['RangeError'] = {
-        message: value.message,
-        stack: value.stack,
-      };
-      if ('cause' in value) reduced.cause = value.cause;
-      return reduced;
-    },
-    ReferenceError: (value) => {
-      if (!types.isNativeError(value)) return false;
-      if (value.constructor?.name !== 'ReferenceError') return false;
-      const reduced: SerializableSpecial['ReferenceError'] = {
-        message: value.message,
-        stack: value.stack,
-      };
-      if ('cause' in value) reduced.cause = value.cause;
-      return reduced;
-    },
-    SyntaxError: (value) => {
-      if (!types.isNativeError(value)) return false;
-      if (value.constructor?.name !== 'SyntaxError') return false;
-      const reduced: SerializableSpecial['SyntaxError'] = {
-        message: value.message,
-        stack: value.stack,
-      };
-      if ('cause' in value) reduced.cause = value.cause;
-      return reduced;
-    },
-    TypeError: (value) => {
-      if (!types.isNativeError(value)) return false;
-      if (value.constructor?.name !== 'TypeError') return false;
-      const reduced: SerializableSpecial['TypeError'] = {
-        message: value.message,
-        stack: value.stack,
-      };
-      if ('cause' in value) reduced.cause = value.cause;
-      return reduced;
-    },
-    URIError: (value) => {
-      if (!types.isNativeError(value)) return false;
-      if (value.constructor?.name !== 'URIError') return false;
-      const reduced: SerializableSpecial['URIError'] = {
-        message: value.message,
-        stack: value.stack,
-      };
-      if ('cause' in value) reduced.cause = value.cause;
-      return reduced;
-    },
+    // See `makeErrorSubclassReducer` for implementation details.
+    EvalError: makeErrorSubclassReducer('EvalError'),
+    RangeError: makeErrorSubclassReducer('RangeError'),
+    ReferenceError: makeErrorSubclassReducer('ReferenceError'),
+    SyntaxError: makeErrorSubclassReducer('SyntaxError'),
+    TypeError: makeErrorSubclassReducer('TypeError'),
+    URIError: makeErrorSubclassReducer('URIError'),
+    // AggregateError is similar to other subclasses but also preserves the
+    // `errors` array. We extend the base helper's output here.
     AggregateError: (value) => {
-      if (!types.isNativeError(value)) return false;
-      if (value.constructor?.name !== 'AggregateError') return false;
-      const reduced: SerializableSpecial['AggregateError'] = {
-        message: value.message,
-        stack: value.stack,
+      const base = makeErrorSubclassReducer('AggregateError')(value);
+      if (!base) return false;
+      return {
+        ...base,
         errors: (value as AggregateError).errors,
-      };
-      if ('cause' in value) reduced.cause = value.cause;
-      return reduced;
+      } satisfies SerializableSpecial['AggregateError'];
     },
     // Base Error reducer — catch-all for any Error instance not matched by a
     // specific subclass reducer above (including user Error subclasses without
@@ -253,44 +238,13 @@ export function getCommonRevivers(
       return error;
     },
     // Error subclass revivers reconstruct the correct built-in Error type.
-    // The `cause` option is only passed when the serialized data includes it,
-    // preserving the distinction between "no cause" and "cause is undefined".
-    EvalError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new global.EvalError(value.message, opts);
-      if (value.stack !== undefined) error.stack = value.stack;
-      return error;
-    },
-    RangeError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new global.RangeError(value.message, opts);
-      if (value.stack !== undefined) error.stack = value.stack;
-      return error;
-    },
-    ReferenceError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new global.ReferenceError(value.message, opts);
-      if (value.stack !== undefined) error.stack = value.stack;
-      return error;
-    },
-    SyntaxError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new global.SyntaxError(value.message, opts);
-      if (value.stack !== undefined) error.stack = value.stack;
-      return error;
-    },
-    TypeError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new global.TypeError(value.message, opts);
-      if (value.stack !== undefined) error.stack = value.stack;
-      return error;
-    },
-    URIError: (value) => {
-      const opts = 'cause' in value ? { cause: value.cause } : undefined;
-      const error = new global.URIError(value.message, opts);
-      if (value.stack !== undefined) error.stack = value.stack;
-      return error;
-    },
+    // See `makeErrorSubclassReviver` for implementation details.
+    EvalError: makeErrorSubclassReviver(global, 'EvalError'),
+    RangeError: makeErrorSubclassReviver(global, 'RangeError'),
+    ReferenceError: makeErrorSubclassReviver(global, 'ReferenceError'),
+    SyntaxError: makeErrorSubclassReviver(global, 'SyntaxError'),
+    TypeError: makeErrorSubclassReviver(global, 'TypeError'),
+    URIError: makeErrorSubclassReviver(global, 'URIError'),
     AggregateError: (value) => {
       const opts = 'cause' in value ? { cause: value.cause } : undefined;
       const error = new global.AggregateError(
