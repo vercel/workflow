@@ -1,4 +1,4 @@
-import { NotInWorkflowOrStepContextError } from '../context-errors.js';
+import { throwNotInWorkflowOrStepContext } from '../context-errors.js';
 import type { WorkflowMetadata } from '../workflow/get-workflow-metadata.js';
 import { contextStorage } from './context-storage.js';
 
@@ -10,9 +10,10 @@ export type { WorkflowMetadata };
 export function getWorkflowMetadata(): WorkflowMetadata {
   const ctx = contextStorage.getStore();
   if (!ctx) {
-    throw new NotInWorkflowOrStepContextError(
+    throwNotInWorkflowOrStepContext(
       'getWorkflowMetadata()',
-      'getWorkflowMetadata(): https://workflow-sdk.dev/docs/api-reference/workflow/get-workflow-metadata'
+      'https://workflow-sdk.dev/docs/api-reference/workflow/get-workflow-metadata',
+      getWorkflowMetadata
     );
   }
   return ctx.workflowMetadata;

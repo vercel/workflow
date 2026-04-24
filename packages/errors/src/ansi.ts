@@ -45,10 +45,15 @@ export function hint(messages: string | string[]): string {
   return styles.info(`${chalk.bold('hint:')} ${message}`);
 }
 
-/** A "note:" line — use for informational context (docs links, etc). */
+/** A "note:" line — use for informational context. */
 export function note(messages: string | string[]): string {
   const message = Array.isArray(messages) ? messages.join('\n') : messages;
   return styles.info(`${chalk.bold('note:')} ${message}`);
+}
+
+/** A "docs:" line — use for a single documentation URL. */
+export function docs(url: string): string {
+  return styles.info(`${chalk.bold('docs:')} ${url}`);
 }
 
 /** Render an inline code token (italicized, dim backticks). */

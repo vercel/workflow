@@ -4,18 +4,34 @@ import {
   type WorkflowMetadata,
 } from './workflow/get-workflow-metadata.js';
 
-/**
- * URL strings shaped as `"<topic>: https://<path>"` so the error surface always
- * shows a human-readable topic alongside the link. The `https://` prefix is
- * enforced by the type to prevent accidental protocol-less URLs.
- */
-type DocLink = `${string}: https://${string}`;
+/** A `docs:` line URL. The leading protocol is part of the type so call sites
+ * can't accidentally pass a protocol-relative or bare path. */
+type DocsUrl = `https://${string}`;
 
 /** Apply dim styling to the `workflow/` / `step/` prefixes in a qualified name. */
 function ansifyName(name: string): string {
   return name
     .replace(/^workflow\//, `${Ansi.dim('workflow/')}`)
     .replace(/^step\//, `${Ansi.dim('step/')}`);
+}
+
+/**
+ * V8-only (Node, Bun, Chrome, Deno). Rewrites `err.stack` so the top frame is
+ * the caller of `stackStartFn` instead of the framework function that threw.
+ * Without this, terminal overlays (Next.js, Turbopack, VS Code) render the
+ * code frame at our `throw` site inside `@workflow/core`, which is useless
+ * to the user.
+ *
+ * No-op on engines that don't expose `Error.captureStackTrace` — the stack
+ * degrades gracefully to the default behavior.
+ */
+function redirectStackToCaller(err: Error, stackStartFn: Function): void {
+  const capture = (
+    Error as unknown as {
+      captureStackTrace?: (target: object, fn: Function) => void;
+    }
+  ).captureStackTrace;
+  capture?.(err, stackStartFn);
 }
 
 /**
@@ -26,20 +42,17 @@ function ansifyName(name: string): string {
  * @example
  * ```
  * `createHook()` can only be called inside a workflow function
- * ╰▶ note: Read more about creating hooks: https://...
+ * ╰▶ docs: https://workflow-sdk.dev/docs/...
  * ```
  */
 export class NotInWorkflowContextError extends Error {
   name = 'NotInWorkflowContextError';
 
-  constructor(
-    readonly functionName: string,
-    docLink: DocLink
-  ) {
+  constructor(functionName: string, docsUrl: DocsUrl) {
     super(
       Ansi.frame(
         `${Ansi.code(functionName)} can only be called inside a workflow function`,
-        [Ansi.note(`Read more about ${docLink}`)]
+        [Ansi.docs(docsUrl)]
       )
     );
   }
@@ -52,14 +65,11 @@ export class NotInWorkflowContextError extends Error {
 export class NotInStepContextError extends Error {
   name = 'NotInStepContextError';
 
-  constructor(
-    readonly functionName: string,
-    docLink: DocLink
-  ) {
+  constructor(functionName: string, docsUrl: DocsUrl) {
     super(
       Ansi.frame(
         `${Ansi.code(functionName)} can only be called inside a step function`,
-        [Ansi.note(`Read more about ${docLink}`)]
+        [Ansi.docs(docsUrl)]
       )
     );
   }
@@ -72,14 +82,11 @@ export class NotInStepContextError extends Error {
 export class NotInWorkflowOrStepContextError extends Error {
   name = 'NotInWorkflowOrStepContextError';
 
-  constructor(
-    readonly functionName: string,
-    docLink: DocLink
-  ) {
+  constructor(functionName: string, docsUrl: DocsUrl) {
     super(
       Ansi.frame(
         `${Ansi.code(functionName)} can only be called inside a workflow or step function`,
-        [Ansi.note(`Read more about ${docLink}`)]
+        [Ansi.docs(docsUrl)]
       )
     );
   }
@@ -93,30 +100,76 @@ export class NotInWorkflowOrStepContextError extends Error {
 export class UnavailableInWorkflowContextError extends Error {
   name = 'UnavailableInWorkflowContextError';
 
-  constructor(
-    readonly functionName: string,
-    docLink: DocLink
-  ) {
+  constructor(functionName: string, docsUrl: DocsUrl) {
     const ctx = (globalThis as any)[WORKFLOW_CONTEXT_SYMBOL] as
       | WorkflowMetadata
       | undefined;
     const workflowName = ctx?.workflowName;
 
-    const noteLines = [
-      workflowName
-        ? `this call was made from the ${ansifyName(workflowName)} workflow context.`
-        : 'this call was made from a workflow context.',
-      `Read more about ${docLink}`,
-    ];
+    const contextLine = workflowName
+      ? `this call was made from the ${ansifyName(workflowName)} workflow context.`
+      : 'this call was made from a workflow context.';
 
     super(
       Ansi.frame(
         `${Ansi.code(functionName)} cannot be called from a workflow context.`,
         [
           'calling this in a workflow context can cause determinism issues.',
-          Ansi.note(noteLines),
+          contextLine,
+          Ansi.docs(docsUrl),
         ]
       )
     );
   }
+}
+
+/**
+ * Throw a {@link NotInWorkflowContextError} whose stack trace points at the
+ * user code that called `stackStartFn`, not at our framework internals.
+ *
+ * Prefer this over `throw new NotInWorkflowContextError(...)` so tooling
+ * (Next.js error overlay, VS Code terminal linkifier, Sentry, etc.) shows
+ * the user's call site as the relevant frame.
+ */
+export function throwNotInWorkflowContext(
+  functionName: string,
+  docsUrl: DocsUrl,
+  stackStartFn: Function
+): never {
+  const err = new NotInWorkflowContextError(functionName, docsUrl);
+  redirectStackToCaller(err, stackStartFn);
+  throw err;
+}
+
+/** See {@link throwNotInWorkflowContext}. */
+export function throwNotInStepContext(
+  functionName: string,
+  docsUrl: DocsUrl,
+  stackStartFn: Function
+): never {
+  const err = new NotInStepContextError(functionName, docsUrl);
+  redirectStackToCaller(err, stackStartFn);
+  throw err;
+}
+
+/** See {@link throwNotInWorkflowContext}. */
+export function throwNotInWorkflowOrStepContext(
+  functionName: string,
+  docsUrl: DocsUrl,
+  stackStartFn: Function
+): never {
+  const err = new NotInWorkflowOrStepContextError(functionName, docsUrl);
+  redirectStackToCaller(err, stackStartFn);
+  throw err;
+}
+
+/** See {@link throwNotInWorkflowContext}. */
+export function throwUnavailableInWorkflowContext(
+  functionName: string,
+  docsUrl: DocsUrl,
+  stackStartFn: Function
+): never {
+  const err = new UnavailableInWorkflowContextError(functionName, docsUrl);
+  redirectStackToCaller(err, stackStartFn);
+  throw err;
 }

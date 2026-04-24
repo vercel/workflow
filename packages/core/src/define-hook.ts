@@ -1,6 +1,6 @@
 import type { StandardSchemaV1 } from '@standard-schema/spec';
 import type { Hook as HookEntity } from '@workflow/world';
-import { NotInWorkflowContextError } from './context-errors.js';
+import { throwNotInWorkflowContext } from './context-errors.js';
 import type { Hook, HookOptions } from './create-hook.js';
 import { resumeHook } from './runtime/resume-hook.js';
 
@@ -73,13 +73,19 @@ export function defineHook<TInput, TOutput = TInput>({
 }: {
   schema?: StandardSchemaV1<TInput, TOutput>;
 } = {}): TypedHook<TInput, TOutput> {
+  function create(_options?: HookOptions): Hook<TOutput> {
+    // NOTE: `create` is referenced by name (not `this.create`) so the stack
+    // strip still works if the caller destructured the hook (`const { create }
+    // = defineHook(); create()`) — in that case `this` is undefined.
+    throwNotInWorkflowContext(
+      'defineHook().create()',
+      'https://workflow-sdk.dev/docs/api-reference/workflow/define-hook',
+      create
+    );
+  }
+
   return {
-    create(_options?: HookOptions): Hook<TOutput> {
-      throw new NotInWorkflowContextError(
-        'defineHook().create()',
-        'defineHook(): https://workflow-sdk.dev/docs/api-reference/workflow/define-hook'
-      );
-    },
+    create,
     async resume(token: string, payload: TInput): Promise<HookEntity> {
       if (!schema?.['~standard']) {
         return await resumeHook(token, payload);

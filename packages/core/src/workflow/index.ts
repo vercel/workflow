@@ -1,6 +1,6 @@
 import {
-  NotInStepContextError,
-  UnavailableInWorkflowContextError,
+  throwNotInStepContext,
+  throwUnavailableInWorkflowContext,
 } from '../context-errors.js';
 import type { StepMetadata } from '../step/get-step-metadata.js';
 
@@ -19,14 +19,16 @@ export { getWritable } from './writable-stream.js';
 // workflows can't use these functions, but we still need to provide
 // the export so bundling doesn't fail when step and workflow are in same file
 export function getStepMetadata(): StepMetadata {
-  throw new NotInStepContextError(
+  throwNotInStepContext(
     'getStepMetadata()',
-    'getStepMetadata(): https://workflow-sdk.dev/docs/api-reference/workflow/get-step-metadata'
+    'https://workflow-sdk.dev/docs/api-reference/workflow/get-step-metadata',
+    getStepMetadata
   );
 }
 export function resumeHook() {
-  throw new UnavailableInWorkflowContextError(
+  throwUnavailableInWorkflowContext(
     'resumeHook()',
-    'resuming hooks: https://workflow-sdk.dev/docs/api-reference/workflow-api/resume-hook'
+    'https://workflow-sdk.dev/docs/api-reference/workflow-api/resume-hook',
+    resumeHook
   );
 }

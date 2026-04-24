@@ -1,4 +1,4 @@
-import { NotInWorkflowContextError } from './context-errors.js';
+import { throwNotInWorkflowContext } from './context-errors.js';
 import type { Serializable } from './schemas.js';
 
 /**
@@ -178,9 +178,10 @@ export interface WebhookOptions
  */
 // @ts-expect-error `options` is here for types/docs
 export function createHook<T = any>(options?: HookOptions): Hook<T> {
-  throw new NotInWorkflowContextError(
+  throwNotInWorkflowContext(
     'createHook()',
-    'createHook(): https://workflow-sdk.dev/docs/api-reference/workflow/create-hook'
+    'https://workflow-sdk.dev/docs/api-reference/workflow/create-hook',
+    createHook
   );
 }
 
@@ -199,8 +200,9 @@ export function createWebhook(
   // @ts-expect-error `options` is here for types/docs
   options?: WebhookOptions
 ): Webhook<Request> | Webhook<RequestWithResponse> {
-  throw new NotInWorkflowContextError(
+  throwNotInWorkflowContext(
     'createWebhook()',
-    'createWebhook(): https://workflow-sdk.dev/docs/api-reference/workflow/create-webhook'
+    'https://workflow-sdk.dev/docs/api-reference/workflow/create-webhook',
+    createWebhook
   );
 }

@@ -51,7 +51,7 @@ describe('Ansi.code', () => {
   });
 });
 
-describe('Ansi.hint / note / help', () => {
+describe('Ansi.hint / note / help / docs', () => {
   it('renders a hint line', () => {
     expect(Ansi.hint('try reloading')).toMatchInlineSnapshot(
       `"<blue><b>hint:</b> try reloading</blue>"`
@@ -69,6 +69,14 @@ describe('Ansi.hint / note / help', () => {
   it('renders a help line', () => {
     expect(Ansi.help('run `wf inspect run run_123`')).toMatchInlineSnapshot(
       `"<cyan><b>help:</b> run \`wf inspect run run_123\`</cyan>"`
+    );
+  });
+
+  it('renders a docs line', () => {
+    expect(
+      Ansi.docs('https://workflow-sdk.dev/docs/api-reference/workflow/sleep')
+    ).toMatchInlineSnapshot(
+      `"<blue><b>docs:</b> https://workflow-sdk.dev/docs/api-reference/workflow/sleep</blue>"`
     );
   });
 });

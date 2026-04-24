@@ -1,4 +1,4 @@
-import { NotInStepContextError } from '../context-errors.js';
+import { throwNotInStepContext } from '../context-errors.js';
 import { contextStorage } from './context-storage.js';
 
 export interface StepMetadata {
@@ -48,9 +48,10 @@ export interface StepMetadata {
 export function getStepMetadata(): StepMetadata {
   const ctx = contextStorage.getStore();
   if (!ctx) {
-    throw new NotInStepContextError(
+    throwNotInStepContext(
       'getStepMetadata()',
-      'getStepMetadata(): https://workflow-sdk.dev/docs/api-reference/workflow/get-step-metadata'
+      'https://workflow-sdk.dev/docs/api-reference/workflow/get-step-metadata',
+      getStepMetadata
     );
   }
   return ctx.stepMetadata;

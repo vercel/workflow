@@ -1,5 +1,5 @@
 import type { StringValue } from 'ms';
-import { NotInWorkflowContextError } from './context-errors.js';
+import { throwNotInWorkflowContext } from './context-errors.js';
 import { WORKFLOW_SLEEP } from './symbols.js';
 
 /**
@@ -40,9 +40,10 @@ export async function sleep(param: StringValue | Date | number): Promise<void> {
   // Inside the workflow VM, the sleep function is stored in the globalThis object behind a symbol
   const sleepFn = (globalThis as any)[WORKFLOW_SLEEP];
   if (!sleepFn) {
-    throw new NotInWorkflowContextError(
+    throwNotInWorkflowContext(
       'sleep()',
-      'sleep(): https://workflow-sdk.dev/docs/api-reference/workflow/sleep'
+      'https://workflow-sdk.dev/docs/api-reference/workflow/sleep',
+      sleep
     );
   }
   return sleepFn(param);

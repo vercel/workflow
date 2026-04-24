@@ -41,21 +41,28 @@ export function getWorkflowMetadata(): WorkflowMetadata {
   // Inside the workflow VM, the context is stored in the globalThis object behind a symbol
   const ctx = (globalThis as any)[WORKFLOW_CONTEXT_SYMBOL] as WorkflowMetadata;
   if (!ctx) {
-    // Avoid importing NotInWorkflowOrStepContextError here — that module
-    // imports from this file, so bringing it in eagerly would create a
-    // module-init cycle. Render the same Ansi framing inline to match the
-    // sibling `step/get-workflow-metadata.ts` path which uses the structured
-    // class.
-    throw new Error(
+    // Avoid importing the structured context-error classes here — the
+    // `context-errors.ts` module imports from this file, so bringing those
+    // in eagerly would create a module-init cycle. Render the same framing
+    // inline, and redirect the stack to the user's call site so terminal
+    // overlays point at their code, not at this function.
+    const err = new Error(
       Ansi.frame(
         `${Ansi.code('getWorkflowMetadata()')} can only be called inside a workflow or step function`,
         [
-          Ansi.note(
-            'Read more about getWorkflowMetadata(): https://workflow-sdk.dev/docs/api-reference/workflow/get-workflow-metadata'
+          Ansi.docs(
+            'https://workflow-sdk.dev/docs/api-reference/workflow/get-workflow-metadata'
           ),
         ]
       )
     );
+    const capture = (
+      Error as unknown as {
+        captureStackTrace?: (target: object, fn: Function) => void;
+      }
+    ).captureStackTrace;
+    capture?.(err, getWorkflowMetadata);
+    throw err;
   }
   return ctx;
 }
