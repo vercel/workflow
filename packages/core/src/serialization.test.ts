@@ -3183,6 +3183,196 @@ describe('custom Error subclass serialization', () => {
   });
 });
 
+describe('built-in Error subclass serialization', () => {
+  const { context, globalThis: vmGlobalThis } = createContext({
+    seed: 'test-error-subclass',
+    fixedTimestamp: 1714857600000,
+  });
+  vmGlobalThis.Request = globalThis.Request;
+  vmGlobalThis.Response = globalThis.Response;
+  vmGlobalThis.ReadableStream = globalThis.ReadableStream;
+  vmGlobalThis.WritableStream = globalThis.WritableStream;
+
+  // Round-trip within the same (host) context — for testing type preservation
+  async function roundTrip(value: unknown) {
+    const serialized = await dehydrateStepReturnValue(
+      value,
+      mockRunId,
+      noEncryptionKey
+    );
+    return hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      globalThis
+    );
+  }
+
+  it('should round-trip TypeError', async () => {
+    const error = new TypeError('bad argument');
+    const hydrated = (await roundTrip(error)) as TypeError;
+    expect(hydrated).toBeInstanceOf(TypeError);
+    expect(hydrated.message).toBe('bad argument');
+    expect(hydrated.stack).toBeDefined();
+  });
+
+  it('should round-trip RangeError', async () => {
+    const error = new RangeError('out of bounds');
+    const hydrated = (await roundTrip(error)) as RangeError;
+    expect(hydrated).toBeInstanceOf(RangeError);
+    expect(hydrated.message).toBe('out of bounds');
+  });
+
+  it('should round-trip SyntaxError', async () => {
+    const error = new SyntaxError('unexpected token');
+    const hydrated = (await roundTrip(error)) as SyntaxError;
+    expect(hydrated).toBeInstanceOf(SyntaxError);
+    expect(hydrated.message).toBe('unexpected token');
+  });
+
+  it('should round-trip URIError', async () => {
+    const error = new URIError('bad URI');
+    const hydrated = (await roundTrip(error)) as URIError;
+    expect(hydrated).toBeInstanceOf(URIError);
+    expect(hydrated.message).toBe('bad URI');
+  });
+
+  it('should round-trip ReferenceError', async () => {
+    const error = new ReferenceError('x is not defined');
+    const hydrated = (await roundTrip(error)) as ReferenceError;
+    expect(hydrated).toBeInstanceOf(ReferenceError);
+    expect(hydrated.message).toBe('x is not defined');
+  });
+
+  it('should round-trip EvalError', async () => {
+    const error = new EvalError('eval failed');
+    const hydrated = (await roundTrip(error)) as EvalError;
+    expect(hydrated).toBeInstanceOf(EvalError);
+    expect(hydrated.message).toBe('eval failed');
+  });
+
+  it('should round-trip AggregateError', async () => {
+    const errors = [new Error('first'), new TypeError('second')];
+    const aggregate = new AggregateError(errors, 'multiple failures');
+    const hydrated = (await roundTrip(aggregate)) as AggregateError;
+    expect(hydrated).toBeInstanceOf(AggregateError);
+    expect(hydrated.message).toBe('multiple failures');
+    expect(hydrated.errors).toHaveLength(2);
+    expect(hydrated.errors[0]).toBeInstanceOf(Error);
+    expect((hydrated.errors[0] as Error).message).toBe('first');
+    expect(hydrated.errors[1]).toBeInstanceOf(TypeError);
+    expect((hydrated.errors[1] as Error).message).toBe('second');
+  });
+
+  it('should round-trip AggregateError with non-Error entries in errors array', async () => {
+    const aggregate = new AggregateError(
+      ['string error', 42, { code: 'ERR' }],
+      'mixed errors'
+    );
+    const hydrated = (await roundTrip(aggregate)) as AggregateError;
+    expect(hydrated).toBeInstanceOf(AggregateError);
+    expect(hydrated.errors).toHaveLength(3);
+    expect(hydrated.errors[0]).toBe('string error');
+    expect(hydrated.errors[1]).toBe(42);
+    expect(hydrated.errors[2]).toEqual({ code: 'ERR' });
+  });
+
+  it('should round-trip plain Error with custom name', async () => {
+    const error = new Error('something failed');
+    error.name = 'CustomError';
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.name).toBe('CustomError');
+    expect(hydrated.message).toBe('something failed');
+  });
+
+  it('should preserve cause on Error', async () => {
+    const cause = new TypeError('root cause');
+    const error = new Error('wrapper', { cause });
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.message).toBe('wrapper');
+    expect(hydrated.cause).toBeInstanceOf(TypeError);
+    expect((hydrated.cause as TypeError).message).toBe('root cause');
+  });
+
+  it('should preserve deeply nested cause chain', async () => {
+    const root = new ReferenceError('x is not defined');
+    const middle = new TypeError('invalid operation', { cause: root });
+    const outer = new Error('operation failed', { cause: middle });
+    const hydrated = (await roundTrip(outer)) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.message).toBe('operation failed');
+    const hydratedMiddle = hydrated.cause as TypeError;
+    expect(hydratedMiddle).toBeInstanceOf(TypeError);
+    expect(hydratedMiddle.message).toBe('invalid operation');
+    const hydratedRoot = hydratedMiddle.cause as ReferenceError;
+    expect(hydratedRoot).toBeInstanceOf(ReferenceError);
+    expect(hydratedRoot.message).toBe('x is not defined');
+  });
+
+  it('should preserve non-Error cause values', async () => {
+    const error = new Error('failed', { cause: 'string cause' });
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated.cause).toBe('string cause');
+  });
+
+  it('should not set cause on hydrated Error when original had no cause', async () => {
+    const error = new Error('no cause');
+    expect('cause' in error).toBe(false);
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated.message).toBe('no cause');
+    expect('cause' in hydrated).toBe(false);
+  });
+
+  it('should use specific serialization key for Error subclasses', async () => {
+    const error = new TypeError('test');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('TypeError');
+    expect(str).not.toMatch(/"Error"/);
+  });
+
+  it('should use generic Error key for unrecognized Error subclass', async () => {
+    class MyError extends Error {
+      constructor(message: string) {
+        super(message);
+        this.name = 'MyError';
+      }
+    }
+    const error = new MyError('custom');
+    const hydrated = (await roundTrip(error)) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.name).toBe('MyError');
+    expect(hydrated.message).toBe('custom');
+  });
+
+  it('should round-trip TypeError across VM boundaries', async () => {
+    const hostError = new TypeError('host type error');
+    const serialized = await dehydrateStepReturnValue(
+      hostError,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = await hydrateStepReturnValue(
+      serialized,
+      mockRunId,
+      noEncryptionKey,
+      vmGlobalThis
+    );
+    runInContext('var __testVal = null', context);
+    (vmGlobalThis as any).__testVal = hydrated;
+    expect(runInContext('__testVal instanceof TypeError', context)).toBe(true);
+    expect(runInContext('__testVal.message', context)).toBe('host type error');
+  });
+});
+
 describe('DOMException serialization', () => {
   const { context, globalThis: vmGlobalThis } = createContext({
     seed: 'test-domexception',
