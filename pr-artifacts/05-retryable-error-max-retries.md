@@ -17,44 +17,46 @@ async function add(a: number, b: number): Promise<number> {
 
 ```
 Simple workflow started
- POST /.well-known/workflow/v1/flow 200 in 76ms (next.js: 18ms, application-code: 59ms)
- POST /.well-known/workflow/v1/step 200 in 196ms (next.js: 145ms, application-code: 51ms)
- POST /.well-known/workflow/v1/step 200 in 64ms  (next.js: 3ms,   application-code: 61ms)
- POST /.well-known/workflow/v1/step 200 in 69ms  (next.js: 4ms,   application-code: 66ms)
-[workflow-sdk] Step "step//./workflows/1_simple//add" hit max retries, bubbling error thrown by your step to the parent workflow {
-  workflowRunId: 'wrun_01KPYRVP5T4TJQRJ8BXZQKGZ8V',
-  workflowName: 'workflow//./workflows/1_simple//simple',
-  stepId: 'step_01KPYRVP6KQKN4MBJKH7C5ZX16',
-  stepName: 'step//./workflows/1_simple//add',
+ POST /.well-known/workflow/v1/flow 200 in ~70ms
+ POST /.well-known/workflow/v1/step 200 in 70ms        ← attempt 1
+ POST /.well-known/workflow/v1/step 200 in 68ms        ← attempt 2
+ POST /.well-known/workflow/v1/step 200 in 67ms        ← attempt 3
+[workflow-sdk] Step add (./workflows/1_simple) hit max retries — bubbling error thrown by your step to the parent workflow
+Error: Transient failure, always fails
+    at add (…workbench_0njdtf~._.js:3271:11)
+    … (full stack omitted) …
+{
+  workflowRunId: 'wrun_01KPYT7QKCN84S4BH0W3MCXWY5',
+  workflowName:  'workflow//./workflows/1_simple//simple',
+  stepId:        'step_01KPYT7QM2J4KNFVPHQKFRR3Y0',
+  stepName:      'step//./workflows/1_simple//add',
   attempt: 4,
   retryCount: 3,
   errorAttribution: 'user',
-  errorName: 'Error',
-  errorMessage: 'Transient failure, always fails',
-  errorStack: 'Error: Transient failure, always fails\n    at add (…)\n    … (full stack omitted) …'
+  errorName:   'Error',
+  errorMessage: 'Transient failure, always fails'
 }
- POST /.well-known/workflow/v1/step 200 in 70ms (next.js: 3ms, application-code: 67ms)
-[workflow-sdk] Workflow "workflow//./workflows/1_simple//simple" threw
+ POST /.well-known/workflow/v1/step 200 in 65ms
+[workflow-sdk] Workflow simple (./workflows/1_simple) threw
 Error: Transient failure, always fails
     at add (…)
     … (full stack omitted) …
 {
-  workflowRunId: 'wrun_01KPYRVP5T4TJQRJ8BXZQKGZ8V',
-  workflowName: 'workflow//./workflows/1_simple//simple',
   errorCode: 'USER_ERROR',
   errorAttribution: 'user',
   errorName: 'FatalError',
   errorMessage: 'Step "step//./workflows/1_simple//add" failed after 3 retries: Transient failure, always fails'
 }
- POST /.well-known/workflow/v1/flow 200 in 72ms (next.js: 9ms, application-code: 63ms)
+ POST /.well-known/workflow/v1/flow 200 in ~70ms
 ```
 
 ## What this PR ensures
 
 - **One `hit max retries` summary log**, not 4 near-identical attempt
-  logs — the per-attempt step-failed emission now only logs when the
-  error is fatal or when the retry budget has been exhausted. Interim
-  attempts stay quiet.
+  logs — per-attempt step-failed emission stays quiet for retryable
+  transient errors until the budget is exhausted.
+- **Pretty step-level rendering** — `Step add (./workflows/1_simple) hit
+  max retries` and the stack renders inline in the message.
 - **`attempt: 4, retryCount: 3`** clearly distinguishes the total call
   count from the retry count.
 - **`errorAttribution: 'user'`** on both summary logs.
@@ -67,3 +69,4 @@ Error: Transient failure, always fails
 
 - `.changeset/friendlier-logger-metadata.md` — scoped logger + prefix + structured fields
 - `.changeset/friendlier-error-attribution.md` — `errorAttribution`
+- `.changeset/log-readability.md` — inline stack + friendly names

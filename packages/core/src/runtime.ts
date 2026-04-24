@@ -4,7 +4,10 @@ import {
   RunExpiredError,
   WorkflowRuntimeError,
 } from '@workflow/errors';
-import { parseWorkflowName } from '@workflow/utils/parse-name';
+import {
+  formatWorkflowName,
+  parseWorkflowName,
+} from '@workflow/utils/parse-name';
 import {
   type Event,
   SPEC_VERSION_CURRENT,
@@ -597,10 +600,11 @@ export function workflowEntrypoint(
                     // everything else is a user code error.
                     const errorCode = classifyRunError(err);
                     const description = describeError(err, errorCode);
+                    const friendlyWorkflow = formatWorkflowName(workflowName);
                     const framing =
                       description.attribution === 'sdk'
-                        ? `Workflow "${workflowName}" failed due to an SDK runtime error`
-                        : `Workflow "${workflowName}" threw`;
+                        ? `Workflow ${friendlyWorkflow} failed due to an SDK runtime error`
+                        : `Workflow ${friendlyWorkflow} threw`;
 
                     // Use the stack as the primary message so it shows up
                     // in flattened logs without structured metadata.

@@ -30,29 +30,36 @@ async function add(a: number, b: number): Promise<number> {
   `fatal = true`, *and* the dehydration call that produces it has been
   moved inside the step-handler's user-code try/catch. The error now
   routes through `userCodeFailed` → `step_failed`, so `FatalError.is()`
-  short-circuits the retry loop on attempt 1. Since serialization is
-  deterministic, retrying would never succeed anyway.
-- **`[workflow-sdk]` log prefix.** Every SDK-emitted line is now namespaced,
-  so users can grep their logs for SDK messages vs. their own.
-- **Structured `context` / `problematicValue`.** The "Serialization failed"
-  log has both fields so log drains can index by context (argument
-  position / return value / stream chunk) and see the offending value.
-- **Plain text in structured fields.** No ANSI escape bytes.
+  short-circuits the retry loop on attempt 1.
+- **Pretty step-level log** — framing + stack rendered inline, structured
+  fields compact (same as Scenario 01).
+- **`[workflow-sdk]` log prefix** on every SDK-emitted line.
+- **Structured `context` / `problematicValue`** on the per-attempt
+  "Serialization failed" log.
 
 ## Actual log output
 
 ```
+Simple workflow started
+ POST /.well-known/workflow/v1/flow 200 in 277ms (next.js: 185ms, application-code: 92ms)
 [workflow-sdk] Serialization failed { context: 'step return value', problematicValue: NotSerializable {} }
-[workflow-sdk] Step "step//./workflows/1_simple//add" threw a FatalError — bubbling up to parent workflow {
-  workflowRunId: 'wrun_01KPYR...',
-  stepName: 'step//./workflows/1_simple//add',
+[workflow-sdk] Step add (./workflows/1_simple) threw a FatalError — bubbling up to parent workflow
+Error: Failed to serialize step return value
+Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).
+Learn more: https://workflow-sdk.dev/err/serialization-failed
+    at dehydrateStepReturnValue (…packages_0p_d9mh._.js:9734:15)
+    … (full stack omitted) …
+{
+  workflowRunId: 'wrun_01KPYT…',
+  stepId:        'step_01KPYT…',
+  stepName:      'step//./workflows/1_simple//add',
   errorAttribution: 'user',
-  errorName: 'SerializationError',
-  errorMessage: "Failed to serialize step return value\n\nEnsure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).\n\nLearn more: https://workflow-sdk.dev/err/serialization-failed",
-  hint: 'A value passed across a workflow/step boundary could not be serialized. Only plain objects, arrays, primitives, Date, RegExp, Map, and Set survive the boundary — class instances, functions, and DOM objects do not.'
+  errorName:   'SerializationError',
+  errorMessage: "Failed to serialize step return value\n\nEnsure you're returning serializable types…\n\nLearn more: https://workflow-sdk.dev/err/serialization-failed",
+  hint: 'A value passed across a workflow/step boundary could not be serialized. …'
 }
- POST /.well-known/workflow/v1/step 200 in 1596ms
-[workflow-sdk] Workflow "workflow//./workflows/1_simple//simple" threw
+ POST /.well-known/workflow/v1/step 200 in ~200ms
+[workflow-sdk] Workflow simple (./workflows/1_simple) threw
 SerializationError: Failed to serialize step return value
 …
 ```
@@ -71,11 +78,16 @@ Before this PR the same scenario emitted:
    wall-clock: ~21 seconds of guaranteed-to-fail work.
 2. `errorMessage` / `errorStack` contained literal `\x1B[...m` ANSI escape
    bytes, making structured log drains unreadable.
-3. No `errorAttribution` field.
-4. No `hint` field / docs link.
+3. The step-level log embedded the full stack inside an `errorStack`
+   string field — terminal reading was significantly worse than the
+   workflow-level log. Fixed in this PR (see Scenario 01 for the
+   general rendering change).
+4. No `errorAttribution` field.
+5. No `hint` field / docs link.
 
 ## Related changesets
 
 - `.changeset/friendlier-serialization-errors.md` — SerializationError class + friendly hints
 - `.changeset/serialization-error-fatal.md` — mark fatal + route dehydration through step-failure path
+- `.changeset/log-readability.md` — inline stack + friendly names in step-level logs
 - `.changeset/friendlier-logger-metadata.md` — `[workflow-sdk]` prefix

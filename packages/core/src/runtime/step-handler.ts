@@ -10,7 +10,7 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { pluralize } from '@workflow/utils';
+import { formatStepName, pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
 import { describeError } from '../describe-error.js';
@@ -368,13 +368,16 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             if (step.attempt > maxRetries + 1) {
               const retryCount = step.attempt - 1;
               const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
-              stepLogger.error('Step exceeded max retries', {
-                workflowRunId,
-                workflowName,
-                stepId,
-                stepName,
-                retryCount,
-              });
+              stepLogger.error(
+                `Step ${formatStepName(stepName)} exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`,
+                {
+                  workflowRunId,
+                  workflowName,
+                  stepId,
+                  stepName,
+                  retryCount,
+                }
+              );
               // Fail the step via event (event-sourced architecture)
               try {
                 await world.events.create(
@@ -629,17 +632,24 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
 
               if (isFatal) {
                 const description = describeError(err);
-                stepLogger.error(
+                const friendlyStep = formatStepName(stepName);
+                const framing =
                   description.attribution === 'sdk'
-                    ? `Step "${stepName}" failed with a FatalError from the SDK runtime — bubbling up to parent workflow`
-                    : `Step "${stepName}" threw a FatalError — bubbling up to parent workflow`,
+                    ? `Step ${friendlyStep} failed with a FatalError from the SDK runtime — bubbling up to parent workflow`
+                    : `Step ${friendlyStep} threw a FatalError — bubbling up to parent workflow`;
+                // Mirror the workflow-level log formatting: put the framing +
+                // stack into the message so console.error renders the stack
+                // inline, and keep the metadata object small with only the
+                // structured fields that log drains want to index.
+                stepLogger.error(
+                  `${framing}\n${normalizedStack || normalizedError.message}`,
                   {
                     workflowRunId,
+                    stepId,
                     stepName,
                     errorAttribution: description.attribution,
                     errorName: normalizedError.name,
                     errorMessage: normalizedError.message,
-                    errorStack: normalizedStack,
                     ...(description.hint ? { hint: description.hint } : {}),
                   }
                 );
@@ -693,10 +703,13 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   // Max retries reached
                   const retryCount = step.attempt - 1;
                   const description = describeError(err);
-                  stepLogger.error(
+                  const friendlyStep = formatStepName(stepName);
+                  const framing =
                     description.attribution === 'sdk'
-                      ? `Step "${stepName}" hit max retries on an SDK runtime error — bubbling to parent workflow`
-                      : `Step "${stepName}" hit max retries — bubbling error thrown by your step to the parent workflow`,
+                      ? `Step ${friendlyStep} hit max retries on an SDK runtime error — bubbling to parent workflow`
+                      : `Step ${friendlyStep} hit max retries — bubbling error thrown by your step to the parent workflow`;
+                  stepLogger.error(
+                    `${framing}\n${normalizedStack || normalizedError.message}`,
                     {
                       workflowRunId,
                       workflowName,
@@ -707,7 +720,6 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       errorAttribution: description.attribution,
                       errorName: normalizedError.name,
                       errorMessage: normalizedError.message,
-                      errorStack: normalizedStack,
                       ...(description.hint ? { hint: description.hint } : {}),
                     }
                   );
