@@ -1,4 +1,5 @@
-import { Ansi } from '@workflow/errors';
+import { redirectStackToCaller } from '../capture-stack.js';
+import { NotInWorkflowOrStepContextError } from '../context-violation-error.js';
 
 export interface WorkflowMetadata {
   /**
@@ -38,30 +39,21 @@ export const WORKFLOW_CONTEXT_SYMBOL =
   /* @__PURE__ */ Symbol.for('WORKFLOW_CONTEXT');
 
 export function getWorkflowMetadata(): WorkflowMetadata {
-  // Inside the workflow VM, the context is stored in the globalThis object behind a symbol
+  // Inside the workflow VM, the context is stored in the globalThis object
+  // behind a symbol.
   const ctx = (globalThis as any)[WORKFLOW_CONTEXT_SYMBOL] as WorkflowMetadata;
   if (!ctx) {
-    // Avoid importing the structured context-error classes here — the
-    // `context-errors.ts` module imports from this file, so bringing those
-    // in eagerly would create a module-init cycle. Render the same framing
-    // inline, and redirect the stack to the user's call site so terminal
-    // overlays point at their code, not at this function.
-    const err = new Error(
-      Ansi.frame(
-        `${Ansi.code('getWorkflowMetadata()')} can only be called inside a workflow or step function`,
-        [
-          Ansi.docs(
-            'https://workflow-sdk.dev/docs/api-reference/workflow/get-workflow-metadata'
-          ),
-        ]
-      )
+    // Use the shared `NotInWorkflowOrStepContextError` — it lives in
+    // `context-violation-error.ts` specifically so this file can throw it
+    // without creating a module-init cycle (the full `context-errors.ts`
+    // depends on this file's `WORKFLOW_CONTEXT_SYMBOL`).
+    const err = new NotInWorkflowOrStepContextError(
+      'getWorkflowMetadata()',
+      'https://workflow-sdk.dev/docs/api-reference/workflow/get-workflow-metadata'
     );
-    const capture = (
-      Error as unknown as {
-        captureStackTrace?: (target: object, fn: Function) => void;
-      }
-    ).captureStackTrace;
-    capture?.(err, getWorkflowMetadata);
+    // Redirect the stack to the caller so terminal overlays (Next.js,
+    // Turbopack, VS Code) point at the user's code rather than this frame.
+    redirectStackToCaller(err, getWorkflowMetadata);
     throw err;
   }
   return ctx;

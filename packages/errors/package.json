@@ -20,6 +20,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./ansi": {
+      "types": "./dist/ansi.d.ts",
+      "default": "./dist/ansi.js"
     }
   },
   "scripts": {

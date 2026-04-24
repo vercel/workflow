@@ -2,7 +2,10 @@ import { parseDurationToDate } from '@workflow/utils';
 import type { StructuredError } from '@workflow/world';
 import type { StringValue } from 'ms';
 
-export * as Ansi from './ansi.js';
+// Note: `Ansi` helpers live under the `@workflow/errors/ansi` subpath so the
+// main entry point doesn't pull `chalk` (and its ESM machinery) into every
+// consumer — most places that `import from '@workflow/errors'` only want the
+// error classes and never render framed messages.
 
 const BASE_URL = 'https://workflow-sdk.dev/err';
 
@@ -621,6 +624,13 @@ export class RunNotSupportedError extends WorkflowError {
  * A fatal error is an error that cannot be retried.
  * It will cause the step to fail and the error will
  * be bubbled up to the workflow logic.
+ *
+ * Any error can opt into the non-retry behavior by setting a `fatal: true`
+ * own property. This is how structured error classes that aren't direct
+ * `FatalError` subclasses (e.g. context-violation errors) signal to the
+ * step handler that retrying will never help — the user's code is calling
+ * a workflow-only API from the wrong context, or similar — and burning
+ * retry attempts just produces a wall of duplicated log output.
  */
 export class FatalError extends Error {
   fatal = true;
@@ -631,7 +641,9 @@ export class FatalError extends Error {
   }
 
   static is(value: unknown): value is FatalError {
-    return isError(value) && value.name === 'FatalError';
+    if (!isError(value)) return false;
+    if (value.name === 'FatalError') return true;
+    return (value as { fatal?: unknown }).fatal === true;
   }
 }
 

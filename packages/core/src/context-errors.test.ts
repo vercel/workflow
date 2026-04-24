@@ -1,3 +1,5 @@
+import { FatalError } from '@workflow/errors';
+import { inspect } from 'node:util';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   NotInStepContextError,
@@ -94,6 +96,90 @@ describe('UnavailableInWorkflowContextError', () => {
       'https://workflow-sdk.dev/docs/api-reference/workflow-api/resume-hook'
     );
     expect(err.message).toContain('from a workflow context');
+  });
+});
+
+describe('plain .message / lazy pretty rendering', () => {
+  it('.message contains no ANSI escape bytes', () => {
+    // The user's structured logs, log drains, and CBOR event payloads all
+    // read `err.message` as a string. ANSI bytes leaking into them produced
+    // unreadable `\x1B[...m` noise in JSON. Keep `.message` plain.
+    const err = new NotInWorkflowContextError(
+      'createHook()',
+      'https://example.com/docs'
+    );
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI check
+    expect(err.message).not.toMatch(/\x1B\[/);
+  });
+
+  it('.stack contains no ANSI escape bytes', () => {
+    const err = new NotInWorkflowContextError(
+      'createHook()',
+      'https://example.com/docs'
+    );
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI check
+    expect(err.stack ?? '').not.toMatch(/\x1B\[/);
+  });
+
+  it('util.inspect(err) reveals the pretty framed form', () => {
+    // Node prints uncaught / logged errors via util.inspect. The pretty
+    // (framed) output belongs on the render path, not in stored state.
+    const err = new NotInWorkflowContextError(
+      'createHook()',
+      'https://example.com/docs'
+    );
+    const out = inspect(err);
+    expect(out).toContain('NotInWorkflowContextError:');
+    expect(out).toContain('createHook()');
+    expect(out).toContain('can only be called inside a workflow function');
+    expect(out).toContain('╰▶');
+    expect(out).toContain('docs:');
+  });
+
+  it('err.toString() also returns the pretty framed form', () => {
+    const err = new NotInWorkflowContextError(
+      'createHook()',
+      'https://example.com/docs'
+    );
+    expect(err.toString()).toContain('NotInWorkflowContextError:');
+    expect(err.toString()).toContain('╰▶');
+  });
+});
+
+describe('FatalError.is() gate', () => {
+  // The step handler uses FatalError.is() to decide retry vs bubble-up.
+  // Context-violation errors can't succeed on retry — they signal the
+  // user called a workflow-only API from the wrong context — so burning
+  // three retry attempts just produces duplicated log output.
+  it.each([
+    [
+      'NotInWorkflowContextError',
+      () =>
+        new NotInWorkflowContextError('createHook()', 'https://example.com'),
+    ],
+    [
+      'NotInStepContextError',
+      () =>
+        new NotInStepContextError('getStepMetadata()', 'https://example.com'),
+    ],
+    [
+      'NotInWorkflowOrStepContextError',
+      () =>
+        new NotInWorkflowOrStepContextError(
+          'getWorkflowMetadata()',
+          'https://example.com'
+        ),
+    ],
+    [
+      'UnavailableInWorkflowContextError',
+      () =>
+        new UnavailableInWorkflowContextError(
+          'resumeHook()',
+          'https://example.com'
+        ),
+    ],
+  ])('%s satisfies FatalError.is', (_name, make) => {
+    expect(FatalError.is(make())).toBe(true);
   });
 });
 

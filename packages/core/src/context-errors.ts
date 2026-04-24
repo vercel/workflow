@@ -1,103 +1,34 @@
-import { Ansi } from '@workflow/errors';
+import { redirectStackToCaller } from './capture-stack.js';
+import {
+  ContextViolationError,
+  type Detail,
+  type DocsUrl,
+  NotInStepContextError,
+  NotInWorkflowContextError,
+  NotInWorkflowOrStepContextError,
+} from './context-violation-error.js';
 import {
   WORKFLOW_CONTEXT_SYMBOL,
   type WorkflowMetadata,
 } from './workflow/get-workflow-metadata.js';
 
-/** A `docs:` line URL. The leading protocol is part of the type so call sites
- * can't accidentally pass a protocol-relative or bare path. */
-type DocsUrl = `https://${string}`;
-
-/** Apply dim styling to the `workflow/` / `step/` prefixes in a qualified name. */
-function ansifyName(name: string): string {
-  return name
-    .replace(/^workflow\//, `${Ansi.dim('workflow/')}`)
-    .replace(/^step\//, `${Ansi.dim('step/')}`);
-}
-
-/**
- * V8-only (Node, Bun, Chrome, Deno). Rewrites `err.stack` so the top frame is
- * the caller of `stackStartFn` instead of the framework function that threw.
- * Without this, terminal overlays (Next.js, Turbopack, VS Code) render the
- * code frame at our `throw` site inside `@workflow/core`, which is useless
- * to the user.
- *
- * No-op on engines that don't expose `Error.captureStackTrace` — the stack
- * degrades gracefully to the default behavior.
- */
-function redirectStackToCaller(err: Error, stackStartFn: Function): void {
-  const capture = (
-    Error as unknown as {
-      captureStackTrace?: (target: object, fn: Function) => void;
-    }
-  ).captureStackTrace;
-  capture?.(err, stackStartFn);
-}
-
-/**
- * Thrown when an API that must run inside a workflow function is called
- * from outside a workflow context (e.g. from a step function or from
- * regular application code).
- *
- * @example
- * ```
- * `createHook()` can only be called inside a workflow function
- * ╰▶ docs: https://workflow-sdk.dev/docs/...
- * ```
- */
-export class NotInWorkflowContextError extends Error {
-  name = 'NotInWorkflowContextError';
-
-  constructor(functionName: string, docsUrl: DocsUrl) {
-    super(
-      Ansi.frame(
-        `${Ansi.code(functionName)} can only be called inside a workflow function`,
-        [Ansi.docs(docsUrl)]
-      )
-    );
-  }
-}
-
-/**
- * Thrown when an API that must run inside a step function is called from
- * outside a step context.
- */
-export class NotInStepContextError extends Error {
-  name = 'NotInStepContextError';
-
-  constructor(functionName: string, docsUrl: DocsUrl) {
-    super(
-      Ansi.frame(
-        `${Ansi.code(functionName)} can only be called inside a step function`,
-        [Ansi.docs(docsUrl)]
-      )
-    );
-  }
-}
-
-/**
- * Thrown when an API that must run inside either a workflow or step function
- * is called from regular application code.
- */
-export class NotInWorkflowOrStepContextError extends Error {
-  name = 'NotInWorkflowOrStepContextError';
-
-  constructor(functionName: string, docsUrl: DocsUrl) {
-    super(
-      Ansi.frame(
-        `${Ansi.code(functionName)} can only be called inside a workflow or step function`,
-        [Ansi.docs(docsUrl)]
-      )
-    );
-  }
-}
+// Re-export the structural base + subclasses so the public surface is a
+// single import point. The base + simpler subclasses live in
+// `context-violation-error.ts` because `get-workflow-metadata.ts` needs to
+// throw one without creating an import cycle with this file.
+export {
+  ContextViolationError,
+  NotInStepContextError,
+  NotInWorkflowContextError,
+  NotInWorkflowOrStepContextError,
+};
 
 /**
  * Thrown when an API that MUST NOT run inside a workflow function is called
  * from one (e.g. `resumeHook()`, which would cause determinism issues).
  * The message names the specific workflow that made the offending call.
  */
-export class UnavailableInWorkflowContextError extends Error {
+export class UnavailableInWorkflowContextError extends ContextViolationError {
   name = 'UnavailableInWorkflowContextError';
 
   constructor(functionName: string, docsUrl: DocsUrl) {
@@ -106,20 +37,47 @@ export class UnavailableInWorkflowContextError extends Error {
       | undefined;
     const workflowName = ctx?.workflowName;
 
-    const contextLine = workflowName
-      ? `this call was made from the ${ansifyName(workflowName)} workflow context.`
-      : 'this call was made from a workflow context.';
+    // Apply dim styling to `workflow/` / `step/` prefixes in the qualified
+    // name so the part the user named stands out.
+    const nameSegs = (() => {
+      if (!workflowName) return null;
+      const m = workflowName.match(/^(workflow\/|step\/)(.*)$/);
+      if (m) return [{ dim: m[1] }, { text: m[2] }] as const;
+      return [{ text: workflowName }] as const;
+    })();
 
-    super(
-      Ansi.frame(
-        `${Ansi.code(functionName)} cannot be called from a workflow context.`,
-        [
-          'calling this in a workflow context can cause determinism issues.',
-          contextLine,
-          Ansi.docs(docsUrl),
-        ]
-      )
-    );
+    const contextLine: Detail = nameSegs
+      ? {
+          type: 'plain',
+          segments: [
+            { text: 'this call was made from the ' },
+            ...nameSegs,
+            { text: ' workflow context.' },
+          ],
+        }
+      : {
+          type: 'plain',
+          segments: [{ text: 'this call was made from a workflow context.' }],
+        };
+
+    super({
+      title: [
+        { code: functionName },
+        { text: ' cannot be called from a workflow context.' },
+      ],
+      details: [
+        {
+          type: 'plain',
+          segments: [
+            {
+              text: 'calling this in a workflow context can cause determinism issues.',
+            },
+          ],
+        },
+        contextLine,
+        { type: 'docs', url: docsUrl },
+      ],
+    });
   }
 }
 
@@ -134,6 +92,7 @@ export class UnavailableInWorkflowContextError extends Error {
 export function throwNotInWorkflowContext(
   functionName: string,
   docsUrl: DocsUrl,
+  // biome-ignore lint/complexity/noBannedTypes: matches Error.captureStackTrace
   stackStartFn: Function
 ): never {
   const err = new NotInWorkflowContextError(functionName, docsUrl);
@@ -145,6 +104,7 @@ export function throwNotInWorkflowContext(
 export function throwNotInStepContext(
   functionName: string,
   docsUrl: DocsUrl,
+  // biome-ignore lint/complexity/noBannedTypes: matches Error.captureStackTrace
   stackStartFn: Function
 ): never {
   const err = new NotInStepContextError(functionName, docsUrl);
@@ -156,6 +116,7 @@ export function throwNotInStepContext(
 export function throwNotInWorkflowOrStepContext(
   functionName: string,
   docsUrl: DocsUrl,
+  // biome-ignore lint/complexity/noBannedTypes: matches Error.captureStackTrace
   stackStartFn: Function
 ): never {
   const err = new NotInWorkflowOrStepContextError(functionName, docsUrl);
@@ -167,6 +128,7 @@ export function throwNotInWorkflowOrStepContext(
 export function throwUnavailableInWorkflowContext(
   functionName: string,
   docsUrl: DocsUrl,
+  // biome-ignore lint/complexity/noBannedTypes: matches Error.captureStackTrace
   stackStartFn: Function
 ): never {
   const err = new UnavailableInWorkflowContextError(functionName, docsUrl);

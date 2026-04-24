@@ -3,8 +3,4 @@
 "@workflow/builders": patch
 ---
 
-Add `WorkflowBuildError` class (with optional `hint` for an actionable next
-step) and apply it to user-facing build sites in `@workflow/builders`:
-failed esbuild phases, unresolved built-in steps, and empty esbuild output
-now throw `WorkflowBuildError` with a hint pointing at the fix. Runtime
-invariants remain plain `Error`.
+Add `WorkflowBuildError` (with optional `hint`) and apply it to user-facing build-time failures in `@workflow/builders`: failed esbuild phases, unresolved built-in steps, and empty esbuild output now include a hint pointing at the likely fix.
