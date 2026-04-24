@@ -558,15 +558,29 @@ export class FatalError extends Error {
   }
 
   static [WORKFLOW_SERIALIZE](instance: FatalError) {
-    return {
+    const serialized: {
+      message: string;
+      stack?: string;
+      cause?: unknown;
+    } = {
       message: instance.message,
       stack: instance.stack,
     };
+    // Preserve the error cause chain when present. Only include `cause`
+    // when the property exists on the instance, to distinguish between
+    // "no cause" and "cause: undefined".
+    if ('cause' in instance) serialized.cause = instance.cause;
+    return serialized;
   }
 
-  static [WORKFLOW_DESERIALIZE](data: { message: string; stack?: string }) {
+  static [WORKFLOW_DESERIALIZE](data: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+  }) {
     const error = new FatalError(data.message);
     if (data.stack !== undefined) error.stack = data.stack;
+    if ('cause' in data) error.cause = data.cause;
     return error;
   }
 }
@@ -607,22 +621,54 @@ export class RetryableError extends Error {
   }
 
   static [WORKFLOW_SERIALIZE](instance: RetryableError) {
-    return {
+    // Normalize retryAfter to a numeric timestamp to be realm-safe. The Date
+    // reducer in the serialization pipeline uses `instanceof global.Date`,
+    // which fails for Dates from a different VM realm. Serializing as a
+    // timestamp sidesteps that issue entirely.
+    const retryAfterRaw = instance.retryAfter as unknown;
+    let retryAfter: number;
+    if (
+      retryAfterRaw &&
+      typeof retryAfterRaw === 'object' &&
+      typeof (retryAfterRaw as { getTime?: unknown }).getTime === 'function'
+    ) {
+      const t = (retryAfterRaw as Date).getTime();
+      retryAfter = Number.isNaN(t) ? Date.now() + 1000 : t;
+    } else if (
+      typeof retryAfterRaw === 'string' ||
+      typeof retryAfterRaw === 'number'
+    ) {
+      const t = new Date(retryAfterRaw).getTime();
+      retryAfter = Number.isNaN(t) ? Date.now() + 1000 : t;
+    } else {
+      retryAfter = Date.now() + 1000;
+    }
+
+    const serialized: {
+      message: string;
+      stack?: string;
+      retryAfter: number;
+      cause?: unknown;
+    } = {
       message: instance.message,
       stack: instance.stack,
-      retryAfter: instance.retryAfter,
+      retryAfter,
     };
+    if ('cause' in instance) serialized.cause = instance.cause;
+    return serialized;
   }
 
   static [WORKFLOW_DESERIALIZE](data: {
     message: string;
     stack?: string;
-    retryAfter: Date;
+    retryAfter: number;
+    cause?: unknown;
   }) {
     const error = new RetryableError(data.message, {
-      retryAfter: data.retryAfter,
+      retryAfter: new Date(data.retryAfter),
     });
     if (data.stack !== undefined) error.stack = data.stack;
+    if ('cause' in data) error.cause = data.cause;
     return error;
   }
 }

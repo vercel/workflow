@@ -1145,17 +1145,17 @@ describe('e2e', () => {
       );
 
       test(
-        'FatalError preserves class identity through serialization',
+        'FatalError preserves class identity through step return value serialization',
         { timeout: 60_000 },
         async () => {
           const run = await start(await e2e('errorFatalSerdeRoundTrip'), []);
           const result = await run.returnValue;
 
-          expect(result.caught).toBe(true);
           expect(result.isFatal).toBe(true);
           expect(result.isInstanceOf).toBe(true);
-          expect(result.message).toContain('Fatal step error');
+          expect(result.message).toBe('fatal serde test');
           expect(result.hasFatalProp).toBe(true);
+          expect(result.name).toBe('FatalError');
 
           const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
           expect(runData.status).toBe('completed');
@@ -1163,7 +1163,7 @@ describe('e2e', () => {
       );
 
       test(
-        'RetryableError preserves class identity through serialization',
+        'RetryableError preserves class identity through step return value serialization',
         { timeout: 60_000 },
         async () => {
           const run = await start(
@@ -1172,11 +1172,12 @@ describe('e2e', () => {
           );
           const result = await run.returnValue;
 
-          expect(result.caught).toBe(true);
           expect(result.isRetryable).toBe(true);
           expect(result.isInstanceOf).toBe(true);
           expect(result.message).toBe('retryable serde test');
+          expect(result.name).toBe('RetryableError');
           expect(result.hasRetryAfter).toBe(true);
+          expect(result.retryAfterIso).toBe('2025-06-01T00:00:00.000Z');
 
           const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
           expect(runData.status).toBe('completed');

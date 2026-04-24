@@ -961,45 +961,54 @@ export async function errorFatalCatchable() {
   }
 }
 
-/** Test: FatalError preserves class identity through step error serialization */
-export async function errorFatalSerdeRoundTrip() {
-  'use workflow';
-  try {
-    await throwFatalError();
-    return { caught: false, isFatal: false, isInstanceOf: false };
-  } catch (e: any) {
-    return {
-      caught: true,
-      isFatal: FatalError.is(e),
-      isInstanceOf: e instanceof FatalError,
-      message: e.message,
-      hasFatalProp: e.fatal === true,
-    };
-  }
+/**
+ * Test: FatalError preserves class identity when returned from a step.
+ * Exercises WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE through the step return
+ * value serialization pipeline (step context → workflow context).
+ */
+async function returnFatalErrorStep() {
+  'use step';
+  // Return the error as a value (not thrown), so it flows through the
+  // step return value serialization pipeline, which uses the Instance
+  // reducer/reviver for classes with WORKFLOW_SERIALIZE.
+  return new FatalError('fatal serde test');
 }
 
-/** Test: RetryableError preserves class identity through step error serialization */
-async function throwRetryableErrorStep() {
+export async function errorFatalSerdeRoundTrip() {
+  'use workflow';
+  const err: any = await returnFatalErrorStep();
+  return {
+    isFatal: FatalError.is(err),
+    isInstanceOf: err instanceof FatalError,
+    message: err.message,
+    hasFatalProp: err.fatal === true,
+    name: err.name,
+  };
+}
+
+/**
+ * Test: RetryableError preserves class identity and retryAfter when
+ * returned from a step. Exercises WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE
+ * through the step return value serialization pipeline.
+ */
+async function returnRetryableErrorStep() {
   'use step';
-  throw new RetryableError('retryable serde test', {
-    retryAfter: new Date('2099-01-01T00:00:00.000Z'),
+  return new RetryableError('retryable serde test', {
+    retryAfter: new Date('2025-06-01T00:00:00.000Z'),
   });
 }
 
 export async function errorRetryableSerdeRoundTrip() {
   'use workflow';
-  try {
-    await throwRetryableErrorStep();
-    return { caught: false };
-  } catch (e: any) {
-    return {
-      caught: true,
-      isRetryable: RetryableError.is(e),
-      isInstanceOf: e instanceof RetryableError,
-      message: e.message,
-      hasRetryAfter: e.retryAfter instanceof Date,
-    };
-  }
+  const err: any = await returnRetryableErrorStep();
+  return {
+    isRetryable: RetryableError.is(err),
+    isInstanceOf: err instanceof RetryableError,
+    message: err.message,
+    name: err.name,
+    hasRetryAfter: err.retryAfter instanceof Date,
+    retryAfterIso: err.retryAfter?.toISOString(),
+  };
 }
 
 // ------------------------------------------------------------

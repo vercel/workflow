@@ -3591,6 +3591,49 @@ describe('FatalError and RetryableError serialization', () => {
     expect(str).toContain('Instance');
     expect(str).toContain(RETRYABLE_CLASS_ID);
   });
+
+  it('should preserve cause on FatalError when present', async () => {
+    const cause = new Error('underlying issue');
+    const error = new FatalError('fatal with cause');
+    (error as Error).cause = cause;
+    const hydrated = (await roundTrip(error)) as FatalError;
+    expect(hydrated).toBeInstanceOf(FatalError);
+    expect(hydrated.message).toBe('fatal with cause');
+    expect((hydrated as Error).cause).toBeInstanceOf(Error);
+    expect(((hydrated as Error).cause as Error).message).toBe(
+      'underlying issue'
+    );
+  });
+
+  it('should not set cause on hydrated FatalError when original had no cause', async () => {
+    const error = new FatalError('no cause');
+    expect('cause' in error).toBe(false);
+    const hydrated = (await roundTrip(error)) as FatalError;
+    expect('cause' in hydrated).toBe(false);
+  });
+
+  it('should preserve cause on RetryableError when present', async () => {
+    const cause = new Error('underlying retry issue');
+    const error = new RetryableError('retry with cause');
+    (error as Error).cause = cause;
+    const hydrated = (await roundTrip(error)) as RetryableError;
+    expect(hydrated).toBeInstanceOf(RetryableError);
+    expect(hydrated.message).toBe('retry with cause');
+    expect((hydrated as Error).cause).toBeInstanceOf(Error);
+    expect(((hydrated as Error).cause as Error).message).toBe(
+      'underlying retry issue'
+    );
+  });
+
+  it('should round-trip RetryableError with retryAfter Date that has specific value', async () => {
+    const retryDate = new Date('2099-12-31T23:59:59.999Z');
+    const error = new RetryableError('future retry', {
+      retryAfter: retryDate,
+    });
+    const hydrated = (await roundTrip(error)) as RetryableError;
+    expect(hydrated.retryAfter).toBeInstanceOf(Date);
+    expect(hydrated.retryAfter.getTime()).toBe(retryDate.getTime());
+  });
 });
 
 describe('format prefix system', () => {
