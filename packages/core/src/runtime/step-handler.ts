@@ -542,6 +542,40 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               ...Attribute.QueueExecutionTimeMs(executionTimeMs),
             });
 
+            // --- Dehydrate (serialize) the step's return value ---
+            // A non-serializable return value is a user-code bug, not an
+            // infrastructure failure. Route it through the same step-failure
+            // path as a thrown error so SerializationError (which is marked
+            // `fatal: true`) short-circuits the retry loop instead of
+            // bubbling as an HTTP 500 and burning through all 4 queue
+            // deliveries on a guaranteed-to-fail message.
+            if (!userCodeFailed) {
+              try {
+                result = await trace(
+                  'step.dehydrate',
+                  {},
+                  async (dehydrateSpan) => {
+                    const startTime = Date.now();
+                    const dehydrated = await dehydrateStepReturnValue(
+                      result,
+                      workflowRunId,
+                      encryptionKey,
+                      ops
+                    );
+                    const durationMs = Date.now() - startTime;
+                    dehydrateSpan?.setAttributes({
+                      ...Attribute.QueueSerializeTimeMs(durationMs),
+                      ...Attribute.StepResultType(typeof dehydrated),
+                    });
+                    return dehydrated;
+                  }
+                );
+              } catch (err) {
+                userCodeError = err;
+                userCodeFailed = true;
+              }
+            }
+
             // --- Handle user code errors ---
             if (userCodeFailed) {
               const err = userCodeError;
@@ -813,30 +847,13 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             // --- Infrastructure: complete the step ---
             // Errors here (network failures, server errors) propagate to the
             // queue handler for automatic retry.
-
-            // NOTE: None of the code from this point is guaranteed to run
-            // Since the step might fail or cause a function timeout and the process might be SIGKILL'd
-            // The workflow runtime must be resilient to the below code not executing on a failed step
-            result = await trace(
-              'step.dehydrate',
-              {},
-              async (dehydrateSpan) => {
-                const startTime = Date.now();
-                const dehydrated = await dehydrateStepReturnValue(
-                  result,
-                  workflowRunId,
-                  encryptionKey,
-                  ops
-                );
-                const durationMs = Date.now() - startTime;
-                dehydrateSpan?.setAttributes({
-                  ...Attribute.QueueSerializeTimeMs(durationMs),
-                  ...Attribute.StepResultType(typeof dehydrated),
-                });
-                return dehydrated;
-              }
-            );
-
+            //
+            // NOTE: None of the code from this point is guaranteed to run.
+            // Since the step might fail or cause a function timeout and the
+            // process might be SIGKILL'd, the workflow runtime must be
+            // resilient to the below code not executing on a failed step.
+            // (Dehydration already happened above and is accounted for in the
+            // userCodeFailed path.)
             waitUntil(
               Promise.all(ops).catch((err) => {
                 // Ignore expected client disconnect errors (e.g., browser refresh during streaming)

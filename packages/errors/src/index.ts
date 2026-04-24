@@ -282,6 +282,15 @@ interface SerializationErrorOptions extends ErrorOptions {
  */
 export class SerializationError extends WorkflowError {
   readonly hint?: string;
+  /**
+   * Serialization errors are deterministic — if a step returns a non-POJO,
+   * replaying the step will always produce the same non-serializable value.
+   * Retrying is guaranteed to fail, so these errors are surfaced as fatal
+   * and skip the step-retry loop. `FatalError.is()` recognizes any error
+   * with `fatal: true` (see `packages/errors/src/index.ts`), so no other
+   * wiring is required for user-thrown SerializationErrors.
+   */
+  readonly fatal = true;
 
   constructor(message: string, options?: SerializationErrorOptions) {
     const body = options?.hint ? `${message}\n\n${options.hint}` : message;
