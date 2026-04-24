@@ -28,12 +28,19 @@ const {
     },
     mockEventsCreate: vi.fn(),
     mockQueue: vi.fn().mockResolvedValue({ messageId: 'msg_test' }),
-    mockRuntimeLogger: {
-      warn: vi.fn(),
-      debug: vi.fn(),
-      info: vi.fn(),
-      error: vi.fn(),
-    },
+    mockRuntimeLogger: (() => {
+      const logger = {
+        warn: vi.fn(),
+        debug: vi.fn(),
+        info: vi.fn(),
+        error: vi.fn(),
+        forRun: vi.fn(),
+        child: vi.fn(),
+      };
+      logger.forRun.mockReturnValue(logger);
+      logger.child.mockReturnValue(logger);
+      return logger;
+    })(),
     mockStepLogger: {
       warn: vi.fn(),
       debug: vi.fn(),
@@ -284,9 +291,16 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried completing step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      // Workflow/step context is attached via the scoped logger (forRun),
+      // not repeated in every log call.
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
       // Should NOT have queued a workflow continuation
       expect(mockQueueMessage).not.toHaveBeenCalled();
@@ -333,9 +347,14 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
     });
   });
@@ -379,9 +398,14 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
       // Step function should NOT have been called (pre-execution guard)
       expect(mockStepFn).not.toHaveBeenCalled();
@@ -428,9 +452,14 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried retrying step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
     });
 
@@ -560,7 +589,12 @@ describe('step-handler max deliveries', () => {
     expect(mockQueueMessage).toHaveBeenCalled();
     expect(mockRuntimeLogger.error).toHaveBeenCalledWith(
       expect.stringContaining('exceeded max deliveries'),
-      expect.objectContaining({ workflowRunId: 'wrun_test123' })
+      expect.objectContaining({ attempt: MAX_QUEUE_DELIVERIES + 1 })
+    );
+    expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.any(String),
+      expect.objectContaining({ stepId: 'step_abc' })
     );
   });
 
@@ -719,9 +753,14 @@ describe('step-handler step not found', () => {
     expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
       'Tried failing step for missing function, but step has already finished.',
       expect.objectContaining({
-        workflowRunId: 'wrun_test123',
-        stepId: 'step_abc',
+        errorName: 'EntityConflictError',
+        errorMessage: expect.stringContaining('Step already completed'),
       })
+    );
+    expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.any(String),
+      expect.objectContaining({ stepName: 'missingStep' })
     );
     // Should NOT re-queue the workflow since step was already resolved
     expect(mockQueueMessage).not.toHaveBeenCalled();
