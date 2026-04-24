@@ -1,17 +1,28 @@
 ---
 title: Serializable Steps
-description: Wrap non-serializable objects (like AI model providers) inside step functions so they can cross the workflow boundary.
+description: Wrap non-serializable third-party objects (like AI model providers) inside step factory functions so they can cross the workflow boundary.
 type: guide
-summary: Return a callback from a step to defer provider initialization, making non-serializable AI SDK models work inside durable workflows.
+summary: Return a callback from a step to defer construction of a non-owned class (AI SDK models, cloud SDK clients) until execution time, making them usable inside durable workflows.
+related:
+  - /docs/foundations/serialization
+  - /docs/foundations/serialization#custom-class-serialization
+  - /docs/api-reference/workflow/use-step
 ---
 
 <Callout>
 This is an advanced guide. It dives into workflow internals and is not required reading to use workflow.
 </Callout>
 
+## When to use this pattern
+
+Workflow functions run inside a sandboxed VM where every value that crosses a function boundary must be serializable. There are two ways to get a non-serializable object across that boundary, depending on whether you own the class:
+
+- **You own the class** — implement the [`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE` protocol](/docs/foundations/serialization#custom-class-serialization). The instance becomes a first-class serializable value: you can pass it as a workflow input, return it from a step, and call `"use step"` instance methods on it directly. This is the right tool when the class is yours to modify.
+- **You don't own the class** — you can't add methods to `openai("gpt-4o")` from `@ai-sdk/openai` or `new S3Client({...})` from `@aws-sdk/client-s3`. Instead, wrap construction in a `"use step"` factory function and pass the factory across the boundary. That's what this page covers.
+
 ## The Problem
 
-Workflow functions run inside a sandboxed VM where every value that crosses a function boundary must be serializable (JSON-safe). AI SDK model providers — `openai("gpt-4o")`, `anthropic("claude-sonnet-4-20250514")`, etc. — return complex objects with methods, closures, and internal state. Passing one directly into a step causes a serialization error.
+AI SDK model providers — `openai("gpt-4o")`, `anthropic("claude-sonnet-4-20250514")`, etc. — return complex objects with methods, closures, and internal state. Passing one directly into a step causes a serialization error, and you can't bolt `WORKFLOW_SERIALIZE` onto a third-party class.
 
 ```typescript lineNumbers
 import { openai } from "@ai-sdk/openai";
@@ -133,3 +144,4 @@ async function uploadFile(
 - [`"use step"`](/docs/api-reference/workflow/use-step) — marks a function for extraction and serialization
 - [`"use workflow"`](/docs/api-reference/workflow/use-workflow) — declares the orchestrator function
 - [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — accepts a model factory for durable AI agent streaming
+- [Custom class serialization](/docs/foundations/serialization#custom-class-serialization) — the companion pattern for classes you own (`WORKFLOW_SERIALIZE` / `WORKFLOW_DESERIALIZE`)

@@ -119,6 +119,18 @@ const config: NextConfig = {
         destination: '/docs/foundations/common-patterns',
         permanent: true,
       },
+      // Cookbook: child-workflows and distributed-abort-controller moved
+      // from common-patterns (now "Reliability Patterns") to advanced
+      {
+        source: '/cookbook/common-patterns/child-workflows',
+        destination: '/cookbook/advanced/child-workflows',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/distributed-abort-controller',
+        destination: '/cookbook/advanced/distributed-abort-controller',
+        permanent: true,
+      },
     ];
   },
 };

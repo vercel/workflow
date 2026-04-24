@@ -12,15 +12,15 @@ export type RecipeCategory =
   | 'advanced';
 
 export const categoryOrder: RecipeCategory[] = [
-  'common-patterns',
   'agent-patterns',
+  'common-patterns',
   'integrations',
   'advanced',
 ];
 
 export const categoryLabels: Record<RecipeCategory, string> = {
-  'common-patterns': 'Common Patterns',
   'agent-patterns': 'Agent Patterns',
+  'common-patterns': 'Common Patterns',
   integrations: 'Integrations',
   advanced: 'Advanced',
 };
@@ -31,19 +31,13 @@ export const slugToCategory: Record<string, string> = {
   saga: 'common-patterns',
   batching: 'common-patterns',
   'rate-limiting': 'common-patterns',
-  'fan-out': 'common-patterns',
   scheduling: 'common-patterns',
   idempotency: 'common-patterns',
   webhooks: 'common-patterns',
-  'content-router': 'common-patterns',
-  'child-workflows': 'common-patterns',
-  'distributed-abort-controller': 'common-patterns',
 
   // Agent Patterns
   'durable-agent': 'agent-patterns',
-  'tool-streaming': 'agent-patterns',
   'human-in-the-loop': 'agent-patterns',
-  'tool-orchestration': 'agent-patterns',
   'stop-workflow': 'agent-patterns',
 
   // Integrations
@@ -52,10 +46,9 @@ export const slugToCategory: Record<string, string> = {
   'chat-sdk': 'integrations',
 
   // Advanced
+  'child-workflows': 'advanced',
+  'distributed-abort-controller': 'advanced',
   'serializable-steps': 'advanced',
-  'durable-objects': 'advanced',
-  'isomorphic-packages': 'advanced',
-  'custom-serialization': 'advanced',
   'publishing-libraries': 'advanced',
 };
 
@@ -83,18 +76,11 @@ export const recipes: Record<string, Recipe> = {
       'Handle 429 responses and transient failures with RetryableError and exponential backoff.',
     category: 'common-patterns',
   },
-  'fan-out': {
-    slug: 'fan-out',
-    title: 'Fan-Out & Parallel Delivery',
-    description:
-      'Send a message to multiple channels or recipients in parallel with independent failure handling.',
-    category: 'common-patterns',
-  },
   scheduling: {
     slug: 'scheduling',
     title: 'Sleep, Scheduling & Timed Workflows',
     description:
-      'Use durable sleep to schedule actions minutes, hours, days, or weeks into the future.',
+      'Schedule future actions with durable sleep and race sleeps against hooks to let external events cancel the workflow early.',
     category: 'common-patterns',
   },
   idempotency: {
@@ -111,27 +97,6 @@ export const recipes: Record<string, Recipe> = {
       'Receive HTTP callbacks from external services, process them durably, and respond inline.',
     category: 'common-patterns',
   },
-  'content-router': {
-    slug: 'content-router',
-    title: 'Conditional Routing',
-    description:
-      'Inspect a payload and route it to different step handlers based on its content.',
-    category: 'common-patterns',
-  },
-  'child-workflows': {
-    slug: 'child-workflows',
-    title: 'Child Workflows',
-    description:
-      'Spawn and orchestrate child workflows from a parent, polling for completion and handling partial failures.',
-    category: 'common-patterns',
-  },
-  'distributed-abort-controller': {
-    slug: 'distributed-abort-controller',
-    title: 'Distributed Abort Controller',
-    description:
-      'Build a cross-process abort controller using workflow streams and hooks to coordinate cancellation by semantic ID.',
-    category: 'common-patterns',
-  },
 
   // Agent Patterns
   'durable-agent': {
@@ -141,25 +106,11 @@ export const recipes: Record<string, Recipe> = {
       'Replace a stateless AI agent with a durable one that survives crashes, retries tool calls, and streams output.',
     category: 'agent-patterns',
   },
-  'tool-streaming': {
-    slug: 'tool-streaming',
-    title: 'Tool Streaming',
-    description:
-      'Stream real-time progress updates from tools to the UI while they execute.',
-    category: 'agent-patterns',
-  },
   'human-in-the-loop': {
     slug: 'human-in-the-loop',
     title: 'Human-in-the-Loop',
     description:
       'Pause an AI agent to wait for human approval, then resume based on the decision.',
-    category: 'agent-patterns',
-  },
-  'tool-orchestration': {
-    slug: 'tool-orchestration',
-    title: 'Tool Orchestration',
-    description:
-      'Choose between step-level and workflow-level tools, or combine both for complex tool implementations.',
     category: 'agent-patterns',
   },
   'stop-workflow': {
@@ -194,32 +145,25 @@ export const recipes: Record<string, Recipe> = {
   },
 
   // Advanced
+  'child-workflows': {
+    slug: 'child-workflows',
+    title: 'Child Workflows',
+    description:
+      'Spawn and orchestrate child workflows from a parent, polling for completion and handling partial failures.',
+    category: 'advanced',
+  },
+  'distributed-abort-controller': {
+    slug: 'distributed-abort-controller',
+    title: 'Distributed Abort Controller',
+    description:
+      'Build a cross-process abort controller using workflow streams and hooks to coordinate cancellation by semantic ID.',
+    category: 'advanced',
+  },
   'serializable-steps': {
     slug: 'serializable-steps',
     title: 'Serializable Steps',
     description:
       'Wrap non-serializable objects (like AI model providers) inside step functions so they can cross the workflow boundary.',
-    category: 'advanced',
-  },
-  'durable-objects': {
-    slug: 'durable-objects',
-    title: 'Durable Objects',
-    description:
-      'Model long-lived stateful entities as workflows that persist state across requests.',
-    category: 'advanced',
-  },
-  'isomorphic-packages': {
-    slug: 'isomorphic-packages',
-    title: 'Isomorphic Packages',
-    description:
-      'Publish reusable workflow packages that work both inside and outside the workflow runtime.',
-    category: 'advanced',
-  },
-  'custom-serialization': {
-    slug: 'custom-serialization',
-    title: 'Custom Serialization',
-    description:
-      'Make custom classes survive workflow serialization using the WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE protocol.',
     category: 'advanced',
   },
   'publishing-libraries': {

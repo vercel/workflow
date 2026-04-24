@@ -5,12 +5,8 @@
     "saga",
     "batching",
     "rate-limiting",
-    "fan-out",
     "scheduling",
     "idempotency",
-    "webhooks",
-    "content-router",
-    "child-workflows",
-    "distributed-abort-controller"
+    "webhooks"
   ]
 }
