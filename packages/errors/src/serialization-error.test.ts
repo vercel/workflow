@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { SerializationError, WorkflowError } from './index.js';
+import { FatalError, SerializationError, WorkflowError } from './index.js';
 
 describe('SerializationError', () => {
   test('sets the name and extends WorkflowError', () => {
@@ -43,5 +43,15 @@ describe('SerializationError', () => {
     expect(SerializationError.is(err)).toBe(true);
     expect(SerializationError.is(other)).toBe(false);
     expect(SerializationError.is(null)).toBe(false);
+  });
+
+  test('is fatal — FatalError.is() short-circuits retry loop', () => {
+    // Serialization failures are deterministic. Retrying a step that
+    // returned a non-POJO will produce the same error on every attempt,
+    // so the step handler should not burn the retry budget. We opt in
+    // via a `fatal: true` own property that FatalError.is() recognizes.
+    const err = new SerializationError('boom');
+    expect(err.fatal).toBe(true);
+    expect(FatalError.is(err)).toBe(true);
   });
 });

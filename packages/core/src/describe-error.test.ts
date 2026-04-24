@@ -167,3 +167,86 @@ describe('describeRunError', () => {
     expect(result.hint).toBeUndefined();
   });
 });
+
+/**
+ * Snapshot tests for the full `describeError` / `describeRunError` payload
+ * shape. These act as a regression gate on the exact strings that feed into
+ * log metadata fields (`errorAttribution`, `hint`) and UI attribution — we
+ * don't want a reworded hint to silently change what users see in their
+ * logs + docs links.
+ */
+describe('describeError — payload shape snapshots', () => {
+  test('plain user Error payload', () => {
+    expect(describeError(new Error('boom'))).toMatchInlineSnapshot(`
+      {
+        "attribution": "user",
+        "errorCode": "USER_ERROR",
+      }
+    `);
+  });
+
+  test('SerializationError payload', () => {
+    expect(
+      describeError(new SerializationError('boom'))
+    ).toMatchInlineSnapshot(`
+        {
+          "attribution": "user",
+          "errorCode": "USER_ERROR",
+          "hint": "A value passed across a workflow/step boundary could not be serialized. See the error message for the offending path and the Learn More link for details.",
+        }
+      `);
+  });
+
+  test('context-violation error payload', () => {
+    expect(
+      describeError(
+        new NotInWorkflowContextError(
+          'createHook',
+          'https://workflow-sdk.dev/docs/api-reference/workflow/create-hook'
+        )
+      )
+    ).toMatchInlineSnapshot(`
+      {
+        "attribution": "user",
+        "errorCode": "USER_ERROR",
+        "hint": "A workflow-only or step-only API was called from the wrong context. The error message includes the exact API and how to move the call.",
+      }
+    `);
+  });
+
+  test('WorkflowRuntimeError payload', () => {
+    expect(
+      describeError(new WorkflowRuntimeError('internal invariant'))
+    ).toMatchInlineSnapshot(`
+        {
+          "attribution": "sdk",
+          "errorCode": "RUNTIME_ERROR",
+          "hint": "This is an internal workflow SDK error, not a bug in your code. If it keeps happening, please report it with the stack trace and the runId.",
+        }
+      `);
+  });
+
+  test('REPLAY_TIMEOUT via precomputed errorCode payload', () => {
+    expect(
+      describeError(undefined, RUN_ERROR_CODES.REPLAY_TIMEOUT)
+    ).toMatchInlineSnapshot(`
+        {
+          "attribution": "sdk",
+          "errorCode": "REPLAY_TIMEOUT",
+          "hint": "The workflow replay took too long. This usually means the event log is unusually large or the workflow function is doing heavy synchronous work between step boundaries.",
+        }
+      `);
+  });
+
+  test('MAX_DELIVERIES_EXCEEDED via precomputed errorCode payload', () => {
+    expect(
+      describeError(undefined, RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED)
+    ).toMatchInlineSnapshot(`
+      {
+        "attribution": "sdk",
+        "errorCode": "MAX_DELIVERIES_EXCEEDED",
+        "hint": "The workflow queue exceeded its max-delivery budget. This usually indicates a persistent runtime failure — check the most recent stack traces for the underlying cause.",
+      }
+    `);
+  });
+});

@@ -1,0 +1,69 @@
+# 05 · Retryable (non-fatal) error — exhausts max retries
+
+## Scenario
+
+A step throws a plain `Error` (not `FatalError`) on every attempt. The
+runtime should retry, eventually hit max deliveries, then surface a
+single "hit max retries" log + the workflow-level failure.
+
+```ts
+async function add(a: number, b: number): Promise<number> {
+  'use step';
+  throw new Error('Transient failure, always fails');
+}
+```
+
+## Actual log output
+
+```
+Simple workflow started
+ POST /.well-known/workflow/v1/flow 200 in 76ms (next.js: 18ms, application-code: 59ms)
+ POST /.well-known/workflow/v1/step 200 in 196ms (next.js: 145ms, application-code: 51ms)
+ POST /.well-known/workflow/v1/step 200 in 64ms  (next.js: 3ms,   application-code: 61ms)
+ POST /.well-known/workflow/v1/step 200 in 69ms  (next.js: 4ms,   application-code: 66ms)
+[workflow-sdk] Step "step//./workflows/1_simple//add" hit max retries, bubbling error thrown by your step to the parent workflow {
+  workflowRunId: 'wrun_01KPYRVP5T4TJQRJ8BXZQKGZ8V',
+  workflowName: 'workflow//./workflows/1_simple//simple',
+  stepId: 'step_01KPYRVP6KQKN4MBJKH7C5ZX16',
+  stepName: 'step//./workflows/1_simple//add',
+  attempt: 4,
+  retryCount: 3,
+  errorAttribution: 'user',
+  errorName: 'Error',
+  errorMessage: 'Transient failure, always fails',
+  errorStack: 'Error: Transient failure, always fails\n    at add (…)\n    … (full stack omitted) …'
+}
+ POST /.well-known/workflow/v1/step 200 in 70ms (next.js: 3ms, application-code: 67ms)
+[workflow-sdk] Workflow "workflow//./workflows/1_simple//simple" threw
+Error: Transient failure, always fails
+    at add (…)
+    … (full stack omitted) …
+{
+  workflowRunId: 'wrun_01KPYRVP5T4TJQRJ8BXZQKGZ8V',
+  workflowName: 'workflow//./workflows/1_simple//simple',
+  errorCode: 'USER_ERROR',
+  errorAttribution: 'user',
+  errorName: 'FatalError',
+  errorMessage: 'Step "step//./workflows/1_simple//add" failed after 3 retries: Transient failure, always fails'
+}
+ POST /.well-known/workflow/v1/flow 200 in 72ms (next.js: 9ms, application-code: 63ms)
+```
+
+## What this PR ensures
+
+- **One `hit max retries` summary log**, not 4 near-identical attempt
+  logs — the per-attempt step-failed emission now only logs when the
+  error is fatal or when the retry budget has been exhausted. Interim
+  attempts stay quiet.
+- **`attempt: 4, retryCount: 3`** clearly distinguishes the total call
+  count from the retry count.
+- **`errorAttribution: 'user'`** on both summary logs.
+- **`[workflow-sdk]` prefix** on SDK-emitted lines.
+- **Scoped logger context** — `workflowRunId` / `stepId` / `stepName` are
+  attached via `runtimeLogger.forRun(…).child({ stepId, stepName })` so
+  every log in this unit of work carries consistent metadata.
+
+## Related changesets
+
+- `.changeset/friendlier-logger-metadata.md` — scoped logger + prefix + structured fields
+- `.changeset/friendlier-error-attribution.md` — `errorAttribution`

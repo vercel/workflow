@@ -1,0 +1,81 @@
+# 02 · SerializationError — step returns a non-POJO
+
+## Scenario
+
+`workbench/example/workflows/1_simple.ts` patched so the `add` step returns
+a class instance with methods (which `devalue` rejects):
+
+```ts
+class NotSerializable {
+  method() { return 42; }
+}
+
+async function add(a: number, b: number): Promise<number> {
+  'use step';
+  return new NotSerializable() as unknown as number;
+}
+```
+
+## What this PR changes
+
+- **Friendly hint baked into the error message.** The error body now reads:
+
+  > `Failed to serialize step return value`
+  >
+  > `Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
+  >
+  > `Learn more: https://workflow-sdk.dev/err/serialization-failed`
+
+- **Single block, no retries.** `SerializationError` is now marked
+  `fatal = true`, *and* the dehydration call that produces it has been
+  moved inside the step-handler's user-code try/catch. The error now
+  routes through `userCodeFailed` → `step_failed`, so `FatalError.is()`
+  short-circuits the retry loop on attempt 1. Since serialization is
+  deterministic, retrying would never succeed anyway.
+- **`[workflow-sdk]` log prefix.** Every SDK-emitted line is now namespaced,
+  so users can grep their logs for SDK messages vs. their own.
+- **Structured `context` / `problematicValue`.** The "Serialization failed"
+  log has both fields so log drains can index by context (argument
+  position / return value / stream chunk) and see the offending value.
+- **Plain text in structured fields.** No ANSI escape bytes.
+
+## Actual log output
+
+```
+[workflow-sdk] Serialization failed { context: 'step return value', problematicValue: NotSerializable {} }
+[workflow-sdk] Step "step//./workflows/1_simple//add" threw a FatalError — bubbling up to parent workflow {
+  workflowRunId: 'wrun_01KPYR...',
+  stepName: 'step//./workflows/1_simple//add',
+  errorAttribution: 'user',
+  errorName: 'SerializationError',
+  errorMessage: "Failed to serialize step return value\n\nEnsure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).\n\nLearn more: https://workflow-sdk.dev/err/serialization-failed",
+  hint: 'A value passed across a workflow/step boundary could not be serialized. Only plain objects, arrays, primitives, Date, RegExp, Map, and Set survive the boundary — class instances, functions, and DOM objects do not.'
+}
+ POST /.well-known/workflow/v1/step 200 in 1596ms
+[workflow-sdk] Workflow "workflow//./workflows/1_simple//simple" threw
+SerializationError: Failed to serialize step return value
+…
+```
+
+One block. No retries. ~1.6s end-to-end vs. ~21s under the old
+retry-until-max-deliveries behavior.
+
+## Compare: pre-PR
+
+Before this PR the same scenario emitted:
+
+1. `POST /.well-known/workflow/v1/step 500 in 213ms` followed by 3 queue
+   retries (attempts 2, 3, 4) — all producing near-identical error blocks
+   — before the workflow finally failed with
+   `FatalError: Step "..." exceeded max retries (4 retries)`. Total
+   wall-clock: ~21 seconds of guaranteed-to-fail work.
+2. `errorMessage` / `errorStack` contained literal `\x1B[...m` ANSI escape
+   bytes, making structured log drains unreadable.
+3. No `errorAttribution` field.
+4. No `hint` field / docs link.
+
+## Related changesets
+
+- `.changeset/friendlier-serialization-errors.md` — SerializationError class + friendly hints
+- `.changeset/serialization-error-fatal.md` — mark fatal + route dehydration through step-failure path
+- `.changeset/friendlier-logger-metadata.md` — `[workflow-sdk]` prefix

@@ -96,4 +96,81 @@ describe('logger', () => {
     runtimeLogger.error('boom');
     expect(errorSpy).toHaveBeenCalledWith('[workflow-sdk] boom', '');
   });
+
+  /**
+   * Snapshot tests for the exact shape of runtime log output. These act as
+   * regression gates on what users see in their log drains, so that
+   * refactors of the logger don't accidentally change field ordering, the
+   * prefix, or whether metadata is merged.
+   */
+  describe('shape snapshots', () => {
+    test('scoped logger emits the canonical step-failure call signature', () => {
+      const log = runtimeLogger.forRun('wrun_123', 'workflow//my-wf').child({
+        stepId: 'step_456',
+        stepName: 'step//my-step',
+      });
+
+      log.error('Step "step//my-step" threw a FatalError', {
+        errorAttribution: 'user',
+        errorName: 'FatalError',
+        errorMessage: 'boom',
+        hint: 'Move the call to a step function.',
+      });
+
+      expect(errorSpy.mock.calls).toMatchInlineSnapshot(`
+        [
+          [
+            "[workflow-sdk] Step "step//my-step" threw a FatalError",
+            {
+              "errorAttribution": "user",
+              "errorMessage": "boom",
+              "errorName": "FatalError",
+              "hint": "Move the call to a step function.",
+              "stepId": "step_456",
+              "stepName": "step//my-step",
+              "workflowName": "workflow//my-wf",
+              "workflowRunId": "wrun_123",
+            },
+          ],
+        ]
+      `);
+    });
+
+    test('hit-max-retries style call signature', () => {
+      const log = runtimeLogger.forRun('wrun_abc', 'workflow//main').child({
+        stepId: 'step_xyz',
+        stepName: 'step//doWork',
+      });
+
+      log.error(
+        'Step "step//doWork" hit max retries — bubbling error thrown by your step to the parent workflow',
+        {
+          attempt: 4,
+          retryCount: 3,
+          errorAttribution: 'user',
+          errorName: 'Error',
+          errorMessage: 'Transient failure',
+        }
+      );
+
+      expect(errorSpy.mock.calls).toMatchInlineSnapshot(`
+        [
+          [
+            "[workflow-sdk] Step "step//doWork" hit max retries — bubbling error thrown by your step to the parent workflow",
+            {
+              "attempt": 4,
+              "errorAttribution": "user",
+              "errorMessage": "Transient failure",
+              "errorName": "Error",
+              "retryCount": 3,
+              "stepId": "step_xyz",
+              "stepName": "step//doWork",
+              "workflowName": "workflow//main",
+              "workflowRunId": "wrun_abc",
+            },
+          ],
+        ]
+      `);
+    });
+  });
 });
