@@ -1,5 +1,6 @@
 import {
   EntityConflictError,
+  FatalError,
   RUN_ERROR_CODES,
   RunExpiredError,
   WorkflowRuntimeError,
@@ -37,6 +38,7 @@ import {
   getWorldHandlers,
   type WorldHandlers,
 } from './runtime/world.js';
+import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -160,15 +162,18 @@ export function workflowEntrypoint(
           );
           try {
             const world = await getWorld();
+            const rawKey = await world.getEncryptionKeyForRun?.(runId);
+            const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+            const err = new FatalError(
+              `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`
+            );
             await world.events.create(
               runId,
               {
                 eventType: 'run_failed',
                 specVersion: SPEC_VERSION_CURRENT,
                 eventData: {
-                  error: {
-                    message: `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
-                  },
+                  error: await dehydrateRunError(err, runId, encryptionKey),
                   errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
                 },
               },
@@ -236,15 +241,24 @@ export function workflowEntrypoint(
 
             try {
               const world = await getWorld();
+              const rawKey = await world.getEncryptionKeyForRun?.(runId);
+              const encryptionKey = rawKey
+                ? await importKey(rawKey)
+                : undefined;
+              const timeoutErr = new FatalError(
+                `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s) after ${metadata.attempt} attempts`
+              );
               await world.events.create(
                 runId,
                 {
                   eventType: 'run_failed',
                   specVersion: SPEC_VERSION_CURRENT,
                   eventData: {
-                    error: {
-                      message: `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s) after ${metadata.attempt} attempts`,
-                    },
+                    error: await dehydrateRunError(
+                      timeoutErr,
+                      runId,
+                      encryptionKey
+                    ),
                     errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
                   },
                 },
@@ -392,16 +406,22 @@ export function workflowEntrypoint(
                         }
                       );
                       try {
+                        const rawKey =
+                          await world.getEncryptionKeyForRun?.(runId);
+                        const encryptionKey = rawKey
+                          ? await importKey(rawKey)
+                          : undefined;
                         await world.events.create(
                           runId,
                           {
                             eventType: 'run_failed',
                             specVersion: SPEC_VERSION_CURRENT,
                             eventData: {
-                              error: {
-                                message: err.message,
-                                stack: err.stack,
-                              },
+                              error: await dehydrateRunError(
+                                err,
+                                runId,
+                                encryptionKey
+                              ),
                               errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
                             },
                           },
@@ -609,7 +629,15 @@ export function workflowEntrypoint(
                       }
                     );
 
-                    // Fail the workflow run via event (event-sourced architecture)
+                    // Apply the source-map-remapped stack to the thrown value
+                    // so that the serialized error preserves it for consumers.
+                    if (err instanceof Error && errorStack) {
+                      err.stack = errorStack;
+                    }
+
+                    // Fail the workflow run via event (event-sourced architecture).
+                    // Serialize the original thrown value so its full type identity
+                    // and custom properties round-trip through the event log.
                     try {
                       await world.events.create(
                         runId,
@@ -617,10 +645,11 @@ export function workflowEntrypoint(
                           eventType: 'run_failed',
                           specVersion: SPEC_VERSION_CURRENT,
                           eventData: {
-                            error: {
-                              message: errorMessage,
-                              stack: errorStack,
-                            },
+                            error: await dehydrateRunError(
+                              err,
+                              runId,
+                              encryptionKey
+                            ),
                             errorCode,
                           },
                         },

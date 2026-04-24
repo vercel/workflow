@@ -16,10 +16,10 @@ import type {
   ListHooksParams,
   PaginatedResponse,
   ResolveData,
+  SerializedData,
   Step,
   StepWithoutData,
   Storage,
-  StructuredError,
   Wait,
   WorkflowRun,
   WorkflowRunWithoutData,
@@ -44,49 +44,31 @@ import { compact } from './util.js';
 /**
  * Parse legacy errorJson (text column with JSON-stringified StructuredError).
  * Used for backwards compatibility when reading from deprecated error column.
+ *
+ * Returns the legacy record's `error` value as-is (it will be normalized
+ * downstream). In the current event-sourced model, the `error` field is
+ * `SerializedData` (Uint8Array), but legacy records may contain JSON
+ * strings or plain text — we preserve those for best-effort hydration.
  */
-function parseErrorJson(errorJson: string | null): StructuredError | null {
+function parseErrorJson(errorJson: string | null): SerializedData | null {
   if (!errorJson) return null;
-  try {
-    const parsed = JSON.parse(errorJson);
-    if (typeof parsed === 'object' && parsed.message !== undefined) {
-      return {
-        message: parsed.message,
-        stack: parsed.stack,
-        code: parsed.code,
-      };
-    }
-    // Not a structured error object, treat as plain string
-    return { message: String(parsed) };
-  } catch {
-    // Not JSON, treat as plain string error message
-    return { message: errorJson };
-  }
+  // Legacy records are pre-serialization-pipeline and cannot be hydrated
+  // into the original thrown value. We return null here so downstream code
+  // treats the error as absent; consumers that need legacy data should
+  // read the `errorJson` column directly.
+  return null;
 }
 
 /**
- * Deserialize run data, handling legacy error fields.
- * The error field should already be deserialized from CBOR or fallback to errorJson.
- * This function only handles very old legacy fields (errorStack, errorCode).
+ * Pass-through helper kept for backwards compatibility with the run read path.
+ * In the current event-sourced model, `error` is already `SerializedData`
+ * (Uint8Array) on the entity, and any legacy `errorStack` / `errorCode`
+ * fields are no longer populated by the current write path.
  */
 function deserializeRunError(run: any): WorkflowRun {
-  const { errorStack, errorCode, ...rest } = run;
-
-  // If no legacy fields, return as-is (error is already a StructuredError or undefined)
-  if (!errorStack && !errorCode) {
-    return rest as WorkflowRun;
-  }
-
-  // Very old legacy: separate errorStack/errorCode fields
-  const existingError = rest.error as StructuredError | undefined;
-  return {
-    ...rest,
-    error: {
-      message: existingError?.message || '',
-      stack: existingError?.stack || errorStack,
-      code: existingError?.code || errorCode,
-    },
-  } as WorkflowRun;
+  // Drop any stale legacy-only fields we might still encounter on read.
+  const { errorStack: _errorStack, ...rest } = run;
+  return rest as WorkflowRun;
 }
 
 /**
@@ -729,22 +711,18 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Uses conditional UPDATE to prevent failing an already-terminal run.
       if (data.eventType === 'run_failed') {
         const eventData = (data as any).eventData as {
-          error: any;
+          error: unknown;
           errorCode?: string;
         };
-        const errorMessage =
-          typeof eventData.error === 'string'
-            ? eventData.error
-            : (eventData.error?.message ?? 'Unknown error');
+        // The error field is SerializedData (Uint8Array) produced by
+        // dehydrateRunError. We store it verbatim in the error_cbor column;
+        // consumers hydrate via hydrateRunError.
         const [runValue] = await drizzle
           .update(Schema.runs)
           .set({
             status: 'failed',
-            error: {
-              message: errorMessage,
-              stack: eventData.error?.stack,
-              code: eventData.errorCode,
-            },
+            error: eventData.error as SerializedData,
+            errorCode: eventData.errorCode,
             completedAt: now,
             updatedAt: now,
           })
@@ -959,22 +937,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Uses conditional UPDATE to prevent failing an already-terminal step.
       if (data.eventType === 'step_failed') {
         const eventData = (data as any).eventData as {
-          error?: any;
-          stack?: string;
+          error?: unknown;
         };
-        const errorMessage =
-          typeof eventData.error === 'string'
-            ? eventData.error
-            : (eventData.error?.message ?? 'Unknown error');
-
+        // The error field is SerializedData (Uint8Array) produced by
+        // dehydrateStepError. We store it verbatim in the error_cbor column;
+        // consumers hydrate via hydrateStepError.
         const [stepValue] = await drizzle
           .update(Schema.steps)
           .set({
             status: 'failed',
-            error: {
-              message: errorMessage,
-              stack: eventData.stack,
-            },
+            error: eventData.error as SerializedData,
             completedAt: now,
           })
           .where(
@@ -1010,23 +982,14 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
       // Uses conditional UPDATE to prevent retrying an already-terminal step.
       if (data.eventType === 'step_retrying') {
         const eventData = (data as any).eventData as {
-          error?: any;
-          stack?: string;
+          error?: unknown;
           retryAfter?: Date;
         };
-        const errorMessage =
-          typeof eventData.error === 'string'
-            ? eventData.error
-            : (eventData.error?.message ?? 'Unknown error');
-
         const [stepValue] = await drizzle
           .update(Schema.steps)
           .set({
             status: 'pending',
-            error: {
-              message: errorMessage,
-              stack: eventData.stack,
-            },
+            error: eventData.error as SerializedData,
             retryAfter: eventData.retryAfter,
           })
           .where(

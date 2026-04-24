@@ -124,6 +124,7 @@ vi.mock('../serialization.js', () => ({
   dehydrateStepReturnValue: vi
     .fn()
     .mockResolvedValue(new Uint8Array([1, 2, 3])),
+  dehydrateStepError: vi.fn().mockResolvedValue(new Uint8Array([4, 5, 6])),
 }));
 
 // Mock context storage
@@ -154,17 +155,17 @@ vi.mock('@workflow/utils/get-port', () => ({
   getPort: vi.fn().mockResolvedValue(3000),
 }));
 
-// Import the module AFTER all mocks are set up
-// Since getWorldHandlers is now async, we need to call stepEntrypoint
-// to trigger createQueueHandler and populate capturedHandlerRef
-import { stepEntrypoint } from './step-handler.js';
-import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import { getStepFunction } from '../private.js';
 import {
   getErrorName,
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
+import { MAX_QUEUE_DELIVERIES } from './constants.js';
+// Import the module AFTER all mocks are set up
+// Since getWorldHandlers is now async, we need to call stepEntrypoint
+// to trigger createQueueHandler and populate capturedHandlerRef
+import { stepEntrypoint } from './step-handler.js';
 import { getWorld } from './world.js';
 
 function capturedHandler(
@@ -670,15 +671,15 @@ describe('step-handler step not found', () => {
       }),
       expect.anything()
     );
+    // The error payload is now SerializedData (Uint8Array). The wire-format
+    // message content is tested via the serialization test suite.
     expect(mockEventsCreate).toHaveBeenCalledWith(
       'wrun_test123',
       expect.objectContaining({
         eventType: 'step_failed',
         correlationId: 'step_abc',
         eventData: expect.objectContaining({
-          error: expect.stringContaining(
-            'Step "missingStep" is not registered'
-          ),
+          error: expect.any(Uint8Array),
         }),
       }),
       expect.anything()
@@ -702,12 +703,15 @@ describe('step-handler step not found', () => {
     );
 
     expect(result).toBeUndefined();
+    // The error payload is now SerializedData (Uint8Array) — its contents
+    // are tested via the serialization test suite. Here we just verify
+    // that step_failed was written with a binary error field.
     expect(mockEventsCreate).toHaveBeenCalledWith(
       'wrun_test123',
       expect.objectContaining({
         eventType: 'step_failed',
         eventData: expect.objectContaining({
-          error: expect.stringContaining('Step "badStep" is not registered'),
+          error: expect.any(Uint8Array),
         }),
       }),
       expect.anything()

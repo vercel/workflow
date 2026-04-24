@@ -1,9 +1,9 @@
 import {
   type Event,
   type Hook,
+  type SerializedData,
   type Step,
   StepStatusSchema,
-  type StructuredError,
   type Wait,
   WaitStatusSchema,
   type WorkflowRun,
@@ -79,9 +79,20 @@ export const runs = schema.table(
     /** @deprecated */
     inputJson: jsonb('input').$type<SerializedContent>(),
     input: Cbor<SerializedContent>()('input_cbor'),
-    /** @deprecated - use error instead */
+    /** @deprecated - use error instead (legacy JSON-stringified StructuredError) */
     errorJson: text('error'),
-    error: Cbor<StructuredError>()('error_cbor'),
+    /**
+     * The thrown value from a run_failed event, serialized via the workflow
+     * serialization pipeline (dehydrateRunError). Stored as a Uint8Array and
+     * wrapped in CBOR for transport.
+     */
+    error: Cbor<SerializedData>()('error_cbor'),
+    /**
+     * The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) from
+     * a run_failed event. Plaintext metadata for routing — does not require
+     * decryption or hydration.
+     */
+    errorCode: varchar('error_code'),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at')
       .defaultNow()
@@ -130,9 +141,14 @@ export const steps = schema.table(
     /** @deprecated we stream binary data */
     outputJson: jsonb('output').$type<SerializedContent>(),
     output: Cbor<SerializedContent>()('output_cbor'),
-    /** @deprecated - use error instead */
+    /** @deprecated - use error instead (legacy JSON-stringified StructuredError) */
     errorJson: text('error'),
-    error: Cbor<StructuredError>()('error_cbor'),
+    /**
+     * The thrown value from a step_failed / step_retrying event, serialized
+     * via the workflow serialization pipeline (dehydrateStepError). Stored
+     * as a Uint8Array and wrapped in CBOR for transport.
+     */
+    error: Cbor<SerializedData>()('error_cbor'),
     attempt: integer('attempt').notNull(),
     /** Maps to startedAt in Step interface */
     startedAt: timestamp('started_at'),

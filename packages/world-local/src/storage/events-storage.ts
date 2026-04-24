@@ -513,11 +513,14 @@ export function createEventsStorage(
         }
       } else if (data.eventType === 'run_failed' && 'eventData' in data) {
         const failedData = data.eventData as {
-          error: any;
+          error: unknown;
           errorCode?: string;
         };
         // Reuse currentRun from validation (already read above)
         if (currentRun) {
+          // The error field is SerializedData (Uint8Array) produced by
+          // dehydrateRunError. We store it verbatim — consumers hydrate it
+          // via hydrateRunError to reconstruct the original thrown value.
           run = {
             runId: currentRun.runId,
             deploymentId: currentRun.deploymentId,
@@ -530,14 +533,8 @@ export function createEventsStorage(
             startedAt: currentRun.startedAt,
             status: 'failed',
             output: undefined,
-            error: {
-              message:
-                typeof failedData.error === 'string'
-                  ? failedData.error
-                  : (failedData.error?.message ?? 'Unknown error'),
-              stack: failedData.error?.stack,
-              code: failedData.errorCode,
-            },
+            error: failedData.error as Uint8Array,
+            errorCode: failedData.errorCode,
             completedAt: now,
             updatedAt: now,
           };
@@ -732,8 +729,7 @@ export function createEventsStorage(
         // Uses writeExclusive on a lock file to atomically prevent concurrent
         // invocations from both failing the same step (TOCTOU race).
         const failedData = data.eventData as {
-          error: any;
-          stack?: string;
+          error: unknown;
         };
         if (validatedStep) {
           const stepCompositeKey = `${effectiveRunId}-${data.correlationId}`;
@@ -752,17 +748,13 @@ export function createEventsStorage(
               'Cannot modify step in terminal state'
             );
           }
-          const error = {
-            message:
-              typeof failedData.error === 'string'
-                ? failedData.error
-                : (failedData.error?.message ?? 'Unknown error'),
-            stack: failedData.stack,
-          };
+          // The error field is SerializedData (Uint8Array) produced by
+          // dehydrateStepError. We store it verbatim — consumers hydrate it
+          // via hydrateStepError to reconstruct the original thrown value.
           step = {
             ...validatedStep,
             status: 'failed',
-            error,
+            error: failedData.error as Uint8Array,
             completedAt: now,
             updatedAt: now,
           };
@@ -776,8 +768,7 @@ export function createEventsStorage(
         // step_retrying: Sets status back to 'pending', records error
         // Reuse validatedStep from validation (already read above)
         const retryData = data.eventData as {
-          error: any;
-          stack?: string;
+          error: unknown;
           retryAfter?: Date;
         };
         if (validatedStep) {
@@ -785,13 +776,7 @@ export function createEventsStorage(
           step = {
             ...validatedStep,
             status: 'pending',
-            error: {
-              message:
-                typeof retryData.error === 'string'
-                  ? retryData.error
-                  : (retryData.error?.message ?? 'Unknown error'),
-              stack: retryData.stack,
-            },
+            error: retryData.error as Uint8Array,
             retryAfter: retryData.retryAfter,
             updatedAt: now,
           };
