@@ -28,7 +28,7 @@ describe('stream display formatting', () => {
     const chunk = new Uint8Array([255, 254, 253]);
 
     expect(formatStreamChunkForDisplay(chunk)).toEqual({
-      text: '"Uint8Array(3) [255, 254, 253]"',
+      text: 'Uint8Array(3) [255, 254, 253]',
     });
   });
 

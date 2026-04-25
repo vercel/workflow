@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import type { DecodedStreamChunkSource } from '../lib/stream-display';
-import { DataInspector } from './ui/data-inspector';
+import { DataInspector, DecodedBytesChunk } from './ui/data-inspector';
 import { Skeleton } from './ui/skeleton';
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -102,120 +102,6 @@ const ChunkRow = React.memo(function ChunkRow({
     </div>
   );
 });
-
-function DecodedBytesChunk({
-  decodedText,
-  source,
-}: {
-  decodedText: string;
-  source: DecodedStreamChunkSource;
-}) {
-  const [selectedView, setSelectedView] = useState<'decoded' | 'bytes'>(
-    'decoded'
-  );
-  const parsed = parseChunkData(decodedText);
-
-  return (
-    <div className="min-w-0">
-      {selectedView === 'decoded' ? (
-        <div className="min-w-0">
-          {typeof parsed === 'string' ? (
-            <span
-              className="whitespace-pre-wrap break-words"
-              style={{ color: 'var(--ds-gray-1000)' }}
-            >
-              {deserializeChunkText(parsed)}
-            </span>
-          ) : (
-            <DataInspector data={parsed} expandLevel={1} />
-          )}
-        </div>
-      ) : (
-        <DecodedBytesInspector decodedText={decodedText} source={source} />
-      )}
-      <div className="mt-2 flex">
-        <div
-          className="inline-flex overflow-hidden rounded border"
-          style={{ borderColor: 'var(--ds-gray-400)' }}
-          title={`${source.type} decoded as ${source.encoding.toUpperCase()} text. Switch to Bytes to inspect the summarized raw value.`}
-          role="tablist"
-        >
-          <button
-            type="button"
-            className="h-5 px-1.5 text-[10px] font-medium"
-            style={{
-              backgroundColor:
-                selectedView === 'decoded'
-                  ? 'var(--ds-gray-200)'
-                  : 'var(--ds-gray-100)',
-              color: 'var(--ds-gray-900)',
-            }}
-            onClick={() => setSelectedView('decoded')}
-            role="tab"
-            aria-selected={selectedView === 'decoded'}
-          >
-            Decoded
-          </button>
-          <button
-            type="button"
-            className="h-5 border-l px-1.5 text-[10px] font-medium"
-            style={{
-              borderColor: 'var(--ds-gray-400)',
-              backgroundColor:
-                selectedView === 'bytes'
-                  ? 'var(--ds-gray-200)'
-                  : 'var(--ds-gray-100)',
-              color: 'var(--ds-gray-900)',
-            }}
-            onClick={() => setSelectedView('bytes')}
-            role="tab"
-            aria-selected={selectedView === 'bytes'}
-          >
-            Bytes
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DecodedBytesInspector({
-  decodedText,
-  source,
-}: {
-  decodedText: string;
-  source: DecodedStreamChunkSource;
-}) {
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <div className="font-mono">
-      <button
-        type="button"
-        className="flex max-w-full items-start gap-1 text-left"
-        style={{ color: 'var(--ds-gray-1000)' }}
-        onClick={() => setExpanded((value) => !value)}
-        title={`${source.type} decoded as ${source.encoding.toUpperCase()} text`}
-      >
-        <span className="select-none" style={{ color: 'var(--ds-gray-700)' }}>
-          {expanded ? '▼' : '▶'}
-        </span>
-        <span className="min-w-0 break-words">{source.rawSummary}</span>
-      </button>
-      {expanded && (
-        <div className="mt-1 pl-5">
-          <span style={{ color: 'var(--ds-gray-700)' }}>decoded: </span>
-          <span
-            className="whitespace-pre-wrap break-words"
-            style={{ color: 'var(--ds-green-900)' }}
-          >
-            {JSON.stringify(decodedText)}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Skeleton loading

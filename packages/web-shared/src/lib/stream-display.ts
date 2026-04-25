@@ -16,7 +16,7 @@ export interface FormattedStreamChunkDisplay {
   decodedFrom?: DecodedStreamChunkSource;
 }
 
-function summarizeArrayBufferView(value: ArrayBufferView): string {
+export function summarizeArrayBufferView(value: ArrayBufferView): string {
   const ta = value as unknown as {
     length: number;
     constructor: { name: string };
@@ -111,26 +111,30 @@ export function formatStreamChunkForDisplay(
     // Add additional decoded display sources here when we support more raw
     // stream chunk types, such as ArrayBuffer or Blob.
     if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
-      try {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(
-          value as ArrayBufferView
-        );
-        return {
-          text,
-          decodedFrom: {
-            type: value.constructor.name,
-            encoding: 'utf-8',
-            rawSummary: summarizeArrayBufferView(value),
-          },
-        };
-      } catch {
-        // Binary payloads still use the compact summary below.
-      }
+      return formatArrayBufferViewForDisplay(value);
     }
 
     const safe = sanitizeStreamChunkForDisplay(value);
     return { text: JSON.stringify(safe, null, 2) };
   } catch {
     return { text: '[Serialization Error]' };
+  }
+}
+
+export function formatArrayBufferViewForDisplay(
+  value: ArrayBufferView
+): FormattedStreamChunkDisplay {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(value);
+    return {
+      text,
+      decodedFrom: {
+        type: value.constructor.name,
+        encoding: 'utf-8',
+        rawSummary: summarizeArrayBufferView(value),
+      },
+    };
+  } catch {
+    return { text: summarizeArrayBufferView(value) };
   }
 }
