@@ -257,7 +257,7 @@ const ExtendedThemeContext = createContext<InspectorThemeExtended>(
   inspectorThemeExtendedLight
 );
 
-export function DecodedBytesChunk({
+function DecodedBytesChunk({
   decodedText,
   source,
 }: {
@@ -557,8 +557,9 @@ function makeBytesDisplay(display: FormattedStreamChunkDisplay): unknown {
  * Recursively walk data and replace RunRef/StreamRef/typed array objects with
  * non-expandable versions so ObjectInspector doesn't show their internals.
  * Only recurses into plain objects and arrays to avoid stripping class
- * instances (Date, Error, Map, Set, URL, Headers, etc.) that have their
- * own rendering in NodeRenderer.
+ * instances (Date, Error, URL, Headers, etc.) that have their own rendering in
+ * NodeRenderer. Map and Set containers are preserved while their contents are
+ * prepared for display.
  */
 function collapseRefs(data: unknown): unknown {
   if (data === null || typeof data !== 'object') return data;
@@ -568,6 +569,17 @@ function collapseRefs(data: unknown): unknown {
   if (isRunRef(data) || isStreamRef(data))
     return makeOpaqueRef(data as unknown as Record<string, unknown>);
   if (Array.isArray(data)) return data.map(collapseRefs);
+  if (data instanceof Map) {
+    return new Map(
+      Array.from(data.entries(), ([key, value]) => [
+        collapseRefs(key),
+        collapseRefs(value),
+      ])
+    );
+  }
+  if (data instanceof Set) {
+    return new Set(Array.from(data.values(), collapseRefs));
+  }
   // Only recurse into plain objects — leave class instances untouched
   const proto = Object.getPrototypeOf(data);
   if (proto !== Object.prototype && proto !== null) return data;

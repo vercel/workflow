@@ -3,11 +3,7 @@ import {
   hydrateData,
   isEncryptedData,
 } from '@workflow/core/serialization-format';
-import {
-  type DecodedStreamChunkSource,
-  formatStreamChunkForDisplay,
-  getWebRevivers,
-} from '@workflow/web-shared';
+import { getWebRevivers } from '@workflow/web-shared';
 import type { WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
@@ -15,10 +11,8 @@ import { readStream } from '~/lib/workflow-api-client';
 
 export interface StreamChunk {
   id: number;
-  /** Serialized payload expected by StreamViewer */
-  text: string;
-  /** Present when bytes were decoded into text for display */
-  decodedFrom?: DecodedStreamChunkSource;
+  /** Hydrated payload rendered by StreamViewer/DataInspector */
+  value: unknown;
 }
 
 const FRAME_HEADER_SIZE = 4;
@@ -120,10 +114,8 @@ export function useStreamReader(
         hydrated = ENCRYPTED_PLACEHOLDER;
       }
 
-      const display = formatStreamChunkForDisplay(hydrated);
-
       const chunkId = chunkIdRef.current++;
-      return { encrypted: false, chunk: { id: chunkId, ...display } };
+      return { encrypted: false, chunk: { id: chunkId, value: hydrated } };
     },
     []
   );
@@ -154,14 +146,13 @@ export function useStreamReader(
 
     const parseLegacyLine = (line: string): StreamChunk => {
       const chunkId = chunkIdRef.current++;
-      let text: string;
+      let value: unknown;
       try {
-        const parsed = JSON.parse(line);
-        text = JSON.stringify(parsed, null, 2);
+        value = JSON.parse(line);
       } catch {
-        text = line;
+        value = line;
       }
-      return { id: chunkId, text };
+      return { id: chunkId, value };
     };
 
     /**

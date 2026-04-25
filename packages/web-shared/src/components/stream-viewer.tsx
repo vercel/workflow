@@ -2,33 +2,8 @@
 
 import React, { useEffect, useRef } from 'react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import type { DecodedStreamChunkSource } from '../lib/stream-display';
-import { DataInspector, DecodedBytesChunk } from './ui/data-inspector';
+import { DataInspector } from './ui/data-inspector';
 import { Skeleton } from './ui/skeleton';
-
-// ──────────────────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────────────────
-
-function deserializeChunkText(text: string): string {
-  try {
-    const parsed = JSON.parse(text);
-    if (typeof parsed === 'string') {
-      return parsed;
-    }
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return text;
-  }
-}
-
-function parseChunkData(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Types
@@ -36,8 +11,7 @@ function parseChunkData(text: string): unknown {
 
 export interface StreamChunk {
   id: number;
-  text: string;
-  decodedFrom?: DecodedStreamChunkSource;
+  value: unknown;
 }
 
 type Chunk = StreamChunk;
@@ -64,8 +38,6 @@ const ChunkRow = React.memo(function ChunkRow({
   chunk: Chunk;
   index: number;
 }) {
-  const parsed = chunk.decodedFrom ? chunk.text : parseChunkData(chunk.text);
-
   return (
     <div
       className="text-[11px] rounded-md border p-3"
@@ -82,20 +54,15 @@ const ChunkRow = React.memo(function ChunkRow({
           [{index}]
         </span>
         <div className="min-w-0 flex-1">
-          {chunk.decodedFrom ? (
-            <DecodedBytesChunk
-              decodedText={chunk.text}
-              source={chunk.decodedFrom}
-            />
-          ) : typeof parsed === 'string' ? (
+          {typeof chunk.value === 'string' ? (
             <span
               className="whitespace-pre-wrap break-words"
               style={{ color: 'var(--ds-gray-1000)' }}
             >
-              {deserializeChunkText(parsed)}
+              {chunk.value}
             </span>
           ) : (
-            <DataInspector data={parsed} expandLevel={1} />
+            <DataInspector data={chunk.value} expandLevel={1} />
           )}
         </div>
       </div>
