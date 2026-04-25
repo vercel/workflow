@@ -4,6 +4,7 @@ import {
   isEncryptedData,
 } from '@workflow/core/serialization-format';
 import {
+  type DecodedStreamChunkSource,
   formatStreamChunkForDisplay,
   getWebRevivers,
 } from '@workflow/web-shared';
@@ -16,6 +17,8 @@ export interface StreamChunk {
   id: number;
   /** Serialized payload expected by StreamViewer */
   text: string;
+  /** Present when bytes were decoded into text for display */
+  decodedFrom?: DecodedStreamChunkSource;
 }
 
 const FRAME_HEADER_SIZE = 4;
@@ -117,10 +120,10 @@ export function useStreamReader(
         hydrated = ENCRYPTED_PLACEHOLDER;
       }
 
-      const text = formatStreamChunkForDisplay(hydrated);
+      const display = formatStreamChunkForDisplay(hydrated);
 
       const chunkId = chunkIdRef.current++;
-      return { encrypted: false, chunk: { id: chunkId, text } };
+      return { encrypted: false, chunk: { id: chunkId, ...display } };
     },
     []
   );

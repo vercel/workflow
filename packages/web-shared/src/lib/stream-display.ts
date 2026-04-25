@@ -5,6 +5,17 @@
 const MAX_DISPLAY_ENTRIES = 200;
 const MAX_DISPLAY_DEPTH = 6;
 
+export interface DecodedStreamChunkSource {
+  type: string;
+  encoding: 'utf-8';
+  rawSummary: string;
+}
+
+export interface FormattedStreamChunkDisplay {
+  text: string;
+  decodedFrom?: DecodedStreamChunkSource;
+}
+
 function summarizeArrayBufferView(value: ArrayBufferView): string {
   const ta = value as unknown as {
     length: number;
@@ -89,25 +100,37 @@ export function sanitizeStreamChunkForDisplay(
   return value;
 }
 
-export function formatStreamChunkForDisplay(value: unknown): string {
+export function formatStreamChunkForDisplay(
+  value: unknown
+): FormattedStreamChunkDisplay {
   try {
     if (typeof value === 'string') {
-      return value;
+      return { text: value };
     }
 
+    // Add additional decoded display sources here when we support more raw
+    // stream chunk types, such as ArrayBuffer or Blob.
     if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
       try {
-        return new TextDecoder('utf-8', { fatal: true }).decode(
+        const text = new TextDecoder('utf-8', { fatal: true }).decode(
           value as ArrayBufferView
         );
+        return {
+          text,
+          decodedFrom: {
+            type: value.constructor.name,
+            encoding: 'utf-8',
+            rawSummary: summarizeArrayBufferView(value),
+          },
+        };
       } catch {
         // Binary payloads still use the compact summary below.
       }
     }
 
     const safe = sanitizeStreamChunkForDisplay(value);
-    return JSON.stringify(safe, null, 2);
+    return { text: JSON.stringify(safe, null, 2) };
   } catch {
-    return '[Serialization Error]';
+    return { text: '[Serialization Error]' };
   }
 }

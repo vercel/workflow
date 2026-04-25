@@ -50,6 +50,7 @@ export {
   STREAM_REF_TYPE,
   truncateId,
 } from './lib/hydration';
+export type { DecodedStreamChunkSource } from './lib/stream-display';
 export {
   formatStreamChunkForDisplay,
   sanitizeStreamChunkForDisplay,
