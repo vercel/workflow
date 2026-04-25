@@ -7,11 +7,6 @@
 "@workflow/world-vercel": major
 ---
 
-**BREAKING CHANGE**: Serialize thrown values through the workflow serialization pipeline for `step_failed`, `step_retrying`, and `run_failed` events.
-
-- `WorkflowRun.error` and `Step.error` are now `SerializedData` (Uint8Array) instead of `{ message, stack?, code? }`. Consumers that previously read these fields directly must hydrate via `hydrateRunError` / `hydrateStepError`.
-- `WorkflowRun` gains a top-level `errorCode` field carrying the previous `error.code` value as plaintext metadata.
-- `WorkflowRunFailedError.cause` is now `unknown` (the hydrated thrown value with its original type identity, cause chain, and custom properties preserved) instead of a synthesized `Error`. A new `errorCode` property exposes the error classification.
-- Event payload for `step_failed`, `step_retrying`, and `run_failed` now contains `error: SerializedData` (was `{ message, stack? }` / `{ message, stack?, code? }`).
-- `@workflow/world-postgres` gains a new migration (`0010_add_error_code.sql`) adding an `error_code` column to `workflow.workflow_runs`. Legacy records in the deprecated `error` text column are surfaced as `undefined` on read (they cannot be hydrated into the original thrown value).
-- The o11y `hydrateResourceIO` helper (used by the CLI and web UI) now hydrates the `error` field on runs and steps in addition to `input`/`output`, so `--withData` output continues to surface readable error messages and stacks.
+**BREAKING CHANGE**: `step_failed`, `step_retrying`, and `run_failed` events now serialize the full thrown value via the workflow serialization pipeline. `WorkflowRun.error` / `Step.error` are now `SerializedData` (hydrate via `hydrateRunError` / `hydrateStepError`), `WorkflowRun` gains a top-level `errorCode`, and `WorkflowRunFailedError.cause` is the hydrated thrown value (`unknown`) with its original class identity, cause chain, and custom properties preserved.
+</content>
+</invoke>
