@@ -12,8 +12,8 @@ export type BuildTarget = (typeof validBuildTargets)[number];
  * Source map emission mode for generated workflow bundles. Matches esbuild's
  * `sourcemap` option vocabulary:
  *
- * - `true` / `'inline'`: emit a base64-encoded source map at the end of the bundle
- * - `'linked'`: write a separate `.map` file and add a `sourceMappingURL` comment
+ * - `true` / `'linked'`: write a separate `.map` file and add a `sourceMappingURL` comment
+ * - `'inline'`: emit a base64-encoded source map at the end of the bundle
  * - `'external'`: write a separate `.map` file without the comment
  * - `'both'`: emit both inline and external source maps
  * - `false`: omit source maps entirely
