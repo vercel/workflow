@@ -786,7 +786,7 @@ export async function getNextBuilderDeferred() {
     }
 
     private getDistDir(): string {
-      return (this.config as { distDir?: string }).distDir || '.next';
+      return this.config.distDir || '.next';
     }
 
     private getWorkflowsCacheFilePath(): string {

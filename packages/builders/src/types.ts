@@ -37,6 +37,10 @@ interface BaseWorkflowConfig {
   // The workflow manifest is written to workflows-manifest.json inside this dir.
   diagnosticsDir?: string;
 
+  // Optional framework output directory, used by builders that mirror framework
+  // artifact locations.
+  distDir?: string;
+
   // Suppress informational logs emitted by createWorkflowsBundle()
   // (e.g. intermediate/final workflow bundle timing logs).
   suppressCreateWorkflowsBundleLogs?: boolean;
@@ -79,7 +83,6 @@ export interface VercelBuildOutputConfig extends BaseWorkflowConfig {
  */
 export interface NextConfig extends BaseWorkflowConfig {
   buildTarget: 'next';
-  distDir?: string;
   // Next.js builder computes paths dynamically, so these are not used
   stepsBundlePath: string;
   workflowsBundlePath: string;
