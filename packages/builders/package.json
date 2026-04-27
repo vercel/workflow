@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@swc/core": "catalog:",
+    "@vercel/nft": "1.5.0",
     "@workflow/core": "workspace:*",
     "@workflow/errors": "workspace:*",
     "@workflow/utils": "workspace:*",
