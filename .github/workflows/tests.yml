@@ -331,6 +331,7 @@ jobs:
         with:
           install-dependencies: 'false'
           build-packages: 'false'
+          cache-pnpm: 'false'
 
       - id: set-matrix
         run: |
@@ -711,6 +712,7 @@ jobs:
         with:
           install-dependencies: 'false'
           build-packages: 'false'
+          cache-pnpm: 'false'
 
       - id: set-matrix
         run: |
