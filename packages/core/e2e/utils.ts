@@ -63,11 +63,6 @@ export function hasStepSourceMaps(): boolean {
     return appName !== 'sveltekit';
   }
 
-  // Vite only works in vercel, not on local prod or dev
-  if (appName === 'vite') {
-    return false;
-  }
-
   // NestJS preserves source maps in all builds including prod
   if (appName === 'nest') {
     return true;
