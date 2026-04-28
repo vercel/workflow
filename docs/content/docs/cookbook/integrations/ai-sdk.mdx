@@ -302,6 +302,7 @@ Non-obvious correctness details worth knowing before adapting this pattern.
 
 ### Snapshot `tailIndex` *before* resuming the hook
 
+{/* @skip-typecheck - fragment referencing variables from the surrounding multi-turn pattern */}
 ```typescript
 const tailIndex = await probe.getTailIndex(); // [!code highlight] FIRST
 await probe.cancel();

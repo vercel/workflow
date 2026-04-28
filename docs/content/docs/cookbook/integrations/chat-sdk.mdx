@@ -234,9 +234,9 @@ type Platform = keyof typeof bot.webhooks;
 
 export async function POST(
   req: Request,
-  ctx: RouteContext<"/api/webhooks/[platform]">
+  { params }: { params: Promise<{ platform: string }> }
 ) {
-  const { platform } = await ctx.params;
+  const { platform } = await params;
   const handler = bot.webhooks[platform as Platform];
   if (!handler) return new Response(`Unknown platform: ${platform}`, { status: 404 });
 
