@@ -139,54 +139,6 @@ async function resolveDeploymentId(
   return `dpl_${inspectorId}`;
 }
 
-async function probeDeploymentReady(
-  url: string,
-  bypassSecret: string | undefined
-): Promise<boolean> {
-  try {
-    const headers: Record<string, string> = {
-      'User-Agent': 'wait-for-vercel-project',
-    };
-    if (bypassSecret) {
-      headers['x-vercel-protection-bypass'] = bypassSecret;
-    }
-    // Manual redirect handling so we can detect "still building"
-    // responses, where the deployment URL temporarily redirects to the
-    // build-logs page on vercel.com.
-    const res = await fetch(url, {
-      method: 'GET',
-      headers,
-      redirect: 'manual',
-    });
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get('location') || '';
-      try {
-        const dest = new URL(location, url);
-        // A redirect to vercel.com (or *.vercel.com) typically means the
-        // deployment is still building and Vercel is serving the build-
-        // logs page. Treat as not-yet-ready.
-        if (
-          dest.hostname === 'vercel.com' ||
-          dest.hostname.endsWith('.vercel.com')
-        ) {
-          return false;
-        }
-      } catch {
-        // Malformed Location header — fall through and treat the 3xx as
-        // a successful liveness signal.
-      }
-      return true;
-    }
-    // Any non-5xx response means the edge can route to the deployment
-    // (including 401/403 from Deployment Protection or 404/405 from the
-    // app) — that's a sufficient liveness signal. Retry on 5xx (e.g.
-    // 502 while the function is still booting) or network errors.
-    return res.status < 500;
-  } catch {
-    return false;
-  }
-}
-
 async function run(): Promise<void> {
   try {
     const projectSlug = core.getInput('project-slug', { required: true });
@@ -214,7 +166,6 @@ async function run(): Promise<void> {
     if (!githubToken) {
       throw new Error('github-token input or GITHUB_TOKEN env var is required');
     }
-    const bypassSecret = core.getInput('bypass-secret') || undefined;
 
     const { owner, repo } = getRepo();
     const sha = resolveTargetSha();
@@ -305,16 +256,7 @@ async function run(): Promise<void> {
         continue;
       }
 
-      // 3. Probe the deployment URL for readiness (independent of GH state).
-      core.info(`Probing ${deploymentUrl} for readiness...`);
-      const ready = await probeDeploymentReady(deploymentUrl, bypassSecret);
-      if (!ready) {
-        core.info(`⏳ Deployment URL not yet responding cleanly`);
-        await sleep(checkInterval * 1000);
-        continue;
-      }
-
-      // 4. Resolve the Vercel deployment ID from commit statuses.
+      // 3. Resolve the Vercel deployment ID from commit statuses.
       let deploymentId: string | null = null;
       try {
         deploymentId = await resolveDeploymentId(

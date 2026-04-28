@@ -22,9 +22,6 @@ inputs:
     description: 'GitHub token used to query the Deployments API. Defaults to GITHUB_TOKEN.'
     required: false
     default: ${{ github.token }}
-  bypass-secret:
-    description: 'Vercel Deployment Protection bypass secret. When provided, used in the readiness probe so protected deployments do not return 401/403 from the probe.'
-    required: false
 
 outputs:
   deployment-url:

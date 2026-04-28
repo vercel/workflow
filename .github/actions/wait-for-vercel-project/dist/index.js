@@ -19885,35 +19885,6 @@ async function resolveDeploymentId(owner, repo, sha, projectSlug, token) {
   if (!inspectorId) return null;
   return `dpl_${inspectorId}`;
 }
-async function probeDeploymentReady(url, bypassSecret) {
-  try {
-    const headers = {
-      "User-Agent": "wait-for-vercel-project"
-    };
-    if (bypassSecret) {
-      headers["x-vercel-protection-bypass"] = bypassSecret;
-    }
-    const res = await fetch(url, {
-      method: "GET",
-      headers,
-      redirect: "manual"
-    });
-    if (res.status >= 300 && res.status < 400) {
-      const location = res.headers.get("location") || "";
-      try {
-        const dest = new URL(location, url);
-        if (dest.hostname === "vercel.com" || dest.hostname.endsWith(".vercel.com")) {
-          return false;
-        }
-      } catch {
-      }
-      return true;
-    }
-    return res.status < 500;
-  } catch {
-    return false;
-  }
-}
 async function run() {
   try {
     const projectSlug = core.getInput("project-slug", { required: true });
@@ -19934,7 +19905,6 @@ async function run() {
     if (!githubToken) {
       throw new Error("github-token input or GITHUB_TOKEN env var is required");
     }
-    const bypassSecret = core.getInput("bypass-secret") || void 0;
     const { owner, repo } = getRepo();
     const sha = resolveTargetSha();
     const ghEnvName = `${environment === "production" ? "Production" : "Preview"} \u2013 ${projectSlug}`;
@@ -20006,13 +19976,6 @@ async function run() {
         core.warning(
           `Deployment status was "success" but had no environment_url; retrying`
         );
-        await sleep(checkInterval * 1e3);
-        continue;
-      }
-      core.info(`Probing ${deploymentUrl} for readiness...`);
-      const ready = await probeDeploymentReady(deploymentUrl, bypassSecret);
-      if (!ready) {
-        core.info(`\u23F3 Deployment URL not yet responding cleanly`);
         await sleep(checkInterval * 1e3);
         continue;
       }

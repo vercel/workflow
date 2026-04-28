@@ -270,7 +270,6 @@ jobs:
         uses: ./.github/actions/wait-for-vercel-project
         with:
           project-slug: ${{ matrix.app.project-slug }}
-          bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           timeout: 1000
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
