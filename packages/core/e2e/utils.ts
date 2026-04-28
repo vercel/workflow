@@ -63,8 +63,10 @@ export function hasStepSourceMaps(): boolean {
     return appName !== 'sveltekit';
   }
 
-  // Vite only works in vercel, not on local prod or dev
-  if (appName === 'vite') {
+  // Vite local prod doesn't currently emit source maps for step bundles.
+  // In local dev (vite >=7.3) source maps are preserved, so we only
+  // disable for non-dev (i.e. local prod) here.
+  if (appName === 'vite' && !process.env.DEV_TEST_CONFIG) {
     return false;
   }
 
