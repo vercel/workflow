@@ -22,6 +22,10 @@ inputs:
     description: 'Whether to build packages (excludes workbenches)'
     required: false
     default: 'true'
+  cache-pnpm:
+    description: 'Whether to enable the pnpm store cache. Disable for jobs that never run pnpm install (the post-job cache save fails with "Path Validation Error" when the store path was never created).'
+    required: false
+    default: 'true'
 
 runs:
   using: 'composite'
@@ -39,7 +43,7 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node-version }}
-        cache: 'pnpm'
+        cache: ${{ inputs.cache-pnpm == 'true' && 'pnpm' || '' }}
 
     - name: Install Dependencies
       if: ${{ inputs.install-dependencies == 'true' }}
