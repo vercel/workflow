@@ -19979,29 +19979,22 @@ async function run() {
         await sleep(checkInterval * 1e3);
         continue;
       }
-      let deploymentId = null;
-      try {
-        deploymentId = await resolveDeploymentId(
-          owner,
-          repo,
-          sha,
-          projectSlug,
-          githubToken
-        );
-      } catch (err) {
-        core.warning(
-          `Failed to resolve Vercel deployment ID: ${err.message}`
-        );
-      }
+      const deploymentId = await resolveDeploymentId(
+        owner,
+        repo,
+        sha,
+        projectSlug,
+        githubToken
+      );
       if (!deploymentId) {
-        core.warning(
-          `Could not extract deployment ID from commit status for "Vercel \u2013 ${projectSlug}"`
+        throw new Error(
+          `Deployment became ready at ${deploymentUrl}, but the Vercel deployment ID could not be resolved from the "Vercel \u2013 ${projectSlug}" commit status`
         );
       }
       core.info(`\u2705 Deployment ready: ${deploymentUrl}`);
-      if (deploymentId) core.info(`Deployment ID: ${deploymentId}`);
+      core.info(`Deployment ID: ${deploymentId}`);
       core.setOutput("deployment-url", deploymentUrl);
-      core.setOutput("deployment-id", deploymentId || "");
+      core.setOutput("deployment-id", deploymentId);
       return;
     }
     throw new Error(

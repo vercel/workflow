@@ -257,30 +257,28 @@ async function run(): Promise<void> {
       }
 
       // 3. Resolve the Vercel deployment ID from commit statuses.
-      let deploymentId: string | null = null;
-      try {
-        deploymentId = await resolveDeploymentId(
-          owner,
-          repo,
-          sha,
-          projectSlug,
-          githubToken
-        );
-      } catch (err) {
-        core.warning(
-          `Failed to resolve Vercel deployment ID: ${(err as Error).message}`
-        );
-      }
+      // Fail loudly if we can't extract the dpl_xxx ID. Consumers wire
+      // this output into VERCEL_DEPLOYMENT_ID, which world-target uses to
+      // decide between the Vercel and local worlds (see
+      // packages/utils/src/world-target.ts) — an empty value would
+      // silently flip execution mode.
+      const deploymentId = await resolveDeploymentId(
+        owner,
+        repo,
+        sha,
+        projectSlug,
+        githubToken
+      );
       if (!deploymentId) {
-        core.warning(
-          `Could not extract deployment ID from commit status for "Vercel – ${projectSlug}"`
+        throw new Error(
+          `Deployment became ready at ${deploymentUrl}, but the Vercel deployment ID could not be resolved from the "Vercel – ${projectSlug}" commit status`
         );
       }
 
       core.info(`✅ Deployment ready: ${deploymentUrl}`);
-      if (deploymentId) core.info(`Deployment ID: ${deploymentId}`);
+      core.info(`Deployment ID: ${deploymentId}`);
       core.setOutput('deployment-url', deploymentUrl);
-      core.setOutput('deployment-id', deploymentId || '');
+      core.setOutput('deployment-id', deploymentId);
       return;
     }
 
