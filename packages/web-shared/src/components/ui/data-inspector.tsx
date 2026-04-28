@@ -99,7 +99,7 @@ function isRunRef(value: unknown): value is RunRef {
   return desc?.value === RUN_REF_TYPE;
 }
 
-function isBytesDisplay(value: unknown): value is BytesDisplay {
+export function isBytesDisplay(value: unknown): value is BytesDisplay {
   if (value === null || typeof value !== 'object') return false;
   const desc = Object.getOwnPropertyDescriptor(value, '__type');
   return desc?.value === BYTES_DISPLAY_TYPE;
@@ -292,7 +292,6 @@ function DecodedBytesChunk({
           className="inline-flex overflow-hidden rounded border"
           style={{ borderColor: 'var(--ds-gray-400)' }}
           title={`${source.type} decoded as ${source.encoding.toUpperCase()} text. Switch to Bytes to inspect the summarized raw value.`}
-          role="tablist"
         >
           <button
             type="button"
@@ -305,8 +304,8 @@ function DecodedBytesChunk({
               color: 'var(--ds-gray-900)',
             }}
             onClick={() => setSelectedView('decoded')}
-            role="tab"
-            aria-selected={selectedView === 'decoded'}
+            aria-pressed={selectedView === 'decoded'}
+            aria-label="Show decoded text"
           >
             Decoded
           </button>
@@ -322,8 +321,8 @@ function DecodedBytesChunk({
               color: 'var(--ds-gray-900)',
             }}
             onClick={() => setSelectedView('bytes')}
-            role="tab"
-            aria-selected={selectedView === 'bytes'}
+            aria-pressed={selectedView === 'bytes'}
+            aria-label="Show raw bytes summary"
           >
             Bytes
           </button>
@@ -560,8 +559,11 @@ function makeBytesDisplay(display: FormattedStreamChunkDisplay): unknown {
  * instances (Date, Error, URL, Headers, etc.) that have their own rendering in
  * NodeRenderer. Map and Set containers are preserved while their contents are
  * prepared for display.
+ *
+ * Exported for testing the typed-array detection path used by hydrated
+ * AI agent stream chunks (e.g. `{ delta: new Uint8Array(...) }`).
  */
-function collapseRefs(data: unknown): unknown {
+export function collapseRefs(data: unknown): unknown {
   if (data === null || typeof data !== 'object') return data;
   if (ArrayBuffer.isView(data) && !(data instanceof DataView)) {
     return makeBytesDisplay(formatArrayBufferViewForDisplay(data));
