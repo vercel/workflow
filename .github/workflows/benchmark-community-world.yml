@@ -91,37 +91,70 @@ jobs:
         with:
           build-packages: 'true'
 
+      - name: Validate inputs
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+          WORLD_ID: ${{ inputs.world-id }}
+          WORLD_PACKAGE: ${{ inputs.world-package }}
+        run: |
+          if [[ ! "$APP_NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+            echo "Invalid app-name: $APP_NAME" >&2
+            exit 1
+          fi
+          if [[ ! "$WORLD_ID" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; then
+            echo "Invalid world-id: $WORLD_ID" >&2
+            exit 1
+          fi
+          if [[ ! "$WORLD_PACKAGE" =~ ^(@[a-zA-Z0-9][a-zA-Z0-9_.-]*/)?[a-zA-Z0-9][a-zA-Z0-9_.-]*(@[a-zA-Z0-9][a-zA-Z0-9_.+-]*)?$ ]]; then
+            echo "Invalid world-package: $WORLD_PACKAGE" >&2
+            exit 1
+          fi
+
       - name: Install ${{ inputs.world-name }} World
-        run: pnpm --filter ${{ inputs.app-name }} add ${{ inputs.world-package }}
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+          WORLD_PACKAGE: ${{ inputs.world-package }}
+        run: pnpm --filter "$APP_NAME" add "$WORLD_PACKAGE"
 
       - name: Run setup command
         if: ${{ inputs.setup-command != '' }}
-        run: ${{ inputs.setup-command }}
-        working-directory: workbench/${{ inputs.app-name }}
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+          SETUP_COMMAND: ${{ inputs.setup-command }}
+        run: |
+          cd "workbench/$APP_NAME"
+          eval "$SETUP_COMMAND"
 
       - name: Resolve symlinks
-        run: ./scripts/resolve-symlinks.sh workbench/${{ inputs.app-name }}
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+        run: ./scripts/resolve-symlinks.sh "workbench/$APP_NAME"
 
       - name: Set environment variables
+        env:
+          ENV_VARS_JSON: ${{ inputs.env-vars }}
         run: |
-          echo '${{ inputs.env-vars }}' | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> $GITHUB_ENV
+          printf '%s' "$ENV_VARS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value)"' >> "$GITHUB_ENV"
 
       - name: Build workbench
-        run: pnpm turbo run build --filter='./workbench/${{ inputs.app-name }}'
+        env:
+          APP_NAME: ${{ inputs.app-name }}
+        run: pnpm turbo run build --filter="./workbench/$APP_NAME"
 
       - name: Run benchmarks
         env:
           DEPLOYMENT_URL: "http://localhost:3000"
           APP_NAME: ${{ inputs.app-name }}
+          WORLD_ID: ${{ inputs.world-id }}
           WORKFLOW_BENCH_BACKEND: ${{ inputs.world-id }}
           BENCHMARK_FULL_SUITE: ${{ inputs.full-suite }}
         run: |
-          cd workbench/${{ inputs.app-name }}
+          cd "workbench/$APP_NAME"
           pnpm start &
           echo "Waiting for server to start..."
           sleep 15
-          cd ../..
-          pnpm vitest bench packages/core/e2e/bench.bench.ts --run --outputJson=bench-results-${{ inputs.app-name }}-${{ inputs.world-id }}.json
+          cd "$GITHUB_WORKSPACE"
+          pnpm vitest bench packages/core/e2e/bench.bench.ts --run "--outputJson=bench-results-$APP_NAME-$WORLD_ID.json"
 
       - name: Render benchmark results
         uses: ./.github/actions/render-benchmarks
