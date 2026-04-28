@@ -17,6 +17,104 @@ const repoRoot = path.resolve(__dirname, '../../..');
 const docsGlobalsPath = path.join(__dirname, 'docs-globals.d.ts');
 const docsGlobalsContent = fs.readFileSync(docsGlobalsPath, 'utf-8');
 
+type PackageExport =
+  | string
+  | {
+      types?: string;
+      default?: string;
+      import?: string;
+      require?: string;
+    };
+
+interface PackageJson {
+  name?: string;
+  exports?: Record<string, PackageExport> | PackageExport;
+}
+
+function toDeclarationPath(packageDir: string, exportTarget: string): string {
+  const normalizedTarget = exportTarget.replace(/^\.\//, '');
+
+  if (/\.d\.[cm]?ts$/.test(normalizedTarget)) {
+    return path.join(packageDir, normalizedTarget);
+  }
+
+  const parsed = path.parse(normalizedTarget);
+
+  if (parsed.ext === '.cts') {
+    return path.join(packageDir, normalizedTarget.replace(/\.cts$/, '.d.cts'));
+  }
+
+  if (parsed.ext === '.mts') {
+    return path.join(packageDir, normalizedTarget.replace(/\.mts$/, '.d.mts'));
+  }
+
+  if (parsed.ext === '.js' || parsed.ext === '.ts') {
+    return path.join(packageDir, normalizedTarget.replace(/\.[jt]s$/, '.d.ts'));
+  }
+
+  return path.join(packageDir, normalizedTarget);
+}
+
+function getExportTarget(exportValue: PackageExport): string | undefined {
+  if (typeof exportValue === 'string') return exportValue;
+  return (
+    exportValue.types ??
+    exportValue.default ??
+    exportValue.import ??
+    exportValue.require
+  );
+}
+
+function createWorkspacePackagePathMappings(): ts.MapLike<string[]> {
+  const mappings: ts.MapLike<string[]> = {};
+  const packagesDir = path.join(repoRoot, 'packages');
+
+  for (const packageName of fs.readdirSync(packagesDir)) {
+    const packageDir = path.join(packagesDir, packageName);
+    const packageJsonPath = path.join(packageDir, 'package.json');
+    if (!fs.existsSync(packageJsonPath)) continue;
+
+    const packageJson = JSON.parse(
+      fs.readFileSync(packageJsonPath, 'utf-8')
+    ) as PackageJson;
+    if (!packageJson.name || !packageJson.exports) continue;
+
+    const exportsMap =
+      typeof packageJson.exports === 'string'
+        ? { '.': packageJson.exports }
+        : packageJson.exports;
+
+    for (const [exportKey, exportValue] of Object.entries(exportsMap)) {
+      if (exportKey.includes('*')) continue;
+
+      const exportTarget = getExportTarget(exportValue);
+      if (!exportTarget) continue;
+
+      const moduleName =
+        exportKey === '.'
+          ? packageJson.name
+          : `${packageJson.name}/${exportKey.replace(/^\.\//, '')}`;
+
+      const declarationPath = toDeclarationPath(packageDir, exportTarget);
+      if (fs.existsSync(declarationPath)) {
+        mappings[moduleName] = [declarationPath];
+      }
+    }
+  }
+
+  return mappings;
+}
+
+function moduleMatchesPathMapping(moduleName: string): boolean {
+  return Object.keys(compilerOptions.paths ?? {}).some((pattern) => {
+    if (pattern === moduleName) return true;
+    if (!pattern.includes('*')) return false;
+
+    const [prefix, suffix] = pattern.split('*');
+    return moduleName.startsWith(prefix) && moduleName.endsWith(suffix);
+  });
+}
+
 /**
  * Error codes to ignore during type checking.
  *
@@ -61,6 +159,7 @@ const compilerOptions: ts.CompilerOptions = {
   ],
   baseUrl: repoRoot,
   paths: {
+    ...createWorkspacePackagePathMappings(),
     'react/jsx-runtime': [
       path.join(__dirname, '../node_modules/react/jsx-runtime'),
     ],
@@ -70,6 +169,9 @@ const compilerOptions: ts.CompilerOptions = {
     // have "require" conditions that TS picks up incorrectly with Bundler resolution.
     workflow: [path.join(repoRoot, 'packages/workflow/dist/index')],
     'workflow/api': [path.join(repoRoot, 'packages/workflow/dist/api')],
+    'workflow/next': [path.join(repoRoot, 'packages/next/dist/index')],
+    'workflow/vite': [path.join(repoRoot, 'packages/workflow/dist/vite')],
+    'workflow/astro': [path.join(repoRoot, 'packages/astro/dist/index')],
     'workflow/errors': [
       path.join(repoRoot, 'packages/workflow/dist/internal/errors'),
     ],
@@ -94,13 +196,6 @@ const compilerOptions: ts.CompilerOptions = {
 };
 
 /**
- * Modules that we explicitly resolve via `paths` mappings. A TS2307
- * ("Cannot find module") error for any of these is a real regression and
- * must NOT be silenced.
- */
-const RESOLVED_MODULES = new Set(Object.keys(compilerOptions.paths ?? {}));
-
-/**
  * Returns true if a TS2307 diagnostic refers to a module we don't expect to
  * resolve (relative imports, framework deps, app aliases, etc.).
  * Returns false for modules in our paths mapping — those failures are real.
@@ -110,7 +205,7 @@ function isExpectedMissingModule(diagnostic: ts.Diagnostic): boolean {
   const match = msg.match(/Cannot find module '([^']+)'/);
   if (!match) return false;
   const mod = match[1];
-  return !RESOLVED_MODULES.has(mod);
+  return !moduleMatchesPathMapping(mod);
 }
 
 /**

@@ -94,10 +94,11 @@ Create a separate Vitest config for integration tests that includes the `workflo
 
 ```typescript title="vitest.integration.config.ts" lineNumbers
 import { defineConfig } from "vitest/config";
+import type { PluginOption } from "vite";
 import { workflow } from "@workflow/vitest"; // [!code highlight]
 
 export default defineConfig({
-  plugins: [workflow()], // [!code highlight]
+  plugins: [workflow() as PluginOption], // [!code highlight]
   test: {
     include: ["**/*.integration.test.ts"],
     testTimeout: 60_000, // Workflows may take longer than default timeout

@@ -17,10 +17,11 @@ Create a Vitest config with the `workflow()` Vite plugin for code transforms and
 
 ```typescript title="vitest.server.config.ts" lineNumbers
 import { defineConfig } from "vitest/config";
+import type { PluginOption } from "vite";
 import { workflow } from "workflow/vite"; // [!code highlight]
 
 export default defineConfig({
-  plugins: [workflow()], // [!code highlight]
+  plugins: [workflow() as PluginOption], // [!code highlight]
   test: {
     include: ["**/*.server.test.ts"],
     testTimeout: 60_000,

@@ -30,8 +30,11 @@ const docsFiles = globSync(path.join(repoRoot, 'docs/content/docs/**/*.mdx'));
 // Find package README files
 const readmeFiles = globSync(path.join(repoRoot, 'packages/*/README.md'));
 
+// Find skill docs
+const skillFiles = globSync(path.join(repoRoot, 'skills/**/SKILL.md'));
+
 // Combine all documentation files - use relative paths for better output
-let allDocFiles = [...docsFiles, ...readmeFiles].map((f) =>
+let allDocFiles = [...docsFiles, ...readmeFiles, ...skillFiles].map((f) =>
   path.relative(repoRoot, f)
 );
 

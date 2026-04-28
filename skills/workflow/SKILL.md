@@ -3,7 +3,7 @@ name: workflow
 description: Creates durable, resumable workflows using Vercel's Workflow SDK. Use when building workflows that need to survive restarts, pause for external events, retry on failure, or coordinate multi-step operations over time. Triggers on mentions of "workflow", "durable functions", "resumable", "workflow sdk", "queue", "event", "push", "subscribe", or step-based orchestration.
 metadata:
   author: Vercel Inc.
-  version: '1.8'
+  version: '1.9'
 ---
 
 ## *CRITICAL*: Always Use Correct `workflow` Documentation
@@ -66,8 +66,8 @@ import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowN
 
 // Framework integrations
 import { withWorkflow } from "workflow/next";
-import { workflow } from "workflow/vite";
-import { workflow } from "workflow/astro";
+import { workflow as viteWorkflow } from "workflow/vite";
+import { workflow as astroWorkflow } from "workflow/astro";
 // Or use modules: ["workflow/nitro"] for Nitro/Nuxt
 
 // AI agent
@@ -85,6 +85,9 @@ async function fetchUserData(userId: string) {
   const response = await fetch(`https://api.example.com/users/${userId}`);
   return response.json();
 }
+
+declare function generateText(options: { model: unknown; prompt: string }): Promise<unknown>;
+declare function openai(model: string): unknown;
 
 async function processWithAI(data: any) {
   "use step";
@@ -187,6 +190,11 @@ Use `start()` to launch workflows from API routes. **`start()` cannot be called 
 ```typescript
 import { start } from "workflow/api";
 
+declare function myWorkflow(arg1: string, arg2: number): Promise<unknown>;
+declare function noArgWorkflow(): Promise<unknown>;
+declare const arg1: string;
+declare const arg2: number;
+
 // From an API route — works directly
 export async function POST() {
   const run = await start(myWorkflow, [arg1, arg2]);
@@ -200,7 +208,10 @@ const run = await start(noArgWorkflow);
 **Starting child workflows from inside a workflow — must use a step:**
 
 ```typescript
+import { sleep } from "workflow";
 import { start } from "workflow/api";
+
+declare function childWorkflow(data: string): Promise<unknown>;
 
 // Wrap start() in a step function
 async function triggerChild(data: string) {
@@ -280,6 +291,8 @@ Use `FatalError` for permanent failures (no retry), `RetryableError` for transie
 
 ```typescript
 import { FatalError, RetryableError } from "workflow";
+
+declare const res: Response;
 
 if (res.status >= 400 && res.status < 500) {
   throw new FatalError(`Client error: ${res.status}`);
@@ -552,10 +565,11 @@ describe("createUser step", () => {
 ```typescript
 // vitest.integration.config.ts
 import { defineConfig } from "vitest/config";
+import type { PluginOption } from "vite";
 import { workflow } from "@workflow/vitest";
 
 export default defineConfig({
-  plugins: [workflow()],
+  plugins: [workflow() as PluginOption],
   test: {
     include: ["**/*.integration.test.ts"],
     testTimeout: 60_000,
@@ -593,6 +607,8 @@ describe("approvalWorkflow", () => {
 ```typescript
 import { start, resumeWebhook } from "workflow/api";
 import { waitForHook } from "@workflow/vitest";
+
+declare function ingestWorkflow(endpointId: string): Promise<unknown>;
 
 const run = await start(ingestWorkflow, ["ep-1"]);
 const hook = await waitForHook(run);  // Discovers the random webhook token
@@ -634,33 +650,48 @@ import { hydrateResourceIO, observabilityRevivers, parseStepName, parseWorkflowN
 ⚠️ Pagination is nested: `{ pagination: { cursor } }` — NOT `{ cursor }` directly.
 
 ```typescript
+import { getWorld } from "workflow/runtime";
+
+declare const runId: string;
+declare const stepId: string;
+declare const hookId: string;
+declare const token: string;
+declare const name: string;
+declare const chunk: Uint8Array;
+declare const streamChunks: Uint8Array[];
+declare const queueName: `__wkf_step_${string}`;
+declare const payload: { runId: string };
+declare const opts: undefined;
+declare const cursor: string | undefined;
+const resolveDataMode = "all" as const;
+
 const world = await getWorld();
 
 // Runs
-const { data, cursor } = await world.runs.list({ pagination: { cursor }, resolveData: 'all' | 'none' });
-const run = await world.runs.get(runId, { resolveData: 'all' | 'none' });
+const runsPage = await world.runs.list({ pagination: { cursor }, resolveData: resolveDataMode });
+const run = await world.runs.get(runId, { resolveData: resolveDataMode });
 // Cancel via event creation (no cancel() method on runs)
 await world.events.create(runId, { eventType: 'run_cancelled' });
 
 // Steps — runId is top-level, NOT inside pagination
-const { data, cursor } = await world.steps.list({ runId, pagination: { cursor }, resolveData: 'all' | 'none' });
-const step = await world.steps.get(runId, stepId, { resolveData: 'all' | 'none' });
+const stepsPage = await world.steps.list({ runId, pagination: { cursor }, resolveData: resolveDataMode });
+const step = await world.steps.get(runId, stepId, { resolveData: resolveDataMode });
 
 // Events
-const { data, cursor } = await world.events.list({ runId, pagination: { cursor } });
+const eventsPage = await world.events.list({ runId, pagination: { cursor } });
 await world.events.create(runId, { eventType: 'run_cancelled' });
 
 // Hooks
-const hook = await world.hooks.get(hookId);
-const hook = await world.hooks.getByToken(token);
+const hookById = await world.hooks.get(hookId);
+const hookByToken = await world.hooks.getByToken(token);
 
 // Streams (methods on world.streams)
 await world.streams.write(runId, name, chunk);
-await world.streams.writeMulti?.(runId, name, chunks);
-const readable = await world.streams.get(runId, name, startIndex);
+await world.streams.writeMulti?.(runId, name, streamChunks);
+const readable = await world.streams.get(runId, name, 0);
 await world.streams.close(runId, name);
 const streamNames = await world.streams.list(runId);
-const chunks = await world.streams.getChunks(runId, name, { limit, cursor });
+const streamChunkPage = await world.streams.getChunks(runId, name, { limit: 50, cursor });
 const info = await world.streams.getInfo(runId, name);
 
 // Queue (methods live directly on world — internal SDK infrastructure)
@@ -683,6 +714,8 @@ const run = await world.runs.get(runId, { resolveData: 'none' });
 console.log(run.status); // 'running' | 'completed' | 'failed' | 'cancelled'
 
 // Full inspection — resolveData includes data, hydrateResourceIO deserializes it
+import { hydrateResourceIO, observabilityRevivers } from "workflow/observability";
+
 const step = await world.steps.get(runId, stepId); // defaults to 'all'
 const hydrated = hydrateResourceIO(step, observabilityRevivers);
 ```
@@ -713,6 +746,8 @@ const hydrated = steps.map(s => hydrateResourceIO(s, observabilityRevivers));
 `parseWorkflowName()`, `parseStepName()`, and `parseClassName()` return `{ shortName: string, moduleSpecifier: string } | null`. Always use optional chaining:
 
 ```typescript
+import { parseWorkflowName } from "workflow/observability";
+
 const parsed = parseWorkflowName("workflow//./src/workflows/order//processOrder");
 // parsed?.shortName → "processOrder"
 // parsed?.moduleSpecifier → "./src/workflows/order"
@@ -743,18 +778,31 @@ Three error strategies for different failure modes:
 ```typescript
 import { FatalError, RetryableError } from "workflow";
 
-// Permanent failure — workflow terminates
-throw new FatalError("Invalid input: missing required field");
+declare function criticalStep(data: unknown): Promise<unknown>;
+declare function optionalStep(data: unknown): Promise<unknown>;
+declare function enrichmentStep(data: unknown): Promise<unknown>;
 
-// Transient failure — will retry
-throw new RetryableError("API rate limited", { retryAfter: "5m" });
+function failForInvalidInput() {
+  // Permanent failure — workflow terminates
+  throw new FatalError("Invalid input: missing required field");
+}
 
-// Mixed criticality parallel execution
-const results = await Promise.allSettled([
-  criticalStep(data),    // Must succeed
-  optionalStep(data),    // OK to fail
-  enrichmentStep(data),  // OK to fail
-]);
-const [critical, optional, enrichment] = results;
-if (critical.status === "rejected") throw new FatalError(critical.reason);
+function retryAfterRateLimit() {
+  // Transient failure — will retry
+  throw new RetryableError("API rate limited", { retryAfter: "5m" });
+}
+
+async function runMixedCriticality(data: unknown) {
+  const [critical, optional, enrichment] = await Promise.allSettled([
+    criticalStep(data),    // Must succeed
+    optionalStep(data),    // OK to fail
+    enrichmentStep(data),  // OK to fail
+  ]);
+
+  if (critical.status === "rejected") {
+    throw new FatalError(String(critical.reason));
+  }
+
+  return { optional, enrichment };
+}
 ```

@@ -104,18 +104,20 @@ To add encryption support to a custom `World`:
 ```typescript
 import type { WorkflowRun, World } from "@workflow/world";
 
-export const getEncryptionKeyForRun: World["getEncryptionKeyForRun"] = async (
-  run,
-  context
-) => {
-  const runId = typeof run === "string" ? run : run.runId;
-  const deploymentId =
-    typeof run === "string"
-      ? (context?.deploymentId as string | undefined)
-      : run.deploymentId;
+export class EncryptedWorld implements Pick<World, "getEncryptionKeyForRun"> {
+  async getEncryptionKeyForRun(
+    runOrId: WorkflowRun | string,
+    context?: Record<string, unknown>
+  ): Promise<Uint8Array | undefined> {
+    const runId = typeof runOrId === "string" ? runOrId : runOrId.runId;
+    const deploymentId =
+      typeof runOrId === "string"
+        ? (context?.deploymentId as string | undefined)
+        : runOrId.deploymentId;
 
-  return await lookupRunKey(runId, deploymentId);
-};
+    return await lookupRunKey(runId, deploymentId);
+  }
+}
 
 async function lookupRunKey(
   runId: string,
