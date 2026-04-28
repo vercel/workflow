@@ -115,6 +115,7 @@ export function withWorkflow(
       supportsTurboCondition && !useDeferredBuilder;
     const shouldWatch = process.env.NODE_ENV === 'development';
     let workflowBuilderPromise: Promise<any> | undefined;
+    const distDir = nextConfig.distDir || '.next';
 
     const getWorkflowBuilder = async () => {
       if (!workflowBuilderPromise) {
@@ -126,7 +127,8 @@ export function withWorkflow(
             dirs: ['pages', 'app', 'src/pages', 'src/app'],
             projectRoot: nextConfig.outputFileTracingRoot,
             workingDir: process.cwd(),
-            distDir: nextConfig.distDir || '.next',
+            distDir,
+            diagnosticsDir: `${distDir}/diagnostics`,
             buildTarget: 'next',
             workflowsBundlePath: '', // not used in base
             stepsBundlePath: '', // not used in base
