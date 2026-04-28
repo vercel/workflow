@@ -291,8 +291,8 @@ jobs:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           # Point PRs at the protected workflow-server preview; unset on main
           # so production runs hit the public vercel-workflow.com URL.
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref == 'refs/heads/main' && '' || secrets.VERCEL_WORKFLOW_SERVER_URL }}
-          VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS: ${{ github.ref == 'refs/heads/main' && '' || secrets.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -331,6 +331,7 @@ jobs:
         with:
           install-dependencies: 'false'
           build-packages: 'false'
+          cache-pnpm: 'false'
 
       - id: set-matrix
         run: |
@@ -711,6 +712,7 @@ jobs:
         with:
           install-dependencies: 'false'
           build-packages: 'false'
+          cache-pnpm: 'false'
 
       - id: set-matrix
         run: |
