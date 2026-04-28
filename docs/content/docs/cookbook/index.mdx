@@ -10,14 +10,17 @@ A curated collection of workflow patterns with clean, copy-paste code examples f
 
 - [**Durable Agent**](/cookbook/agent-patterns/durable-agent) — Replace a stateless AI agent with one that survives crashes and retries tool calls
 - [**Human-in-the-Loop**](/cookbook/agent-patterns/human-in-the-loop) — Pause an agent for human approval, then resume based on the decision
-- [**Stop Workflow**](/cookbook/agent-patterns/stop-workflow) — Race an agent stream against a stop hook for graceful cancellation
+- [**Agent Cancellation**](/cookbook/agent-patterns/agent-cancellation) — Stop a running agent immediately via `run.cancel()` or gracefully via a hook + `Promise.race`
 
 ## Common Patterns
 
+- [**Sequential & Parallel Execution**](/cookbook/common-patterns/sequential-and-parallel) — Compose steps with `await`, `Promise.all`, and `Promise.race` against durable sleeps and webhooks
+- [**Workflow Composition**](/cookbook/common-patterns/workflow-composition) — Call workflows from other workflows by direct await or background spawn via `start()`
 - [**Saga**](/cookbook/common-patterns/saga) — Coordinate multi-step transactions with automatic rollback when a step fails
 - [**Batching**](/cookbook/common-patterns/batching) — Process large collections in parallel batches with failure isolation
 - [**Rate Limiting**](/cookbook/common-patterns/rate-limiting) — Handle 429 responses and transient failures with RetryableError and backoff
 - [**Scheduling**](/cookbook/common-patterns/scheduling) — Use durable sleep to schedule actions minutes, hours, or weeks ahead
+- [**Timeouts**](/cookbook/common-patterns/timeouts) — Add deadlines to slow steps, hooks, and webhooks by racing them against a durable sleep
 - [**Idempotency**](/cookbook/common-patterns/idempotency) — Ensure side effects happen exactly once, even when steps retry
 - [**Webhooks**](/cookbook/common-patterns/webhooks) — Receive HTTP callbacks from external services and process them durably
 

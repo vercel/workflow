@@ -28,17 +28,20 @@ export const categoryLabels: Record<RecipeCategory, string> = {
 /** Map from slug → category folder for URL construction */
 export const slugToCategory: Record<string, string> = {
   // Common Patterns
+  'sequential-and-parallel': 'common-patterns',
+  'workflow-composition': 'common-patterns',
   saga: 'common-patterns',
   batching: 'common-patterns',
   'rate-limiting': 'common-patterns',
   scheduling: 'common-patterns',
+  timeouts: 'common-patterns',
   idempotency: 'common-patterns',
   webhooks: 'common-patterns',
 
   // Agent Patterns
   'durable-agent': 'agent-patterns',
   'human-in-the-loop': 'agent-patterns',
-  'stop-workflow': 'agent-patterns',
+  'agent-cancellation': 'agent-patterns',
 
   // Integrations
   'ai-sdk': 'integrations',
@@ -55,6 +58,20 @@ export const slugToCategory: Record<string, string> = {
 /** All recipe metadata, keyed by slug */
 export const recipes: Record<string, Recipe> = {
   // Common Patterns
+  'sequential-and-parallel': {
+    slug: 'sequential-and-parallel',
+    title: 'Sequential & Parallel Execution',
+    description:
+      'Compose steps with familiar async/await patterns — sequential await, Promise.all, and Promise.race against durable sleeps and webhooks.',
+    category: 'common-patterns',
+  },
+  'workflow-composition': {
+    slug: 'workflow-composition',
+    title: 'Workflow Composition',
+    description:
+      'Call workflows from other workflows by direct await (flatten into the parent) or background spawn via start() (separate run).',
+    category: 'common-patterns',
+  },
   saga: {
     slug: 'saga',
     title: 'Transactions & Rollbacks (Saga)',
@@ -81,6 +98,13 @@ export const recipes: Record<string, Recipe> = {
     title: 'Sleep, Scheduling & Timed Workflows',
     description:
       'Schedule future actions with durable sleep and race sleeps against hooks to let external events cancel the workflow early.',
+    category: 'common-patterns',
+  },
+  timeouts: {
+    slug: 'timeouts',
+    title: 'Timeouts',
+    description:
+      'Add deadlines to slow steps, hooks, and webhooks by racing them against a durable sleep.',
     category: 'common-patterns',
   },
   idempotency: {
@@ -113,11 +137,11 @@ export const recipes: Record<string, Recipe> = {
       'Pause an AI agent to wait for human approval, then resume based on the decision.',
     category: 'agent-patterns',
   },
-  'stop-workflow': {
-    slug: 'stop-workflow',
-    title: 'Stop Workflow',
+  'agent-cancellation': {
+    slug: 'agent-cancellation',
+    title: 'Agent Cancellation',
     description:
-      'Gracefully cancel a running agent workflow using a hook signal.',
+      'Cancel a running agent from the outside — Hard Cancellation via getRun(runId).cancel() for forced termination, or Stop Signal via a hook for a graceful exit.',
     category: 'agent-patterns',
   },
 

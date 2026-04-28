@@ -1,20 +1,68 @@
 ---
-title: Stop Workflow
-description: Gracefully cancel a running agent workflow using Promise.race and a hook signal.
+title: Agent Cancellation
+description: Cancel a running agent from the outside — either immediately via run.cancel() or gracefully via a stop signal hook.
 type: guide
-summary: Race an agent stream against a stop hook — when the hook fires, the workflow exits immediately.
+summary: Two patterns for cancelling a running agent — Hard Cancellation via getRun(runId).cancel() for forced termination, or Stop Signal via a hook + Promise.race for a clean exit with cleanup and final stream notification.
 ---
 
-Use this pattern when you need to gracefully stop a running agent from the outside — for example, a "Stop" button in a chat UI or an admin cancellation endpoint. The workflow races the agent stream against a stop hook. When the hook is resumed, the race resolves and the workflow exits.
+Cancel a running agent from the outside — for example, a "Stop" button in a chat UI, an admin cancellation endpoint, or a timeout fallback. Two patterns are available depending on whether you need the agent to exit cleanly or just need the run to stop: **Hard Cancellation** via `getRun(runId).cancel()` for immediate forced termination, or **Stop Signal** via a hook + `Promise.race` for a graceful exit that runs cleanup and notifies streaming clients before returning.
 
 ## When to use this
 
 * **Chat stop buttons** — let users cancel a long-running agent from the browser
-* **Admin cancellation** — stop a workflow from a different process or API
-* **Cost control** — terminate agents that are consuming too many steps or tokens
+* **Admin cancellation** — stop an agent from a different process or API
 * **Timeout fallback** — combine with `sleep()` to auto-stop after a deadline
 
-## Pattern
+## Choosing an approach
+
+Pick the option that matches what your endpoint needs to deliver to the caller:
+
+* **Hard Cancellation** — terminates the run immediately with no opportunity for cleanup or client notification. A single line of code, but the workflow throws `WorkflowRunCancelledError` and any streaming clients see an abrupt connection close.
+* **Stop Signal** — the workflow exits as soon as the hook fires, runs any pending cleanup, emits a final `data-stopped` part to the stream so the client can render cleanly, and returns a real result.
+
+The trade-offs at a glance:
+
+| | Hard Cancellation | Stop Signal |
+| --- | --- | --- |
+| Mechanism | `getRun(runId).cancel()` | Hook + `Promise.race` |
+| Speed to terminate | Immediate | At the next `await` boundary in the workflow |
+| Runs `finally` / cleanup | No | Yes |
+| Final stream notification | No (abrupt close) | Yes (`data-stopped` part) |
+| `run.returnValue` | Throws `WorkflowRunCancelledError` | Returns the workflow's result |
+| Code complexity | One line | Hook + race + signal step |
+| Best for | Stuck or unresponsive runs, forced termination | User-facing stop, admin cancel, timeouts |
+
+## Hard Cancellation
+
+Call `.cancel()` on a run to terminate it immediately:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+export async function POST(
+  _request: Request,
+  { params }: { params: Promise<{ runId: string }> }
+) {
+  const { runId } = await params;
+  await getRun(runId).cancel(); // [!code highlight]
+  return Response.json({ success: true });
+}
+```
+
+This is an abrupt termination — the run is stopped mid-step with no opportunity to exit cleanly:
+
+* **No cleanup runs** — `finally` blocks, defer-style step cleanup, and any logic after the current step are all skipped
+* **No final notification to the client** — the writable closes abruptly, so a streaming UI just sees the connection drop with no `data-stopped` part to render a clean ending
+* **`run.returnValue` throws** — anyone awaiting the result receives [`WorkflowRunCancelledError`](/docs/api-reference/workflow-errors/workflow-run-cancelled-error) instead of a meaningful payload
+* **Underlying step keeps running** — same caveat as the Stop Signal pattern below: the model stream or HTTP call inside the current step continues to completion in the background
+
+Hard Cancellation is the appropriate choice when the run is stuck or unresponsive, has exceeded its expected runtime, or you don't need a clean exit. For everything else — chat stop buttons, admin "stop" actions, timeout fallbacks — you typically want the Stop Signal pattern: the agent finishes its current step, emits a final stream part so the client renders a clean ending, and returns a real result.
+
+## Stop Signal
+
+<Callout type="warn">
+**Limitation:** This pattern does not cancel the underlying model stream. The agent step writing to the writable continues running in the background until it completes — tokens generated after the stop signal are still produced (and billed by your model provider). What this pattern *does* is exit the workflow function as soon as the hook fires and emit a `data-stopped` part so the client can stop rendering. For hard cross-process cancellation that signals the inner step to bail out, see [Distributed Abort Controller](/cookbook/advanced/distributed-abort-controller).
+</Callout>
 
 ### Example
 
@@ -146,6 +194,7 @@ This is the same pattern used by the [Distributed Abort Controller](/cookbook/ad
 * **Audit logging** — include a `reason` field in the stop schema to record who stopped and why
 * **Cross-process** — the hook token is deterministic, so any process can call `stopHook.resume()` with the run ID
 * **Step limits** — combine with `maxSteps` on the agent to cap execution even without manual stop
+* **Hard Cancellation as a fallback** — wire your stop endpoint to fall back to `getRun(runId).cancel()` if the hook resume errors with `not found` / `expired` (for example, the hook was already consumed). This guarantees the run is terminated even when the Stop Signal path is unavailable.
 
 ## Key APIs
 
@@ -153,3 +202,4 @@ This is the same pattern used by the [Distributed Abort Controller](/cookbook/ad
 * [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata) — access the run ID for deterministic hook tokens
 * [`getWritable()`](/docs/api-reference/workflow/get-writable) — stream a stop notification to the client
 * [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — the agent that gets raced against the stop hook
+* [`getRun()`](/docs/api-reference/workflow-api/get-run) — entry point for Hard Cancellation: `getRun(runId).cancel()`

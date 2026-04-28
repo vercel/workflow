@@ -1,0 +1,155 @@
+---
+title: Sequential & Parallel Execution
+description: Compose steps with familiar async/await patterns — sequential await, Promise.all, and Promise.race.
+type: guide
+summary: Workflows are just async functions, so all the standard composition primitives (await, Promise.all, Promise.race) apply unchanged — including racing webhooks against durable sleeps.
+related:
+  - /docs/foundations/workflows-and-steps
+  - /cookbook/common-patterns/timeouts
+  - /cookbook/common-patterns/scheduling
+---
+
+Workflows are written in plain async/await — there's no new control-flow API to learn. Sequential awaits chain steps that depend on each other, `Promise.all` runs independent steps in parallel, and `Promise.race` returns whichever finishes first. These compose with workflow primitives like [`sleep()`](/docs/api-reference/workflow/sleep) and [`createWebhook()`](/docs/api-reference/workflow/create-webhook) since those are also just promises.
+
+## When to use this
+
+- **Pipelines** — each step depends on the previous step's output (validate → process → store)
+- **Independent fan-out** — fetch multiple resources or perform multiple actions that don't depend on each other
+- **Race conditions** — return as soon as one of N operations completes (timeout, first-responder, deadline)
+- **Mixing primitives** — running steps, sleeps, and webhooks side-by-side in the same control-flow expression
+
+## Pattern
+
+### Sequential
+
+The simplest way to orchestrate steps is to execute them one after another, where each step depends on the previous step's output.
+
+```typescript lineNumbers
+declare function validateData(data: unknown): Promise<string>; // @setup
+declare function processData(data: string): Promise<string>; // @setup
+declare function storeData(data: string): Promise<string>; // @setup
+
+export async function dataPipelineWorkflow(data: unknown) {
+  "use workflow";
+
+  const validated = await validateData(data);
+  const processed = await processData(validated);
+  const stored = await storeData(processed);
+
+  return stored;
+}
+```
+
+### Parallel with `Promise.all`
+
+When steps don't depend on each other, run them concurrently with `Promise.all`. The workflow waits until all of them resolve.
+
+```typescript lineNumbers
+declare function fetchUser(userId: string): Promise<{ name: string }>; // @setup
+declare function fetchOrders(userId: string): Promise<{ items: string[] }>; // @setup
+declare function fetchPreferences(userId: string): Promise<{ theme: string }>; // @setup
+
+export async function fetchUserData(userId: string) {
+  "use workflow";
+
+  const [user, orders, preferences] = await Promise.all([ // [!code highlight]
+    fetchUser(userId), // [!code highlight]
+    fetchOrders(userId), // [!code highlight]
+    fetchPreferences(userId), // [!code highlight]
+  ]); // [!code highlight]
+
+  return { user, orders, preferences };
+}
+```
+
+### Race with `Promise.race`
+
+`Promise.race` resolves as soon as the first promise settles. Since [`sleep()`](/docs/api-reference/workflow/sleep) and [`createWebhook()`](/docs/api-reference/workflow/create-webhook) return promises, they compose naturally — for example, waiting for a webhook callback with a deadline:
+
+```typescript lineNumbers
+import { sleep, createWebhook } from "workflow";
+
+declare function executeExternalTask(webhookUrl: string): Promise<void>; // @setup
+
+export async function runExternalTask(userId: string) {
+  "use workflow";
+
+  const webhook = createWebhook();
+  await executeExternalTask(webhook.url);
+
+  await Promise.race([ // [!code highlight]
+    webhook, // [!code highlight]
+    sleep("1 day"), // [!code highlight]
+  ]); // [!code highlight]
+
+  console.log("Done");
+}
+```
+
+For racing operations against deadlines specifically (timeouts), see the dedicated [Timeouts](/cookbook/common-patterns/timeouts) recipe — it covers result discrimination, `FatalError` semantics, and the "loser keeps running" caveat.
+
+### Combining sequential, parallel, and durable primitives
+
+Most real workflows combine all three. Here's a simplified version of the [birthday card generator demo](https://github.com/vercel/workflow-examples/tree/main/birthday-card-generator) — sequential card generation, parallel RSVP fan-out, non-blocking webhook collection, and a durable sleep until the birthday:
+
+```typescript lineNumbers
+import { createWebhook, sleep, type Webhook } from "workflow";
+
+declare function makeCardText(prompt: string): Promise<string>; // @setup
+declare function makeCardImage(text: string): Promise<string>; // @setup
+declare function sendRSVPEmail(friend: string, webhook: Webhook): Promise<void>; // @setup
+declare function sendBirthdayCard(text: string, image: string, rsvps: unknown[], email: string): Promise<void>; // @setup
+
+export async function birthdayWorkflow(
+  prompt: string,
+  email: string,
+  friends: string[],
+  birthday: Date
+) {
+  "use workflow";
+
+  const text = await makeCardText(prompt); // [!code highlight]
+  const image = await makeCardImage(text); // [!code highlight]
+
+  const webhooks = friends.map(() => createWebhook());
+
+  await Promise.all( // [!code highlight]
+    friends.map((friend, i) => sendRSVPEmail(friend, webhooks[i])) // [!code highlight]
+  ); // [!code highlight]
+
+  const rsvps: unknown[] = [];
+  webhooks.map((webhook) =>
+    webhook.then((req) => req.json()).then(({ rsvp }) => rsvps.push(rsvp))
+  );
+
+  await sleep(birthday); // [!code highlight]
+
+  await sendBirthdayCard(text, image, rsvps, email);
+
+  return { text, image, status: "Sent" };
+}
+```
+
+## How it works
+
+1. **`await` is durable.** When the workflow awaits a step, the runtime persists the step's input, suspends the workflow, runs the step, and replays the workflow with the step's result on resume. The same applies to `sleep()` and `createWebhook()`.
+2. **`Promise.all` runs steps concurrently.** Each promise in the array is suspended on its own and the workflow resumes only when all have settled. Failures propagate — if any promise rejects, the whole `Promise.all` rejects.
+3. **`Promise.race` resolves on the first settle.** The losing promises keep running in the background but their results are discarded by the workflow.
+4. **All primitives are promises.** `sleep("1 day")` and `createWebhook()` return promises, so they compose with `Promise.all` / `Promise.race` exactly like steps do — this is what makes patterns like "race a webhook against a 24-hour deadline" a one-liner.
+
+## Adapting to your use case
+
+- **Replace `Promise.all` with `Promise.allSettled`** when partial failures should not abort the rest. You'll get an array of `{ status, value | reason }` instead of throwing on the first rejection.
+- **Bound the parallelism** — `Promise.all` over 1000 items will fan out 1000 concurrent steps. If your downstream APIs can't handle that, batch the array into chunks (see [Batching](/cookbook/common-patterns/batching)).
+- **Add a deadline to any race** — pair the operation with `sleep("30s").then(() => "timeout" as const)` and check the discriminated result. See [Timeouts](/cookbook/common-patterns/timeouts).
+- **Mix steps and hooks in a race** — wait for an external signal *or* a deadline *or* a step result, all in the same `Promise.race`. The first one to resolve wins.
+
+## Key APIs
+
+- [`"use workflow"`](/docs/foundations/workflows-and-steps) — marks the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps) — marks functions with full Node.js access
+- [`sleep()`](/docs/api-reference/workflow/sleep) — durable sleep that survives restarts
+- [`createWebhook()`](/docs/api-reference/workflow/create-webhook) — webhook URL the workflow can race against
+- [`Promise.all()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/all) — wait for all promises
+- [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race) — wait for the first to settle
+- [`Promise.allSettled()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/allSettled) — wait for all, including failures
