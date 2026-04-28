@@ -351,16 +351,25 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
+      // Compose the per-request hang protection with any signal the caller
+      // already passed via `options`, so callers that want their own
+      // cancellation don't silently lose the timeout backstop (and vice
+      // versa). No caller does this today, but `makeRequest()` accepts
+      // arbitrary `RequestInit` options so this future-proofs the contract.
+      const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      const signal = options.signal
+        ? AbortSignal.any([options.signal, timeoutSignal])
+        : timeoutSignal;
       const request = new Request(url, {
         ...options,
         body,
         headers,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal,
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
       const fetchStart = Date.now();
       let response: Response;
       try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
         response = await fetch(request, {
           dispatcher: getDispatcher(),
         } as any);
