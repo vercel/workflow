@@ -41,9 +41,12 @@ jobs:
         id: waitForDocsDeployment
         uses: ./.github/actions/wait-for-vercel-project
         with:
-          team-id: "team_nLlpyC6REAqxydlFKbrMDlud"
-          project-id: "prj_aLMkVj1S4Alk08AThC76nXgwbLEB"
-          vercel-token: ${{ secrets.VERCEL_DOCS_TOKEN }}
+          project-slug: workflow-docs
+          # The job-level `permissions: contents: read` blocks the default
+          # GITHUB_TOKEN from reading the Deployments / Statuses APIs.
+          # Use the GitHub App token, which already has the necessary scopes
+          # for the workflow,front repositories.
+          github-token: ${{ steps.app-token.outputs.token }}
           timeout: 1200
           check-interval: 15
           environment: preview
