@@ -34,20 +34,18 @@ export function ActiveSpanProvider({
 
   useEffect(() => {
     setActiveSpanId((currentSpanId) => {
-      if (spans.length === 0) {
+      if (!currentSpanId) {
         return null;
       }
 
-      if (currentSpanId) {
-        const hasCurrentSpan = spans.some(
-          (span) => span.spanId === currentSpanId
-        );
-        if (hasCurrentSpan) {
-          return currentSpanId;
-        }
+      const hasCurrentSpan = spans.some(
+        (span) => span.spanId === currentSpanId
+      );
+      if (hasCurrentSpan) {
+        return currentSpanId;
       }
 
-      return spans[0].spanId;
+      return null;
     });
   }, [spans]);
 
