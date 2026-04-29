@@ -1,5 +1,11 @@
 name: Dispatch Front Workflow Release PR
 
+# DISABLED: This workflow dispatches to vercel/front (cross-repo) which
+# requires a GitHub App token. The Release App has been temporarily
+# removed, so this workflow is disabled (all jobs gated on `if: false`)
+# until the App is restored. See .github/workflows/release.yml and
+# .github/workflows/backport.yml, which have also been updated to no
+# longer rely on the Release App.
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
@@ -15,6 +21,7 @@ jobs:
   dispatch-front-sync:
     name: Dispatch Front Sync
     if: >
+      false &&
       startsWith(github.event.pull_request.head.ref, 'changeset-release/') &&
       github.event.action != 'closed'
     runs-on: ubuntu-latest
@@ -71,6 +78,7 @@ jobs:
   dispatch-front-close:
     name: Dispatch Front Close
     if: >
+      false &&
       startsWith(github.event.pull_request.head.ref, 'changeset-release/') &&
       github.event.action == 'closed'
     runs-on: ubuntu-latest
