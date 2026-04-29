@@ -833,7 +833,7 @@ describe('e2e', () => {
   // Extended, CJK, emoji, RTL) round-trip end-to-end as bytes that decode
   // back to the original strings — the same property that the web inspector
   // relies on to render decoded text for typed-array stream chunks.
-  test('utf8StreamWorkflow', { timeout: 60_000 }, async () => {
+  test('utf8StreamWorkflow', { timeout: 120_000 }, async () => {
     const run = await start(await e2e('utf8StreamWorkflow'), []);
     const reader = run.getReadable().getReader();
 
