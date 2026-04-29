@@ -8,6 +8,18 @@ import {
 import type { Nitro } from 'nitro/types';
 import { join } from 'pathe';
 
+/**
+ * Forward string entries from Nitro's `externals.external` config to the
+ * workflow builder's esbuild `external` option. RegExp and function entries
+ * are skipped since esbuild's `external` only supports literal strings.
+ */
+function getNitroStringExternals(nitro: Nitro): string[] | undefined {
+  const externals = nitro.options.externals?.external?.filter(
+    (entry): entry is string => typeof entry === 'string'
+  );
+  return externals && externals.length > 0 ? externals : undefined;
+}
+
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
   constructor(nitro: Nitro) {
     super({
@@ -15,6 +27,7 @@ export class VercelBuilder extends VercelBuildOutputAPIBuilder {
         workingDir: nitro.options.rootDir,
         dirs: ['.'], // Different apps that use nitro have different directories
         runtime: nitro.options.workflow?.runtime,
+        externalPackages: getNitroStringExternals(nitro),
       }),
       buildTarget: 'vercel-build-output-api',
     });
@@ -41,6 +54,7 @@ export class LocalBuilder extends BaseBuilder {
         workingDir: nitro.options.rootDir,
         watch: nitro.options.dev,
         dirs: ['.'], // Different apps that use nitro have different directories
+        externalPackages: getNitroStringExternals(nitro),
       }),
       buildTarget: 'next', // Placeholder, not actually used
     });
