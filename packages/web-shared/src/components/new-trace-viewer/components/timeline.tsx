@@ -37,7 +37,9 @@ const SEGMENT_CONFIG: Record<
   received: { className: 'bg-blue-700' },
 };
 
-const COMPRESSED_BOX_SIZE_PX = 16;
+const BAR_HEIGHT_PX = 24;
+const COMPRESSED_BOX_SIZE_PX = 24;
+const COMPRESSED_SEGMENT_WIDTH_PX = 4;
 const SEGMENT_GAP_PX = 1;
 // Keep this in sync with the rendered row height in the timeline/event list.
 const ROW_HEIGHT = 34;
@@ -131,13 +133,19 @@ const TimelineBar = memo(function TimelineBar({
     isRowHovered &&
     pixelWidth >= getMinDurationLabelWidthPx(totalDurationLabel);
 
+  const showCompressedArrow = isCompressed && (leftFrac <= 0 || rightFrac >= 1);
   const CompressedArrow = leftFrac < 0.5 ? ArrowLeft : ArrowRight;
-  const barContent = isCompressed ? (
-    <div className="relative top-[3px] flex h-4 w-4 items-center justify-center rounded-[0.25rem] bg-gray-200">
+  const barContent = showCompressedArrow ? (
+    <div className="flex h-6 w-6 items-center justify-center rounded-[0.25rem]">
       <CompressedArrow className="size-3 text-gray-900" />
     </div>
+  ) : isCompressed ? (
+    <div
+      className="h-6 rounded-[0.25rem]"
+      style={{ background: fallbackColor }}
+    />
   ) : segments.length > 0 ? (
-    <div className="relative w-full h-4 top-[3px]">
+    <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
         const segPixelWidth =
           (seg.endFraction - seg.startFraction) * pixelWidth;
@@ -175,7 +183,7 @@ const TimelineBar = memo(function TimelineBar({
     </div>
   ) : (
     <div
-      className="relative h-4 rounded-[0.25rem] top-[3px]"
+      className="relative h-6 rounded-[0.25rem]"
       style={{
         width: '100%',
         minWidth: 4,
@@ -200,14 +208,23 @@ const TimelineBar = memo(function TimelineBar({
       onClick={onClick}
     >
       <div
-        className="absolute top-1.5 h-[22px] rounded-sm"
+        className="absolute top-1/2 -translate-y-1/2 rounded-sm"
         style={{
           left: isCompressed
-            ? `min(${leftPct}%, calc(100% - ${COMPRESSED_BOX_SIZE_PX}px))`
+            ? `min(${leftPct}%, calc(100% - ${
+                showCompressedArrow
+                  ? COMPRESSED_BOX_SIZE_PX
+                  : COMPRESSED_SEGMENT_WIDTH_PX
+              }px))`
             : `${leftPct}%`,
           width: isCompressed
-            ? `${COMPRESSED_BOX_SIZE_PX}px`
+            ? `${
+                showCompressedArrow
+                  ? COMPRESSED_BOX_SIZE_PX
+                  : COMPRESSED_SEGMENT_WIDTH_PX
+              }px`
             : `max(${widthPct}%, 4px)`,
+          height: BAR_HEIGHT_PX,
         }}
       >
         {barContent}
