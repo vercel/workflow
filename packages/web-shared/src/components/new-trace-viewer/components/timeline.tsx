@@ -1,5 +1,6 @@
 'use client';
 
+import { ArrowLeft, ArrowRight } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
@@ -36,7 +37,7 @@ const SEGMENT_CONFIG: Record<
   received: { className: 'bg-blue-700' },
 };
 
-const FIXED_BAR_WIDTH_PX = 4;
+const COMPRESSED_BOX_SIZE_PX = 16;
 const SEGMENT_GAP_PX = 1;
 // Keep this in sync with the rendered row height in the timeline/event list.
 const ROW_HEIGHT = 34;
@@ -101,11 +102,11 @@ const TimelineBar = memo(function TimelineBar({
   const widthPct = widthFrac * 100;
 
   const pixelWidth = widthFrac * containerWidth;
-  const isCompressed = containerWidth > 0 && pixelWidth < FIXED_BAR_WIDTH_PX;
+  const isCompressed =
+    containerWidth > 0 && pixelWidth < COMPRESSED_BOX_SIZE_PX;
   const [isRowHovered, setIsRowHovered] = useState(false);
 
   const segments = useMemo(() => computeSpanSegments(span), [span]);
-  const finalSegment = segments[segments.length - 1];
 
   const workflowStatus = (span.attributes.data as Record<string, unknown>)
     ?.status as string | undefined;
@@ -114,24 +115,7 @@ const TimelineBar = memo(function TimelineBar({
   const fallbackColor = isErrored
     ? (colors.errorBar ?? 'var(--ds-red-700)')
     : colors.bar;
-  const compressedSegmentStatus = isErrored
-    ? 'failed'
-    : span.resource === 'hook'
-      ? 'received'
-      : finalSegment?.status;
-  const compressedSegmentStyle =
-    compressedSegmentStatus === 'queued'
-      ? { background: 'var(--ds-gray-500)' }
-      : compressedSegmentStatus
-        ? SEGMENT_CONFIG[compressedSegmentStatus].style
-        : undefined;
-  const compressedSegmentClassName = compressedSegmentStatus
-    ? SEGMENT_CONFIG[compressedSegmentStatus].className
-    : undefined;
 
-  const hasCompressedStatus = Boolean(
-    compressedSegmentClassName || compressedSegmentStyle
-  );
   const renderDurationLabel = (label: string) => (
     <span
       className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-white tabular-nums"
@@ -147,19 +131,10 @@ const TimelineBar = memo(function TimelineBar({
     isRowHovered &&
     pixelWidth >= getMinDurationLabelWidthPx(totalDurationLabel);
 
+  const CompressedArrow = leftFrac < 0.5 ? ArrowLeft : ArrowRight;
   const barContent = isCompressed ? (
-    <div
-      className={cn(
-        'relative h-4 rounded-[0.25rem] top-[3px]',
-        compressedSegmentClassName
-      )}
-      style={{
-        width: '100%',
-        background: hasCompressedStatus ? undefined : fallbackColor,
-        ...compressedSegmentStyle,
-      }}
-    >
-      {showBarDurationLabel ? renderDurationLabel(totalDurationLabel) : null}
+    <div className="relative top-[3px] flex h-4 w-4 items-center justify-center rounded-[0.25rem] bg-gray-200">
+      <CompressedArrow className="size-3 text-gray-900" />
     </div>
   ) : segments.length > 0 ? (
     <div className="relative w-full h-4 top-[3px]">
@@ -228,10 +203,10 @@ const TimelineBar = memo(function TimelineBar({
         className="absolute top-1.5 h-[22px] rounded-sm"
         style={{
           left: isCompressed
-            ? `min(${leftPct}%, calc(100% - ${FIXED_BAR_WIDTH_PX}px))`
+            ? `min(${leftPct}%, calc(100% - ${COMPRESSED_BOX_SIZE_PX}px))`
             : `${leftPct}%`,
           width: isCompressed
-            ? `${FIXED_BAR_WIDTH_PX}px`
+            ? `${COMPRESSED_BOX_SIZE_PX}px`
             : `max(${widthPct}%, 4px)`,
         }}
       >
@@ -248,16 +223,12 @@ export function TimelineHeader({
   viewDuration,
   rootStart,
   compression,
-  isZoomed,
-  onResetZoom,
   hoverInfo,
 }: {
   viewStart: number;
   viewDuration: number;
   rootStart: number;
   compression: TimeCompression;
-  isZoomed: boolean;
-  onResetZoom: () => void;
   hoverInfo?: { fraction: number; label: string } | null;
 }): ReactNode {
   const viewEnd = viewStart + viewDuration;
@@ -296,15 +267,6 @@ export function TimelineHeader({
           </span>
         )}
       </div>
-      {isZoomed && (
-        <button
-          type="button"
-          className="absolute right-2 top-1/2 -translate-y-1/2 z-[5] flex items-center py-0.5 px-2 border border-gray-alpha-400 rounded-md bg-background-100 font-sans text-[11px] font-medium text-gray-900 cursor-pointer whitespace-nowrap transition-[color,border-color] duration-[120ms] ease-in-out hover:text-gray-1000 hover:border-gray-600"
-          onClick={onResetZoom}
-        >
-          Reset zoom
-        </button>
-      )}
     </div>
   );
 }

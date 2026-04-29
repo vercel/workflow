@@ -155,7 +155,7 @@ export function SplitPane({
         <div
           ref={containerRef}
           className={cn(
-            'grid flex-1 min-h-0 content-start overflow-x-hidden overflow-y-auto',
+            'grid flex-1 min-h-0 overflow-x-hidden overflow-y-auto',
             isDragging && 'select-none'
           )}
           style={{ gridTemplateColumns: colTemplate }}

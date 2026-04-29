@@ -379,39 +379,12 @@ function computeHookSegmentsFromSpan(
 }
 
 function computeSleepSegmentsFromSpan(
-  startMs: number,
+  _startMs: number,
   duration: number,
-  events: SpanEvent[]
+  _events: SpanEvent[]
 ): Segment[] {
-  const segments: Segment[] = [];
-  if (duration <= 0) return segments;
-
-  const completedTime = events
-    .filter((e) => e.name === 'wait_completed')
-    .map((e) => getHighResInMs(e.timestamp))
-    .sort((a, b) => a - b)[0];
-
-  if (completedTime === undefined) {
-    segments.push({ startFraction: 0, endFraction: 1, status: 'sleeping' });
-    return segments;
-  }
-
-  const completedFrac = timeToFraction(completedTime, startMs, duration);
-  if (completedFrac > 0.001) {
-    segments.push({
-      startFraction: 0,
-      endFraction: completedFrac,
-      status: 'sleeping',
-    });
-  }
-
-  segments.push({
-    startFraction: completedFrac,
-    endFraction: 1,
-    status: 'succeeded',
-  });
-
-  return segments;
+  if (duration <= 0) return [];
+  return [{ startFraction: 0, endFraction: 1, status: 'sleeping' }];
 }
 
 function computeRunSegmentsFromSpan(

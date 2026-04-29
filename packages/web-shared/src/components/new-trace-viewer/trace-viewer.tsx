@@ -1,7 +1,7 @@
 'use client';
 
 import { parseStepName, parseWorkflowName } from '@workflow/utils/parse-name';
-import { Search, X } from 'lucide-react';
+import { RotateCcw, Search, X, ZoomIn, ZoomOut } from 'lucide-react';
 import {
   type ReactNode,
   useCallback,
@@ -194,13 +194,45 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     [trace.spans, viewport.start, viewport.end]
   );
 
-  const isZoomed =
-    viewport.start > root.startTime + 0.01 ||
-    viewport.end < root.startTime + root.duration - 0.01;
-
   const resetZoom = useCallback(() => {
     animateTo({ start: root.startTime, end: root.startTime + root.duration });
   }, [animateTo, root.startTime, root.duration]);
+
+  const ZOOM_FACTOR = 0.5;
+
+  const zoomBy = useCallback(
+    (factor: number) => {
+      const rootS = root.startTime;
+      const rootE = root.startTime + root.duration;
+      const rootD = root.duration;
+
+      setViewport((prev) => {
+        const prevDuration = prev.end - prev.start;
+        const center = (prev.start + prev.end) / 2;
+        const newDuration = Math.max(
+          MIN_VIEWPORT_MS,
+          Math.min(rootD, prevDuration * factor)
+        );
+        let newStart = center - newDuration / 2;
+        let newEnd = center + newDuration / 2;
+
+        if (newStart < rootS) {
+          newStart = rootS;
+          newEnd = rootS + newDuration;
+        }
+        if (newEnd > rootE) {
+          newEnd = rootE;
+          newStart = Math.max(rootS, rootE - newDuration);
+        }
+
+        return { start: newStart, end: newEnd };
+      });
+    },
+    [setViewport, root.startTime, root.duration]
+  );
+
+  const zoomIn = useCallback(() => zoomBy(ZOOM_FACTOR), [zoomBy]);
+  const zoomOut = useCallback(() => zoomBy(1 / ZOOM_FACTOR), [zoomBy]);
 
   const handleSelectSpan = useCallback(
     (spanId: string) => {
@@ -468,8 +500,6 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
               viewDuration={viewDuration}
               rootStart={root.startTime}
               compression={compression}
-              isZoomed={isZoomed}
-              onResetZoom={resetZoom}
               hoverInfo={hoverInfo}
             />
           }
@@ -498,6 +528,32 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             />
           </div>
         </SplitPane>
+        <div className="absolute right-3 bottom-3 z-[5] flex items-center border border-gray-alpha-400 rounded-lg bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
+          <button
+            type="button"
+            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+            onClick={zoomOut}
+            aria-label="Zoom out"
+          >
+            <ZoomOut className="w-4 h-4" />
+          </button>
+          <button
+            type="button"
+            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+            onClick={resetZoom}
+            aria-label="Reset zoom"
+          >
+            <RotateCcw className="w-3.5 h-3.5" />
+          </button>
+          <button
+            type="button"
+            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+            onClick={zoomIn}
+            aria-label="Zoom in"
+          >
+            <ZoomIn className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Detail panel */}
