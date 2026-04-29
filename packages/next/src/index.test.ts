@@ -138,6 +138,21 @@ describe('withWorkflow builder config', () => {
     });
   });
 
+  it('externalizes the built-in Vercel world while preserving user externals', async () => {
+    const config = withWorkflow({
+      serverExternalPackages: ['@node-rs/xxhash'],
+    });
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.serverExternalPackages).toEqual([
+      '@node-rs/xxhash',
+      '@workflow/world-vercel',
+    ]);
+  });
+
   it('preserves an explicit lazyDiscovery disable override', () => {
     process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '0';
 

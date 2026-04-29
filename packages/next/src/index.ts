@@ -3,12 +3,12 @@ import { copyFile, mkdir } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
-import { parseEnvironmentFlag } from './environment-flag.js';
 import {
   getNextBuilder,
   shouldUseDeferredBuilder,
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
+import { parseEnvironmentFlag } from './environment-flag.js';
 
 function resolveNextVersion(workingDir: string): string {
   const errors: unknown[] = [];
@@ -196,6 +196,16 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
+    nextConfig.serverExternalPackages = [
+      ...new Set([
+        ...(nextConfig.serverExternalPackages || []),
+        // The core runtime imports this package with a literal dynamic import
+        // so Next.js can trace it for Vercel deployments. Keep it external so
+        // local builds do not try to bundle @vercel/queue's native keyring
+        // dependency.
+        '@workflow/world-vercel',
+      ]),
+    ];
     const existingCompiler = nextConfig.compiler ?? {};
     const existingRunAfterProductionCompile = (
       existingCompiler as {
