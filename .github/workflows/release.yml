@@ -59,6 +59,8 @@ jobs:
           publish: pnpm ci:publish
           createGithubReleases: false
           setupGitUser: false
+          # Use GitHub API for GPG-signed commits (required by branch rules).
+          commitMode: github-api
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
