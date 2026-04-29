@@ -1240,17 +1240,53 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             ? data.eventData
             : undefined;
 
-      const [value] = await drizzle
-        .insert(events)
-        .values({
-          runId: effectiveRunId,
-          eventId,
-          correlationId: data.correlationId,
-          eventType: data.eventType,
-          eventData: storedEventData,
-          specVersion: effectiveSpecVersion,
-        })
-        .returning({ createdAt: events.createdAt });
+      let value: { createdAt: Date } | undefined;
+      try {
+        [value] = await drizzle
+          .insert(events)
+          .values({
+            runId: effectiveRunId,
+            eventId,
+            correlationId: data.correlationId,
+            eventType: data.eventType,
+            eventData: storedEventData,
+            specVersion: effectiveSpecVersion,
+          })
+          .returning({ createdAt: events.createdAt });
+      } catch (err) {
+        // Translate unique-violation on the entity-creation partial index
+        // (workflow_events_entity_creation_unique) into EntityConflictError
+        // so the runtime's existing dedup catch path can handle it. Without
+        // this, two concurrent invocations producing identical
+        // correlationIds (e.g. snapshot runtime deterministic ULIDs) would
+        // surface as unhandled DB errors instead of dedup signals.
+        // Drizzle wraps the underlying pg error in DrizzleQueryError; the
+        // pg error (with .code === '23505') lives on .cause. We additionally
+        // gate on the violated constraint name so other 23505 violations on
+        // these event types (e.g. the events primary key, or any future
+        // unique constraint we might add) don't get misclassified as a
+        // correlationId conflict.
+        const isEntityCreatingEvent =
+          data.eventType === 'step_created' ||
+          data.eventType === 'hook_created' ||
+          data.eventType === 'wait_created';
+        const pgErr = (err as { code?: string; constraint?: string }).code
+          ? (err as { code?: string; constraint?: string })
+          : ((err as { cause?: { code?: string; constraint?: string } })
+              .cause ?? {});
+        const pgCode = pgErr.code;
+        const pgConstraint = pgErr.constraint;
+        if (
+          isEntityCreatingEvent &&
+          pgCode === '23505' &&
+          pgConstraint === 'workflow_events_entity_creation_unique'
+        ) {
+          throw new EntityConflictError(
+            `${data.eventType} for correlationId "${data.correlationId}" already exists in run "${effectiveRunId}"`
+          );
+        }
+        throw err;
+      }
       if (!value) {
         throw new EntityConflictError(`Event ${eventId} could not be created`);
       }
