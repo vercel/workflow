@@ -97,6 +97,32 @@ export function withWorkflow(
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
 
+    // Mark workflow world packages as server-only externals so Next.js does
+    // not try to bundle them into route handlers. Bundling these would force
+    // webpack/turbopack to follow transitive `require()` calls into native
+    // modules (e.g. `@napi-rs/keyring` reached via `@vercel/queue` →
+    // `@vercel/oidc` → `@vercel/cli-auth`) that cannot be parsed by the JS
+    // bundler. Leaving them as runtime requires resolves to the installed
+    // `node_modules` copy on the server.
+    const existingServerExternalPackages = Array.isArray(
+      nextConfig.serverExternalPackages
+    )
+      ? nextConfig.serverExternalPackages
+      : [];
+    nextConfig.serverExternalPackages = Array.from(
+      new Set([
+        ...existingServerExternalPackages,
+        '@workflow/world-vercel',
+        '@workflow/world-local',
+        '@workflow/world-postgres',
+        // Externalize the underlying SDKs reached transitively from
+        // `@workflow/world-vercel` so Next.js does not follow them into
+        // optional native modules during bundling.
+        '@vercel/queue',
+        '@vercel/oidc',
+      ])
+    );
+
     // configure the loader if turbopack is being used
     if (!nextConfig.turbopack) {
       nextConfig.turbopack = {};
