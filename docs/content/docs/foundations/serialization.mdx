@@ -185,7 +185,7 @@ async function doublePoint(point: Point) {
 
 2. **`WORKFLOW_DESERIALIZE`**: A static method that receives the serialized data and returns a new class instance
 
-3. **Automatic Registration**: The SWC compiler plugin automatically detects classes that implement these symbols and registers them for serialization
+3. **Automatic Registration**: The SWC compiler plugin automatically detects classes that implement these symbols and registers them for serialization. Each class receives a deterministic `classId` derived from its file path and class name, and is registered into the global `Symbol.for("workflow-class-registry")` registry at build time — no manual registration step is required
 
 ### Requirements
 

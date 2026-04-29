@@ -269,9 +269,7 @@ jobs:
         id: waitForDeployment
         uses: ./.github/actions/wait-for-vercel-project
         with:
-          team-id: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
-          project-id: ${{ matrix.app.project-id }}
-          vercel-token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          project-slug: ${{ matrix.app.project-slug }}
           timeout: 1000
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
