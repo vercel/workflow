@@ -7,7 +7,6 @@ import {
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
-import { createVercelWorld } from '@workflow/world-vercel';
 
 const require = createRequire(
   pathToFileURL(process.cwd() + '/package.json').href
@@ -93,6 +92,9 @@ export const createWorld = async (): Promise<World> => {
       );
     }
 
+    const { createVercelWorld } = await dynamicImport(
+      resolveModulePath('@workflow/world-vercel')
+    );
     return createVercelWorld();
   }
 
