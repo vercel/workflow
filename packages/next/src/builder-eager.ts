@@ -1,9 +1,15 @@
 import { constants } from 'node:fs';
 import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
-import { extname, join, resolve } from 'node:path';
+import { dirname, extname, join, relative, resolve } from 'node:path';
 import Watchpack from 'watchpack';
 
 let CachedNextBuilderEager: any;
+
+interface EagerDiscoveredEntries {
+  discoveredSteps: Set<string>;
+  discoveredWorkflows: Set<string>;
+  discoveredSerdeFiles: Set<string>;
+}
 
 // Create the eager Next builder dynamically by extending the ESM BaseBuilder.
 // Exported as getNextBuilderEager() to allow CommonJS modules to import from
@@ -15,6 +21,7 @@ export async function getNextBuilderEager() {
 
   const {
     BaseBuilder: BaseBuilderClass,
+    getImportPath,
     STEP_QUEUE_TRIGGER,
     WORKFLOW_QUEUE_TRIGGER,
     // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
@@ -219,60 +226,6 @@ export async function getNextBuilderEager() {
           };
         };
 
-        const logBuildMessages = (
-          result: {
-            errors?: import('esbuild').Message[];
-            warnings?: import('esbuild').Message[];
-          },
-          label: string
-        ) => {
-          const logByType = (
-            messages: import('esbuild').Message[] | undefined,
-            method: 'error' | 'warn'
-          ) => {
-            if (!messages || messages.length === 0) {
-              return;
-            }
-            const descriptor = method === 'error' ? 'errors' : 'warnings';
-            console[method](`${descriptor} while rebuilding ${label}`);
-            for (const message of messages) {
-              console[method](message);
-            }
-          };
-
-          logByType(result.errors, 'error');
-          logByType(result.warnings, 'warn');
-        };
-
-        const rebuildExistingFiles = async () => {
-          const rebuiltStepStart = Date.now();
-          const stepsResult = await stepsCtx.rebuild();
-          logBuildMessages(stepsResult, 'steps bundle');
-          console.log(
-            'Rebuilt steps bundle',
-            `${Date.now() - rebuiltStepStart}ms`
-          );
-
-          const rebuiltWorkflowStart = Date.now();
-          const workflowResult = await workflowsCtx.interimBundleCtx.rebuild();
-          logBuildMessages(workflowResult, 'workflows bundle');
-
-          if (
-            !workflowResult.outputFiles ||
-            workflowResult.outputFiles.length === 0
-          ) {
-            console.error(
-              'No output generated while rebuilding workflows bundle'
-            );
-            return;
-          }
-          await workflowsCtx.bundleFinal(workflowResult.outputFiles[0].text);
-          console.log(
-            'Rebuilt workflow bundle',
-            `${Date.now() - rebuiltWorkflowStart}ms`
-          );
-        };
-
         const isWatchableFile = (path: string) =>
           watchableExtensions.has(extname(path));
 
@@ -370,14 +323,7 @@ export async function getNextBuilderEager() {
           }
 
           enqueue(async () => {
-            if (addedFiles.length > 0 || removedFiles.length > 0) {
-              await fullRebuild();
-              return;
-            }
-
-            if (modifiedFiles.length > 0) {
-              await rebuildExistingFiles();
-            }
+            await fullRebuild();
           });
         });
 
@@ -445,7 +391,16 @@ export async function getNextBuilderEager() {
       // Create steps bundle
       const stepsRouteDir = join(workflowGeneratedDir, 'step');
       await mkdir(stepsRouteDir, { recursive: true });
-      return await this.createStepsBundle({
+      const routeFile = join(stepsRouteDir, 'route.js');
+      const bundleFile = join(stepsRouteDir, 'route.bundle.js');
+      const discoveredEntries = await this.discoverEntries(
+        inputFiles,
+        stepsRouteDir,
+        tsconfigPath
+      );
+      // Keep esbuild output out of Next's route graph; its CJS require shims are
+      // difficult for webpack/turbopack to analyze when lazy discovery is off.
+      const result = await this.createStepsBundle({
         // If any dynamic requires are used when bundling with ESM
         // esbuild will create a too dynamic wrapper around require
         // which turbopack/webpack fail to analyze. If we externalize
@@ -453,10 +408,60 @@ export async function getNextBuilderEager() {
         // to use cjs as alternative to avoid
         format: 'esm',
         inputFiles,
-        outfile: join(stepsRouteDir, 'route.js'),
+        outfile: bundleFile,
         externalizeNonSteps: true,
         tsconfigPath,
+        discoveredEntries,
       });
+      await this.writeThinStepsRoute(routeFile, discoveredEntries);
+      return result;
+    }
+
+    private async writeThinStepsRoute(
+      routeFile: string,
+      discoveredEntries: EagerDiscoveredEntries
+    ): Promise<void> {
+      const stepFiles = [...discoveredEntries.discoveredSteps].sort();
+      const serdeFiles = [...discoveredEntries.discoveredSerdeFiles].sort();
+      const stepFileSet = new Set(stepFiles);
+      const serdeOnlyFiles = serdeFiles.filter((f) => !stepFileSet.has(f));
+      const imports = [
+        "import 'workflow/internal/builtins';",
+        ...stepFiles.map((file) => this.createRouteImport(routeFile, file)),
+        ...serdeOnlyFiles.map((file) =>
+          this.createRouteImport(routeFile, file)
+        ),
+      ];
+
+      const routeContents = [
+        '// biome-ignore-all lint: generated file',
+        '/* eslint-disable */',
+        ...imports,
+        "export { stepEntrypoint as POST } from 'workflow/runtime';",
+      ].join('\n');
+
+      await writeFile(routeFile, routeContents);
+    }
+
+    private createRouteImport(routeFile: string, file: string): string {
+      const normalizedFile = file.replace(/\\/g, '/');
+      const { importPath, isPackage } = getImportPath(
+        normalizedFile,
+        this.config.workingDir
+      );
+
+      if (isPackage) {
+        return `import '${importPath}';`;
+      }
+
+      let importSpecifier = relative(
+        dirname(routeFile),
+        normalizedFile
+      ).replace(/\\/g, '/');
+      if (!importSpecifier.startsWith('.')) {
+        importSpecifier = `./${importSpecifier}`;
+      }
+      return `import '${importSpecifier}';`;
     }
 
     private async buildWorkflowsFunction({
