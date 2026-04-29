@@ -24,12 +24,7 @@ import { SplitPane } from './components/split-pane';
 import { Timeline, TimelineHeader } from './components/timeline';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { DetailPanel } from './detail-panel';
-import {
-  buildTimeCompression,
-  computeCompressedTimeMarkers,
-  computeRootBounds,
-  computeTimeMarkers,
-} from './utils';
+import { computeRootBounds, computeTimeMarkers } from './utils';
 
 interface NewTraceViewerProps {
   trace: Trace;
@@ -194,22 +189,10 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
   const viewDuration = viewport.end - viewport.start;
 
-  const compression = useMemo(
-    () => buildTimeCompression(trace.spans, viewport.start, viewport.end),
-    [trace.spans, viewport.start, viewport.end]
+  const timeMarkers = useMemo(
+    () => computeTimeMarkers(viewDuration, viewport.start - root.startTime),
+    [viewDuration, viewport.start, root.startTime]
   );
-
-  const timeMarkers = useMemo(() => {
-    const viewEnd = viewport.end;
-    return compression.isCompressed
-      ? computeCompressedTimeMarkers(
-          compression,
-          viewport.start,
-          viewEnd,
-          root.startTime
-        )
-      : computeTimeMarkers(viewDuration, viewport.start - root.startTime);
-  }, [compression, viewport.start, viewport.end, viewDuration, root.startTime]);
 
   const resetZoom = useCallback(() => {
     animateTo({ start: root.startTime, end: root.startTime + root.duration });
@@ -341,10 +324,10 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
 
   const hoverInfo = useMemo(() => {
     if (hoverFraction == null) return null;
-    const absTime = compression.fromVisual(hoverFraction);
+    const absTime = viewport.start + hoverFraction * viewDuration;
     const offset = absTime - root.startTime;
     return { fraction: hoverFraction, label: formatDuration(offset, true) };
-  }, [hoverFraction, compression, root.startTime]);
+  }, [hoverFraction, viewport.start, viewDuration, root.startTime]);
 
   const handleTimelineMouseMove = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -524,14 +507,15 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           </div>
           <div
             ref={timelineRef}
-            className="block min-h-0 overflow-visible relative px-2"
+            className="block min-h-0 overflow-visible relative"
             onDoubleClick={resetZoom}
             onMouseMove={handleTimelineMouseMove}
             onMouseLeave={handleTimelineMouseLeave}
           >
             <Timeline
               spans={filteredSpans}
-              compression={compression}
+              viewStart={viewport.start}
+              viewEnd={viewport.end}
               markers={timeMarkers}
               selectedId={activeSpanId}
               onSelect={handleSelectSpan}

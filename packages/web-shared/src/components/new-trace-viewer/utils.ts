@@ -31,35 +31,6 @@ export function computeRootBounds(spans: Span[]): RootBounds {
 }
 
 // ---------------------------------------------------------------------------
-// Time compression
-// ---------------------------------------------------------------------------
-
-export interface TimeCompression {
-  toVisual(time: number): number;
-  fromVisual(fraction: number): number;
-  isCompressed: boolean;
-}
-
-export function buildTimeCompression(
-  _spans: Span[],
-  viewStart: number,
-  viewEnd: number
-): TimeCompression {
-  const range = viewEnd - viewStart;
-
-  return {
-    isCompressed: false,
-    toVisual(time: number): number {
-      if (range <= 0) return 0;
-      return Math.min(Math.max((time - viewStart) / range, 0), 1);
-    },
-    fromVisual(fraction: number): number {
-      return viewStart + fraction * range;
-    },
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Time markers
 // ---------------------------------------------------------------------------
 
@@ -109,36 +80,6 @@ export function computeTimeMarkers(
   return markers;
 }
 
-export function computeCompressedTimeMarkers(
-  compression: TimeCompression,
-  viewStart: number,
-  viewEnd: number,
-  rootStart: number
-): TimeMarker[] {
-  const viewDuration = viewEnd - viewStart;
-  if (viewDuration <= 0) return [];
-
-  const maxTicks = 6;
-  const interval = pickInterval(viewDuration, maxTicks);
-  const offset = viewStart - rootStart;
-
-  const firstTick = Math.ceil(offset / interval) * interval;
-  const markers: TimeMarker[] = [];
-
-  for (let t = firstTick; t <= offset + viewDuration; t += interval) {
-    const absTime = rootStart + t;
-    const position = compression.toVisual(absTime);
-    if (position < -0.01 || position > 1.01) continue;
-    markers.push({
-      position: Math.min(Math.max(position, 0), 1),
-      label: formatDuration(Math.abs(t), true),
-    });
-    if (markers.length >= MAX_MARKERS) break;
-  }
-
-  return markers;
-}
-
 // ---------------------------------------------------------------------------
 // Span gaps — time deltas between consecutive spans (Alt-key overlay)
 // ---------------------------------------------------------------------------
@@ -152,8 +93,12 @@ export interface SpanGap {
 
 export function computeSpanGaps(
   spans: Span[],
-  compression: TimeCompression
+  viewStart: number,
+  viewEnd: number
 ): SpanGap[] {
+  const range = viewEnd - viewStart;
+  if (range <= 0) return [];
+
   const gaps: SpanGap[] = [];
   for (let i = 0; i < spans.length - 1; i++) {
     const endTime = getHighResInMs(spans[i].endTime);
@@ -161,8 +106,8 @@ export function computeSpanGaps(
     const gapMs = startTime - endTime;
     if (gapMs <= 0) continue;
 
-    const leftFrac = compression.toVisual(endTime);
-    const rightFrac = compression.toVisual(startTime);
+    const leftFrac = Math.min(Math.max((endTime - viewStart) / range, 0), 1);
+    const rightFrac = Math.min(Math.max((startTime - viewStart) / range, 0), 1);
     if (rightFrac - leftFrac < 0.001) continue;
 
     gaps.push({ gapMs, leftFrac, rightFrac, rowIndex: i });

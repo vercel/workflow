@@ -11,8 +11,7 @@ import {
 } from 'react';
 import { cn } from '../../../lib/utils';
 
-/** Wide enough for comfortable dragging; visual line stays 1px centered. */
-const GUTTER_PX = 9;
+const GUTTER_PX = 1;
 const MIN_PX = 50;
 const DEFAULT_START_PX = 340;
 

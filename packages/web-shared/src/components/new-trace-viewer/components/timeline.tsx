@@ -6,12 +6,10 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
-import type { SegmentStatus, TimeCompression } from '../utils';
+import type { SegmentStatus, TimeMarker } from '../utils';
 import {
-  computeCompressedTimeMarkers,
   computeSpanGaps,
   computeSpanSegments,
-  computeTimeMarkers,
   getResourceColor,
 } from '../utils';
 
@@ -35,8 +33,8 @@ const SEGMENT_CONFIG: Record<
 };
 
 const BAR_HEIGHT_PX = 24;
-const COMPRESSED_BOX_SIZE_PX = 24;
-const COMPRESSED_SEGMENT_WIDTH_PX = 4;
+const TINY_BAR_BOX_SIZE_PX = 24;
+const TINY_BAR_WIDTH_PX = 4;
 const SEGMENT_GAP_PX = 1;
 // Keep this in sync with the rendered row height in the timeline/event list.
 const ROW_HEIGHT = 34;
@@ -78,13 +76,15 @@ const DeltaIndicator = memo(function DeltaIndicator({
 
 const TimelineBar = memo(function TimelineBar({
   span,
-  compression,
+  viewStart,
+  viewDuration,
   containerWidth,
   isSelected,
   onClick,
 }: {
   span: Span;
-  compression: TimeCompression;
+  viewStart: number;
+  viewDuration: number;
   containerWidth: number;
   isSelected: boolean;
   onClick: () => void;
@@ -93,16 +93,22 @@ const TimelineBar = memo(function TimelineBar({
   const endTime = getHighResInMs(span.endTime);
   const totalDurationMs = endTime - startTime;
 
-  const leftFrac = compression.toVisual(startTime);
-  const rightFrac = compression.toVisual(endTime);
-  const widthFrac = rightFrac - leftFrac;
+  const leftFracRaw =
+    viewDuration > 0 ? (startTime - viewStart) / viewDuration : 0;
+  const rightFracRaw =
+    viewDuration > 0 ? (endTime - viewStart) / viewDuration : 0;
+  const widthFrac = rightFracRaw - leftFracRaw;
 
-  const leftPct = leftFrac * 100;
+  const leftPct = leftFracRaw * 100;
   const widthPct = widthFrac * 100;
 
   const pixelWidth = widthFrac * containerWidth;
-  const isCompressed =
-    containerWidth > 0 && pixelWidth < COMPRESSED_BOX_SIZE_PX;
+  const visibleLeftFrac = Math.max(0, Math.min(1, leftFracRaw));
+  const visibleRightFrac = Math.max(0, Math.min(1, rightFracRaw));
+  const visiblePixelWidth =
+    Math.max(0, visibleRightFrac - visibleLeftFrac) * containerWidth;
+  const isTinyBar =
+    containerWidth > 0 && visiblePixelWidth < TINY_BAR_BOX_SIZE_PX;
   const [isRowHovered, setIsRowHovered] = useState(false);
 
   const segments = useMemo(() => computeSpanSegments(span), [span]);
@@ -130,13 +136,13 @@ const TimelineBar = memo(function TimelineBar({
     isRowHovered &&
     pixelWidth >= getMinDurationLabelWidthPx(totalDurationLabel);
 
-  const showCompressedArrow = isCompressed && (leftFrac <= 0 || rightFrac >= 1);
-  const CompressedArrow = leftFrac < 0.5 ? ArrowLeft : ArrowRight;
-  const barContent = showCompressedArrow ? (
+  const showBoundaryArrow = isTinyBar && (leftFracRaw < 0 || rightFracRaw > 1);
+  const BoundaryArrow = leftFracRaw < 0.5 ? ArrowLeft : ArrowRight;
+  const barContent = showBoundaryArrow ? (
     <div className="flex h-6 w-6 items-center justify-center rounded-[0.25rem]">
-      <CompressedArrow className="size-3 text-gray-900" />
+      <BoundaryArrow className="size-3 text-gray-900" />
     </div>
-  ) : isCompressed ? (
+  ) : isTinyBar ? (
     <div
       className="h-6 rounded-[0.25rem]"
       style={{ background: fallbackColor }}
@@ -198,29 +204,25 @@ const TimelineBar = memo(function TimelineBar({
       aria-expanded={isSelected}
       aria-level={1}
       className={cn(
-        'h-[34px] relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 rounded-sm aria-selected:hover:bg-gray-200'
+        'h-[34px] relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200'
       )}
       onMouseEnter={() => setIsRowHovered(true)}
       onMouseLeave={() => setIsRowHovered(false)}
       onClick={onClick}
     >
       <div
-        className="absolute top-1/2 -translate-y-1/2 rounded-sm"
+        className="absolute top-1/2 -translate-y-1/2"
         style={{
-          left: isCompressed
-            ? `min(${leftPct}%, calc(100% - ${
-                showCompressedArrow
-                  ? COMPRESSED_BOX_SIZE_PX
-                  : COMPRESSED_SEGMENT_WIDTH_PX
-              }px))`
-            : `${leftPct}%`,
-          width: isCompressed
-            ? `${
-                showCompressedArrow
-                  ? COMPRESSED_BOX_SIZE_PX
-                  : COMPRESSED_SEGMENT_WIDTH_PX
-              }px`
-            : `max(${widthPct}%, 4px)`,
+          left: showBoundaryArrow
+            ? `min(max(${leftPct}%, 0px), calc(100% - ${TINY_BAR_BOX_SIZE_PX}px))`
+            : isTinyBar
+              ? `min(${leftPct}%, calc(100% - ${TINY_BAR_WIDTH_PX}px))`
+              : `${leftPct}%`,
+          width: showBoundaryArrow
+            ? `${TINY_BAR_BOX_SIZE_PX}px`
+            : isTinyBar
+              ? `${TINY_BAR_WIDTH_PX}px`
+              : `max(${widthPct}%, 4px)`,
           height: BAR_HEIGHT_PX,
         }}
       >
@@ -266,7 +268,8 @@ export function TimelineHeader({
 
 export function Timeline({
   spans,
-  compression,
+  viewStart,
+  viewEnd,
   markers,
   selectedId,
   onSelect,
@@ -274,7 +277,8 @@ export function Timeline({
   altHeld = false,
 }: {
   spans: Span[];
-  compression: TimeCompression;
+  viewStart: number;
+  viewEnd: number;
   markers: TimeMarker[];
   selectedId: string | null;
   onSelect: (spanId: string) => void;
@@ -283,6 +287,7 @@ export function Timeline({
 }): ReactNode {
   const containerRef = useRef<HTMLDivElement>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  const viewDuration = viewEnd - viewStart;
 
   useEffect(() => {
     const el = containerRef.current;
@@ -295,12 +300,12 @@ export function Timeline({
   }, []);
 
   const gaps = useMemo(
-    () => computeSpanGaps(spans, compression),
-    [spans, compression]
+    () => computeSpanGaps(spans, viewStart, viewEnd),
+    [spans, viewStart, viewEnd]
   );
 
   return (
-    <div ref={containerRef} className="relative py-2 h-full">
+    <div ref={containerRef} className="relative py-2 h-full overflow-hidden">
       <div
         aria-hidden
         className="absolute inset-y-0 inset-x-0 pointer-events-none"
@@ -323,7 +328,8 @@ export function Timeline({
         <TimelineBar
           key={span.spanId}
           span={span}
-          compression={compression}
+          viewStart={viewStart}
+          viewDuration={viewDuration}
           containerWidth={containerWidth}
           isSelected={selectedId === span.spanId}
           onClick={() => onSelect(span.spanId)}
