@@ -1,5 +1,7 @@
 ---
+"@workflow/builders": patch
+"@workflow/core": patch
 "@workflow/next": patch
 ---
 
-Fix eager workflow step route builds with lazy discovery disabled.
+Fix eager Next.js workflow builds with lazy discovery disabled.
