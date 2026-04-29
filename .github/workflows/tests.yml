@@ -642,9 +642,61 @@ jobs:
           $job = Start-Job -ScriptBlock { Set-Location $using:PWD; pnpm dev *>&1 | Tee-Object -FilePath $using:logFile }
           Start-Sleep -Seconds 15
           cd ../..
+
+          # Fail-fast guards: if the Next.js dev server gets into a corrupted
+          # state during HMR (a recurring Turbopack-on-Windows issue where
+          # `packages/core/dist/*.js` becomes "MODULE_UNPARSABLE" and every
+          # subsequent request returns 500), the e2e suite would otherwise burn
+          # the full 30-minute job window polling stuck workflow runs before
+          # finally being cancelled. Below we (1) bail out if `dev.test.ts`
+          # fails, since that's the first thing to start hitting 500s, and
+          # (2) probe the server before the long e2e run to catch any other
+          # silent breakage.
+          #
+          # Get-DevServerStatus returns the HTTP status code of GET /api/chat,
+          # or 0 if the request never produced a response. /api/chat is a
+          # POST-only endpoint, so a healthy dev server responds with 405
+          # Method Not Allowed; we only treat 5xx (and no-response) as
+          # unhealthy.
+          function Get-DevServerStatus {
+            try {
+              $resp = Invoke-WebRequest -Uri "http://localhost:3000/api/chat" -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop
+              return [int]$resp.StatusCode
+            } catch {
+              if ($_.Exception.Response) {
+                try { return [int]$_.Exception.Response.StatusCode } catch { return 0 }
+              }
+              return 0
+            }
+          }
+
+          $devExit = 0
           pnpm vitest run packages/core/e2e/dev.test.ts
+          $devExit = $LASTEXITCODE
+          if ($devExit -ne 0) {
+            Write-Host "::warning title=dev.test.ts failed::dev.test.ts exited with code $devExit. Skipping the remainder of the e2e suite to avoid waiting for the 30-minute job timeout."
+            Stop-Job $job -ErrorAction SilentlyContinue
+            exit $devExit
+          }
+
+          # Sanity-check the server before kicking off the long e2e suite. This
+          # catches the case where Turbopack quietly went sideways (e.g. lost
+          # track of files in `packages/core/dist` after HMR on Windows) and is
+          # returning 500 for every request. Without this check the e2e suite
+          # would burn the full 30-minute job window polling stuck workflow
+          # runs before getting cancelled.
+          $status = Get-DevServerStatus
+          Write-Host "[health-check:pre-e2e] GET /api/chat -> $status"
+          if ($status -eq 0 -or $status -ge 500) {
+            Write-Host "::error title=Next.js dev server unhealthy::Dev server returned $status before e2e tests. Aborting to avoid the 30-minute job timeout. See the 'Print Next.js server logs' step for the underlying Turbopack error."
+            Stop-Job $job -ErrorAction SilentlyContinue
+            exit 1
+          }
+
           pnpm run test:e2e --reporter=default --reporter=json --reporter=./packages/core/e2e/github-reporter.ts --outputFile=e2e-windows-nextjs-turbopack.json
-          Stop-Job $job
+          $e2eExit = $LASTEXITCODE
+          Stop-Job $job -ErrorAction SilentlyContinue
+          exit $e2eExit
         shell: powershell
         env:
           NODE_OPTIONS: "--enable-source-maps"
