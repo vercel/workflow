@@ -54,14 +54,14 @@ const EventRow = ({
 
   return (
     <li
-      className="overflow-clip group"
+      className="relative overflow-clip group after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-gray-alpha-400"
       role="treeitem"
       aria-selected={isSelected}
       aria-expanded={isSelected}
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 rounded-sm px-2 h-[34px] py-1.5 flex">
+      <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 px-2 h-[34px] py-1.5 flex">
         <div className="flex items-center gap-2">
           <span className={tagClassName}>
             <Icon className="w-4 h-4" />
@@ -91,7 +91,7 @@ const EventList = ({
     <ul
       id="event-list"
       role="tree"
-      className="block min-h-0 overflow-visible px-2 py-2"
+      className="block min-h-0 overflow-visible py-2"
     >
       {spans.map((span) => {
         return (
