@@ -33,6 +33,7 @@ import {
   getCollectedRunIds,
   getProtectionBypassHeaders,
   getWorkflowMetadata,
+  hasNestedStepStackFrames,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
   isLocalDeployment,
@@ -1014,8 +1015,11 @@ describe('e2e', () => {
             expect(result.message).toContain(
               'Step error from imported helper module'
             );
-            // Stack trace propagates to caught error with function names and source file
-            expect(result.stack).toContain('throwErrorFromStep');
+            // Stack trace propagates to caught error with function names and source file.
+            // Some production bundlers collapse non-exported helper frames.
+            if (hasNestedStepStackFrames()) {
+              expect(result.stack).toContain('throwErrorFromStep');
+            }
             expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
 
@@ -1035,7 +1039,9 @@ describe('e2e', () => {
               s.stepName.includes('stepThatThrowsFromHelper')
             );
             expect(failedStep.status).toBe('failed');
-            expect(failedStep.error.stack).toContain('throwErrorFromStep');
+            if (hasNestedStepStackFrames()) {
+              expect(failedStep.error.stack).toContain('throwErrorFromStep');
+            }
             expect(failedStep.error.stack).toContain(
               'stepThatThrowsFromHelper'
             );

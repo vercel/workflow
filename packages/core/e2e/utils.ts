@@ -49,10 +49,15 @@ export function isLocalDeployment(): boolean {
  *       get rid of this strange matrix
  */
 export function hasStepSourceMaps(): boolean {
-  // Next.js does not consume inline sourcemaps AT ALL for step bundles
-  // TODO: we need to fix this
   const appName = process.env.APP_NAME as string;
-  if (['nextjs-webpack', 'nextjs-turbopack'].includes(appName)) {
+  // Turbopack still does not consume inline sourcemaps for step bundles.
+  // TODO: we need to fix this
+  if (appName === 'nextjs-turbopack') {
+    return false;
+  }
+  // Webpack dev imports original step sources directly, so source filenames are
+  // available. Production-style builds still do not expose them consistently.
+  if (appName === 'nextjs-webpack' && !process.env.DEV_TEST_CONFIG) {
     return false;
   }
 
@@ -76,6 +81,17 @@ export function hasStepSourceMaps(): boolean {
 
   // Works everywhere else (i.e. other frameworks in dev mode)
   return true;
+}
+
+/**
+ * Checks if non-exported nested helper function names are expected to survive
+ * in step error stack traces.
+ */
+export function hasNestedStepStackFrames(): boolean {
+  const appName = process.env.APP_NAME as string;
+  // Turbopack production-style builds can collapse the non-exported helper
+  // frame while preserving the exported step frame and error message.
+  return appName !== 'nextjs-turbopack' || Boolean(process.env.DEV_TEST_CONFIG);
 }
 
 /**
