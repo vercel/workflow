@@ -150,6 +150,48 @@ describe('withWorkflow builder config', () => {
     expect(nextConfig.serverExternalPackages).toEqual([
       '@node-rs/xxhash',
       '@workflow/world-vercel',
+      '@vercel/queue',
+      '@vercel/oidc',
+      '@vercel/cli-auth',
+      '@napi-rs/keyring',
+    ]);
+    expect(nextConfig.outputFileTracingIncludes?.['/*']).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('packages/world-vercel/package.json'),
+        expect.stringContaining('@vercel+queue'),
+      ])
+    );
+  });
+
+  it('marks the built-in Vercel world dependencies as webpack externals after user config', async () => {
+    const userWebpack = vi.fn((webpackConfig: any) => {
+      webpackConfig.externals = [{ react: 'commonjs react' }];
+      return webpackConfig;
+    });
+    const config = withWorkflow({
+      webpack: userWebpack,
+    });
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+    const webpackConfig = nextConfig.webpack?.(
+      {
+        externals: [],
+        module: {
+          rules: [],
+        },
+      },
+      {} as any
+    );
+
+    expect(userWebpack).toHaveBeenCalledOnce();
+    expect(webpackConfig?.externals).toEqual([
+      { react: 'commonjs react' },
+      { '@vercel/queue': 'commonjs @vercel/queue' },
+      { '@vercel/oidc': 'commonjs @vercel/oidc' },
+      { '@vercel/cli-auth': 'commonjs @vercel/cli-auth' },
+      { '@napi-rs/keyring': 'commonjs @napi-rs/keyring' },
     ]);
   });
 

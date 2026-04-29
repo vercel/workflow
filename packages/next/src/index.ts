@@ -1,6 +1,6 @@
-import { copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { copyFile, mkdir } from 'node:fs/promises';
-import { dirname, isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import {
@@ -9,6 +9,36 @@ import {
   WORKFLOW_DEFERRED_ENTRIES,
 } from './builder.js';
 import { parseEnvironmentFlag } from './environment-flag.js';
+
+const VERCEL_WORLD_PACKAGE = '@workflow/world-vercel';
+const VERCEL_WORLD_DEPENDENCY_PACKAGES = [
+  '@vercel/queue',
+  '@vercel/oidc',
+  '@vercel/cli-auth',
+  '@napi-rs/keyring',
+];
+const VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES = [
+  VERCEL_WORLD_PACKAGE,
+  ...VERCEL_WORLD_DEPENDENCY_PACKAGES,
+];
+const VERCEL_WORLD_DEPENDENCY_WEBPACK_EXTERNALS =
+  VERCEL_WORLD_DEPENDENCY_PACKAGES.map((pkg) => ({
+    [pkg]: `commonjs ${pkg}`,
+  }));
+
+function externalizeVercelWorldDependenciesForWebpack(webpackConfig: any): any {
+  if (Array.isArray(webpackConfig.externals)) {
+    webpackConfig.externals.push(...VERCEL_WORLD_DEPENDENCY_WEBPACK_EXTERNALS);
+  } else if (webpackConfig.externals) {
+    webpackConfig.externals = [
+      webpackConfig.externals,
+      ...VERCEL_WORLD_DEPENDENCY_WEBPACK_EXTERNALS,
+    ];
+  } else {
+    webpackConfig.externals = [...VERCEL_WORLD_DEPENDENCY_WEBPACK_EXTERNALS];
+  }
+  return webpackConfig;
+}
 
 function resolveNextVersion(workingDir: string): string {
   const errors: unknown[] = [];
@@ -54,6 +84,136 @@ function fileExists(path: string): boolean {
   } catch {
     return false;
   }
+}
+
+function findPackageRoot(path: string): string | undefined {
+  let currentDir = dirname(path);
+  while (currentDir !== dirname(currentDir)) {
+    if (fileExists(join(currentDir, 'package.json'))) {
+      return currentDir;
+    }
+    currentDir = dirname(currentDir);
+  }
+}
+
+function resolvePackageRoot(
+  packageName: string,
+  resolutionPaths: string[]
+): string | undefined {
+  try {
+    return findPackageRoot(
+      require.resolve(packageName, { paths: resolutionPaths })
+    );
+  } catch {
+    return;
+  }
+}
+
+function toPosixPath(path: string): string {
+  return path.split('\\').join('/');
+}
+
+function getPackageDependencies(packageRoot: string): string[] {
+  try {
+    const packageJson = JSON.parse(
+      readFileSync(join(packageRoot, 'package.json'), 'utf-8')
+    ) as {
+      dependencies?: Record<string, string>;
+      optionalDependencies?: Record<string, string>;
+    };
+    return [
+      ...Object.keys(packageJson.dependencies || {}),
+      ...Object.keys(packageJson.optionalDependencies || {}),
+    ];
+  } catch {
+    return [];
+  }
+}
+
+function collectPackageRoots(
+  packageNames: string[],
+  resolutionPaths: string[],
+  rootsByPackage: Map<string, string> = new Map()
+): Map<string, string> {
+  for (const packageName of packageNames) {
+    if (rootsByPackage.has(packageName)) {
+      continue;
+    }
+
+    const packageRoot = resolvePackageRoot(packageName, resolutionPaths);
+    if (!packageRoot) {
+      continue;
+    }
+
+    rootsByPackage.set(packageName, packageRoot);
+    collectPackageRoots(
+      getPackageDependencies(packageRoot),
+      [packageRoot, ...resolutionPaths],
+      rootsByPackage
+    );
+  }
+
+  return rootsByPackage;
+}
+
+function getPackageTracingPatterns(
+  workingDir: string,
+  packageName: string,
+  packageRoot: string
+): string[] {
+  const relativePackageRoot = toPosixPath(relative(workingDir, packageRoot));
+
+  if (packageName.startsWith('@workflow/')) {
+    return [
+      `${relativePackageRoot}/package.json`,
+      `${relativePackageRoot}/dist/**/*`,
+    ];
+  }
+
+  return [`${relativePackageRoot}/**/*`];
+}
+
+function getVercelWorldTracingIncludes(workingDir: string): string[] {
+  const workflowCoreRoot = resolvePackageRoot('@workflow/core', [
+    workingDir,
+    __dirname,
+  ]);
+  const vercelWorldRoot = resolvePackageRoot(VERCEL_WORLD_PACKAGE, [
+    workingDir,
+    ...(workflowCoreRoot ? [workflowCoreRoot] : []),
+    __dirname,
+  ]);
+  const resolutionPaths = [
+    workingDir,
+    ...(workflowCoreRoot ? [workflowCoreRoot] : []),
+    ...(vercelWorldRoot ? [vercelWorldRoot] : []),
+    __dirname,
+  ];
+  const rootsByPackage = collectPackageRoots(
+    VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
+    resolutionPaths
+  );
+
+  return [
+    ...new Set(
+      [...rootsByPackage].flatMap(([packageName, packageRoot]) =>
+        getPackageTracingPatterns(workingDir, packageName, packageRoot)
+      )
+    ),
+  ];
+}
+
+function addVercelWorldTracingIncludes(nextConfig: NextConfig): void {
+  const tracingIncludes = getVercelWorldTracingIncludes(process.cwd());
+  if (tracingIncludes.length === 0) {
+    return;
+  }
+
+  const existingIncludes = nextConfig.outputFileTracingIncludes ?? {};
+  nextConfig.outputFileTracingIncludes = {
+    ...existingIncludes,
+    '/*': [...new Set([...(existingIncludes['/*'] || []), ...tracingIncludes])],
+  };
 }
 
 function getWorkflowManifestCopyPaths({
@@ -200,12 +360,13 @@ export function withWorkflow(
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),
         // The core runtime imports this package with a literal dynamic import
-        // so Next.js can trace it for Vercel deployments. Keep it external so
-        // local builds do not try to bundle @vercel/queue's native keyring
-        // dependency.
-        '@workflow/world-vercel',
+        // so Next.js can trace it for Vercel deployments. Keep the Vercel
+        // world and its native-prone dependencies external so local builds do
+        // not try to parse @vercel/queue's keyring dependency tree.
+        ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
       ]),
     ];
+    addVercelWorldTracingIncludes(nextConfig);
     const existingCompiler = nextConfig.compiler ?? {};
     const existingRunAfterProductionCompile = (
       existingCompiler as {
@@ -378,9 +539,13 @@ export function withWorkflow(
         loader: loaderPath,
       });
 
-      return existingWebpackModify
+      const modifiedWebpackConfig = existingWebpackModify
         ? existingWebpackModify(...args)
         : webpackConfig;
+
+      return externalizeVercelWorldDependenciesForWebpack(
+        modifiedWebpackConfig ?? webpackConfig
+      );
     };
     // only run this in the main process so it only runs once
     // as Next.js uses child processes for different builds
