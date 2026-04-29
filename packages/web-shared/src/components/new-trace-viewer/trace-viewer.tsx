@@ -19,12 +19,17 @@ import { useSidebarDataOptional } from '../sidebar/sidebar-data-context';
 import type { Trace } from '../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
 import { CopyButton } from './components/copy-button';
-import { SplitPane } from './components/split-pane';
 import EventList from './components/event-list';
+import { SplitPane } from './components/split-pane';
 import { Timeline, TimelineHeader } from './components/timeline';
 import { ActiveSpanProvider, useActiveSpan } from './context';
 import { DetailPanel } from './detail-panel';
-import { buildTimeCompression, computeRootBounds } from './utils';
+import {
+  buildTimeCompression,
+  computeCompressedTimeMarkers,
+  computeRootBounds,
+  computeTimeMarkers,
+} from './utils';
 
 interface NewTraceViewerProps {
   trace: Trace;
@@ -193,6 +198,18 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
     () => buildTimeCompression(trace.spans, viewport.start, viewport.end),
     [trace.spans, viewport.start, viewport.end]
   );
+
+  const timeMarkers = useMemo(() => {
+    const viewEnd = viewport.end;
+    return compression.isCompressed
+      ? computeCompressedTimeMarkers(
+          compression,
+          viewport.start,
+          viewEnd,
+          root.startTime
+        )
+      : computeTimeMarkers(viewDuration, viewport.start - root.startTime);
+  }, [compression, viewport.start, viewport.end, viewDuration, root.startTime]);
 
   const resetZoom = useCallback(() => {
     animateTo({ start: root.startTime, end: root.startTime + root.duration });
@@ -495,13 +512,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             </div>
           }
           endHeader={
-            <TimelineHeader
-              viewStart={viewport.start}
-              viewDuration={viewDuration}
-              rootStart={root.startTime}
-              compression={compression}
-              hoverInfo={hoverInfo}
-            />
+            <TimelineHeader markers={timeMarkers} hoverInfo={hoverInfo} />
           }
         >
           <div className="block overflow-visible">
@@ -521,6 +532,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             <Timeline
               spans={filteredSpans}
               compression={compression}
+              markers={timeMarkers}
               selectedId={activeSpanId}
               onSelect={handleSelectSpan}
               hoverFraction={hoverFraction}

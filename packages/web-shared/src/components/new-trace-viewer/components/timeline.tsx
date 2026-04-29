@@ -233,39 +233,18 @@ const TimelineBar = memo(function TimelineBar({
 export { TimelineBar };
 
 export function TimelineHeader({
-  viewStart,
-  viewDuration,
-  rootStart,
-  compression,
+  markers,
   hoverInfo,
 }: {
-  viewStart: number;
-  viewDuration: number;
-  rootStart: number;
-  compression: TimeCompression;
+  markers: TimeMarker[];
   hoverInfo?: { fraction: number; label: string } | null;
 }): ReactNode {
-  const viewEnd = viewStart + viewDuration;
-
-  const markers = useMemo(
-    () =>
-      compression.isCompressed
-        ? computeCompressedTimeMarkers(
-            compression,
-            viewStart,
-            viewEnd,
-            rootStart
-          )
-        : computeTimeMarkers(viewDuration, viewStart - rootStart),
-    [compression, viewStart, viewEnd, viewDuration, rootStart]
-  );
-
   return (
     <div className="relative bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-end px-2 pb-1">
       <div className="relative h-full flex-1">
-        {markers.map((m, i) => (
+        {markers.map((m) => (
           <span
-            key={i}
+            key={`${m.position}-${m.label}`}
             className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap"
             style={{ left: `${m.position * 100}%` }}
           >
@@ -288,6 +267,7 @@ export function TimelineHeader({
 export function Timeline({
   spans,
   compression,
+  markers,
   selectedId,
   onSelect,
   hoverFraction,
@@ -295,6 +275,7 @@ export function Timeline({
 }: {
   spans: Span[];
   compression: TimeCompression;
+  markers: TimeMarker[];
   selectedId: string | null;
   onSelect: (spanId: string) => void;
   hoverFraction?: number | null;
@@ -319,7 +300,19 @@ export function Timeline({
   );
 
   return (
-    <div ref={containerRef} className="relative py-2">
+    <div ref={containerRef} className="relative py-2 h-full">
+      <div
+        aria-hidden
+        className="absolute inset-y-0 inset-x-0 pointer-events-none"
+      >
+        {markers.map((marker) => (
+          <div
+            key={`${marker.position}-${marker.label}`}
+            className="absolute top-0 bottom-0 w-px bg-gray-alpha-300"
+            style={{ left: `${marker.position * 100}%` }}
+          />
+        ))}
+      </div>
       {hoverFraction != null && (
         <div
           className="absolute top-0 bottom-0 w-px bg-gray-alpha-400 pointer-events-none z-10"
