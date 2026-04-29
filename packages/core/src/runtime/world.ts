@@ -9,7 +9,7 @@ import type { World } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
 
 const require = createRequire(
-  pathToFileURL(process.cwd() + '/package.json').href
+  pathToFileURL(`${process.cwd()}/package.json`).href
 );
 
 const WorldCache = Symbol.for('@workflow/world//cache');
@@ -92,9 +92,9 @@ export const createWorld = async (): Promise<World> => {
       );
     }
 
-    const { createVercelWorld } = await dynamicImport(
-      resolveModulePath('@workflow/world-vercel')
-    );
+    // Keep the built-in Vercel world import literal so deploy bundlers such as
+    // Next.js output file tracing can include it in serverless functions.
+    const { createVercelWorld } = await import('@workflow/world-vercel');
     return createVercelWorld();
   }
 
