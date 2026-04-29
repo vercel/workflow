@@ -260,7 +260,7 @@ export function withWorkflow(
     // configure the loader for webpack
     const existingWebpackModify = nextConfig.webpack;
     nextConfig.webpack = (...args) => {
-      const [webpackConfig] = args;
+      const [webpackConfig, options] = args;
       if (!webpackConfig.module) {
         webpackConfig.module = {};
       }
@@ -273,6 +273,40 @@ export function withWorkflow(
         test: /.*\.(mjs|cjs|cts|ts|tsx|js|jsx)$/,
         loader: loaderPath,
       });
+
+      // For server builds, mark workflow world packages as commonjs externals
+      // so webpack does not follow transitive `require()` calls into native
+      // modules (e.g. `@napi-rs/keyring` reached via `@vercel/queue` →
+      // `@vercel/oidc` → `@vercel/cli-auth`). `serverExternalPackages` is
+      // not always honored for these auto-generated workflow route handlers,
+      // so we also push direct externals here as a belt-and-suspenders.
+      if (options?.isServer) {
+        const externalPackages = [
+          '@workflow/world-vercel',
+          '@workflow/world-local',
+          '@workflow/world-postgres',
+          '@vercel/queue',
+          '@vercel/oidc',
+          '@napi-rs/keyring',
+        ];
+        const existingExternals = webpackConfig.externals;
+        const externalEntry = (
+          { request }: { request?: string },
+          callback: (err?: unknown, result?: string) => void
+        ) => {
+          if (request && externalPackages.includes(request)) {
+            return callback(null, `commonjs ${request}`);
+          }
+          return callback();
+        };
+        if (Array.isArray(existingExternals)) {
+          webpackConfig.externals = [externalEntry, ...existingExternals];
+        } else if (existingExternals) {
+          webpackConfig.externals = [externalEntry, existingExternals];
+        } else {
+          webpackConfig.externals = [externalEntry];
+        }
+      }
 
       return existingWebpackModify
         ? existingWebpackModify(...args)
