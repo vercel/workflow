@@ -1,13 +1,14 @@
 import { Circle } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { Span } from '../../trace-viewer/types';
-import { formatDuration, getHighResInMs } from '../../trace-viewer/util/timing';
+import { formatDuration } from '../../trace-viewer/util/timing';
 import {
   WorkflowIcon,
   WebhookIcon,
   SleepIcon,
   StepForwardIcon,
 } from '../icons';
+import { getSpanDurationMs } from '../utils';
 
 interface EventStyle {
   icon: React.ComponentType<{ className?: string }>;
@@ -43,7 +44,7 @@ const EventRow = ({
   isSelected: boolean;
   onSelectSpan: (spanId: string) => void;
 }) => {
-  const durationMs = getHighResInMs(span.duration);
+  const durationMs = getSpanDurationMs(span);
   const isErrored =
     (span.attributes.data as Record<string, unknown>).status === 'failed';
   const { icon: Icon, className: tagClassName } = getEventStyle(

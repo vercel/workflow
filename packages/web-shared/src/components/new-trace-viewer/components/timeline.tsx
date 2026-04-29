@@ -10,6 +10,7 @@ import type { SegmentStatus, TimeMarker } from '../utils';
 import {
   computeSpanGaps,
   computeSpanSegments,
+  getSpanDurationMs,
   getResourceColor,
 } from '../utils';
 
@@ -91,7 +92,7 @@ const TimelineBar = memo(function TimelineBar({
 }): ReactNode {
   const startTime = getHighResInMs(span.startTime);
   const endTime = getHighResInMs(span.endTime);
-  const totalDurationMs = endTime - startTime;
+  const totalDurationMs = getSpanDurationMs(span);
 
   const leftFracRaw =
     viewDuration > 0 ? (startTime - viewStart) / viewDuration : 0;

@@ -4,6 +4,7 @@ import { X } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { Span } from '../trace-viewer/types';
 import { formatDuration, getHighResInMs } from '../trace-viewer/util/timing';
+import { getSpanDurationMs } from './utils';
 
 interface DetailPanelProps {
   span: Span;
@@ -17,7 +18,7 @@ export function DetailPanel({
   onClose,
 }: DetailPanelProps): ReactNode {
   const startMs = getHighResInMs(span.startTime);
-  const durationMs = getHighResInMs(span.duration);
+  const durationMs = getSpanDurationMs(span);
   const offsetMs = startMs - rootStart;
 
   return (

@@ -30,6 +30,13 @@ export function computeRootBounds(spans: Span[]): RootBounds {
   return { startTime: minStart, endTime: maxEnd, duration };
 }
 
+export function getSpanDurationMs(span: Span): number {
+  return Math.max(
+    0,
+    getHighResInMs(span.endTime) - getHighResInMs(span.startTime)
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Time markers
 // ---------------------------------------------------------------------------
@@ -415,8 +422,7 @@ function computeV1RunSegments(
  */
 export function computeSpanSegments(span: Span): Segment[] {
   const startMs = getHighResInMs(span.startTime);
-  const endMs = getHighResInMs(span.endTime);
-  const duration = endMs - startMs;
+  const duration = getSpanDurationMs(span);
   const activeStartMs = span.activeStartTime
     ? getHighResInMs(span.activeStartTime)
     : undefined;

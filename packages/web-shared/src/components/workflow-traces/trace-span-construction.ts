@@ -59,7 +59,7 @@ export const waitEventsToWaitEntity = (
   waitId: string;
   runId: string;
   createdAt: Date;
-  resumeAt: Date;
+  resumeAt?: Date;
   completedAt?: Date;
 } | null => {
   const startEvent = events.find((event) => event.eventType === 'wait_created');
@@ -73,7 +73,9 @@ export const waitEventsToWaitEntity = (
     waitId: startEvent.correlationId,
     runId: startEvent.runId,
     createdAt: startEvent.createdAt,
-    resumeAt: startEvent.eventData?.resumeAt,
+    resumeAt: startEvent.eventData?.resumeAt
+      ? new Date(startEvent.eventData.resumeAt)
+      : undefined,
     completedAt: completedEvent?.createdAt,
   };
 };
@@ -81,13 +83,29 @@ export const waitEventsToWaitEntity = (
 /**
  * Converts a workflow Wait to an OpenTelemetry Span
  */
-export function waitToSpan(events: Event[], maxEndTime: Date): Span | null {
+export function waitToSpan(
+  events: Event[],
+  maxEndTime: Date,
+  fallbackEndTime = maxEndTime
+): Span | null {
   const wait = waitEventsToWaitEntity(events);
   if (!wait) {
     return null;
   }
   const startTime = wait.createdAt;
-  const endTime = wait.completedAt ?? maxEndTime;
+  const startMs = startTime.getTime();
+  let endTime = wait.completedAt;
+  if (!endTime) {
+    const fallbackCap =
+      wait.resumeAt && wait.resumeAt.getTime() < fallbackEndTime.getTime()
+        ? wait.resumeAt
+        : fallbackEndTime;
+    endTime =
+      maxEndTime.getTime() > startMs &&
+      maxEndTime.getTime() < fallbackCap.getTime()
+        ? maxEndTime
+        : fallbackCap;
+  }
   const start = dateToOtelTime(startTime);
   const end = dateToOtelTime(endTime);
   const duration = calculateDuration(startTime, endTime);
