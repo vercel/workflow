@@ -15,9 +15,6 @@ import {
   getResourceColor,
 } from '../utils';
 
-const QUEUED_BACKGROUND =
-  'radial-gradient(circle, var(--ds-gray-400) 2px, transparent 2px) center / 20px 20px space no-repeat, var(--ds-gray-500)';
-
 const HATCHED_BACKGROUND =
   'repeating-linear-gradient(-45deg, var(--ds-gray-400) 0px, var(--ds-gray-400) 3px, var(--ds-gray-500) 3px, var(--ds-gray-500) 6px)';
 
@@ -25,7 +22,7 @@ const SEGMENT_CONFIG: Record<
   SegmentStatus,
   { className?: string; style?: React.CSSProperties }
 > = {
-  queued: { style: { background: QUEUED_BACKGROUND } },
+  queued: { className: 'bg-gray-500' },
   retrying: {
     className: 'box-border bg-gray-500',
   },
