@@ -161,6 +161,14 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               if (isProjectLocalFile) {
                 resolvedPath = esbuildResult.path;
                 shouldMakeRelative = true;
+              } else if (
+                options.entriesToBundle &&
+                esbuildResult.path?.endsWith('.node')
+              ) {
+                return {
+                  external: true,
+                  path: specifier,
+                };
               }
             }
           }
@@ -169,6 +177,16 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
 
           // Normalize to forward slashes for cross-platform comparison
           const normalizedResolvedPath = resolvedPath.replace(/\\/g, '/');
+
+          if (
+            options.entriesToBundle &&
+            normalizedResolvedPath.endsWith('.node')
+          ) {
+            return {
+              external: true,
+              path: specifier,
+            };
+          }
 
           // Check if this module is a discovered entry whose SWC-transformed
           // code contains side effects (workflow/step/class registration).
