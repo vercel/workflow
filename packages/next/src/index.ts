@@ -1,3 +1,6 @@
+import { copyFileSync, mkdirSync, statSync } from 'node:fs';
+import { copyFile, mkdir } from 'node:fs/promises';
+import { dirname, isAbsolute, join } from 'node:path';
 import type { NextConfig } from 'next';
 import semver from 'semver';
 import { parseEnvironmentFlag } from './environment-flag.js';
@@ -42,6 +45,93 @@ function resolveNextVersion(workingDir: string): string {
     errors,
     `Could not resolve Next.js version. Ensure \`next\` is installed in your project (working directory: ${workingDir}).`
   );
+}
+
+function fileExists(path: string): boolean {
+  try {
+    const stats = statSync(path);
+    return stats.isFile();
+  } catch {
+    return false;
+  }
+}
+
+function getWorkflowManifestCopyPaths({
+  projectDir,
+  distDir,
+}: {
+  projectDir: string;
+  distDir: string;
+}): { manifestPath: string; diagnosticsManifestPath: string } | undefined {
+  const manifestCandidates = [
+    join(projectDir, 'app/.well-known/workflow/v1/manifest.json'),
+    join(projectDir, 'src/app/.well-known/workflow/v1/manifest.json'),
+    join(projectDir, 'public/.well-known/workflow/v1/manifest.json'),
+  ];
+  const manifestPath = manifestCandidates.find(fileExists);
+
+  if (!manifestPath) {
+    return;
+  }
+
+  const resolvedDistDir = isAbsolute(distDir)
+    ? distDir
+    : join(projectDir, distDir);
+  const diagnosticsManifestPath = join(
+    resolvedDistDir,
+    'diagnostics',
+    'workflows-manifest.json'
+  );
+  return { manifestPath, diagnosticsManifestPath };
+}
+
+async function copyWorkflowDiagnosticsManifest(metadata: {
+  projectDir: string;
+  distDir: string;
+}): Promise<void> {
+  const paths = getWorkflowManifestCopyPaths(metadata);
+  if (!paths) {
+    return;
+  }
+
+  const { manifestPath, diagnosticsManifestPath } = paths;
+  await mkdir(dirname(diagnosticsManifestPath), { recursive: true });
+  await copyFile(manifestPath, diagnosticsManifestPath);
+}
+
+function copyWorkflowDiagnosticsManifestSync(metadata: {
+  projectDir: string;
+  distDir: string;
+}): void {
+  const paths = getWorkflowManifestCopyPaths(metadata);
+  if (!paths) {
+    return;
+  }
+
+  const { manifestPath, diagnosticsManifestPath } = paths;
+  mkdirSync(dirname(diagnosticsManifestPath), { recursive: true });
+  copyFileSync(manifestPath, diagnosticsManifestPath);
+}
+
+function registerWorkflowDiagnosticsManifestCopy(metadata: {
+  projectDir: string;
+  distDir: string;
+}): void {
+  const marker = '__workflowDiagnosticsManifestCopies';
+  const globalWithMarker = globalThis as typeof globalThis & {
+    [marker]?: Array<{ projectDir: string; distDir: string }>;
+  };
+
+  if (!globalWithMarker[marker]) {
+    globalWithMarker[marker] = [];
+    process.once('exit', () => {
+      for (const copyMetadata of globalWithMarker[marker] || []) {
+        copyWorkflowDiagnosticsManifestSync(copyMetadata);
+      }
+    });
+  }
+
+  globalWithMarker[marker].push(metadata);
 }
 
 export function withWorkflow(
@@ -106,6 +196,15 @@ export function withWorkflow(
     }
     // shallow clone to avoid read-only on top-level
     nextConfig = Object.assign({}, nextConfig);
+    const existingCompiler = nextConfig.compiler ?? {};
+    const existingRunAfterProductionCompile = (
+      existingCompiler as {
+        runAfterProductionCompile?: (metadata: {
+          projectDir: string;
+          distDir: string;
+        }) => Promise<void>;
+      }
+    ).runAfterProductionCompile;
 
     // configure the loader if turbopack is being used
     if (!nextConfig.turbopack) {
@@ -126,6 +225,17 @@ export function withWorkflow(
     const shouldWatch = process.env.NODE_ENV === 'development';
     let workflowBuilderPromise: Promise<any> | undefined;
     const distDir = nextConfig.distDir || '.next';
+
+    nextConfig.compiler = {
+      ...existingCompiler,
+      runAfterProductionCompile: async (metadata) => {
+        if (existingRunAfterProductionCompile) {
+          await existingRunAfterProductionCompile(metadata);
+        }
+        await copyWorkflowDiagnosticsManifest(metadata);
+        registerWorkflowDiagnosticsManifestCopy(metadata);
+      },
+    };
 
     const getWorkflowBuilder = async () => {
       if (!workflowBuilderPromise) {

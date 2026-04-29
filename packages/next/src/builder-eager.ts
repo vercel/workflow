@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, relative, resolve } from 'node:path';
+import type { WorkflowManifest } from '@workflow/builders';
 import Watchpack from 'watchpack';
 
 let CachedNextBuilderEager: any;
@@ -9,6 +10,10 @@ interface EagerDiscoveredEntries {
   discoveredSteps: Set<string>;
   discoveredWorkflows: Set<string>;
   discoveredSerdeFiles: Set<string>;
+}
+
+interface EagerWorkflowBundle {
+  manifest?: WorkflowManifest;
 }
 
 // Create the eager Next builder dynamically by extending the ESM BaseBuilder.
@@ -54,40 +59,53 @@ export async function getNextBuilderEager() {
       const workflowsBundle = await this.buildWorkflowsFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
 
-      // Merge manifests from both bundles
-      const manifest = {
-        steps: { ...stepsManifest.steps, ...workflowsBundle?.manifest?.steps },
-        workflows: {
-          ...stepsManifest.workflows,
-          ...workflowsBundle?.manifest?.workflows,
-        },
-        classes: {
-          ...stepsManifest.classes,
-          ...workflowsBundle?.manifest?.classes,
-        },
+      const writeUnifiedManifest = async ({
+        stepsManifest,
+        workflowsBundle,
+      }: {
+        stepsManifest: WorkflowManifest;
+        workflowsBundle?: EagerWorkflowBundle | null;
+      }) => {
+        // Merge manifests from both bundles
+        const manifest = {
+          steps: {
+            ...(stepsManifest.steps ?? {}),
+            ...(workflowsBundle?.manifest?.steps ?? {}),
+          },
+          workflows: {
+            ...(stepsManifest.workflows ?? {}),
+            ...(workflowsBundle?.manifest?.workflows ?? {}),
+          },
+          classes: {
+            ...(stepsManifest.classes ?? {}),
+            ...(workflowsBundle?.manifest?.classes ?? {}),
+          },
+        };
+
+        // Write unified manifest to workflow generated directory
+        const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
+        const manifestJson = await this.createManifest({
+          workflowBundlePath,
+          manifestDir: workflowGeneratedDir,
+          manifest,
+        });
+
+        // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
+        // Next.js serves files from public/ at the root URL.
+        if (this.shouldExposePublicManifest && manifestJson) {
+          const publicManifestDir = join(
+            this.config.workingDir,
+            'public/.well-known/workflow/v1'
+          );
+          await mkdir(publicManifestDir, { recursive: true });
+          await copyFile(
+            join(workflowGeneratedDir, 'manifest.json'),
+            join(publicManifestDir, 'manifest.json')
+          );
+        }
       };
 
-      // Write unified manifest to workflow generated directory
-      const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
-      const manifestJson = await this.createManifest({
-        workflowBundlePath,
-        manifestDir: workflowGeneratedDir,
-        manifest,
-      });
-
-      // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
-      // Next.js serves files from public/ at the root URL.
-      if (this.shouldExposePublicManifest && manifestJson) {
-        const publicManifestDir = join(
-          this.config.workingDir,
-          'public/.well-known/workflow/v1'
-        );
-        await mkdir(publicManifestDir, { recursive: true });
-        await copyFile(
-          join(workflowGeneratedDir, 'manifest.json'),
-          join(publicManifestDir, 'manifest.json')
-        );
-      }
+      await writeUnifiedManifest({ stepsManifest, workflowsBundle });
 
       await this.writeFunctionsConfig(outputDir);
 
@@ -201,7 +219,7 @@ export async function getNextBuilderEager() {
           options.inputFiles = newInputFiles;
 
           await stepsCtx.dispose();
-          const { context: newStepsCtx } =
+          const { manifest: newStepsManifest, context: newStepsCtx } =
             await this.buildStepsFunction(options);
           if (!newStepsCtx) {
             throw new Error(
@@ -224,6 +242,11 @@ export async function getNextBuilderEager() {
             interimBundleCtx: newWorkflowsCtx.interimBundleCtx,
             bundleFinal: newWorkflowsCtx.bundleFinal,
           };
+
+          await writeUnifiedManifest({
+            stepsManifest: newStepsManifest,
+            workflowsBundle: newWorkflowsCtx,
+          });
         };
 
         const isWatchableFile = (path: string) =>
