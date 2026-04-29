@@ -55,13 +55,16 @@ export function isLocalDeployment(): boolean {
  */
 export function hasStepSourceMaps(): boolean {
   const appName = process.env.APP_NAME as string;
-  if (['nextjs-webpack', 'nextjs-turbopack'].includes(appName)) {
-    // Eager local dev routes import the source files directly, so Next can
-    // report the original TypeScript locations there.
-    return (
-      Boolean(process.env.DEV_TEST_CONFIG) &&
-      !isNextLazyDiscoveryEnabledForTest()
-    );
+  if (appName === 'nextjs-webpack') {
+    // Webpack local dev routes report original TypeScript locations for both
+    // eager and deferred workflow discovery.
+    return Boolean(process.env.DEV_TEST_CONFIG);
+  }
+
+  if (appName === 'nextjs-turbopack') {
+    // Turbopack local dev routes preserve function names, but do not reliably
+    // report original TypeScript source filenames in step error stacks.
+    return false;
   }
 
   // Vercel deployments (both production and preview) have proper source maps
