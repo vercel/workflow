@@ -55,15 +55,13 @@ export function isLocalDeployment(): boolean {
  */
 export function hasStepSourceMaps(): boolean {
   const appName = process.env.APP_NAME as string;
-  // Turbopack still does not consume inline sourcemaps for step bundles.
-  // TODO: we need to fix this
-  if (appName === 'nextjs-turbopack') {
-    return false;
-  }
-  // Webpack dev imports original step sources directly, so source filenames are
-  // available. Production-style builds still do not expose them consistently.
-  if (appName === 'nextjs-webpack' && !process.env.DEV_TEST_CONFIG) {
-    return false;
+  if (['nextjs-webpack', 'nextjs-turbopack'].includes(appName)) {
+    // Eager local dev routes import the source files directly, so Next can
+    // report the original TypeScript locations there.
+    return (
+      Boolean(process.env.DEV_TEST_CONFIG) &&
+      !isNextLazyDiscoveryEnabledForTest()
+    );
   }
 
   // Vercel deployments (both production and preview) have proper source maps
