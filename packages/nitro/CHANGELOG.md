@@ -1,5 +1,20 @@
 # @workflow/nitro
 
+## 5.0.0-beta.3
+
+### Minor Changes
+
+- [#1844](https://github.com/vercel/workflow/pull/1844) [`cbecbaa`](https://github.com/vercel/workflow/commit/cbecbaa5fe0cc58da4b758dbd84a48e89ca7ba88) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Forward string entries from Nitro's `externals.external` config to the workflow builder's esbuild `external` option.
+
+### Patch Changes
+
+- Updated dependencies [[`baba580`](https://github.com/vercel/workflow/commit/baba580794f636fa371d86634a2eac7bf367da12), [`7d07fab`](https://github.com/vercel/workflow/commit/7d07fab692ba79d0339b093a45f5beecb219639e), [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c), [`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec)]:
+  - @workflow/builders@5.0.0-beta.3
+  - @workflow/core@5.0.0-beta.3
+  - @workflow/swc-plugin@5.0.0-beta.3
+  - @workflow/rollup@5.0.0-beta.3
+  - @workflow/vite@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

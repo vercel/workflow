@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1852](https://github.com/vercel/workflow/pull/1852) [`9ea1254`](https://github.com/vercel/workflow/commit/9ea125427f4d96acf142b8b8deca0594e7ee1e7b) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Decode UTF-8 typed array stream chunks in the web stream viewer.
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

@@ -1,5 +1,14 @@
 # @workflow/world-testing
 
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- Updated dependencies [[`7d07fab`](https://github.com/vercel/workflow/commit/7d07fab692ba79d0339b093a45f5beecb219639e), [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c), [`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec)]:
+  - @workflow/core@5.0.0-beta.3
+  - @workflow/cli@5.0.0-beta.3
+  - workflow@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

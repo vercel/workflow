@@ -1,5 +1,19 @@
 # @workflow/core
 
+## 5.0.0-beta.3
+
+### Minor Changes
+
+- [#1491](https://github.com/vercel/workflow/pull/1491) [`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec) Thanks [@pranaygp](https://github.com/pranaygp)! - Allow `start()` to be called directly inside workflow functions
+
+### Patch Changes
+
+- [#1848](https://github.com/vercel/workflow/pull/1848) [`7d07fab`](https://github.com/vercel/workflow/commit/7d07fab692ba79d0339b093a45f5beecb219639e) Thanks [@pranaygp](https://github.com/pranaygp)! - Replace `eval` in `serialization.ts` `revive()` helper with `JSON.parse`. `devalue.stringify()` output is always valid JSON (special values are encoded as negative integer sentinels), so `JSON.parse` is a safe drop-in that eliminates the `eval` anti-pattern.
+
+- Updated dependencies [[`3ad8ee7`](https://github.com/vercel/workflow/commit/3ad8ee7e33e4639cf0e4778c1e87b96a17a74c56), [`354840e`](https://github.com/vercel/workflow/commit/354840e93b46e2eae29d4b1f936b04a92db1890e)]:
+  - @workflow/world-local@5.0.0-beta.3
+  - @workflow/world-vercel@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

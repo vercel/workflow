@@ -1,5 +1,17 @@
 # @workflow/builders
 
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1857](https://github.com/vercel/workflow/pull/1857) [`baba580`](https://github.com/vercel/workflow/commit/baba580794f636fa371d86634a2eac7bf367da12) Thanks [@ijjk](https://github.com/ijjk)! - Write Next.js workflow diagnostics manifests inside the Next.js dist directory and only use `.vercel/output/diagnostics` for the Vercel Build Output API builder.
+
+- [#1686](https://github.com/vercel/workflow/pull/1686) [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Remove `client` transform mode from SWC plugin. The `client` and `step` modes were nearly identical — both preserved step function bodies, replaced workflow bodies with throw stubs, and emitted the same JSON manifest. The only differences were the step registration mechanism (simple property assignment vs. IIFE) and whether DCE ran. Step mode now absorbs all client-mode behaviors: hoisted variable references for object property steps (so `.stepId` is accessible), and dead code elimination. All integrations that previously used `mode: 'client'` now use `mode: 'step'`.
+
+- Updated dependencies [[`7d07fab`](https://github.com/vercel/workflow/commit/7d07fab692ba79d0339b093a45f5beecb219639e), [`417c493`](https://github.com/vercel/workflow/commit/417c4930be3d21768c7efd4d224510a33d8c468c), [`e295bae`](https://github.com/vercel/workflow/commit/e295bae417bd072f8e18e8d07c76d90d40ae7cec)]:
+  - @workflow/core@5.0.0-beta.3
+  - @workflow/swc-plugin@5.0.0-beta.3
+
 ## 5.0.0-beta.2
 
 ### Patch Changes
