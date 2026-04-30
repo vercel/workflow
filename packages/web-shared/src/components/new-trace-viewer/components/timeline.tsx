@@ -35,7 +35,7 @@ const TINY_BAR_BOX_SIZE_PX = 24;
 const TINY_BAR_WIDTH_PX = 4;
 const SEGMENT_GAP_PX = 1;
 // Keep this in sync with the rendered row height in the timeline/event list.
-const ROW_HEIGHT = 48;
+const ROW_HEIGHT = 40;
 const CONTAINER_PAD_Y = 8;
 const END_CAP_HEIGHT = 8;
 export const TIMELINE_PADDING_PX = 16;
@@ -203,7 +203,7 @@ const TimelineBar = memo(function TimelineBar({
       aria-expanded={isSelected}
       aria-level={1}
       className={cn(
-        'h-12 relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200'
+        'h-10 relative flex items-center hover:bg-gray-100 aria-selected:bg-gray-100 aria-selected:hover:bg-gray-200'
       )}
       onMouseEnter={() => setIsRowHovered(true)}
       onMouseLeave={() => setIsRowHovered(false)}

@@ -28,7 +28,7 @@ const defaultStyle: EventStyle = {
   className: 'text-gray-900',
 };
 
-const ROW_HEIGHT_CLASS = 'h-12';
+const ROW_HEIGHT_CLASS = 'h-10';
 
 function getEventStyle(resource: string, isErrored: boolean): EventStyle {
   const style = eventStyles[resource] ?? defaultStyle;
