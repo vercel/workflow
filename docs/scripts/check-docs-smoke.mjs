@@ -44,16 +44,28 @@ const assertNoProtection = async (path) => {
 
 const waitForServer = async (url, timeoutMs = 30_000) => {
   const startedAt = Date.now();
+  let lastStatus = null;
+  let lastBody = null;
   while (Date.now() - startedAt < timeoutMs) {
     try {
       const res = await fetch(url, { headers: getTrustedSourcesHeaders() });
       if (res.ok) return;
-    } catch {
-      // ignore until server is ready
+      lastStatus = res.status;
+      // Capture the first ~500 chars of the body to help diagnose
+      // protection/auth failures (e.g. SSO login redirects).
+      try {
+        lastBody = (await res.text()).slice(0, 500);
+      } catch {
+        lastBody = '<unable to read body>';
+      }
+    } catch (err) {
+      lastStatus = `network error: ${(err && err.message) || err}`;
     }
     await wait(500);
   }
-  throw new Error(`Timed out waiting for server at ${url}`);
+  throw new Error(
+    `Timed out waiting for server at ${url} (last status: ${lastStatus}; body: ${lastBody})`
+  );
 };
 
 const assertPngResponse = async (path) => {
