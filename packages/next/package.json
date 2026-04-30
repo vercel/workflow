@@ -37,7 +37,6 @@
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
-    "enhanced-resolve": "catalog:",
     "semver": "catalog:",
     "watchpack": "2.5.1"
   },

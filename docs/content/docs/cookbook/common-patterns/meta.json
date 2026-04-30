@@ -2,15 +2,14 @@
   "title": "Common Patterns",
   "defaultOpen": true,
   "pages": [
+    "sequential-and-parallel",
+    "workflow-composition",
     "saga",
     "batching",
     "rate-limiting",
-    "fan-out",
     "scheduling",
+    "timeouts",
     "idempotency",
-    "webhooks",
-    "content-router",
-    "child-workflows",
-    "distributed-abort-controller"
+    "webhooks"
   ]
 }
