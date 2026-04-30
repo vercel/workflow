@@ -47,6 +47,10 @@ jobs:
     name: Docs Preview Smoke Checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      id-token: write
+      contents: read
+      deployments: read
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -75,8 +79,22 @@ jobs:
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
+      - name: Mint OIDC token for Vercel Trusted Sources
+        id: oidc
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // Default audience matches the trusted-source rule configured on
+            // the workflow-docs project: aud=https://github.com/vercel,
+            // repository=vercel/workflow.
+            const token = await core.getIDToken();
+            core.setSecret(token);
+            core.setOutput('token', token);
+
       - name: Verify OpenGraph images and sitemap
         run: pnpm --filter docs test:smoke
         env:
           DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Bypass deployment protection via OIDC Trusted Sources.
+          # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
+          VERCEL_TRUSTED_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}

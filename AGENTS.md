@@ -101,7 +101,12 @@ DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest r
 # - WORKFLOW_VERCEL_TEAM: Vercel team ID (CI uses team_nO2mCG4W8IxPIeKoSsqwAxxB for labs)
 # - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...) — see test matrix
 # - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug — see test matrix
-# - VERCEL_AUTOMATION_BYPASS_SECRET: Deployment-protection bypass for the project
+# - VERCEL_TRUSTED_OIDC_TOKEN: Short-lived GitHub Actions OIDC token used to
+#                              bypass deployment protection via Trusted Sources.
+#                              Only available inside GitHub Actions runs (via
+#                              core.getIDToken()). Locally you must either run
+#                              against a deployment without protection enabled,
+#                              or temporarily disable protection on the project.
 #
 # Example (nextjs-turbopack preview deployment):
 NODE_OPTIONS="--enable-source-maps" \
@@ -113,7 +118,6 @@ WORKFLOW_VERCEL_AUTH_TOKEN="<vercel_labs_token>" \
 WORKFLOW_VERCEL_TEAM="team_nO2mCG4W8IxPIeKoSsqwAxxB" \
 WORKFLOW_VERCEL_PROJECT="prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi" \
 WORKFLOW_VERCEL_PROJECT_SLUG="example-nextjs-workflow-turbopack" \
-VERCEL_AUTOMATION_BYPASS_SECRET="<bypass_secret>" \
 pnpm run test:e2e
 ```
 

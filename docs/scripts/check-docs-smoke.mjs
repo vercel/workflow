@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { getTrustedSourcesHeaders } from '../../scripts/trusted-sources-headers.mjs';
 
 /**
  * Docs smoke checks.
@@ -24,18 +25,10 @@ const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const getHeaders = () => {
-  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-  if (bypassSecret) {
-    return { 'x-vercel-protection-bypass': bypassSecret };
-  }
-  return {};
-};
-
 const assertNoProtection = async (path) => {
   const res = await fetch(`${BASE_URL}${path}`, {
     redirect: 'manual',
-    headers: getHeaders(),
+    headers: getTrustedSourcesHeaders(),
   });
   const location = res.headers.get('location') || '';
   if (
@@ -53,7 +46,7 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const res = await fetch(url, { headers: getHeaders() });
+      const res = await fetch(url, { headers: getTrustedSourcesHeaders() });
       if (res.ok) return;
     } catch {
       // ignore until server is ready
@@ -64,7 +57,9 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
 };
 
 const assertPngResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: getTrustedSourcesHeaders(),
+  });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -81,7 +76,9 @@ const assertPngResponse = async (path) => {
 };
 
 const assertHtmlMeta = async (path, expectedOgImagePath) => {
-  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: getTrustedSourcesHeaders(),
+  });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -246,7 +243,9 @@ const checks = [
 const GZIP_SIGNATURE = [0x1f, 0x8b];
 
 const assertTgzResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: getTrustedSourcesHeaders(),
+  });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -259,7 +258,9 @@ const assertTgzResponse = async (path) => {
 };
 
 const assertXmlResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: getTrustedSourcesHeaders(),
+  });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
