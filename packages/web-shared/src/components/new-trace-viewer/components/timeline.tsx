@@ -22,11 +22,11 @@ const SEGMENT_CONFIG: Record<
   retrying: {
     className: 'box-border bg-gray-500',
   },
-  waiting: { className: 'bg-amber-700' },
+  waiting: { className: 'bg-gray-500' },
   running: { className: 'bg-blue-700' },
   failed: { className: 'bg-red-700' },
   succeeded: { className: 'bg-green-700' },
-  sleeping: { className: 'bg-amber-700' },
+  sleeping: { className: 'bg-gray-500' },
   received: { className: 'bg-blue-700' },
 };
 
@@ -56,7 +56,7 @@ const DeltaIndicator = memo(function DeltaIndicator({
 
   return (
     <div
-      className='absolute pointer-events-none'
+      className="absolute pointer-events-none"
       style={{
         left: `${leftFrac * 100}%`,
         width: `${(rightFrac - leftFrac) * 100}%`,
@@ -64,10 +64,10 @@ const DeltaIndicator = memo(function DeltaIndicator({
         height: END_CAP_HEIGHT,
       }}
     >
-      <div className='absolute left-0 top-0 w-px h-full bg-amber-800' />
-      <div className='absolute left-0 right-0 top-1/2 h-px bg-amber-800' />
-      <div className='absolute right-0 top-0 w-px h-full bg-amber-800' />
-      <span className='absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-label-12 leading-none whitespace-nowrap rounded-xs px-1 py-0.5 text-gray-100 bg-amber-800'>
+      <div className="absolute left-0 top-0 w-px h-full bg-amber-800" />
+      <div className="absolute left-0 right-0 top-1/2 h-px bg-amber-800" />
+      <div className="absolute right-0 top-0 w-px h-full bg-amber-800" />
+      <span className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-label-12 leading-none whitespace-nowrap rounded-xs px-1 py-0.5 text-gray-100 bg-amber-800">
         {label}
       </span>
     </div>
@@ -122,7 +122,7 @@ const TimelineBar = memo(function TimelineBar({
     : colors.bar;
   const renderDurationLabel = (label: string) => (
     <span
-      className='pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-white tabular-nums'
+      className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-white tabular-nums"
       style={{ textShadow: '0 1px 1px rgba(0, 0, 0, 0.45)' }}
     >
       {label}
@@ -138,16 +138,16 @@ const TimelineBar = memo(function TimelineBar({
   const showBoundaryArrow = isTinyBar && (leftFracRaw < 0 || rightFracRaw > 1);
   const BoundaryArrow = leftFracRaw < 0.5 ? ArrowLeft : ArrowRight;
   const barContent = showBoundaryArrow ? (
-    <div className='flex h-6 w-6 items-center justify-center rounded-[0.25rem]'>
-      <BoundaryArrow className='size-3 text-gray-900' />
+    <div className="flex h-6 w-6 items-center justify-center rounded-[0.25rem]">
+      <BoundaryArrow className="size-3 text-gray-900" />
     </div>
   ) : isTinyBar ? (
     <div
-      className='h-6 rounded-[0.25rem]'
+      className="h-6 rounded-[0.25rem]"
       style={{ background: fallbackColor }}
     />
   ) : segments.length > 0 ? (
-    <div className='relative h-6 w-full'>
+    <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
         const segPixelWidth =
           (seg.endFraction - seg.startFraction) * pixelWidth;
@@ -185,7 +185,7 @@ const TimelineBar = memo(function TimelineBar({
     </div>
   ) : (
     <div
-      className='relative h-6 rounded-[0.25rem]'
+      className="relative h-6 rounded-[0.25rem]"
       style={{
         width: '100%',
         minWidth: 4,
@@ -198,7 +198,7 @@ const TimelineBar = memo(function TimelineBar({
 
   return (
     <div
-      role='treeitem'
+      role="treeitem"
       aria-selected={isSelected}
       aria-expanded={isSelected}
       aria-level={1}
@@ -210,14 +210,14 @@ const TimelineBar = memo(function TimelineBar({
       onClick={onClick}
     >
       <div
-        className='absolute inset-y-0'
+        className="absolute inset-y-0"
         style={{
           left: TIMELINE_PADDING_PX,
           right: TIMELINE_PADDING_PX,
         }}
       >
         <div
-          className='absolute top-1/2 -translate-y-1/2'
+          className="absolute top-1/2 -translate-y-1/2"
           style={{
             left: showBoundaryArrow
               ? `min(max(${leftPct}%, 0px), calc(100% - ${TINY_BAR_BOX_SIZE_PX}px))`
@@ -249,12 +249,12 @@ export function TimelineHeader({
   hoverInfo?: { fraction: number; label: string } | null;
 }): ReactNode {
   return (
-    <div className='relative bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-end px-4 pb-1'>
-      <div className='relative h-full flex-1'>
+    <div className="relative bg-background-100 border-b border-gray-alpha-400 h-10 min-h-10 flex items-end px-4 pb-1">
+      <div className="relative h-full flex-1">
         {markers.map((m) => (
           <span
             key={`${m.position}-${m.label}`}
-            className='absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap'
+            className="absolute bottom-1 font-mono text-xs font-normal leading-4 text-gray-900 whitespace-nowrap"
             style={{ left: `${m.position * 100}%` }}
           >
             {m.label}
@@ -262,7 +262,7 @@ export function TimelineHeader({
         ))}
         {hoverInfo && (
           <span
-            className='absolute top-1 pointer-events-none z-10 font-mono text-[11px] leading-4 text-gray-1000 whitespace-nowrap bg-background-100 border border-gray-alpha-400 rounded px-1 -translate-x-1/2'
+            className="absolute top-1 pointer-events-none z-10 font-mono text-[11px] leading-4 text-gray-1000 whitespace-nowrap bg-background-100 border border-gray-alpha-400 rounded px-1 -translate-x-1/2"
             style={{ left: `${hoverInfo.fraction * 100}%` }}
           >
             {hoverInfo.label}
@@ -313,10 +313,10 @@ export function Timeline({
   );
 
   return (
-    <div ref={containerRef} className='relative h-full overflow-hidden'>
+    <div ref={containerRef} className="relative h-full overflow-hidden">
       <div
         aria-hidden
-        className='absolute inset-y-0 pointer-events-none'
+        className="absolute inset-y-0 pointer-events-none"
         style={{
           left: TIMELINE_PADDING_PX,
           right: TIMELINE_PADDING_PX,
@@ -326,7 +326,7 @@ export function Timeline({
           Math.abs(marker.value) > ORIGIN_MARKER_EPSILON ? (
             <div
               key={`${marker.position}-${marker.label}`}
-              className='absolute top-0 bottom-0 w-px bg-gray-alpha-300'
+              className="absolute top-0 bottom-0 w-px bg-gray-alpha-300"
               style={{ left: `${marker.position * 100}%` }}
             />
           ) : null
@@ -334,14 +334,14 @@ export function Timeline({
       </div>
       {hoverFraction != null && (
         <div
-          className='absolute inset-y-0 pointer-events-none z-10'
+          className="absolute inset-y-0 pointer-events-none z-10"
           style={{
             left: TIMELINE_PADDING_PX,
             right: TIMELINE_PADDING_PX,
           }}
         >
           <div
-            className='absolute top-0 bottom-0 w-px bg-gray-alpha-400'
+            className="absolute top-0 bottom-0 w-px bg-gray-alpha-400"
             style={{ left: `${hoverFraction * 100}%` }}
           />
         </div>
@@ -360,7 +360,7 @@ export function Timeline({
       {altHeld && (
         <div
           aria-hidden
-          className='absolute inset-y-0 pointer-events-none'
+          className="absolute inset-y-0 pointer-events-none"
           style={{
             left: TIMELINE_PADDING_PX,
             right: TIMELINE_PADDING_PX,
