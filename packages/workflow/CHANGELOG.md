@@ -1,5 +1,21 @@
 # workflow
 
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @workflow/cli@5.0.0-beta.4
+  - @workflow/core@5.0.0-beta.4
+  - @workflow/next@5.0.0-beta.4
+  - @workflow/nitro@5.0.0-beta.4
+  - @workflow/typescript-plugin@5.0.0-beta.3
+  - @workflow/astro@5.0.0-beta.4
+  - @workflow/nest@5.0.0-beta.4
+  - @workflow/rollup@5.0.0-beta.4
+  - @workflow/sveltekit@5.0.0-beta.4
+  - @workflow/nuxt@5.0.0-beta.4
+
 ## 5.0.0-beta.3
 
 ### Minor Changes

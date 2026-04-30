@@ -1,5 +1,11 @@
 # @workflow/web
 
+## 5.0.0-beta.4
+
+### Patch Changes
+
+- [#1883](https://github.com/vercel/workflow/pull/1883) [`640a050`](https://github.com/vercel/workflow/commit/640a0505b88ff5499994155fd7360179cb9abf4f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Polish the new trace viewer: add detail pane, middle-truncate component, timeline tweaks, and various UI cleanups.
+
 ## 5.0.0-beta.3
 
 ### Patch Changes
