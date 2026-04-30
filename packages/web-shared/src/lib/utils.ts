@@ -7,7 +7,12 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
-const durationFormatter = new Intl.NumberFormat(undefined, {
+// const compactFormatter = new Intl.NumberFormat(undefined, {
+//   maximumFractionDigits: 2,
+// });
+
+const secondsFormatter = new Intl.NumberFormat(undefined, {
+  minimumFractionDigits: 2,
   maximumFractionDigits: 2,
 });
 
@@ -20,33 +25,25 @@ const MS_IN_DAY = 24 * MS_IN_HOUR;
  * Formats a duration in milliseconds to a human-readable string.
  *
  * @param ms - Duration in milliseconds
- * @param compact - If true, returns a single-unit format (e.g., "45s", "2.5m").
- *                  If false (default), returns multi-part format (e.g., "1h 30m", "2d 5h").
+ * @param compact - If true, returns a single-unit format (e.g., "0.38s", "2.5m").
+ *                  If false (default), returns multi-part format (e.g., "1m 13.21s", "2d 5h 3m 12.00s").
  *
- * Compact format:
- * - < 1s: shows milliseconds (e.g., "500ms")
- * - < 1m: shows seconds (e.g., "45s")
- * - < 1h: shows minutes (e.g., "45m")
+ * Compact format (timeline markers):
+ * - < 1m: shows seconds (e.g., "0.38s", "45s")
+ * - < 1h: shows minutes (e.g., "2.5m")
  * - >= 1h: shows hours (e.g., "2.5h")
  *
  * Full format:
- * - < 1s: shows milliseconds (e.g., "500ms")
- * - < 1m: shows seconds (e.g., "45.5s")
- * - >= 1m: shows human-readable format (e.g., "1h 30m", "2d 5h")
+ * - < 1m: shows seconds (e.g., "0.38s", "2.71s")
+ * - >= 1m: shows decomposed format with fractional seconds (e.g., "1m 13.21s", "2m 13.04s")
  */
 export function formatDuration(ms: number, compact = false): string {
   if (ms === 0) {
-    return '0';
+    return '0s';
   }
 
-  // For durations less than 1 second, show milliseconds
-  if (ms < MS_IN_SECOND) {
-    return `${durationFormatter.format(ms)}ms`;
-  }
-
-  // For durations less than 1 minute, show seconds
   if (ms < MS_IN_MINUTE) {
-    return `${durationFormatter.format(ms / MS_IN_SECOND)}s`;
+    return `${secondsFormatter.format(ms / MS_IN_SECOND)}s`;
   }
 
   // Compact format: multi-unit without decimals (e.g. "8m 20s", "2h 30m")
@@ -61,11 +58,11 @@ export function formatDuration(ms: number, compact = false): string {
     return m > 0 ? `${h}h ${m}m` : `${h}h`;
   }
 
-  // Full format: human-readable multi-part
+  // Full format: decompose into larger units + fractional seconds
   const days = Math.floor(ms / MS_IN_DAY);
   const hours = Math.floor((ms % MS_IN_DAY) / MS_IN_HOUR);
   const minutes = Math.floor((ms % MS_IN_HOUR) / MS_IN_MINUTE);
-  const seconds = Math.floor((ms % MS_IN_MINUTE) / MS_IN_SECOND);
+  const seconds = (ms % MS_IN_MINUTE) / MS_IN_SECOND;
 
   const parts: string[] = [];
 
@@ -78,9 +75,7 @@ export function formatDuration(ms: number, compact = false): string {
   if (minutes > 0) {
     parts.push(`${minutes}m`);
   }
-  if (hours <= 1 && (seconds > 0 || parts.length === 0)) {
-    parts.push(`${seconds}s`);
-  }
+  parts.push(`${secondsFormatter.format(seconds)}s`);
 
   return parts.join(' ');
 }

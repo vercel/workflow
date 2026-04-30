@@ -408,7 +408,7 @@ export function getNodeBorderColor(nodeKind: string): string {
 // Get node styling based on node kind - theme-aware colors using CSS variables
 export function getNodeStyle(nodeKind: string): NodeStyleResult {
   return {
-    color: 'hsl(var(--card-foreground))',
+    color: 'var(--card-foreground)',
     backgroundColor: getNodeBackgroundColor(nodeKind),
     borderColor: getNodeBorderColor(nodeKind),
   };

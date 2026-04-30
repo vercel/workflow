@@ -105,7 +105,7 @@
 /* Dark theme defaults */
 .dark-theme,
 .dark,
-[data-theme='dark'] {
+[data-theme="dark"] {
   --ds-background-100: hsl(0, 0%, 7%);
   --ds-background-200: hsl(0, 0%, 10%);
 
@@ -184,3 +184,472 @@
   --ds-shadow-small: 0px 1px 2px rgba(0, 0, 0, 0.3);
 }
 
+@theme inline {
+  /* Deactivating namespaces. When you do this, all of the default utilities that use that namespace (like bg-red-500) will be removed, and only your custom values (like bg-custom) will be available. https://tailwindcss.com/docs/theme#overriding-the-default-theme */
+  /* --color-*: initial; @sev:revert */
+  --breakpoint-*: initial;
+
+  --spacing: 0.25rem;
+
+  /* Pixel Fonts */
+  --font-pixel-square: var(--font-geist-pixel-square);
+  --font-pixel-circle: var(--font-geist-pixel-circle);
+  --font-pixel-line: var(--font-geist-pixel-line);
+  --font-pixel-grid: var(--font-geist-pixel-grid);
+  --font-pixel-triangle: var(--font-geist-pixel-triangle);
+
+  --radius-xs: 0.125rem; /* Previously xs: 2px */
+  --radius-sm: 0.25rem; /* Previously sm: 4px */
+  --radius-md: 0.375rem; /* Previously DEFAULT: 6px */
+  --radius-lg: 0.5rem; /* Previously md: 8px */
+  --radius-xl: 0.75rem; /* Previously lg: 12px */
+  --radius-2xl: 1rem;
+
+  /* Override Tailwind default shadows with Geist's DS shadows */
+  --shadow-border: var(--ds-shadow-border);
+
+  --shadow-2xs: var(--ds-shadow-2xs);
+  --shadow-xs: var(--ds-shadow-xs);
+  --shadow-sm: var(--ds-shadow-small);
+  --shadow-md: var(--ds-shadow-medium);
+  --shadow-lg: var(--ds-shadow-large);
+  --shadow-xl: var(--ds-shadow-xl);
+  --shadow-2xl: var(--ds-shadow-2xl);
+
+  /* Geist Breakpoints */
+  --breakpoint-sm: 401px;
+  --breakpoint-md: 601px;
+  --breakpoint-lg: 961px;
+  --breakpoint-xl: 1200px;
+  --breakpoint-2xl: 1400px;
+
+  --color-geist-cyan: var(--geist-cyan);
+  --color-geist-warning: var(--geist-warning);
+  --color-geist-error: var(--geist-error);
+
+  --color-black: var(--ds-black);
+  --color-white: var(--ds-white);
+
+  --color-background-100: var(--ds-background-100);
+  --color-background-200: var(--ds-background-200);
+
+  --color-gray-100: var(--ds-gray-100);
+  --color-gray-200: var(--ds-gray-200);
+  --color-gray-300: var(--ds-gray-300);
+  --color-gray-400: var(--ds-gray-400);
+  --color-gray-500: var(--ds-gray-500);
+  --color-gray-600: var(--ds-gray-600);
+  --color-gray-700: var(--ds-gray-700);
+  --color-gray-800: var(--ds-gray-800);
+  --color-gray-900: var(--ds-gray-900);
+  --color-gray-1000: var(--ds-gray-1000);
+
+  --color-gray-alpha-100: var(--ds-gray-alpha-100);
+  --color-gray-alpha-200: var(--ds-gray-alpha-200);
+  --color-gray-alpha-300: var(--ds-gray-alpha-300);
+  --color-gray-alpha-400: var(--ds-gray-alpha-400);
+  --color-gray-alpha-500: var(--ds-gray-alpha-500);
+  --color-gray-alpha-600: var(--ds-gray-alpha-600);
+  --color-gray-alpha-700: var(--ds-gray-alpha-700);
+  --color-gray-alpha-800: var(--ds-gray-alpha-800);
+  --color-gray-alpha-900: var(--ds-gray-alpha-900);
+  --color-gray-alpha-1000: var(--ds-gray-alpha-1000);
+
+  --color-blue-100: var(--ds-blue-100);
+  --color-blue-200: var(--ds-blue-200);
+  --color-blue-300: var(--ds-blue-300);
+  --color-blue-400: var(--ds-blue-400);
+  --color-blue-500: var(--ds-blue-500);
+  --color-blue-600: var(--ds-blue-600);
+  --color-blue-700: var(--ds-blue-700);
+  --color-blue-800: var(--ds-blue-800);
+  --color-blue-900: var(--ds-blue-900);
+  --color-blue-1000: var(--ds-blue-1000);
+
+  --color-red-100: var(--ds-red-100);
+  --color-red-200: var(--ds-red-200);
+  --color-red-300: var(--ds-red-300);
+  --color-red-400: var(--ds-red-400);
+  --color-red-500: var(--ds-red-500);
+  --color-red-600: var(--ds-red-600);
+  --color-red-700: var(--ds-red-700);
+  --color-red-800: var(--ds-red-800);
+  --color-red-900: var(--ds-red-900);
+  --color-red-1000: var(--ds-red-1000);
+
+  --color-amber-100: var(--ds-amber-100);
+  --color-amber-200: var(--ds-amber-200);
+  --color-amber-300: var(--ds-amber-300);
+  --color-amber-400: var(--ds-amber-400);
+  --color-amber-500: var(--ds-amber-500);
+  --color-amber-600: var(--ds-amber-600);
+  --color-amber-700: var(--ds-amber-700);
+  --color-amber-800: var(--ds-amber-800);
+  --color-amber-900: var(--ds-amber-900);
+  --color-amber-1000: var(--ds-amber-1000);
+
+  --color-green-100: var(--ds-green-100);
+  --color-green-200: var(--ds-green-200);
+  --color-green-300: var(--ds-green-300);
+  --color-green-400: var(--ds-green-400);
+  --color-green-500: var(--ds-green-500);
+  --color-green-600: var(--ds-green-600);
+  --color-green-700: var(--ds-green-700);
+  --color-green-800: var(--ds-green-800);
+  --color-green-900: var(--ds-green-900);
+  --color-green-1000: var(--ds-green-1000);
+
+  --color-teal-100: var(--ds-teal-100);
+  --color-teal-200: var(--ds-teal-200);
+  --color-teal-300: var(--ds-teal-300);
+  --color-teal-400: var(--ds-teal-400);
+  --color-teal-500: var(--ds-teal-500);
+  --color-teal-600: var(--ds-teal-600);
+  --color-teal-700: var(--ds-teal-700);
+  --color-teal-800: var(--ds-teal-800);
+  --color-teal-900: var(--ds-teal-900);
+  --color-teal-1000: var(--ds-teal-1000);
+
+  --color-purple-100: var(--ds-purple-100);
+  --color-purple-200: var(--ds-purple-200);
+  --color-purple-300: var(--ds-purple-300);
+  --color-purple-400: var(--ds-purple-400);
+  --color-purple-500: var(--ds-purple-500);
+  --color-purple-600: var(--ds-purple-600);
+  --color-purple-700: var(--ds-purple-700);
+  --color-purple-800: var(--ds-purple-800);
+  --color-purple-900: var(--ds-purple-900);
+  --color-purple-1000: var(--ds-purple-1000);
+
+  --color-pink-100: var(--ds-pink-100);
+  --color-pink-200: var(--ds-pink-200);
+  --color-pink-300: var(--ds-pink-300);
+  --color-pink-400: var(--ds-pink-400);
+  --color-pink-500: var(--ds-pink-500);
+  --color-pink-600: var(--ds-pink-600);
+  --color-pink-700: var(--ds-pink-700);
+  --color-pink-800: var(--ds-pink-800);
+  --color-pink-900: var(--ds-pink-900);
+  --color-pink-1000: var(--ds-pink-1000);
+}
+
+/* tempory utility remove once front is fully migrated to geistcn */
+@utility geist-sr-only {
+  @apply sr-only;
+}
+
+@utility clearable-input {
+  --duration: 561.04ms;
+  --timing: linear(
+    0 0%,
+    0.00484 1%,
+    0.018323 2%,
+    0.039014 3%,
+    0.065627 4%,
+    0.097013 5%,
+    0.132156 6%,
+    0.170155 7.000000000000001%,
+    0.210219 8%,
+    0.251659 9%,
+    0.293875 10%,
+    0.336353 11%,
+    0.378653 12%,
+    0.420402 13%,
+    0.461292 14.000000000000002%,
+    0.501066 15%,
+    0.53952 16%,
+    0.57649 17%,
+    0.611853 18%,
+    0.645519 19%,
+    0.677428 20%,
+    0.707546 21%,
+    0.735859 22%,
+    0.762374 23%,
+    0.787113 24%,
+    0.810113 25%,
+    0.83142 26%,
+    0.851089 27%,
+    0.869183 28.000000000000004%,
+    0.88577 28.999999999999996%,
+    0.900923 30%,
+    0.914714 31%,
+    0.927222 32%,
+    0.938521 33%,
+    0.948689 34%,
+    0.957801 35%,
+    0.965931 36%,
+    0.973151 37%,
+    0.979531 38%,
+    0.985137 39%,
+    0.990035 40%,
+    0.994286 41%,
+    0.997947 42%,
+    1.001072 43%,
+    1.003715 44%,
+    1.005922 45%,
+    1.00774 46%,
+    1.009209 47%,
+    1.010369 48%,
+    1.011256 49%,
+    1.011902 50%,
+    1.012339 51%,
+    1.012593 52%,
+    1.01269 53%,
+    1.012653 54%,
+    1.012502 55.00000000000001%,
+    1.012256 56.00000000000001%,
+    1.011932 56.99999999999999%,
+    1.011545 57.99999999999999%,
+    1.011107 59%,
+    1.010631 60%,
+    1.010127 61%,
+    1.009604 62%,
+    1.00907 63%,
+    1.008531 64%,
+    1.007993 65%,
+    1.007461 66%,
+    1.00694 67%,
+    1.006432 68%,
+    1.00594 69%,
+    1.005467 70%,
+    1.005014 71%,
+    1.004582 72%,
+    1.004173 73%,
+    1.003786 74%,
+    1.003422 75%,
+    1.003081 76%,
+    1.002763 77%,
+    1.002466 78%,
+    1.002192 79%,
+    1.001938 80%,
+    1.001705 81%,
+    1.00149 82%,
+    1.001294 83%,
+    1.001116 84%,
+    1.000954 85%,
+    1.000808 86%,
+    1.000676 87%,
+    1.000558 88%,
+    1.000452 89%,
+    1.000358 90%,
+    1.000275 91%,
+    1.000202 92%,
+    1.000138 93%,
+    1.000083 94%
+  );
+}
+
+@utility webkit-search-reset {
+  &::-webkit-search-decoration,
+  &::-webkit-search-cancel-button,
+  &::-webkit-search-results-button,
+  &::-webkit-search-results-decoration {
+    -webkit-appearance: none;
+  }
+}
+
+@utility animation-delay-* {
+  animation-delay: --value(--animation-delay-*);
+  animation-delay: calc(--value(integer) * 1ms);
+  animation-delay: --value([*]);
+}
+
+@utility -animation-delay-* {
+  animation-delay: calc(--value(--animation-delay-*) * -1);
+  animation-delay: calc(--value(integer) * -1ms);
+  animation-delay: calc(--value([*]) * -1);
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* Material */
+
+@utility material-base {
+  @apply bg-background-100 rounded-[6px];
+  box-shadow: var(--ds-shadow-border);
+}
+
+@utility material-small {
+  @apply bg-background-100 rounded-[6px];
+  box-shadow: var(--ds-shadow-border-small);
+}
+
+@utility material-medium {
+  @apply bg-background-100 rounded-[12px];
+  box-shadow: var(--ds-shadow-border-medium);
+}
+
+@utility material-large {
+  @apply bg-background-100 rounded-[12px];
+  box-shadow: var(--ds-shadow-border-large);
+}
+
+@utility material-tooltip {
+  @apply bg-background-100 rounded-[6px];
+  box-shadow: var(--ds-shadow-tooltip);
+}
+
+@utility material-menu {
+  @apply bg-background-100 rounded-[12px];
+  box-shadow: var(--ds-shadow-menu);
+}
+
+@utility material-modal {
+  @apply bg-background-100 rounded-[12px];
+  box-shadow: var(--ds-shadow-modal);
+}
+
+@utility material-fullscreen {
+  @apply bg-background-100 rounded-[16px];
+  box-shadow: var(--ds-shadow-fullscreen);
+}
+
+/* Typography Heading */
+
+@utility text-heading-72 {
+  @apply font-sans font-semibold text-[72px] leading-[72px] tracking-[-4.32px];
+}
+
+@utility text-heading-64 {
+  @apply font-sans font-semibold text-[64px] leading-[64px] tracking-[-3.84px];
+}
+
+@utility text-heading-56 {
+  @apply font-sans font-semibold text-[56px] leading-[56px] tracking-[-3.36px];
+}
+
+@utility text-heading-48 {
+  @apply font-sans font-semibold text-[48px] leading-[56px] tracking-[-2.88px];
+}
+
+@utility text-heading-40 {
+  @apply font-sans font-semibold text-[40px] leading-[48px] tracking-[-2.4px];
+}
+
+@utility text-heading-32 {
+  @apply font-sans font-semibold [&>strong]:font-medium [&>strong]:text-gray-900 text-[32px] leading-[40px] tracking-[-1.28px];
+}
+
+@utility text-heading-24 {
+  @apply font-sans font-semibold [&>strong]:font-medium [&>strong]:text-gray-900 text-[24px] leading-[32px] tracking-[-0.96px];
+}
+
+@utility text-heading-20 {
+  @apply font-sans font-semibold [&>strong]:font-medium [&>strong]:text-gray-900 text-[20px] leading-[26px] tracking-[-0.4px];
+}
+
+@utility text-heading-16 {
+  @apply font-sans font-semibold [&>strong]:font-medium [&>strong]:text-gray-900 text-[16px] leading-[24px] tracking-[-0.32px];
+}
+
+@utility text-heading-14 {
+  @apply font-sans font-semibold text-[14px] leading-[20px] tracking-[-0.28px];
+}
+
+/* Typography Button */
+
+@utility text-button-16 {
+  @apply font-sans font-medium text-[16px] leading-[20px];
+}
+
+@utility text-button-14 {
+  @apply font-sans font-medium text-[14px] leading-[20px];
+}
+
+@utility text-button-12 {
+  @apply font-sans font-medium text-[12px] leading-[16px];
+}
+
+/* Typography Label */
+
+@utility text-label-20 {
+  @apply font-sans font-normal text-[20px] leading-[32px];
+}
+
+@utility text-label-18 {
+  @apply font-sans font-normal text-[18px] leading-[20px];
+}
+
+@utility text-label-16 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[16px] leading-[20px];
+}
+
+@utility text-label-14 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[14px] leading-[20px];
+}
+
+@utility text-label-14-mono {
+  @apply font-mono font-normal text-[14px] leading-[20px];
+}
+
+@utility text-label-13 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[13px] leading-[16px];
+}
+
+@utility text-label-13-mono {
+  @apply font-mono font-normal text-[13px] leading-[20px];
+}
+
+@utility text-label-12 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[12px] leading-[16px];
+}
+
+@utility text-label-12-mono {
+  @apply font-mono font-normal text-[12px] leading-[16px];
+}
+
+/* Typography Copy */
+
+@utility text-copy-24 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[24px] leading-[36px];
+}
+
+@utility text-copy-20 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[20px] leading-[36px];
+}
+
+@utility text-copy-18 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[18px] leading-[28px];
+}
+
+@utility text-copy-16 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[16px] leading-[24px];
+}
+
+@utility text-copy-14 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[14px] leading-[20px];
+}
+
+@utility text-copy-14-mono {
+  @apply font-mono font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[14px] leading-[20px];
+}
+
+@utility text-copy-13 {
+  @apply font-sans font-normal [&>strong]:font-medium [&>strong]:text-gray-1000 text-[13px] leading-[18px];
+}
+
+@utility text-copy-13-mono {
+  @apply font-mono font-normal text-[13px] leading-[18px];
+}
+
+@utility container {
+  @apply px-6 mx-auto w-full;
+  max-width: calc(1200px + 48px);
+}
+
+@keyframes tooltip-enter {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

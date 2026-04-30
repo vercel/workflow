@@ -47,6 +47,7 @@
     "format": "biome format --write"
   },
   "dependencies": {
+    "@radix-ui/react-tooltip": "1.2.8",
     "@tailwindcss/postcss": "4",
     "@workflow/core": "workspace:*",
     "@workflow/utils": "workspace:*",

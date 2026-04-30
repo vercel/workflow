@@ -17,6 +17,7 @@ import type { MouseEvent as ReactMouseEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useToast } from '../lib/toast';
+import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
 import { ErrorBoundary } from './error-boundary';
 import {
   EntityDetailPanel,
@@ -36,7 +37,6 @@ import {
   getCustomSpanClassName,
   getCustomSpanEventClassName,
 } from './workflow-traces/trace-colors';
-import { buildTrace, type TraceWithMeta } from '../lib/trace-builder';
 
 /**
  * While a run is live, continuously grow root.duration and rescale so the
@@ -776,7 +776,6 @@ export const WorkflowTraceViewer = ({
   encryptionKey,
   onDecrypt,
   isDecrypting = false,
-  hasEncryptedData = false,
 }: {
   run: WorkflowRun;
   events: Event[];
@@ -819,8 +818,6 @@ export const WorkflowTraceViewer = ({
   onDecrypt?: () => void;
   /** Whether the encryption key is currently being fetched */
   isDecrypting?: boolean;
-  /** Run-level hint: the run contains encrypted data (from probe). */
-  hasEncryptedData?: boolean;
 }) => {
   const toast = useToast();
   const [selectedSpan, setSelectedSpan] = useState<SelectedSpanInfo | null>(
@@ -977,7 +974,7 @@ export const WorkflowTraceViewer = ({
   }
 
   return (
-    <div className="relative w-full h-full flex">
+    <div className="relative w-full h-full flex flex-col">
       {/* Timeline (takes remaining space) */}
       <div className="flex-1 min-w-0 relative">
         <TraceViewerContextProvider
@@ -1164,7 +1161,6 @@ export const WorkflowTraceViewer = ({
                 onDecrypt={onDecrypt}
                 isDecrypting={isDecrypting}
                 selectedSpan={selectedSpan}
-                hasEncryptedData={hasEncryptedData}
               />
             </ErrorBoundary>
           </div>
