@@ -54,22 +54,22 @@ const EventRow = ({
 
   return (
     <li
-      className="relative overflow-clip group after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-gray-alpha-400"
-      role="treeitem"
+      className='relative overflow-clip group after:absolute after:inset-x-0 after:bottom-0 after:h-px after:bg-gray-alpha-400'
+      role='treeitem'
       aria-selected={isSelected}
       aria-expanded={isSelected}
       aria-level={1}
       onClick={() => onSelectSpan(span.spanId)}
     >
-      <div className="hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 px-2 h-[34px] py-1.5 flex">
-        <div className="flex items-center gap-2">
+      <div className='hover:bg-gray-100 group-aria-selected:bg-gray-100 group-aria-selected:hover:bg-gray-200 hover:aria-selected:bg-gray-100 px-2 h-[34px] py-1.5 flex'>
+        <div className='flex items-center gap-2'>
           <span className={tagClassName}>
-            <Icon className="w-4 h-4" />
+            <Icon className='w-4 h-4' />
           </span>
-          <span className="text-label-14">{span.name}</span>
+          <span className='text-label-14'>{span.name}</span>
         </div>
-        <div className="ml-auto">
-          <span className="text-label-14 text-gray-900 tabular-nums">
+        <div className='ml-auto'>
+          <span className='text-label-14 text-gray-900 tabular-nums'>
             {formatDuration(durationMs)}
           </span>
         </div>
@@ -88,11 +88,7 @@ const EventList = ({
   onSelectSpan: (spanId: string) => void;
 }) => {
   return (
-    <ul
-      id="event-list"
-      role="tree"
-      className="block min-h-0 overflow-visible py-2"
-    >
+    <ul id='event-list' role='tree' className='block min-h-0 overflow-visible'>
       {spans.map((span) => {
         return (
           <EventRow
