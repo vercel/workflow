@@ -13,19 +13,19 @@ describe('getProtectionBypassHeader', () => {
   });
 
   it('returns empty object when env var is unset', () => {
-    delete process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
+    delete process.env.VERCEL_OIDC_TOKEN;
     expect(getProtectionBypassHeader()).toEqual({});
   });
 
   it('returns empty object when env var is empty', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS = '';
+    process.env.VERCEL_OIDC_TOKEN = '';
     expect(getProtectionBypassHeader()).toEqual({});
   });
 
-  it('returns x-vercel-protection-bypass header when env var is set', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS = 'my-bypass-secret';
+  it('returns x-vercel-trusted-oidc-idp-token header when env var is set', () => {
+    process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
     expect(getProtectionBypassHeader()).toEqual({
-      'x-vercel-protection-bypass': 'my-bypass-secret',
+      'x-vercel-trusted-oidc-idp-token': 'my-oidc-token',
     });
   });
 });
@@ -88,22 +88,32 @@ describe('getHeaders', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
-    delete process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
+    delete process.env.VERCEL_OIDC_TOKEN;
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
-  it('omits x-vercel-protection-bypass when env var is unset', () => {
+  it('omits x-vercel-trusted-oidc-idp-token when env var is unset', () => {
     const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-vercel-protection-bypass')).toBeNull();
+    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
   });
 
-  it('sets x-vercel-protection-bypass when env var is set', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS = 'my-secret';
+  it('sets x-vercel-trusted-oidc-idp-token when env var is set (direct)', () => {
+    process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
     const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-vercel-protection-bypass')).toBe('my-secret');
+    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBe(
+      'my-oidc-token'
+    );
+  });
+
+  it('sets x-vercel-trusted-oidc-idp-token when env var is set (proxied — forwarded downstream)', () => {
+    process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
+    const headers = getHeaders(undefined, { usingProxy: true });
+    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBe(
+      'my-oidc-token'
+    );
   });
 
   it('omits x-vercel-workflow-api-url when override is unset', () => {

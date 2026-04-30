@@ -301,13 +301,16 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
-          # Bypass deployment protection via OIDC Trusted Sources.
+          # Bypass deployment protection on both the workbench app and the
+          # workflow-server preview via OIDC Trusted Sources. The workbench app
+          # consumes this as `x-vercel-trusted-oidc-idp-token` for the protected
+          # deployment; world-vercel additionally forwards it on requests to the
+          # workflow-server preview when VERCEL_WORKFLOW_SERVER_URL is set.
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
-          VERCEL_TRUSTED_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          VERCEL_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
           # Point PRs at the protected workflow-server preview; unset on main
           # so production runs hit the public vercel-workflow.com URL.
           VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
-          VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS || '' }}
 
       - name: Generate E2E summary
         if: always()

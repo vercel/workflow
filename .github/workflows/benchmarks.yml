@@ -419,7 +419,7 @@ jobs:
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
           # Bypass deployment protection via OIDC Trusted Sources.
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
-          VERCEL_TRUSTED_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          VERCEL_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
           # Run full suite on nextjs-turbopack only (stress tests are too slow to run on all apps)
           BENCHMARK_FULL_SUITE: ${{ matrix.app.name == 'nextjs-turbopack' && ((github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test')) }}
         run: |

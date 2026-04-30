@@ -97,4 +97,4 @@ jobs:
           DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
           # Bypass deployment protection via OIDC Trusted Sources.
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
-          VERCEL_TRUSTED_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          VERCEL_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}

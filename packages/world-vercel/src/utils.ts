@@ -201,16 +201,23 @@ export interface HttpConfig {
 
 /**
  * Returns an object with the Vercel Deployment Protection bypass header
- * if the `VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS` env var is set, otherwise
- * returns an empty object. Useful for spreading into a headers init object
- * for direct fetch() calls that don't go through `getHeaders()`.
+ * if the `VERCEL_OIDC_TOKEN` env var is set, otherwise returns an empty
+ * object. Useful for spreading into a headers init object for direct
+ * fetch() calls that don't go through `getHeaders()`.
  *
- * See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation
+ * Uses the OIDC Trusted Sources flow: the caller (a Vercel function with
+ * `@vercel/oidc` configured, or a CI runner) attaches its short-lived OIDC
+ * token in the `x-vercel-trusted-oidc-idp-token` header. The target project
+ * must have a matching trusted-source rule configured. When the target
+ * deployment doesn't have Deployment Protection enabled, the header is
+ * silently ignored by Vercel's edge.
+ *
+ * See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
  */
 export function getProtectionBypassHeader(): Record<string, string> {
-  const bypassSecret = process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
-  if (bypassSecret) {
-    return { 'x-vercel-protection-bypass': bypassSecret };
+  const oidcToken = process.env.VERCEL_OIDC_TOKEN;
+  if (oidcToken) {
+    return { 'x-vercel-trusted-oidc-idp-token': oidcToken };
   }
   return {};
 }
@@ -259,6 +266,11 @@ export const getHeaders = (
   if (workflowServerUrlOverride && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
+  // Attach the trusted-sources bypass header on every request. The proxy
+  // forwards it downstream to the workflow-server (which may have Deployment
+  // Protection enabled on its preview URL); for direct workflow-server
+  // requests it bypasses protection at Vercel's edge. When the target has no
+  // Deployment Protection enabled, the header is silently ignored.
   for (const [key, value] of Object.entries(getProtectionBypassHeader())) {
     headers.set(key, value);
   }

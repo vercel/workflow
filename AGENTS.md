@@ -101,8 +101,10 @@ DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest r
 # - WORKFLOW_VERCEL_TEAM: Vercel team ID (CI uses team_nO2mCG4W8IxPIeKoSsqwAxxB for labs)
 # - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...) — see test matrix
 # - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug — see test matrix
-# - VERCEL_TRUSTED_OIDC_TOKEN: Short-lived GitHub Actions OIDC token used to
+# - VERCEL_OIDC_TOKEN:         Short-lived GitHub Actions OIDC token used to
 #                              bypass deployment protection via Trusted Sources.
+#                              Reuses Vercel's standard env var name (also read
+#                              by `@vercel/oidc`'s `getVercelOidcToken()`).
 #                              Only available inside GitHub Actions runs (via
 #                              core.getIDToken()). Locally you must either run
 #                              against a deployment without protection enabled,
