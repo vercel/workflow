@@ -92,6 +92,26 @@ jobs:
             core.setSecret(token);
             core.setOutput('token', token);
 
+      - name: Debug — test trusted-sources bypass with curl
+        env:
+          DOCS_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
+          VERCEL_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          # Test against an arbitrary labs preview deployment too. This lets us
+          # tell whether the bypass works on at least one project.
+          LABS_URL: https://example-nextjs-workflow-turbopack-5ujj1t178.labs.vercel.dev
+        run: |
+          echo "=== docs WITHOUT header ==="
+          curl -sI "$DOCS_URL/og" | head -2 || true
+          echo ""
+          echo "=== docs WITH header ==="
+          curl -sI -H "x-vercel-trusted-oidc-idp-token: $VERCEL_OIDC_TOKEN" "$DOCS_URL/og" | head -2 || true
+          echo ""
+          echo "=== labs (turbopack) WITHOUT header ==="
+          curl -sI "$LABS_URL/" | head -2 || true
+          echo ""
+          echo "=== labs (turbopack) WITH header ==="
+          curl -sI -H "x-vercel-trusted-oidc-idp-token: $VERCEL_OIDC_TOKEN" "$LABS_URL/" | head -2 || true
+
       - name: Verify OpenGraph images and sitemap
         run: pnpm --filter docs test:smoke
         env:
