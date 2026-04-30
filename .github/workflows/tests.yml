@@ -269,9 +269,7 @@ jobs:
         id: waitForDeployment
         uses: ./.github/actions/wait-for-vercel-project
         with:
-          team-id: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
-          project-id: ${{ matrix.app.project-id }}
-          vercel-token: ${{ secrets.VERCEL_LABS_TOKEN }}
+          project-slug: ${{ matrix.app.project-slug }}
           timeout: 1000
           check-interval: 15
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
@@ -291,8 +289,8 @@ jobs:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           # Point PRs at the protected workflow-server preview; unset on main
           # so production runs hit the public vercel-workflow.com URL.
-          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref == 'refs/heads/main' && '' || secrets.VERCEL_WORKFLOW_SERVER_URL }}
-          VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS: ${{ github.ref == 'refs/heads/main' && '' || secrets.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS }}
+          VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
+          VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS || '' }}
 
       - name: Generate E2E summary
         if: always()
@@ -331,6 +329,7 @@ jobs:
         with:
           install-dependencies: 'false'
           build-packages: 'false'
+          cache-pnpm: 'false'
 
       - id: set-matrix
         run: |
@@ -369,8 +368,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="canary"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -447,8 +446,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="canary"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -546,8 +545,8 @@ jobs:
         env:
           APP_NAME: ${{ matrix.app.name }}
         run: |
-          cat packages/next/package.json | jq '.dependencies.next|="canary"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
-          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="canary"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
+          cat packages/next/package.json | jq '.dependencies.next|="16.3.0-canary.2"' > packages/next/package.json.new && mv packages/next/package.json.new packages/next/package.json
+          cat "workbench/$APP_NAME/package.json" | jq '.dependencies.next|="16.3.0-canary.2"' > "workbench/$APP_NAME/package.json.new" && mv "workbench/$APP_NAME/package.json.new" "workbench/$APP_NAME/package.json"
           pnpm install --no-frozen-lockfile
 
       - name: Install Dependencies
@@ -711,6 +710,7 @@ jobs:
         with:
           install-dependencies: 'false'
           build-packages: 'false'
+          cache-pnpm: 'false'
 
       - id: set-matrix
         run: |

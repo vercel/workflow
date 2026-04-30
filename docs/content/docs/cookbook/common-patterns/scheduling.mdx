@@ -2,248 +2,124 @@
 title: Sleep, Scheduling & Timed Workflows
 description: Use durable sleep to schedule actions minutes, hours, days, or weeks into the future.
 type: guide
-summary: Schedule future actions with durable sleep that survives cold starts, and race sleeps against hooks to let external events wake the workflow early.
+summary: Schedule future actions with durable sleep that survives cold starts, and race sleeps against hooks to let external events cancel the workflow early.
 ---
 
-Workflow's `sleep()` is durable -- it survives cold starts, restarts, and deployments. This makes it the foundation for scheduled actions, drip campaigns, reminders, and any pattern that needs to wait for real-world time to pass.
+Workflow's `sleep()` is durable — it survives cold starts, restarts, and deployments. Combined with `defineHook()` and `Promise.race()`, it becomes the foundation for interruptible scheduled workflows like drip campaigns, reminders, and timed sequences.
 
 ## When to use this
 
-- Sending emails on a schedule (drip campaigns, reminders, digests)
-- Waiting for a deadline before taking action
-- Any pattern where "do X, wait N hours, then do Y" needs to be reliable
+- Sending emails on a schedule (drip campaigns, onboarding sequences, reminders)
+- Waiting for a deadline but allowing early cancellation
+- Any pattern where "do X, wait N hours, then do Y" needs to be both reliable and interruptible
 
-## Pattern: Drip campaign
+## Drip campaign with cancellation
 
-Send emails at scheduled intervals using `sleep()` between steps. The workflow runs for days or weeks, sleeping between each email.
+A drip campaign sends emails at intervals, sleeping between each. Each sleep races against a cancellation hook — if an external event fires the hook (e.g. user converts, unsubscribes), the campaign stops immediately.
 
 ```typescript
-import { sleep } from "workflow";
+import { defineHook, sleep } from "workflow";
 
-export async function onboardingDrip(email: string) {
-  "use workflow";
-
-  await sendEmail(email, "welcome");
-
-  await sleep("1d"); // [!code highlight]
-  await sendEmail(email, "getting-started-tips");
-
-  await sleep("2d"); // [!code highlight]
-  await sendEmail(email, "feature-highlights");
-
-  await sleep("4d"); // [!code highlight]
-  await sendEmail(email, "follow-up");
-
-  return { email, status: "completed", totalDays: 7 };
-}
+// Hook that any API route can fire to cancel the drip
+export const cancelDrip = defineHook<{ reason?: string }>(); // [!code highlight]
 
 async function sendEmail(email: string, template: string): Promise<void> {
   "use step";
   await fetch("https://api.sendgrid.com/v3/mail/send", {
     method: "POST",
     headers: { Authorization: `Bearer ${process.env.SENDGRID_KEY}` },
-    body: JSON.stringify({
-      to: [{ email }],
-      template_id: template,
-    }),
+    body: JSON.stringify({ to: [{ email }], template_id: template }),
   });
+}
+
+export async function emailSequence(email: string) {
+  "use workflow";
+
+  await sendEmail(email, "welcome");
+
+  // Race durable sleep against the cancellation hook
+  const hook = cancelDrip.create({ token: `cancel-drip:${email}` }); // [!code highlight]
+  const cancelled = await Promise.race([ // [!code highlight]
+    sleep("2d").then(() => false), // [!code highlight]
+    hook.then(() => true), // [!code highlight]
+  ]); // [!code highlight]
+  if (cancelled) return { status: "cancelled", email };
+
+  await sendEmail(email, "getting-started-tips");
+
+  // Create a fresh hook for the next sleep window
+  const hook2 = cancelDrip.create({ token: `cancel-drip:${email}` }); // [!code highlight]
+  const cancelled2 = await Promise.race([ // [!code highlight]
+    sleep("2d").then(() => false), // [!code highlight]
+    hook2.then(() => true), // [!code highlight]
+  ]); // [!code highlight]
+  if (cancelled2) return { status: "cancelled", email };
+
+  await sendEmail(email, "feature-highlights");
+
+  return { status: "drip-complete", email };
 }
 ```
 
-## Pattern: Interruptible reminder (sleep vs hook)
+### Cancelling from an API route
 
-Race a `sleep()` against a `defineHook` so external events can cancel, snooze, or send early:
+Any server-side code can fire the hook by calling `.resume()` with the same token:
 
 ```typescript
-import { defineHook, sleep } from "workflow";
+import { cancelDrip } from "@/workflows/email-sequence";
 
-type ReminderAction =
-  | { type: "cancel" }
-  | { type: "send_now" }
-  | { type: "snooze"; seconds: number };
+export async function POST(req: Request) {
+  const { email, reason } = await req.json();
 
-export const reminderActionHook = defineHook<ReminderAction>();
+  if (!email) {
+    return Response.json({ error: "email is required" }, { status: 400 });
+  }
 
-export async function scheduleReminder(userId: string, delayMs: number) {
-  "use workflow";
-
-  let sendAt = new Date(Date.now() + delayMs);
-  const action = reminderActionHook.create({ token: `reminder:${userId}` });
-
-  const outcome = await Promise.race([ // [!code highlight]
-    sleep(sendAt).then(() => ({ kind: "time" as const })), // [!code highlight]
-    action.then((payload) => ({ kind: "action" as const, payload })), // [!code highlight]
-  ]);
-
-  if (outcome.kind === "action") {
-    if (outcome.payload.type === "cancel") {
-      return { userId, status: "cancelled" };
+  try {
+    await cancelDrip.resume(`cancel-drip:${email}`, { // [!code highlight]
+      reason: reason ?? "User completed action", // [!code highlight]
+    }); // [!code highlight]
+  } catch (error) {
+    const msg = error instanceof Error ? error.message.toLowerCase() : "";
+    if (msg.includes("not found") || msg.includes("expired")) {
+      return Response.json({
+        success: true,
+        email,
+        note: "No active drip found (already completed or cancelled)",
+      });
     }
-    if (outcome.payload.type === "snooze") {
-      sendAt = new Date(Date.now() + outcome.payload.seconds * 1000);
-      await sleep(sendAt);
-    }
-    // "send_now" falls through to send immediately
+    throw error;
   }
 
-  await sendReminderEmail(userId);
-  return { userId, status: "sent" };
-}
-
-async function sendReminderEmail(userId: string): Promise<void> {
-  "use step";
-  await fetch("https://api.example.com/reminders/send", {
-    method: "POST",
-    body: JSON.stringify({ userId }),
-  });
+  return Response.json({ success: true, email });
 }
 ```
 
-To wake the reminder early from an API route:
+## How it works
 
-```typescript
-import { resumeHook } from "workflow/api";
+1. **Durable sleep** — `sleep("2d")` persists through restarts at zero compute cost. The workflow resumes precisely when the timer fires.
+2. **Hook creation** — `cancelDrip.create({ token })` registers a hook that resolves when any external system calls `.resume()` with the same token.
+3. **Race** — `Promise.race([sleep(...), hook])` blocks until either the timer fires or the hook is resumed, whichever comes first.
+4. **Fresh hooks per window** — after a sleep completes normally, the previous hook instance is consumed. A new `.create()` call registers a fresh hook for the next sleep window, reusing the same token.
 
-// POST /api/reminder/cancel
-export async function POST(request: Request) {
-  const { userId } = await request.json();
-  await resumeHook(`reminder:${userId}`, { type: "cancel" }); // [!code highlight]
-  return Response.json({ ok: true });
-}
-```
+## Adapting to your use case
 
-## Pattern: Timed collection window (digest)
-
-Open a collection window using `sleep()` and accumulate events from a hook until the window closes:
-
-```typescript
-import { sleep, defineHook } from "workflow";
-
-type EventPayload = { type: string; message: string };
-
-export const digestEvent = defineHook<EventPayload>();
-
-export async function collectAndSendDigest(
-  digestId: string,
-  userId: string,
-  windowMs: number = 3_600_000
-) {
-  "use workflow";
-
-  const hook = digestEvent.create({ token: `digest:${digestId}` });
-  const windowClosed = sleep(`${windowMs}ms`).then(() => ({
-    kind: "window_closed" as const,
-  }));
-  const events: EventPayload[] = [];
-
-  while (true) {
-    const outcome = await Promise.race([ // [!code highlight]
-      hook.then((payload) => ({ kind: "event" as const, payload })),
-      windowClosed,
-    ]);
-
-    if (outcome.kind === "window_closed") break; // [!code highlight]
-    events.push(outcome.payload);
-  }
-
-  if (events.length > 0) {
-    await sendDigestEmail(userId, events);
-  }
-
-  return { digestId, status: events.length > 0 ? "sent" : "empty", eventCount: events.length };
-}
-
-async function sendDigestEmail(userId: string, events: EventPayload[]): Promise<void> {
-  "use step";
-  await fetch("https://api.example.com/digest/send", {
-    method: "POST",
-    body: JSON.stringify({ userId, events }),
-  });
-}
-```
-
-## Pattern: Timeout
-
-Add a timeout to any operation by racing it against `sleep()`:
-
-```typescript
-import { sleep, FatalError } from "workflow";
-
-export async function processWithTimeout(jobId: string) {
-  "use workflow";
-
-  const result = await Promise.race([ // [!code highlight]
-    processData(jobId),
-    sleep("30s").then(() => "timeout" as const), // [!code highlight]
-  ]);
-
-  if (result === "timeout") {
-    return { jobId, status: "timed_out" };
-  }
-
-  return { jobId, status: "completed", result };
-}
-
-async function processData(jobId: string): Promise<string> {
-  "use step";
-  // Long-running computation
-  return `result-for-${jobId}`;
-}
-```
-
-## Polling external services
-
-When you need to poll an external service until a job completes, define your own `sleep` as a step function and use it in a polling loop. Each iteration becomes a separate step in the event log, making the entire loop durable.
-
-```typescript
-async function sleep(ms: number): Promise<void> {
-  "use step";
-  await new Promise(resolve => setTimeout(resolve, ms));
-}
-
-export async function waitForTranscription(jobId: string) {
-  "use workflow";
-
-  let status = "processing";
-  let attempts = 0;
-  const maxAttempts = 36; // ~3 minutes at 5s intervals
-
-  while (status === "processing" && attempts < maxAttempts) {
-    await sleep(5000); // [!code highlight]
-    attempts++;
-    const result = await checkJobStatus(jobId); // [!code highlight]
-    status = result.status;
-  }
-
-  if (status !== "completed") {
-    return { jobId, status: "timed_out", attempts };
-  }
-
-  return { jobId, status: "completed", attempts };
-}
-
-async function checkJobStatus(jobId: string): Promise<{ status: string }> {
-  "use step";
-  const res = await fetch(`https://api.example.com/jobs/${jobId}`);
-  return res.json();
-}
-```
-
-**When to use this vs `sleep()` from `workflow`:**
-- Use `sleep()` from `workflow` for fixed, known delays (drip campaigns, reminders, cooldowns).
-- Use a custom sleep-as-step for polling loops where you need to check a condition between sleeps. The custom step version also works in libraries that don't want to import from the `workflow` module directly.
+- **Change durations** — replace `"2d"` with any duration string (`"1h"`, `"7d"`, `"30m"`) or a `Date` object for absolute times.
+- **Add more steps** — the pattern scales to any number of email-then-sleep pairs.
+- **Snooze instead of cancel** — resolve the hook with a `snooze` payload and sleep again: `sleep(new Date(Date.now() + payload.snoozeMs))`.
+- **Timeout any operation** — the same `Promise.race(sleep, work)` pattern works for adding deadlines to slow steps.
+- **Real providers** — swap the `sendEmail` step body for Resend, Postmark, or any HTTP API. The `"use step"` function has full Node.js access.
 
 ## Tips
 
 - **`sleep()` accepts** duration strings (`"1d"`, `"2h"`, `"30s"`), milliseconds, or `Date` objects for sleeping until a specific time.
-- **Durable means durable.** A `sleep("7d")` workflow costs nothing while sleeping -- no compute, no memory. It resumes precisely when the timer fires.
-- **Race `sleep` against `defineHook`** for interruptible waits. This is the standard pattern for reminders, approvals with deadlines, and timed collection windows.
-- **Use `sleep()` in workflow context only.** Step functions cannot call `sleep()` directly. If a step needs a delay, use a standard `setTimeout` or return control to the workflow.
+- **Durable means durable.** A `sleep("7d")` workflow costs nothing while sleeping — no compute, no memory.
+- **Use `sleep()` in workflow context only.** Step functions cannot call `sleep()` directly. If a step needs a delay, use `setTimeout` inside the step.
 
 ## Key APIs
 
-- [`"use workflow"`](/docs/foundations/workflows-and-steps) -- marks the orchestrator function
-- [`"use step"`](/docs/foundations/workflows-and-steps) -- marks functions that run with full Node.js access
-- [`sleep()`](/docs/api-reference/workflow/sleep) -- durable wait (survives restarts, zero compute cost while sleeping)
-- [`defineHook`](/docs/api-reference/workflow/define-hook) -- creates a hook that external systems can trigger
-- [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race) -- races sleep against hooks for interruptible waits
+- [`"use workflow"`](/docs/foundations/workflows-and-steps) — marks the orchestrator function
+- [`"use step"`](/docs/foundations/workflows-and-steps) — marks functions that run with full Node.js access
+- [`sleep()`](/docs/api-reference/workflow/sleep) — durable wait (survives restarts, zero compute cost)
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) — creates a typed hook that external systems can fire
+- [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race) — races sleep against hooks for interruptible waits

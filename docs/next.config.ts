@@ -113,10 +113,47 @@ const config: NextConfig = {
         destination: '/worlds',
         permanent: true,
       },
-      // Redirect old control-flow-patterns to common-patterns
+      // Foundations "Common Patterns" page was retired in favor of dedicated
+      // cookbook recipes. Path-level redirect lands visitors on the cookbook
+      // overview where each pattern (Sequential & Parallel, Workflow
+      // Composition, Timeouts, etc.) has its own page. Note: anchor fragments
+      // from old links (#timeout-pattern, #direct-await-flattening, etc.) are
+      // dropped on redirect — Next.js redirects() does not match anchors.
+      {
+        source: '/docs/foundations/common-patterns',
+        destination: '/cookbook',
+        permanent: true,
+      },
       {
         source: '/docs/foundations/control-flow-patterns',
-        destination: '/docs/foundations/common-patterns',
+        destination: '/cookbook',
+        permanent: true,
+      },
+      // Cookbook: child-workflows and distributed-abort-controller moved
+      // from common-patterns (now "Reliability Patterns") to advanced
+      {
+        source: '/cookbook/common-patterns/child-workflows',
+        destination: '/cookbook/advanced/child-workflows',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/common-patterns/distributed-abort-controller',
+        destination: '/cookbook/advanced/distributed-abort-controller',
+        permanent: true,
+      },
+      // Cookbook: stop-workflow → agent-stop-signal → agent-cancellation.
+      // The page now covers both Hard Cancellation (run.cancel()) and Stop
+      // Signal (hook + Promise.race) as named patterns, so the broader
+      // "Agent Cancellation" title fits both. Both prior URLs land directly
+      // on the current page (no redirect chains).
+      {
+        source: '/cookbook/agent-patterns/stop-workflow',
+        destination: '/cookbook/agent-patterns/agent-cancellation',
+        permanent: true,
+      },
+      {
+        source: '/cookbook/agent-patterns/agent-stop-signal',
+        destination: '/cookbook/agent-patterns/agent-cancellation',
         permanent: true,
       },
     ];

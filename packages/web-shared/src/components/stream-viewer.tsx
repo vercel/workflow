@@ -6,36 +6,12 @@ import { DataInspector } from './ui/data-inspector';
 import { Skeleton } from './ui/skeleton';
 
 // ──────────────────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────────────────
-
-function deserializeChunkText(text: string): string {
-  try {
-    const parsed = JSON.parse(text);
-    if (typeof parsed === 'string') {
-      return parsed;
-    }
-    return JSON.stringify(parsed, null, 2);
-  } catch {
-    return text;
-  }
-}
-
-function parseChunkData(text: string): unknown {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return text;
-  }
-}
-
-// ──────────────────────────────────────────────────────────────────────────
 // Types
 // ──────────────────────────────────────────────────────────────────────────
 
 export interface StreamChunk {
   id: number;
-  text: string;
+  value: unknown;
 }
 
 type Chunk = StreamChunk;
@@ -62,8 +38,6 @@ const ChunkRow = React.memo(function ChunkRow({
   chunk: Chunk;
   index: number;
 }) {
-  const parsed = parseChunkData(chunk.text);
-
   return (
     <div
       className="text-[11px] rounded-md border p-3"
@@ -72,22 +46,26 @@ const ChunkRow = React.memo(function ChunkRow({
         backgroundColor: 'var(--ds-gray-100)',
       }}
     >
-      <span
-        className="select-none mr-2"
-        style={{ color: 'var(--ds-gray-500)' }}
-      >
-        [{index}]
-      </span>
-      {typeof parsed === 'string' ? (
+      <div className="flex items-start gap-2">
         <span
-          className="whitespace-pre-wrap break-words"
-          style={{ color: 'var(--ds-gray-1000)' }}
+          className="select-none pt-px"
+          style={{ color: 'var(--ds-gray-500)' }}
         >
-          {deserializeChunkText(parsed)}
+          [{index}]
         </span>
-      ) : (
-        <DataInspector data={parsed} expandLevel={1} />
-      )}
+        <div className="min-w-0 flex-1">
+          {typeof chunk.value === 'string' ? (
+            <span
+              className="whitespace-pre-wrap break-words"
+              style={{ color: 'var(--ds-gray-1000)' }}
+            >
+              {chunk.value}
+            </span>
+          ) : (
+            <DataInspector data={chunk.value} expandLevel={1} />
+          )}
+        </div>
+      </div>
     </div>
   );
 });

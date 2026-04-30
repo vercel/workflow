@@ -1,0 +1,99 @@
+---
+title: Timeouts
+description: Add deadlines to slow operations by racing them against a durable sleep.
+type: guide
+summary: Use `Promise.race` with `sleep()` to bound the time any step, hook, or webhook is allowed to take — and recover gracefully when the deadline fires first.
+related:
+  - /docs/api-reference/workflow/sleep
+  - /docs/foundations/hooks
+  - /cookbook/common-patterns/scheduling
+  - /cookbook/common-patterns/webhooks
+---
+
+A common requirement is bounding how long a workflow waits for something to finish — a slow step, an external webhook, a human approval. Race the operation against a durable `sleep()` with `Promise.race()` — whichever finishes first wins, and the loser keeps running but its result is ignored.
+
+## When to use this
+
+- **Slow steps** — bound the time spent waiting on third-party APIs, model calls, or expensive computation
+- **External callbacks** — give webhooks a deadline so the workflow doesn't hang forever waiting for an event that may never arrive
+- **Human approvals** — auto-decline or escalate when a hook isn't resumed within a window
+- **Polling loops** — give an outer poll-until-ready loop an overall budget
+
+## Pattern
+
+### Timeout on a slow step
+
+```typescript lineNumbers
+import { sleep } from "workflow";
+
+declare function processData(data: string): Promise<string>; // @setup
+
+export async function processWithTimeout(data: string) {
+  "use workflow";
+
+  const result = await Promise.race([ // [!code highlight]
+    processData(data), // [!code highlight]
+    sleep("30s").then(() => "timeout" as const), // [!code highlight]
+  ]); // [!code highlight]
+
+  if (result === "timeout") {
+    throw new Error("Processing timed out after 30 seconds");
+  }
+
+  return result;
+}
+```
+
+### Timeout on a webhook
+
+The same pattern works for any promise — including hooks and webhooks. Here a webhook waits for an external service to call back, with a hard deadline of 7 days:
+
+```typescript lineNumbers
+import { sleep, createWebhook } from "workflow";
+
+declare function sendApprovalRequest(requestId: string, webhookUrl: string): Promise<void>; // @setup
+
+export async function waitForApproval(requestId: string) {
+  "use workflow";
+
+  const webhook = createWebhook<{ approved: boolean }>();
+  await sendApprovalRequest(requestId, webhook.url);
+
+  const result = await Promise.race([ // [!code highlight]
+    webhook.then((req) => req.json()), // [!code highlight]
+    sleep("7 days").then(() => ({ timedOut: true }) as const), // [!code highlight]
+  ]); // [!code highlight]
+
+  if ("timedOut" in result) {
+    throw new Error("Approval request expired after 7 days");
+  }
+
+  return result.approved;
+}
+```
+
+## How it works
+
+1. **Durable sleep** — `sleep("30s")` persists through restarts at zero compute cost. The workflow resumes precisely when the timer fires.
+2. **Race** — `Promise.race([work, sleep(...)])` returns the value of whichever promise resolves first. The loser keeps running in the background but its result is ignored by the workflow.
+3. **Discriminated result** — tagging the sleep branch with a sentinel value (`"timeout" as const`, `{ timedOut: true }`) lets TypeScript narrow the result and pick the right branch.
+4. **Throw to fail the workflow** — inside a workflow function, throwing an `Error` exits the run with that error. Use `FatalError` inside steps; throw plain errors inside workflows.
+
+<Callout type="warn">
+**The losing operation keeps running.** `Promise.race` doesn't cancel — when the sleep wins, the underlying step (or model call, or HTTP request) continues to completion in the background. This is fine for idempotent reads but matters when the operation has side effects or costs money. For hard cancellation across processes, see [Distributed Abort Controller](/cookbook/advanced/distributed-abort-controller).
+</Callout>
+
+## Adapting to your use case
+
+- **Different durations** — `sleep()` accepts duration strings (`"30s"`, `"5m"`, `"7 days"`), milliseconds, or `Date` objects for absolute deadlines.
+- **Soft timeout (retry)** — instead of throwing, loop and retry with a fresh `Promise.race` and a backoff.
+- **Soft timeout (fallback)** — return a default value when the timer wins instead of throwing: `if (result === "timeout") return cachedFallback`.
+- **Combine with cancellation** — race three promises: the operation, a deadline `sleep()`, and a cancellation hook. See the [Scheduling cookbook](/cookbook/common-patterns/scheduling) for the cancellation half of this pattern.
+- **Per-step deadlines** — wrap each step in its own `Promise.race` for independent budgets, or use a single outer race for an overall workflow deadline.
+
+## Key APIs
+
+- [`sleep()`](/docs/api-reference/workflow/sleep) — durable wait (survives restarts, zero compute cost)
+- [`createWebhook()`](/docs/api-reference/workflow/create-webhook) — create a webhook URL the workflow can race against
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) — typed hook for in-process cancellation
+- [`Promise.race()`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/race) — race operations against deadlines

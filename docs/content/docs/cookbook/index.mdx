@@ -6,37 +6,33 @@ type: overview
 
 A curated collection of workflow patterns with clean, copy-paste code examples for real use cases.
 
-## Common Patterns
-
-- [**Saga**](/cookbook/common-patterns/saga) — Coordinate multi-step transactions with automatic rollback when a step fails
-- [**Batching**](/cookbook/common-patterns/batching) — Process large collections in parallel batches with failure isolation
-- [**Rate Limiting**](/cookbook/common-patterns/rate-limiting) — Handle 429 responses and transient failures with RetryableError and backoff
-- [**Fan-Out**](/cookbook/common-patterns/fan-out) — Send to multiple channels in parallel with independent failure handling
-- [**Scheduling**](/cookbook/common-patterns/scheduling) — Use durable sleep to schedule actions minutes, hours, or weeks ahead
-- [**Idempotency**](/cookbook/common-patterns/idempotency) — Ensure side effects happen exactly once, even when steps retry
-- [**Webhooks**](/cookbook/common-patterns/webhooks) — Receive HTTP callbacks from external services and process them durably
-- [**Conditional Routing**](/cookbook/common-patterns/content-router) — Route payloads to different step handlers based on content
-- [**Child Workflows**](/cookbook/common-patterns/child-workflows) — Spawn and orchestrate child workflows from a parent
-- [**Distributed Abort Controller**](/cookbook/common-patterns/distributed-abort-controller) — Build a cross-process abort controller using workflow streams and hooks
-
 ## Agent Patterns
 
 - [**Durable Agent**](/cookbook/agent-patterns/durable-agent) — Replace a stateless AI agent with one that survives crashes and retries tool calls
-- [**Tool Streaming**](/cookbook/agent-patterns/tool-streaming) — Stream real-time progress updates from tools to the UI
 - [**Human-in-the-Loop**](/cookbook/agent-patterns/human-in-the-loop) — Pause an agent for human approval, then resume based on the decision
-- [**Tool Orchestration**](/cookbook/agent-patterns/tool-orchestration) — Choose between step-level and workflow-level tools, or combine both
-- [**Stop Workflow**](/cookbook/agent-patterns/stop-workflow) — Gracefully cancel a running agent workflow using a hook signal
+- [**Agent Cancellation**](/cookbook/agent-patterns/agent-cancellation) — Stop a running agent immediately via `run.cancel()` or gracefully via a hook + `Promise.race`
+
+## Common Patterns
+
+- [**Sequential & Parallel Execution**](/cookbook/common-patterns/sequential-and-parallel) — Compose steps with `await`, `Promise.all`, and `Promise.race` against durable sleeps and webhooks
+- [**Workflow Composition**](/cookbook/common-patterns/workflow-composition) — Call workflows from other workflows by direct await or background spawn via `start()`
+- [**Saga**](/cookbook/common-patterns/saga) — Coordinate multi-step transactions with automatic rollback when a step fails
+- [**Batching**](/cookbook/common-patterns/batching) — Process large collections in parallel batches with failure isolation
+- [**Rate Limiting**](/cookbook/common-patterns/rate-limiting) — Handle 429 responses and transient failures with RetryableError and backoff
+- [**Scheduling**](/cookbook/common-patterns/scheduling) — Use durable sleep to schedule actions minutes, hours, or weeks ahead
+- [**Timeouts**](/cookbook/common-patterns/timeouts) — Add deadlines to slow steps, hooks, and webhooks by racing them against a durable sleep
+- [**Idempotency**](/cookbook/common-patterns/idempotency) — Ensure side effects happen exactly once, even when steps retry
+- [**Webhooks**](/cookbook/common-patterns/webhooks) — Receive HTTP callbacks from external services and process them durably
 
 ## Integrations
 
-- [**AI SDK**](/cookbook/integrations/ai-sdk) — Use AI SDK model providers, tool calling, and streaming inside durable workflows
+- [**AI SDK**](/cookbook/integrations/ai-sdk) — Use streamText() directly inside a workflow for lower-level control over model calls and tool execution
 - [**Chat SDK**](/cookbook/integrations/chat-sdk) — Build durable chat sessions with workflow persistence and AI SDK chat primitives
 - [**Sandbox**](/cookbook/integrations/sandbox) — Orchestrate Vercel Sandbox lifecycle inside durable workflows
 
 ## Advanced
 
-- [**Serializable Steps**](/cookbook/advanced/serializable-steps) — Wrap non-serializable objects so they cross the workflow boundary
-- [**Durable Objects**](/cookbook/advanced/durable-objects) — Model long-lived stateful entities as workflows
-- [**Isomorphic Packages**](/cookbook/advanced/isomorphic-packages) — Publish packages that work inside and outside the workflow runtime
-- [**Custom Serialization**](/cookbook/advanced/custom-serialization) — Make custom classes survive workflow serialization
+- [**Child Workflows**](/cookbook/advanced/child-workflows) — Spawn and orchestrate child workflows from a parent
+- [**Distributed Abort Controller**](/cookbook/advanced/distributed-abort-controller) — Build a cross-process abort controller using workflow streams and hooks
+- [**Serializable Steps**](/cookbook/advanced/serializable-steps) — Wrap non-serializable third-party objects so they cross the workflow boundary
 - [**Publishing Libraries**](/cookbook/advanced/publishing-libraries) — Ship npm packages that export reusable workflow functions
