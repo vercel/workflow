@@ -214,6 +214,7 @@ jobs:
       id-token: write
       contents: read
       deployments: read
+      statuses: read
     strategy:
       fail-fast: false
       matrix:
