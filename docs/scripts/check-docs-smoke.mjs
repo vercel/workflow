@@ -287,6 +287,37 @@ const assertXmlResponse = async (path) => {
 };
 
 const run = async () => {
+  // Diagnostic: log the (public) claims of the VERCEL_OIDC_TOKEN if present,
+  // so we can verify what audience/repository GitHub Actions actually mints.
+  // The signature is not logged.
+  const oidcToken = process.env.VERCEL_OIDC_TOKEN;
+  if (oidcToken) {
+    const parts = oidcToken.split('.');
+    if (parts.length === 3) {
+      try {
+        const payload = JSON.parse(
+          Buffer.from(parts[1], 'base64url').toString('utf8')
+        );
+        const { aud, iss, repository, repository_owner, sub, ref, exp } =
+          payload;
+        console.log(
+          'OIDC token claims:',
+          JSON.stringify(
+            { aud, iss, repository, repository_owner, sub, ref, exp },
+            null,
+            2
+          )
+        );
+      } catch (err) {
+        console.log('Failed to decode OIDC token payload:', err);
+      }
+    } else {
+      console.log('VERCEL_OIDC_TOKEN is not a JWT (parts:', parts.length, ')');
+    }
+  } else {
+    console.log('No VERCEL_OIDC_TOKEN set in environment');
+  }
+
   let child = null;
   let stopServer = async () => {};
   let cleanup = async () => {};
