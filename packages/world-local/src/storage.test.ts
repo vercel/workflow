@@ -2928,4 +2928,78 @@ describe('Storage', () => {
       expect(result.run!.runId).toMatch(/^wrun_/);
     });
   });
+
+  // Regression tests for VULN-916: path-traversal via request-controlled IDs.
+  //
+  // Prior to the fix, a client could supply a `runId` like `../../../package`
+  // and cause the backend to read/write files outside the storage root, since
+  // the IDs flowed straight into `path.join(basedir, 'runs', ...)`. The
+  // sanitization in `assertSafeEntityId` rejects any separator/`..`/leading
+  // dot before the value is used in a filesystem path.
+  describe('path traversal prevention (VULN-916)', () => {
+    const traversalIds = [
+      '../../../package',
+      '../runs/wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      '../nonexistent/wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'a/b',
+      'a\\b',
+      '.hidden',
+      '.locks',
+    ];
+
+    for (const runId of traversalIds) {
+      it(`rejects traversal runId on events.create: ${JSON.stringify(runId)}`, async () => {
+        await expect(
+          storage.events.create(runId, { eventType: 'run_started' })
+        ).rejects.toThrow(/Unsafe runId/);
+      });
+
+      it(`rejects traversal runId on runs.get: ${JSON.stringify(runId)}`, async () => {
+        await expect(storage.runs.get(runId)).rejects.toThrow(/Unsafe runId/);
+      });
+
+      it(`rejects traversal runId on steps.list: ${JSON.stringify(runId)}`, async () => {
+        await expect(storage.steps.list({ runId } as any)).rejects.toThrow(
+          /Unsafe runId/
+        );
+      });
+
+      it(`rejects traversal runId on events.list: ${JSON.stringify(runId)}`, async () => {
+        await expect(storage.events.list({ runId } as any)).rejects.toThrow(
+          /Unsafe runId/
+        );
+      });
+    }
+
+    it('rejects traversal stepId on steps.get', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(storage.steps.get(run.runId, '../escape')).rejects.toThrow(
+        /Unsafe stepId/
+      );
+    });
+
+    it('rejects traversal correlationId on events.create', async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      await expect(
+        storage.events.create(run.runId, {
+          eventType: 'step_started',
+          correlationId: '../escape',
+        })
+      ).rejects.toThrow(/Unsafe correlationId/);
+    });
+
+    it('rejects traversal hookId on hooks.get', async () => {
+      await expect(storage.hooks.get('../escape')).rejects.toThrow(
+        /Unsafe hookId/
+      );
+    });
+  });
 });

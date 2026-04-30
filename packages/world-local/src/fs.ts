@@ -1,11 +1,92 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { EntityConflictError } from '@workflow/errors';
+import { EntityConflictError, WorkflowWorldError } from '@workflow/errors';
 import type { PaginatedResponse } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 
 const ulid = monotonicFactory(() => Math.random());
+
+/**
+ * Truncate a possibly-untrusted value for inclusion in an error message.
+ * Keeps error output actionable for developers in dev mode while limiting
+ * the amount of attacker-controlled data reflected back if a `world-local`
+ * backend is ever run in a context that surfaces these messages to clients.
+ */
+function truncateForError(value: unknown): string {
+  const s = typeof value === 'string' ? value : String(value);
+  const MAX = 48;
+  return s.length > MAX ? `${s.slice(0, MAX)}…` : s;
+}
+
+/**
+ * Thrown when a caller-supplied entity ID contains characters that would
+ * escape the storage root (path traversal) or otherwise produce an unsafe
+ * filename. Extends {@link WorkflowWorldError} so the platform's standard
+ * error-to-HTTP mapping handles it alongside other world-layer errors.
+ */
+export class UnsafeEntityIdError extends WorkflowWorldError {
+  constructor(kind: string, value: string) {
+    super(
+      `Unsafe ${kind} "${truncateForError(value)}": must not be empty, start with ".", or contain path separators or null bytes`
+    );
+    this.name = 'UnsafeEntityIdError';
+  }
+
+  static is(value: unknown): value is UnsafeEntityIdError {
+    return value instanceof Error && value.name === 'UnsafeEntityIdError';
+  }
+}
+
+/**
+ * Validate that a string is safe to embed in a filesystem path as a single
+ * path component. Rejects values that are:
+ *   - empty
+ *   - starting with `.` (blocks `.`, `..`, `.locks`, `.tmp`, and other
+ *     hidden or reserved filenames)
+ *   - containing `/`, `\`, or a NUL byte
+ *
+ * This is the primary defense against path-traversal attacks where a
+ * request body supplies a `runId` / `stepId` / `correlationId` containing
+ * `../` sequences to read or write files outside the storage root.
+ * {@link resolveWithinBase} provides a belt-and-suspenders containment
+ * check at the point of `path.join` for defense in depth.
+ *
+ * @param kind - Human-readable label used in the error message (e.g. "runId")
+ * @param value - The value to validate; throws {@link UnsafeEntityIdError}
+ *   if the value is not safe.
+ */
+export function assertSafeEntityId(kind: string, value: string): void {
+  if (
+    value.length === 0 ||
+    value.startsWith('.') ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('\0')
+  ) {
+    throw new UnsafeEntityIdError(kind, value);
+  }
+}
+
+/**
+ * Join `basedir` with an entity-relative path and assert the result stays
+ * inside `basedir`. Complements {@link assertSafeEntityId}: per-entry-point
+ * validation is the primary defense, and this final check catches any path
+ * escape that slipped past (e.g. a new call site that forgot to validate,
+ * or an unusual character combination on a future filesystem). Throws
+ * {@link UnsafeEntityIdError} if the joined path escapes `basedir`.
+ */
+export function resolveWithinBase(
+  basedir: string,
+  ...segments: string[]
+): string {
+  const resolvedBase = path.resolve(basedir);
+  const joined = path.resolve(basedir, ...segments);
+  if (joined !== resolvedBase && !joined.startsWith(resolvedBase + path.sep)) {
+    throw new UnsafeEntityIdError('path', segments.join('/'));
+  }
+  return joined;
+}
 
 const isWindows = process.platform === 'win32';
 
@@ -73,8 +154,13 @@ export function stripTag(fileId: string): string {
 
 /**
  * Build the file path for an entity, with optional tag embedded in the filename.
- * `taggedPath('runs', 'wrun_ABC', 'vitest-0')` → `runs/wrun_ABC.vitest-0.json`
- * `taggedPath('runs', 'wrun_ABC')` → `runs/wrun_ABC.json`
+ * `taggedPath('/data', 'runs', 'wrun_ABC', 'vitest-0')` → `/data/runs/wrun_ABC.vitest-0.json`
+ * `taggedPath('/data', 'runs', 'wrun_ABC')` → `/data/runs/wrun_ABC.json`
+ *
+ * The `fileId` and `tag` are validated with {@link assertSafeEntityId} and
+ * the result is containment-checked with {@link resolveWithinBase} to
+ * prevent path-traversal attacks when values are derived from untrusted
+ * request input.
  */
 export function taggedPath(
   basedir: string,
@@ -82,8 +168,10 @@ export function taggedPath(
   fileId: string,
   tag?: string
 ): string {
+  assertSafeEntityId('fileId', fileId);
+  if (tag !== undefined) assertSafeEntityId('tag', tag);
   const filename = tag ? `${fileId}.${tag}.json` : `${fileId}.json`;
-  return path.join(basedir, entityDir, filename);
+  return resolveWithinBase(basedir, entityDir, filename);
 }
 
 /**
@@ -98,14 +186,19 @@ export async function readJSONWithFallback<T>(
   schema: z.ZodType<T>,
   tag?: string
 ): Promise<T | null> {
+  assertSafeEntityId('fileId', fileId);
+  if (tag !== undefined) assertSafeEntityId('tag', tag);
   if (tag) {
     const result = await readJSON(
-      path.join(basedir, entityDir, `${fileId}.${tag}.json`),
+      resolveWithinBase(basedir, entityDir, `${fileId}.${tag}.json`),
       schema
     );
     if (result !== null) return result;
   }
-  return readJSON(path.join(basedir, entityDir, `${fileId}.json`), schema);
+  return readJSON(
+    resolveWithinBase(basedir, entityDir, `${fileId}.json`),
+    schema
+  );
 }
 
 /**
@@ -362,6 +455,15 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     getCreatedAt,
     getId,
   } = config;
+
+  // Validate filePrefix (typically `${runId}-`) so request-derived prefixes
+  // consistently reject unsafe characters. filePrefix is only used below to
+  // filter readdir() results by prefix — it doesn't participate in path
+  // construction — but keeping the validation rule uniform across the
+  // storage layer avoids special cases and catches bad values earlier.
+  if (filePrefix !== undefined) {
+    assertSafeEntityId('filePrefix', filePrefix);
+  }
 
   // 1. Get all JSON files in directory
   const fileIds = await listJSONFiles(directory);

@@ -675,9 +675,11 @@ type Revivers = {
 };
 
 function revive(str: string) {
-  // biome-ignore lint/security/noGlobalEval: Eval is safe here - we are only passing value from `devalue.stringify()`
-  // biome-ignore lint/complexity/noCommaOperator: This is how you do global scope eval
-  return (0, eval)(`(${str})`);
+  // devalue.stringify() always produces valid JSON: special values
+  // (undefined, NaN, Infinity, -0) are encoded as negative integer
+  // sentinels and the remaining structure is ordinary JSON. Parsing
+  // with JSON.parse yields the flattened form that unflatten() expects.
+  return JSON.parse(str);
 }
 
 function getCommonReducers(global: Record<string, any> = globalThis) {

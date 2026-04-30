@@ -16,7 +16,7 @@ Child workflows are the right choice when:
 - **You want massive fan-out.** Spawning 50 or 500 children is practical because each runs on its own infrastructure.
 - **You need per-item observability.** Each child workflow has its own run ID, status, and event log for monitoring.
 
-For simpler cases where steps share a single event log, use [direct await composition](/docs/foundations/common-patterns#direct-await-flattening) instead.
+For simpler cases where steps share a single event log, use [direct await composition](/cookbook/common-patterns/workflow-composition#direct-await-flattening) instead.
 
 ## Basic pattern: spawn and poll
 

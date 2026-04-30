@@ -1,128 +1,516 @@
 ---
 title: Sandbox
-description: Orchestrate Vercel Sandbox lifecycle -- creation, code execution, snapshotting -- inside durable workflows.
+description: Model one Vercel Sandbox per workflow run — durable, idle-efficient, and not bound by the 5-hour sandbox hard cap.
 type: guide
-summary: Use workflow steps to provision sandboxes, run code, and manage sandbox lifecycle with automatic cleanup on failure.
+summary: Own a sandbox for the lifetime of a workflow run. Hibernate on idle via snapshot(), proactively refresh before the sandbox hard cap, and reconnect by runId — so one logical session can run effectively forever.
 related:
   - /docs/ai/defining-tools
   - /docs/foundations/errors-and-retries
-  - /docs/api-reference/workflow-ai/durable-agent
+  - /docs/cookbook/common-patterns/scheduling
+  - /docs/cookbook/agent-patterns/durable-agent
 ---
 
-[Vercel Sandbox](https://vercel.com/docs/sandbox) provides isolated code execution environments. The `@vercel/sandbox` package implements first-class support for the Workflow SDK -- the `Sandbox` class is serializable, and its methods (`create`, `runCommand`, `destroy`, etc.) implicitly run as steps. This means you can interact with sandboxes directly inside workflow functions without wrapping each operation in a separate `"use step"` function.
+[Vercel Sandbox](https://vercel.com/docs/sandbox) provides isolated code execution environments. The `@vercel/sandbox` package has first-class support for the Workflow SDK — the `Sandbox` class is serializable, and its methods (`create`, `runCommand`, `stop`, `snapshot`) implicitly run as steps. You can use `Sandbox` directly inside a workflow function without wrapping each call in a separate `"use step"` function.
 
-## What It Enables
+## Why Workflow + Sandbox
 
-- **Durable sandbox sessions** -- Sandbox provisioning and teardown survive cold starts
-- **Automatic cleanup** -- Saga-style compensation ensures sandboxes are destroyed on failure
-- **Multi-step code execution** -- Run a sequence of commands in the same sandbox with each step logged
-- **Agent-driven sandboxes** -- Give your DurableAgent a tool that spins up sandboxes on demand
+A sandbox alone gets you an isolated VM. A workflow around it gets you a **durable controller** for that VM's entire lifetime:
 
-## When to Use
+- **One workflow run = one sandbox session.** The `runId` is the only state you need to persist on the client. Close the tab, come back a week later, POST the same `runId` and you're back in the same session.
+- **Efficient resource use.** Active sandboxes cost money; hibernated workflows cost nothing. The workflow races a command hook against a `sleep()` timer — when idle, it calls `sandbox.snapshot()` (which also stops the VM) and waits indefinitely. Next command → spin a new sandbox from the snapshot with filesystem, installed packages, and git history intact.
+- **Beyond the 5-hour hard cap.** Every Vercel Sandbox has a maximum lifetime. The workflow tracks that deadline and proactively snapshots + recreates *before* the cap, so the logical session outlives any one VM. Effectively unbounded session duration on top of time-bounded infrastructure.
+- **Automatic cleanup.** `try/finally` in the workflow guarantees the VM is stopped on failure or destroy.
 
-Use this integration when your workflow needs to:
+## Use Case: Coding Agents
 
-- Execute user-provided or AI-generated code safely
-- Run multi-step build/test pipelines in isolated environments
-- Provision temporary environments for interactive sessions
-- Snapshot sandbox state between steps for reproducibility
+This is the pattern [Open Agents](https://open-agents.dev/) uses to spawn coding agents that run "infinitely in the cloud." Each agent session gets its own sandbox — full filesystem, network, and runtime access — and the durable workflow keeps the agent loop resumable across restarts, auto-hibernates when the user walks away, and reconnects instantly when they return.
 
-## Sandbox Lifecycle in a Workflow
+Most coding-agent workloads look like this:
 
-Because `@vercel/sandbox` methods are implicit steps, each call is automatically persisted to the event log. If a failure occurs partway through, the workflow replays from where it left off.
+- User sends a task → agent plans, reads files, runs shell commands, commits.
+- User walks away mid-run → agent keeps going, eventually goes idle waiting for input.
+- User comes back days later → same branch, same filesystem, same conversation history.
+
+Without durable workflows you'd need a separate state store for the agent loop, a separate job queue for retries, a separate scheduler for idle cleanup, and bespoke reconnection logic. With the pattern below, all of it is one file.
+
+## Quickstart: One-shot Pipeline
+
+Before the full session pattern, the simplest shape. Each sandbox method is an implicit step, so the event log records every command and the workflow replays from the last completed call on restart.
 
 ```typescript title="workflows/sandbox-pipeline.ts" lineNumbers
 import { Sandbox } from "@vercel/sandbox";
 
-export async function sandboxPipeline(input: {
-  template: string;
-  commands: string[];
-}) {
+export async function sandboxPipeline(input: { commands: string[] }) {
   "use workflow";
 
-  const sandbox = await Sandbox.create({ template: input.template }); // [!code highlight]
+  const sandbox = await Sandbox.create({ runtime: "node22" }); // [!code highlight]
 
   try {
     const results = [];
     for (const command of input.commands) {
-      const result = await sandbox.runCommand(command); // [!code highlight]
-      results.push(result);
+      const result = await sandbox.runCommand({ // [!code highlight]
+        cmd: "bash",
+        args: ["-c", command],
+      });
+      results.push({
+        command,
+        exitCode: result.exitCode,
+        stdout: await result.stdout(),
+        stderr: await result.stderr(),
+      });
     }
     return { status: "completed", results };
+  } finally {
+    await sandbox.stop(); // [!code highlight]
+  }
+}
+```
+
+## Session Pattern: Persistent Sandbox Beyond the Hard Cap
+
+One workflow run owns a sandbox for its whole lifetime. The workflow's loop does two jobs simultaneously:
+
+1. **Command pipeline** — await a hook, run the next user command, stream output, loop.
+2. **Sandbox lifecycle** — race the hook against a `sleep()` timer armed for whichever comes first: the idle deadline or the sandbox's refresh deadline (a safety margin before its hard cap).
+
+When the timer wins:
+
+- **Idle** → `sandbox.snapshot()` and wait indefinitely for the next command. No compute while asleep.
+- **Near sandbox hard cap** → `sandbox.snapshot()` and immediately create a new sandbox from the snapshot. The session appears continuous; the underlying VM just rotated.
+
+The only way out is an explicit `/destroy` command.
+
+<Tabs items={['Workflow', 'API Routes', 'Client']}>
+
+<Tab value="Workflow">
+
+```typescript title="workflows/sandbox-session.ts" lineNumbers
+import { defineHook, sleep, getWritable, getWorkflowMetadata } from "workflow";
+import { Sandbox, type Snapshot } from "@vercel/sandbox";
+import { z } from "zod";
+
+export const commandHook = defineHook({ // [!code highlight]
+  schema: z.object({ command: z.string() }),
+});
+
+const RUNTIME = "node22";
+const HIBERNATE_AFTER_MS = 30 * 60_000; // 30 min idle → hibernate
+const SANDBOX_TIMEOUT_MS = 5 * 60 * 60_000; // sandbox hard cap (5h)
+const REFRESH_SAFETY_MS = 5 * 60_000; // refresh 5 min before the cap
+
+export type SandboxEvent =
+  | {
+      type: "created";
+      sandboxId: string;
+      runtime: string;
+      startedAt: number;
+      sandboxExpiresAt: number;
+      hibernateAfterMs: number;
+    }
+  | {
+      type: "status";
+      state:
+        | "active"
+        | "hibernating"
+        | "hibernated"
+        | "resuming"
+        | "refreshing"
+        | "destroyed";
+      at: number;
+      sandboxId?: string;
+      sandboxExpiresAt?: number;
+      snapshotId?: string;
+    }
+  | { type: "activity"; at: number }
+  | { type: "command_start"; id: string; command: string; at: number }
+  | { type: "command_output"; id: string; stream: "stdout" | "stderr"; data: string }
+  | { type: "command_end"; id: string; exitCode: number | null; durationMs: number }
+  | { type: "result"; status: "destroyed"; durationMs: number };
+
+async function emit(event: SandboxEvent) {
+  "use step";
+  const writer = getWritable<SandboxEvent>().getWriter();
+  try {
+    await writer.write(event);
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function runCommandAndStream(sandbox: Sandbox, id: string, command: string) {
+  "use step";
+  const writer = getWritable<SandboxEvent>().getWriter();
+  const startedAt = Date.now();
+  try {
+    await writer.write({ type: "command_start", id, command, at: startedAt });
+    const result = await sandbox.runCommand({ cmd: "bash", args: ["-c", command] });
+    const stdout = await result.stdout();
+    if (stdout) await writer.write({ type: "command_output", id, stream: "stdout", data: stdout });
+    const stderr = await result.stderr();
+    if (stderr) await writer.write({ type: "command_output", id, stream: "stderr", data: stderr });
+    await writer.write({
+      type: "command_end", id,
+      exitCode: result.exitCode,
+      durationMs: Date.now() - startedAt,
+    });
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+export async function sandboxSessionWorkflow() {
+  "use workflow";
+
+  const { workflowRunId } = getWorkflowMetadata();
+  // Create the hook once, outside the loop — reusing the same token from inside // [!code highlight]
+  // the loop would throw HookConflictError. // [!code highlight]
+  const hook = commandHook.create({ token: workflowRunId });
+
+  const startedAt = Date.now();
+
+  let sandbox: Sandbox = await Sandbox.create({
+    runtime: RUNTIME,
+    timeout: SANDBOX_TIMEOUT_MS,
+  });
+  let sandboxCreatedAt = Date.now();
+  let sandboxExpiresAt = sandboxCreatedAt + SANDBOX_TIMEOUT_MS;
+
+  await emit({
+    type: "created",
+    sandboxId: sandbox.sandboxId,
+    runtime: RUNTIME,
+    startedAt,
+    sandboxExpiresAt,
+    hibernateAfterMs: HIBERNATE_AFTER_MS,
+  });
+  await emit({
+    type: "status", state: "active", at: Date.now(),
+    sandboxId: sandbox.sandboxId, sandboxExpiresAt,
+  });
+
+  let snapshot: Snapshot | null = null;
+  let hibernated = false;
+  let lastActivityAt = startedAt;
+  let counter = 0;
+  let destroyed = false;
+
+  try {
+    while (!destroyed) {
+      if (hibernated && snapshot) {
+        // While hibernated, the VM is already stopped. Just wait for the next
+        // command — no idle timer, no compute cost.
+        const payload = await hook;
+        if (payload.command === "/destroy") { destroyed = true; break; }
+
+        await emit({ type: "status", state: "resuming", at: Date.now() });
+        sandbox = await Sandbox.create({ // [!code highlight]
+          source: { type: "snapshot", snapshotId: snapshot.snapshotId }, // [!code highlight]
+          timeout: SANDBOX_TIMEOUT_MS, // [!code highlight]
+        });
+        sandboxCreatedAt = Date.now();
+        sandboxExpiresAt = sandboxCreatedAt + SANDBOX_TIMEOUT_MS;
+        hibernated = false;
+        snapshot = null;
+        await emit({
+          type: "status", state: "active", at: Date.now(),
+          sandboxId: sandbox.sandboxId, sandboxExpiresAt,
+        });
+
+        counter += 1;
+        await runCommandAndStream(sandbox, `cmd-${counter}`, payload.command);
+        lastActivityAt = Date.now();
+        await emit({ type: "activity", at: lastActivityAt });
+        continue;
+      }
+
+      // Active — wake at whichever comes first: idle-deadline or refresh-deadline.
+      const idleDeadline = lastActivityAt + HIBERNATE_AFTER_MS;
+      const refreshDeadline = sandboxExpiresAt - REFRESH_SAFETY_MS;
+      const wakeAt = Math.min(idleDeadline, refreshDeadline);
+      const sleepMs = Math.max(0, wakeAt - Date.now());
+
+      const outcome = await Promise.race([ // [!code highlight]
+        hook.then((p) => ({ type: "command" as const, command: p.command })),
+        sleep(`${sleepMs}ms`).then(() => ({ type: "timer" as const })),
+      ]);
+
+      if (outcome.type === "timer") {
+        const nearExpiry = Date.now() >= refreshDeadline;
+
+        if (nearExpiry) {
+          // Proactive refresh — snapshot and immediately recreate so the
+          // session outlives the sandbox hard cap.
+          await emit({ type: "status", state: "refreshing", at: Date.now() });
+          const snap = await sandbox.snapshot(); // [!code highlight]
+          sandbox = await Sandbox.create({ // [!code highlight]
+            source: { type: "snapshot", snapshotId: snap.snapshotId }, // [!code highlight]
+            timeout: SANDBOX_TIMEOUT_MS, // [!code highlight]
+          });
+          sandboxCreatedAt = Date.now();
+          sandboxExpiresAt = sandboxCreatedAt + SANDBOX_TIMEOUT_MS;
+          await emit({
+            type: "status", state: "active", at: Date.now(),
+            sandboxId: sandbox.sandboxId, sandboxExpiresAt,
+            snapshotId: snap.snapshotId,
+          });
+          lastActivityAt = Date.now();
+        } else {
+          // Idle — snapshot and hibernate indefinitely.
+          await emit({ type: "status", state: "hibernating", at: Date.now() });
+          snapshot = await sandbox.snapshot(); // [!code highlight]
+          hibernated = true;
+          await emit({
+            type: "status", state: "hibernated", at: Date.now(),
+            snapshotId: snapshot.snapshotId,
+          });
+        }
+        continue;
+      }
+
+      if (outcome.command === "/destroy") { destroyed = true; break; }
+
+      counter += 1;
+      await runCommandAndStream(sandbox, `cmd-${counter}`, outcome.command);
+      lastActivityAt = Date.now();
+      await emit({ type: "activity", at: lastActivityAt });
+    }
+  } finally {
+    if (!hibernated) {
+      try {
+        if (sandbox.status === "running") await sandbox.stop();
+      } catch { /* best-effort */ }
+    }
+    await emit({ type: "status", state: "destroyed", at: Date.now() });
+    await emit({
+      type: "result",
+      status: "destroyed",
+      durationMs: Date.now() - startedAt,
+    });
+  }
+}
+```
+
+</Tab>
+
+<Tab value="API Routes">
+
+Two endpoints. `/start` accepts an optional `{ runId }` — if the run still exists, it replays the event log from index 0 so a returning client fully rehydrates. `/command` resumes the hook and returns immediately; command output lands on the `/start` stream.
+
+```typescript title="app/api/sandbox/start/route.ts" lineNumbers
+import { start, getRun } from "workflow/api";
+import { sandboxSessionWorkflow } from "@/workflows/sandbox-session";
+
+export async function POST(req: Request) {
+  let body: { runId?: string } = {};
+  try {
+    const text = await req.text();
+    if (text) body = JSON.parse(text);
+  } catch { /* ignore malformed body */ }
+
+  // Reconnect path: if the client sends a known runId, stream the durable
+  // event log from the beginning so the UI can rehydrate.
+  if (body.runId) {
+    const run = getRun(body.runId);
+    if (await run.exists) { // [!code highlight]
+      const readable = run.getReadable({ startIndex: 0 }); // [!code highlight]
+      return new Response(readable.pipeThrough(ndjson()), {
+        headers: {
+          "Content-Type": "application/x-ndjson",
+          "x-workflow-run-id": body.runId,
+          "x-workflow-reconnected": "true",
+          "Cache-Control": "no-cache, no-transform",
+        },
+      });
+    }
+    // Stale runId — fall through to start fresh.
+  }
+
+  const run = await start(sandboxSessionWorkflow, []);
+  return new Response(run.readable.pipeThrough(ndjson()), {
+    headers: {
+      "Content-Type": "application/x-ndjson",
+      "x-workflow-run-id": run.runId,
+      "Cache-Control": "no-cache, no-transform",
+    },
+  });
+}
+
+function ndjson<T>() {
+  return new TransformStream<T, string>({
+    transform(chunk, controller) {
+      controller.enqueue(JSON.stringify(chunk) + "\n");
+    },
+  });
+}
+```
+
+```typescript title="app/api/sandbox/command/route.ts" lineNumbers
+import { commandHook } from "@/workflows/sandbox-session";
+
+export async function POST(req: Request) {
+  const { runId, command } = (await req.json()) as { runId?: string; command?: string };
+
+  if (!runId || typeof command !== "string") {
+    return Response.json({ error: "runId and command are required" }, { status: 400 });
+  }
+
+  try {
+    await commandHook.resume(runId, { command }); // [!code highlight]
+    return Response.json({ ok: true });
   } catch (error) {
-    await sandbox.destroy(); // [!code highlight]
+    const msg = error instanceof Error ? error.message.toLowerCase() : "";
+    if (msg.includes("not found") || msg.includes("expired")) {
+      return Response.json({ ok: false, note: "session expired" }, { status: 410 });
+    }
     throw error;
   }
 }
 ```
 
-## Sandbox as an Agent Tool
+</Tab>
 
-Give a DurableAgent the ability to create and use sandboxes. The agent decides when to spin up a sandbox, what code to run, and when to tear it down. Since sandbox methods are implicit steps, the tool execute functions can call them directly.
+<Tab value="Client">
 
-```typescript title="workflows/code-agent.ts" lineNumbers
-import { Sandbox } from "@vercel/sandbox";
-import { DurableAgent } from "@workflow/ai/agent";
-import { convertToModelMessages, type UIMessage, type UIMessageChunk } from "ai";
-import { getWritable } from "workflow";
-import z from "zod/v4";
+On mount, if a `runId` is stashed in `localStorage`, reconnect to the existing run. Otherwise start fresh. Commands are POSTed to `/command` — output lands on the `/start` stream.
 
-export async function codeAgent(messages: UIMessage[]) {
-  "use workflow";
+```tsx title="components/sandbox-runner.tsx" lineNumbers
+"use client";
 
-  let activeSandbox: Sandbox | null = null;
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { SandboxEvent } from "@/workflows/sandbox-session";
 
-  const agent = new DurableAgent({
-    model: "anthropic/claude-sonnet-4-20250514",
-    instructions:
-      "You are a coding assistant. You can create sandboxes to run code. " +
-      "Always create a sandbox first, then execute code in it. " +
-      "Clean up the sandbox when you are done.",
-    tools: {
-      createSandbox: {
-        description: "Create an isolated sandbox environment for running code",
-        inputSchema: z.object({
-          template: z.string().describe("The sandbox template (e.g., 'node', 'python')"),
-        }),
-        execute: async ({ template }) => {
-          activeSandbox = await Sandbox.create({ template }); // [!code highlight]
-          return { sandboxId: activeSandbox.id };
-        },
-      },
-      executeCode: {
-        description: "Execute a command in the active sandbox",
-        inputSchema: z.object({
-          command: z.string().describe("The command to execute"),
-        }),
-        execute: async ({ command }) => {
-          if (!activeSandbox) throw new Error("No active sandbox");
-          return activeSandbox.runCommand(command); // [!code highlight]
-        },
-      },
-      cleanupSandbox: {
-        description: "Destroy the active sandbox when finished",
-        inputSchema: z.object({}),
-        execute: async () => {
-          if (!activeSandbox) throw new Error("No active sandbox");
-          await activeSandbox.destroy(); // [!code highlight]
-          activeSandbox = null;
-          return { cleaned: true };
-        },
-      },
+const RUN_ID_KEY = "sandbox.runId";
+
+export function SandboxRunner() {
+  const [events, setEvents] = useState<SandboxEvent[]>([]);
+  const runIdRef = useRef<string | null>(null);
+  const didReconnectRef = useRef(false);
+
+  const consume = useCallback(async (res: Response) => {
+    if (!res.ok || !res.body) return;
+    runIdRef.current = res.headers.get("x-workflow-run-id");
+    if (runIdRef.current) {
+      localStorage.setItem(RUN_ID_KEY, runIdRef.current); // [!code highlight]
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          setEvents((prev) => [...prev, JSON.parse(line) as SandboxEvent]);
+        } catch { /* malformed line */ }
+      }
+    }
+  }, []);
+
+  const openStream = useCallback(
+    async (runId?: string) => {
+      setEvents([]);
+      const res = await fetch("/api/sandbox/start", {
+        method: "POST",
+        headers: runId ? { "Content-Type": "application/json" } : undefined,
+        body: runId ? JSON.stringify({ runId }) : undefined,
+      });
+      await consume(res);
     },
-  });
+    [consume]
+  );
 
-  const result = await agent.stream({
-    messages: await convertToModelMessages(messages),
-    writable: getWritable<UIMessageChunk>(),
-  });
+  // Auto-reconnect on mount if a runId is stashed.
+  useEffect(() => {
+    if (didReconnectRef.current) return;
+    didReconnectRef.current = true;
+    const stored = localStorage.getItem(RUN_ID_KEY);
+    if (stored) openStream(stored); // [!code highlight]
+  }, [openStream]);
 
-  return { messages: result.messages };
+  const start = useCallback(() => {
+    localStorage.removeItem(RUN_ID_KEY);
+    runIdRef.current = null;
+    openStream();
+  }, [openStream]);
+
+  const sendCommand = useCallback(async (command: string) => {
+    if (!runIdRef.current) return;
+    const res = await fetch("/api/sandbox/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ runId: runIdRef.current, command }),
+    });
+    if (res.status === 410) localStorage.removeItem(RUN_ID_KEY);
+  }, []);
+
+  const destroy = useCallback(async () => {
+    await sendCommand("/destroy");
+    localStorage.removeItem(RUN_ID_KEY);
+  }, [sendCommand]);
+
+  // Render events as a terminal-style log. Drive UI state from `status` events
+  // (active / hibernating / hibernated / resuming / refreshing / destroyed).
+  return null;
 }
 ```
 
-## Saga Pattern for Cleanup
+</Tab>
 
-Combine sandbox orchestration with the [saga pattern](/docs/cookbook/common-patterns/saga) to ensure sandboxes are always cleaned up, even when a step in the middle of your pipeline fails.
+</Tabs>
 
-The example above uses a try/catch around the command execution loop. For more complex pipelines with multiple resources (sandbox + database + external API), push compensation functions onto a stack as shown in the [saga recipe](/docs/cookbook/common-patterns/saga).
+## How It Works
+
+1. **One workflow = one session.** The workflow owns a sandbox for its entire lifetime. The `runId` is the only state the client has to remember.
+2. **Hook created once.** `commandHook.create({ token: workflowRunId })` outside the loop. Creating it twice with the same token throws `HookConflictError`.
+3. **Two timer branches.** The active-state race wakes on the earlier of `idleDeadline` and `refreshDeadline`. The hibernated state awaits the hook alone — no timer, no compute.
+4. **Proactive refresh.** `refreshDeadline = sandboxExpiresAt - REFRESH_SAFETY_MS`. Hitting this triggers a snapshot + immediate new sandbox from that snapshot, rolling over the hard cap without user intervention.
+5. **`sandbox.snapshot()` stops the VM.** It's documented as part of the snapshot process — don't call `stop()` separately.
+6. **Resume = new sandbox.** `Sandbox.create({ source: { type: "snapshot", snapshotId } })` creates a fresh VM from the snapshot. The new sandbox has a different `sandboxId`; filesystem, installed packages, and git history are preserved.
+7. **Reconnect by runId.** `getRun(runId).getReadable({ startIndex: 0 })` replays the durable event log to a returning client, who rebuilds UI state from the replay.
+8. **Exit only on `/destroy`.** The workflow loop has no hard deadline of its own. Individual sandboxes time out; the session doesn't.
+
+## Pitfalls
+
+### `sandbox.stop()` is terminal
+
+A stopped sandbox cannot be restarted — you have to create a new one. Hibernation is only possible via `snapshot()` + new-sandbox-from-snapshot. Don't try to "pause" an active sandbox with `stop()` and resume later.
+
+### `snapshot()` already stops the VM
+
+Calling `stop()` after `snapshot()` either errors or is a no-op depending on timing. Snapshot takes care of it.
+
+### New `sandboxId` after resume and refresh
+
+Both `resuming` (idle → command) and `refreshing` (near-hard-cap rotation) create a new sandbox with a new `sandboxId`. Emit it on the subsequent `status: "active"` event and have the UI read from there, not from the initial `created` event.
+
+### Keep the refresh margin generous
+
+`snapshot()` + `Sandbox.create({ source })` takes real time (typically tens of seconds). If `REFRESH_SAFETY_MS` is too small, the old sandbox hits its hard cap mid-snapshot. Leave at least 60–90 seconds; 5 minutes is comfortable.
+
+### Don't call `writable.close()` inside a workflow function
+
+Stream closure must happen inside a `"use step"` function. Calling `writable.close()` directly in the workflow body throws `Not supported in workflow functions`. The runtime closes the underlying writable when the workflow returns.
+
+### Handle stale `runId` gracefully
+
+Clients can hold `runId`s from long-gone workflow runs (localStorage, back button, server restart). Gate the reconnect path on `run.exists` and fall through to starting fresh. On `hook.resume`, catch `not found` / `expired` and return 410 so the client clears its state.
+
+### Keep the hook outside the loop
+
+Each iteration's `hook.then(...)` attaches a listener to the same hook instance. Creating a new hook per iteration with the same token throws `HookConflictError`. One hook, one token (`workflowRunId`), reused every iteration.
+
+## Key APIs
+
+- [`Sandbox.create`](https://vercel.com/docs/sandbox) — provision a VM (runtime, source, timeout)
+- [`sandbox.runCommand`](https://vercel.com/docs/sandbox) — execute a command; implicit step
+- [`sandbox.snapshot`](https://vercel.com/docs/sandbox) — save state and stop the VM; returns `Snapshot`
+- [`defineHook()`](/docs/api-reference/workflow/define-hook) — suspension point for user commands
+- [`sleep()`](/docs/api-reference/workflow/sleep) — durable timer that powers both idle hibernation and proactive refresh
+- [`getRun()`](/docs/api-reference/workflow-api/get-run) — look up a run and replay its event log for reconnection
+- [`getWritable()`](/docs/api-reference/workflow/get-writable) — resumable NDJSON event stream

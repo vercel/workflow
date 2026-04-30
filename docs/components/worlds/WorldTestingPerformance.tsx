@@ -285,116 +285,23 @@ export function WorldTestingPerformance({
 
         {/* Benchmarks — only visible on preview deployments */}
         {showBenchmarks && (
-        <div className="space-y-4">
-          <h3 className="font-semibold text-lg tracking-tight">Benchmarks</h3>
-          {hasBenchmarks ? (
-            <>
-              <p className="text-sm text-muted-foreground">
-                Click on a benchmark to view performance history over the last
-                30 commits.
-              </p>
+          <div className="space-y-4">
+            <h3 className="font-semibold text-lg tracking-tight">Benchmarks</h3>
+            {hasBenchmarks ? (
+              <>
+                <p className="text-sm text-muted-foreground">
+                  Click on a benchmark to view performance history over the last
+                  30 commits.
+                </p>
 
-              {/* Standard Benchmarks */}
-              {standardMetrics.length > 0 && (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Benchmark</TableHead>
-                      <TableHead className="text-right">
-                        <TimeColumnHeader />
-                      </TableHead>
-                      {hasWorkflowRange && (
-                        <>
-                          <TableHead className="text-right">Min</TableHead>
-                          <TableHead className="text-right">Max</TableHead>
-                        </>
-                      )}
-                      <TableHead className="text-right">Samples</TableHead>
-                      <TableHead className="w-[40px]"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {standardMetrics.map(([name, metric]) => {
-                      const isPerfBenchmark = name === PERF_BENCHMARK_NAME;
-                      return (
-                        <TableRow
-                          key={name}
-                          className={cn(
-                            'cursor-pointer hover:bg-muted/50 transition-colors',
-                            isPerfBenchmark && 'bg-muted/30'
-                          )}
-                          onClick={() => setSelectedMetric(name)}
-                        >
-                          <TableCell className="font-medium">
-                            <div className="flex items-center gap-2">
-                              {isPerfBenchmark && (
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Timer className="h-4 w-4 text-purple-900 shrink-0" />
-                                  </TooltipTrigger>
-                                  <TooltipContent
-                                    side="top"
-                                    className="max-w-[200px]"
-                                  >
-                                    <p className="text-xs">
-                                      Primary performance benchmark (PERF)
-                                    </p>
-                                  </TooltipContent>
-                                </Tooltip>
-                              )}
-                              {name}
-                            </div>
-                          </TableCell>
-                          <TableCell className="text-right font-mono">
-                            {metric.workflowTime !== undefined
-                              ? formatTime(metric.workflowTime)
-                              : '—'}
-                          </TableCell>
-                          {hasWorkflowRange && (
-                            <>
-                              <TableCell className="text-right font-mono text-muted-foreground">
-                                {metric.workflowMin !== undefined
-                                  ? formatTime(metric.workflowMin)
-                                  : '—'}
-                              </TableCell>
-                              <TableCell className="text-right font-mono text-muted-foreground">
-                                {metric.workflowMax !== undefined
-                                  ? formatTime(metric.workflowMax)
-                                  : '—'}
-                              </TableCell>
-                            </>
-                          )}
-                          <TableCell className="text-right text-muted-foreground">
-                            {metric.samples || '—'}
-                          </TableCell>
-                          <TableCell>
-                            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-                          </TableCell>
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              )}
-
-              {/* Stream Benchmarks with TTFB and Slurp */}
-              {streamMetrics.length > 0 && (
-                <>
-                  <h4 className="font-medium text-base mt-6">
-                    Stream Benchmarks
-                  </h4>
+                {/* Standard Benchmarks */}
+                {standardMetrics.length > 0 && (
                   <Table>
                     <TableHeader>
                       <TableRow>
                         <TableHead>Benchmark</TableHead>
                         <TableHead className="text-right">
                           <TimeColumnHeader />
-                        </TableHead>
-                        <TableHead className="text-right">
-                          <TTFBColumnHeader />
-                        </TableHead>
-                        <TableHead className="text-right">
-                          <SlurpColumnHeader />
                         </TableHead>
                         {hasWorkflowRange && (
                           <>
@@ -407,64 +314,159 @@ export function WorldTestingPerformance({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {streamMetrics.map(([name, metric]) => (
-                        <TableRow
-                          key={name}
-                          className="cursor-pointer hover:bg-muted/50 transition-colors"
-                          onClick={() => setSelectedMetric(name)}
-                        >
-                          <TableCell className="font-medium">{name}</TableCell>
-                          <TableCell className="text-right font-mono">
-                            {metric.workflowTime !== undefined
-                              ? formatTime(metric.workflowTime)
-                              : '—'}
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-green-900">
-                            {metric.ttfb ? formatTime(metric.ttfb) : '—'}
-                          </TableCell>
-                          <TableCell className="text-right font-mono text-purple-900">
-                            {metric.slurp ? formatTime(metric.slurp) : '—'}
-                          </TableCell>
-                          {hasWorkflowRange && (
-                            <>
-                              <TableCell className="text-right font-mono text-muted-foreground">
-                                {metric.workflowMin !== undefined
-                                  ? formatTime(metric.workflowMin)
-                                  : '—'}
-                              </TableCell>
-                              <TableCell className="text-right font-mono text-muted-foreground">
-                                {metric.workflowMax !== undefined
-                                  ? formatTime(metric.workflowMax)
-                                  : '—'}
-                              </TableCell>
-                            </>
-                          )}
-                          <TableCell className="text-right text-muted-foreground">
-                            {metric.samples || '—'}
-                          </TableCell>
-                          <TableCell>
-                            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {standardMetrics.map(([name, metric]) => {
+                        const isPerfBenchmark = name === PERF_BENCHMARK_NAME;
+                        return (
+                          <TableRow
+                            key={name}
+                            className={cn(
+                              'cursor-pointer hover:bg-muted/50 transition-colors',
+                              isPerfBenchmark && 'bg-muted/30'
+                            )}
+                            onClick={() => setSelectedMetric(name)}
+                          >
+                            <TableCell className="font-medium">
+                              <div className="flex items-center gap-2">
+                                {isPerfBenchmark && (
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <Timer className="h-4 w-4 text-purple-900 shrink-0" />
+                                    </TooltipTrigger>
+                                    <TooltipContent
+                                      side="top"
+                                      className="max-w-[200px]"
+                                    >
+                                      <p className="text-xs">
+                                        Primary performance benchmark (PERF)
+                                      </p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                )}
+                                {name}
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-right font-mono">
+                              {metric.workflowTime !== undefined
+                                ? formatTime(metric.workflowTime)
+                                : '—'}
+                            </TableCell>
+                            {hasWorkflowRange && (
+                              <>
+                                <TableCell className="text-right font-mono text-muted-foreground">
+                                  {metric.workflowMin !== undefined
+                                    ? formatTime(metric.workflowMin)
+                                    : '—'}
+                                </TableCell>
+                                <TableCell className="text-right font-mono text-muted-foreground">
+                                  {metric.workflowMax !== undefined
+                                    ? formatTime(metric.workflowMax)
+                                    : '—'}
+                                </TableCell>
+                              </>
+                            )}
+                            <TableCell className="text-right text-muted-foreground">
+                              {metric.samples || '—'}
+                            </TableCell>
+                            <TableCell>
+                              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
                     </TableBody>
                   </Table>
-                </>
-              )}
+                )}
 
-              <BenchmarkHistoryChart
-                worldId={worldId}
-                metricName={selectedMetric ?? ''}
-                open={selectedMetric !== null}
-                onOpenChange={(open) => !open && setSelectedMetric(null)}
-              />
-            </>
-          ) : (
-            <p className="text-muted-foreground">
-              No benchmark data is currently available for this world.
-            </p>
-          )}
-        </div>
+                {/* Stream Benchmarks with TTFB and Slurp */}
+                {streamMetrics.length > 0 && (
+                  <>
+                    <h4 className="font-medium text-base mt-6">
+                      Stream Benchmarks
+                    </h4>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Benchmark</TableHead>
+                          <TableHead className="text-right">
+                            <TimeColumnHeader />
+                          </TableHead>
+                          <TableHead className="text-right">
+                            <TTFBColumnHeader />
+                          </TableHead>
+                          <TableHead className="text-right">
+                            <SlurpColumnHeader />
+                          </TableHead>
+                          {hasWorkflowRange && (
+                            <>
+                              <TableHead className="text-right">Min</TableHead>
+                              <TableHead className="text-right">Max</TableHead>
+                            </>
+                          )}
+                          <TableHead className="text-right">Samples</TableHead>
+                          <TableHead className="w-[40px]"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {streamMetrics.map(([name, metric]) => (
+                          <TableRow
+                            key={name}
+                            className="cursor-pointer hover:bg-muted/50 transition-colors"
+                            onClick={() => setSelectedMetric(name)}
+                          >
+                            <TableCell className="font-medium">
+                              {name}
+                            </TableCell>
+                            <TableCell className="text-right font-mono">
+                              {metric.workflowTime !== undefined
+                                ? formatTime(metric.workflowTime)
+                                : '—'}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-green-900">
+                              {metric.ttfb ? formatTime(metric.ttfb) : '—'}
+                            </TableCell>
+                            <TableCell className="text-right font-mono text-purple-900">
+                              {metric.slurp ? formatTime(metric.slurp) : '—'}
+                            </TableCell>
+                            {hasWorkflowRange && (
+                              <>
+                                <TableCell className="text-right font-mono text-muted-foreground">
+                                  {metric.workflowMin !== undefined
+                                    ? formatTime(metric.workflowMin)
+                                    : '—'}
+                                </TableCell>
+                                <TableCell className="text-right font-mono text-muted-foreground">
+                                  {metric.workflowMax !== undefined
+                                    ? formatTime(metric.workflowMax)
+                                    : '—'}
+                                </TableCell>
+                              </>
+                            )}
+                            <TableCell className="text-right text-muted-foreground">
+                              {metric.samples || '—'}
+                            </TableCell>
+                            <TableCell>
+                              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </>
+                )}
+
+                <BenchmarkHistoryChart
+                  worldId={worldId}
+                  metricName={selectedMetric ?? ''}
+                  open={selectedMetric !== null}
+                  onOpenChange={(open) => !open && setSelectedMetric(null)}
+                />
+              </>
+            ) : (
+              <p className="text-muted-foreground">
+                No benchmark data is currently available for this world.
+              </p>
+            )}
+          </div>
         )}
 
         {/* Metadata */}

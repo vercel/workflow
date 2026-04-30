@@ -121,7 +121,6 @@ const TimelineBar = memo(function TimelineBar({
   const fallbackColor = isErrored
     ? (colors.errorBar ?? 'var(--ds-red-700)')
     : colors.bar;
-
   const renderDurationLabel = (label: string) => (
     <span
       className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-white tabular-nums"
