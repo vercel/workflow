@@ -92,6 +92,19 @@ jobs:
             core.setSecret(token);
             core.setOutput('token', token);
 
+      - name: Debug — curl deployment with OIDC header (response headers only)
+        env:
+          DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
+          VERCEL_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+        run: |
+          echo "=== Without OIDC header ==="
+          curl -sI "$DEPLOYMENT_URL/og" | head -20 || true
+          echo ""
+          echo "=== With OIDC trusted-sources header ==="
+          curl -sI \
+            -H "x-vercel-trusted-oidc-idp-token: $VERCEL_OIDC_TOKEN" \
+            "$DEPLOYMENT_URL/og" | head -20 || true
+
       - name: Verify OpenGraph images and sitemap
         run: pnpm --filter docs test:smoke
         env:
