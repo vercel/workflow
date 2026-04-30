@@ -44,6 +44,7 @@ export function getSpanDurationMs(span: Span): number {
 export interface TimeMarker {
   position: number;
   label: string;
+  value: number;
 }
 
 const NICE_INTERVALS = [
@@ -80,6 +81,7 @@ export function computeTimeMarkers(
     markers.push({
       position: Math.min(Math.max(position, 0), 1),
       label: formatDuration(Math.abs(t), true),
+      value: t,
     });
     if (markers.length >= MAX_MARKERS) break;
   }
