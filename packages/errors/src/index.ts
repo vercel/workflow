@@ -787,3 +787,43 @@ export const VERCEL_403_ERROR_MESSAGE =
   'Your current vercel account does not have access to this resource. Use `vercel login` or `vercel switch` to ensure you are linked to the right account.';
 
 export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
+
+// ---------------------------------------------------------------------------
+// Cross-realm class registration
+// ---------------------------------------------------------------------------
+//
+// `FatalError` and `RetryableError` are not built-ins, so different realms
+// (e.g. the workflow VM context vs. the host context that runs the queue
+// handler) bundle and load their own copies of this module — meaning each
+// realm has its own distinct class identity. Cross-realm `instanceof` fails
+// because the prototype chains never meet.
+//
+// To let serialization revivers reconstruct a value as the *consumer's*
+// FatalError (so user-code `err instanceof FatalError` passes), each bundled
+// copy of this module self-registers its class on `globalThis` via a known
+// Symbol.for key. Revivers in `@workflow/core` look up the class via the
+// consumer's globalThis at hydration time.
+//
+// First registration in a given realm wins. The descriptor is non-writable
+// and non-configurable to make accidental clobbering loud.
+const FATAL_ERROR_KEY = Symbol.for('@workflow/errors//FatalError');
+const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
+
+if (typeof globalThis !== 'undefined') {
+  if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
+    Object.defineProperty(globalThis, FATAL_ERROR_KEY, {
+      value: FatalError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, RETRYABLE_ERROR_KEY)) {
+    Object.defineProperty(globalThis, RETRYABLE_ERROR_KEY, {
+      value: RetryableError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+}
