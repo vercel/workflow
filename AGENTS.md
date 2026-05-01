@@ -73,7 +73,8 @@ cd packages/core && pnpm vitest run src/[filename].test.ts
 # Note: Use nextjs-turbopack for local e2e testing (not example app - it has no dev server)
 
 # Step 1: Start the dev server in background
-cd workbench/nextjs-turbopack && pnpm dev > /tmp/nextjs-dev.log 2>&1 &
+# NOTE: WORKFLOW_PUBLIC_MANIFEST=1 is required for e2e tests to access the workflow manifest
+cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev > /tmp/nextjs-dev.log 2>&1 &
 
 # Step 2: Wait for server to be ready (usually 15-20 seconds)
 sleep 15
@@ -87,14 +88,34 @@ pkill -f "pnpm dev"
 # To run specific tests, use the -t flag:
 DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest run packages/core/e2e/e2e.test.ts -t "sleeping"
 
-# For production testing against deployed Vercel app:
-# See .github/workflows/tests.yml for required environment variables:
-# - DEPLOYMENT_URL: URL of deployed app
-# - APP_NAME: App name (example, nextjs-turbopack, nextjs-webpack, nitro)
-# - WORKFLOW_VERCEL_ENV: Environment (production or preview)
-# - WORKFLOW_VERCEL_AUTH_TOKEN: Vercel auth token
-# - WORKFLOW_VERCEL_TEAM: Vercel team ID
-# - WORKFLOW_VERCEL_PROJECT: Vercel project ID
+# For running E2E locally against a deployed Vercel preview/production app:
+# The test matrix in .github/workflows/tests.yml is the source of truth —
+# each app entry defines the project-id / project-slug needed below.
+#
+# Required environment variables (matches the CI `e2e-vercel-prod` job):
+# - DEPLOYMENT_URL: Full URL of the deployed app (e.g. a preview deployment URL)
+# - VERCEL_DEPLOYMENT_ID: The dpl_... ID of the deployment (get via `vercel inspect <url>`)
+# - APP_NAME: App name (example, nextjs-turbopack, nextjs-webpack, nitro, vite,
+#             nuxt, sveltekit, hono, express, fastify, astro)
+# - WORKFLOW_VERCEL_ENV: "preview" or "production"
+# - WORKFLOW_VERCEL_AUTH_TOKEN: Vercel auth token with access to the team
+# - WORKFLOW_VERCEL_TEAM: Vercel team ID (CI uses team_nO2mCG4W8IxPIeKoSsqwAxxB for labs)
+# - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...) — see test matrix
+# - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug — see test matrix
+# - VERCEL_AUTOMATION_BYPASS_SECRET: Deployment-protection bypass for the project
+#
+# Example (nextjs-turbopack preview deployment):
+NODE_OPTIONS="--enable-source-maps" \
+DEPLOYMENT_URL="https://example-nextjs-workflow-turbopack-<hash>.labs.vercel.dev" \
+VERCEL_DEPLOYMENT_ID="dpl_..." \
+APP_NAME="nextjs-turbopack" \
+WORKFLOW_VERCEL_ENV="preview" \
+WORKFLOW_VERCEL_AUTH_TOKEN="<vercel_labs_token>" \
+WORKFLOW_VERCEL_TEAM="team_nO2mCG4W8IxPIeKoSsqwAxxB" \
+WORKFLOW_VERCEL_PROJECT="prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi" \
+WORKFLOW_VERCEL_PROJECT_SLUG="example-nextjs-workflow-turbopack" \
+VERCEL_AUTOMATION_BYPASS_SECRET="<bypass_secret>" \
+pnpm run test:e2e
 ```
 
 ### Example App Development
@@ -191,7 +212,7 @@ When backporting changes to `stable`, any conflicts involving docs app files (ou
   - On `main` (pre-release mode), the bump type doesn't affect beta numbering (it always increments `beta.N`) but it **does matter** when changes are backported to `stable`
 - Remember to always build any packages that get changed before running downstream tests like e2e tests in the workbench
 - Remember that changes made to one workbench should propagate to all other workbenches. The workflows should typically only be written once inside the example workbench and symlinked into all the other workbenches
-- When writing changesets, use the `pnpm changeset` command from the root of the repo. Keep the changesets terse (see existing changesets for examples). Try to make changesets that are specific to each modified package so they are targeted. Ensure that any breaking changes are marked as "**BREAKING CHANGE**"
+- When writing changesets (via `pnpm changeset add` from the repo root, as noted above), keep the description terse — one sentence, or two at most. Try to make changesets that are specific to each modified package so they are targeted.
 
 ### Backporting to `stable`
 

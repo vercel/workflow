@@ -158,11 +158,11 @@ const checks = [
       ),
   },
   {
-    name: 'HTML meta - docs common patterns',
+    name: 'HTML meta - cookbook sequential & parallel',
     run: () =>
       assertHtmlMeta(
-        '/docs/foundations/common-patterns',
-        '/og/foundations/common-patterns/image.png'
+        '/cookbook/common-patterns/sequential-and-parallel',
+        '/og/cookbook/common-patterns/sequential-and-parallel/image.png'
       ),
   },
   {
@@ -198,8 +198,11 @@ const checks = [
     run: () => assertPngResponse('/og/getting-started/image.png'),
   },
   {
-    name: 'OG docs foundations image',
-    run: () => assertPngResponse('/og/foundations/common-patterns/image.png'),
+    name: 'OG cookbook common-patterns image',
+    run: () =>
+      assertPngResponse(
+        '/og/cookbook/common-patterns/sequential-and-parallel/image.png'
+      ),
   },
   {
     name: 'OG docs reference image',

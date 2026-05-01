@@ -1,6 +1,6 @@
 {
   "name": "@workflow/next",
-  "version": "5.0.0-beta.2",
+  "version": "5.0.0-beta.4",
   "description": "Next.js integration for Workflow SDK",
   "type": "commonjs",
   "main": "dist/index.js",
@@ -37,7 +37,6 @@
     "@workflow/builders": "workspace:*",
     "@workflow/core": "workspace:*",
     "@workflow/swc-plugin": "workspace:*",
-    "enhanced-resolve": "catalog:",
     "semver": "catalog:",
     "watchpack": "2.5.1"
   },

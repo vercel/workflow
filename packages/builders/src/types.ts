@@ -33,6 +33,14 @@ interface BaseWorkflowConfig {
   // Optional prefix for debug files (e.g., "_" for Astro to ignore them)
   debugFilePrefix?: string;
 
+  // Optional directory where diagnostics artifacts should be written.
+  // The workflow manifest is written to workflows-manifest.json inside this dir.
+  diagnosticsDir?: string;
+
+  // Optional framework output directory, used by builders that mirror framework
+  // artifact locations.
+  distDir?: string;
+
   // Suppress informational logs emitted by createWorkflowsBundle()
   // (e.g. intermediate/final workflow bundle timing logs).
   suppressCreateWorkflowsBundleLogs?: boolean;

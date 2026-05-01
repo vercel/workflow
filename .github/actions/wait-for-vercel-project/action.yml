@@ -1,35 +1,33 @@
 name: 'Wait for Vercel Project Deployment'
-description: 'Wait for a specific Vercel project deployment to be ready using Vercel API'
+description: 'Wait for a specific Vercel project deployment to be ready, using the GitHub Deployments API.'
 author: 'v0'
 
 inputs:
-  project-id:
-    description: 'Vercel project ID for identification'
+  project-slug:
+    description: 'Vercel project slug (e.g. "example-nextjs-workflow-webpack"). Used to identify the GitHub Deployment via its environment name ("Preview – <slug>" / "Production – <slug>").'
     required: true
-  team-id:
-    description: 'Vercel team ID for identification'
-    required: true
-  vercel-token:
-    description: 'Vercel API token for authentication'
-    required: true
+  environment:
+    description: 'Which deployment to wait for: "production" or "preview".'
+    required: false
+    default: 'preview'
   timeout:
-    description: 'Maximum time to wait in seconds'
+    description: 'Maximum time to wait in seconds.'
     required: false
     default: '600'
   check-interval:
-    description: 'How often to check deployment status in seconds'
+    description: 'How often to poll in seconds.'
     required: false
     default: '10'
-  environment:
-    description: 'Environment to filter deployments (Production/Preview)'
+  github-token:
+    description: 'GitHub token used to query the Deployments API. Defaults to GITHUB_TOKEN.'
     required: false
-    default: 'Preview'
+    default: ${{ github.token }}
 
 outputs:
   deployment-url:
-    description: 'The URL of the ready deployment'
+    description: 'The URL of the ready deployment (e.g. https://my-project-abc123.vercel.app).'
   deployment-id:
-    description: 'The ID of the deployment'
+    description: 'The Vercel deployment ID (dpl_xxx), resolved from the matching commit status. Empty string if it could not be resolved.'
 
 runs:
   using: 'node20'

@@ -9,6 +9,7 @@ import type {
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod';
 import {
+  assertSafeEntityId,
   listFilesByExtension,
   readBuffer,
   readJSONWithFallback,
@@ -65,6 +66,8 @@ async function listChunkFilesForStream(
   name: string,
   tag?: string
 ): Promise<{ files: string[]; extMap: Map<string, string> }> {
+  // Name is used as a filename prefix below; validate it can't escape chunksDir.
+  assertSafeEntityId('streamName', name);
   const listPromises: Promise<string[]>[] = [
     listFilesByExtension(chunksDir, '.bin'),
     listFilesByExtension(chunksDir, '.json'),
@@ -117,6 +120,8 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
     runId: string,
     streamName: string
   ): Promise<void> {
+    assertSafeEntityId('runId', runId);
+    assertSafeEntityId('streamName', streamName);
     const cacheKey = `${runId}:${streamName}`;
     if (registeredStreams.has(cacheKey)) {
       return; // Already registered in this session
@@ -282,6 +287,7 @@ export function createStreamer(basedir: string, tag?: string): Streamer {
       },
 
       async list(runId: string) {
+        assertSafeEntityId('runId', runId);
         const data = await readJSONWithFallback(
           basedir,
           'streams/runs',
