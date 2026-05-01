@@ -17,78 +17,76 @@ Run via `POST /api/workflows/start { "workflowName": "simple", "args": [1] }`.
 
 ## What this PR changes
 
-- **Single block, no retries.** Context-violation errors now set `fatal: true`
+- **Single block, no retries.** Context-violation errors set `fatal: true`
   and `FatalError.is(err)` recognizes them, so the step dies on attempt 1
   instead of burning through 3 retries and spamming 4 near-identical log
   blocks.
-- **Step log renders the stack inline, not JSON-escaped.** The step-fatal
-  framing + full stack trace go into the log *message* (matching the
-  workflow-level framing), and the metadata object keeps only the
-  structured indexable fields (`errorAttribution`, `errorName`,
-  `errorMessage`, `hint`, IDs). Log drains still get clean structured
-  fields; humans reading the terminal see a readable stack.
-- **User-friendly names.** `step//./workflows/1_simple//add` renders as
-  `add (./workflows/1_simple)` in the framing string — parsed by the
-  existing `parseStepName` / `parseWorkflowName` utilities.
-- **Plain text in `errorMessage` / `hint`.** Fields are free of
-  `\x1B[...m` ANSI escape bytes — structured log drains and CBOR event
-  payloads stay clean. The fancy framed rendering lives on
-  `[util.inspect.custom]` / `toString()` only.
-- **User-vs-SDK attribution.** `errorAttribution: 'user'` flags this as a
-  user-caused fault (not an SDK bug), feeding into the future ownership UI.
-- **Docs link.** `╰▶ docs: https://workflow-sdk.dev/docs/api-reference/workflow/create-hook`
-  points the user at the exact API reference.
+- **Pretty structured-log block (no JSON dump).** The runtime logger now
+  composes `[workflow-sdk] <message>` + the stack + an opinionated
+  metadata block — *one string passed to `console.error`* — instead of
+  letting `util.inspect` quote-escape multi-line stacks and paragraph
+  hints inside an object dump.
+- **Friendly names + raw IDs side-by-side.** Step / workflow IDs render
+  as `wrun_…` and `step_…` ULIDs (copy/paste-able for the inspect CLI)
+  alongside the parsed friendly name (`add (./workflows/1_simple)`).
+- **Color-coded attribution.** `user error` red / `sdk error` magenta
+  badge, paired with the error class in bold.
+- **Hint as a paragraph, not a JSON string.** Multi-line hints render
+  cleanly under `hint:` instead of being backslash-quote-escaped.
+- **Plain text in the runtime layer.** No ANSI escape bytes leak into
+  `errorMessage` / `errorStack` / `hint` fields; ANSI is applied in the
+  log formatter only, and only when the terminal supports it.
 
 ## Actual log output
 
 ```
 Simple workflow started
- POST /.well-known/workflow/v1/flow 200 in 224ms (next.js: 128ms, application-code: 96ms)
+ POST /.well-known/workflow/v1/flow 200 in 209ms (next.js: 118ms, application-code: 91ms)
 [workflow-sdk] Step add (./workflows/1_simple) threw a FatalError — bubbling up to parent workflow
 NotInWorkflowContextError: `createHook()` can only be called inside a workflow function
 ╰▶ docs: https://workflow-sdk.dev/docs/api-reference/workflow/create-hook
-    at add (…workbench_0njdtf~._.js:13:164)
+    at add (…workbench_0njdtf~._.js:12:164)
     … (full stack omitted for brevity) …
-{
-  workflowRunId: 'wrun_01KPYSYNXMEBS5R015DRXFKGMA',
-  stepId: 'step_01KPYSYP298P9NZX4K6819C4QQ',
-  stepName: 'step//./workflows/1_simple//add',
-  errorAttribution: 'user',
-  errorName: 'NotInWorkflowContextError',
-  errorMessage: '`createHook()` can only be called inside a workflow function\n╰▶ docs: https://workflow-sdk.dev/docs/api-reference/workflow/create-hook',
-  hint: 'A workflow-only or step-only API was called from the wrong context. The error message includes the exact API and how to move the call.'
-}
- POST /.well-known/workflow/v1/step 200 in 167ms
+  user error · NotInWorkflowContextError
+  run    wrun_01KQE8WAC5GR090TXYZEQV84ZN
+  step   step_01KQE8WAGDPMQYWTVNSRG6VA3Q · add (./workflows/1_simple)
+  hint: A workflow-only or step-only API was called from the wrong context. The error message includes the exact API and how to move the call.
+ POST /.well-known/workflow/v1/step 200 in 156ms
+
 [workflow-sdk] Workflow simple (./workflows/1_simple) threw
 NotInWorkflowContextError: `createHook()` can only be called inside a workflow function
 ╰▶ docs: https://workflow-sdk.dev/docs/api-reference/workflow/create-hook
     at add (…)
     … (full stack omitted) …
-{
-  errorCode: 'USER_ERROR',
-  errorAttribution: 'user',
-  errorName: 'NotInWorkflowContextError',
-  errorMessage: '`createHook()` can only be called inside a workflow function\n╰▶ docs: …',
-  hint: 'A workflow-only or step-only API was called from the wrong context. …'
-}
- POST /.well-known/workflow/v1/flow 200 in 89ms
+  user error · FatalError
+  run    wrun_01KQE8WAC5GR090TXYZEQV84ZN · simple (./workflows/1_simple)
+  code   USER_ERROR
+ POST /.well-known/workflow/v1/flow 200 in 77ms
 ```
 
+(In a TTY, `user error` is red and the error class is bold; the keys
+`run`, `step`, `code`, `hint` are dimmed; `·` separators are dimmed.
+Snapshots above are stripped to plain text since GitHub markdown
+doesn't render ANSI.)
+
 Followed by the standard `WorkflowRunFailedError` thrown out of `start()` to
-the caller, with the original context-violation error attached as `[cause]`
-(same plain text, no ANSI).
+the caller, with the original context-violation error attached as `[cause]`.
 
 ## Compare: pre-PR
 
 Before this PR the same scenario emitted:
 
-1. Four near-identical log blocks (1 original + 3 retries) — context
+1. **Four** near-identical log blocks (1 original + 3 retries) — context
    violations weren't recognized as fatal, so the step was retried up to
    max attempts even though it was guaranteed to fail again.
-2. The step-fatal log embedded the full stack trace inside an `errorStack`
-   string field — util.inspect rendered it as an escape-sequence-heavy
-   JSON blob inside the log object. Now the stack sits on the message
-   (rendered inline by the terminal) and the fields stay compact.
+2. The metadata was a `util.inspect`-rendered object dump:
+   `{ workflowRunId: '…', stepName: '…', errorAttribution: 'user',
+   errorName: 'NotInWorkflowContextError', errorMessage: '`createHook()`
+   can only be called inside a workflow function\n╰▶ docs: …',
+   errorStack: 'NotInWorkflowContextError: …\n    at add (…)\n   …',
+   hint: 'A workflow-only or step-only API was called from the wrong
+   context. …' }` — multi-line stack and hint strings were
+   backslash-`\n`-escaped on a single line each, IDs got no parsing.
 3. `errorMessage` / `errorStack` contained literal `\x1B[31m...\x1B[0m`
    ANSI escape bytes, making structured log drains unreadable.
 4. No `errorAttribution` field.
@@ -101,3 +99,4 @@ Before this PR the same scenario emitted:
 - `.changeset/friendlier-error-attribution.md` — `errorAttribution` field
 - `.changeset/friendlier-logger-metadata.md` — `[workflow-sdk]` prefix, scoped logger
 - `.changeset/log-readability.md` — inline stack + friendly names in step-level logs
+- `.changeset/pretty-log-format.md` — opinionated formatter for structured metadata

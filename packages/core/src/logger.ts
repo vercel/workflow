@@ -1,4 +1,5 @@
 import debug from 'debug';
+import { formatLogMetadata } from './log-format.js';
 import { getActiveSpan } from './telemetry.js';
 
 type LogMetadata = Record<string, unknown>;
@@ -47,10 +48,20 @@ function createLogger(namespace: string): Logger {
 
         // Always output error/warn to console so users see critical issues.
         // debug/info only output when DEBUG env var is set.
-        if (level === 'error') {
-          console.error(`[workflow-sdk] ${message}`, merged ?? '');
-        } else if (level === 'warn') {
-          console.warn(`[workflow-sdk] ${message}`, merged ?? '');
+        //
+        // Render the metadata as a single pretty string and pass it as the
+        // sole second argument so the runtime's `console.error` / `util.inspect`
+        // doesn't quote-escape multi-line stacks or paragraph hints inside a
+        // JSON-y object dump. See `./log-format.ts` for the reasoning + format.
+        if (level === 'error' || level === 'warn') {
+          const prefix = `[workflow-sdk] ${message}`;
+          const tail = formatLogMetadata(message, merged);
+          const out = level === 'error' ? console.error : console.warn;
+          if (tail) {
+            out(`${prefix}\n${tail}`);
+          } else {
+            out(prefix);
+          }
         }
 
         // Also log to debug library for verbose output when DEBUG is enabled

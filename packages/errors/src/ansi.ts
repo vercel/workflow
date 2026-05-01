@@ -66,6 +66,21 @@ export function dim(str: string): string {
   return chalk.dim(str);
 }
 
+/** Bold styling (used for emphasizing class names in headers). */
+export function bold(str: string): string {
+  return chalk.bold(str);
+}
+
+/** Red styling (used for the user-error attribution badge). */
+export function red(str: string): string {
+  return chalk.red(str);
+}
+
+/** Magenta styling (used for the SDK-error attribution badge). */
+export function magenta(str: string): string {
+  return chalk.magenta(str);
+}
+
 /**
  * Frame a title with one or more continuation lines, drawn with
  * box-drawing characters. The last content uses `╰▶`, others use `├▶`.

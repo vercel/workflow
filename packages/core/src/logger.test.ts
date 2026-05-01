@@ -15,18 +15,24 @@ describe('logger', () => {
     warnSpy.mockRestore();
   });
 
-  test('error logs go to console.error with [workflow-sdk] prefix', () => {
+  // The logger composes `[workflow-sdk] <message>\n<formatted metadata>`
+  // into a single string argument and passes it to `console.error` /
+  // `console.warn`. This avoids `util.inspect` quoting multi-line stacks
+  // and paragraph hints inside an object dump. See `./log-format.ts`.
+  test('error logs go to console.error with [workflow-sdk] prefix and unknown fields fall through', () => {
     runtimeLogger.error('boom', { foo: 'bar' });
-    expect(errorSpy).toHaveBeenCalledWith('[workflow-sdk] boom', {
-      foo: 'bar',
-    });
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0]).toHaveLength(1);
+    expect(errorSpy.mock.calls[0][0]).toContain('[workflow-sdk] boom');
+    expect(errorSpy.mock.calls[0][0]).toContain('foo');
+    expect(errorSpy.mock.calls[0][0]).toContain('bar');
   });
 
   test('warn logs go to console.warn with [workflow-sdk] prefix', () => {
     runtimeLogger.warn('watch out', { foo: 'bar' });
-    expect(warnSpy).toHaveBeenCalledWith('[workflow-sdk] watch out', {
-      foo: 'bar',
-    });
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toContain('[workflow-sdk] watch out');
+    expect(warnSpy.mock.calls[0][0]).toContain('foo');
   });
 
   test('info and debug do not print to console by default', () => {
@@ -39,45 +45,47 @@ describe('logger', () => {
   test('child() merges parent metadata into every call', () => {
     const child = runtimeLogger.child({ workflowRunId: 'run-1' });
     child.error('boom', { stepId: 'step-1' });
-    expect(errorSpy).toHaveBeenCalledWith('[workflow-sdk] boom', {
-      workflowRunId: 'run-1',
-      stepId: 'step-1',
-    });
+    const out = errorSpy.mock.calls[0][0] as string;
+    expect(out).toContain('[workflow-sdk] boom');
+    expect(out).toContain('run-1');
+    expect(out).toContain('step-1');
   });
 
   test('call-site metadata wins over child metadata on conflict', () => {
     const child = runtimeLogger.child({ workflowRunId: 'parent-id' });
     child.error('boom', { workflowRunId: 'override' });
-    expect(errorSpy).toHaveBeenCalledWith('[workflow-sdk] boom', {
-      workflowRunId: 'override',
-    });
+    const out = errorSpy.mock.calls[0][0] as string;
+    expect(out).toContain('override');
+    expect(out).not.toContain('parent-id');
   });
 
   test('child can be chained', () => {
     const runLogger = runtimeLogger.child({ workflowRunId: 'run-1' });
     const stepLogger = runLogger.child({ stepId: 'step-1' });
     stepLogger.error('boom');
-    expect(errorSpy).toHaveBeenCalledWith('[workflow-sdk] boom', {
-      workflowRunId: 'run-1',
-      stepId: 'step-1',
-    });
+    const out = errorSpy.mock.calls[0][0] as string;
+    expect(out).toContain('run-1');
+    expect(out).toContain('step-1');
   });
 
   test('forRun attaches workflowRunId and workflowName', () => {
-    const runLogger = runtimeLogger.forRun('run-1', 'myWorkflow');
+    // Production passes machine-form names like `workflow//./module//fn`,
+    // which the formatter renders as `fn (./module)`.
+    const runLogger = runtimeLogger.forRun(
+      'run-1',
+      'workflow//./src/jobs//myWorkflow'
+    );
     runLogger.error('boom');
-    expect(errorSpy).toHaveBeenCalledWith('[workflow-sdk] boom', {
-      workflowRunId: 'run-1',
-      workflowName: 'myWorkflow',
-    });
+    const out = errorSpy.mock.calls[0][0] as string;
+    expect(out).toContain('run-1');
+    expect(out).toContain('myWorkflow (./src/jobs)');
   });
 
   test('forRun without workflowName omits the key', () => {
     const runLogger = runtimeLogger.forRun('run-1');
     runLogger.error('boom');
-    expect(errorSpy).toHaveBeenCalledWith('[workflow-sdk] boom', {
-      workflowRunId: 'run-1',
-    });
+    const out = errorSpy.mock.calls[0][0] as string;
+    expect(out).toContain('run-1');
   });
 
   test('forRun accepts extra metadata', () => {
@@ -85,16 +93,15 @@ describe('logger', () => {
       stepId: 'step-1',
     });
     runLogger.error('boom');
-    expect(errorSpy).toHaveBeenCalledWith('[workflow-sdk] boom', {
-      workflowRunId: 'run-1',
-      workflowName: 'myWorkflow',
-      stepId: 'step-1',
-    });
+    const out = errorSpy.mock.calls[0][0] as string;
+    expect(out).toContain('run-1');
+    expect(out).toContain('step-1');
   });
 
-  test('no metadata omits the argument object', () => {
+  test('no metadata: only the prefix line is emitted', () => {
     runtimeLogger.error('boom');
-    expect(errorSpy).toHaveBeenCalledWith('[workflow-sdk] boom', '');
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+    expect(errorSpy.mock.calls[0][0]).toBe('[workflow-sdk] boom');
   });
 
   /**
@@ -120,17 +127,11 @@ describe('logger', () => {
       expect(errorSpy.mock.calls).toMatchInlineSnapshot(`
         [
           [
-            "[workflow-sdk] Step "step//my-step" threw a FatalError",
-            {
-              "errorAttribution": "user",
-              "errorMessage": "boom",
-              "errorName": "FatalError",
-              "hint": "Move the call to a step function.",
-              "stepId": "step_456",
-              "stepName": "step//my-step",
-              "workflowName": "workflow//my-wf",
-              "workflowRunId": "wrun_123",
-            },
+            "[workflow-sdk] Step "step//my-step" threw a FatalError
+          user error · FatalError
+          run    wrun_123
+          step   step_456
+          hint: Move the call to a step function.",
           ],
         ]
       `);
@@ -156,18 +157,11 @@ describe('logger', () => {
       expect(errorSpy.mock.calls).toMatchInlineSnapshot(`
         [
           [
-            "[workflow-sdk] Step "step//doWork" hit max retries — bubbling error thrown by your step to the parent workflow",
-            {
-              "attempt": 4,
-              "errorAttribution": "user",
-              "errorMessage": "Transient failure",
-              "errorName": "Error",
-              "retryCount": 3,
-              "stepId": "step_xyz",
-              "stepName": "step//doWork",
-              "workflowName": "workflow//main",
-              "workflowRunId": "wrun_abc",
-            },
+            "[workflow-sdk] Step "step//doWork" hit max retries — bubbling error thrown by your step to the parent workflow
+          user error · Error
+          run    wrun_abc
+          step   step_xyz
+          retry  4 attempts · 3 retries",
           ],
         ]
       `);
