@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import {
   EntityConflictError,
   FatalError,
@@ -631,8 +632,14 @@ export function workflowEntrypoint(
 
                     // Apply the source-map-remapped stack to the thrown value
                     // so that the serialized error preserves it for consumers.
-                    if (err instanceof Error && errorStack) {
-                      err.stack = errorStack;
+                    //
+                    // `types.isNativeError()` is used instead of `err instanceof
+                    // Error` because the workflow runs in a separate VM realm —
+                    // its Error class is distinct from the host's, so
+                    // `instanceof Error` is `false` for VM-thrown errors. The
+                    // V8 type tag works across realms.
+                    if (types.isNativeError(err) && errorStack) {
+                      (err as Error).stack = errorStack;
                     }
 
                     // Fail the workflow run via event (event-sourced architecture).
