@@ -1304,6 +1304,42 @@ describe('e2e', () => {
           expect(runData.status).toBe('failed');
         }
       );
+
+      test(
+        'step throw of a non-Error value preserves it as cause on the wrapping FatalError',
+        { timeout: 60_000 },
+        async () => {
+          // Steps may also throw any JS value. Non-Error throws aren't
+          // recognized as `FatalError` (they have no `name === 'FatalError'`)
+          // nor `RetryableError`, so they take the transient-retry path.
+          // After max retries the runtime wraps the original thrown value as
+          // `cause` on a fresh FatalError, which the workflow then catches.
+          // The step has `maxRetries = 0` so we exhaust retries on first
+          // attempt and avoid a long test wait.
+          const run = await start(await e2e('errorStepThrowNonErrorValue'), []);
+          const result = await run.returnValue;
+
+          expect(result.caught).toBe(true);
+          // The workflow's catch sees a FatalError wrapping the original
+          // thrown value (max-retries-reached path).
+          expect(result.isFatal).toBe(true);
+          expect(result.isInstanceOf).toBe(true);
+          // The wrapping message mentions the original value (devalue's
+          // serialized form, which preserves the `kind`).
+          expect(result.messageIncludesKind).toBe(true);
+          // The original non-Error value is preserved verbatim as `cause`.
+          expect(result.causeIsObject).toBe(true);
+          expect(result.causeKind).toBe('business-rule-violation');
+          expect(result.causeCode).toBe('INVOICE_LOCKED');
+          expect(result.causeDetail).toEqual({
+            invoiceId: 'inv_123',
+            userId: 'usr_456',
+          });
+
+          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+          expect(runData.status).toBe('completed');
+        }
+      );
     });
 
     describe('not registered', () => {

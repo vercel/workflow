@@ -1028,6 +1028,58 @@ export async function errorWorkflowThrowNonErrorValue() {
   throw value;
 }
 
+// ---
+
+/**
+ * Test: a step throws a non-Error value (a plain object). Non-Error
+ * throws are NOT recognized as `FatalError` (no `name === 'FatalError'`)
+ * nor as `RetryableError`, so they take the transient retry path. With
+ * `maxRetries = 0` the step fails on first attempt; the runtime wraps
+ * the original thrown value as `cause` on a `FatalError` and the
+ * workflow catches that.
+ */
+async function throwNonErrorFromStep() {
+  'use step';
+  // Same shape as `errorWorkflowThrowNonErrorValue` so the test asserts
+  // a parallel round-trip on both throw boundaries.
+  const value: Record<string, unknown> = {
+    kind: 'business-rule-violation',
+    code: 'INVOICE_LOCKED',
+    detail: { invoiceId: 'inv_123', userId: 'usr_456' },
+  };
+  throw value;
+}
+throwNonErrorFromStep.maxRetries = 0;
+
+export async function errorStepThrowNonErrorValue() {
+  'use workflow';
+  try {
+    await throwNonErrorFromStep();
+    return { caught: false } as any;
+  } catch (err: any) {
+    // After max retries the step handler wraps the underlying thrown value
+    // as `cause` on a FatalError. The wrapping FatalError is what reaches
+    // the workflow's catch; the original non-Error object is on `err.cause`.
+    return {
+      caught: true,
+      isFatal: FatalError.is(err),
+      isInstanceOf: err instanceof FatalError,
+      // The wrapping message includes the retry count + the original
+      // non-Error value's `JSON.stringify` form.
+      messageIncludesKind:
+        typeof err?.message === 'string' &&
+        err.message.includes('business-rule-violation'),
+      causeIsObject:
+        err?.cause !== null &&
+        typeof err?.cause === 'object' &&
+        !(err.cause instanceof Error),
+      causeKind: err?.cause?.kind,
+      causeCode: err?.cause?.code,
+      causeDetail: err?.cause?.detail,
+    };
+  }
+}
+
 // ------------------------------------------------------------
 // SECTION 4: NOT REGISTERED ERRORS
 // Tests for step/workflow not registered in the current deployment
