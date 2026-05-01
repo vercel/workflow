@@ -351,11 +351,8 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
-      // Compose the per-request hang protection with any signal the caller
-      // already passed via `options`, so callers that want their own
-      // cancellation don't silently lose the timeout backstop (and vice
-      // versa). No caller does this today, but `makeRequest()` accepts
-      // arbitrary `RequestInit` options so this future-proofs the contract.
+      // Compose user-passed abort signal (unused at time of writing)
+      // with the max request timeout
       const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
       const signal = options.signal
         ? AbortSignal.any([options.signal, timeoutSignal])
