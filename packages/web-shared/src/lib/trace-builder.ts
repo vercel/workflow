@@ -117,6 +117,7 @@ function buildSpans(
   // unknown territory. Even when the run is completed, we may not have loaded
   // all events yet, so always use the latest event we've actually seen.
   const childMaxEnd = latestKnownTime;
+  const runMaxEnd = run.completedAt ?? now;
 
   const stepSpans = Array.from(groupedEvents.eventsByStepId.values())
     .map((events) => stepToSpan(events, childMaxEnd))
@@ -127,7 +128,7 @@ function buildSpans(
     .filter((span): span is Span => span !== null);
 
   const waitSpans = Array.from(groupedEvents.timerEvents.values())
-    .map((events) => waitToSpan(events, childMaxEnd))
+    .map((events) => waitToSpan(events, childMaxEnd, runMaxEnd))
     .filter((span): span is Span => span !== null);
 
   return {

@@ -45,6 +45,9 @@ export const docs = defineDocs({
         .optional(),
       summary: z.string().optional(),
       keywords: z.array(z.string()).optional(),
+      // Pages marked preRelease are only visible under /v5/docs/*.
+      // The default /docs/* (v4) tree filters them out.
+      preRelease: z.boolean().optional(),
     }),
     postprocess: {
       includeProcessedMarkdown: true,

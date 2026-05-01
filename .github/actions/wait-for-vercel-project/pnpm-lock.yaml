@@ -11,10 +11,10 @@ importers:
       '@actions/core':
         specifier: ^1.11.1
         version: 1.11.1
-      '@vercel/sdk':
-        specifier: ^1.10.0
-        version: 1.11.0
     devDependencies:
+      '@types/node':
+        specifier: ^22.19.0
+        version: 22.19.17
       esbuild:
         specifier: ^0.24.0
         version: 0.24.2
@@ -187,14 +187,8 @@ packages:
     resolution: {integrity: sha512-vBZP4NlzfOlerQTnba4aqZoMhE/a9HY7HRqoOPaETQcSQuWEIyZMHGfVu6w9wGtGK5fED5qRs2DteVCjOH60sA==}
     engines: {node: '>=14'}
 
-  '@vercel/sdk@1.11.0':
-    resolution: {integrity: sha512-epfIZMS3/NtBFSrkF470dvlrMEq05g3si8IGD2v18bvK9MmgtoDN3JwRoUaYU/mLER5AeO3TzFtrCbccPfDh9A==}
-    hasBin: true
-    peerDependencies:
-      '@modelcontextprotocol/sdk': '>=1.5.0 <1.10.0'
-    peerDependenciesMeta:
-      '@modelcontextprotocol/sdk':
-        optional: true
+  '@types/node@22.19.17':
+    resolution: {integrity: sha512-wGdMcf+vPYM6jikpS/qhg6WiqSV/OhG+jeeHT/KlVqxYfD40iYJf9/AE1uQxVWFvU7MipKRkRv8NSHiCGgPr8Q==}
 
   esbuild@0.24.2:
     resolution: {integrity: sha512-+9egpBW8I3CD5XPe0n6BfT5fxLzxrlDzqydF3aviG+9ni1lDC/OvMHcxqEFV0+LANZG5R1bFMWfUrjVsdwxJvA==}
@@ -205,12 +199,12 @@ packages:
     resolution: {integrity: sha512-1h/Lnq9yajKY2PEbBadPXj3VxsDDu844OnaAo52UVmIzIvwwtBPIuNvkjuzBlTWpfJyUbG3ez0KSBibQkj4ojg==}
     engines: {node: '>=0.6.11 <=0.7.0 || >=0.7.3'}
 
+  undici-types@6.21.0:
+    resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
   undici@5.29.0:
     resolution: {integrity: sha512-raqeBD6NQK4SkWhQzeYKd1KmIG6dllBOTt55Rmkt4HtI9mwdWtJljnrXjAFUBLTSN67HWrOIZ3EPF4kjUw80Bg==}
     engines: {node: '>=14.0'}
-
-  zod@3.25.76:
-    resolution: {integrity: sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==}
 
 snapshots:
 
@@ -307,9 +301,9 @@ snapshots:
 
   '@fastify/busboy@2.1.1': {}
 
-  '@vercel/sdk@1.11.0':
+  '@types/node@22.19.17':
     dependencies:
-      zod: 3.25.76
+      undici-types: 6.21.0
 
   esbuild@0.24.2:
     optionalDependencies:
@@ -341,8 +335,8 @@ snapshots:
 
   tunnel@0.0.6: {}
 
+  undici-types@6.21.0: {}
+
   undici@5.29.0:
     dependencies:
       '@fastify/busboy': 2.1.1
-
-  zod@3.25.76: {}

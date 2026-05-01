@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, test } from 'vitest';
-import { usesVercelWorld } from '../../utils/src/world-target';
 import { getWorkbenchAppPath } from './utils';
 
 interface CommandResult {
@@ -83,6 +82,12 @@ const ESM_STEP_BUNDLE_PROJECTS: Record<string, string> = {
     '.vercel/output/functions/.well-known/workflow/v1/step.func/index.mjs',
 };
 
+const DIAGNOSTICS_MANIFEST_PATHS: Record<string, string> = {
+  example: '.vercel/output/diagnostics/workflows-manifest.json',
+  'nextjs-webpack': '.next/diagnostics/workflows-manifest.json',
+  'nextjs-turbopack': '.next/diagnostics/workflows-manifest.json',
+};
+
 const DEFERRED_BUILD_MODE_PROJECTS = new Set([
   'nextjs-webpack',
   'nextjs-turbopack',
@@ -128,12 +133,13 @@ describe.each([
       }
     }
 
-    if (usesVercelWorld()) {
-      const diagnosticsManifestPath = path.join(
+    const diagnosticsManifestPath = DIAGNOSTICS_MANIFEST_PATHS[project];
+    if (diagnosticsManifestPath) {
+      const resolvedDiagnosticsManifestPath = path.join(
         getWorkbenchAppPath(project),
-        '.vercel/output/diagnostics/workflows-manifest.json'
+        diagnosticsManifestPath
       );
-      await fs.access(diagnosticsManifestPath);
+      await fs.access(resolvedDiagnosticsManifestPath);
     }
 
     // Verify ESM step bundles use native import.meta (no CJS polyfill needed)

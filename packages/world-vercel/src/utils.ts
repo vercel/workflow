@@ -53,16 +53,25 @@ function httpLog(
     );
   }
 }
-
 /**
- * Hard-coded workflow-server URL override for testing.
- * Set this to test against a different workflow-server version.
- * Leave empty string for production (uses default vercel-workflow.com).
- *
- * Example: 'https://workflow-server-git-branch-name.vercel.sh'
+ * Inline workflow-server URL override. Must remain an empty string on
+ * `main` — rewritten by external CI for branch-deployment testing.
+ * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
  */
 const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
+/**
+ * Effective workflow-server URL override. The inline constant wins when
+ * set; otherwise falls back to the `VERCEL_WORKFLOW_SERVER_URL` env var.
+ *
+ * When set, requests bypass the default production host
+ * (`https://vercel-workflow.com`). When using the proxy
+ * (`api.vercel.com/v1/workflow`), this value is forwarded via the
+ * `x-vercel-workflow-api-url` header so the proxy routes the request to
+ * the override URL.
+ */
+const getWorkflowServerUrlOverride = (): string =>
+  WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
@@ -190,12 +199,28 @@ export interface HttpConfig {
   usingProxy: boolean;
 }
 
+/**
+ * Returns an object with the Vercel Deployment Protection bypass header
+ * if the `VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS` env var is set, otherwise
+ * returns an empty object. Useful for spreading into a headers init object
+ * for direct fetch() calls that don't go through `getHeaders()`.
+ *
+ * See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation
+ */
+export function getProtectionBypassHeader(): Record<string, string> {
+  const bypassSecret = process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
+  if (bypassSecret) {
+    return { 'x-vercel-protection-bypass': bypassSecret };
+  }
+  return {};
+}
+
 export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
   const defaultHost =
-    WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    getWorkflowServerUrlOverride() || 'https://vercel-workflow.com';
   const customProxyUrl = process.env.WORKFLOW_VERCEL_BACKEND_URL;
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   // Use proxy when we have project config (for authentication via Vercel API)
@@ -230,8 +255,12 @@ export const getHeaders = (
   // Only set workflow-api-url header when using the proxy, since the proxy
   // forwards it to the workflow-server. When not using proxy, requests go
   // directly to the workflow-server so this header has no effect.
-  if (WORKFLOW_SERVER_URL_OVERRIDE && options.usingProxy) {
-    headers.set('x-vercel-workflow-api-url', WORKFLOW_SERVER_URL_OVERRIDE);
+  const workflowServerUrlOverride = getWorkflowServerUrlOverride();
+  if (workflowServerUrlOverride && options.usingProxy) {
+    headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
+  }
+  for (const [key, value] of Object.entries(getProtectionBypassHeader())) {
+    headers.set(key, value);
   }
   return headers;
 };

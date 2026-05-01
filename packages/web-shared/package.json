@@ -1,7 +1,7 @@
 {
   "name": "@workflow/web-shared",
   "description": "Shared components for Workflow Observability UI",
-  "version": "5.0.0-beta.2",
+  "version": "5.0.0-beta.4",
   "private": false,
   "files": [
     "dist",
@@ -47,6 +47,7 @@
     "format": "biome format --write"
   },
   "dependencies": {
+    "@radix-ui/react-tooltip": "1.2.8",
     "@tailwindcss/postcss": "4",
     "@workflow/core": "workspace:*",
     "@workflow/utils": "workspace:*",

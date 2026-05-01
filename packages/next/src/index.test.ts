@@ -50,7 +50,7 @@ const loaderStubPath = join(
 );
 const hadLoaderStub = existsSync(loaderStubPath);
 
-describe('withWorkflow outputFileTracingRoot', () => {
+describe('withWorkflow builder config', () => {
   const originalEnv = {
     PORT: process.env.PORT,
     VERCEL_DEPLOYMENT_ID: process.env.VERCEL_DEPLOYMENT_ID,
@@ -107,6 +107,34 @@ describe('withWorkflow outputFileTracingRoot', () => {
     expect(builderConfigs[0]).toMatchObject({
       projectRoot: '/repo',
       workingDir: process.cwd(),
+    });
+  });
+
+  it('configures diagnostics inside the default Next.js dist dir', async () => {
+    const config = withWorkflow({});
+
+    await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(builderConfigs[0]).toMatchObject({
+      distDir: '.next',
+      diagnosticsDir: '.next/diagnostics',
+    });
+  });
+
+  it('configures diagnostics inside a custom Next.js dist dir', async () => {
+    const config = withWorkflow({
+      distDir: 'build-output',
+    });
+
+    await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(builderConfigs[0]).toMatchObject({
+      distDir: 'build-output',
+      diagnosticsDir: 'build-output/diagnostics',
     });
   });
 });

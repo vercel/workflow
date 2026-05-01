@@ -3,16 +3,16 @@ import {
   hydrateData,
   isEncryptedData,
 } from '@workflow/core/serialization-format';
-import type { WorkflowRunStatus } from '@workflow/world';
 import { getWebRevivers } from '@workflow/web-shared';
+import type { WorkflowRunStatus } from '@workflow/world';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { EnvMap } from '~/lib/types';
 import { readStream } from '~/lib/workflow-api-client';
 
 export interface StreamChunk {
   id: number;
-  /** Serialized payload expected by StreamViewer */
-  text: string;
+  /** Hydrated payload rendered by StreamViewer/DataInspector */
+  value: unknown;
 }
 
 const FRAME_HEADER_SIZE = 4;
@@ -21,80 +21,6 @@ const POLL_INTERVAL_MS = 3000;
 
 function isRunActive(status?: WorkflowRunStatus): boolean {
   return status === 'pending' || status === 'running';
-}
-
-/**
- * Maximum number of entries (array elements / object keys) to keep when
- * sanitizing data for the tree inspector. Beyond this, items are replaced
- * with a "…N more" summary so react-inspector doesn't create thousands
- * of DOM nodes and kill the browser tab.
- */
-const MAX_DISPLAY_ENTRIES = 200;
-const MAX_DISPLAY_DEPTH = 6;
-
-/**
- * Prepare a hydrated value for display in the stream viewer.
- *
- * Typed arrays become compact summaries, large arrays/objects are trimmed,
- * and everything else passes through unchanged. This keeps the data
- * inspectable via react-inspector while preventing tab crashes on large
- * payloads (e.g., a 87KB Uint8Array serializes to 87K object keys).
- */
-function sanitizeForDisplay(value: unknown, depth = 0): unknown {
-  if (value === null || value === undefined) return value;
-
-  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
-    const ta = value as unknown as {
-      length: number;
-      constructor: { name: string };
-    } & ArrayLike<number>;
-    const name = ta.constructor.name;
-    const preview = Array.from(
-      { length: Math.min(ta.length, 8) },
-      (_, i) => ta[i]
-    );
-    const suffix = ta.length > 8 ? ', …' : '';
-    return `${name}(${ta.length}) [${preview.join(', ')}${suffix}]`;
-  }
-
-  if (value instanceof ArrayBuffer) {
-    return `ArrayBuffer(${value.byteLength})`;
-  }
-
-  if (depth >= MAX_DISPLAY_DEPTH) {
-    if (Array.isArray(value)) return `Array(${value.length})`;
-    if (typeof value === 'object') return '{…}';
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    if (value.length <= MAX_DISPLAY_ENTRIES) {
-      return value.map((v) => sanitizeForDisplay(v, depth + 1));
-    }
-    const trimmed = value
-      .slice(0, MAX_DISPLAY_ENTRIES)
-      .map((v) => sanitizeForDisplay(v, depth + 1));
-    trimmed.push(`… ${value.length - MAX_DISPLAY_ENTRIES} more items`);
-    return trimmed;
-  }
-
-  if (typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>);
-    const out: Record<string, unknown> = {};
-    const limit = Math.min(keys.length, MAX_DISPLAY_ENTRIES);
-    for (let i = 0; i < limit; i++) {
-      out[keys[i]] = sanitizeForDisplay(
-        (value as Record<string, unknown>)[keys[i]],
-        depth + 1
-      );
-    }
-    if (keys.length > MAX_DISPLAY_ENTRIES) {
-      out[`… ${keys.length - MAX_DISPLAY_ENTRIES} more keys`] = '…';
-    }
-    return out;
-  }
-
-  return value;
 }
 
 const yieldToMain = (): Promise<void> =>
@@ -188,20 +114,8 @@ export function useStreamReader(
         hydrated = ENCRYPTED_PLACEHOLDER;
       }
 
-      let text: string;
-      try {
-        if (typeof hydrated === 'string') {
-          text = hydrated;
-        } else {
-          const safe = sanitizeForDisplay(hydrated);
-          text = JSON.stringify(safe, null, 2);
-        }
-      } catch {
-        text = '[Serialization Error]';
-      }
-
       const chunkId = chunkIdRef.current++;
-      return { encrypted: false, chunk: { id: chunkId, text } };
+      return { encrypted: false, chunk: { id: chunkId, value: hydrated } };
     },
     []
   );
@@ -232,14 +146,13 @@ export function useStreamReader(
 
     const parseLegacyLine = (line: string): StreamChunk => {
       const chunkId = chunkIdRef.current++;
-      let text: string;
+      let value: unknown;
       try {
-        const parsed = JSON.parse(line);
-        text = JSON.stringify(parsed, null, 2);
+        value = JSON.parse(line);
       } catch {
-        text = line;
+        value = line;
       }
-      return { id: chunkId, text };
+      return { id: chunkId, value };
     };
 
     /**
