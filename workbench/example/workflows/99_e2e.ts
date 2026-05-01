@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getHookByToken, getRun, resumeHook, Run, start } from 'workflow/api';
+import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -1316,8 +1316,38 @@ export async function crossContextSerdeWorkflow() {
 }
 
 //////////////////////////////////////////////////////////
-// Instance Method Step Tests
+// Built-in Error subclass round-trip
 //////////////////////////////////////////////////////////
+
+/**
+ * Step that echoes an array of thrown values straight back through the
+ * step return-value boundary. Used by `errorSubclassRoundTripWorkflow` to
+ * verify that built-in Error subclasses survive the step serialization
+ * boundary with their type identity, message, stack, and cause intact.
+ */
+async function echoErrors(errors: unknown[]): Promise<unknown[]> {
+  'use step';
+  return errors;
+}
+
+/**
+ * Round-trips an array of built-in Error subclass instances through every
+ * serialization boundary:
+ *
+ *   client (start args) → workflow → step (echoErrors) → workflow → client (return)
+ *
+ * This exercises the per-subclass reducers/revivers added in the
+ * "Add first-class serialization for built-in Error subclasses" change.
+ * Each subclass reducer must run BEFORE the generic Error reducer
+ * (devalue is first-match-wins); a regression would silently downgrade
+ * `TypeError` etc. to plain `Error` instances.
+ */
+export async function errorSubclassRoundTripWorkflow(
+  errors: unknown[]
+): Promise<unknown[]> {
+  'use workflow';
+  return await echoErrors(errors);
+}
 
 /**
  * A class with instance methods that are marked as steps.

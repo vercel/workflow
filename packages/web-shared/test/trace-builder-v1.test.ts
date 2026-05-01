@@ -192,6 +192,74 @@ describe('Trace viewer with v1 events (no run lifecycle events)', () => {
       // parseStepName which returns the correlationId as fallback
       expect(stepSpan!.spanId).toBe('step_1');
     });
+
+    it('uses resumeAt for pending sleep span duration', () => {
+      const run = makeV1Run({
+        status: 'running',
+        completedAt: undefined,
+        output: undefined,
+      });
+      const waitCreatedAt = new Date(BASE_TIME.getTime() + 1_000);
+      const resumeAt = new Date(BASE_TIME.getTime() + 61_000);
+      const events = [
+        {
+          eventId: 'evnt_wait_created',
+          runId: 'wrun_v1test',
+          eventType: 'wait_created',
+          correlationId: 'wait_1',
+          createdAt: waitCreatedAt,
+          specVersion: 1,
+          eventData: { resumeAt },
+        },
+      ] as Event[];
+
+      const trace = buildTrace(
+        run,
+        events,
+        new Date(BASE_TIME.getTime() + 11_000)
+      );
+      const sleepSpan = trace.spans.find((s) => s.resource === 'sleep');
+
+      expect(sleepSpan).toBeDefined();
+      const { map } = parseTrace(trace);
+      expect(map[sleepSpan!.spanId].duration).toBe(10_000);
+    });
+
+    it('caps pending sleep spans at the latest known event before resumeAt', () => {
+      const run = makeV1Run({
+        status: 'completed',
+        completedAt: new Date(BASE_TIME.getTime() + 86_400_000),
+      });
+      const waitCreatedAt = new Date(BASE_TIME.getTime() + 1_000);
+      const latestKnownAt = new Date(BASE_TIME.getTime() + 86_401_000);
+      const resumeAt = new Date(BASE_TIME.getTime() + 6 * 86_400_000 + 1_000);
+      const events = [
+        {
+          eventId: 'evnt_wait_created',
+          runId: 'wrun_v1test',
+          eventType: 'wait_created',
+          correlationId: 'wait_1',
+          createdAt: waitCreatedAt,
+          specVersion: 1,
+          eventData: { resumeAt },
+        },
+        {
+          eventId: 'evnt_run_completed',
+          runId: 'wrun_v1test',
+          eventType: 'run_completed',
+          createdAt: latestKnownAt,
+          specVersion: 1,
+          eventData: { output: { result: 'ok' } },
+        },
+      ] as Event[];
+
+      const trace = buildTrace(run, events, latestKnownAt);
+      const sleepSpan = trace.spans.find((s) => s.resource === 'sleep');
+
+      expect(sleepSpan).toBeDefined();
+      const { map } = parseTrace(trace);
+      expect(map[sleepSpan!.spanId].duration).toBe(86_399_000);
+    });
   });
 
   describe('computeSegments for v1 run spans', () => {
