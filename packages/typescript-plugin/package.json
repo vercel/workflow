@@ -1,6 +1,6 @@
 {
   "name": "@workflow/typescript-plugin",
-  "version": "5.0.0-beta.2",
+  "version": "5.0.0-beta.3",
   "description": "TypeScript Language Service Plugin for Workflow SDK",
   "main": "dist/index.js",
   "files": [

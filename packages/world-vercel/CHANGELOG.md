@@ -1,5 +1,11 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.3
+
+### Minor Changes
+
+- [#1824](https://github.com/vercel/workflow/pull/1824) [`354840e`](https://github.com/vercel/workflow/commit/354840e93b46e2eae29d4b1f936b04a92db1890e) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Add `VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS` and `VERCEL_WORKFLOW_SERVER_URL` env vars.
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

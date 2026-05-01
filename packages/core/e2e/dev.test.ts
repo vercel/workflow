@@ -44,9 +44,22 @@ export function createDevTests(config?: DevTestConfig) {
     );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
-    const supportsDeferredStepCopies = generatedStep.includes(
+    const usesDeferredBuilder = generatedStep.includes(
       path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
     );
+    const workflowManifestPath = path.join(
+      appPath,
+      'app/.well-known/workflow/v1/manifest.json'
+    );
+    const readManifestStepFunctionNames = async (): Promise<string[]> => {
+      const manifestJson = await fs.readFile(workflowManifestPath, 'utf8');
+      const manifest = JSON.parse(manifestJson) as {
+        steps?: Record<string, Record<string, unknown>>;
+      };
+      return Object.values(manifest.steps || {}).flatMap((entry) =>
+        Object.keys(entry)
+      );
+    };
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
     const fetchWithTimeout = (pathname: string) => {
@@ -192,10 +205,6 @@ export async function myNewStep() {
 `
       );
       restoreFiles.push({ path: stepFile, content });
-      const copiedStepDir = path.join(
-        path.dirname(generatedStep),
-        '__workflow_step_files__'
-      );
 
       await pollUntil({
         description: 'generated step outputs to include myNewStep',
@@ -205,28 +214,20 @@ export async function myNewStep() {
             return;
           }
 
-          const copiedStepFileNames = await fs.readdir(copiedStepDir);
-          const copiedStepContents = await Promise.all(
-            copiedStepFileNames.map(async (copiedStepFileName) => {
-              const copiedStepFilePath = path.join(
-                copiedStepDir,
-                copiedStepFileName
-              );
-              const copiedStepStats = await fs.stat(copiedStepFilePath);
-              if (!copiedStepStats.isFile()) {
-                return '';
-              }
-              return await fs.readFile(copiedStepFilePath, 'utf8');
-            })
-          );
-          expect(
-            copiedStepContents.some((content) => content.includes('myNewStep'))
-          ).toBe(true);
+          // The deferred builder regenerates manifest.json on every rebuild.
+          // Check the manifest for the new step function name.
+          if (usesDeferredBuilder) {
+            const manifestFunctionNames = await readManifestStepFunctionNames();
+            expect(manifestFunctionNames).toContain('myNewStep');
+            return;
+          }
+
+          throw new Error('myNewStep not found in generated step outputs');
         },
       });
     });
 
-    test.skipIf(!supportsDeferredStepCopies)(
+    test.skipIf(!usesDeferredBuilder)(
       'should rebuild on imported step dependency change',
       { timeout: 60_000 },
       async () => {
@@ -250,36 +251,14 @@ export async function ${marker}() {
         );
         restoreFiles.push({ path: importedStepFile, content });
 
-        const copiedStepDir = path.join(
-          path.dirname(generatedStep),
-          '__workflow_step_files__'
-        );
-
         await pollUntil({
           description:
-            'copied deferred step files to include imported step hot-reload marker',
+            'manifest.json to include imported step hot-reload marker',
           timeoutMs: 50_000,
           check: async () => {
             await triggerWorkflowRun('importedStepOnlyWorkflow');
-            const copiedStepFileNames = await fs.readdir(copiedStepDir);
-            const copiedStepContents = await Promise.all(
-              copiedStepFileNames.map(async (copiedStepFileName) => {
-                const copiedStepFilePath = path.join(
-                  copiedStepDir,
-                  copiedStepFileName
-                );
-                const copiedStepStats = await fs.stat(copiedStepFilePath);
-                if (!copiedStepStats.isFile()) {
-                  return '';
-                }
-                return await fs.readFile(copiedStepFilePath, 'utf8');
-              })
-            );
-            expect(
-              copiedStepContents.some((copiedStepContent) =>
-                copiedStepContent.includes(marker)
-              )
-            ).toBe(true);
+            const manifestFunctionNames = await readManifestStepFunctionNames();
+            expect(manifestFunctionNames).toContain(marker);
           },
         });
       }
@@ -330,7 +309,7 @@ ${apiFileContent}`
       }
     );
 
-    test.skipIf(!supportsDeferredStepCopies)(
+    test.skipIf(!usesDeferredBuilder)(
       'should include steps discovered from workflow imports',
       { timeout: 30_000 },
       async () => {
@@ -378,57 +357,28 @@ export async function discoveredViaWorkflowStep() {
 ${apiFileContent}`
         );
 
-        const copiedStepDir = path.join(
-          path.dirname(generatedStep),
-          '__workflow_step_files__'
-        );
-
         await pollUntil({
           description:
-            'copied deferred step files to include discoveredViaWorkflowStep',
+            'manifest.json to include discoveredViaWorkflowStep after discovery',
           timeoutMs: 25_000,
           check: async () => {
             await fetchWithTimeout('/api/chat');
-            const copiedStepFileNames = await fs.readdir(copiedStepDir);
-            const copiedStepContents = await Promise.all(
-              copiedStepFileNames.map(async (copiedStepFileName) => {
-                const copiedStepFilePath = path.join(
-                  copiedStepDir,
-                  copiedStepFileName
-                );
-                const copiedStepStats = await fs.stat(copiedStepFilePath);
-                if (!copiedStepStats.isFile()) {
-                  return '';
-                }
-                return await fs.readFile(copiedStepFilePath, 'utf8');
-              })
+            const manifestFunctionNames = await readManifestStepFunctionNames();
+            expect(manifestFunctionNames).toContain(
+              'discoveredViaWorkflowStep'
             );
-            expect(
-              copiedStepContents.some((content) =>
-                content.includes('discoveredViaWorkflowStep')
-              )
-            ).toBe(true);
           },
         });
       }
     );
 
-    test.skipIf(!supportsDeferredStepCopies)(
-      'should copy package step sources discovered via manifest entries',
+    test.skipIf(!usesDeferredBuilder)(
+      'should reference package step sources discovered via manifest entries',
       { timeout: 30_000 },
       async () => {
-        const workflowManifestPath = path.join(
-          appPath,
-          'app/.well-known/workflow/v1/manifest.json'
-        );
-        const copiedStepDir = path.join(
-          path.dirname(generatedStep),
-          '__workflow_step_files__'
-        );
-
         await pollUntil({
           description:
-            'copied deferred step files to include @workflow/ai package steps',
+            'generated step route to reference @workflow/ai package steps',
           timeoutMs: 25_000,
           check: async () => {
             await fetchWithTimeout('/api/chat');
@@ -446,24 +396,13 @@ ${apiFileContent}`
               )
             ).toBe(true);
 
-            const copiedStepFileNames = await fs.readdir(copiedStepDir);
-            const copiedStepContents = await Promise.all(
-              copiedStepFileNames.map(async (copiedStepFileName) => {
-                const copiedStepFilePath = path.join(
-                  copiedStepDir,
-                  copiedStepFileName
-                );
-                const copiedStepStats = await fs.stat(copiedStepFilePath);
-                if (!copiedStepStats.isFile()) {
-                  return '';
-                }
-                return await fs.readFile(copiedStepFilePath, 'utf8');
-              })
-            );
+            // Package step sources are imported directly (not copied). Verify
+            // the generated step route imports the @workflow/ai package or
+            // otherwise references `durable-agent` via its resolved path.
+            const stepRouteContent = await fs.readFile(generatedStep, 'utf8');
             expect(
-              copiedStepContents.some((content) =>
-                content.includes('async function closeStream')
-              )
+              stepRouteContent.includes('@workflow/ai') ||
+                stepRouteContent.includes('durable-agent')
             ).toBe(true);
           },
         });

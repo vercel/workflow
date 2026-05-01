@@ -5,6 +5,8 @@ type: guide
 summary: Learn how to build, export, and test npm packages that ship workflow and step functions — including package.json exports, re-exporting for stable workflow IDs, keeping step I/O clean, and integration testing.
 ---
 
+import { File, Folder, Files } from "fumadocs-ui/components/files";
+
 <Callout>
 This is an advanced guide for library authors who want to publish reusable workflow functions as npm packages. It assumes familiarity with `"use workflow"`, `"use step"`, and the workflow execution model.
 </Callout>
@@ -13,23 +15,37 @@ This is an advanced guide for library authors who want to publish reusable workf
 
 A workflow library follows a standard TypeScript package layout with a dedicated `workflows/` directory. Each workflow file exports one or more workflow functions that consumers can import and pass to `start()`.
 
-```
-my-media-lib/
-├── src/
-│   ├── index.ts              # Package entry point
-│   ├── types.ts              # Shared types
-│   ├── workflows/
-│   │   ├── index.ts          # Re-exports all workflows
-│   │   ├── transcode.ts      # Workflow: transcode a video
-│   │   └── generate-thumbnails.ts
-│   └── lib/
-│       └── api-client.ts     # Internal helpers (NOT steps)
-├── test-server/
-│   └── workflows.ts          # Re-export for integration tests
-├── tsup.config.ts
-├── package.json
-└── tsconfig.json
-```
+<Files>
+  <Folder name="my-media-lib" defaultOpen>
+    <Folder name="src" defaultOpen>
+      <File name="index.ts" />
+      <File name="types.ts" />
+      <Folder name="workflows" defaultOpen>
+        <File name="index.ts" />
+        <File name="transcode.ts" />
+        <File name="generate-thumbnails.ts" />
+      </Folder>
+      <Folder name="lib" defaultOpen>
+        <File name="api-client.ts" />
+      </Folder>
+    </Folder>
+    <Folder name="test-server" defaultOpen>
+      <File name="workflows.ts" />
+    </Folder>
+    <File name="tsup.config.ts" />
+    <File name="package.json" />
+    <File name="tsconfig.json" />
+  </Folder>
+</Files>
+
+Key files:
+
+- **`src/index.ts`** — Package entry point. Exports the public API.
+- **`src/types.ts`** — Shared TypeScript types.
+- **`src/workflows/index.ts`** — Re-exports every workflow so consumers can pull them in under one specifier (see [Entry Points and Exports](#entry-points-and-exports)).
+- **`src/workflows/*.ts`** — One file per workflow function (e.g. `transcode.ts`, `generate-thumbnails.ts`).
+- **`src/lib/`** — Internal helpers. Plain async code, *not* marked with `"use workflow"` or `"use step"`.
+- **`test-server/workflows.ts`** — Re-export file used by integration tests (see [Testing Workflow Libraries](#testing-workflow-libraries)).
 
 ### Entry Points and Exports
 
@@ -126,7 +142,7 @@ When you publish a workflow library, every step function's inputs and outputs ar
 
 ### 1. Everything Must Be Serializable
 
-Step inputs and outputs must be serializable. The workflow runtime supports a rich set of types beyond plain JSON — including `Date`, `RegExp`, `Map`, `Set`, `BigInt`, `Uint8Array`, `URL`, `Error`, and class instances that implement [custom class serialization](/docs/cookbook/advanced/custom-serialization). See the [serialization reference](/docs/foundations/serialization) for the full list of supported types. Do not pass or return:
+Step inputs and outputs must be serializable. The workflow runtime supports a rich set of types beyond plain JSON — including `Date`, `RegExp`, `Map`, `Set`, `BigInt`, `Uint8Array`, `URL`, `Error`, and class instances that implement [custom class serialization](/docs/foundations/serialization#custom-class-serialization). See the [serialization reference](/docs/foundations/serialization) for the full list of supported types. Do not pass or return:
 
 - Functions or closures
 - `WeakRef`, `WeakMap`, or `WeakSet`
@@ -226,7 +242,18 @@ pnpm vitest run --config vitest.workflowsdk.config.ts
 
 ## Working With and Without Workflow Installed
 
-If your library should work both as a standalone package and inside Workflow SDK, declare `workflow` as an optional peer dependency:
+Some libraries want to be useful to consumers who *aren't* using Workflow SDK at all — the library picks up durable behavior when a workflow runtime is present and falls back to plain async execution otherwise.
+
+<Callout type="info">
+Two rules for isomorphic packages:
+
+1. **Any runtime reference to the `workflow` package must be loaded via dynamic `import("workflow")` inside a try/catch.** A static top-level import makes the module fail to load for consumers who haven't installed workflow.
+2. **The `"use workflow"` and `"use step"` directives are safe to keep in your library source.** When a consumer compiles your code with the Workflow SDK toolchain (via the [re-export pattern](#re-exporting-for-workflow-id-stability) above), the SWC plugin transforms them into durable-execution glue. When they're not compiled — plain Node, plain tests, a consumer without the runtime — they are just string expression statements and run as no-ops.
+</Callout>
+
+### Optional peer dependency
+
+Declare `workflow` as an **optional** peer so consumers without the runtime aren't forced to install it:
 
 ```json
 {
@@ -241,22 +268,52 @@ If your library should work both as a standalone package and inside Workflow SDK
 }
 ```
 
-Use dynamic imports and runtime detection so your library gracefully degrades when workflow is not installed:
+### Runtime detection
+
+Wrap a dynamic `import("workflow")` in try/catch. If either the module isn't installed *or* `getWorkflowMetadata()` throws (call site isn't inside a workflow run), fall through to the standalone path.
 
 ```typescript lineNumbers
-async function isWorkflowRuntime(): Promise<boolean> {
+async function getWorkflowRunId(): Promise<string | null> { // [!code highlight]
   try {
     const wf = await import("workflow");
-    if (typeof wf.getWorkflowMetadata !== "function") return false;
-    wf.getWorkflowMetadata(); // [!code highlight]
-    return true;
+    const { workflowRunId } = wf.getWorkflowMetadata();
+    return workflowRunId;
   } catch {
-    return false;
+    return null;
   }
 }
 ```
 
-See [Isomorphic Packages](/docs/cookbook/advanced/isomorphic-packages) for the full pattern including feature detection, dynamic imports, and dual-path execution.
+### A concrete use case: replay-safe idempotency keys
+
+A payments utility that uses the workflow run ID as a Stripe idempotency key when available, and a fresh UUID otherwise:
+
+{/* @skip-typecheck - depends on getWorkflowRunId defined in the previous block */}
+```typescript lineNumbers
+export async function processPayment(amount: number, currency: string) {
+  const runId = await getWorkflowRunId();
+  const idempotencyKey = runId ?? crypto.randomUUID(); // [!code highlight]
+
+  const res = await fetch("https://api.stripe.com/v1/charges", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.STRIPE_SECRET_KEY}`,
+      "Idempotency-Key": idempotencyKey, // [!code highlight]
+    },
+    body: new URLSearchParams({ amount: String(amount), currency }),
+  });
+  return res.json();
+}
+```
+
+When called from inside a workflow run, the step wrapping this utility gets a stable idempotency key across replays — Stripe dedupes retries for free. When called from a plain Node.js process, it behaves like any other function and a fresh UUID is generated.
+
+### In production
+
+Packages in the wild built on Workflow SDK:
+
+- **[`@mux/ai`](https://github.com/muxinc/ai)** — Reusable video AI workflows (summaries, chapters, content moderation, translation, embeddings) exported with `"use workflow"` / `"use step"` directives. In a standard Node environment the directives are no-ops and the SDK runs as a plain async library; in a Workflow SDK environment the consumer's compiler transforms them into durable, resumable steps with automatic retries and observability. Written up in detail in [*How Mux shipped durable video workflows with their @mux/ai SDK*](https://vercel.com/blog/how-mux-shipped-durable-video-workflows-with-their-mux-ai-sdk) on the Vercel blog.
+- **World ID** — Human-in-the-loop "proof of human" primitive for agent workflows. Developers drop a World ID step into any workflow to require a zero-knowledge cryptographic proof that a real, unique human authorized a specific action (deploy approvals, large payments, sensitive data access, etc.). Because it runs as a workflow step, every verification is durable, replay-safe, and viewable inside the run's execution timeline — giving you a provable audit record of which human approved what. Available on npm and announced in [*World ID for agents: Browserbase, Exa, Okta, and Vercel*](https://world.org/blog/announcements/browserbase-exa-okta-world-id-for-agentic-web) on the World blog.
 
 ## Checklist
 
