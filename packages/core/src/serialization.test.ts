@@ -3548,8 +3548,13 @@ describe('FatalError and RetryableError serialization', () => {
     const str = new TextDecoder().decode(
       (serialized as Uint8Array).subarray(4)
     );
-    // Should be serialized via the FatalError reducer (not Instance/Error).
-    expect(str).toContain('FatalError');
+    // devalue marks reduced values with `["KeyName",N]` arrays. Asserting on
+    // the literal marker (not just the string "FatalError") proves the
+    // dedicated FatalError reducer matched, rather than the generic Error
+    // reducer producing a payload that happens to contain "FatalError" in
+    // the `name` field.
+    expect(str).toContain('["FatalError",');
+    expect(str).not.toContain('["Error",');
     expect(str).not.toContain('Instance');
   });
 
@@ -3584,7 +3589,10 @@ describe('FatalError and RetryableError serialization', () => {
     const str = new TextDecoder().decode(
       (serialized as Uint8Array).subarray(4)
     );
-    expect(str).toContain('RetryableError');
+    // See note on the FatalError variant above: assert on the devalue
+    // marker `["KeyName",N]` to prove the dedicated reducer matched.
+    expect(str).toContain('["RetryableError",');
+    expect(str).not.toContain('["Error",');
     expect(str).not.toContain('Instance');
   });
 
