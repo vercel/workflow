@@ -476,9 +476,14 @@ export function createNodeModuleErrorPlugin(): esbuild.Plugin {
           }
         }
 
-        const liveViolations = packageViolations.filter((violation) =>
-          survivingBuiltins.has(violation.path)
-        );
+        // If the metafile is unavailable for some reason, fall back to
+        // reporting all recorded violations so we never silently suppress
+        // real ones.
+        const liveViolations = outputs
+          ? packageViolations.filter((violation) =>
+              survivingBuiltins.has(violation.path)
+            )
+          : packageViolations;
 
         if (liveViolations.length === 0) return;
 
