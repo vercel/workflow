@@ -1837,12 +1837,16 @@ describe('cross-VM Error serialization', () => {
   vmGlobalThis.WritableStream = globalThis.WritableStream;
 
   it('should serialize a host-context Error when using VM globalThis', async () => {
-    // This simulates the scenario where a FatalError (created in the host
+    // This simulates the scenario where an Error (created in the host
     // context) is passed as an argument to a step function. The serialization
     // uses VM's globalThis, so `instanceof vmGlobal.Error` would fail for
     // host-context errors. Using types.isNativeError() fixes this.
+    //
+    // The custom `name` is intentionally NOT one of the dedicated subclass
+    // names (FatalError, RetryableError, TypeError, …) so the value falls
+    // through to the generic Error reducer, which is the path under test.
     const hostError = new Error('host error');
-    hostError.name = 'FatalError';
+    hostError.name = 'CustomError';
 
     const serialized = await dehydrateStepArguments(
       [hostError],
@@ -1862,7 +1866,7 @@ describe('cross-VM Error serialization', () => {
 
     // The reviver creates errors with `new global.Error()` (VM's Error),
     // so `instanceof` against the host Error fails. Check duck-type instead.
-    expect((hydrated[0] as Error).name).toBe('FatalError');
+    expect((hydrated[0] as Error).name).toBe('CustomError');
     expect((hydrated[0] as Error).message).toBe('host error');
     // Verify it's an instance of the VM's Error
     vmGlobalThis.__testVal = hydrated[0];
@@ -1870,8 +1874,10 @@ describe('cross-VM Error serialization', () => {
   });
 
   it('should serialize a VM-context Error when using VM globalThis', async () => {
+    // See note on the previous test about the custom `name` being
+    // intentionally chosen to bypass the dedicated subclass reducers.
     const vmError = runInContext(
-      '(() => { const e = new Error("vm error"); e.name = "FatalError"; return e; })()',
+      '(() => { const e = new Error("vm error"); e.name = "CustomError"; return e; })()',
       context
     );
 
@@ -1893,7 +1899,7 @@ describe('cross-VM Error serialization', () => {
 
     // The reviver creates errors with `new global.Error()` (VM's Error),
     // so `instanceof` against the host Error fails. Check duck-type instead.
-    expect((hydrated[0] as Error).name).toBe('FatalError');
+    expect((hydrated[0] as Error).name).toBe('CustomError');
     expect((hydrated[0] as Error).message).toBe('vm error');
     // Verify it's an instance of the VM's Error
     vmGlobalThis.__testVal = hydrated[0];
@@ -1901,13 +1907,16 @@ describe('cross-VM Error serialization', () => {
   });
 
   it('should serialize Error subclass from host context through workflow reducers', async () => {
-    class FatalError extends Error {
+    // User-defined subclass with a non-special `name` so the value flows
+    // through the generic Error reducer (which uses `new global.Error(...)`)
+    // rather than one of the dedicated subclass reducers.
+    class CustomError extends Error {
       constructor(message: string) {
         super(message);
-        this.name = 'FatalError';
+        this.name = 'CustomError';
       }
     }
-    const error = new FatalError('step failed');
+    const error = new CustomError('step failed');
 
     const serialized = await dehydrateStepArguments(
       { error },
@@ -1926,7 +1935,7 @@ describe('cross-VM Error serialization', () => {
     )) as { error: Error };
 
     // The reviver creates errors with `new global.Error()` (VM's Error)
-    expect(hydrated.error.name).toBe('FatalError');
+    expect(hydrated.error.name).toBe('CustomError');
     expect(hydrated.error.message).toBe('step failed');
     // Verify it's an instance of the VM's Error
     vmGlobalThis.__testVal = hydrated.error;

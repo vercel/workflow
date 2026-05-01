@@ -101,18 +101,28 @@ function reduceErrorBase(value: unknown): BaseErrorPayload | false {
 
 /**
  * Reduces a native error to the shared `BaseErrorPayload`, but only when its
- * constructor name matches `subclassName`. Used by:
+ * `name` instance property matches `subclassName`. Used by:
  *   - `makeErrorSubclassReducer`, for subclasses whose serialized shape is
  *     exactly `BaseErrorPayload`.
  *   - Inline reducers for subclasses that extend the shape with additional
  *     fields (e.g. `AggregateError.errors`, `RetryableError.retryAfter`).
+ *
+ * Matching by `value.name` (instead of `value.constructor?.name`) is robust
+ * to bundlers that emit the class as an anonymous expression — e.g. Turbopack
+ * compiles `export class FatalError extends Error {…}` to a registration call
+ * like `e.s(["FatalError", 0, class extends Error {…}])`, and the resulting
+ * constructor has `name === ''`. Since every Error subclass we care about
+ * sets `this.name` explicitly in its constructor (built-in subclasses do this
+ * automatically; `FatalError`/`RetryableError` do it in user code), the
+ * instance property is the reliable identity marker across realms and
+ * bundlers.
  */
 function reduceNamedErrorSubclassBase(
   subclassName: string,
   value: unknown
 ): BaseErrorPayload | false {
   if (!types.isNativeError(value)) return false;
-  if (value.constructor?.name !== subclassName) return false;
+  if (value.name !== subclassName) return false;
   return reduceErrorBase(value);
 }
 
