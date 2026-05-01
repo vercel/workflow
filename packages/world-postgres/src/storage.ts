@@ -42,20 +42,18 @@ import type { SerializedContent } from './drizzle/schema.js';
 import { compact } from './util.js';
 
 /**
- * Parse legacy errorJson (text column with JSON-stringified StructuredError).
- * Used for backwards compatibility when reading from deprecated error column.
+ * Read helper for the deprecated `error` text column (legacy: JSON-stringified
+ * `StructuredError`). In the current event-sourced model, the `error` field on
+ * entities is `SerializedData` (Uint8Array) produced by the new error
+ * serialization pipeline; legacy text-column records pre-date that pipeline
+ * and cannot be hydrated back into the original thrown value.
  *
- * Returns the legacy record's `error` value as-is (it will be normalized
- * downstream). In the current event-sourced model, the `error` field is
- * `SerializedData` (Uint8Array), but legacy records may contain JSON
- * strings or plain text — we preserve those for best-effort hydration.
+ * Returns `null` unconditionally so downstream consumers treat legacy errors
+ * as absent rather than receiving a shape that `hydrateStepError` /
+ * `hydrateRunError` can't process. Callers that need to inspect the raw
+ * legacy payload should read the `errorJson` column directly.
  */
-function parseErrorJson(errorJson: string | null): SerializedData | null {
-  if (!errorJson) return null;
-  // Legacy records are pre-serialization-pipeline and cannot be hydrated
-  // into the original thrown value. We return null here so downstream code
-  // treats the error as absent; consumers that need legacy data should
-  // read the `errorJson` column directly.
+function parseErrorJson(_errorJson: string | null): SerializedData | null {
   return null;
 }
 
