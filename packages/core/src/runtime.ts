@@ -18,7 +18,6 @@ import {
 } from '@workflow/world';
 import { classifyRunError } from './classify-error.js';
 import { describeError } from './describe-error.js';
-import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
@@ -30,6 +29,7 @@ import {
   getAllWorkflowRunEvents,
   getQueueOverhead,
   handleHealthCheckMessage,
+  memoizeEncryptionKey,
   parseHealthCheckPayload,
   withHealthCheck,
 } from './runtime/helpers.js';
@@ -163,8 +163,7 @@ export function workflowEntrypoint(
           );
           try {
             const world = await getWorld();
-            const rawKey = await world.getEncryptionKeyForRun?.(runId);
-            const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+            const getEncryptionKey = memoizeEncryptionKey(world, runId);
             const err = new FatalError(
               `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`
             );
@@ -174,7 +173,11 @@ export function workflowEntrypoint(
                 eventType: 'run_failed',
                 specVersion: SPEC_VERSION_CURRENT,
                 eventData: {
-                  error: await dehydrateRunError(err, runId, encryptionKey),
+                  error: await dehydrateRunError(
+                    err,
+                    runId,
+                    await getEncryptionKey()
+                  ),
                   errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
                 },
               },
@@ -242,10 +245,7 @@ export function workflowEntrypoint(
 
             try {
               const world = await getWorld();
-              const rawKey = await world.getEncryptionKeyForRun?.(runId);
-              const encryptionKey = rawKey
-                ? await importKey(rawKey)
-                : undefined;
+              const getEncryptionKey = memoizeEncryptionKey(world, runId);
               const timeoutErr = new FatalError(
                 `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s) after ${metadata.attempt} attempts`
               );
@@ -258,7 +258,7 @@ export function workflowEntrypoint(
                     error: await dehydrateRunError(
                       timeoutErr,
                       runId,
-                      encryptionKey
+                      await getEncryptionKey()
                     ),
                     errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
                   },
@@ -407,11 +407,10 @@ export function workflowEntrypoint(
                         }
                       );
                       try {
-                        const rawKey =
-                          await world.getEncryptionKeyForRun?.(runId);
-                        const encryptionKey = rawKey
-                          ? await importKey(rawKey)
-                          : undefined;
+                        const getEncryptionKey = memoizeEncryptionKey(
+                          world,
+                          runId
+                        );
                         await world.events.create(
                           runId,
                           {
@@ -421,7 +420,7 @@ export function workflowEntrypoint(
                               error: await dehydrateRunError(
                                 err,
                                 runId,
-                                encryptionKey
+                                await getEncryptionKey()
                               ),
                               errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
                             },
@@ -525,12 +524,15 @@ export function workflowEntrypoint(
                     }
                   }
 
-                  // Resolve the encryption key for this run's deployment
-                  const rawKey =
-                    await world.getEncryptionKeyForRun?.(workflowRun);
-                  const encryptionKey = rawKey
-                    ? await importKey(rawKey)
-                    : undefined;
+                  // Resolve the encryption key for this run's deployment.
+                  // Used eagerly here since both runWorkflow (input
+                  // hydration / hook payload decryption) and the run_failed
+                  // dehydrate path below need it.
+                  const getEncryptionKey = memoizeEncryptionKey(
+                    world,
+                    workflowRun
+                  );
+                  const encryptionKey = await getEncryptionKey();
 
                   // --- User code execution ---
                   // Only errors from runWorkflow() (user workflow code) should

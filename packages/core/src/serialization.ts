@@ -1452,6 +1452,15 @@ export async function hydrateStepError(
   const decrypted = await maybeDecrypt(value, key);
 
   if (!(decrypted instanceof Uint8Array)) {
+    // Treated as a devalue "flattened" array. In production this branch is
+    // exercised by legacy code paths that bypassed `dehydrateStepError`; the
+    // SDK version is pinned per workflow run via skew protection, so a
+    // current-version producer always emits a Uint8Array here. If a
+    // misshapen value reaches us, `unflatten` throws — that's intentional:
+    // the higher-level hydration helpers (`hydrateStepIO`,
+    // `hydrateResourceIO`) already wrap us in a try/catch that leaves the
+    // field un-hydrated for o11y display, and surfacing the throw to logs
+    // is more debuggable than silently masking the unsupported shape.
     return unflatten(decrypted as any[], {
       ...getWorkflowRevivers(global),
       ...extraRevivers,
@@ -1526,6 +1535,11 @@ export async function hydrateRunError(
   const decrypted = await maybeDecrypt(value, key);
 
   if (!(decrypted instanceof Uint8Array)) {
+    // See the matching note in `hydrateStepError`: this branch is for
+    // devalue flattened arrays from legacy callers; current SDK versions
+    // always emit a Uint8Array, and a misshapen value here intentionally
+    // throws via `unflatten` so the surrounding try/catch in o11y helpers
+    // surfaces the issue rather than masking it.
     return unflatten(decrypted as any[], {
       ...getExternalRevivers(global, ops, runId, key),
       ...extraRevivers,

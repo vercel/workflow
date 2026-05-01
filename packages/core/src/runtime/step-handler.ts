@@ -14,13 +14,13 @@ import { formatStepName, pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
 import { describeError } from '../describe-error.js';
-import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
   dehydrateStepError,
   dehydrateStepReturnValue,
   hydrateStepArguments,
+  hydrateStepError,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -41,6 +41,7 @@ import {
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
+  memoizeEncryptionKey,
   parseHealthCheckPayload,
   queueMessage,
   withHealthCheck,
@@ -102,8 +103,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
         );
         try {
           const world = await getWorld();
-          const rawKey = await world.getEncryptionKeyForRun?.(workflowRunId);
-          const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+          const getEncryptionKey = memoizeEncryptionKey(world, workflowRunId);
           const err = new FatalError(
             `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`
           );
@@ -117,7 +117,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 error: await dehydrateStepError(
                   err,
                   workflowRunId,
-                  encryptionKey
+                  await getEncryptionKey()
                 ),
               },
             },
@@ -160,11 +160,14 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
         const world = await getWorld();
         const isVercel = process.env.VERCEL_URL !== undefined;
 
-        // Load encryption key early so it's available for all step_failed /
-        // step_retrying event writes below. The key is used to encrypt the
-        // serialized error payload via dehydrateStepError.
-        const rawKey = await world.getEncryptionKeyForRun?.(workflowRunId);
-        const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
+        // Memoized accessor for the per-run AES-256 encryption key. The first
+        // caller (typically `hydrateStepArguments` for input deserialization,
+        // or one of the early-return dehydrateStepError paths if step_started
+        // fails) triggers the actual fetch / HKDF derivation; subsequent
+        // callers await the cached promise. Steps that fail before any
+        // encryption-aware work happens (e.g. an immediate step_started
+        // conflict) skip the fetch entirely.
+        const getEncryptionKey = memoizeEncryptionKey(world, workflowRunId);
 
         // Resolve local async values concurrently before entering the trace span
         const [port, spanKind] = await Promise.all([
@@ -335,7 +338,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       error: await dehydrateStepError(
                         err,
                         workflowRunId,
-                        encryptionKey
+                        await getEncryptionKey()
                       ),
                     },
                   },
@@ -401,11 +404,24 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 }
               );
               // Fail the step via event (event-sourced architecture).
-              // The prior step.error (if any) is already the serialized form
-              // of the previous attempt's error — we intentionally do not try
-              // to preserve it here, since this terminal event represents the
-              // new "max retries exceeded" failure rather than the underlying
-              // attempt error.
+              // Preserve the prior attempt's serialized error as the cause so
+              // the underlying failure is recoverable from `step.error.cause`
+              // after hydration, without forcing consumers to walk the
+              // step_retrying event history. Mirrors the post-failure path
+              // below that wraps the live `err` as cause.
+              const wrappedError = new FatalError(errorMessage);
+              if (step.error != null) {
+                try {
+                  (wrappedError as Error).cause = await hydrateStepError(
+                    step.error,
+                    workflowRunId,
+                    await getEncryptionKey()
+                  );
+                } catch {
+                  // Ignore: best-effort cause attachment, the wrapping
+                  // FatalError stack/message still surface the failure.
+                }
+              }
               try {
                 await world.events.create(
                   workflowRunId,
@@ -415,9 +431,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     correlationId: stepId,
                     eventData: {
                       error: await dehydrateStepError(
-                        new FatalError(errorMessage),
+                        wrappedError,
                         workflowRunId,
-                        encryptionKey
+                        await getEncryptionKey()
                       ),
                     },
                   },
@@ -479,7 +495,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       error: await dehydrateStepError(
                         new FatalError(errorMessage),
                         workflowRunId,
-                        encryptionKey
+                        await getEncryptionKey()
                       ),
                     },
                   },
@@ -501,6 +517,13 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             }
             // Capture startedAt for use in async callback (TypeScript narrowing doesn't persist)
             const stepStartedAt = step.startedAt;
+
+            // Resolve the encryption key now that we're committed to running
+            // user code: input hydration needs it, and `contextStorage` (and
+            // any user-code paths that run inside it) capture the resolved
+            // value. Triggers the underlying world / KMS fetch once, with
+            // subsequent dehydrate paths reusing the memoized result.
+            const encryptionKey = await getEncryptionKey();
 
             // Hydrate the step input arguments, closure variables, and thisVal
             // NOTE: This captures only the synchronous portion of hydration. Any async
