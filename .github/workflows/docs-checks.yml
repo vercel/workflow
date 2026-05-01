@@ -92,6 +92,30 @@ jobs:
             core.setSecret(token);
             core.setOutput('token', token);
 
+      - name: Debug — probe trusted-sources bypass and report edge node
+        env:
+          DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
+          VERCEL_OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+        run: |
+          # The proxy-side trusted-sources changes for GitHub Actions OIDC
+          # are rolling out gradually (~12+ hours) — the response's
+          # `x-vercel-id` header tells us which edge node served us, which
+          # helps explain why a previously-failing request might suddenly
+          # start succeeding (or vice versa) during the rollout window.
+          probe() {
+            local label="$1"; shift
+            echo "=== $label ==="
+            # -I issues a HEAD; grep narrows the output to the status line
+            # plus the trusted-sources-relevant headers we care about.
+            curl -sI "$@" "$DEPLOYMENT_URL/og" \
+              | grep -iE '^(HTTP/|x-vercel-id:|server:|content-type:|set-cookie:.*sso)' \
+              | head -10 || true
+            echo ""
+          }
+          probe "WITHOUT OIDC header"
+          probe "WITH OIDC trusted-sources header" \
+            -H "x-vercel-trusted-oidc-idp-token: $VERCEL_OIDC_TOKEN"
+
       - name: Verify OpenGraph images and sitemap
         run: pnpm --filter docs test:smoke
         env:

@@ -46,11 +46,17 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
   const startedAt = Date.now();
   let lastStatus = null;
   let lastBody = null;
+  // x-vercel-id identifies the Vercel edge node that served the response.
+  // While the proxy-side trusted-sources changes are rolling out gradually,
+  // a failing request may be hitting an edge node that hasn't received the
+  // fix yet — surfacing the id in the timeout error makes that visible.
+  let lastVercelId = null;
   while (Date.now() - startedAt < timeoutMs) {
     try {
       const res = await fetch(url, { headers: getTrustedSourcesHeaders() });
       if (res.ok) return;
       lastStatus = res.status;
+      lastVercelId = res.headers.get('x-vercel-id');
       // Capture the first ~500 chars of the body to help diagnose
       // protection/auth failures (e.g. SSO login redirects).
       try {
@@ -64,7 +70,7 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
     await wait(500);
   }
   throw new Error(
-    `Timed out waiting for server at ${url} (last status: ${lastStatus}; body: ${lastBody})`
+    `Timed out waiting for server at ${url} (last status: ${lastStatus}; x-vercel-id: ${lastVercelId}; body: ${lastBody})`
   );
 };
 
