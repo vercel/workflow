@@ -73,7 +73,8 @@ cd packages/core && pnpm vitest run src/[filename].test.ts
 # Note: Use nextjs-turbopack for local e2e testing (not example app - it has no dev server)
 
 # Step 1: Start the dev server in background
-cd workbench/nextjs-turbopack && pnpm dev > /tmp/nextjs-dev.log 2>&1 &
+# NOTE: WORKFLOW_PUBLIC_MANIFEST=1 is required for e2e tests to access the workflow manifest
+cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 pnpm dev > /tmp/nextjs-dev.log 2>&1 &
 
 # Step 2: Wait for server to be ready (usually 15-20 seconds)
 sleep 15
