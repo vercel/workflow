@@ -562,6 +562,18 @@ function hydrateEventData<T extends { eventId?: string; eventData?: any }>(
     }
   }
 
+  // step_failed / step_retrying / run_failed events have eventData.error
+  // (the thrown value, serialized via the error pipeline). Without this,
+  // event listings in o11y tooling would surface the raw `Uint8Array`
+  // payload instead of a hydrated `{ name, message, stack, … }` object.
+  if ('error' in eventData && eventData.error != null) {
+    try {
+      eventData.error = hydrateData(eventData.error, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
   return { ...resource, eventData };
 }
 

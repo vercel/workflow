@@ -270,6 +270,29 @@ describe('hydrateResourceIO', () => {
     expect(hydrated.eventData.payload).toEqual({ hello: 'world', count: 7 });
   });
 
+  it('should hydrate event eventData.error for step_failed / run_failed events', () => {
+    const errorPayload = makeDevlPayload({
+      message: 'something blew up',
+      stack: 'Error: something blew up\n    at foo:1:1',
+    });
+
+    const event = {
+      eventId: 'evt_step_failed',
+      eventData: {
+        type: 'step_failed',
+        error: errorPayload,
+      },
+    };
+
+    const hydrated = hydrateResourceIO(event, testRevivers);
+    expect(hydrated.eventId).toBe('evt_step_failed');
+    expect(hydrated.eventData.error).toEqual({
+      message: 'something blew up',
+      stack: 'Error: something blew up\n    at foo:1:1',
+    });
+    expect(hydrated.eventData.type).toBe('step_failed');
+  });
+
   it('should hydrate hook metadata', () => {
     const metadata = makeDevlPayload({ token: 'abc123' });
 
