@@ -677,9 +677,6 @@ importers:
 
   packages/errors:
     dependencies:
-      '@workflow/serde':
-        specifier: workspace:*
-        version: link:../serde
       '@workflow/utils':
         specifier: workspace:*
         version: link:../utils

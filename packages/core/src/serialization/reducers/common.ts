@@ -10,6 +10,7 @@
  */
 
 import { types } from 'node:util';
+import { FatalError, RetryableError } from '@workflow/errors';
 import type { Reducers, Revivers, SerializableSpecial } from '../types.js';
 
 // ---- Base64 helpers ----
@@ -100,6 +101,12 @@ function makeErrorSubclassReviver<K extends keyof SerializableSpecial>(
 
 // ---- Reducers ----
 
+// Base reducers for the Error subclasses that need to extend the
+// shared shape with extra fields. Created once at module load rather
+// than per-invocation of `getCommonReducers`.
+const reduceAggregateErrorBase = makeErrorSubclassReducer('AggregateError');
+const reduceRetryableErrorBase = makeErrorSubclassReducer('RetryableError');
+
 export function getCommonReducers(
   global: Record<string, any> = globalThis
 ): Partial<Reducers> {
@@ -138,15 +145,46 @@ export function getCommonReducers(
     // rather than falling through to the generic "Error" reducer.
     // See `makeErrorSubclassReducer` for implementation details.
     EvalError: makeErrorSubclassReducer('EvalError'),
+    FatalError: makeErrorSubclassReducer('FatalError'),
     RangeError: makeErrorSubclassReducer('RangeError'),
     ReferenceError: makeErrorSubclassReducer('ReferenceError'),
+    // RetryableError carries an extra `retryAfter` Date that we serialize as
+    // a numeric epoch timestamp. The Date reducer uses `instanceof global.Date`,
+    // which fails for Dates from a different VM realm; serializing as a
+    // number sidesteps that issue.
+    RetryableError: (value) => {
+      const base = reduceRetryableErrorBase(value);
+      if (!base) return false;
+      const retryAfterRaw = (value as RetryableError).retryAfter as unknown;
+      let retryAfter: number;
+      if (
+        retryAfterRaw &&
+        typeof retryAfterRaw === 'object' &&
+        typeof (retryAfterRaw as { getTime?: unknown }).getTime === 'function'
+      ) {
+        const t = (retryAfterRaw as Date).getTime();
+        retryAfter = Number.isNaN(t) ? Date.now() + 1000 : t;
+      } else if (
+        typeof retryAfterRaw === 'string' ||
+        typeof retryAfterRaw === 'number'
+      ) {
+        const t = new Date(retryAfterRaw).getTime();
+        retryAfter = Number.isNaN(t) ? Date.now() + 1000 : t;
+      } else {
+        retryAfter = Date.now() + 1000;
+      }
+      return {
+        ...base,
+        retryAfter,
+      } satisfies SerializableSpecial['RetryableError'];
+    },
     SyntaxError: makeErrorSubclassReducer('SyntaxError'),
     TypeError: makeErrorSubclassReducer('TypeError'),
     URIError: makeErrorSubclassReducer('URIError'),
     // AggregateError is similar to other subclasses but also preserves the
     // `errors` array. We extend the base helper's output here.
     AggregateError: (value) => {
-      const base = makeErrorSubclassReducer('AggregateError')(value);
+      const base = reduceAggregateErrorBase(value);
       if (!base) return false;
       return {
         ...base,
@@ -240,8 +278,25 @@ export function getCommonRevivers(
     // Error subclass revivers reconstruct the correct built-in Error type.
     // See `makeErrorSubclassReviver` for implementation details.
     EvalError: makeErrorSubclassReviver(global, 'EvalError'),
+    // FatalError and RetryableError are imported directly rather than read
+    // from `global` because they are not built-ins; they live in the
+    // `@workflow/errors` package which is bundled into every context.
+    FatalError: (value) => {
+      const error = new FatalError(value.message);
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) error.cause = value.cause;
+      return error;
+    },
     RangeError: makeErrorSubclassReviver(global, 'RangeError'),
     ReferenceError: makeErrorSubclassReviver(global, 'ReferenceError'),
+    RetryableError: (value) => {
+      const error = new RetryableError(value.message, {
+        retryAfter: new Date(value.retryAfter),
+      });
+      if (value.stack !== undefined) error.stack = value.stack;
+      if ('cause' in value) error.cause = value.cause;
+      return error;
+    },
     SyntaxError: makeErrorSubclassReviver(global, 'SyntaxError'),
     TypeError: makeErrorSubclassReviver(global, 'TypeError'),
     URIError: makeErrorSubclassReviver(global, 'URIError'),

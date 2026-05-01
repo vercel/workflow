@@ -35,7 +35,6 @@
     "@workflow/world": "workspace:*"
   },
   "dependencies": {
-    "@workflow/serde": "workspace:*",
     "@workflow/utils": "workspace:*",
     "ms": "2.1.3"
   }

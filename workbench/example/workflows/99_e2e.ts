@@ -961,56 +961,6 @@ export async function errorFatalCatchable() {
   }
 }
 
-/**
- * Test: FatalError preserves class identity when returned from a step.
- * Exercises WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE through the step return
- * value serialization pipeline (step context → workflow context).
- */
-async function returnFatalErrorStep() {
-  'use step';
-  // Return the error as a value (not thrown), so it flows through the
-  // step return value serialization pipeline, which uses the Instance
-  // reducer/reviver for classes with WORKFLOW_SERIALIZE.
-  return new FatalError('fatal serde test');
-}
-
-export async function errorFatalSerdeRoundTrip() {
-  'use workflow';
-  const err: any = await returnFatalErrorStep();
-  return {
-    isFatal: FatalError.is(err),
-    isInstanceOf: err instanceof FatalError,
-    message: err.message,
-    hasFatalProp: err.fatal === true,
-    name: err.name,
-  };
-}
-
-/**
- * Test: RetryableError preserves class identity and retryAfter when
- * returned from a step. Exercises WORKFLOW_SERIALIZE/WORKFLOW_DESERIALIZE
- * through the step return value serialization pipeline.
- */
-async function returnRetryableErrorStep() {
-  'use step';
-  return new RetryableError('retryable serde test', {
-    retryAfter: new Date('2025-06-01T00:00:00.000Z'),
-  });
-}
-
-export async function errorRetryableSerdeRoundTrip() {
-  'use workflow';
-  const err: any = await returnRetryableErrorStep();
-  return {
-    isRetryable: RetryableError.is(err),
-    isInstanceOf: err instanceof RetryableError,
-    message: err.message,
-    name: err.name,
-    hasRetryAfter: err.retryAfter instanceof Date,
-    retryAfterIso: err.retryAfter?.toISOString(),
-  };
-}
-
 // ------------------------------------------------------------
 // SECTION 4: NOT REGISTERED ERRORS
 // Tests for step/workflow not registered in the current deployment

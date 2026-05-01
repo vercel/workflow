@@ -3500,16 +3500,12 @@ describe('DOMException serialization', () => {
 });
 
 describe('FatalError and RetryableError serialization', () => {
-  // In production, the SWC plugin auto-discovers classes with WORKFLOW_SERIALIZE/
-  // WORKFLOW_DESERIALIZE and generates classId + registration code. In unit tests
-  // we simulate this by manually registering the classes.
-  const FATAL_CLASS_ID = '@workflow/errors//FatalError';
-  const RETRYABLE_CLASS_ID = '@workflow/errors//RetryableError';
-
-  beforeAll(() => {
-    registerSerializationClass(FATAL_CLASS_ID, FatalError);
-    registerSerializationClass(RETRYABLE_CLASS_ID, RetryableError);
-  });
+  // FatalError and RetryableError are first-class serialization targets
+  // (handled by dedicated reducers/revivers in the common reducers module),
+  // so unlike user-defined classes they round-trip without any
+  // `registerSerializationClass` setup. This is what makes them usable
+  // from environments that don't run the SWC plugin (e.g. the vitest e2e
+  // runner, ad-hoc Node scripts, etc.).
 
   async function roundTrip(value: unknown) {
     const serialized = await dehydrateStepReturnValue(
@@ -3542,7 +3538,7 @@ describe('FatalError and RetryableError serialization', () => {
     expect(hydrated.stack).toBe(originalStack);
   });
 
-  it('should serialize FatalError using Instance key (custom class serde)', async () => {
+  it('should serialize FatalError using its dedicated reducer key', async () => {
     const error = new FatalError('test');
     const serialized = await dehydrateStepReturnValue(
       error,
@@ -3552,9 +3548,9 @@ describe('FatalError and RetryableError serialization', () => {
     const str = new TextDecoder().decode(
       (serialized as Uint8Array).subarray(4)
     );
-    // Should be serialized as Instance (custom class serde), not as Error
-    expect(str).toContain('Instance');
-    expect(str).toContain(FATAL_CLASS_ID);
+    // Should be serialized via the FatalError reducer (not Instance/Error).
+    expect(str).toContain('FatalError');
+    expect(str).not.toContain('Instance');
   });
 
   it('should round-trip RetryableError preserving type, message, and retryAfter', async () => {
@@ -3578,7 +3574,7 @@ describe('FatalError and RetryableError serialization', () => {
     expect(hydrated.stack).toBe(originalStack);
   });
 
-  it('should serialize RetryableError using Instance key (custom class serde)', async () => {
+  it('should serialize RetryableError using its dedicated reducer key', async () => {
     const error = new RetryableError('test');
     const serialized = await dehydrateStepReturnValue(
       error,
@@ -3588,8 +3584,8 @@ describe('FatalError and RetryableError serialization', () => {
     const str = new TextDecoder().decode(
       (serialized as Uint8Array).subarray(4)
     );
-    expect(str).toContain('Instance');
-    expect(str).toContain(RETRYABLE_CLASS_ID);
+    expect(str).toContain('RetryableError');
+    expect(str).not.toContain('Instance');
   });
 
   it('should preserve cause on FatalError when present', async () => {

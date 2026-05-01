@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  FatalError,
+  RetryableError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowWorldError,
@@ -1143,46 +1145,6 @@ describe('e2e', () => {
           expect(runData.status).toBe('completed');
         }
       );
-
-      test(
-        'FatalError preserves class identity through step return value serialization',
-        { timeout: 60_000 },
-        async () => {
-          const run = await start(await e2e('errorFatalSerdeRoundTrip'), []);
-          const result = await run.returnValue;
-
-          expect(result.isFatal).toBe(true);
-          expect(result.isInstanceOf).toBe(true);
-          expect(result.message).toBe('fatal serde test');
-          expect(result.hasFatalProp).toBe(true);
-          expect(result.name).toBe('FatalError');
-
-          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
-          expect(runData.status).toBe('completed');
-        }
-      );
-
-      test(
-        'RetryableError preserves class identity through step return value serialization',
-        { timeout: 60_000 },
-        async () => {
-          const run = await start(
-            await e2e('errorRetryableSerdeRoundTrip'),
-            []
-          );
-          const result = await run.returnValue;
-
-          expect(result.isRetryable).toBe(true);
-          expect(result.isInstanceOf).toBe(true);
-          expect(result.message).toBe('retryable serde test');
-          expect(result.name).toBe('RetryableError');
-          expect(result.hasRetryAfter).toBe(true);
-          expect(result.retryAfterIso).toBe('2025-06-01T00:00:00.000Z');
-
-          const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
-          expect(runData.status).toBe('completed');
-        }
-      );
     });
 
     describe('not registered', () => {
@@ -2050,11 +2012,12 @@ describe('e2e', () => {
   );
 
   test(
-    'errorSubclassRoundTripWorkflow - built-in Error subclasses survive every serialization boundary',
+    'errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary',
     { timeout: 60_000 },
     async () => {
-      // Round-trips one instance of each built-in Error subclass that has
-      // a dedicated reducer/reviver pair through the full pipeline:
+      // Round-trips one instance of each Error subclass that has a dedicated
+      // reducer/reviver pair (built-in subclasses + FatalError/RetryableError
+      // from @workflow/errors) through the full pipeline:
       //
       //   client (start args) → workflow → step → workflow → client (return)
       //
@@ -2062,7 +2025,15 @@ describe('e2e', () => {
       // (devalue uses first-match-wins). A regression that drops the
       // ordering — or skips a subclass entirely — would silently downgrade
       // these to plain `Error` and break the `instanceof` assertions.
+      //
+      // FatalError and RetryableError specifically are first-class
+      // serialization targets (rather than going through the SWC
+      // `WORKFLOW_SERIALIZE` class-instance pipeline) so that they round-trip
+      // even from environments that don't run the SWC plugin — e.g. this
+      // vitest runner, which constructs them directly and passes them as
+      // start() arguments.
       const cause = new Error('underlying failure');
+      const retryAfter = new Date('2099-01-01T00:00:00.000Z');
       const inputs: Error[] = [
         new TypeError('bad type', { cause }),
         new RangeError('out of range'),
@@ -2074,6 +2045,8 @@ describe('e2e', () => {
           [new Error('inner-1'), new Error('inner-2')],
           'aggregate failed'
         ),
+        new FatalError('fatal!'),
+        new RetryableError('try again', { retryAfter }),
         // Plain Error included as a control: the catch-all base reducer
         // must still match it after the subclass reducers above.
         new Error('plain error', { cause: 'string-cause' }),
@@ -2102,6 +2075,8 @@ describe('e2e', () => {
         { ctor: ReferenceError, message: 'x is not defined' },
         { ctor: EvalError, message: 'eval went wrong' },
         { ctor: AggregateError, message: 'aggregate failed' },
+        { ctor: FatalError, message: 'fatal!' },
+        { ctor: RetryableError, message: 'try again' },
         { ctor: Error, message: 'plain error', cause: 'string-cause' },
       ];
 
@@ -2135,6 +2110,19 @@ describe('e2e', () => {
       expect((aggregate.errors[0] as Error).message).toBe('inner-1');
       expect(aggregate.errors[1]).toBeInstanceOf(Error);
       expect((aggregate.errors[1] as Error).message).toBe('inner-2');
+
+      // FatalError must preserve its `fatal` instance property after
+      // round-tripping (the constructor sets it on every new instance).
+      const fatal = returnValue[7] as FatalError;
+      expect(fatal.fatal).toBe(true);
+      expect(FatalError.is(fatal)).toBe(true);
+
+      // RetryableError must preserve its `retryAfter` Date with the same
+      // millisecond value across the realm boundary.
+      const retryable = returnValue[8] as RetryableError;
+      expect(retryable.retryAfter).toBeInstanceOf(Date);
+      expect(retryable.retryAfter.getTime()).toBe(retryAfter.getTime());
+      expect(RetryableError.is(retryable)).toBe(true);
     }
   );
 

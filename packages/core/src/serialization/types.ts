@@ -51,6 +51,7 @@ export interface SerializableSpecial {
     stack?: string;
     cause?: unknown;
   };
+  FatalError: { message: string; stack?: string; cause?: unknown };
   Float32Array: string; // base64 string
   Float64Array: string; // base64 string
   Error: { name: string; message: string; stack?: string; cause?: unknown };
@@ -66,6 +67,17 @@ export interface SerializableSpecial {
     | { bodyInit: any };
   ReferenceError: { message: string; stack?: string; cause?: unknown };
   RegExp: { source: string; flags: string };
+  /**
+   * `retryAfter` is serialized as a numeric epoch timestamp rather than a
+   * `Date` to be realm-safe. The Date reducer uses `instanceof global.Date`,
+   * which fails for Dates from a different VM realm.
+   */
+  RetryableError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    retryAfter: number;
+  };
   Request: {
     method: string;
     url: string;
