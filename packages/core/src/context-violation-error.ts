@@ -113,9 +113,15 @@ export abstract class ContextViolationError extends Error {
    */
   [INSPECT_CUSTOM](): string {
     const pretty = renderPretty(this.#content);
-    // `stack` starts with `${name}: ${message}\n    at ...`. Keep the `at ...`
-    // tail; replace the header with the pretty form.
-    const tail = (this.stack ?? '').split('\n').slice(1).join('\n');
+    // `stack` starts with `${name}: ${message}\n    at ...`. Our message is
+    // multi-line (`title\n╰▶ docs: …`), so slicing only the first line glues
+    // the framed-detail tail of the message onto the prepended pretty form
+    // and renders every detail line twice. Slice past *all* message lines.
+    const messageLineCount = this.message.split('\n').length;
+    const tail = (this.stack ?? '')
+      .split('\n')
+      .slice(messageLineCount)
+      .join('\n');
     return tail
       ? `${this.name}: ${pretty}\n${tail}`
       : `${this.name}: ${pretty}`;

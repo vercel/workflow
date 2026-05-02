@@ -136,6 +136,23 @@ describe('plain .message / lazy pretty rendering', () => {
     expect(out).toContain('docs:');
   });
 
+  it('util.inspect(err) does not duplicate framed detail lines', () => {
+    // Regression: `.message` is multi-line (`title\n╰▶ docs: …`), so V8's
+    // `.stack` reads `Name: messageLine1\nmessageLine2\n    at …`. Slicing
+    // only the first line of stack glued the framed-detail tail of the
+    // message onto the prepended pretty form and rendered every `╰▶ docs:`
+    // line twice. Now we slice past all message lines.
+    const out = inspect(
+      new NotInWorkflowContextError('createHook()', 'https://example.com/docs')
+    );
+    // Multi-detail variants would also duplicate every detail; the docs
+    // line is the canonical case.
+    expect(out).not.toMatch(/╰▶ docs:.*\n.*╰▶ docs:/s);
+    // ╰▶ should appear exactly once for the single-detail error.
+    const occurrences = (out.match(/╰▶ docs:/g) ?? []).length;
+    expect(occurrences).toBe(1);
+  });
+
   it('err.toString() also returns the pretty framed form', () => {
     const err = new NotInWorkflowContextError(
       'createHook()',

@@ -76,7 +76,15 @@ export class WorkflowError extends Error {
       ? `${message}\n\nLearn more: ${BASE_URL}/${options.slug}`
       : message;
     super(msgDocs, { cause: options?.cause });
-    this.cause = options?.cause;
+    // Only set `cause` when actually provided. Assigning `undefined`
+    // unconditionally makes `cause` an enumerable own property, which
+    // pollutes `util.inspect(err)` output with `{ cause: undefined, … }`
+    // on every no-cause subclass. The `super(...)` call above already
+    // conditionally sets non-enumerable `.cause` when `options.cause`
+    // is provided.
+    if (options?.cause !== undefined) {
+      this.cause = options.cause;
+    }
 
     if (options?.cause instanceof Error) {
       this.stack = `${this.stack}\nCaused by: ${options.cause.stack}`;
