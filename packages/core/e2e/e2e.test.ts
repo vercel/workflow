@@ -16,6 +16,7 @@ import {
   expect,
   test,
 } from 'vitest';
+import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
   getHookByToken,
@@ -31,7 +32,6 @@ import {
   cliInspectJson,
   fetchManifest,
   getCollectedRunIds,
-  getProtectionBypassHeaders,
   getWorkflowMetadata,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
@@ -117,7 +117,7 @@ async function startWorkflowViaHttp(
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      ...getProtectionBypassHeaders(),
+      ...(await getTrustedSourcesHeaders()),
     },
   });
   if (!res.ok) {
@@ -379,7 +379,7 @@ describe('e2e', () => {
         ),
         {
           method: 'POST',
-          headers: getProtectionBypassHeaders(),
+          headers: await getTrustedSourcesHeaders(),
           body: JSON.stringify({ message: 'should-be-rejected' }),
         }
       );
@@ -434,7 +434,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({ message: 'one' }),
       }
     );
@@ -450,7 +450,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({ message: 'two' }),
       }
     );
@@ -466,7 +466,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({ message: 'three' }),
       }
     );
@@ -511,7 +511,7 @@ describe('e2e', () => {
     );
     const res = await fetch(invalidWebhookUrl, {
       method: 'POST',
-      headers: getProtectionBypassHeaders(),
+      headers: await getTrustedSourcesHeaders(),
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(404);
@@ -1174,7 +1174,7 @@ describe('e2e', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...getProtectionBypassHeaders(),
+          ...(await getTrustedSourcesHeaders()),
         },
         body: JSON.stringify({ x: 3, y: 5 }),
       });
@@ -1531,7 +1531,7 @@ describe('e2e', () => {
       );
       const flowRes = await fetch(flowHealthUrl, {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
       });
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
@@ -1553,7 +1553,7 @@ describe('e2e', () => {
       );
       const stepRes = await fetch(stepHealthUrl, {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
       });
       expect(stepRes.status).toBe(200);
       expect(stepRes.headers.get('Content-Type')).toBe('application/json');

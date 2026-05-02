@@ -55,7 +55,7 @@ export function createResolveLatestDeploymentId(
     const response = await fetch(url, {
       method: 'GET',
       headers: {
-        authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${token}`,
       },
       // @ts-expect-error -- undici dispatcher is accepted by Node.js fetch but not in @types/node's RequestInit
       dispatcher: getDispatcher(),

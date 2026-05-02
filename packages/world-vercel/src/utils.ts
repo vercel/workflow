@@ -63,6 +63,15 @@ function httpLog(
  */
 const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
+/**
+ * Resolves the effective workflow-server URL override at call time. The hard-coded
+ * `WORKFLOW_SERVER_URL_OVERRIDE` constant takes precedence so it is always honored
+ * when set; otherwise we fall back to the `VERCEL_WORKFLOW_SERVER_URL` env var
+ * (used by CI to point preview runs at a protected workflow-server preview).
+ */
+const getWorkflowServerUrlOverride = (): string =>
+  WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
+
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
@@ -195,7 +204,7 @@ export const getHttpUrl = (
 ): { baseUrl: string; usingProxy: boolean } => {
   const projectConfig = config?.projectConfig;
   const defaultHost =
-    WORKFLOW_SERVER_URL_OVERRIDE || 'https://vercel-workflow.com';
+    getWorkflowServerUrlOverride() || 'https://vercel-workflow.com';
   const customProxyUrl = process.env.WORKFLOW_VERCEL_BACKEND_URL;
   const defaultProxyUrl = 'https://api.vercel.com/v1/workflow';
   // Use proxy when we have project config (for authentication via Vercel API)
@@ -230,8 +239,9 @@ export const getHeaders = (
   // Only set workflow-api-url header when using the proxy, since the proxy
   // forwards it to the workflow-server. When not using proxy, requests go
   // directly to the workflow-server so this header has no effect.
-  if (WORKFLOW_SERVER_URL_OVERRIDE && options.usingProxy) {
-    headers.set('x-vercel-workflow-api-url', WORKFLOW_SERVER_URL_OVERRIDE);
+  const workflowServerUrlOverride = getWorkflowServerUrlOverride();
+  if (workflowServerUrlOverride && options.usingProxy) {
+    headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
   return headers;
 };
@@ -239,10 +249,40 @@ export const getHeaders = (
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
-  const token = config?.token ?? (await getVercelOidcToken());
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
+
+  if (usingProxy) {
+    // The api-workflow proxy authenticates the caller with a regular Vercel
+    // auth token; it does not accept OIDC. Fail loudly instead of letting
+    // an opaque 401 bubble up at request time.
+    if (!config?.token) {
+      throw new Error(
+        'world-vercel: api-workflow proxy requested ' +
+          `(${baseUrl}) but no Vercel auth token was provided. ` +
+          'Pass one as `config.token` (the SDK reads it from ' +
+          '`WORKFLOW_VERCEL_AUTH_TOKEN`).'
+      );
+    }
+    headers.set('Authorization', `Bearer ${config.token}`);
+  } else {
+    // Direct workflow-server path. The bearer prefers an explicit
+    // config.token (CLI / GitHub Actions runner / local dev) and falls
+    // back to the per-request Vercel OIDC token. The trusted-sources
+    // bypass header always uses the per-request OIDC token.
+    let oidcToken: string | undefined;
+    try {
+      oidcToken = await getVercelOidcToken();
+    } catch {
+      // No OIDC available outside a Vercel function context.
+    }
+    const authToken = config?.token ?? oidcToken;
+    if (authToken) {
+      headers.set('Authorization', `Bearer ${authToken}`);
+    }
+    if (oidcToken) {
+      headers.set('x-vercel-trusted-oidc-idp-token', oidcToken);
+    }
   }
+
   return { baseUrl, headers, usingProxy };
 }
 
