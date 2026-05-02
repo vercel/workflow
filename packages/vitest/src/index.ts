@@ -12,6 +12,10 @@ import {
   type LocalWorld,
 } from '@workflow/world-local';
 import type { Plugin } from 'vite';
+import {
+  resolveWorkflowTestOptions,
+  WORKFLOW_VITEST_OPTIONS_KEY,
+} from './options.js';
 
 class VitestBuilder extends BaseBuilder {
   #outDir: string;
@@ -63,10 +67,22 @@ export interface WorkflowTestOptions {
    * Defaults to process.cwd().
    */
   cwd?: string;
-}
-
-function getOutDir(cwd: string): string {
-  return join(cwd, '.workflow-vitest');
+  /**
+   * Root directory used for default test artifacts.
+   * When set, `.workflow-data` and `.workflow-vitest` are created here unless
+   * overridden explicitly with `dataDir` or `outDir`.
+   */
+  rootDir?: string;
+  /**
+   * Directory for workflow runtime data written by the test world.
+   * Defaults to `<rootDir>/.workflow-data`.
+   */
+  dataDir?: string;
+  /**
+   * Directory for generated workflow and step bundles.
+   * Defaults to `<rootDir>/.workflow-vitest`.
+   */
+  outDir?: string;
 }
 
 /**
@@ -84,11 +100,13 @@ function getOutDir(cwd: string): string {
  * });
  * ```
  */
-export function workflow(): Plugin[] {
+export function workflow(options?: WorkflowTestOptions): Plugin[] {
+  const resolvedOptions = resolveWorkflowTestOptions(options);
+  const { outDir } = resolvedOptions;
   const dir = fileURLToPath(new URL('.', import.meta.url));
   return [
     workflowTransformPlugin({
-      exclude: [join(process.cwd(), '.workflow-vitest') + '/'],
+      exclude: [outDir + '/'],
     }),
     {
       name: 'workflow:vitest',
@@ -97,6 +115,9 @@ export function workflow(): Plugin[] {
           test: {
             globalSetup: [join(dir, 'global-setup.js')],
             setupFiles: [join(dir, 'setup-file.js')],
+            provide: {
+              [WORKFLOW_VITEST_OPTIONS_KEY]: resolvedOptions,
+            },
           },
         } as Record<string, unknown>;
       },
@@ -112,12 +133,11 @@ export function workflow(): Plugin[] {
 export async function buildWorkflowTests(
   options?: WorkflowTestOptions
 ): Promise<void> {
-  const cwd = options?.cwd ?? process.cwd();
-  const outDir = getOutDir(cwd);
+  const { cwd, dataDir, outDir } = resolveWorkflowTestOptions(options);
   const builder = new VitestBuilder(cwd, outDir);
   await builder.build();
   // Pre-create the shared data directory so workers don't race on mkdir
-  await initDataDir(join(cwd, '.workflow-data'));
+  await initDataDir(dataDir);
 }
 
 let world: LocalWorld | undefined;
@@ -139,8 +159,7 @@ export async function setupWorkflowTests(
     world = undefined;
   }
 
-  const cwd = options?.cwd ?? process.cwd();
-  const outDir = getOutDir(cwd);
+  const { dataDir, outDir } = resolveWorkflowTestOptions(options);
 
   // Lazy-load bundles on first dispatch instead of eagerly at setup time.
   // Eager native import() during setupFiles loads step dependencies into
@@ -168,13 +187,14 @@ export async function setupWorkflowTests(
   // Each vitest worker uses a unique tag to isolate its test data.
   // All workers write to the shared .workflow-data directory so runs
   // are visible to the observability dashboard, but clear() only
-  // deletes files matching the worker's tag.
+  // deletes files matching the worker's tag. Recovery stays disabled because
+  // tests expect a clean world and register direct handlers after setup begins.
   const poolId = process.env.VITEST_POOL_ID ?? '0';
   world = createLocalWorld({
-    dataDir: join(cwd, '.workflow-data'),
+    dataDir,
+    recoverActiveRuns: false,
     tag: `vitest-${poolId}`,
   });
-  await world.start?.();
   await world.clear();
 
   world.registerHandler(
@@ -186,6 +206,11 @@ export async function setupWorkflowTests(
     createLazyHandler(join(outDir, 'steps.mjs'))
   );
 
+  // Handlers must be registered before start(): if recoverActiveRuns is ever
+  // re-enabled here (or plumbed through from a caller), start() re-enqueues
+  // pending runs and the queue begins dispatching. Registering after start
+  // would race handler installation against that dispatch.
+  await world.start?.();
   setWorld(world);
 }
 
