@@ -305,42 +305,55 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
 
-  // Resolve the per-request OIDC token via `@vercel/oidc`. It reads
-  // `getContext().headers['x-vercel-oidc-token']` first — a token Vercel
-  // injects fresh on every request that reflects *current* project settings
-  // — and only falls back to `process.env.VERCEL_OIDC_TOKEN` (the
-  // deployment-bake-time token) when that header is absent. The two diverge
-  // on redeployed-after-config-change projects: the bake-time env var can
-  // carry stale `iss`/etc. and fail the workflow-server's trusted-source
-  // rule, even though a freshly minted token would have matched.
-  let oidcToken: string | undefined;
-  try {
-    oidcToken = await getVercelOidcToken();
-  } catch {
-    // No OIDC available (e.g. local dev / GitHub Actions / Vercel CLI).
-    // Fall through; the trusted-sources header is only meaningful when
-    // calling a Vercel-deployed target with Deployment Protection enabled,
-    // and the bearer token below covers the auth side independently.
-  }
-
-  // Authorization bearer prefers an explicitly-configured token (a static
-  // Vercel auth token from the CLI or GitHub Actions runner) over the
-  // per-request OIDC token.
-  const authToken = config?.token ?? oidcToken;
-  if (authToken) {
-    headers.set('Authorization', `Bearer ${authToken}`);
-  }
-
-  // The deployment-protection bypass header MUST be the per-request OIDC
-  // token. A static `config.token` wouldn't pass the trusted-source check
-  // (it isn't a JWT signed by Vercel's OIDC issuer), and reading
-  // `process.env.VERCEL_OIDC_TOKEN` directly would pick up the stale
-  // bake-time token described above.
-  if (oidcToken) {
-    headers.set('x-vercel-trusted-oidc-idp-token', oidcToken);
-    // Diagnostic — log the OIDC claims rather than the bearer claims since
-    // the OIDC token is what governs trusted-sources matching.
-    logOidcClaimsOnce(oidcToken, baseUrl);
+  // There are two outbound flows with different auth requirements:
+  //
+  // 1. Proxied (usingProxy=true) — SDK calls api.vercel.com/v1/workflow,
+  //    the api-workflow proxy authenticates the caller with a regular
+  //    Vercel auth token, and mints its OWN OIDC token internally before
+  //    forwarding to workflow-server. The SDK→proxy hop hits a public
+  //    endpoint, so the trusted-sources bypass header is meaningless here.
+  //    This is the path used by the CLI, GitHub Actions test runners,
+  //    and any other "API client" caller.
+  //
+  // 2. Direct (usingProxy=false) — running inside a Vercel deployment
+  //    that talks straight to workflow-server. workflow-server
+  //    authenticates the caller with a Vercel-issued OIDC token, and the
+  //    workflow-server preview URL has Deployment Protection enabled, so
+  //    we also need the trusted-sources bypass header. Both headers MUST
+  //    use the per-request OIDC token from getVercelOidcToken() — the
+  //    `x-vercel-oidc-token` request header Vercel injects on every
+  //    invocation, freshly minted to reflect current project settings.
+  //    Reading process.env.VERCEL_OIDC_TOKEN directly would pick up the
+  //    deployment-bake-time token, which on a redeployed-after-config-
+  //    change project carries stale claims and fails the rule check.
+  if (usingProxy) {
+    // Proxied path: bearer auth only, sourced from config.token (the
+    // static Vercel auth token the caller configured).
+    if (config?.token) {
+      headers.set('Authorization', `Bearer ${config.token}`);
+    }
+  } else {
+    // Direct path: per-request Vercel OIDC token for both bearer auth
+    // (workflow-server validates it) and the trusted-sources bypass
+    // header (Vercel's edge validates it against workflow-server's
+    // trusted-sources rule). Caller-supplied config.token still wins
+    // for the bearer side — useful for tests / local dev.
+    let oidcToken: string | undefined;
+    try {
+      oidcToken = await getVercelOidcToken();
+    } catch {
+      // Outside a Vercel function context (or no OIDC enabled). Fall
+      // through; downstream may still succeed against an unprotected
+      // target, and a config.token may still be enough for bearer auth.
+    }
+    const authToken = config?.token ?? oidcToken;
+    if (authToken) {
+      headers.set('Authorization', `Bearer ${authToken}`);
+    }
+    if (oidcToken) {
+      headers.set('x-vercel-trusted-oidc-idp-token', oidcToken);
+      logOidcClaimsOnce(oidcToken, baseUrl);
+    }
   }
 
   return { baseUrl, headers, usingProxy };
