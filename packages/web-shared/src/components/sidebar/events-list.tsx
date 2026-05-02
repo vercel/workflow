@@ -142,8 +142,11 @@ function EventItem({
           className="flex min-h-[32px] items-center justify-between gap-4 px-2.5 py-1.5"
           style={{ borderColor: 'var(--ds-gray-300)' }}
         >
-          <span className="text-[14px]" style={{ color: 'var(--ds-gray-700)' }}>
-            eventId
+          <span
+            className="text-[13px] font-medium"
+            style={{ color: 'var(--ds-gray-700)' }}
+          >
+            Event ID
           </span>
           <span
             className="max-w-[70%] truncate text-right text-[13px] font-mono"
@@ -159,10 +162,10 @@ function EventItem({
             style={{ borderColor: 'var(--ds-gray-300)' }}
           >
             <span
-              className="text-[14px]"
+              className="text-[13px] font-medium"
               style={{ color: 'var(--ds-gray-700)' }}
             >
-              correlationId
+              Correlation ID
             </span>
             <span
               className="max-w-[70%] truncate text-right text-[13px] font-mono"
@@ -311,10 +314,10 @@ export function EventsList({
   return (
     <div className="mt-2" style={{ color: 'var(--ds-gray-1000)' }}>
       <h3
-        className="text-heading-16 font-medium mt-4 mb-2"
+        className="text-label-14 font-medium mt-4 mb-2"
         style={{ color: 'var(--ds-gray-1000)' }}
       >
-        Events {!isLoading && `(${sortedEvents.length})`}
+        Events
       </h3>
       {isLoading ? (
         <div className="flex flex-col gap-4">

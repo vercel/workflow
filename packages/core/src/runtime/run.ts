@@ -266,12 +266,8 @@ export class Run<TResult> {
     // Pass the key as a promise — it will be resolved lazily inside
     // the first async transform() call of the deserialize stream.
     const encryptionKey = this.#getEncryptionKey();
-    const stream = getExternalRevivers(
-      global,
-      ops,
-      this.runId,
-      encryptionKey
-    ).ReadableStream({
+    const stream = getExternalRevivers(global, ops, this.runId, encryptionKey)
+      .ReadableStream!({
       name,
       startIndex,
     }) as ReadableStream<R>;
