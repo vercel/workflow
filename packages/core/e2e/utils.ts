@@ -5,6 +5,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { createVercelWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
+import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { getWorld, setWorld } from '../src/runtime';
 
@@ -199,20 +200,6 @@ const awaitCommand = async (
   );
 };
 
-/**
- * Returns headers needed to bypass Vercel Deployment Protection.
- * When VERCEL_AUTOMATION_BYPASS_SECRET is set, includes the x-vercel-protection-bypass header.
- */
-export function getProtectionBypassHeaders(): HeadersInit {
-  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-  if (bypassSecret) {
-    return {
-      'x-vercel-protection-bypass': bypassSecret,
-    };
-  }
-  return {};
-}
-
 export const cliInspectJson = async (args: string) => {
   const cliAppPath = getWorkbenchAppPath();
   const cliArgs = splitArgs(getCliArgs());
@@ -305,7 +292,7 @@ export async function fetchManifest(
 
   const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
   const res = await fetch(url, {
-    headers: getProtectionBypassHeaders(),
+    headers: await getTrustedSourcesHeaders(),
   });
   if (!res.ok) {
     throw new Error(

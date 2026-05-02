@@ -210,6 +210,10 @@ jobs:
     name: E2E Vercel Prod Tests (${{ matrix.app.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+      deployments: read
     strategy:
       fail-fast: false
       matrix:
@@ -286,11 +290,17 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # The trusted-sources OIDC token (x-vercel-trusted-oidc-idp-token)
+          # is minted on demand inside `scripts/trusted-sources-headers.mjs`
+          # via the runner's ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars
+          # (exposed when `permissions: id-token: write` is set on the job),
+          # and re-minted before its 5-minute expiry. This lets long e2e
+          # suites keep a fresh token throughout the run instead of using
+          # a single pre-minted token that would expire mid-suite.
+          # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
           # Point PRs at the protected workflow-server preview; unset on main
           # so production runs hit the public vercel-workflow.com URL.
           VERCEL_WORKFLOW_SERVER_URL: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_URL || '' }}
-          VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS: ${{ github.ref != 'refs/heads/main' && secrets.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS || '' }}
 
       - name: Generate E2E summary
         if: always()

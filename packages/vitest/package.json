@@ -26,7 +26,8 @@
   "scripts": {
     "build": "tsc",
     "clean": "tsc --build --clean && rm -rf dist ||:",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "vitest run src"
   },
   "dependencies": {
     "@workflow/builders": "workspace:*",
@@ -38,7 +39,8 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@workflow/tsconfig": "workspace:*",
-    "vite": "7.3.2"
+    "vite": "7.3.2",
+    "vitest": "catalog:"
   },
   "peerDependencies": {
     "vite": ">=6.0.0",
