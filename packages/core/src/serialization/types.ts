@@ -85,6 +85,7 @@ export interface SerializableSpecial {
     body: Request['body'];
     duplex: Request['duplex'];
     responseWritable?: WritableStream<Response>;
+    signal?: AbortSignal;
   };
   Response: {
     type: Response['type'];
