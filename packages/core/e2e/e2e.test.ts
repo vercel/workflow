@@ -2341,6 +2341,47 @@ describe('e2e', () => {
   );
 
   test(
+    'hookWithSleepFinalStepWorkflow - step only on final payload',
+    { timeout: 120_000 },
+    async () => {
+      // Regression test for the v0chat incident. Mirrors the production
+      // shape: a hook + fire-and-forget sleep, where the step runs only
+      // once the final (done) payload arrives. Replay ends up with two
+      // `hook_received` events followed by a single `step_created`, which
+      // is the race window for the deferred unconsumed-event check.
+      const token = Math.random().toString(36).slice(2);
+
+      const run = await start(await e2e('hookWithSleepFinalStepWorkflow'), [
+        token,
+      ]);
+
+      // Wait for the hook to register.
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      let hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run.runId);
+      await resumeHook(hook, { type: 'msg', id: 1 });
+
+      // Let the workflow replay and suspend before the next payload so the
+      // final event log contains two `hook_received` entries before any
+      // `step_created` — the exact replay shape from production.
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      hook = await getHookByToken(token);
+      await resumeHook(hook, { type: 'final', id: 2, done: true });
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        seen: [1, 2],
+        finalResult: { processed: true, type: 'final', id: 2 },
+      });
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
     'sleepInLoopWorkflow - sleep inside loop with steps actually delays each iteration',
     { timeout: 60_000 },
     async () => {
