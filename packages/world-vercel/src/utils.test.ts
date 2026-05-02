@@ -1,34 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getHeaders, getHttpUrl, getProtectionBypassHeader } from './utils.js';
-
-describe('getProtectionBypassHeader', () => {
-  const originalEnv = process.env;
-
-  beforeEach(() => {
-    process.env = { ...originalEnv };
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-  });
-
-  it('returns empty object when env var is unset', () => {
-    delete process.env.VERCEL_OIDC_TOKEN;
-    expect(getProtectionBypassHeader()).toEqual({});
-  });
-
-  it('returns empty object when env var is empty', () => {
-    process.env.VERCEL_OIDC_TOKEN = '';
-    expect(getProtectionBypassHeader()).toEqual({});
-  });
-
-  it('returns x-vercel-trusted-oidc-idp-token header when env var is set', () => {
-    process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
-    expect(getProtectionBypassHeader()).toEqual({
-      'x-vercel-trusted-oidc-idp-token': 'my-oidc-token',
-    });
-  });
-});
+import { getHeaders, getHttpUrl } from './utils.js';
 
 describe('getHttpUrl', () => {
   const originalEnv = process.env;
@@ -95,25 +66,14 @@ describe('getHeaders', () => {
     process.env = originalEnv;
   });
 
-  it('omits x-vercel-trusted-oidc-idp-token when env var is unset', () => {
+  // Note: `getHeaders` no longer attaches `x-vercel-trusted-oidc-idp-token`.
+  // That header is set by `getHttpConfig`, alongside the `Authorization`
+  // bearer, using the same per-request token from `getVercelOidcToken()`,
+  // so the two headers always agree.
+  it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig instead)', () => {
+    process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
     const headers = getHeaders(undefined, { usingProxy: false });
     expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
-  });
-
-  it('sets x-vercel-trusted-oidc-idp-token when env var is set (direct)', () => {
-    process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBe(
-      'my-oidc-token'
-    );
-  });
-
-  it('sets x-vercel-trusted-oidc-idp-token when env var is set (proxied — forwarded downstream)', () => {
-    process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
-    const headers = getHeaders(undefined, { usingProxy: true });
-    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBe(
-      'my-oidc-token'
-    );
   });
 
   it('omits x-vercel-workflow-api-url when override is unset', () => {
