@@ -12,6 +12,7 @@ import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
+import { decodeSafeJwtClaims } from './jwt-claims.js';
 import {
   ErrorType,
   getSpanKind,
@@ -277,12 +278,44 @@ export const getHeaders = (
   return headers;
 };
 
+/**
+ * Diagnostic guard: log the (non-sensitive) claims of the OIDC token we
+ * send to the workflow-server **once per process** so we can verify what
+ * token shape we're actually carrying. The signature is intentionally
+ * not logged. This is invaluable while the trusted-sources rules on the
+ * receiving end are being rolled out / migrated, because a 401 from the
+ * Vercel edge tells you nothing about why the rule didn't match.
+ *
+ * One-time: a process that handles many requests would otherwise spam
+ * the log with redundant lines (the OIDC token is process-stable for
+ * Vercel-issued tokens during a request lifetime).
+ */
+let oidcClaimsLogged = false;
+
+function logOidcClaimsOnce(token: string, baseUrl: string): void {
+  if (oidcClaimsLogged) return;
+  oidcClaimsLogged = true;
+  const claims = decodeSafeJwtClaims(token);
+  if (claims) {
+    console.log(
+      `[world-vercel] outbound OIDC token claims for ${baseUrl}: ` +
+        JSON.stringify(claims)
+    );
+  } else {
+    console.log(
+      `[world-vercel] outbound auth token for ${baseUrl} is not a JWT ` +
+        `(static API token?)`
+    );
+  }
+}
+
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
   const token = config?.token ?? (await getVercelOidcToken());
   if (token) {
     headers.set('Authorization', `Bearer ${token}`);
+    logOidcClaimsOnce(token, baseUrl);
   }
   return { baseUrl, headers, usingProxy };
 }
