@@ -339,6 +339,10 @@ jobs:
     needs: build
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'workflow-server-test') }}
     timeout-minutes: 90
+    permissions:
+      id-token: write
+      contents: read
+      deployments: read
     strategy:
       fail-fast: false
       matrix:
@@ -402,7 +406,13 @@ jobs:
           WORKFLOW_VERCEL_TEAM: "team_nO2mCG4W8IxPIeKoSsqwAxxB"
           WORKFLOW_VERCEL_PROJECT: ${{ matrix.app.project-id }}
           WORKFLOW_VERCEL_PROJECT_SLUG: ${{ matrix.app.project-slug }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Trusted-sources OIDC token is minted on demand by
+          # scripts/trusted-sources-headers.mjs via the runner's
+          # ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars (auto-set when
+          # `permissions: id-token: write` is on the job) and re-minted
+          # before its 5-minute expiry, so long benchmark runs keep a
+          # fresh token throughout.
+          # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
           # Run full suite on nextjs-turbopack only (stress tests are too slow to run on all apps)
           BENCHMARK_FULL_SUITE: ${{ matrix.app.name == 'nextjs-turbopack' && ((github.event_name == 'workflow_dispatch' && inputs.full_suite) || contains(github.event.pull_request.labels.*.name, 'stress-test')) }}
         run: |
