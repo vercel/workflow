@@ -124,14 +124,10 @@ async function startWorkflowViaHttp(
     },
   });
   if (!res.ok) {
-    // x-vercel-id identifies the Vercel edge node that served the
-    // response; useful for tracking which regions still need the
-    // trusted-sources proxy fix during a gradual rollout.
-    const vercelId = res.headers.get('x-vercel-id') ?? '<absent>';
     throw new Error(
       `Failed to trigger workflow: ${res.url} ${
         res.status
-      } (x-vercel-id: ${vercelId}): ${await res.text()}`
+      }: ${await res.text()}`
     );
   }
   const result = await res.json();

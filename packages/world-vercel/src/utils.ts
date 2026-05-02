@@ -12,7 +12,6 @@ import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
-import { decodeSafeJwtClaims } from './jwt-claims.js';
 import {
   ErrorType,
   getSpanKind,
@@ -244,116 +243,36 @@ export const getHeaders = (
   if (workflowServerUrlOverride && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
-  // NOTE: the trusted-sources bypass header (x-vercel-trusted-oidc-idp-token)
-  // is no longer attached here. It must use the same per-request OIDC token
-  // as the Authorization bearer header — see `getHttpConfig`. Reading
-  // `process.env.VERCEL_OIDC_TOKEN` directly here picks up the stale
-  // deployment-bake-time token, which on a redeployed-after-config-change
-  // project does NOT match the per-request `x-vercel-oidc-token` header
-  // (where Vercel injects a freshly minted token reflecting current project
-  // settings).
   return headers;
 };
-
-/**
- * Diagnostic guard: log the (non-sensitive) claims of the OIDC tokens we
- * have access to **once per process** so we can verify what token shape
- * we're actually carrying. Signatures are intentionally not logged. This
- * is invaluable while the trusted-sources rules on the receiving end are
- * being rolled out / migrated, because a 401 from the Vercel edge tells
- * you nothing about why the rule didn't match.
- *
- * Logs BOTH:
- *   - the per-request token returned by `getVercelOidcToken()` (sourced
- *     primarily from the `x-vercel-oidc-token` request header that Vercel
- *     injects on every invocation, freshly minted to reflect current
- *     project settings); this is what we attach as the trusted-sources
- *     bypass header.
- *   - the bake-time token in `process.env.VERCEL_OIDC_TOKEN`, which is
- *     frozen at deployment-creation time. On redeployed-after-config-
- *     change projects this can have stale claims.
- *
- * One-time: a process that handles many requests would otherwise spam
- * the log with redundant lines (the per-request OIDC token is stable
- * for the duration of a single Vercel function invocation).
- */
-let oidcClaimsLogged = false;
-
-function summarizeJwt(token: string | undefined | null): string {
-  if (!token) return '<absent>';
-  const claims = decodeSafeJwtClaims(token);
-  if (claims) return JSON.stringify(claims);
-  return '<not a JWT (static token?)>';
-}
-
-function logOidcClaimsOnce(perRequestToken: string, baseUrl: string): void {
-  if (oidcClaimsLogged) return;
-  oidcClaimsLogged = true;
-  const envToken = process.env.VERCEL_OIDC_TOKEN;
-  const sameTokens =
-    typeof envToken === 'string' && envToken === perRequestToken;
-  console.log(
-    `[world-vercel] outbound OIDC tokens for ${baseUrl}: ` +
-      `getVercelOidcToken()=${summarizeJwt(perRequestToken)} ` +
-      `VERCEL_OIDC_TOKEN_env=${
-        sameTokens ? '<same as getVercelOidcToken()>' : summarizeJwt(envToken)
-      }`
-  );
-}
 
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
 
-  // There are two outbound flows with different auth requirements:
-  //
-  // 1. Proxied (usingProxy=true) — SDK calls api.vercel.com/v1/workflow,
-  //    the api-workflow proxy authenticates the caller with a regular
-  //    Vercel auth token, and mints its OWN OIDC token internally before
-  //    forwarding to workflow-server. The SDK→proxy hop hits a public
-  //    endpoint, so the trusted-sources bypass header is meaningless here.
-  //    This is the path used by the CLI, GitHub Actions test runners,
-  //    and any other "API client" caller.
-  //
-  // 2. Direct (usingProxy=false) — running inside a Vercel deployment
-  //    that talks straight to workflow-server. workflow-server
-  //    authenticates the caller with a Vercel-issued OIDC token, and the
-  //    workflow-server preview URL has Deployment Protection enabled, so
-  //    we also need the trusted-sources bypass header. Both headers MUST
-  //    use the per-request OIDC token from getVercelOidcToken() — the
-  //    `x-vercel-oidc-token` request header Vercel injects on every
-  //    invocation, freshly minted to reflect current project settings.
-  //    Reading process.env.VERCEL_OIDC_TOKEN directly would pick up the
-  //    deployment-bake-time token, which on a redeployed-after-config-
-  //    change project carries stale claims and fails the rule check.
   if (usingProxy) {
-    // Proxied path: bearer auth only, sourced from config.token (the
-    // static Vercel auth token the caller configured). The api-workflow
-    // proxy will always reject unauthenticated requests, so failing here
-    // is strictly nicer than letting an opaque 401 bubble up much later.
+    // The api-workflow proxy authenticates the caller with a regular Vercel
+    // auth token; it does not accept OIDC. Fail loudly instead of letting
+    // an opaque 401 bubble up at request time.
     if (!config?.token) {
       throw new Error(
         'world-vercel: api-workflow proxy requested ' +
           `(${baseUrl}) but no Vercel auth token was provided. ` +
           'Pass one as `config.token` (the SDK reads it from ' +
-          '`WORKFLOW_VERCEL_AUTH_TOKEN`); the proxy authenticates the ' +
-          'caller with a regular Vercel auth token, not OIDC.'
+          '`WORKFLOW_VERCEL_AUTH_TOKEN`).'
       );
     }
     headers.set('Authorization', `Bearer ${config.token}`);
   } else {
-    // Direct path: per-request Vercel OIDC token for both bearer auth
-    // (workflow-server validates it) and the trusted-sources bypass
-    // header (Vercel's edge validates it against workflow-server's
-    // trusted-sources rule). Caller-supplied config.token still wins
-    // for the bearer side — useful for tests / local dev.
+    // Direct workflow-server path. The bearer prefers an explicit
+    // config.token (CLI / GitHub Actions runner / local dev) and falls
+    // back to the per-request Vercel OIDC token. The trusted-sources
+    // bypass header always uses the per-request OIDC token.
     let oidcToken: string | undefined;
     try {
       oidcToken = await getVercelOidcToken();
     } catch {
-      // Outside a Vercel function context (or no OIDC enabled). Fall
-      // through; downstream may still succeed against an unprotected
-      // target, and a config.token may still be enough for bearer auth.
+      // No OIDC available outside a Vercel function context.
     }
     const authToken = config?.token ?? oidcToken;
     if (authToken) {
@@ -361,7 +280,6 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
     }
     if (oidcToken) {
       headers.set('x-vercel-trusted-oidc-idp-token', oidcToken);
-      logOidcClaimsOnce(oidcToken, baseUrl);
     }
   }
 

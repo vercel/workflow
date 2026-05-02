@@ -70,11 +70,7 @@ describe('getHeaders', () => {
     process.env = originalEnv;
   });
 
-  // Note: `getHeaders` no longer attaches `x-vercel-trusted-oidc-idp-token`.
-  // That header is set by `getHttpConfig`, alongside the `Authorization`
-  // bearer, using the same per-request token from `getVercelOidcToken()`,
-  // so the two headers always agree.
-  it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig instead)', () => {
+  it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig)', () => {
     process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
     const headers = getHeaders(undefined, { usingProxy: false });
     expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
