@@ -1,13 +1,16 @@
 import { types } from 'node:util';
 import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
 import type { Event, WorkflowRun } from '@workflow/world';
+import { monotonicFactory } from 'ulid';
 import { assert, describe, expect, it, vi } from 'vitest';
+import { DEFERRED_CHECK_DELAY_MS } from './events-consumer.js';
 import type { WorkflowSuspension } from './global.js';
 import {
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
 } from './serialization.js';
+import { createContext } from './vm/index.js';
 import { runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
@@ -4484,4 +4487,194 @@ describe('runWorkflow', () => {
     );
     expect(hydrated).toBe('third');
   });
+
+  it('should not trigger unconsumed event error for for-await hook loop + unawaited sleep when hydrate latency exceeds the deferred-check window', async () => {
+    // Regression test for the v0chat production incident: a workflow that
+    // combines `createHook()`, fire-and-forget `sleep()`, and a per-payload
+    // step inside `for await` would falsely reject with
+    // `Corrupted event log` during replay. When hydrate latency exceeds the
+    // EventsConsumer's deferred-check timer, the second round of async work
+    // (hydrate payload #2 → for-await resumes → step subscribe) completes
+    // after the timer fires, so step_created is briefly orphaned.
+    //
+    // Event log shape mirrors the production run:
+    //   run_created, run_started,
+    //   hook_created, wait_created,
+    //   hook_received #1 (not-done),
+    //   hook_received #2 (done) — buffered during replay,
+    //   step_created — orphaned between hook_received #2 consume and step subscribe,
+    //   step_started, step_completed
+    const ops: Promise<any>[] = [];
+    const workflowRunId = 'wrun_test';
+    const startedAt = new Date('2024-01-01T00:00:00.000Z');
+
+    const workflowRun: WorkflowRun = {
+      runId: workflowRunId,
+      workflowName: 'workflow',
+      status: 'running',
+      input: await dehydrateWorkflowArguments(
+        [],
+        workflowRunId,
+        noEncryptionKey,
+        ops
+      ),
+      createdAt: startedAt,
+      updatedAt: startedAt,
+      startedAt,
+      deploymentId: 'test-deployment',
+    };
+
+    // Derive deterministic correlation IDs using the same seeded ULID
+    // factory runWorkflow uses internally, so events match what the runtime
+    // expects.
+    const seed = `${workflowRunId}:${workflowRun.workflowName}:${+startedAt}`;
+    const vm = createContext({ seed, fixedTimestamp: +startedAt });
+    const ulid = monotonicFactory(() => vm.globalThis.Math.random());
+    const hookCorr = `hook_${ulid(+startedAt)}`;
+    const waitCorr = `wait_${ulid(+startedAt)}`;
+    const stepCorr = `step_${ulid(+startedAt)}`;
+
+    const payload1 = await dehydrateStepReturnValue(
+      { done: false },
+      workflowRunId,
+      noEncryptionKey,
+      ops
+    );
+    const payload2 = await dehydrateStepReturnValue(
+      { done: true },
+      workflowRunId,
+      noEncryptionKey,
+      ops
+    );
+    const stepResult = await dehydrateStepReturnValue(
+      'ok',
+      workflowRunId,
+      noEncryptionKey,
+      ops
+    );
+
+    const events: Event[] = [
+      {
+        eventId: 'evnt-0',
+        runId: workflowRunId,
+        eventType: 'run_created',
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'evnt-1',
+        runId: workflowRunId,
+        eventType: 'run_started',
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'evnt-2',
+        runId: workflowRunId,
+        eventType: 'hook_created',
+        correlationId: hookCorr,
+        eventData: { token: 'tok', isWebhook: false },
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'evnt-3',
+        runId: workflowRunId,
+        eventType: 'wait_created',
+        correlationId: waitCorr,
+        eventData: { resumeAt: new Date('2099-01-01') },
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'evnt-4',
+        runId: workflowRunId,
+        eventType: 'hook_received',
+        correlationId: hookCorr,
+        eventData: { payload: payload1 },
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'evnt-5',
+        runId: workflowRunId,
+        eventType: 'hook_received',
+        correlationId: hookCorr,
+        eventData: { payload: payload2 },
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'evnt-STEP-CREATED',
+        runId: workflowRunId,
+        eventType: 'step_created',
+        correlationId: stepCorr,
+        eventData: { stepName: 'doStep', input: payload2 },
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'evnt-7',
+        runId: workflowRunId,
+        eventType: 'step_started',
+        correlationId: stepCorr,
+        createdAt: startedAt,
+      },
+      {
+        eventId: 'evnt-8',
+        runId: workflowRunId,
+        eventType: 'step_completed',
+        correlationId: stepCorr,
+        eventData: { result: stepResult },
+        createdAt: startedAt,
+      },
+    ];
+
+    // Mock hydrate with a delay larger than the deferred-check window. In
+    // production this corresponds to slower-than-expected encrypted payload
+    // decryption (cold cache, contended CPU, etc.); the fix must not rely on
+    // hydrate completing within the timer window.
+    const BUFFER_FOR_TEST_MS = 50;
+    const hydrateDelayMs = DEFERRED_CHECK_DELAY_MS + BUFFER_FOR_TEST_MS;
+    const serialization = await import('./serialization.js');
+    const originalHydrate = serialization.hydrateStepReturnValue;
+    const spy = vi
+      .spyOn(serialization, 'hydrateStepReturnValue')
+      .mockImplementation(async (...args) => {
+        await new Promise((r) => setTimeout(r, hydrateDelayMs));
+        return originalHydrate(...args);
+      });
+
+    try {
+      const workflowCode = `
+        const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
+        const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+        const doStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doStep");
+        async function workflow() {
+          const hook = createHook();
+          // Fire-and-forget timeout, not awaited — mirrors the production
+          // agent-stop pattern.
+          void sleep("1d");
+          for await (const payload of hook) {
+            if (payload && payload.done) {
+              await doStep(payload);
+              break;
+            }
+          }
+          return "finished";
+        }
+      ${getWorkflowTransformCode('workflow')}`;
+
+      // On an unfixed EventsConsumer this rejects with a WorkflowRuntimeError
+      // (the false-positive "Unconsumed event" error). With the fix it runs
+      // to completion.
+      const result = await runWorkflow(
+        workflowCode,
+        workflowRun,
+        events,
+        noEncryptionKey
+      );
+      const hydrated = await hydrateWorkflowReturnValue(
+        result,
+        workflowRunId,
+        noEncryptionKey
+      );
+      expect(hydrated).toBe('finished');
+    } finally {
+      spy.mockRestore();
+    }
+  }, 30_000);
 });

@@ -5,9 +5,12 @@
  * `*.tgz` files at the project root with valid gzip signature bytes.
  *
  * Requires DEPLOYMENT_URL to point at the tarballs deployment. If the
- * deployment is behind Vercel deployment protection, set
- * VERCEL_AUTOMATION_BYPASS_SECRET.
+ * deployment is behind Vercel Deployment Protection, the OIDC trusted
+ * sources headers minted by `scripts/trusted-sources-headers.mjs` are
+ * used to bypass it.
  */
+
+import { getTrustedSourcesHeaders } from '../../scripts/trusted-sources-headers.mjs';
 
 const rawBaseUrl = process.env.DEPLOYMENT_URL || '';
 if (!rawBaseUrl) {
@@ -20,18 +23,10 @@ const BASE_URL = rawBaseUrl.startsWith('http')
 
 const GZIP_SIGNATURE = [0x1f, 0x8b];
 
-const getHeaders = () => {
-  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-  if (bypassSecret) {
-    return { 'x-vercel-protection-bypass': bypassSecret };
-  }
-  return {};
-};
-
 const assertNoProtection = async (path) => {
   const res = await fetch(`${BASE_URL}${path}`, {
     redirect: 'manual',
-    headers: getHeaders(),
+    headers: await getTrustedSourcesHeaders(),
   });
   const location = res.headers.get('location') || '';
   if (
@@ -46,7 +41,9 @@ const assertNoProtection = async (path) => {
 };
 
 const assertTgzResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, { headers: getHeaders() });
+  const res = await fetch(`${BASE_URL}${path}`, {
+    headers: await getTrustedSourcesHeaders(),
+  });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
