@@ -3,7 +3,7 @@ import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { WorkflowBuildError } from '@workflow/errors';
-import { pluralize, usesVercelWorld } from '@workflow/utils';
+import { pluralize } from '@workflow/utils';
 import chalk from 'chalk';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
@@ -1325,13 +1325,23 @@ export const OPTIONS = handler;`;
   }
 
   /**
-   * Whether diagnostics artifacts should be emitted to Vercel output.
-   * This is enabled when the resolved world target is Vercel.
+   * Resolves the workflow manifest diagnostics path, when this builder should
+   * emit one.
    */
-  protected get shouldEmitVercelDiagnostics(): boolean {
-    return (
-      usesVercelWorld() || this.config.buildTarget === 'vercel-build-output-api'
-    );
+  protected getDiagnosticsManifestPath(): string | undefined {
+    if (this.config.diagnosticsDir) {
+      return resolve(
+        this.config.workingDir,
+        this.config.diagnosticsDir,
+        'workflows-manifest.json'
+      );
+    }
+
+    if (this.config.buildTarget === 'vercel-build-output-api') {
+      return this.resolvePath(
+        '.vercel/output/diagnostics/workflows-manifest.json'
+      );
+    }
   }
 
   /**
@@ -1367,10 +1377,9 @@ export const OPTIONS = handler;`;
 
       await mkdir(manifestDir, { recursive: true });
       await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
-      if (this.shouldEmitVercelDiagnostics) {
-        const diagnosticsManifestPath = this.resolvePath(
-          '.vercel/output/diagnostics/workflows-manifest.json'
-        );
+
+      const diagnosticsManifestPath = this.getDiagnosticsManifestPath();
+      if (diagnosticsManifestPath) {
         await this.ensureDirectory(diagnosticsManifestPath);
         await writeFile(diagnosticsManifestPath, manifestJson);
       }

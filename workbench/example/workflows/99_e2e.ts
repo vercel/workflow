@@ -13,7 +13,7 @@ import {
   RetryableError,
   sleep,
 } from 'workflow';
-import { getHookByToken, getRun, resumeHook, Run, start } from 'workflow/api';
+import { getHookByToken, getRun, Run, resumeHook, start } from 'workflow/api';
 import { importedStepOnly } from './_imported_step_only';
 import { callThrower, stepThatThrowsFromHelper } from './helpers';
 
@@ -342,6 +342,39 @@ export async function outputStreamInsideStepWorkflow() {
   await sleep('1s');
   await stepCloseOutputStreamInsideStep();
   await stepCloseOutputStreamInsideStep('step-ns');
+  return 'done';
+}
+
+//////////////////////////////////////////////////////////
+
+async function stepWriteUtf8Text(writable: WritableStream, text: string) {
+  'use step';
+  const writer = writable.getWriter();
+  await writer.write(new TextEncoder().encode(text));
+  writer.releaseLock();
+}
+
+async function stepWriteUtf8Json(writable: WritableStream, value: unknown) {
+  'use step';
+  const writer = writable.getWriter();
+  await writer.write(new TextEncoder().encode(JSON.stringify(value)));
+  writer.releaseLock();
+}
+
+// Emits a sequence of Uint8Array chunks containing UTF-8 encoded text,
+// including multi-byte sequences (Latin Extended, CJK, emoji, RTL), plus
+// one chunk whose decoded text is a valid JSON document. Used to validate
+// that typed-array stream chunks round-trip as UTF-8 end-to-end.
+export async function utf8StreamWorkflow() {
+  'use workflow';
+  const writable = getWritable();
+  await sleep('1s');
+  await stepWriteUtf8Text(writable, 'Hello, world!');
+  await stepWriteUtf8Text(writable, 'Café — naïve résumé');
+  await stepWriteUtf8Text(writable, '你好，世界！🌍✨');
+  await stepWriteUtf8Text(writable, 'مرحبا بالعالم');
+  await stepWriteUtf8Json(writable, { greeting: '안녕하세요', emoji: '🎉' });
+  await stepCloseOutputStream(writable);
   return 'done';
 }
 
@@ -1283,8 +1316,38 @@ export async function crossContextSerdeWorkflow() {
 }
 
 //////////////////////////////////////////////////////////
-// Instance Method Step Tests
+// Built-in Error subclass round-trip
 //////////////////////////////////////////////////////////
+
+/**
+ * Step that echoes an array of thrown values straight back through the
+ * step return-value boundary. Used by `errorSubclassRoundTripWorkflow` to
+ * verify that built-in Error subclasses survive the step serialization
+ * boundary with their type identity, message, stack, and cause intact.
+ */
+async function echoErrors(errors: unknown[]): Promise<unknown[]> {
+  'use step';
+  return errors;
+}
+
+/**
+ * Round-trips an array of built-in Error subclass instances through every
+ * serialization boundary:
+ *
+ *   client (start args) → workflow → step (echoErrors) → workflow → client (return)
+ *
+ * This exercises the per-subclass reducers/revivers added in the
+ * "Add first-class serialization for built-in Error subclasses" change.
+ * Each subclass reducer must run BEFORE the generic Error reducer
+ * (devalue is first-match-wins); a regression would silently downgrade
+ * `TypeError` etc. to plain `Error` instances.
+ */
+export async function errorSubclassRoundTripWorkflow(
+  errors: unknown[]
+): Promise<unknown[]> {
+  'use workflow';
+  return await echoErrors(errors);
+}
 
 /**
  * A class with instance methods that are marked as steps.

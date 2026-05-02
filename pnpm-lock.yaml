@@ -754,9 +754,6 @@ importers:
       '@workflow/swc-plugin':
         specifier: workspace:*
         version: link:../swc-plugin-workflow
-      enhanced-resolve:
-        specifier: 'catalog:'
-        version: 5.19.0
       semver:
         specifier: 'catalog:'
         version: 7.7.4
@@ -1164,6 +1161,9 @@ importers:
 
   packages/web-shared:
     dependencies:
+      '@radix-ui/react-tooltip':
+        specifier: 1.2.8
+        version: 1.2.8(@types/react-dom@19.1.9(@types/react@19.1.13))(@types/react@19.1.13)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
       '@tailwindcss/postcss':
         specifier: '4'
         version: 4.1.13

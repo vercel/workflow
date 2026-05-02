@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  FatalError,
+  RetryableError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowWorldError,
@@ -33,6 +35,7 @@ import {
   getCollectedRunIds,
   getProtectionBypassHeaders,
   getWorkflowMetadata,
+  hasNestedStepStackFrames,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
   isLocalDeployment,
@@ -828,6 +831,46 @@ describe('e2e', () => {
     }
   );
 
+  // utf8StreamWorkflow emits a sequence of Uint8Array chunks containing
+  // UTF-8 encoded text. This validates that multi-byte sequences (Latin
+  // Extended, CJK, emoji, RTL) round-trip end-to-end as bytes that decode
+  // back to the original strings — the same property that the web inspector
+  // relies on to render decoded text for typed-array stream chunks.
+  test('utf8StreamWorkflow', { timeout: 120_000 }, async () => {
+    const run = await start(await e2e('utf8StreamWorkflow'), []);
+    const reader = run.getReadable().getReader();
+
+    // `fatal: true` makes the decoder throw on any invalid UTF-8 sequence,
+    // so a successful decode is itself a round-trip assertion.
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+
+    const expectedTexts = [
+      'Hello, world!',
+      'Café — naïve résumé',
+      '你好，世界！🌍✨',
+      'مرحبا بالعالم',
+    ];
+
+    for (const expected of expectedTexts) {
+      const { value } = await reader.read();
+      assert(value);
+      assert(value instanceof Uint8Array);
+      expect(decoder.decode(value)).toBe(expected);
+    }
+
+    // Final chunk: UTF-8 encoded JSON document. The web inspector also
+    // re-parses decoded text as JSON when possible, so we exercise that
+    // shape here too.
+    const expectedJson = { greeting: '안녕하세요', emoji: '🎉' };
+    const { value: jsonValue } = await reader.read();
+    assert(jsonValue);
+    assert(jsonValue instanceof Uint8Array);
+    expect(JSON.parse(decoder.decode(jsonValue))).toEqual(expectedJson);
+
+    expect((await reader.read()).done).toBe(true);
+    expect(await run.returnValue).toEqual('done');
+  });
+
   test('fetchWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('fetchWorkflow'), []);
     const returnValue = await run.returnValue;
@@ -974,8 +1017,11 @@ describe('e2e', () => {
             expect(result.message).toContain(
               'Step error from imported helper module'
             );
-            // Stack trace propagates to caught error with function names and source file
-            expect(result.stack).toContain('throwErrorFromStep');
+            // Stack trace propagates to caught error with function names and source file.
+            // Some production bundlers collapse non-exported helper frames.
+            if (hasNestedStepStackFrames()) {
+              expect(result.stack).toContain('throwErrorFromStep');
+            }
             expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
 
@@ -995,7 +1041,9 @@ describe('e2e', () => {
               s.stepName.includes('stepThatThrowsFromHelper')
             );
             expect(failedStep.status).toBe('failed');
-            expect(failedStep.error.stack).toContain('throwErrorFromStep');
+            if (hasNestedStepStackFrames()) {
+              expect(failedStep.error.stack).toContain('throwErrorFromStep');
+            }
             expect(failedStep.error.stack).toContain(
               'stepThatThrowsFromHelper'
             );
@@ -1960,6 +2008,121 @@ describe('e2e', () => {
         `runs ${run.runId} --withData`
       );
       expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
+    'errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary',
+    { timeout: 60_000 },
+    async () => {
+      // Round-trips one instance of each Error subclass that has a dedicated
+      // reducer/reviver pair (built-in subclasses + FatalError/RetryableError
+      // from @workflow/errors) through the full pipeline:
+      //
+      //   client (start args) → workflow → step → workflow → client (return)
+      //
+      // Each subclass reducer must run before the generic `Error` reducer
+      // (devalue uses first-match-wins). A regression that drops the
+      // ordering — or skips a subclass entirely — would silently downgrade
+      // these to plain `Error` and break the `instanceof` assertions.
+      //
+      // FatalError and RetryableError specifically are first-class
+      // serialization targets (rather than going through the SWC
+      // `WORKFLOW_SERIALIZE` class-instance pipeline) so that they round-trip
+      // even from environments that don't run the SWC plugin — e.g. this
+      // vitest runner, which constructs them directly and passes them as
+      // start() arguments.
+      const cause = new Error('underlying failure');
+      const retryAfter = new Date('2099-01-01T00:00:00.000Z');
+      const inputs: Error[] = [
+        new TypeError('bad type', { cause }),
+        new RangeError('out of range'),
+        new SyntaxError('parse failed'),
+        new URIError('bad uri'),
+        new ReferenceError('x is not defined'),
+        new EvalError('eval went wrong'),
+        new AggregateError(
+          [new Error('inner-1'), new Error('inner-2')],
+          'aggregate failed'
+        ),
+        new FatalError('fatal!'),
+        new RetryableError('try again', { retryAfter }),
+        // Plain Error included as a control: the catch-all base reducer
+        // must still match it after the subclass reducers above.
+        new Error('plain error', { cause: 'string-cause' }),
+      ];
+
+      const run = await start(await e2e('errorSubclassRoundTripWorkflow'), [
+        inputs,
+      ]);
+      const returnValue = (await run.returnValue) as unknown[];
+
+      expect(returnValue).toHaveLength(inputs.length);
+
+      // Each output must match its input's class identity, message, and
+      // (when present) cause — proving the subclass reducer/reviver pair
+      // ran on every boundary. Stack is preserved as a non-empty string;
+      // the exact frames are framework-dependent so we don't pin them.
+      const expectations: Array<{
+        ctor: new (...args: any[]) => Error;
+        message: string;
+        cause?: unknown;
+      }> = [
+        { ctor: TypeError, message: 'bad type', cause },
+        { ctor: RangeError, message: 'out of range' },
+        { ctor: SyntaxError, message: 'parse failed' },
+        { ctor: URIError, message: 'bad uri' },
+        { ctor: ReferenceError, message: 'x is not defined' },
+        { ctor: EvalError, message: 'eval went wrong' },
+        { ctor: AggregateError, message: 'aggregate failed' },
+        { ctor: FatalError, message: 'fatal!' },
+        { ctor: RetryableError, message: 'try again' },
+        { ctor: Error, message: 'plain error', cause: 'string-cause' },
+      ];
+
+      for (const [i, expected] of expectations.entries()) {
+        const actual = returnValue[i] as Error;
+        expect(actual).toBeInstanceOf(expected.ctor);
+        expect(actual.message).toBe(expected.message);
+        expect(typeof actual.stack).toBe('string');
+        expect(actual.stack!.length).toBeGreaterThan(0);
+        if ('cause' in expected) {
+          // For the Error-typed cause, compare message rather than identity
+          // (a fresh Error is reconstructed on each deserialization step).
+          if (expected.cause instanceof Error) {
+            expect(actual.cause).toBeInstanceOf(Error);
+            expect((actual.cause as Error).message).toBe(
+              expected.cause.message
+            );
+          } else {
+            expect(actual.cause).toBe(expected.cause);
+          }
+        } else {
+          expect('cause' in actual).toBe(false);
+        }
+      }
+
+      // AggregateError must preserve its `errors` array with the inner
+      // Error instances reconstructed via the base Error reviver.
+      const aggregate = returnValue[6] as AggregateError;
+      expect(aggregate.errors).toHaveLength(2);
+      expect(aggregate.errors[0]).toBeInstanceOf(Error);
+      expect((aggregate.errors[0] as Error).message).toBe('inner-1');
+      expect(aggregate.errors[1]).toBeInstanceOf(Error);
+      expect((aggregate.errors[1] as Error).message).toBe('inner-2');
+
+      // FatalError must preserve its `fatal` instance property after
+      // round-tripping (the constructor sets it on every new instance).
+      const fatal = returnValue[7] as FatalError;
+      expect(fatal.fatal).toBe(true);
+      expect(FatalError.is(fatal)).toBe(true);
+
+      // RetryableError must preserve its `retryAfter` Date with the same
+      // millisecond value across the realm boundary.
+      const retryable = returnValue[8] as RetryableError;
+      expect(retryable.retryAfter).toBeInstanceOf(Date);
+      expect(retryable.retryAfter.getTime()).toBe(retryAfter.getTime());
+      expect(RetryableError.is(retryable)).toBe(true);
     }
   );
 

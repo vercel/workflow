@@ -10,6 +10,7 @@ import type {
 import { HookSchema } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
+  assertSafeEntityId,
   deleteJSON,
   listJSONFiles,
   paginatedFileSystemQuery,
@@ -44,6 +45,7 @@ export function createHooksStorage(
   }
 
   async function get(hookId: string, params?: GetHookParams): Promise<Hook> {
+    assertSafeEntityId('hookId', hookId);
     const hook = await readJSONWithFallback(
       basedir,
       'hooks',

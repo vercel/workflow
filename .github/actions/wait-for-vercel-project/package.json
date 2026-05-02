@@ -1,14 +1,14 @@
 {
   "private": true,
-  "description": "Wait for Vercel project deployment using Vercel API",
+  "description": "Wait for Vercel project deployment using GitHub Deployments API",
   "scripts": {
     "build": "esbuild src/wait-for-deployment.ts --bundle --outfile=dist/index.js --platform=node --target=node20 --format=cjs"
   },
   "dependencies": {
-    "@actions/core": "^1.11.1",
-    "@vercel/sdk": "^1.10.0"
+    "@actions/core": "^1.11.1"
   },
   "devDependencies": {
+    "@types/node": "^22.19.0",
     "esbuild": "^0.24.0"
   }
 }
