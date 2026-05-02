@@ -53,6 +53,7 @@ const world = createWorld({
   jobPrefix: "myapp", // optional
   queueConcurrency: 10, // optional
   maxPoolSize: 10, // optional, overrides WORKFLOW_POSTGRES_MAX_POOL_SIZE when `pool` is omitted
+  noPreparedStatements: true, // optional, set when running against a pool that cannot honour prepared statements (PgBouncer txn mode, PGlite-socket)
 });
 
 // Or pass an existing pg.Pool (shared with your app Drizzle, etc.); `world.close()` will not end it.
@@ -70,6 +71,7 @@ const worldFromPool = createWorld({ pool });
 | `pool`             | `pg.Pool` | —                                                                                      | Optional. When set, used for Drizzle, Graphile Worker, and stream writes. `world.close()` does not end it. |
 | `jobPrefix`        | `string`  | `process.env.WORKFLOW_POSTGRES_JOB_PREFIX`                                             | Optional prefix for queue job names                                                                  |
 | `queueConcurrency` | `number`  | `10`                                                                                   | Number of concurrent active step executions per process                                              |
+| `noPreparedStatements` | `boolean` | `process.env.WORKFLOW_POSTGRES_NO_PREPARED_STATEMENTS` (`1`/`true`)                | Forwards graphile-worker's `noPreparedStatements: true` to its internal `run()`/`makeWorkerUtils()`. Required when the pool routes traffic through a layer that cannot honour per-session prepared statements, such as PgBouncer in transaction pooling mode or PGlite-socket. |
 
 ## Environment Variables
 
@@ -80,6 +82,7 @@ const worldFromPool = createWorld({ pool });
 | `WORKFLOW_POSTGRES_JOB_PREFIX`         | Prefix for queue job names                                   | -                                               |
 | `WORKFLOW_POSTGRES_WORKER_CONCURRENCY` | Number of concurrent workers                                 | `10`                                            |
 | `WORKFLOW_POSTGRES_MAX_POOL_SIZE`      | Internal `pg.Pool` max size                                  | `10`                                            |
+| `WORKFLOW_POSTGRES_NO_PREPARED_STATEMENTS` | Set to `1` or `true` to disable prepared statements in graphile-worker (PgBouncer txn mode, PGlite-socket) | -                                               |
 
 When `pool` is omitted, `maxPoolSize` precedence is: `createWorld({ maxPoolSize })`, then `WORKFLOW_POSTGRES_MAX_POOL_SIZE`, then the `pg.Pool` default.
 

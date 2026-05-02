@@ -287,6 +287,31 @@ describe('postgres queue http execution', () => {
     }
   });
 
+  it('forwards noPreparedStatements to graphile-worker when configured', async () => {
+    const queue = buildQueue(
+      { connectionString: 'postgres://test', noPreparedStatements: true },
+      pool
+    );
+    await queue.start();
+
+    expect(makeWorkerUtils).toHaveBeenCalledWith(
+      expect.objectContaining({ noPreparedStatements: true })
+    );
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ noPreparedStatements: true })
+    );
+  });
+
+  it('omits noPreparedStatements by default to keep prepared statements enabled', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+    await queue.start();
+
+    const workerUtilsArgs = vi.mocked(makeWorkerUtils).mock.calls[0]?.[0];
+    const runArgs = vi.mocked(run).mock.calls[0]?.[0];
+    expect(workerUtilsArgs).not.toHaveProperty('noPreparedStatements');
+    expect(runArgs).not.toHaveProperty('noPreparedStatements');
+  });
+
   it('queues producer delays and headers in graphile job metadata', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2024-01-01T00:00:00.000Z'));

@@ -30,6 +30,12 @@ function getDefaultMaxPoolSize(): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
+function getDefaultNoPreparedStatements(): boolean | undefined {
+  const raw = process.env.WORKFLOW_POSTGRES_NO_PREPARED_STATEMENTS;
+  if (raw === undefined) return undefined;
+  return raw === '1' || raw.toLowerCase() === 'true';
+}
+
 export function createWorld(
   config: PostgresWorldConfig = {
     connectionString:
@@ -51,8 +57,15 @@ export function createWorld(
       ...(maxPoolSize !== undefined ? { max: maxPoolSize } : {}),
     });
 
+  const noPreparedStatements =
+    config.noPreparedStatements ?? getDefaultNoPreparedStatements();
+  const queueConfig: PostgresWorldConfig =
+    noPreparedStatements === undefined
+      ? config
+      : { ...config, noPreparedStatements };
+
   const drizzle = createClient(pool);
-  const queue = createQueue(config, pool);
+  const queue = createQueue(queueConfig, pool);
   const storage = createStorage(drizzle);
   const streamer = createStreamer(pool, drizzle);
 

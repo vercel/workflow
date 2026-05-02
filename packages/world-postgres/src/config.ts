@@ -12,4 +12,13 @@ export type PostgresWorldConfig = PgConnectionConfig & {
    * Default is 10ms. Set to 0 for immediate flushing.
    */
   streamFlushIntervalMs?: number;
+  /**
+   * Disable prepared statements in the embedded graphile-worker. Required when
+   * the connection pool routes traffic through a layer that cannot honour
+   * per-session prepared statements, such as PgBouncer in transaction pooling
+   * mode or PGlite-socket (PGlite multiplexes many TCP clients onto a single
+   * WASM session). When `true`, graphile-worker's `noPreparedStatements` flag
+   * is forwarded to its internal `run()` and `makeWorkerUtils()` calls.
+   */
+  noPreparedStatements?: boolean;
 };

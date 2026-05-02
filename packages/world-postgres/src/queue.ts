@@ -336,6 +336,9 @@ export function createQueue(
           workerUtils = await makeWorkerUtils({
             pgPool: pool,
             logger: graphileLogger,
+            ...(config.noPreparedStatements
+              ? { noPreparedStatements: true }
+              : {}),
           });
           await workerUtils.migrate();
           await migratePgBossJobs(workerUtils);
@@ -499,6 +502,7 @@ export function createQueue(
       logger: graphileLogger,
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
       taskList,
+      ...(config.noPreparedStatements ? { noPreparedStatements: true } : {}),
     });
   }
 
