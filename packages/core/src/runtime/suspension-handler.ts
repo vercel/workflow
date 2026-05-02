@@ -230,12 +230,16 @@ export async function handleSuspension({
             },
           });
 
-          // Write stream cancellation packet for real-time step propagation
+          // Write stream cancellation packet for real-time step propagation.
+          // streamName is set on the queue item at controller construction time
+          // (see workflow/abort-controller.ts).
           try {
-            // The stream name is derived from the hook token
-            // (abort hooks use token format `abrt_{id}`, stream is `strm_{id}_system_abort`)
-            const abortId = queueItem.token.replace('abrt_', '');
-            const streamName = `strm_${abortId}_system_abort`;
+            const streamName = queueItem.abortStreamName;
+            if (!streamName) {
+              throw new Error(
+                'abortStreamName missing on queue item — abort-controller.ts must set this field'
+              );
+            }
             await world.streams.write(
               runId,
               streamName,

@@ -50,6 +50,7 @@ import * as workflowModule from './serialization/workflow.js';
 import { contextStorage } from './step/context-storage.js';
 import {
   ABORT_HOOK_TOKEN,
+  ABORT_LISTENER_ATTACHED,
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
@@ -527,6 +528,38 @@ function getAllBaseReducers(
 }
 
 /**
+ * Attach a single abort listener to a signal, deduped across calls.
+ *
+ * Each serialization pass goes through the reducer, but a controller passed
+ * to N steps would otherwise accumulate N listeners — each writing the same
+ * stream packet and double-closing the stream on abort. The marker symbol
+ * ensures the stream-write side-effect runs at most once per (signal, runId).
+ */
+function attachAbortListenerOnce(
+  signal: AbortSignal,
+  streamName: string,
+  runId: string,
+  ops: Promise<void>[]
+): void {
+  if (signal.aborted) return;
+  if ((signal as any)[ABORT_LISTENER_ATTACHED]) return;
+  (signal as any)[ABORT_LISTENER_ATTACHED] = true;
+
+  signal.addEventListener(
+    'abort',
+    () => {
+      const writable = new WorkflowServerWritableStream(runId, streamName);
+      const writer = writable.getWriter();
+      const packet = new TextEncoder().encode(
+        JSON.stringify({ reason: signal.reason })
+      );
+      ops.push(writer.write(packet).then(() => writer.close()));
+    },
+    { once: true }
+  );
+}
+
+/**
  * Reducers for serialization boundary from the client side, passing arguments
  * to the workflow handler.
  *
@@ -609,18 +642,7 @@ export function getExternalReducers(
         (value.signal as any)[ABORT_HOOK_TOKEN] = hookToken;
       }
 
-      // Attach listener for abort propagation (listener-first to avoid micro-race)
-      if (!value.signal.aborted) {
-        const abortListener = () => {
-          const writable = new WorkflowServerWritableStream(runId, streamName);
-          const writer = writable.getWriter();
-          const packet = new TextEncoder().encode(
-            JSON.stringify({ reason: value.signal.reason })
-          );
-          ops.push(writer.write(packet).then(() => writer.close()));
-        };
-        value.signal.addEventListener('abort', abortListener, { once: true });
-      }
+      attachAbortListenerOnce(value.signal, streamName, runId, ops);
 
       return {
         streamName,
@@ -648,17 +670,7 @@ export function getExternalReducers(
         (value as any)[ABORT_HOOK_TOKEN] = hookToken;
       }
 
-      if (!value.aborted) {
-        const abortListener = () => {
-          const writable = new WorkflowServerWritableStream(runId, streamName);
-          const writer = writable.getWriter();
-          const packet = new TextEncoder().encode(
-            JSON.stringify({ reason: value.reason })
-          );
-          ops.push(writer.write(packet).then(() => writer.close()));
-        };
-        value.addEventListener('abort', abortListener, { once: true });
-      }
+      attachAbortListenerOnce(value, streamName, runId, ops);
 
       return {
         streamName,
@@ -868,17 +880,7 @@ function getStepReducers(
         (value.signal as any)[ABORT_HOOK_TOKEN] = hookToken;
       }
 
-      if (!value.signal.aborted) {
-        const abortListener = () => {
-          const writable = new WorkflowServerWritableStream(runId, streamName);
-          const writer = writable.getWriter();
-          const packet = new TextEncoder().encode(
-            JSON.stringify({ reason: value.signal.reason })
-          );
-          ops.push(writer.write(packet).then(() => writer.close()));
-        };
-        value.signal.addEventListener('abort', abortListener, { once: true });
-      }
+      attachAbortListenerOnce(value.signal, streamName, runId, ops);
 
       return {
         streamName,
@@ -906,17 +908,7 @@ function getStepReducers(
         (value as any)[ABORT_HOOK_TOKEN] = hookToken;
       }
 
-      if (!value.aborted) {
-        const abortListener = () => {
-          const writable = new WorkflowServerWritableStream(runId, streamName);
-          const writer = writable.getWriter();
-          const packet = new TextEncoder().encode(
-            JSON.stringify({ reason: value.reason })
-          );
-          ops.push(writer.write(packet).then(() => writer.close()));
-        };
-        value.addEventListener('abort', abortListener, { once: true });
-      }
+      attachAbortListenerOnce(value, streamName, runId, ops);
 
       return {
         streamName,
@@ -934,7 +926,7 @@ function getStepReducers(
  *
  * @param value - The serialized abort controller/signal data
  * @param ops - The ops array for tracking async work
- * @param runId - The workflow run ID (for stream writes)
+ * @param runId - The workflow run ID (for stream reads)
  * @returns A real AbortController with patched abort() method
  */
 function reviveAbortController(

@@ -46,7 +46,10 @@ class WorkflowAbortSignal {
   addEventListener(type: string, listener: () => void): void {
     if (type !== 'abort') return;
     if (this.aborted) {
-      // Fire immediately if already aborted
+      // Fire synchronously, not on a microtask. Native AbortSignal fires on a
+      // microtask per spec, but inside the workflow VM we deliberately diverge
+      // for deterministic replay: listener ordering must be tied to the
+      // orchestrator's sync execution path, not to microtask scheduling.
       listener();
       return;
     }
@@ -104,6 +107,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
         token: hookToken,
         isWebhook: false,
         isSystem: true,
+        abortStreamName: streamName,
       });
 
       // Subscribe to events for this hook's lifecycle
