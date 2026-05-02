@@ -80,6 +80,7 @@ export async function* streamTextIterator({
   experimental_context,
   experimental_telemetry,
   includeRawChunks = false,
+  suppressToolInputDeltas = false,
   experimental_transform,
   responseFormat,
   collectUIChunks = false,
@@ -99,6 +100,11 @@ export async function* streamTextIterator({
   experimental_context?: unknown;
   experimental_telemetry?: TelemetrySettings;
   includeRawChunks?: boolean;
+  /**
+   * If true, suppresses incremental tool-input-delta UIMessageChunks while
+   * preserving raw stream processing and final tool input availability.
+   */
+  suppressToolInputDeltas?: boolean;
   experimental_transform?:
     | StreamTextTransform<ToolSet>
     | Array<StreamTextTransform<ToolSet>>;
@@ -305,6 +311,7 @@ export async function* streamTextIterator({
             ...currentGenerationSettings,
             toolChoice: currentToolChoice,
             includeRawChunks,
+            suppressToolInputDeltas,
             experimental_telemetry,
             transforms,
             responseFormat,

@@ -3,6 +3,73 @@ import { describe, expect, it } from 'vitest';
 import { doStreamStep, normalizeFinishReason } from './do-stream-step.js';
 import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 
+function createToolInputDeltaModel() {
+  return async () =>
+    ({
+      provider: 'mock',
+      modelId: 'mock-tool-input-deltas',
+      doStream: async () => ({
+        stream: new ReadableStream({
+          start(controller) {
+            for (const part of [
+              { type: 'stream-start', warnings: [] },
+              {
+                type: 'response-metadata',
+                id: 'response-1',
+                modelId: 'mock-tool-input-deltas',
+                timestamp: new Date(),
+              },
+              {
+                type: 'tool-input-start',
+                id: 'call-1',
+                toolName: 'writeFile',
+              },
+              {
+                type: 'tool-input-delta',
+                id: 'call-1',
+                delta: '{"path":"src/App.tsx"',
+              },
+              {
+                type: 'tool-input-delta',
+                id: 'call-1',
+                delta: ',"content":"x"}',
+              },
+              { type: 'tool-input-end', id: 'call-1' },
+              {
+                type: 'tool-call',
+                toolCallId: 'call-1',
+                toolName: 'writeFile',
+                input: '{"path":"src/App.tsx","content":"x"}',
+              },
+              {
+                type: 'finish',
+                finishReason: { type: 'tool-calls' },
+                usage: {
+                  inputTokens: { total: 1 },
+                  outputTokens: { total: 1 },
+                },
+              },
+            ]) {
+              controller.enqueue(part);
+            }
+            controller.close();
+          },
+        }),
+      }),
+    }) as any;
+}
+
+function createChunkCollector() {
+  const chunks: any[] = [];
+  const writable = new WritableStream({
+    write(chunk) {
+      chunks.push(chunk);
+    },
+  });
+
+  return { chunks, writable };
+}
+
 describe('normalizeFinishReason', () => {
   describe('string finish reasons', () => {
     it('should pass through "stop"', () => {
@@ -197,5 +264,44 @@ describe('doStreamStep', () => {
         input: '{"city":"San Francisco"',
       })
     );
+  });
+
+  it('can suppress tool input deltas without dropping final tool input', async () => {
+    const { chunks, writable } = createChunkCollector();
+
+    const result = await doStreamStep(
+      [{ role: 'user', content: [{ type: 'text', text: 'write a file' }] }],
+      createToolInputDeltaModel(),
+      writable,
+      [],
+      { suppressToolInputDeltas: true }
+    );
+
+    expect(chunks.map((chunk) => chunk.type)).toEqual([
+      'start-step',
+      'tool-input-start',
+      'tool-input-available',
+      'finish-step',
+    ]);
+    expect(result.toolCalls[0]?.input).toBe(
+      '{"path":"src/App.tsx","content":"x"}'
+    );
+    expect(result.step.toolCalls[0]?.input).toEqual({
+      path: 'src/App.tsx',
+      content: 'x',
+    });
+  });
+
+  it('streams tool input deltas by default', async () => {
+    const { chunks, writable } = createChunkCollector();
+
+    await doStreamStep(
+      [{ role: 'user', content: [{ type: 'text', text: 'write a file' }] }],
+      createToolInputDeltaModel(),
+      writable,
+      []
+    );
+
+    expect(chunks.map((chunk) => chunk.type)).toContain('tool-input-delta');
   });
 });

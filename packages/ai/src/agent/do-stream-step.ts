@@ -16,12 +16,12 @@ import {
   type ToolSet,
   type UIMessageChunk,
 } from 'ai';
+import { getErrorMessage } from '../get-error-message.js';
 import type {
   ProviderOptions,
   StreamTextTransform,
   TelemetrySettings,
 } from './durable-agent.js';
-import { getErrorMessage } from '../get-error-message.js';
 import { safeParseToolCallInput } from './safe-parse-tool-call-input.js';
 import { recordSpan } from './telemetry.js';
 import type { CompatibleLanguageModel } from './types.js';
@@ -71,6 +71,11 @@ export interface DoStreamStepOptions {
   providerOptions?: ProviderOptions;
   toolChoice?: ToolChoice<ToolSet>;
   includeRawChunks?: boolean;
+  /**
+   * If true, suppresses incremental tool-input-delta UIMessageChunks while
+   * preserving raw stream processing and final tool input availability.
+   */
+  suppressToolInputDeltas?: boolean;
   experimental_telemetry?: TelemetrySettings;
   transforms?: Array<StreamTextTransform<ToolSet>>;
   responseFormat?: LanguageModelV3CallOptions['responseFormat'];
@@ -221,6 +226,7 @@ export async function doStreamStep(
       const chunks: LanguageModelV3StreamPart[] = [];
       const includeRawChunks = options?.includeRawChunks ?? false;
       const collectUIChunks = options?.collectUIChunks ?? false;
+      const suppressToolInputDeltas = options?.suppressToolInputDeltas ?? false;
       const uiChunks: UIMessageChunk[] = [];
       let msToFirstChunk: number | undefined;
 
@@ -437,6 +443,10 @@ export async function doStreamStep(
                 }
 
                 case 'tool-input-delta': {
+                  if (suppressToolInputDeltas) {
+                    break;
+                  }
+
                   controller.enqueue({
                     type: 'tool-input-delta',
                     toolCallId: part.id,
