@@ -3,6 +3,7 @@ packages:
   - "!workbench/nitro"
   - packages/*
   - docs
+  - tarballs
 
 catalog:
   "@biomejs/biome": ^2.4.4

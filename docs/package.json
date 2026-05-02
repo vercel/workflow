@@ -4,8 +4,7 @@
   "private": true,
   "license": "Apache-2.0",
   "scripts": {
-    "build": "next build",
-    "prebuild": "pnpm -w run build && node scripts/pack.ts"
+    "build": "next build"
   },
   "dependencies": {
     "next": "16.2.1",

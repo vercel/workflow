@@ -31,6 +31,7 @@ async function main() {
     name: string;
     dir: string;
     packageJson: PackageJson;
+    originalContent: string;
   }> = [];
 
   for (const packageDir of packageDirs) {
@@ -44,24 +45,30 @@ async function main() {
       continue; // Skip directories without package.json
     }
 
-    const packageJsonContent = await fs.readFile(packageJsonPath, 'utf8');
-    const packageJson: PackageJson = JSON.parse(packageJsonContent);
+    const originalContent = await fs.readFile(packageJsonPath, 'utf8');
+    const packageJson: PackageJson = JSON.parse(originalContent);
 
     // Skip private packages
     if (packageJson.private) continue;
 
-    packages.push({ name: packageJson.name, dir, packageJson });
+    packages.push({
+      name: packageJson.name,
+      dir,
+      packageJson,
+      originalContent,
+    });
   }
 
   // Create a set of all package names for dependency resolution
   const packageNames = new Set(packages.map((p) => p.name));
 
-  for (const { name, dir, packageJson } of packages) {
+  for (const { name, dir, packageJson, originalContent } of packages) {
     const packageJsonPath = path.join(dir, 'package.json');
-    const originalPackageJson = JSON.stringify(packageJson, null, 2);
 
     // Create modified package.json with preview version
-    const modifiedPackageJson: PackageJson = JSON.parse(originalPackageJson);
+    const modifiedPackageJson: PackageJson = JSON.parse(
+      JSON.stringify(packageJson)
+    );
     modifiedPackageJson.version += `-${sha}`;
 
     // Update workspace dependencies to use preview tarball URLs
@@ -91,8 +98,9 @@ async function main() {
       await exec(`pnpm pack --out="${outDir}/%s.tgz"`, { cwd: dir });
       console.log(`Packed ${name}`);
     } finally {
-      // Always restore original package.json
-      await fs.writeFile(packageJsonPath, originalPackageJson);
+      // Always restore original package.json (preserves trailing newline /
+      // exact byte content of the source file)
+      await fs.writeFile(packageJsonPath, originalContent);
     }
   }
 
