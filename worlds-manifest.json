@@ -144,6 +144,20 @@
       "services": [],
       "requiresCredentials": true,
       "credentialsNote": "Requires JAZZ_API_KEY, JAZZ_WORKER_ACCOUNT, and JAZZ_WORKER_SECRET from Jazz Cloud"
+    },
+    {
+      "id": "cloudflare",
+      "type": "community",
+      "package": "@ataylorme/workflow-world-cloudflare",
+      "name": "Cloudflare Workers",
+      "description": "Cloudflare Workers world using Durable Objects for per-run state, D1 for cross-run queries, and Cloudflare Queues for message dispatch",
+      "repository": "https://github.com/ataylorme/workflow-world-cloudflare",
+      "docs": "/docs/deploying/world/cloudflare-world",
+      "features": [],
+      "env": {
+        "WORKFLOW_TARGET_WORLD": "@ataylorme/workflow-world-cloudflare"
+      },
+      "services": []
     }
   ]
 }

@@ -1,0 +1,121 @@
+---
+title: Cloudflare Workers World
+description: Community world using Durable Objects, D1, and Cloudflare Queues.
+type: integration
+summary: Deploy workflows to Cloudflare Workers using Durable Objects for state, D1 for indexing, and Queues for dispatch.
+prerequisites:
+  - /docs/deploying
+related:
+  - /docs/deploying/world/local-world
+  - /docs/deploying/world/vercel-world
+  - /docs/deploying/world/postgres-world
+---
+
+The Cloudflare Workers World is a community-maintained backend that runs workflows on [Cloudflare's edge network](https://workers.cloudflare.com). It uses three Cloudflare primitives for a fully serverless architecture:
+
+- **Durable Objects** for per-run state (events, steps, hooks, waits, streams)
+- **D1 (SQLite)** for cross-run index queries
+- **Cloudflare Queues** for reliable message dispatch
+
+<Callout type="info">
+This is a community World maintained at [`@ataylorme/workflow-world-cloudflare`](https://github.com/ataylorme/workflow-world-cloudflare). For issues and contributions, visit the [GitHub repository](https://github.com/ataylorme/workflow-world-cloudflare).
+</Callout>
+
+## Installation
+
+Install the package:
+
+```package-install
+@ataylorme/workflow-world-cloudflare
+```
+
+## Cloudflare Bindings
+
+Configure your `wrangler.toml` with the required bindings:
+
+```toml title="wrangler.toml"
+name = "my-workflow-worker"
+main = "src/worker.ts"
+compatibility_date = "2024-12-01"
+
+[durable_objects]
+bindings = [
+  { name = "WORKFLOW_RUNS", class_name = "WorkflowRunDO" }
+]
+
+[[d1_databases]]
+binding = "WORKFLOW_DB"
+database_name = "workflow"
+database_id = "<your-d1-database-id>"
+
+[[queues.producers]]
+binding = "WORKFLOW_QUEUE"
+queue = "workflow-jobs"
+
+[[queues.consumers]]
+queue = "workflow-jobs"
+max_batch_size = 10
+max_retries = 3
+
+[[migrations]]
+tag = "v1"
+new_classes = ["WorkflowRunDO"]
+```
+
+## Database Migration
+
+Run the D1 migration to create index tables. This is idempotent and safe to run multiple times:
+
+```ts
+import { migrate } from '@ataylorme/workflow-world-cloudflare/d1';
+
+await migrate(env.WORKFLOW_DB);
+```
+
+## Usage
+
+Create the world in your Worker and re-export the Durable Object class:
+
+```ts title="src/worker.ts" lineNumbers
+import { createWorld, WorkflowRunDO } from '@ataylorme/workflow-world-cloudflare';
+
+// Re-export the DO class so Cloudflare can instantiate it
+export { WorkflowRunDO };
+
+export default {
+  async fetch(request, env) {
+    const world = createWorld({
+      db: env.WORKFLOW_DB,
+      runs: env.WORKFLOW_RUNS,
+      queue: env.WORKFLOW_QUEUE,
+    });
+    // Use world with your workflow runtime...
+  },
+
+  async queue(batch, env) {
+    const world = createWorld({
+      db: env.WORKFLOW_DB,
+      runs: env.WORKFLOW_RUNS,
+      queue: env.WORKFLOW_QUEUE,
+    });
+    await world.handleQueueBatch(batch);
+  },
+};
+```
+
+## How It Works
+
+Each workflow run maps 1:1 to a Durable Object instance. All per-run state lives in the DO's transactional storage, which provides strong consistency without external databases.
+
+D1 maintains a lightweight global index so that cross-run queries (`runs.list`, `hooks.getByToken`) work without needing to fan out to every DO. The DO writes index updates to D1 fire-and-forget after each mutation.
+
+Workflow and step invocations are dispatched through Cloudflare Queues for reliable, at-least-once delivery.
+
+## Limitations
+
+- **`events.listByCorrelationId()`** — Requires `runId` context; the DO-per-run architecture cannot query across runs without knowing which DO to target
+- **`steps.get()`** — Requires `runId` for the same routing reason
+- **`readFromStream()`** — Expects stream names in `runId:streamName` format because the Streamer interface does not pass `runId` for reads
+- **Cloudflare platform** — Requires Cloudflare Workers with Durable Objects, D1, and Queues enabled
+
+For local development, use the [Local World](/worlds/local) which requires no external services.
