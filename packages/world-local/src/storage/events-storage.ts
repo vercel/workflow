@@ -6,6 +6,7 @@ import {
   RunExpiredError,
   RunNotSupportedError,
   TooEarlyError,
+  WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
@@ -224,6 +225,14 @@ export function createEventsStorage(
             }
           }
         }
+      }
+
+      // run_failed on a non-existent run is rejected to match the
+      // postgres and vercel worlds, which both surface this as a
+      // WorkflowRunNotFoundError rather than silently persisting an
+      // event for a run that was never created.
+      if (data.eventType === 'run_failed' && !currentRun) {
+        throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
       // ============================================================
