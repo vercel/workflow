@@ -56,7 +56,7 @@ async function fetchManifest(): Promise<WorkflowManifest> {
   if (cachedManifest) return cachedManifest;
   const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
   const res = await fetch(url, {
-    headers: getTrustedSourcesHeaders(),
+    headers: await getTrustedSourcesHeaders(),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {

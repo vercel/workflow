@@ -28,7 +28,7 @@ const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const assertNoProtection = async (path) => {
   const res = await fetch(`${BASE_URL}${path}`, {
     redirect: 'manual',
-    headers: getTrustedSourcesHeaders(),
+    headers: await getTrustedSourcesHeaders(),
   });
   const location = res.headers.get('location') || '';
   if (
@@ -53,7 +53,9 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
   let lastVercelId = null;
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const res = await fetch(url, { headers: getTrustedSourcesHeaders() });
+      const res = await fetch(url, {
+        headers: await getTrustedSourcesHeaders(),
+      });
       if (res.ok) return;
       lastStatus = res.status;
       lastVercelId = res.headers.get('x-vercel-id');
@@ -76,7 +78,7 @@ const waitForServer = async (url, timeoutMs = 30_000) => {
 
 const assertPngResponse = async (path) => {
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: getTrustedSourcesHeaders(),
+    headers: await getTrustedSourcesHeaders(),
   });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
@@ -95,7 +97,7 @@ const assertPngResponse = async (path) => {
 
 const assertHtmlMeta = async (path, expectedOgImagePath) => {
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: getTrustedSourcesHeaders(),
+    headers: await getTrustedSourcesHeaders(),
   });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
@@ -262,7 +264,7 @@ const GZIP_SIGNATURE = [0x1f, 0x8b];
 
 const assertTgzResponse = async (path) => {
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: getTrustedSourcesHeaders(),
+    headers: await getTrustedSourcesHeaders(),
   });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
@@ -277,7 +279,7 @@ const assertTgzResponse = async (path) => {
 
 const assertXmlResponse = async (path) => {
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: getTrustedSourcesHeaders(),
+    headers: await getTrustedSourcesHeaders(),
   });
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
