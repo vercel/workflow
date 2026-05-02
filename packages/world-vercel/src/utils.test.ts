@@ -1,5 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getHeaders, getHttpUrl } from './utils.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getHeaders, getHttpConfig, getHttpUrl } from './utils.js';
+
+vi.mock('@vercel/oidc', () => ({
+  getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
+}));
 
 describe('getHttpUrl', () => {
   const originalEnv = process.env;
@@ -110,5 +114,39 @@ describe('getHeaders', () => {
     expect(headers.get('x-vercel-project-id')).toBe('prj_123');
     expect(headers.get('x-vercel-team-id')).toBe('team_456');
     expect(headers.get('x-vercel-environment')).toBe('preview');
+  });
+});
+
+describe('getHttpConfig (proxied path)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_WORKFLOW_SERVER_URL;
+    delete process.env.VERCEL_OIDC_TOKEN;
+    delete process.env.WORKFLOW_VERCEL_BACKEND_URL;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('throws when usingProxy and no config.token is provided', async () => {
+    await expect(
+      getHttpConfig({
+        projectConfig: { projectId: 'prj_123', teamId: 'team_456' },
+      })
+    ).rejects.toThrow(/no Vercel auth token was provided/);
+  });
+
+  it('attaches Authorization bearer when usingProxy and config.token is provided', async () => {
+    const { headers } = await getHttpConfig({
+      projectConfig: { projectId: 'prj_123', teamId: 'team_456' },
+      token: 'my-vercel-auth-token',
+    });
+    expect(headers.get('Authorization')).toBe('Bearer my-vercel-auth-token');
+    // The trusted-sources bypass header is meaningless on the proxied
+    // path (api.vercel.com is public) and must NOT be attached.
+    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
   });
 });

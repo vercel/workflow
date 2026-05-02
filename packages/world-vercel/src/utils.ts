@@ -328,10 +328,19 @@ export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   //    change project carries stale claims and fails the rule check.
   if (usingProxy) {
     // Proxied path: bearer auth only, sourced from config.token (the
-    // static Vercel auth token the caller configured).
-    if (config?.token) {
-      headers.set('Authorization', `Bearer ${config.token}`);
+    // static Vercel auth token the caller configured). The api-workflow
+    // proxy will always reject unauthenticated requests, so failing here
+    // is strictly nicer than letting an opaque 401 bubble up much later.
+    if (!config?.token) {
+      throw new Error(
+        'world-vercel: api-workflow proxy requested ' +
+          `(${baseUrl}) but no Vercel auth token was provided. ` +
+          'Pass one as `config.token` (the SDK reads it from ' +
+          '`WORKFLOW_VERCEL_AUTH_TOKEN`); the proxy authenticates the ' +
+          'caller with a regular Vercel auth token, not OIDC.'
+      );
     }
+    headers.set('Authorization', `Bearer ${config.token}`);
   } else {
     // Direct path: per-request Vercel OIDC token for both bearer auth
     // (workflow-server validates it) and the trusted-sources bypass
