@@ -8,6 +8,7 @@ import { config } from './config.js';
 import {
   clearCreatedFilesCache,
   deleteJSON,
+  hasTag,
   listTaggedFiles,
   listTaggedFilesByExtension,
   readJSON,
@@ -48,6 +49,7 @@ export type LocalWorld = World & {
  * @param args.dataDir - Directory for storing workflow data (default: `.workflow-data/`)
  * @param args.port - Port override for queue transport (default: auto-detected)
  * @param args.baseUrl - Full base URL override for queue transport (default: `http://localhost:{port}`)
+ * @param args.recoverActiveRuns - Whether `start()` should re-enqueue pending/running runs from storage (default: `true`)
  * @param args.tag - Optional tag to scope files (e.g., `vitest-0`). When set, files are written
  *   as `{id}.{tag}.json` and `clear()` only deletes files matching this tag.
  * @throws {DataDirAccessError} If the data directory cannot be created or accessed
@@ -63,10 +65,11 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
   const tag = mergedConfig.tag;
   const queue = createQueue(mergedConfig);
   const storage = createStorage(mergedConfig.dataDir, tag);
+  const recoverActiveRuns = mergedConfig.recoverActiveRuns ?? true;
   return {
     specVersion: SPEC_VERSION_CURRENT,
     ...queue,
-    ...createStorage(mergedConfig.dataDir, tag),
+    ...storage,
     ...instrumentObject('world.streams', {
       ...createStreamer(mergedConfig.dataDir, tag),
       ...(mergedConfig.streamFlushIntervalMs !== undefined && {
@@ -75,7 +78,20 @@ export function createLocalWorld(args?: Partial<Config>): LocalWorld {
     }),
     async start() {
       await initDataDir(mergedConfig.dataDir);
-      await reenqueueActiveRuns(storage.runs, queue.queue, 'world-local');
+      if (!recoverActiveRuns) {
+        return;
+      }
+      const recoveryRuns = tag
+        ? {
+            ...storage.runs,
+            list: ((params) =>
+              storage.runs.list({
+                ...params,
+                fileIdFilter: (fileId) => hasTag(fileId, tag),
+              })) as typeof storage.runs.list,
+          }
+        : storage.runs;
+      await reenqueueActiveRuns(recoveryRuns, queue.queue, 'world-local');
     },
     async close() {
       await queue.close();
