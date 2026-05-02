@@ -18,8 +18,8 @@ preRelease: true
 - **Cooperative cancellation.** Steps receive the abort in real time and can respond by checking `signal.aborted`, calling `signal.throwIfAborted()`, or passing the signal to APIs like `fetch`.
 - **Abort errors skip retries.** When a step throws due to an abort (e.g., `fetch` throws `AbortError`), the error is automatically wrapped in `FatalError` so it skips retries and bubbles up immediately.
 - **`AbortSignal.timeout()` blocked in workflow VM.** Because it relies on real-time timers that break deterministic replay, `AbortSignal.timeout()` throws a helpful error pointing to the `sleep()` + `AbortController` pattern instead.
-- **Pending queue items processed on completion.** The runtime now processes all pending invocations when a workflow completes or fails, not just on suspension. This ensures abort signals, hooks, and other queue items are flushed correctly at every lifecycle boundary.
-- **`Request.signal` preserved.** When a `Request` object is serialized, its `.signal` is included and reconstructed on the other side using the same stream-backed mechanism.
+- **`Request.signal` preserved when it carries abort state.** A `Request`'s `.signal` is serialized when it's already aborted (so the cancellation that happened pre-serialization is preserved) or when it's a workflow-managed signal (so its hook + stream backing carries through). Plain non-aborted native signals — including the auto-generated signal on `new Request(url)` — are dropped to avoid minting stream infrastructure for every `Request`. To get cross-boundary cancellation through a `Request`, build it with the signal from a workflow-context `AbortController`.
+- **Fire-and-forget at completion.** If you call `abort()` (or `dispose` a hook, or kick off a `void sleep('1d')`) without a suspension point between that call and the workflow's return, the runtime logs a warning but does not flush the pending operation. Aborts that need to propagate must occur before the workflow's last suspension.
 
 ## Timeout with cancellation
 

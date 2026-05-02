@@ -104,11 +104,11 @@ Replay starts → events loaded
         │
         ├─→ new AbortController() → hook created → event consumer subscribes
         ├─→ hook_created event consumed
-        ├─→ hook_received event consumed → signal.aborted updated to true
+        ├─→ hook_received event consumed → signal.aborted re-asserted as true
         └─→ Workflow code sees signal.aborted === true at the correct point in replay
 ```
 
-Note that `signal.aborted` is not set synchronously when `abort()` is called in the workflow. Instead, the abort is recorded via the hook, and `signal.aborted` reflects the correct state during replay when the event consumer processes the `hook_received` event. This ensures the workflow sees the abort at a deterministically consistent point.
+On replay, the events consumer re-applies the abort by calling `_setAborted` when it encounters the `hook_received` event in the log — at the same point in execution where the original `abort()` happened. This is what makes the abort deterministic across replays.
 
 ## Where the Hook Is Created
 
@@ -237,7 +237,7 @@ Since abort involves two operations (stream write + hook resume), partial failur
 - Steps see the abort and throw `AbortError` (stream worked)
 - Workflow doesn't see `signal.aborted === true` on the next replay (hook not resumed)
 - The workflow sees the step failure as an error, which it can handle with try/catch
-- **Recovery:** The step-side abort handler retries the hook resume. On the next successful attempt, the workflow converges.
+- **Recovery:** The step-side `resumeHook` call is best-effort — if it throws, the failure is swallowed. Convergence comes from the next replay: when the step's reviver re-reads the stream, it sees the abort packet and calls `resumeHook` again. There's no in-process retry loop; the dual-mechanism design relies on either the stream or the hook eventually landing.
 
 ### Hook Succeeds, Stream Fails
 
@@ -262,7 +262,22 @@ The dual mechanism provides natural resilience — if either one succeeds, the s
 
 ## Request.signal
 
-When a `Request` object is serialized, its `.signal` property is included using the same stream-backed mechanism. On deserialization, the signal is reconstructed as a real `AbortSignal` that listens on the backing stream. If the original signal was already aborted at serialization time, the deserialized signal starts in the aborted state.
+A `Request`'s `.signal` is forwarded by the `Request` reducer in two cases:
+
+1. **The signal is already aborted.** The serialized payload preserves `aborted: true` and the abort `reason`, so the deserialized step sees the cancellation that happened before the boundary.
+2. **The signal is workflow-managed** (i.e., it has the `ABORT_STREAM_NAME` symbol — produced by a workflow-context `AbortController`). Its hook + stream backing carries through, and the deserialized step listens on the stream as usual.
+
+Plain non-aborted native signals are intentionally dropped, including the auto-generated signal that `new Request(url)` synthesizes when no `signal` is passed. Forwarding every Request signal would mint stream infrastructure for the throwaway auto-signals on every Request, even ones the caller never intended to use for cancellation.
+
+If you want cross-boundary cancellation through a `Request`, build it with a signal from a workflow-context `AbortController`:
+
+{/* @skip-typecheck: conceptual snippet */}
+```typescript
+const controller = new AbortController(); // in workflow function
+const req = new Request(url, { signal: controller.signal });
+await fetchStep(req); // signal carries through
+controller.abort();   // step-side fetch sees the abort
+```
 
 ## Related Documentation
 
