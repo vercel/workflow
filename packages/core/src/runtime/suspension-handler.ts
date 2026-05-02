@@ -21,6 +21,7 @@ import type {
 } from '../global.js';
 import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
+import { getAbortStreamIdFromToken } from '../util.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { serializeTraceCarrier } from '../telemetry.js';
 import { queueMessage } from './helpers.js';
@@ -116,6 +117,7 @@ export async function handleSuspension({
           token: queueItem.token,
           metadata: hookMetadata,
           isWebhook: queueItem.isWebhook ?? false,
+          ...(queueItem.isSystem && { isSystem: true }),
         },
       };
     })
@@ -234,12 +236,7 @@ export async function handleSuspension({
           // streamName is set on the queue item at controller construction time
           // (see workflow/abort-controller.ts).
           try {
-            const streamName = queueItem.abortStreamName;
-            if (!streamName) {
-              throw new Error(
-                'abortStreamName missing on queue item — abort-controller.ts must set this field'
-              );
-            }
+            const streamName = getAbortStreamIdFromToken(queueItem.token);
             await world.streams.write(
               runId,
               streamName,

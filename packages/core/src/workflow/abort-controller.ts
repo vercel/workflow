@@ -22,6 +22,18 @@ class WorkflowAbortSignal {
   readonly [ABORT_HOOK_TOKEN]: string;
 
   #listeners: Array<() => void> = [];
+  #onabort: ((this: WorkflowAbortSignal) => void) | null = null;
+
+  get onabort(): ((this: WorkflowAbortSignal) => void) | null {
+    return this.#onabort;
+  }
+
+  set onabort(handler: ((this: WorkflowAbortSignal) => void) | null) {
+    this.#onabort = handler;
+    if (handler && this.aborted) {
+      handler.call(this);
+    }
+  }
 
   constructor(streamName: string, hookToken: string) {
     this[ABORT_STREAM_NAME] = streamName;
@@ -37,6 +49,9 @@ class WorkflowAbortSignal {
     if (this.aborted) return;
     this.aborted = true;
     this.reason = reason;
+    if (this.#onabort) {
+      this.#onabort.call(this);
+    }
     for (const listener of this.#listeners) {
       listener();
     }
@@ -107,7 +122,6 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
         token: hookToken,
         isWebhook: false,
         isSystem: true,
-        abortStreamName: streamName,
       });
 
       // Subscribe to events for this hook's lifecycle

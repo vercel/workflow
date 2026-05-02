@@ -22,8 +22,6 @@ export interface HookInvocationQueueItem {
   isSystem?: boolean;
   abortRequested?: boolean;
   abortReason?: unknown;
-  /** Stream name for real-time abort propagation, set by abort-controller hooks. */
-  abortStreamName?: string;
 }
 
 export interface WaitInvocationQueueItem {

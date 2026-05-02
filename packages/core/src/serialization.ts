@@ -51,6 +51,7 @@ import { contextStorage } from './step/context-storage.js';
 import {
   ABORT_HOOK_TOKEN,
   ABORT_LISTENER_ATTACHED,
+  ABORT_READER_CANCEL,
   ABORT_STREAM_NAME,
   BODY_INIT_SYMBOL,
   STABLE_ULID,
@@ -503,10 +504,19 @@ function getAllBaseReducers(
       if (responseWritable) {
         data.responseWritable = responseWritable;
       }
-      // Include signal if present and not the default stub
+      // Forward the signal in two cases:
+      //   1. Already aborted — preserve aborted=true/reason so the hydrated
+      //      step sees the cancellation that happened before serialize.
+      //   2. Already tagged with workflow infrastructure — i.e. a signal
+      //      from a workflow-managed AbortController, which has stream/hook
+      //      backing for cross-boundary propagation.
+      // Plain non-aborted native signals are intentionally dropped (would
+      // mint stream infra for every Request, including the auto-generated
+      // signal on `new Request(url)`).
       if (
         value.signal &&
-        (value.signal.aborted || (value.signal as any)[ABORT_STREAM_NAME])
+        (value.signal.aborted ||
+          (value.signal as AbortInternals)[ABORT_STREAM_NAME])
       ) {
         data.signal = value.signal;
       }
@@ -524,6 +534,97 @@ function getAllBaseReducers(
         redirected: value.redirected,
       };
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared abort reducer helpers
+// ---------------------------------------------------------------------------
+
+type AbortSerializedData = {
+  streamName: string;
+  hookToken: string;
+  aborted: boolean;
+  reason: unknown;
+};
+
+/**
+ * Symbol-keyed internal fields tagged onto AbortController/AbortSignal
+ * instances (and `holder`s in reducer helpers). All optional — a plain
+ * native instance has none of them set.
+ */
+type AbortInternals = {
+  [ABORT_STREAM_NAME]?: string;
+  [ABORT_HOOK_TOKEN]?: string;
+  [ABORT_READER_CANCEL]?: AbortController;
+};
+
+type AbortSignalLike = AbortInternals & {
+  aborted: boolean;
+  reason?: unknown;
+  addEventListener?: Function;
+};
+
+type AbortHolder = AbortInternals & { signal?: AbortInternals };
+
+/**
+ * Shared logic for AbortController/AbortSignal reducers in external and step
+ * contexts. Assigns stream/hook names if not already present, optionally
+ * attaches an abort listener for real-time propagation, and returns the
+ * serialized representation.
+ */
+function reduceAbortWithListener(
+  signal: AbortSignalLike,
+  holder: AbortHolder,
+  global: Record<string, any>,
+  ops: Promise<void>[],
+  runId: string
+): AbortSerializedData {
+  let streamName = holder[ABORT_STREAM_NAME];
+  let hookToken = holder[ABORT_HOOK_TOKEN];
+  if (!streamName) {
+    const id = ((global as any)[STABLE_ULID] || defaultUlid)();
+    streamName = getAbortStreamId(id);
+    hookToken = `abrt_${id}`;
+    holder[ABORT_STREAM_NAME] = streamName;
+    holder[ABORT_HOOK_TOKEN] = hookToken;
+    if (holder.signal) {
+      holder.signal[ABORT_STREAM_NAME] = streamName;
+      holder.signal[ABORT_HOOK_TOKEN] = hookToken;
+    }
+  }
+
+  // Deduped via ABORT_LISTENER_ATTACHED marker — see attachAbortListenerOnce.
+  attachAbortListenerOnce(signal as AbortSignal, streamName, runId, ops);
+
+  return {
+    streamName,
+    hookToken: hookToken!,
+    aborted: signal.aborted,
+    reason: signal.aborted ? signal.reason : undefined,
+  };
+}
+
+/**
+ * Shared logic for AbortController/AbortSignal reducers in workflow context.
+ * Reads existing stream/hook names from symbols (must already be set).
+ */
+function reduceAbortBySymbol(
+  signal: { aborted: boolean; reason?: unknown },
+  holder: AbortHolder
+): AbortSerializedData | false {
+  const streamName =
+    holder[ABORT_STREAM_NAME] ?? holder.signal?.[ABORT_STREAM_NAME];
+  const hookToken =
+    holder[ABORT_HOOK_TOKEN] ?? holder.signal?.[ABORT_HOOK_TOKEN];
+  if (!streamName) {
+    throw new Error('AbortController/AbortSignal stream name is not set');
+  }
+  return {
+    streamName,
+    hookToken: hookToken!,
+    aborted: signal.aborted,
+    reason: signal.aborted ? signal.reason : undefined,
   };
 }
 
@@ -628,28 +729,7 @@ export function getExternalReducers(
         !(value instanceof global.AbortController)
       )
         return false;
-
-      // Reuse existing names if already serialized (dedup)
-      let streamName = (value as any)[ABORT_STREAM_NAME];
-      let hookToken = (value as any)[ABORT_HOOK_TOKEN];
-      if (!streamName) {
-        const id = ((global as any)[STABLE_ULID] || defaultUlid)();
-        streamName = getAbortStreamId(id);
-        hookToken = `abrt_${id}`;
-        (value as any)[ABORT_STREAM_NAME] = streamName;
-        (value as any)[ABORT_HOOK_TOKEN] = hookToken;
-        (value.signal as any)[ABORT_STREAM_NAME] = streamName;
-        (value.signal as any)[ABORT_HOOK_TOKEN] = hookToken;
-      }
-
-      attachAbortListenerOnce(value.signal, streamName, runId, ops);
-
-      return {
-        streamName,
-        hookToken,
-        aborted: value.signal.aborted,
-        reason: value.signal.aborted ? value.signal.reason : undefined,
-      };
+      return reduceAbortWithListener(value.signal, value, global, ops, runId);
     },
 
     AbortSignal: (value) => {
@@ -659,25 +739,7 @@ export function getExternalReducers(
         !(value instanceof global.AbortSignal)
       )
         return false;
-
-      let streamName = (value as any)[ABORT_STREAM_NAME];
-      let hookToken = (value as any)[ABORT_HOOK_TOKEN];
-      if (!streamName) {
-        const id = ((global as any)[STABLE_ULID] || defaultUlid)();
-        streamName = getAbortStreamId(id);
-        hookToken = `abrt_${id}`;
-        (value as any)[ABORT_STREAM_NAME] = streamName;
-        (value as any)[ABORT_HOOK_TOKEN] = hookToken;
-      }
-
-      attachAbortListenerOnce(value, streamName, runId, ops);
-
-      return {
-        streamName,
-        hookToken,
-        aborted: value.aborted,
-        reason: value.aborted ? value.reason : undefined,
-      };
+      return reduceAbortWithListener(value, value, global, ops, runId);
     },
   };
 }
@@ -731,50 +793,26 @@ export function getWorkflowReducers(
     // is a plain object (not a class), so instanceof checks won't work for signals.
     // Detect instances by the presence of the ABORT_STREAM_NAME symbol instead.
     AbortController: (value) => {
-      // Must have a .signal property to be a controller (not a signal)
       if (!value || !value.signal) return false;
+      const holder = value as AbortController & AbortHolder;
       const hasAbortSymbol =
-        (value as any)[ABORT_STREAM_NAME] ||
-        (value as any).signal?.[ABORT_STREAM_NAME];
+        holder[ABORT_STREAM_NAME] ?? holder.signal?.[ABORT_STREAM_NAME];
       const isNativeAbortController =
         global.AbortController &&
         typeof global.AbortController === 'function' &&
         value instanceof global.AbortController;
       if (!hasAbortSymbol && !isNativeAbortController) return false;
-      const streamName =
-        (value as any)[ABORT_STREAM_NAME] ||
-        (value.signal as any)?.[ABORT_STREAM_NAME];
-      const hookToken =
-        (value as any)[ABORT_HOOK_TOKEN] ||
-        (value.signal as any)?.[ABORT_HOOK_TOKEN];
-      if (!streamName) {
-        throw new Error('AbortController stream name is not set');
-      }
-      return {
-        streamName,
-        hookToken,
-        aborted: value.signal.aborted,
-        reason: value.signal.aborted ? value.signal.reason : undefined,
-      };
+      return reduceAbortBySymbol(value.signal, holder);
     },
     AbortSignal: (value) => {
-      const hasAbortSymbol = value && (value as any)[ABORT_STREAM_NAME];
+      const signal = value as (AbortSignal & AbortInternals) | undefined;
+      const hasAbortSymbol = signal && signal[ABORT_STREAM_NAME];
       const isNativeAbortSignal =
         global.AbortSignal &&
         typeof global.AbortSignal === 'function' &&
         value instanceof global.AbortSignal;
       if (!hasAbortSymbol && !isNativeAbortSignal) return false;
-      const streamName = (value as any)[ABORT_STREAM_NAME];
-      const hookToken = (value as any)[ABORT_HOOK_TOKEN];
-      if (!streamName) {
-        throw new Error('AbortSignal stream name is not set');
-      }
-      return {
-        streamName,
-        hookToken,
-        aborted: value.aborted,
-        reason: value.aborted ? value.reason : undefined,
-      };
+      return reduceAbortBySymbol(value, value as AbortHolder);
     },
   };
 }
@@ -867,27 +905,7 @@ function getStepReducers(
         !(value instanceof global.AbortController)
       )
         return false;
-
-      let streamName = (value as any)[ABORT_STREAM_NAME];
-      let hookToken = (value as any)[ABORT_HOOK_TOKEN];
-      if (!streamName) {
-        const id = ((global as any)[STABLE_ULID] || defaultUlid)();
-        streamName = getAbortStreamId(id);
-        hookToken = `abrt_${id}`;
-        (value as any)[ABORT_STREAM_NAME] = streamName;
-        (value as any)[ABORT_HOOK_TOKEN] = hookToken;
-        (value.signal as any)[ABORT_STREAM_NAME] = streamName;
-        (value.signal as any)[ABORT_HOOK_TOKEN] = hookToken;
-      }
-
-      attachAbortListenerOnce(value.signal, streamName, runId, ops);
-
-      return {
-        streamName,
-        hookToken,
-        aborted: value.signal.aborted,
-        reason: value.signal.aborted ? value.signal.reason : undefined,
-      };
+      return reduceAbortWithListener(value.signal, value, global, ops, runId);
     },
 
     AbortSignal: (value) => {
@@ -897,27 +915,151 @@ function getStepReducers(
         !(value instanceof global.AbortSignal)
       )
         return false;
-
-      let streamName = (value as any)[ABORT_STREAM_NAME];
-      let hookToken = (value as any)[ABORT_HOOK_TOKEN];
-      if (!streamName) {
-        const id = ((global as any)[STABLE_ULID] || defaultUlid)();
-        streamName = getAbortStreamId(id);
-        hookToken = `abrt_${id}`;
-        (value as any)[ABORT_STREAM_NAME] = streamName;
-        (value as any)[ABORT_HOOK_TOKEN] = hookToken;
-      }
-
-      attachAbortListenerOnce(value, streamName, runId, ops);
-
-      return {
-        streamName,
-        hookToken,
-        aborted: value.aborted,
-        reason: value.aborted ? value.reason : undefined,
-      };
+      return reduceAbortWithListener(value, value, global, ops, runId);
     },
   };
+}
+
+/**
+ * Cancel dangling abort-stream readers on any AbortController instances found
+ * in the hydrated step arguments. Called after the step function returns
+ * (success or failure) to prevent reader promises from keeping the serverless
+ * function alive indefinitely.
+ */
+export function cancelAbortReaders(...values: unknown[]): void {
+  const visited = new WeakSet();
+  function cancelIfPresent(val: AbortInternals): void {
+    const cancel = val[ABORT_READER_CANCEL];
+    if (cancel && !cancel.signal.aborted) {
+      cancel.abort();
+    }
+  }
+  function walk(val: unknown): void {
+    if (val == null || typeof val !== 'object') return;
+    if (visited.has(val as object)) return;
+    visited.add(val as object);
+    if (val instanceof AbortController) {
+      cancelIfPresent(val as AbortController & AbortInternals);
+      cancelIfPresent(val.signal as AbortSignal & AbortInternals);
+      return;
+    }
+    if (val instanceof AbortSignal) {
+      cancelIfPresent(val as AbortSignal & AbortInternals);
+      return;
+    }
+    if (Array.isArray(val)) {
+      for (const item of val) walk(item);
+      return;
+    }
+    if (val instanceof Map) {
+      for (const v of val.values()) walk(v);
+      return;
+    }
+    if (val instanceof Set) {
+      for (const v of val) walk(v);
+      return;
+    }
+    // Request/Response expose `signal`/`body` as prototype getters, so
+    // Object.values() won't find them. Descend explicitly.
+    if (typeof Request !== 'undefined' && val instanceof Request) {
+      walk(val.signal);
+      return;
+    }
+    for (const v of Object.values(val as Record<string, unknown>)) walk(v);
+  }
+  for (const v of values) walk(v);
+}
+
+/**
+ * Sets up a stream reader on the controller that listens for an abort packet.
+ * Returns the readerCancel controller so it can be stored on both the
+ * controller and signal for cleanup by cancelAbortReaders.
+ */
+function setupAbortStreamReader(
+  controller: AbortController,
+  runId: string,
+  streamName: string,
+  ops: Promise<void>[]
+): AbortController {
+  const readerCancel = new AbortController();
+
+  ops.push(
+    (async () => {
+      try {
+        const readable = new WorkflowServerReadableStream(runId, streamName);
+        const reader = readable.getReader();
+        const result = await Promise.race([
+          reader.read(),
+          new Promise<{ value: undefined; done: true }>((resolve) => {
+            if (readerCancel.signal.aborted) {
+              resolve({ value: undefined, done: true });
+              return;
+            }
+            readerCancel.signal.addEventListener(
+              'abort',
+              () => resolve({ value: undefined, done: true }),
+              { once: true }
+            );
+          }),
+        ]);
+        reader.releaseLock();
+        if (result.value && !result.done) {
+          try {
+            const data = JSON.parse(new TextDecoder().decode(result.value));
+            controller.abort(data.reason);
+          } catch {
+            controller.abort();
+          }
+        }
+      } catch {
+        // Stream read failed — signal won't propagate in real-time,
+        // but hook-based propagation on next replay provides fallback
+      }
+    })()
+  );
+
+  return readerCancel;
+}
+
+/**
+ * Stores abort serialization symbols and the readerCancel controller
+ * on both the controller and its signal.
+ */
+function tagAbortPair(
+  controller: AbortController,
+  value: { streamName: string; hookToken: string },
+  readerCancel?: AbortController
+): void {
+  const taggedController = controller as AbortController & AbortInternals;
+  const taggedSignal = controller.signal as AbortSignal & AbortInternals;
+  taggedController[ABORT_STREAM_NAME] = value.streamName;
+  taggedController[ABORT_HOOK_TOKEN] = value.hookToken;
+  taggedSignal[ABORT_STREAM_NAME] = value.streamName;
+  taggedSignal[ABORT_HOOK_TOKEN] = value.hookToken;
+  if (readerCancel) {
+    taggedController[ABORT_READER_CANCEL] = readerCancel;
+    taggedSignal[ABORT_READER_CANCEL] = readerCancel;
+  }
+}
+
+/**
+ * Propagate abort-internal symbols from one signal to another. Used by the
+ * Request reviver because `new Request(url, { signal })` copies the signal
+ * internally — the constructed `request.signal` is a fresh AbortSignal that
+ * doesn't carry symbols from the source.
+ */
+function copyAbortInternals(src: AbortSignal, dest: AbortSignal): void {
+  const s = src as AbortSignal & AbortInternals;
+  const d = dest as AbortSignal & AbortInternals;
+  if (s[ABORT_STREAM_NAME] !== undefined) {
+    d[ABORT_STREAM_NAME] = s[ABORT_STREAM_NAME];
+  }
+  if (s[ABORT_HOOK_TOKEN] !== undefined) {
+    d[ABORT_HOOK_TOKEN] = s[ABORT_HOOK_TOKEN];
+  }
+  if (s[ABORT_READER_CANCEL] !== undefined) {
+    d[ABORT_READER_CANCEL] = s[ABORT_READER_CANCEL];
+  }
 }
 
 /**
@@ -936,51 +1078,29 @@ function reviveAbortController(
 ): AbortController {
   const controller = new AbortController();
 
-  // Store symbols for re-serialization
-  (controller as any)[ABORT_STREAM_NAME] = value.streamName;
-  (controller as any)[ABORT_HOOK_TOKEN] = value.hookToken;
-  (controller.signal as any)[ABORT_STREAM_NAME] = value.streamName;
-  (controller.signal as any)[ABORT_HOOK_TOKEN] = value.hookToken;
-
   if (value.aborted) {
+    tagAbortPair(controller, value);
     controller.abort(value.reason);
   } else if (value.streamName) {
-    // Set up stream reader for real-time abort propagation
-    ops.push(
-      (async () => {
-        try {
-          const readable = new WorkflowServerReadableStream(
-            runId,
-            value.streamName
-          );
-          const reader = readable.getReader();
-          const result = await reader.read();
-          reader.releaseLock();
-          if (result.value && !result.done) {
-            try {
-              const data = JSON.parse(new TextDecoder().decode(result.value));
-              controller.abort(data.reason);
-            } catch {
-              controller.abort();
-            }
-          }
-        } catch {
-          // Stream read failed — signal won't propagate in real-time,
-          // but hook-based propagation on next replay provides fallback
-        }
-      })()
+    const readerCancel = setupAbortStreamReader(
+      controller,
+      runId,
+      value.streamName,
+      ops
     );
+    tagAbortPair(controller, value, readerCancel);
+  } else {
+    tagAbortPair(controller, value);
   }
 
   // Override abort() to also write stream + resume hook (for step-initiated abort)
   const originalAbort = controller.abort.bind(controller);
   controller.abort = (reason?: unknown) => {
-    if (controller.signal.aborted) return; // already aborted
+    if (controller.signal.aborted) return;
     originalAbort(reason);
 
     const ctx = contextStorage.getStore();
     if (ctx) {
-      // Write stream cancellation packet
       ctx.ops.push(
         (async () => {
           try {
@@ -999,7 +1119,6 @@ function reviveAbortController(
         })()
       );
 
-      // Resume the internal hook so the workflow sees the abort on replay
       if (value.hookToken) {
         ctx.ops.push(
           (async () => {
@@ -1021,6 +1140,35 @@ function reviveAbortController(
   };
 
   return controller;
+}
+
+/**
+ * Revives just an AbortSignal without the patched abort() overhead.
+ * Used when only a signal (not a controller) was serialized.
+ */
+function reviveAbortSignal(
+  value: SerializableSpecial['AbortSignal'],
+  ops: Promise<void>[],
+  runId: string
+): AbortSignal {
+  const controller = new AbortController();
+
+  if (value.aborted) {
+    tagAbortPair(controller, value);
+    controller.abort(value.reason);
+  } else if (value.streamName) {
+    const readerCancel = setupAbortStreamReader(
+      controller,
+      runId,
+      value.streamName,
+      ops
+    );
+    tagAbortPair(controller, value, readerCancel);
+  } else {
+    tagAbortPair(controller, value);
+  }
+
+  return controller.signal;
 }
 
 /**
@@ -1078,7 +1226,12 @@ export function getExternalRevivers(
         duplex: value.duplex,
       };
       if (value.signal) init.signal = value.signal;
-      return new global.Request(value.url, init);
+      const request = new global.Request(value.url, init);
+      // The Request constructor creates an internal signal copy, so the
+      // abort-internal symbols set by reviveAbortSignal don't propagate.
+      // Re-tag the request's own signal so cancelAbortReaders can find it.
+      if (value.signal) copyAbortInternals(value.signal, request.signal);
+      return request;
     },
     Response: (value) => {
       // Note: Response constructor only accepts status, statusText, and headers
@@ -1167,7 +1320,7 @@ export function getExternalRevivers(
     },
 
     AbortController: (value) => reviveAbortController(value, ops, runId),
-    AbortSignal: (value) => reviveAbortController(value, ops, runId).signal,
+    AbortSignal: (value) => reviveAbortSignal(value, ops, runId),
   };
 }
 
@@ -1391,6 +1544,10 @@ function getStepRevivers(
       };
       if (value.signal) init.signal = value.signal;
       const request = new global.Request(value.url, init);
+      // The Request constructor creates an internal signal copy, so the
+      // abort-internal symbols set by reviveAbortSignal don't propagate.
+      // Re-tag the request's own signal so cancelAbortReaders can find it.
+      if (value.signal) copyAbortInternals(value.signal, request.signal);
       if (responseWritable) {
         request.respondWith = async (response: Response) => {
           const writer = responseWritable.getWriter();
@@ -1483,7 +1640,7 @@ function getStepRevivers(
     },
 
     AbortController: (value) => reviveAbortController(value, ops, runId),
-    AbortSignal: (value) => reviveAbortController(value, ops, runId).signal,
+    AbortSignal: (value) => reviveAbortSignal(value, ops, runId),
   };
 }
 
@@ -1764,6 +1921,12 @@ const STREAM_AND_REQUEST_KEYS = [
   'Request',
   'Response',
   'StepFunction',
+  // Wire AbortController/AbortSignal through the client serialization path so
+  // signals reachable via Request.signal (or as direct arguments) get their
+  // dedicated reducer. Without this, devalue falls back to its arbitrary-POJO
+  // path and fails for any signal the Request reducer forwards.
+  'AbortController',
+  'AbortSignal',
 ] as const;
 
 function getStreamAndRequestReducers(
