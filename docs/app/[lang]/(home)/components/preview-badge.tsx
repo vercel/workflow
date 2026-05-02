@@ -16,6 +16,7 @@ import {
 
 type PreviewBadgeProps = {
   deploymentUrl: string;
+  tarballsUrl: string;
 };
 
 function CopyButton({ text }: { text: string }) {
@@ -65,8 +66,8 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-export function PreviewBadge({ deploymentUrl }: PreviewBadgeProps) {
-  const baseUrl = deploymentUrl.replace(/\/$/, '');
+export function PreviewBadge({ deploymentUrl, tarballsUrl }: PreviewBadgeProps) {
+  const baseUrl = (tarballsUrl || deploymentUrl).replace(/\/$/, '');
   const installCmd = `pnpm i ${baseUrl}/workflow.tgz`;
   const npxCmd = `npx workflow@${baseUrl}/workflow.tgz web`;
 
