@@ -276,6 +276,14 @@ describe('Storage', () => {
         expect(updated.error?.message).toBe('Something went wrong');
         expect(updated.completedAt).toBeInstanceOf(Date);
       });
+
+      it('should reject run_failed on non-existent run', async () => {
+        await expect(
+          updateRun(storage, 'wrun_nonexistent', 'run_failed', {
+            error: 'Something went wrong',
+          })
+        ).rejects.toMatchObject({ name: 'WorkflowRunNotFoundError' });
+      });
     });
 
     describe('list', () => {

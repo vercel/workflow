@@ -1,34 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { getHeaders, getHttpUrl, getProtectionBypassHeader } from './utils.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getHeaders, getHttpConfig, getHttpUrl } from './utils.js';
 
-describe('getProtectionBypassHeader', () => {
-  const originalEnv = process.env;
-
-  beforeEach(() => {
-    process.env = { ...originalEnv };
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-  });
-
-  it('returns empty object when env var is unset', () => {
-    delete process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
-    expect(getProtectionBypassHeader()).toEqual({});
-  });
-
-  it('returns empty object when env var is empty', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS = '';
-    expect(getProtectionBypassHeader()).toEqual({});
-  });
-
-  it('returns x-vercel-protection-bypass header when env var is set', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS = 'my-bypass-secret';
-    expect(getProtectionBypassHeader()).toEqual({
-      'x-vercel-protection-bypass': 'my-bypass-secret',
-    });
-  });
-});
+vi.mock('@vercel/oidc', () => ({
+  getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
+}));
 
 describe('getHttpUrl', () => {
   const originalEnv = process.env;
@@ -88,22 +63,17 @@ describe('getHeaders', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
-    delete process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
+    delete process.env.VERCEL_OIDC_TOKEN;
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
-  it('omits x-vercel-protection-bypass when env var is unset', () => {
+  it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig)', () => {
+    process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
     const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-vercel-protection-bypass')).toBeNull();
-  });
-
-  it('sets x-vercel-protection-bypass when env var is set', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS = 'my-secret';
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-vercel-protection-bypass')).toBe('my-secret');
+    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
   });
 
   it('omits x-vercel-workflow-api-url when override is unset', () => {
@@ -140,5 +110,39 @@ describe('getHeaders', () => {
     expect(headers.get('x-vercel-project-id')).toBe('prj_123');
     expect(headers.get('x-vercel-team-id')).toBe('team_456');
     expect(headers.get('x-vercel-environment')).toBe('preview');
+  });
+});
+
+describe('getHttpConfig (proxied path)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_WORKFLOW_SERVER_URL;
+    delete process.env.VERCEL_OIDC_TOKEN;
+    delete process.env.WORKFLOW_VERCEL_BACKEND_URL;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('throws when usingProxy and no config.token is provided', async () => {
+    await expect(
+      getHttpConfig({
+        projectConfig: { projectId: 'prj_123', teamId: 'team_456' },
+      })
+    ).rejects.toThrow(/no Vercel auth token was provided/);
+  });
+
+  it('attaches Authorization bearer when usingProxy and config.token is provided', async () => {
+    const { headers } = await getHttpConfig({
+      projectConfig: { projectId: 'prj_123', teamId: 'team_456' },
+      token: 'my-vercel-auth-token',
+    });
+    expect(headers.get('Authorization')).toBe('Bearer my-vercel-auth-token');
+    // The trusted-sources bypass header is meaningless on the proxied
+    // path (api.vercel.com is public) and must NOT be attached.
+    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
   });
 });

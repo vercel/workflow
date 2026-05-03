@@ -2,8 +2,15 @@ import type { Storage } from '@workflow/world';
 import { instrumentObject } from '../instrumentObject.js';
 import { createEventsStorage } from './events-storage.js';
 import { createHooksStorage } from './hooks-storage.js';
-import { createRunsStorage } from './runs-storage.js';
+import { createRunsStorage, type LocalRunsStorage } from './runs-storage.js';
 import { createStepsStorage } from './steps-storage.js';
+
+/**
+ * Storage shape used inside world-local: identical to `Storage`, but `runs`
+ * exposes the internal `fileIdFilter` option on `list()`. Structurally
+ * assignable to `Storage` at public boundaries (e.g., `reenqueueActiveRuns`).
+ */
+export type LocalStorage = Omit<Storage, 'runs'> & { runs: LocalRunsStorage };
 
 /**
  * Creates a complete storage implementation using the filesystem.
@@ -14,21 +21,19 @@ import { createStepsStorage } from './steps-storage.js';
  * @param basedir - The base directory for storing workflow data
  * @returns A complete Storage implementation with tracing
  */
-export function createStorage(basedir: string, tag?: string): Storage {
+export function createStorage(basedir: string, tag?: string): LocalStorage {
   // Create raw storage implementations
-  const storage: Storage = {
-    runs: createRunsStorage(basedir, tag),
-    steps: createStepsStorage(basedir, tag),
-    events: createEventsStorage(basedir, tag),
-    hooks: createHooksStorage(basedir, tag),
-  };
+  const runs = createRunsStorage(basedir, tag);
+  const steps = createStepsStorage(basedir, tag);
+  const events = createEventsStorage(basedir, tag);
+  const hooks = createHooksStorage(basedir, tag);
 
   // Instrument all storage methods with tracing
   // NOTE: Span names are lowercase per OTEL semantic conventions
   return {
-    runs: instrumentObject('world.runs', storage.runs),
-    steps: instrumentObject('world.steps', storage.steps),
-    events: instrumentObject('world.events', storage.events),
-    hooks: instrumentObject('world.hooks', storage.hooks),
+    runs: instrumentObject('world.runs', runs),
+    steps: instrumentObject('world.steps', steps),
+    events: instrumentObject('world.events', events),
+    hooks: instrumentObject('world.hooks', hooks),
   };
 }
