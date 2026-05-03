@@ -1,5 +1,4 @@
 ---
-"@workflow/core": patch
 ---
 
 Add TanStack Start workbench app and getting-started guide. The existing
