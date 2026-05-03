@@ -19,7 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      id-token: write
       contents: read
       deployments: read
     env:
@@ -51,11 +50,10 @@ jobs:
           environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
 
       - name: Verify tarball endpoints
+        # The tarballs project must be publicly accessible (no Deployment
+        # Protection) so that pnpm/npm can install from preview URLs.
+        # The smoke checks make unauthenticated requests and fail loudly
+        # if a login redirect or non-2xx response is returned.
         run: pnpm --filter tarballs test:smoke
         env:
           DEPLOYMENT_URL: ${{ steps.waitForTarballsDeployment.outputs.deployment-url }}
-          # Trusted-sources OIDC token is minted on demand by
-          # scripts/trusted-sources-headers.mjs via the runner's
-          # ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars (auto-set when
-          # `permissions: id-token: write` is on the job).
-          # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources

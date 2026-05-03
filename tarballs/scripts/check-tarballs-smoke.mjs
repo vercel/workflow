@@ -1,16 +1,15 @@
 /**
  * Tarballs smoke checks.
  *
- * Validates that the deployed tarballs project is serving the expected
- * `*.tgz` files at the project root with valid gzip signature bytes.
+ * Validates that the deployed tarballs project is publicly accessible
+ * (no Vercel Deployment Protection) and serving the expected `*.tgz`
+ * files with a valid gzip signature. The project must be publicly
+ * reachable for `pnpm install` to fetch tarball URLs from a third-party
+ * project, so the smoke checks make no attempt to send a bypass token —
+ * if a check fails behind a login redirect, the project is misconfigured.
  *
- * Requires DEPLOYMENT_URL to point at the tarballs deployment. If the
- * deployment is behind Vercel Deployment Protection, the OIDC trusted
- * sources headers minted by `scripts/trusted-sources-headers.mjs` are
- * used to bypass it.
+ * Requires DEPLOYMENT_URL to point at the tarballs deployment.
  */
-
-import { getTrustedSourcesHeaders } from '../../scripts/trusted-sources-headers.mjs';
 
 const rawBaseUrl = process.env.DEPLOYMENT_URL || '';
 if (!rawBaseUrl) {
@@ -24,10 +23,7 @@ const BASE_URL = rawBaseUrl.startsWith('http')
 const GZIP_SIGNATURE = [0x1f, 0x8b];
 
 const assertNoProtection = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    redirect: 'manual',
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetch(`${BASE_URL}${path}`, { redirect: 'manual' });
   const location = res.headers.get('location') || '';
   if (
     res.status === 307 &&
@@ -35,15 +31,13 @@ const assertNoProtection = async (path) => {
       location.includes('/_vercel/login'))
   ) {
     throw new Error(
-      `${path} redirected to Vercel login; check deployment protection/bypass`
+      `${path} redirected to Vercel login — the tarballs project must be publicly accessible (disable Deployment Protection)`
     );
   }
 };
 
 const assertTgzResponse = async (path) => {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: await getTrustedSourcesHeaders(),
-  });
+  const res = await fetch(`${BASE_URL}${path}`);
   if (!res.ok) {
     throw new Error(`${path} returned ${res.status}`);
   }
@@ -55,10 +49,25 @@ const assertTgzResponse = async (path) => {
   }
 };
 
+const assertHtmlResponse = async (path) => {
+  const res = await fetch(`${BASE_URL}${path}`);
+  if (!res.ok) {
+    throw new Error(`${path} returned ${res.status}`);
+  }
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('text/html')) {
+    throw new Error(`${path} content-type was ${contentType}`);
+  }
+};
+
 const checks = [
   {
     name: 'Deployment protection',
     run: () => assertNoProtection('/workflow.tgz'),
+  },
+  {
+    name: 'Index page',
+    run: () => assertHtmlResponse('/'),
   },
   {
     name: 'Tarball - workflow',
