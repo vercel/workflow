@@ -590,6 +590,71 @@ describe('fs utilities', () => {
         assert(result.data[0], 'expected first result to be defined');
         expect(result.data[0].name).toBe('prefixed-1');
       });
+
+      it('keeps fileIdFilter applied on later cursor pages', async () => {
+        const pageDir = await fs.mkdtemp(
+          path.join(os.tmpdir(), 'fileid-filter-pagination-')
+        );
+        const baseTime = new Date('2024-01-01T00:00:00.000Z').getTime();
+        const ulidAfter = createUlidAfter(baseTime);
+
+        try {
+          const files: Record<string, object> = {};
+          for (let i = 0; i < 5; i++) {
+            const fileId = `match_${ulidAfter(`${i}m`)}`;
+            files[fileId] = {
+              id: fileId,
+              name: `match-${i}`,
+              createdAt: new Date(baseTime + ms(`${i}m`)),
+            };
+          }
+
+          for (let i = 5; i < 8; i++) {
+            const fileId = `other_${ulidAfter(`${i}m`)}`;
+            files[fileId] = {
+              id: fileId,
+              name: `other-${i}`,
+              createdAt: new Date(baseTime + ms(`${i}m`)),
+            };
+          }
+
+          await createFilesystem(pageDir, files);
+
+          const firstPage = await paginatedFileSystemQuery({
+            directory: pageDir,
+            schema: TestItemSchema,
+            fileIdFilter: (fileId) => fileId.startsWith('match_'),
+            getCreatedAt: getPrefixCreatedAt,
+            getId: (item) => item.id,
+            limit: 2,
+            sortOrder: 'desc',
+          });
+
+          expect(firstPage.data).toHaveLength(2);
+          expect(
+            firstPage.data.every((item) => item.id.startsWith('match_'))
+          ).toBe(true);
+          assert(firstPage.cursor, 'expected first page cursor to be defined');
+
+          const secondPage = await paginatedFileSystemQuery({
+            directory: pageDir,
+            schema: TestItemSchema,
+            fileIdFilter: (fileId) => fileId.startsWith('match_'),
+            getCreatedAt: getPrefixCreatedAt,
+            getId: (item) => item.id,
+            limit: 2,
+            cursor: firstPage.cursor,
+            sortOrder: 'desc',
+          });
+
+          expect(secondPage.data).toHaveLength(2);
+          expect(
+            secondPage.data.every((item) => item.id.startsWith('match_'))
+          ).toBe(true);
+        } finally {
+          await fs.rm(pageDir, { recursive: true, force: true });
+        }
+      });
     });
 
     describe('error handling', () => {

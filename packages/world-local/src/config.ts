@@ -16,6 +16,12 @@ export type Config = {
   port?: number;
   baseUrl?: string;
   /**
+   * Whether start() should re-enqueue pending/running runs from storage.
+   * Defaults to true. Test harnesses that always start from a clean slate can
+   * disable recovery to avoid replaying stale runs.
+   */
+  recoverActiveRuns?: boolean;
+  /**
    * Optional tag to scope filesystem operations.
    * When set, files are written as `{id}.{tag}.json` and `clear()` only deletes
    * files matching this tag. Used by vitest to isolate test data in the shared

@@ -1,100 +1,9 @@
-import { WorkflowWorldError } from '@workflow/errors';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { z } from 'zod';
+import { getHeaders, getHttpConfig, getHttpUrl } from './utils.js';
 
-const { mockFetch } = vi.hoisted(() => ({
-  mockFetch: vi.fn(),
-}));
-vi.stubGlobal('fetch', mockFetch);
-vi.mock('./http-client.js', () => ({
-  getDispatcher: vi.fn().mockReturnValue({}),
-}));
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
 }));
-
-import {
-  getHeaders,
-  getHttpUrl,
-  getProtectionBypassHeader,
-  makeRequest,
-} from './utils.js';
-
-describe('makeRequest', () => {
-  const originalEnv = process.env;
-
-  beforeEach(() => {
-    process.env = { ...originalEnv };
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-    vi.restoreAllMocks();
-    mockFetch.mockReset();
-  });
-
-  it('converts AbortSignal.timeout TimeoutError into WorkflowWorldError', async () => {
-    const timeoutError = new Error('The operation was aborted due to timeout');
-    timeoutError.name = 'TimeoutError';
-    mockFetch.mockRejectedValueOnce(timeoutError);
-
-    const promise = makeRequest({
-      endpoint: '/runs/run_123',
-      options: { method: 'POST' },
-      config: { token: 'test-token' },
-      schema: z.object({ ok: z.boolean() }),
-    });
-
-    await expect(promise).rejects.toBeInstanceOf(WorkflowWorldError);
-    await expect(promise).rejects.toMatchObject({
-      message: expect.stringContaining('POST /runs/run_123 timed out after'),
-      cause: timeoutError,
-    });
-  });
-
-  it('does not wrap non-timeout fetch errors', async () => {
-    const networkError = new TypeError('fetch failed');
-    mockFetch.mockRejectedValueOnce(networkError);
-
-    const promise = makeRequest({
-      endpoint: '/runs/run_123',
-      options: { method: 'GET' },
-      config: { token: 'test-token' },
-      schema: z.object({ ok: z.boolean() }),
-    });
-
-    await expect(promise).rejects.toBe(networkError);
-  });
-});
-
-describe('getProtectionBypassHeader', () => {
-  const originalEnv = process.env;
-
-  beforeEach(() => {
-    process.env = { ...originalEnv };
-  });
-
-  afterEach(() => {
-    process.env = originalEnv;
-  });
-
-  it('returns empty object when env var is unset', () => {
-    delete process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
-    expect(getProtectionBypassHeader()).toEqual({});
-  });
-
-  it('returns empty object when env var is empty', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS = '';
-    expect(getProtectionBypassHeader()).toEqual({});
-  });
-
-  it('returns x-vercel-protection-bypass header when env var is set', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS = 'my-bypass-secret';
-    expect(getProtectionBypassHeader()).toEqual({
-      'x-vercel-protection-bypass': 'my-bypass-secret',
-    });
-  });
-});
 
 describe('getHttpUrl', () => {
   const originalEnv = process.env;
@@ -154,22 +63,17 @@ describe('getHeaders', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     delete process.env.VERCEL_WORKFLOW_SERVER_URL;
-    delete process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
+    delete process.env.VERCEL_OIDC_TOKEN;
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
-  it('omits x-vercel-protection-bypass when env var is unset', () => {
+  it('does not attach x-vercel-trusted-oidc-idp-token (set by getHttpConfig)', () => {
+    process.env.VERCEL_OIDC_TOKEN = 'my-oidc-token';
     const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-vercel-protection-bypass')).toBeNull();
-  });
-
-  it('sets x-vercel-protection-bypass when env var is set', () => {
-    process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS = 'my-secret';
-    const headers = getHeaders(undefined, { usingProxy: false });
-    expect(headers.get('x-vercel-protection-bypass')).toBe('my-secret');
+    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
   });
 
   it('omits x-vercel-workflow-api-url when override is unset', () => {
@@ -206,5 +110,39 @@ describe('getHeaders', () => {
     expect(headers.get('x-vercel-project-id')).toBe('prj_123');
     expect(headers.get('x-vercel-team-id')).toBe('team_456');
     expect(headers.get('x-vercel-environment')).toBe('preview');
+  });
+});
+
+describe('getHttpConfig (proxied path)', () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    process.env = { ...originalEnv };
+    delete process.env.VERCEL_WORKFLOW_SERVER_URL;
+    delete process.env.VERCEL_OIDC_TOKEN;
+    delete process.env.WORKFLOW_VERCEL_BACKEND_URL;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('throws when usingProxy and no config.token is provided', async () => {
+    await expect(
+      getHttpConfig({
+        projectConfig: { projectId: 'prj_123', teamId: 'team_456' },
+      })
+    ).rejects.toThrow(/no Vercel auth token was provided/);
+  });
+
+  it('attaches Authorization bearer when usingProxy and config.token is provided', async () => {
+    const { headers } = await getHttpConfig({
+      projectConfig: { projectId: 'prj_123', teamId: 'team_456' },
+      token: 'my-vercel-auth-token',
+    });
+    expect(headers.get('Authorization')).toBe('Bearer my-vercel-auth-token');
+    // The trusted-sources bypass header is meaningless on the proxied
+    // path (api.vercel.com is public) and must NOT be attached.
+    expect(headers.get('x-vercel-trusted-oidc-idp-token')).toBeNull();
   });
 });
