@@ -181,19 +181,26 @@ export function getCommonReducers(
       const valid = !Number.isNaN(value.getDate());
       return valid ? value.toISOString() : '.';
     },
-    // DOMException is a special case: in Node.js it passes isNativeError()
-    // and instanceof Error, but has a unique constructor signature
-    // (message, name) and a read-only numeric `code` property derived from
-    // `name`. It must be checked before the generic Error reducer.
+    // DOMException is a special case: it `instanceof Error` is true in Node,
+    // but `types.isNativeError()` returns FALSE for it, so the generic Error
+    // reducer (which gates on isNativeError) won't match. Check it explicitly
+    // by constructor name + Error inheritance so we catch DOMExceptions from
+    // any realm (cross-VM safety: instanceof global.DOMException would fail
+    // for instances minted in another context).
     DOMException: (value) => {
-      if (!types.isNativeError(value)) return false;
-      if (value.constructor?.name !== 'DOMException') return false;
+      if (value === null || typeof value !== 'object') return false;
+      if (
+        (value as { constructor?: { name?: string } }).constructor?.name !==
+        'DOMException'
+      )
+        return false;
+      const e = value as Error & { cause?: unknown };
       const reduced: SerializableSpecial['DOMException'] = {
-        message: value.message,
-        name: value.name,
-        stack: value.stack,
+        message: e.message,
+        name: e.name,
+        stack: e.stack,
       };
-      if ('cause' in value) reduced.cause = value.cause;
+      if ('cause' in e) reduced.cause = e.cause;
       return reduced;
     },
     // Error subclass reducers are intentionally placed before the base Error
