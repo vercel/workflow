@@ -102,7 +102,16 @@ DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest r
 # - WORKFLOW_VERCEL_TEAM: Vercel team ID (CI uses team_nO2mCG4W8IxPIeKoSsqwAxxB for labs)
 # - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...) — see test matrix
 # - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug — see test matrix
-# - VERCEL_AUTOMATION_BYPASS_SECRET: Deployment-protection bypass for the project
+# - VERCEL_OIDC_TOKEN:         Short-lived OIDC token used to bypass
+#                              deployment protection via Trusted Sources.
+#                              In CI this is auto-minted from the GitHub
+#                              Actions runner. Locally, run
+#                              `vercel env pull` from any workbench app's
+#                              directory and the resulting `.env.local`
+#                              will contain a `VERCEL_OIDC_TOKEN` value
+#                              that all workbench projects accept (they
+#                              are configured to trust each other under
+#                              `trustedSources.projects`).
 #
 # Example (nextjs-turbopack preview deployment):
 NODE_OPTIONS="--enable-source-maps" \
@@ -114,7 +123,7 @@ WORKFLOW_VERCEL_AUTH_TOKEN="<vercel_labs_token>" \
 WORKFLOW_VERCEL_TEAM="team_nO2mCG4W8IxPIeKoSsqwAxxB" \
 WORKFLOW_VERCEL_PROJECT="prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi" \
 WORKFLOW_VERCEL_PROJECT_SLUG="example-nextjs-workflow-turbopack" \
-VERCEL_AUTOMATION_BYPASS_SECRET="<bypass_secret>" \
+VERCEL_OIDC_TOKEN="$(grep VERCEL_OIDC_TOKEN workbench/nextjs-turbopack/.env.local | cut -d= -f2-)" \
 pnpm run test:e2e
 ```
 
