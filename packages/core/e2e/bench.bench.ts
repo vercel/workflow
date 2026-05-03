@@ -2,13 +2,10 @@ import { createVercelWorld } from '@workflow/world-vercel';
 import fs from 'fs';
 import path from 'path';
 import { bench, describe } from 'vitest';
+import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import { setWorld, start } from '../src/runtime';
-import {
-  getProtectionBypassHeaders,
-  getWorkbenchAppPath,
-  isLocalDeployment,
-} from './utils';
+import { getWorkbenchAppPath, isLocalDeployment } from './utils';
 
 const deploymentUrl = process.env.DEPLOYMENT_URL;
 if (!deploymentUrl) {
@@ -59,7 +56,7 @@ async function fetchManifest(): Promise<WorkflowManifest> {
   if (cachedManifest) return cachedManifest;
   const url = new URL('/.well-known/workflow/v1/manifest.json', deploymentUrl);
   const res = await fetch(url, {
-    headers: getProtectionBypassHeaders(),
+    headers: await getTrustedSourcesHeaders(),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {
