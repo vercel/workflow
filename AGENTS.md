@@ -87,14 +87,43 @@ pkill -f "pnpm dev"
 # To run specific tests, use the -t flag:
 DEPLOYMENT_URL="http://localhost:3000" APP_NAME="nextjs-turbopack" pnpm vitest run packages/core/e2e/e2e.test.ts -t "sleeping"
 
-# For production testing against deployed Vercel app:
-# See .github/workflows/tests.yml for required environment variables:
-# - DEPLOYMENT_URL: URL of deployed app
-# - APP_NAME: App name (example, nextjs-turbopack, nextjs-webpack, nitro)
-# - WORKFLOW_VERCEL_ENV: Environment (production or preview)
-# - WORKFLOW_VERCEL_AUTH_TOKEN: Vercel auth token
-# - WORKFLOW_VERCEL_TEAM: Vercel team ID
-# - WORKFLOW_VERCEL_PROJECT: Vercel project ID
+# For running E2E locally against a deployed Vercel preview/production app:
+# The test matrix in .github/workflows/tests.yml is the source of truth —
+# each app entry defines the project-id / project-slug needed below.
+#
+# Required environment variables (matches the CI `e2e-vercel-prod` job):
+# - DEPLOYMENT_URL: Full URL of the deployed app (e.g. a preview deployment URL)
+# - VERCEL_DEPLOYMENT_ID: The dpl_... ID of the deployment (get via `vercel inspect <url>`)
+# - APP_NAME: App name (example, nextjs-turbopack, nextjs-webpack, nitro, vite,
+#             nuxt, sveltekit, hono, express, fastify, astro)
+# - WORKFLOW_VERCEL_ENV: "preview" or "production"
+# - WORKFLOW_VERCEL_AUTH_TOKEN: Vercel auth token with access to the team
+# - WORKFLOW_VERCEL_TEAM: Vercel team ID (CI uses team_nO2mCG4W8IxPIeKoSsqwAxxB for labs)
+# - WORKFLOW_VERCEL_PROJECT: Vercel project ID (prj_...) — see test matrix
+# - WORKFLOW_VERCEL_PROJECT_SLUG: Vercel project slug — see test matrix
+# - VERCEL_OIDC_TOKEN:         Short-lived OIDC token used to bypass
+#                              deployment protection via Trusted Sources.
+#                              In CI this is auto-minted from the GitHub
+#                              Actions runner. Locally, run
+#                              `vercel env pull` from any workbench app's
+#                              directory and the resulting `.env.local`
+#                              will contain a `VERCEL_OIDC_TOKEN` value
+#                              that all workbench projects accept (they
+#                              are configured to trust each other under
+#                              `trustedSources.projects`).
+#
+# Example (nextjs-turbopack preview deployment):
+NODE_OPTIONS="--enable-source-maps" \
+DEPLOYMENT_URL="https://example-nextjs-workflow-turbopack-<hash>.labs.vercel.dev" \
+VERCEL_DEPLOYMENT_ID="dpl_..." \
+APP_NAME="nextjs-turbopack" \
+WORKFLOW_VERCEL_ENV="preview" \
+WORKFLOW_VERCEL_AUTH_TOKEN="<vercel_labs_token>" \
+WORKFLOW_VERCEL_TEAM="team_nO2mCG4W8IxPIeKoSsqwAxxB" \
+WORKFLOW_VERCEL_PROJECT="prj_yjkM7UdHliv8bfxZ1sMJQf1pMpdi" \
+WORKFLOW_VERCEL_PROJECT_SLUG="example-nextjs-workflow-turbopack" \
+VERCEL_OIDC_TOKEN="$(grep VERCEL_OIDC_TOKEN workbench/nextjs-turbopack/.env.local | cut -d= -f2-)" \
+pnpm run test:e2e
 ```
 
 ### Example App Development
