@@ -1,5 +1,11 @@
 import { describe, expect, test } from 'vitest';
-import { parseClassName, parseStepName, parseWorkflowName } from './parse-name';
+import {
+  formatStepName,
+  formatWorkflowName,
+  parseClassName,
+  parseStepName,
+  parseWorkflowName,
+} from './parse-name';
 
 describe('parseWorkflowName', () => {
   test('should parse a valid workflow name with relative path', () => {
@@ -217,5 +223,40 @@ describe('parseClassName', () => {
     expect(parseClassName('class//')).toBeNull();
     expect(parseClassName('step//path//fn')).toBeNull();
     expect(parseClassName('workflow//path//fn')).toBeNull();
+  });
+});
+
+describe('formatStepName / formatWorkflowName', () => {
+  test('renders a step with relative path as "shortName (moduleSpecifier)"', () => {
+    expect(formatStepName('step//./workflows/1_simple//add')).toBe(
+      'add (./workflows/1_simple)'
+    );
+  });
+
+  test('renders a workflow with relative path the same way', () => {
+    expect(formatWorkflowName('workflow//./workflows/1_simple//simple')).toBe(
+      'simple (./workflows/1_simple)'
+    );
+  });
+
+  test('renders a step with module specifier', () => {
+    expect(formatStepName('step//@myorg/tasks@2.0.0//processOrder')).toBe(
+      'processOrder (@myorg/tasks@2.0.0)'
+    );
+  });
+
+  test('nested functions use the leaf name', () => {
+    expect(
+      formatStepName('step//./workflows/order//processOrder/innerStep')
+    ).toBe('innerStep (./workflows/order)');
+  });
+
+  test('falls back to the raw name when the format is unrecognized', () => {
+    // Never silently drop information — if parsing fails the caller still
+    // gets something back that identifies the entity.
+    expect(formatStepName('something-weird')).toBe('something-weird');
+    expect(formatWorkflowName('step//wrong-tag//fn')).toBe(
+      'step//wrong-tag//fn'
+    );
   });
 });
