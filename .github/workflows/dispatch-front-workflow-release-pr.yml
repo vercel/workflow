@@ -3,9 +3,8 @@ name: Dispatch Front Workflow Release PR
 # DISABLED: This workflow dispatches to vercel/front (cross-repo) which
 # requires a GitHub App token. The Release App has been temporarily
 # removed, so this workflow is disabled (all jobs gated on `if: false`)
-# until the App is restored. See .github/workflows/release.yml and
-# .github/workflows/backport.yml, which have also been updated to no
-# longer rely on the Release App.
+# until the App is restored. See .github/workflows/release.yml, which
+# has also been updated to no longer rely on the Release App.
 on:
   pull_request:
     types: [opened, synchronize, reopened, closed]
