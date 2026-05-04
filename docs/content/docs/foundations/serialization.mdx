@@ -169,6 +169,39 @@ export async function fetch(...args: Parameters<typeof globalThis.fetch>) {
 
 This allows you to make HTTP requests directly in workflow functions while maintaining deterministic replay behavior through automatic caching.
 
+## AbortController & AbortSignal
+
+`AbortController` and `AbortSignal` are serializable types that enable cooperative cancellation across workflow and step boundaries. Inside a workflow function, `new AbortController()` creates a durable controller that works across suspensions and step boundaries:
+
+```typescript lineNumbers
+import { sleep } from "workflow";
+
+export async function cancellableWorkflow() {
+  "use workflow";
+
+  const controller = new AbortController(); // [!code highlight]
+
+  const result = await Promise.race([
+    fetchData(controller.signal), // [!code highlight]
+    sleep("10s").then(() => null),
+  ]);
+
+  if (result === null) {
+    controller.abort(); // [!code highlight]
+  }
+
+  return result;
+}
+
+async function fetchData(signal: AbortSignal) {
+  "use step";
+  const response = await fetch("https://api.example.com/data", { signal });
+  return response.json();
+}
+```
+
+For usage patterns including timeouts, parallel cancellation, user-triggered cancellation, and run cancellation, see the [Cancellation Guide](/docs/foundations/cancellation). For details on the hook and stream backing that makes this work, see [How Cancellation Works](/docs/how-it-works/cancellation).
+
 ## Custom Class Serialization
 
 By default, custom class instances cannot be serialized because the serialization system doesn't know how to reconstruct them. You can make your classes serializable by implementing two static methods using special symbols from the `@workflow/serde` package.
@@ -376,37 +409,3 @@ export async function processOrderWorkflow() {
 }
 ```
 
-## Pass-by-Value Semantics
-
-## AbortController & AbortSignal
-
-`AbortController` and `AbortSignal` are serializable types that enable cooperative cancellation across workflow and step boundaries. Inside a workflow function, `new AbortController()` creates a durable controller that works across suspensions and step boundaries:
-
-```typescript lineNumbers
-import { sleep } from "workflow";
-
-export async function cancellableWorkflow() {
-  "use workflow";
-
-  const controller = new AbortController(); // [!code highlight]
-
-  const result = await Promise.race([
-    fetchData(controller.signal), // [!code highlight]
-    sleep("10s").then(() => null),
-  ]);
-
-  if (result === null) {
-    controller.abort(); // [!code highlight]
-  }
-
-  return result;
-}
-
-async function fetchData(signal: AbortSignal) {
-  "use step";
-  const response = await fetch("https://api.example.com/data", { signal });
-  return response.json();
-}
-```
-
-For usage patterns including timeouts, parallel cancellation, user-triggered cancellation, and run cancellation, see the [Cancellation Guide](/docs/foundations/cancellation). For details on the hook and stream backing that makes this work, see [How Cancellation Works](/docs/how-it-works/cancellation).
