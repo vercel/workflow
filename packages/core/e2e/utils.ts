@@ -112,7 +112,7 @@ export function hasWorkflowSourceMaps(): boolean {
   // TODO: figure out how to get sourcemaps working in these frameworks too
   if (
     process.env.DEV_TEST_CONFIG &&
-    ['vite', 'astro', 'sveltekit'].includes(appName)
+    ['vite', 'astro', 'sveltekit', 'tanstack-start'].includes(appName)
   ) {
     return false;
   }

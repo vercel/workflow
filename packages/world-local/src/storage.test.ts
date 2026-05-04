@@ -1995,6 +1995,112 @@ describe('Storage', () => {
     });
   });
 
+  describe('concurrent entity-creation races', () => {
+    let testRunId: string;
+    beforeEach(async () => {
+      const run = await createRun(storage, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+      await updateRun(storage, testRunId, 'run_started');
+    });
+
+    it('should reject concurrent step_created with the same correlationId', async () => {
+      // Two concurrent step_created calls with identical correlationIds
+      // (as produced by the snapshot runtime's deterministic ULIDs across
+      // concurrent VM invocations of the same resumption) must produce
+      // exactly one step_created event in the log — not two. Without an
+      // atomic guard the second writer overwrites the entity and persists
+      // a duplicate event, causing downstream issues like double-queued
+      // step messages.
+      const results = await Promise.allSettled([
+        createStep(storage, testRunId, {
+          stepId: 'step_dup_1',
+          stepName: 'test-step',
+          input: new Uint8Array([1]),
+        }),
+        createStep(storage, testRunId, {
+          stepId: 'step_dup_1',
+          stepName: 'test-step',
+          input: new Uint8Array([2]),
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+
+      // Verify only one step_created event exists in the log.
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const stepCreatedEvents = events.data.filter(
+        (e) =>
+          e.eventType === 'step_created' && e.correlationId === 'step_dup_1'
+      );
+      expect(stepCreatedEvents).toHaveLength(1);
+    });
+
+    it('should reject concurrent wait_created with the same correlationId', async () => {
+      // wait_created previously used a TOCTOU read-then-check pattern that
+      // could let both concurrent writers through. The atomic claim now
+      // guarantees exactly one winner.
+      const results = await Promise.allSettled([
+        createWait(storage, testRunId, {
+          waitId: 'wait_dup_1',
+          resumeAt: new Date('2099-01-01'),
+        }),
+        createWait(storage, testRunId, {
+          waitId: 'wait_dup_1',
+          resumeAt: new Date('2099-01-02'),
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+
+      // Verify only one wait_created event exists in the log.
+      const events = await storage.events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const waitCreatedEvents = events.data.filter(
+        (e) =>
+          e.eventType === 'wait_created' && e.correlationId === 'wait_dup_1'
+      );
+      expect(waitCreatedEvents).toHaveLength(1);
+    });
+
+    it('should reject sequential duplicate step_created calls', async () => {
+      // Sequential (non-racing) duplicates must also be rejected — the
+      // constraint file persists across calls.
+      await createStep(storage, testRunId, {
+        stepId: 'step_seq_dup',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await expect(
+        createStep(storage, testRunId, {
+          stepId: 'step_seq_dup',
+          stepName: 'test-step',
+          input: new Uint8Array(),
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+    });
+  });
+
   describe('run terminal state validation', () => {
     describe('completed run', () => {
       it('should reject run_started on completed run', async () => {
