@@ -9,23 +9,23 @@ describe('SerializationError', () => {
     expect(err).toBeInstanceOf(SerializationError);
   });
 
-  test('includes the serialization-failed docs link', () => {
+  test('renders just the title when no hint is provided', () => {
+    // The class no longer attaches a slug-based `╰▶ docs:` line —
+    // its in-product hint (added by `formatSerializationError` in
+    // `@workflow/core`) carries the foundations URL inline, so the
+    // bare-title case stays a single line.
     const err = new SerializationError('boom');
-    expect(err.message).toContain('boom');
-    expect(err.message).toContain(
-      'https://workflow-sdk.dev/err/serialization-failed'
-    );
+    expect(err.message).toBe('boom');
   });
 
-  test('appends hint before the docs link', () => {
+  test('renders the hint as a framed `╰▶ hint:` branch', () => {
     const err = new SerializationError('boom', {
       hint: 'Register the class with WORKFLOW_SERIALIZE.',
     });
     expect(err.hint).toBe('Register the class with WORKFLOW_SERIALIZE.');
     expect(err.message).toMatchInlineSnapshot(`
       "boom
-      ├▶ hint: Register the class with WORKFLOW_SERIALIZE.
-      ╰▶ docs: https://workflow-sdk.dev/err/serialization-failed"
+      ╰▶ hint: Register the class with WORKFLOW_SERIALIZE."
     `);
   });
 
