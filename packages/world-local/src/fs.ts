@@ -72,6 +72,15 @@ export function stripTag(fileId: string): string {
 }
 
 /**
+ * Check whether a fileId belongs to a specific tag.
+ * `wrun_ABC.vitest-0` belongs to `vitest-0`.
+ * Untagged fileIds never match a tag-scoped lookup.
+ */
+export function hasTag(fileId: string, tag: string): boolean {
+  return fileId.endsWith(`.${tag}`);
+}
+
+/**
  * Build the file path for an entity, with optional tag embedded in the filename.
  * `taggedPath('runs', 'wrun_ABC', 'vitest-0')` → `runs/wrun_ABC.vitest-0.json`
  * `taggedPath('runs', 'wrun_ABC')` → `runs/wrun_ABC.json`
@@ -321,6 +330,7 @@ interface PaginatedFileSystemQueryConfig<T> {
   directory: string;
   schema: z.ZodType<T>;
   filePrefix?: string;
+  fileIdFilter?: (fileId: string) => boolean;
   filter?: (item: T) => boolean;
   sortOrder?: 'asc' | 'desc';
   limit?: number;
@@ -355,6 +365,7 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
     directory,
     schema,
     filePrefix,
+    fileIdFilter,
     filter,
     sortOrder = 'desc',
     limit = 20,
@@ -370,13 +381,16 @@ export async function paginatedFileSystemQuery<T extends { createdAt: Date }>(
   const relevantFileIds = filePrefix
     ? fileIds.filter((fileId) => fileId.startsWith(filePrefix))
     : fileIds;
+  const filteredFileIds = fileIdFilter
+    ? relevantFileIds.filter(fileIdFilter)
+    : relevantFileIds;
 
   // 3. ULID Optimization: Filter by cursor using filename timestamps before loading JSON
   const parsedCursor = parseCursor(cursor);
-  let candidateFileIds = relevantFileIds;
+  let candidateFileIds = filteredFileIds;
 
   if (parsedCursor) {
-    candidateFileIds = relevantFileIds.filter((fileId) => {
+    candidateFileIds = filteredFileIds.filter((fileId) => {
       const filenameDate = getCreatedAt(`${fileId}.json`);
       if (filenameDate) {
         // Use filename timestamp for cursor filtering
