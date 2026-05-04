@@ -31,6 +31,10 @@ export class VercelBuildOutputAPIBuilder extends BaseBuilder {
     await this.createPackageJson(workflowsFuncDir, 'module');
     await this.createVcConfig(workflowsFuncDir, {
       handler: 'index.mjs',
+      // Skip the source-map-support runtime shim when sourcemaps are
+      // disabled — it's a meaningful chunk of the function bundle and
+      // serves no purpose without maps.
+      shouldAddSourcemapSupport: this.sourcemapsEnabled,
       maxDuration: 'max',
       experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
       runtime: this.config.runtime,
