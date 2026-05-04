@@ -14,22 +14,18 @@ export function getMsInHighRes(ms: number): [number, number] {
 }
 
 /**
- * Formats a duration for timeline display (compact single-unit format).
+ * Formats a duration for timeline display (compact format).
  * @deprecated Use formatDuration(ms, true) instead.
  */
 export const formatDurationForTimeline = (ms: number): string =>
   formatDuration(ms, true);
 
-const timeSelectionFormatter = new Intl.NumberFormat(undefined, {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-});
-
 export function formatTimeSelection(ms: number): string {
-  if (ms >= 1000) {
-    return `${timeSelectionFormatter.format(ms / 1000)}s`;
+  const roundedMs = Math.round(ms);
+  if (roundedMs < 1000) {
+    return `${roundedMs}ms`;
   }
-  return `${timeSelectionFormatter.format(ms)}ms`;
+  return `${Math.round(ms / 1000)}s`;
 }
 
 /**

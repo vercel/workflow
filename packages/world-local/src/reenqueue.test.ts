@@ -121,6 +121,139 @@ describe('re-enqueue active runs on start', () => {
     await world2.close();
   });
 
+  it('only re-enqueues runs for the matching tag', async () => {
+    const world0 = createLocalWorld({ dataDir, tag: 'vitest-0' });
+    await world0.start();
+
+    const run0 = await createRun(world0, {
+      deploymentId: 'dpl_1',
+      workflowName: 'taggedWorkflow0',
+      input: new Uint8Array([1]),
+    });
+
+    const world1 = createLocalWorld({ dataDir, tag: 'vitest-1' });
+    const run1 = await createRun(world1, {
+      deploymentId: 'dpl_1',
+      workflowName: 'taggedWorkflow1',
+      input: new Uint8Array([2]),
+    });
+
+    await world0.close();
+    await world1.close();
+
+    const restartedWorld0 = createLocalWorld({ dataDir, tag: 'vitest-0' });
+    const receivedRunIds: string[] = [];
+    restartedWorld0.registerHandler('__wkf_workflow_', async (req) => {
+      const body = await req.json();
+      receivedRunIds.push(body.runId);
+      return Response.json({ ok: true });
+    });
+
+    await restartedWorld0.start();
+
+    await vi.waitFor(() => {
+      expect(receivedRunIds).toEqual([run0.runId]);
+    });
+
+    expect(receivedRunIds).not.toContain(run1.runId);
+
+    await restartedWorld0.close();
+  });
+
+  it('keeps tag filtering when recovery paginates across multiple pages', async () => {
+    const world0 = createLocalWorld({ dataDir, tag: 'vitest-0' });
+    const world1 = createLocalWorld({ dataDir, tag: 'vitest-1' });
+    const untaggedWorld = createLocalWorld({ dataDir });
+
+    await world0.start();
+    await world1.start();
+    await untaggedWorld.start();
+
+    const taggedRunIds: string[] = [];
+    const otherRunIds: string[] = [];
+
+    for (let i = 0; i < 25; i++) {
+      const run = await createRun(world0, {
+        deploymentId: 'dpl_1',
+        workflowName: `taggedWorkflow${i}`,
+        input: new Uint8Array([i]),
+      });
+      taggedRunIds.push(run.runId);
+    }
+
+    for (let i = 0; i < 5; i++) {
+      const run = await createRun(world1, {
+        deploymentId: 'dpl_1',
+        workflowName: `otherTaggedWorkflow${i}`,
+        input: new Uint8Array([i]),
+      });
+      otherRunIds.push(run.runId);
+    }
+
+    for (let i = 0; i < 5; i++) {
+      const run = await createRun(untaggedWorld, {
+        deploymentId: 'dpl_1',
+        workflowName: `untaggedWorkflow${i}`,
+        input: new Uint8Array([i]),
+      });
+      otherRunIds.push(run.runId);
+    }
+
+    await world0.close();
+    await world1.close();
+    await untaggedWorld.close();
+
+    const restartedWorld0 = createLocalWorld({ dataDir, tag: 'vitest-0' });
+    const receivedRunIds: string[] = [];
+    restartedWorld0.registerHandler('__wkf_workflow_', async (req) => {
+      const body = await req.json();
+      receivedRunIds.push(body.runId);
+      return Response.json({ ok: true });
+    });
+
+    await restartedWorld0.start();
+
+    await vi.waitFor(() => {
+      expect(receivedRunIds).toHaveLength(taggedRunIds.length);
+    });
+
+    expect(new Set(receivedRunIds)).toEqual(new Set(taggedRunIds));
+    for (const runId of otherRunIds) {
+      expect(receivedRunIds).not.toContain(runId);
+    }
+
+    await restartedWorld0.close();
+  });
+
+  it('skips startup recovery when recoverActiveRuns is false', async () => {
+    const world1 = createLocalWorld({ dataDir });
+    await world1.start();
+
+    const run = await createRun(world1, {
+      deploymentId: 'dpl_1',
+      workflowName: 'myWorkflow',
+      input: new Uint8Array([1]),
+    });
+
+    await world1.close();
+
+    const world2 = createLocalWorld({ dataDir, recoverActiveRuns: false });
+    const receivedRunIds: string[] = [];
+    world2.registerHandler('__wkf_workflow_', async (req) => {
+      const body = await req.json();
+      receivedRunIds.push(body.runId);
+      return Response.json({ ok: true });
+    });
+
+    await world2.start();
+
+    await new Promise((r) => globalThis.setTimeout(r, 50));
+    expect(receivedRunIds).toHaveLength(0);
+    expect(receivedRunIds).not.toContain(run.runId);
+
+    await world2.close();
+  });
+
   it('does nothing on first start with empty data dir', async () => {
     const world = createLocalWorld({ dataDir });
     const receivedRunIds: string[] = [];

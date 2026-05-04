@@ -199,22 +199,6 @@ export interface HttpConfig {
   usingProxy: boolean;
 }
 
-/**
- * Returns an object with the Vercel Deployment Protection bypass header
- * if the `VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS` env var is set, otherwise
- * returns an empty object. Useful for spreading into a headers init object
- * for direct fetch() calls that don't go through `getHeaders()`.
- *
- * See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/protection-bypass-automation
- */
-export function getProtectionBypassHeader(): Record<string, string> {
-  const bypassSecret = process.env.VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS;
-  if (bypassSecret) {
-    return { 'x-vercel-protection-bypass': bypassSecret };
-  }
-  return {};
-}
-
 export const getHttpUrl = (
   config?: APIConfig
 ): { baseUrl: string; usingProxy: boolean } => {
@@ -259,19 +243,46 @@ export const getHeaders = (
   if (workflowServerUrlOverride && options.usingProxy) {
     headers.set('x-vercel-workflow-api-url', workflowServerUrlOverride);
   }
-  for (const [key, value] of Object.entries(getProtectionBypassHeader())) {
-    headers.set(key, value);
-  }
   return headers;
 };
 
 export async function getHttpConfig(config?: APIConfig): Promise<HttpConfig> {
   const { baseUrl, usingProxy } = getHttpUrl(config);
   const headers = getHeaders(config, { usingProxy });
-  const token = config?.token ?? (await getVercelOidcToken());
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`);
+
+  if (usingProxy) {
+    // The api-workflow proxy authenticates the caller with a regular Vercel
+    // auth token; it does not accept OIDC. Fail loudly instead of letting
+    // an opaque 401 bubble up at request time.
+    if (!config?.token) {
+      throw new Error(
+        'world-vercel: api-workflow proxy requested ' +
+          `(${baseUrl}) but no Vercel auth token was provided. ` +
+          'Pass one as `config.token` (the SDK reads it from ' +
+          '`WORKFLOW_VERCEL_AUTH_TOKEN`).'
+      );
+    }
+    headers.set('Authorization', `Bearer ${config.token}`);
+  } else {
+    // Direct workflow-server path. The bearer prefers an explicit
+    // config.token (CLI / GitHub Actions runner / local dev) and falls
+    // back to the per-request Vercel OIDC token. The trusted-sources
+    // bypass header always uses the per-request OIDC token.
+    let oidcToken: string | undefined;
+    try {
+      oidcToken = await getVercelOidcToken();
+    } catch {
+      // No OIDC available outside a Vercel function context.
+    }
+    const authToken = config?.token ?? oidcToken;
+    if (authToken) {
+      headers.set('Authorization', `Bearer ${authToken}`);
+    }
+    if (oidcToken) {
+      headers.set('x-vercel-trusted-oidc-idp-token', oidcToken);
+    }
   }
+
   return { baseUrl, headers, usingProxy };
 }
 

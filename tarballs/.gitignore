@@ -1,0 +1,7 @@
+node_modules
+.vercel
+.env*.local
+
+# Generated tarballs and index page
+public/*.tgz
+public/index.html
