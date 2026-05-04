@@ -1,8 +1,7 @@
-import path from 'node:path';
 import type { Event, EventResult, WorkflowRun } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
-import { writeJSON } from '../fs.js';
+import { assertSafeEntityId, resolveWithinBase, writeJSON } from '../fs.js';
 import { filterRunData, stripEventDataRefs } from './filters.js';
 import { monotonicUlid } from './helpers.js';
 import { deleteAllHooksForRun } from './hooks-storage.js';
@@ -22,6 +21,12 @@ export async function handleLegacyEvent(
   currentRun: WorkflowRun,
   params?: { resolveData?: 'none' | 'all' }
 ): Promise<EventResult> {
+  // Defense in depth: events.create already validates runId before routing
+  // here, but handleLegacyEvent is exported and its signature doesn't
+  // document that invariant. Validating locally keeps the guarantee in this
+  // file.
+  assertSafeEntityId('runId', runId);
+
   const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
 
   switch (data.eventType) {
@@ -44,7 +49,7 @@ export async function handleLegacyEvent(
         completedAt: now,
         updatedAt: now,
       };
-      const runPath = path.join(basedir, 'runs', `${runId}.json`);
+      const runPath = resolveWithinBase(basedir, 'runs', `${runId}.json`);
       await writeJSON(runPath, run, { overwrite: true });
       await deleteAllHooksForRun(basedir, runId);
       // Return without event (legacy behavior skips event storage)
@@ -70,7 +75,11 @@ export async function handleLegacyEvent(
         specVersion: SPEC_VERSION_CURRENT,
       };
       const compositeKey = `${runId}-${eventId}`;
-      const eventPath = path.join(basedir, 'events', `${compositeKey}.json`);
+      const eventPath = resolveWithinBase(
+        basedir,
+        'events',
+        `${compositeKey}.json`
+      );
       await writeJSON(eventPath, event);
       return { event: stripEventDataRefs(event, resolveData) };
     }

@@ -20,18 +20,13 @@ import {
   relative,
   resolve,
 } from 'node:path';
-import enhancedResolveOrig from 'enhanced-resolve';
 import {
   createSocketServer,
   type SocketIO,
   type SocketServerConfig,
 } from './socket-server.js';
-import {
-  createDeferredStepCopyInlineSourceMapComment,
-  createDeferredStepSourceMetadataComment,
-  DEFERRED_STEP_COPY_DIR_NAME,
-} from './step-copy-utils.js';
 
+const DEFERRED_STEP_COPY_DIR_NAME = '__workflow_step_files__';
 const ROUTE_STUB_FILE_MARKER = 'WORKFLOW_ROUTE_STUB_FILE';
 const ROUTE_STUB_MARKER_SCAN_BYTES = 4 * 1024;
 
@@ -66,45 +61,6 @@ export async function getNextBuilderDeferred() {
     'import("@workflow/builders")'
   )) as typeof import('@workflow/builders');
 
-  // Shared resolve options matching the configuration used by the SWC
-  // esbuild plugin (swc-esbuild-plugin.ts) for consistent resolution
-  // semantics across the toolchain.
-  const NODE_RESOLVE_OPTIONS = {
-    dependencyType: 'commonjs' as const,
-    modules: ['node_modules'],
-    exportsFields: ['exports'],
-    importsFields: ['imports'],
-    conditionNames: ['node', 'require'],
-    descriptionFiles: ['package.json'],
-    extensions: [
-      '.ts',
-      '.tsx',
-      '.mts',
-      '.cts',
-      '.cjs',
-      '.mjs',
-      '.js',
-      '.jsx',
-      '.json',
-      '.node',
-    ],
-    enforceExtensions: false,
-    symlinks: true,
-    mainFields: ['main'],
-    mainFiles: ['index'],
-    roots: [],
-    fullySpecified: false,
-    preferRelative: false,
-    preferAbsolute: false,
-    restrictions: [],
-  };
-
-  const NODE_ESM_RESOLVE_OPTIONS = {
-    ...NODE_RESOLVE_OPTIONS,
-    dependencyType: 'esm' as const,
-    conditionNames: ['node', 'import'],
-  };
-
   class NextDeferredBuilder extends BaseBuilderClass {
     private socketIO?: SocketIO;
     private readonly discoveredWorkflowFiles = new Set<string>();
@@ -116,14 +72,6 @@ export async function getNextBuilderDeferred() {
     private cacheWriteTimer: NodeJS.Timeout | null = null;
     private deferredRebuildTimer: NodeJS.Timeout | null = null;
     private lastDeferredBuildSignature: string | null = null;
-    // Lazily initialized resolvers for bare specifier rewriting.
-    // Cached to avoid re-creating on every import rewrite.
-    private esmSyncResolver?: ReturnType<
-      typeof enhancedResolveOrig.create.sync
-    >;
-    private cjsSyncResolver?: ReturnType<
-      typeof enhancedResolveOrig.create.sync
-    >;
     private manifestStepResolveBaseDirs: string[] | null = null;
 
     async build() {
@@ -1338,116 +1286,9 @@ export async function getNextBuilderDeferred() {
       return relativePath;
     }
 
-    private getStepCopyFileName(filePath: string): string {
-      const normalizedPath = filePath.replace(/\\/g, '/');
-      const hash = createHash('sha256').update(normalizedPath).digest('hex');
-      const extension = extname(normalizedPath);
-      return `${hash.slice(0, 16)}${extension || '.js'}`;
-    }
-
-    private rewriteCopiedStepImportSpecifier(
-      specifier: string,
-      sourceFilePath: string,
-      copiedFilePath: string,
-      copiedStepFileBySourcePath: Map<string, string>
+    private resolveImportTargetWithExtensionFallbacks(
+      targetPath: string
     ): string {
-      if (!specifier.startsWith('.')) {
-        // Bare specifiers (e.g. '@workflow/serde') that are transitive
-        // dependencies of SDK packages can't be resolved by the bundler
-        // from the copied file's location (__workflow_step_files__/ inside
-        // the app dir) because the app doesn't directly depend on them.
-        //
-        // Only rewrite when the specifier can't be resolved from the app
-        // directory. If the package is a direct dependency of the app,
-        // the bare specifier will resolve normally and should be left as-is.
-        const appResolvable = this.resolveBareCopiedStepSpecifier(
-          specifier,
-          copiedFilePath
-        );
-        if (!appResolvable) {
-          const resolved = this.resolveBareCopiedStepSpecifier(
-            specifier,
-            sourceFilePath
-          );
-          if (!resolved) return specifier;
-          let rewrittenPath = relative(
-            dirname(copiedFilePath),
-            resolved
-          ).replace(/\\/g, '/');
-          if (!rewrittenPath.startsWith('.')) {
-            rewrittenPath = `./${rewrittenPath}`;
-          }
-          return rewrittenPath;
-        }
-        return specifier;
-      }
-
-      const specifierMatch = specifier.match(/^([^?#]+)(.*)$/);
-      const importPath = specifierMatch?.[1] ?? specifier;
-      const suffix = specifierMatch?.[2] ?? '';
-      const absoluteTargetPath = resolve(dirname(sourceFilePath), importPath);
-      const resolvedTargetPath =
-        this.resolveCopiedStepImportTargetPath(absoluteTargetPath);
-      const normalizedTargetPath = resolvedTargetPath.replace(/\\/g, '/');
-      const copiedTargetPath =
-        copiedStepFileBySourcePath.get(normalizedTargetPath) ||
-        (() => {
-          try {
-            const realTargetPath = realpathSync(resolvedTargetPath).replace(
-              /\\/g,
-              '/'
-            );
-            return copiedStepFileBySourcePath.get(realTargetPath);
-          } catch {
-            return undefined;
-          }
-        })();
-      let rewrittenPath = relative(
-        dirname(copiedFilePath),
-        copiedTargetPath || resolvedTargetPath
-      ).replace(/\\/g, '/');
-      if (!rewrittenPath.startsWith('.')) {
-        rewrittenPath = `./${rewrittenPath}`;
-      }
-      return `${rewrittenPath}${suffix}`;
-    }
-
-    /**
-     * Resolves a bare specifier (e.g. '@workflow/serde', 'workflow') to an
-     * absolute file path using ESM-compatible resolution semantics via
-     * `enhanced-resolve`. Tries ESM conditions first (`node`, `import`),
-     * falling back to CJS resolution if ESM fails.
-     */
-    private resolveBareCopiedStepSpecifier(
-      specifier: string,
-      sourceFilePath: string
-    ): string | undefined {
-      if (!this.esmSyncResolver) {
-        this.esmSyncResolver = enhancedResolveOrig.create.sync(
-          NODE_ESM_RESOLVE_OPTIONS
-        );
-      }
-      if (!this.cjsSyncResolver) {
-        this.cjsSyncResolver =
-          enhancedResolveOrig.create.sync(NODE_RESOLVE_OPTIONS);
-      }
-      const context = dirname(sourceFilePath);
-      try {
-        const resolved = this.esmSyncResolver(context, specifier);
-        if (resolved) return resolved;
-      } catch {
-        // ESM resolution failed, try CJS
-      }
-      try {
-        const resolved = this.cjsSyncResolver(context, specifier);
-        if (resolved) return resolved;
-      } catch {
-        // CJS resolution also failed
-      }
-      return undefined;
-    }
-
-    private resolveCopiedStepImportTargetPath(targetPath: string): string {
       if (existsSync(targetPath)) {
         return targetPath;
       }
@@ -1482,46 +1323,6 @@ export async function getNextBuilderDeferred() {
       }
 
       return targetPath;
-    }
-
-    private rewriteRelativeImportsForCopiedStep(
-      source: string,
-      sourceFilePath: string,
-      copiedFilePath: string,
-      copiedStepFileBySourcePath: Map<string, string>
-    ): string {
-      const rewriteSpecifier = (specifier: string) =>
-        this.rewriteCopiedStepImportSpecifier(
-          specifier,
-          sourceFilePath,
-          copiedFilePath,
-          copiedStepFileBySourcePath
-        );
-      const rewritePattern = (currentSource: string, pattern: RegExp): string =>
-        currentSource.replace(
-          pattern,
-          (_match, prefix: string, specifier: string, suffix: string) =>
-            `${prefix}${rewriteSpecifier(specifier)}${suffix}`
-        );
-
-      let rewrittenSource = source;
-      rewrittenSource = rewritePattern(
-        rewrittenSource,
-        /(from\s+['"])([^'"]+)(['"])/g
-      );
-      rewrittenSource = rewritePattern(
-        rewrittenSource,
-        /(import\s+['"])([^'"]+)(['"])/g
-      );
-      rewrittenSource = rewritePattern(
-        rewrittenSource,
-        /(import\(\s*['"])([^'"]+)(['"]\s*\))/g
-      );
-      rewrittenSource = rewritePattern(
-        rewrittenSource,
-        /(require\(\s*['"])([^'"]+)(['"]\s*\))/g
-      );
-      return rewrittenSource;
     }
 
     private extractRelativeImportSpecifiers(source: string): string[] {
@@ -1571,7 +1372,7 @@ export async function getNextBuilderDeferred() {
       const absoluteTargetPath = resolve(dirname(sourceFilePath), importPath);
 
       const candidatePaths = new Set<string>([
-        this.resolveCopiedStepImportTargetPath(absoluteTargetPath),
+        this.resolveImportTargetWithExtensionFallbacks(absoluteTargetPath),
       ]);
 
       if (!extname(absoluteTargetPath)) {
@@ -1595,7 +1396,7 @@ export async function getNextBuilderDeferred() {
 
       for (const candidatePath of candidatePaths) {
         const resolvedPath =
-          this.resolveCopiedStepImportTargetPath(candidatePath);
+          this.resolveImportTargetWithExtensionFallbacks(candidatePath);
         const normalizedResolvedPath =
           this.normalizeDiscoveredFilePath(resolvedPath);
 
@@ -1861,133 +1662,6 @@ export async function getNextBuilderDeferred() {
       return verifiedSerdeFiles.sort();
     }
 
-    private async createResponseBuiltinsStepFile({
-      stepsRouteDir,
-    }: {
-      stepsRouteDir: string;
-    }): Promise<string> {
-      const copiedStepsDir = join(stepsRouteDir, DEFERRED_STEP_COPY_DIR_NAME);
-      await mkdir(copiedStepsDir, { recursive: true });
-
-      const responseBuiltinsFilePath = join(
-        copiedStepsDir,
-        'workflow-response-builtins.ts'
-      );
-      const source = [
-        'export async function __builtin_response_array_buffer(this: Request | Response) {',
-        "  'use step';",
-        '  return this.arrayBuffer();',
-        '}',
-        '',
-        'export async function __builtin_response_json(this: Request | Response) {',
-        "  'use step';",
-        '  return this.json();',
-        '}',
-        '',
-        'export async function __builtin_response_text(this: Request | Response) {',
-        "  'use step';",
-        '  return this.text();',
-        '}',
-      ].join('\n');
-      const sourceMapComment = createDeferredStepCopyInlineSourceMapComment({
-        sourcePath: responseBuiltinsFilePath,
-        sourceContent: source,
-      });
-      await this.writeFileIfChanged(
-        responseBuiltinsFilePath,
-        `${source}\n${sourceMapComment}\n`
-      );
-
-      return responseBuiltinsFilePath;
-    }
-
-    private async copyDiscoveredStepFiles({
-      stepFiles,
-      stepsRouteDir,
-      preserveFileNames = [],
-    }: {
-      stepFiles: string[];
-      stepsRouteDir: string;
-      preserveFileNames?: string[];
-    }): Promise<string[]> {
-      const copiedStepsDir = join(stepsRouteDir, DEFERRED_STEP_COPY_DIR_NAME);
-      await mkdir(copiedStepsDir, { recursive: true });
-
-      const normalizedStepFiles = Array.from(
-        new Set(
-          stepFiles.map((stepFile) =>
-            this.normalizeDiscoveredFilePath(stepFile)
-          )
-        )
-      ).sort();
-      const copiedStepFileBySourcePath = new Map<string, string>();
-      const expectedFileNames = new Set<string>(preserveFileNames);
-      const copiedStepFiles: string[] = [];
-
-      for (const normalizedStepFile of normalizedStepFiles) {
-        const copiedFileName = this.getStepCopyFileName(normalizedStepFile);
-        const copiedFilePath = join(copiedStepsDir, copiedFileName);
-        const normalizedPathKey = normalizedStepFile.replace(/\\/g, '/');
-        copiedStepFileBySourcePath.set(normalizedPathKey, copiedFilePath);
-        try {
-          const realPathKey = realpathSync(normalizedStepFile).replace(
-            /\\/g,
-            '/'
-          );
-          copiedStepFileBySourcePath.set(realPathKey, copiedFilePath);
-        } catch {
-          // Keep best-effort mapping when source cannot be realpath-resolved.
-        }
-        expectedFileNames.add(copiedFileName);
-        copiedStepFiles.push(copiedFilePath);
-      }
-
-      for (const normalizedStepFile of normalizedStepFiles) {
-        const source = await readFile(normalizedStepFile, 'utf-8');
-        const copiedFilePath = copiedStepFileBySourcePath.get(
-          normalizedStepFile.replace(/\\/g, '/')
-        );
-        if (!copiedFilePath) {
-          continue;
-        }
-        const rewrittenSource = this.rewriteRelativeImportsForCopiedStep(
-          source,
-          normalizedStepFile,
-          copiedFilePath,
-          copiedStepFileBySourcePath
-        );
-        const metadataComment = createDeferredStepSourceMetadataComment({
-          relativeFilename:
-            await this.getRelativeFilenameForSwc(normalizedStepFile),
-          absolutePath: normalizedStepFile.replace(/\\/g, '/'),
-        });
-        const sourceMapComment = createDeferredStepCopyInlineSourceMapComment({
-          sourcePath: normalizedStepFile,
-          sourceContent: source,
-          generatedContent: rewrittenSource,
-        });
-        const copiedSource = `${metadataComment}\n${rewrittenSource}\n${sourceMapComment}`;
-
-        await this.writeFileIfChanged(copiedFilePath, copiedSource);
-      }
-
-      const existingEntries = await readdir(copiedStepsDir, {
-        withFileTypes: true,
-      }).catch(() => []);
-      await Promise.all(
-        existingEntries
-          .filter((entry) => !expectedFileNames.has(entry.name))
-          .map((entry) =>
-            rm(join(copiedStepsDir, entry.name), {
-              recursive: true,
-              force: true,
-            })
-          )
-      );
-
-      return copiedStepFiles;
-    }
-
     private async createDeferredStepsManifest({
       stepFiles,
       workflowFiles,
@@ -2076,6 +1750,51 @@ export async function getNextBuilderDeferred() {
       return Array.from(new Set(existingCandidates)).sort();
     }
 
+    /**
+     * Resolves the path to the workflow SDK's internal response builtins
+     * step file. Returns the file as a pair of (absolute path, import
+     * specifier) so the caller can include it in both the manifest
+     * (absolute path) and the generated step/route.js (as an import).
+     */
+    private resolveResponseBuiltinsStepSource(): {
+      absolutePath: string;
+      importPath: string;
+    } | null {
+      let resolved: string;
+      try {
+        resolved = require.resolve('workflow/internal/builtins', {
+          paths: [this.config.workingDir],
+        });
+      } catch {
+        return null;
+      }
+      return {
+        absolutePath: this.normalizeDiscoveredFilePath(resolved),
+        importPath: 'workflow/internal/builtins',
+      };
+    }
+
+    /**
+     * Builds the import specifier for a given step/serde source file as it
+     * should appear in the generated step/route.js. Package-provided files
+     * are imported via their package specifier so the bundler resolves them
+     * from the app's dependency graph. Local files are imported via a
+     * relative path from the generated route.
+     */
+    private getStepRouteImportSpecifier(
+      stepRouteFile: string,
+      sourceFilePath: string
+    ): string {
+      const { importPath, isPackage } = getImportPath(
+        sourceFilePath,
+        this.config.workingDir
+      );
+      if (isPackage) {
+        return importPath;
+      }
+      return this.getRelativeImportSpecifier(stepRouteFile, sourceFilePath);
+    }
+
     private async buildStepsFunction({
       workflowGeneratedDir,
       routeFileName = 'route.js',
@@ -2110,12 +1829,12 @@ export async function getNextBuilderDeferred() {
       const stepFilesWithManifestSources = Array.from(
         new Set([...stepFiles, ...additionalManifestStepFiles])
       ).sort();
-      const responseBuiltinsStepFilePath =
-        await this.createResponseBuiltinsStepFile({
-          stepsRouteDir,
-        });
+      const responseBuiltins = this.resolveResponseBuiltinsStepSource();
       const manifestStepFiles = Array.from(
-        new Set([...stepFilesWithManifestSources, responseBuiltinsStepFilePath])
+        new Set([
+          ...stepFilesWithManifestSources,
+          ...(responseBuiltins ? [responseBuiltins.absolutePath] : []),
+        ])
       ).sort();
       const manifest = await this.createDeferredStepsManifest({
         stepFiles: manifestStepFiles,
@@ -2125,58 +1844,46 @@ export async function getNextBuilderDeferred() {
 
       const manifestDiscoveredStepFiles =
         await this.collectManifestStepSourceFiles(manifest);
-      // Copy all discovered step sources so they are transformed in step mode.
-      // Importing raw node_modules files directly can bypass loader transforms,
-      // which prevents step registrars from being emitted.
-      const copiedStepSourceFiles = Array.from(
+      // Step source files are imported directly from their original
+      // locations. The workflow loader transforms every file it sees in
+      // step mode, so package-provided sources register their step
+      // functions as module side effects just like local sources do.
+      const stepSourceFiles = Array.from(
         new Set([
           ...stepFilesWithManifestSources,
           ...manifestDiscoveredStepFiles,
         ])
       ).sort();
-      const copiedDiscoveredStepFiles = await this.copyDiscoveredStepFiles({
-        stepFiles: copiedStepSourceFiles,
-        stepsRouteDir,
-        preserveFileNames: [basename(responseBuiltinsStepFilePath)],
-      });
-      const copiedStepFiles = [
-        responseBuiltinsStepFilePath,
-        ...copiedDiscoveredStepFiles,
-      ];
 
       const stepRouteFile = join(stepsRouteDir, routeFileName);
-      const copiedStepImports = copiedStepFiles
-        .map((copiedStepFile) => {
-          const importSpecifier = this.getRelativeImportSpecifier(
-            stepRouteFile,
-            copiedStepFile
-          );
-          return `import '${importSpecifier}';`;
-        })
+      const stepImportSpecifiers = new Set<string>();
+      if (responseBuiltins) {
+        stepImportSpecifiers.add(responseBuiltins.importPath);
+      }
+      for (const stepSourceFile of stepSourceFiles) {
+        stepImportSpecifiers.add(
+          this.getStepRouteImportSpecifier(stepRouteFile, stepSourceFile)
+        );
+      }
+      const stepImports = Array.from(stepImportSpecifiers)
+        .map((specifier) => `import '${specifier}';`)
         .join('\n');
+
       const serdeImports = serdeOnlyFiles
         .map((serdeFile) => {
           const normalizedSerdeFile =
             this.normalizeDiscoveredFilePath(serdeFile);
-          const { importPath, isPackage } = getImportPath(
-            normalizedSerdeFile,
-            this.config.workingDir
-          );
-          if (isPackage) {
-            return `import '${importPath}';`;
-          }
-          const importSpecifier = this.getRelativeImportSpecifier(
+          return `import '${this.getStepRouteImportSpecifier(
             stepRouteFile,
             normalizedSerdeFile
-          );
-          return `import '${importSpecifier}';`;
+          )}';`;
         })
         .join('\n');
 
       const routeContents = [
         '// biome-ignore-all lint: generated file',
         '/* eslint-disable */',
-        copiedStepImports,
+        stepImports,
         serdeImports
           ? `// Serde files for cross-context class registration\n${serdeImports}`
           : '',

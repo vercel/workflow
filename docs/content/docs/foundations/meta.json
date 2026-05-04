@@ -3,7 +3,6 @@
   "pages": [
     "workflows-and-steps",
     "starting-workflows",
-    "common-patterns",
     "errors-and-retries",
     "hooks",
     "streaming",

@@ -27,6 +27,11 @@ import {
 import { useDarkMode } from '../../hooks/use-dark-mode';
 import { ENCRYPTED_DISPLAY_NAME } from '../../lib/hydration';
 import {
+  type DecodedStreamChunkSource,
+  type FormattedStreamChunkDisplay,
+  formatArrayBufferViewForDisplay,
+} from '../../lib/stream-display';
+import {
   type InspectorThemeExtended,
   inspectorThemeDark,
   inspectorThemeExtendedDark,
@@ -43,6 +48,7 @@ import { Spinner } from './spinner';
 const STREAM_REF_TYPE = '__workflow_stream_ref__';
 const CLASS_INSTANCE_REF_TYPE = '__workflow_class_instance_ref__';
 const RUN_REF_TYPE = '__workflow_run_ref__';
+const BYTES_DISPLAY_TYPE = '__workflow_bytes_display__';
 
 interface StreamRef {
   __type: typeof STREAM_REF_TYPE;
@@ -52,6 +58,32 @@ interface StreamRef {
 interface RunRef {
   __type: typeof RUN_REF_TYPE;
   runId: string;
+}
+
+interface BytesDisplay {
+  __type: typeof BYTES_DISPLAY_TYPE;
+  text: string;
+  decodedFrom?: DecodedStreamChunkSource;
+}
+
+function deserializeChunkText(text: string): string {
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === 'string') {
+      return parsed;
+    }
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function parseChunkData(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
 }
 
 function isStreamRef(value: unknown): value is StreamRef {
@@ -65,6 +97,12 @@ function isRunRef(value: unknown): value is RunRef {
   if (value === null || typeof value !== 'object') return false;
   const desc = Object.getOwnPropertyDescriptor(value, '__type');
   return desc?.value === RUN_REF_TYPE;
+}
+
+export function isBytesDisplay(value: unknown): value is BytesDisplay {
+  if (value === null || typeof value !== 'object') return false;
+  const desc = Object.getOwnPropertyDescriptor(value, '__type');
+  return desc?.value === BYTES_DISPLAY_TYPE;
 }
 
 function isClassInstanceRef(value: unknown): value is {
@@ -219,6 +257,147 @@ const ExtendedThemeContext = createContext<InspectorThemeExtended>(
   inspectorThemeExtendedLight
 );
 
+function DecodedBytesChunk({
+  decodedText,
+  source,
+}: {
+  decodedText: string;
+  source: DecodedStreamChunkSource;
+}) {
+  const [selectedView, setSelectedView] = useState<'decoded' | 'bytes'>(
+    'decoded'
+  );
+  const parsed = parseChunkData(decodedText);
+
+  return (
+    <div className="min-w-0">
+      {selectedView === 'decoded' ? (
+        <div className="min-w-0">
+          {typeof parsed === 'string' ? (
+            <span
+              className="whitespace-pre-wrap break-words"
+              style={{ color: 'var(--ds-gray-1000)' }}
+            >
+              {deserializeChunkText(parsed)}
+            </span>
+          ) : (
+            <DataInspector data={parsed} expandLevel={1} />
+          )}
+        </div>
+      ) : (
+        <DecodedBytesInspector decodedText={decodedText} source={source} />
+      )}
+      <div className="mt-2 flex">
+        <div
+          className="inline-flex overflow-hidden rounded border"
+          style={{ borderColor: 'var(--ds-gray-400)' }}
+          title={`${source.type} decoded as ${source.encoding.toUpperCase()} text. Switch to Bytes to inspect the summarized raw value.`}
+        >
+          <button
+            type="button"
+            className="h-5 px-1.5 text-[10px] font-medium"
+            style={{
+              backgroundColor:
+                selectedView === 'decoded'
+                  ? 'var(--ds-gray-200)'
+                  : 'var(--ds-gray-100)',
+              color: 'var(--ds-gray-900)',
+            }}
+            onClick={() => setSelectedView('decoded')}
+            aria-pressed={selectedView === 'decoded'}
+            aria-label="Show decoded text"
+          >
+            Decoded
+          </button>
+          <button
+            type="button"
+            className="h-5 border-l px-1.5 text-[10px] font-medium"
+            style={{
+              borderColor: 'var(--ds-gray-400)',
+              backgroundColor:
+                selectedView === 'bytes'
+                  ? 'var(--ds-gray-200)'
+                  : 'var(--ds-gray-100)',
+              color: 'var(--ds-gray-900)',
+            }}
+            onClick={() => setSelectedView('bytes')}
+            aria-pressed={selectedView === 'bytes'}
+            aria-label="Show raw bytes summary"
+          >
+            Bytes
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DecodedBytesInspector({
+  decodedText,
+  source,
+}: {
+  decodedText: string;
+  source: DecodedStreamChunkSource;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="font-mono">
+      <button
+        type="button"
+        className="flex max-w-full items-start gap-1 text-left"
+        style={{ color: 'var(--ds-gray-1000)' }}
+        onClick={() => setExpanded((value) => !value)}
+        title={`${source.type} decoded as ${source.encoding.toUpperCase()} text`}
+      >
+        <span className="select-none" style={{ color: 'var(--ds-gray-700)' }}>
+          {expanded ? '▼' : '▶'}
+        </span>
+        <span className="min-w-0 break-words">{source.rawSummary}</span>
+      </button>
+      {expanded && (
+        <div className="mt-1 pl-5">
+          <span style={{ color: 'var(--ds-gray-700)' }}>decoded: </span>
+          <span
+            className="whitespace-pre-wrap break-words"
+            style={{ color: 'var(--ds-green-900)' }}
+          >
+            {JSON.stringify(decodedText)}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BytesDisplayLabel({
+  name,
+  display,
+}: {
+  name?: string;
+  display: BytesDisplay;
+}) {
+  return (
+    <div className="inline-block min-w-0 align-top">
+      {name != null && <ObjectName name={name} />}
+      {name != null && <span>: </span>}
+      {display.decodedFrom ? (
+        <DecodedBytesChunk
+          decodedText={display.text}
+          source={display.decodedFrom}
+        />
+      ) : (
+        <span
+          className="whitespace-pre-wrap break-words"
+          style={{ color: 'var(--ds-gray-1000)' }}
+        >
+          {display.text}
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Custom nodeRenderer
 // ---------------------------------------------------------------------------
@@ -247,6 +426,10 @@ function NodeRenderer({
   expanded?: boolean;
 }) {
   const extendedTheme = useContext(ExtendedThemeContext);
+
+  if (isBytesDisplay(data)) {
+    return <BytesDisplayLabel name={name} display={data} />;
+  }
 
   // Encrypted marker → flat label with Lock icon, clickable when onDecrypt is available
   if (
@@ -352,18 +535,53 @@ function makeOpaqueRef(ref: Record<string, unknown>): unknown {
   return opaque;
 }
 
+function makeBytesDisplay(display: FormattedStreamChunkDisplay): unknown {
+  const opaque = Object.create(null);
+  Object.defineProperty(opaque, '__type', {
+    value: BYTES_DISPLAY_TYPE,
+    enumerable: false,
+  });
+  Object.defineProperty(opaque, 'text', {
+    value: display.text,
+    enumerable: false,
+  });
+  Object.defineProperty(opaque, 'decodedFrom', {
+    value: display.decodedFrom,
+    enumerable: false,
+  });
+  return opaque;
+}
+
 /**
- * Recursively walk data and replace RunRef/StreamRef objects with
+ * Recursively walk data and replace RunRef/StreamRef/typed array objects with
  * non-expandable versions so ObjectInspector doesn't show their internals.
  * Only recurses into plain objects and arrays to avoid stripping class
- * instances (Date, Error, Map, Set, URL, Headers, etc.) that have their
- * own rendering in NodeRenderer.
+ * instances (Date, Error, URL, Headers, etc.) that have their own rendering in
+ * NodeRenderer. Map and Set containers are preserved while their contents are
+ * prepared for display.
+ *
+ * Exported for testing the typed-array detection path used by hydrated
+ * AI agent stream chunks (e.g. `{ delta: new Uint8Array(...) }`).
  */
-function collapseRefs(data: unknown): unknown {
+export function collapseRefs(data: unknown): unknown {
   if (data === null || typeof data !== 'object') return data;
+  if (ArrayBuffer.isView(data) && !(data instanceof DataView)) {
+    return makeBytesDisplay(formatArrayBufferViewForDisplay(data));
+  }
   if (isRunRef(data) || isStreamRef(data))
     return makeOpaqueRef(data as unknown as Record<string, unknown>);
   if (Array.isArray(data)) return data.map(collapseRefs);
+  if (data instanceof Map) {
+    return new Map(
+      Array.from(data.entries(), ([key, value]) => [
+        collapseRefs(key),
+        collapseRefs(value),
+      ])
+    );
+  }
+  if (data instanceof Set) {
+    return new Set(Array.from(data.values(), collapseRefs));
+  }
   // Only recurse into plain objects — leave class instances untouched
   const proto = Object.getPrototypeOf(data);
   if (proto !== Object.prototype && proto !== null) return data;
@@ -467,8 +685,21 @@ function isObjectLike(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
+function isSameBytesDisplay(a: BytesDisplay, b: BytesDisplay): boolean {
+  return (
+    a.text === b.text &&
+    a.decodedFrom?.type === b.decodedFrom?.type &&
+    a.decodedFrom?.encoding === b.decodedFrom?.encoding &&
+    a.decodedFrom?.rawSummary === b.decodedFrom?.rawSummary
+  );
+}
+
 function isDeepEqual(a: unknown, b: unknown, seen = new WeakMap()): boolean {
   if (Object.is(a, b)) return true;
+
+  if (isBytesDisplay(a) || isBytesDisplay(b)) {
+    return isBytesDisplay(a) && isBytesDisplay(b) && isSameBytesDisplay(a, b);
+  }
 
   if (a instanceof Date && b instanceof Date) {
     return a.getTime() === b.getTime();

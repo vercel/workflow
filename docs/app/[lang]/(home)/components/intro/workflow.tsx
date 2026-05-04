@@ -10,18 +10,15 @@ type WorkflowLog = {
 };
 
 const Loading = (
-  <Loader2Icon
-    key="loading"
-    className="size-[13px] text-muted-foreground animate-spin"
-  />
+  <Loader2Icon className="size-[13px] text-muted-foreground animate-spin" />
 );
 const Success = (
-  <div key="success">
+  <div>
     <CheckIcon className="size-[14px] text-emerald-500" />
   </div>
 );
 const ErrorIndicator = (
-  <div key="error">
+  <div>
     <XIcon className="size-[14px] text-rose-500" />
   </div>
 );

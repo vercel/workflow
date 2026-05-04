@@ -1,10 +1,4 @@
 {
   "title": "Agent Patterns",
-  "pages": [
-    "durable-agent",
-    "tool-streaming",
-    "human-in-the-loop",
-    "tool-orchestration",
-    "stop-workflow"
-  ]
+  "pages": ["durable-agent", "human-in-the-loop", "agent-cancellation"]
 }

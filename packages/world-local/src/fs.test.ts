@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { WorkflowWorldError } from '@workflow/errors';
 import type { PaginatedResponse } from '@workflow/world';
 import ms from 'ms';
 import { monotonicFactory } from 'ulid';
@@ -14,7 +15,16 @@ import {
   vi,
 } from 'vitest';
 import { z } from 'zod';
-import { paginatedFileSystemQuery, ulidToDate, writeJSON } from './fs.js';
+import {
+  assertSafeEntityId,
+  paginatedFileSystemQuery,
+  readJSONWithFallback,
+  resolveWithinBase,
+  taggedPath,
+  UnsafeEntityIdError,
+  ulidToDate,
+  writeJSON,
+} from './fs.js';
 
 // Create a new monotonic ULID factory for each test to avoid state pollution
 let ulid = monotonicFactory(() => Math.random());
@@ -580,6 +590,71 @@ describe('fs utilities', () => {
         assert(result.data[0], 'expected first result to be defined');
         expect(result.data[0].name).toBe('prefixed-1');
       });
+
+      it('keeps fileIdFilter applied on later cursor pages', async () => {
+        const pageDir = await fs.mkdtemp(
+          path.join(os.tmpdir(), 'fileid-filter-pagination-')
+        );
+        const baseTime = new Date('2024-01-01T00:00:00.000Z').getTime();
+        const ulidAfter = createUlidAfter(baseTime);
+
+        try {
+          const files: Record<string, object> = {};
+          for (let i = 0; i < 5; i++) {
+            const fileId = `match_${ulidAfter(`${i}m`)}`;
+            files[fileId] = {
+              id: fileId,
+              name: `match-${i}`,
+              createdAt: new Date(baseTime + ms(`${i}m`)),
+            };
+          }
+
+          for (let i = 5; i < 8; i++) {
+            const fileId = `other_${ulidAfter(`${i}m`)}`;
+            files[fileId] = {
+              id: fileId,
+              name: `other-${i}`,
+              createdAt: new Date(baseTime + ms(`${i}m`)),
+            };
+          }
+
+          await createFilesystem(pageDir, files);
+
+          const firstPage = await paginatedFileSystemQuery({
+            directory: pageDir,
+            schema: TestItemSchema,
+            fileIdFilter: (fileId) => fileId.startsWith('match_'),
+            getCreatedAt: getPrefixCreatedAt,
+            getId: (item) => item.id,
+            limit: 2,
+            sortOrder: 'desc',
+          });
+
+          expect(firstPage.data).toHaveLength(2);
+          expect(
+            firstPage.data.every((item) => item.id.startsWith('match_'))
+          ).toBe(true);
+          assert(firstPage.cursor, 'expected first page cursor to be defined');
+
+          const secondPage = await paginatedFileSystemQuery({
+            directory: pageDir,
+            schema: TestItemSchema,
+            fileIdFilter: (fileId) => fileId.startsWith('match_'),
+            getCreatedAt: getPrefixCreatedAt,
+            getId: (item) => item.id,
+            limit: 2,
+            cursor: firstPage.cursor,
+            sortOrder: 'desc',
+          });
+
+          expect(secondPage.data).toHaveLength(2);
+          expect(
+            secondPage.data.every((item) => item.id.startsWith('match_'))
+          ).toBe(true);
+        } finally {
+          await fs.rm(pageDir, { recursive: true, force: true });
+        }
+      });
     });
 
     describe('error handling', () => {
@@ -771,6 +846,131 @@ describe('fs utilities', () => {
           createdAt: testTime,
         }),
       ]);
+    });
+  });
+
+  describe('assertSafeEntityId (path traversal prevention)', () => {
+    // Values that should be accepted: actual entity IDs used by the system.
+    const safeIds = [
+      'wrun_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'evnt_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'step_0',
+      'step_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'hook_01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      'wrun_01ARZ3-step_01ARYY', // composite key with hyphen
+      'vitest-0', // tag
+      'strm_01ARZ3_user', // stream id with underscores
+      'strm_01ARZ3_user_bmFtZXNwYWNl', // stream id with base64url namespace
+      'wrun_ABC.vitest-0', // tagged file id
+      'a', // minimal valid value
+    ];
+
+    // Values that should be rejected: real-world path traversal attempts.
+    const unsafeIds = [
+      '',
+      '.',
+      '..',
+      '../foo',
+      '../../../package',
+      '../runs/wrun_01K8PSDCVBE9PBKXHR39AH15RE',
+      '..\\..\\windows',
+      'foo/bar',
+      'foo\\bar',
+      '/etc/passwd',
+      '.hidden',
+      '.locks',
+      '.tmp',
+      'foo\0bar', // null byte
+      'a/../b',
+      'a\\..\\b',
+    ];
+
+    for (const id of safeIds) {
+      it(`accepts safe ID: ${JSON.stringify(id)}`, () => {
+        expect(() => assertSafeEntityId('test', id)).not.toThrow();
+      });
+    }
+
+    for (const id of unsafeIds) {
+      it(`rejects unsafe ID: ${JSON.stringify(id)}`, () => {
+        expect(() => assertSafeEntityId('test', id)).toThrow(
+          UnsafeEntityIdError
+        );
+      });
+    }
+
+    it('includes the kind label in the error message', () => {
+      expect(() => assertSafeEntityId('runId', '../escape')).toThrow(
+        /Unsafe runId/
+      );
+    });
+
+    it('taggedPath rejects path-traversal fileIds', () => {
+      expect(() => taggedPath(testDir, 'runs', '../escape')).toThrow(
+        UnsafeEntityIdError
+      );
+      expect(() => taggedPath(testDir, 'runs', 'wrun_ABC', '../tag')).toThrow(
+        UnsafeEntityIdError
+      );
+    });
+
+    it('taggedPath still produces correct paths for safe IDs', () => {
+      expect(taggedPath(testDir, 'runs', 'wrun_ABC')).toBe(
+        path.join(testDir, 'runs', 'wrun_ABC.json')
+      );
+      expect(taggedPath(testDir, 'runs', 'wrun_ABC', 'vitest-0')).toBe(
+        path.join(testDir, 'runs', 'wrun_ABC.vitest-0.json')
+      );
+    });
+
+    it('readJSONWithFallback rejects path-traversal fileIds', async () => {
+      const schema = z.object({ id: z.string() });
+      await expect(
+        readJSONWithFallback(testDir, 'runs', '../package', schema)
+      ).rejects.toThrow(UnsafeEntityIdError);
+    });
+
+    it('UnsafeEntityIdError extends WorkflowWorldError', () => {
+      const err = new UnsafeEntityIdError('runId', '../escape');
+      expect(err).toBeInstanceOf(WorkflowWorldError);
+      expect(err.name).toBe('UnsafeEntityIdError');
+      expect(UnsafeEntityIdError.is(err)).toBe(true);
+    });
+
+    it('UnsafeEntityIdError truncates long values in the message', () => {
+      const longValue = 'a'.repeat(500);
+      const err = new UnsafeEntityIdError('runId', `${longValue}/escape`);
+      expect(err.message.length).toBeLessThan(200);
+      expect(err.message).toContain('…');
+    });
+  });
+
+  describe('resolveWithinBase (containment check)', () => {
+    it('resolves safe segments inside the base directory', () => {
+      const result = resolveWithinBase(testDir, 'runs', 'wrun_ABC.json');
+      expect(result).toBe(path.join(testDir, 'runs', 'wrun_ABC.json'));
+    });
+
+    it('resolves to the base directory itself without error', () => {
+      expect(resolveWithinBase(testDir)).toBe(path.resolve(testDir));
+    });
+
+    it('throws when a segment escapes the base via ..', () => {
+      expect(() => resolveWithinBase(testDir, '..', 'etc', 'passwd')).toThrow(
+        UnsafeEntityIdError
+      );
+    });
+
+    it('throws when a segment is an absolute path', () => {
+      expect(() => resolveWithinBase(testDir, '/etc/passwd')).toThrow(
+        UnsafeEntityIdError
+      );
+    });
+
+    it('throws when joined path escapes via chained ..', () => {
+      expect(() =>
+        resolveWithinBase(testDir, 'runs', '..', '..', 'package.json')
+      ).toThrow(UnsafeEntityIdError);
     });
   });
 });

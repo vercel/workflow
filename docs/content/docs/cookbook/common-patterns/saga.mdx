@@ -13,6 +13,12 @@ Use the saga pattern when a business transaction spans multiple services and you
 - Any sequence where partial completion leaves the system in an inconsistent state
 - Operations that need "all or nothing" semantics across external APIs
 
+## How it works
+
+1. Each forward step does work and registers a compensation function.
+2. If any step throws `FatalError`, the catch block runs compensations in reverse (LIFO) order to restore consistency.
+3. Regular errors are retried automatically (up to 3x by default). Use `FatalError` only for permanent failures where retrying won't help.
+
 ## Pattern
 
 Each step returns a result and pushes a compensation handler onto a stack. If a later step throws a `FatalError`, the workflow catches it and executes compensations in LIFO order.
@@ -34,23 +40,21 @@ export async function subscriptionUpgradeSaga(accountId: string, seats: number) 
   const compensations: Array<() => Promise<void>> = [];
 
   try {
-    // Step 1: Reserve seats
     const reservationId = await reserveSeats(accountId, seats);
     compensations.push(() => releaseSeats(accountId, reservationId)); // [!code highlight]
 
-    // Step 2: Capture payment
     const invoiceId = await captureInvoice(accountId, seats);
     compensations.push(() => refundInvoice(accountId, invoiceId)); // [!code highlight]
 
-    // Step 3: Provision access
     const entitlementId = await provisionSeats(accountId, seats);
     compensations.push(() => deprovisionSeats(accountId, entitlementId)); // [!code highlight]
 
-    // Step 4: Notify
+    // No compensation — notifications are fire-and-forget
     await sendConfirmation(accountId, invoiceId, entitlementId);
+
     return { status: "completed" };
   } catch (error) {
-    // Unwind compensations in reverse order
+    // Unwind compensations in reverse (LIFO) order
     for (const compensate of compensations.reverse()) { // [!code highlight]
       await compensate(); // [!code highlight]
     }
@@ -62,10 +66,12 @@ export async function subscriptionUpgradeSaga(accountId: string, seats: number) 
 
 ### Step functions
 
-Each step is a `"use step"` function with full Node.js access. Forward steps do the work; compensation steps undo it.
+Each step is a `"use step"` function with full Node.js access (fetch, fs, npm packages). Forward steps do the work and throw `FatalError` on permanent failure; compensation steps undo it and must be idempotent — safe to call multiple times if the workflow restarts mid-rollback.
 
 ```typescript
 import { FatalError } from "workflow";
+
+// Forward steps
 
 async function reserveSeats(accountId: string, seats: number): Promise<string> {
   "use step";
@@ -76,15 +82,6 @@ async function reserveSeats(accountId: string, seats: number): Promise<string> {
   if (!res.ok) throw new FatalError("Seat reservation failed"); // [!code highlight]
   const { reservationId } = await res.json();
   return reservationId;
-}
-
-async function releaseSeats(accountId: string, reservationId: string): Promise<void> {
-  "use step";
-  // Compensations should be idempotent — safe to call twice
-  await fetch(`https://api.example.com/seats/release`, {
-    method: "POST",
-    body: JSON.stringify({ accountId, reservationId }),
-  });
 }
 
 async function captureInvoice(accountId: string, seats: number): Promise<string> {
@@ -98,14 +95,6 @@ async function captureInvoice(accountId: string, seats: number): Promise<string>
   return invoiceId;
 }
 
-async function refundInvoice(accountId: string, invoiceId: string): Promise<void> {
-  "use step";
-  await fetch(`https://api.example.com/invoices/${invoiceId}/refund`, {
-    method: "POST",
-    body: JSON.stringify({ accountId }),
-  });
-}
-
 async function provisionSeats(accountId: string, seats: number): Promise<string> {
   "use step";
   const res = await fetch(`https://api.example.com/entitlements`, {
@@ -115,14 +104,6 @@ async function provisionSeats(accountId: string, seats: number): Promise<string>
   if (!res.ok) throw new FatalError("Provisioning failed"); // [!code highlight]
   const { entitlementId } = await res.json();
   return entitlementId;
-}
-
-async function deprovisionSeats(accountId: string, entitlementId: string): Promise<void> {
-  "use step";
-  await fetch(`https://api.example.com/entitlements/${entitlementId}`, {
-    method: "DELETE",
-    body: JSON.stringify({ accountId }),
-  });
 }
 
 async function sendConfirmation(
@@ -136,7 +117,119 @@ async function sendConfirmation(
     body: JSON.stringify({ accountId, invoiceId, entitlementId, template: "upgrade-complete" }),
   });
 }
+
+// Compensation steps — must be idempotent
+
+async function releaseSeats(accountId: string, reservationId: string): Promise<void> {
+  "use step";
+  await fetch(`https://api.example.com/seats/release`, {
+    method: "POST",
+    body: JSON.stringify({ accountId, reservationId }),
+  });
+}
+
+async function refundInvoice(accountId: string, invoiceId: string): Promise<void> {
+  "use step";
+  await fetch(`https://api.example.com/invoices/${invoiceId}/refund`, {
+    method: "POST",
+    body: JSON.stringify({ accountId }),
+  });
+}
+
+async function deprovisionSeats(accountId: string, entitlementId: string): Promise<void> {
+  "use step";
+  await fetch(`https://api.example.com/entitlements/${entitlementId}`, {
+    method: "DELETE",
+    body: JSON.stringify({ accountId }),
+  });
+}
 ```
+
+### Streaming step progress (optional)
+
+Use `getWritable()` to stream progress events to a UI so users can see each step execute in real time.
+
+```typescript
+import { FatalError } from "workflow";
+import { getWritable } from "workflow";
+
+type SagaEvent =
+  | { type: "step_start"; step: string }
+  | { type: "step_done"; step: string; detail: string }
+  | { type: "step_failed"; step: string; error: string }
+  | { type: "compensating"; step: string }
+  | { type: "compensated"; step: string }
+  | { type: "result"; status: "completed" | "rolled_back" };
+
+async function emit(event: SagaEvent) {
+  "use step";
+  const writer = getWritable<SagaEvent>().getWriter();
+  try {
+    await writer.write(event);
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+declare function reserveSeats(accountId: string, seats: number): Promise<string>; // @setup
+declare function releaseSeats(accountId: string, reservationId: string): Promise<void>; // @setup
+declare function captureInvoice(accountId: string, seats: number): Promise<string>; // @setup
+declare function refundInvoice(accountId: string, invoiceId: string): Promise<void>; // @setup
+declare function provisionSeats(accountId: string, seats: number): Promise<string>; // @setup
+declare function deprovisionSeats(accountId: string, entitlementId: string): Promise<void>; // @setup
+declare function sendConfirmation(accountId: string, invoiceId: string, entitlementId: string): Promise<void>; // @setup
+
+export async function subscriptionUpgradeSaga(accountId: string, seats: number) {
+  "use workflow";
+
+  const compensations: Array<{ name: string; execute: () => Promise<void> }> = [];
+
+  try {
+    await emit({ type: "step_start", step: "Reserve Seats" });
+    const reservationId = await reserveSeats(accountId, seats);
+    compensations.push({ name: "Release Seats", execute: () => releaseSeats(accountId, reservationId) });
+    await emit({ type: "step_done", step: "Reserve Seats", detail: reservationId });
+
+    await emit({ type: "step_start", step: "Capture Invoice" });
+    const invoiceId = await captureInvoice(accountId, seats);
+    compensations.push({ name: "Refund Invoice", execute: () => refundInvoice(accountId, invoiceId) });
+    await emit({ type: "step_done", step: "Capture Invoice", detail: invoiceId });
+
+    await emit({ type: "step_start", step: "Provision Seats" });
+    const entitlementId = await provisionSeats(accountId, seats);
+    compensations.push({ name: "Deprovision Seats", execute: () => deprovisionSeats(accountId, entitlementId) });
+    await emit({ type: "step_done", step: "Provision Seats", detail: entitlementId });
+
+    // No compensation — notifications are fire-and-forget
+    await emit({ type: "step_start", step: "Send Confirmation" });
+    await sendConfirmation(accountId, invoiceId, entitlementId);
+    await emit({ type: "step_done", step: "Send Confirmation", detail: "sent" });
+
+    await emit({ type: "result", status: "completed" });
+    return { status: "completed" };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error";
+    await emit({ type: "step_failed", step: "failed", error: errorMessage });
+
+    // Unwind compensations in reverse (LIFO) order
+    for (const comp of compensations.reverse()) {
+      await emit({ type: "compensating", step: comp.name });
+      await comp.execute();
+      await emit({ type: "compensated", step: comp.name });
+    }
+
+    await emit({ type: "result", status: "rolled_back" });
+    return { status: "rolled_back" };
+  }
+}
+```
+
+## Adapting to your use case
+
+- Replace the step functions with real API calls. Each `"use step"` function has full Node.js access.
+- Add or remove steps as needed — the pattern scales to any number of steps.
+- Make compensations idempotent — they may be retried if the workflow restarts mid-rollback.
+- The `emit()` calls and `SagaEvent` type are optional — remove them if you don't need real-time UI progress.
 
 ## Tips
 
@@ -144,9 +237,11 @@ async function sendConfirmation(
 - **Make compensations idempotent.** If a compensation step is retried, it should produce the same result. Check whether the resource was already released before releasing it again.
 - **Compensation steps are also `"use step"` functions.** This makes them durable — if the workflow restarts mid-rollback, it resumes where it left off.
 - **Capture values in closures carefully.** Use block-scoped variables or copy values before pushing compensations to avoid referencing stale state.
+- **Notifications don't need compensations.** Fire-and-forget steps like sending emails or Slack messages typically don't register a compensation.
 
 ## Key APIs
 
 - [`"use workflow"`](/docs/api-reference/workflow/use-workflow) -- declares the orchestrator function
 - [`"use step"`](/docs/api-reference/workflow/use-step) -- declares step functions with full Node.js access
 - [`FatalError`](/docs/api-reference/workflow/fatal-error) -- non-retryable error that triggers compensation
+- [`getWritable()`](/docs/api-reference/workflow/get-writable) -- streams data from workflows for real-time UI updates
