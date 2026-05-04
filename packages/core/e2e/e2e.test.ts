@@ -2436,6 +2436,27 @@ describe('e2e', () => {
         // The sleep wins, so the workflow aborts and returns timed out status.
         expect(returnValue.status).toBe('timed out');
         expect(returnValue.aborted).toBe(true);
+
+        // The synchronous `controller.signal.aborted` check above only proves
+        // the WORKFLOW VM saw the abort — it doesn't prove the abort committed
+        // to the event log or propagated to the in-flight step. Inspect the
+        // event log directly to verify the abort hook was both created AND
+        // resumed (the resumption is what writes the cancel packet to the
+        // backing stream and lets the running step see signal.aborted=true).
+        const world = await getWorld();
+        const { data: events } = await world.events.list({ runId: run.runId });
+        const hookCreated = events.find((e) => e.eventType === 'hook_created');
+        const hookReceived = events.find(
+          (e) => e.eventType === 'hook_received'
+        );
+        expect(
+          hookCreated,
+          'abort hook was never created in the event log'
+        ).toBeDefined();
+        expect(
+          hookReceived,
+          'abort hook was created but never resumed — the abort did not propagate to the in-flight step'
+        ).toBeDefined();
       }
     );
 

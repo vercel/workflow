@@ -15,6 +15,8 @@ import { EventConsumerResult, EventsConsumer } from './events-consumer.js';
 import type { QueueItem } from './global.js';
 import { ENOTSUP, WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
+import { handleSuspension } from './runtime/suspension-handler.js';
+import { getWorld } from './runtime/world.js';
 import type { WorkflowOrchestratorContext } from './private.js';
 import {
   dehydrateWorkflowReturnValue,
@@ -43,41 +45,49 @@ import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
 
 /**
- * Logs a warning when a workflow run completes or fails with uncommitted
- * operations still in the invocations queue. This typically indicates the
- * user forgot to `await` a step, hook, or sleep call.
+ * Drain pending queue items at workflow completion (success or failure).
+ *
+ * Treats end-of-run like a final suspension: any operation the workflow code
+ * spawned but didn't `await` — abort hook resumes, hook creations/disposals,
+ * sleep waits, step queueings — gets committed to the event log via the
+ * suspension handler before the run is marked terminal.
+ *
+ * This matches normal JS semantics where `setTimeout(fn, ...)` etc. continue
+ * running after the surrounding function returns. Most importantly, it ensures
+ * `controller.abort()` called as the last statement of a workflow actually
+ * propagates to in-flight steps on other compute instances — without this,
+ * the abort hook is created but never resumed and the cancellation never
+ * reaches the running step.
+ *
+ * Drain failures are swallowed: the workflow's own outcome (the user's return
+ * value or thrown error) is the source of truth; secondary cleanup that fails
+ * shouldn't change the run's terminal state.
  */
-function warnPendingQueueItems(
+async function drainPendingQueueItems(
   runId: string,
   pendingQueue: Map<string, QueueItem>,
+  vmGlobalThis: typeof globalThis,
+  workflowRun: WorkflowRun,
   outcome: 'completed' | 'failed'
-): void {
-  // Filter out hooks that are either already created (alive, waiting for payloads)
-  // or explicitly disposed — both are benign since the backend auto-disposes
-  // all hooks when a run reaches a terminal state
-  const items = [...pendingQueue.values()].filter(
-    (item) => !(item.type === 'hook' && (item.hasCreatedEvent || item.disposed))
-  );
-  if (items.length === 0) return;
-
-  const details = items.map((item) => {
-    switch (item.type) {
-      case 'step':
-        return `step "${item.stepName}"`;
-      case 'hook':
-        return `hook "${item.token}"`;
-      case 'wait':
-        return 'sleep';
-      default:
-        return `unknown (${(item as { type: string }).type})`;
-    }
-  });
-
-  runtimeLogger.warn(
-    `Workflow run ${outcome} with ${items.length} uncommitted operation(s): ${details.join(', ')}. ` +
-      'Did you forget to `await` a step, hook, or sleep call?',
-    { workflowRunId: runId }
-  );
+): Promise<void> {
+  if (pendingQueue.size === 0) return;
+  try {
+    const world = await getWorld();
+    const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
+    await handleSuspension({
+      suspension: synthesized,
+      world,
+      run: workflowRun,
+    });
+  } catch (err) {
+    runtimeLogger.warn(
+      `Failed to drain pending queue items for ${outcome} workflow run`,
+      {
+        workflowRunId: runId,
+        message: err instanceof Error ? err.message : String(err),
+      }
+    );
+  }
 }
 
 export async function runWorkflow(
@@ -767,9 +777,11 @@ export async function runWorkflow(
         ...Attribute.WorkflowResultType(typeof result),
       });
 
-      warnPendingQueueItems(
+      await drainPendingQueueItems(
         workflowRun.runId,
         workflowContext.invocationsQueue,
+        vmGlobalThis,
+        workflowRun,
         'completed'
       );
 
@@ -780,9 +792,11 @@ export async function runWorkflow(
         throw err;
       }
 
-      warnPendingQueueItems(
+      await drainPendingQueueItems(
         workflowRun.runId,
         workflowContext.invocationsQueue,
+        vmGlobalThis,
+        workflowRun,
         'failed'
       );
 

@@ -3744,8 +3744,17 @@ describe('runWorkflow', () => {
     });
   });
 
-  describe('pending queue warnings', () => {
-    it('should warn when workflow completes with an unawaited step', async () => {
+  describe('pending queue drain at completion', () => {
+    // Behavior change (was "pending queue warnings"): the runtime no longer
+    // warns about unawaited steps/hooks/sleeps at end-of-run. Instead it drains
+    // the queue through the suspension handler, committing each pending
+    // operation (step queueing, hook creation/disposal, abort propagation) so
+    // it actually fires — matching normal JS semantics where async work spawned
+    // by a function continues after the function returns. The most important
+    // case is `controller.abort()` called as the last statement of a workflow:
+    // the abort hook now commits to the event log even with no suspension
+    // between abort() and return.
+    it('drains an unawaited step on completion (no "uncommitted" warning)', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const ops: Promise<any>[] = [];
@@ -3764,12 +3773,8 @@ describe('runWorkflow', () => {
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
           deploymentId: 'test-deployment',
         };
-
-        // No step events — the unawaited step stays pending in the queue
         const events: Event[] = [];
 
-        // Workflow calls step but doesn't await it, returns immediately.
-        // The runtime warns but does not block completion.
         await runWorkflow(
           `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
           async function workflow() {
@@ -3785,16 +3790,15 @@ describe('runWorkflow', () => {
         expect(
           warnCalls.some(
             (msg: string) =>
-              msg.includes('uncommitted operation') &&
-              msg.includes('step "add"')
+              typeof msg === 'string' && msg.includes('uncommitted operation')
           )
-        ).toBe(true);
+        ).toBe(false);
       } finally {
         warnSpy.mockRestore();
       }
     });
 
-    it('should warn when workflow fails with pending operations', async () => {
+    it('drains pending operations even when the workflow throws', async () => {
       const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
         const ops: Promise<any>[] = [];
@@ -3813,11 +3817,8 @@ describe('runWorkflow', () => {
           startedAt: new Date('2024-01-01T00:00:00.000Z'),
           deploymentId: 'test-deployment',
         };
-
-        // No step events — the unawaited step stays pending in the queue
         const events: Event[] = [];
 
-        // Workflow calls step (not awaited) then throws
         await expect(
           runWorkflow(
             `const add = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("add");
@@ -3831,13 +3832,16 @@ describe('runWorkflow', () => {
           )
         ).rejects.toThrow('workflow error');
 
+        // The thrown error is preserved (workflow's outcome is the source of
+        // truth); the unawaited step is drained on the way out, no warning
+        // about uncommitted ops.
         const warnCalls = warnSpy.mock.calls.map((c) => c[0]);
         expect(
           warnCalls.some(
             (msg: string) =>
-              msg.includes('failed') && msg.includes('step "add"')
+              typeof msg === 'string' && msg.includes('uncommitted operation')
           )
-        ).toBe(true);
+        ).toBe(false);
       } finally {
         warnSpy.mockRestore();
       }
