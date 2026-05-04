@@ -251,11 +251,6 @@ function PackageContents({
 }) {
   if (pkg.files.length === 0) return null;
 
-  // Group files by their top-level directory under `package/`. The leading
-  // `package/` prefix is just the npm convention for tarball contents and
-  // doesn't add information for a viewer.
-  const grouped = useMemo(() => groupByTopLevel(pkg.files), [pkg.files]);
-
   return (
     <details class={`contents contents-${variant}`}>
       <summary>
@@ -266,87 +261,150 @@ function PackageContents({
         </span>
       </summary>
       <div class="contents-body">
-        <ol class="contents-groups">
-          {grouped.map((group) => (
-            <ContentsGroup
-              key={group.label}
-              group={group}
-              total={pkg.unpackedSizeBytes}
-            />
-          ))}
-        </ol>
+        <SizeStats pkg={pkg} />
+        <FileTable files={pkg.files} />
       </div>
     </details>
   );
 }
 
-interface FileGroup {
-  label: string;
-  size: number;
-  files: { path: string; size: number }[];
+/**
+ * Two large prominent metric tiles, modeled after packagephobia's `Stats`
+ * widget — value + unit on top, uppercase label beneath. The headline
+ * numbers a viewer is most likely to want.
+ */
+function SizeStats({ pkg }: { pkg: PackedPackage }) {
+  return (
+    <div class="size-stats">
+      <SizeStat bytes={pkg.tarballSizeBytes} label="Publish size" />
+      <SizeStat bytes={pkg.unpackedSizeBytes} label="Unpacked size" />
+    </div>
+  );
 }
 
-function groupByTopLevel(files: { path: string; size: number }[]): FileGroup[] {
-  const groups = new Map<string, FileGroup>();
-  for (const f of files) {
-    // Strip `package/` prefix.
-    const stripped = f.path.startsWith('package/')
-      ? f.path.slice('package/'.length)
-      : f.path;
-    const slash = stripped.indexOf('/');
-    const label = slash === -1 ? '(root)' : stripped.slice(0, slash);
-    const inner = slash === -1 ? stripped : stripped.slice(slash + 1);
-    const existing = groups.get(label);
-    if (existing) {
-      existing.size += f.size;
-      existing.files.push({ path: inner, size: f.size });
-    } else {
-      groups.set(label, {
-        label,
+function SizeStat({ bytes, label }: { bytes: number; label: string }) {
+  const { value, unit } = splitSize(bytes);
+  return (
+    <div class="size-stat">
+      <div class="size-stat-row">
+        <span class="size-stat-value">{value}</span>
+        <span class="size-stat-unit">{unit}</span>
+      </div>
+      <div class="size-stat-label">{label}</div>
+    </div>
+  );
+}
+
+function splitSize(bytes: number): { value: string; unit: string } {
+  if (bytes < 1024) return { value: String(bytes), unit: 'B' };
+  if (bytes < 1024 * 1024)
+    return { value: (bytes / 1024).toFixed(1), unit: 'KiB' };
+  return { value: (bytes / 1024 / 1024).toFixed(2), unit: 'MiB' };
+}
+
+type SortKey = 'size' | 'path';
+type SortDir = 'asc' | 'desc';
+
+interface DisplayFile {
+  path: string;
+  size: number;
+}
+
+function FileTable({ files }: { files: DisplayFile[] }) {
+  const [sortKey, setSortKey] = useState<SortKey>('size');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  const stripped = useMemo<DisplayFile[]>(
+    () =>
+      files.map((f) => ({
+        path: f.path.startsWith('package/')
+          ? f.path.slice('package/'.length)
+          : f.path,
         size: f.size,
-        files: [{ path: inner, size: f.size }],
-      });
+      })),
+    [files]
+  );
+
+  const sorted = useMemo(() => {
+    const arr = [...stripped];
+    arr.sort((a, b) => {
+      const cmp =
+        sortKey === 'size' ? a.size - b.size : a.path.localeCompare(b.path);
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return arr;
+  }, [stripped, sortKey, sortDir]);
+
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir(key === 'size' ? 'desc' : 'asc');
     }
   }
-  const arr = Array.from(groups.values());
-  for (const g of arr) {
-    g.files.sort((a, b) => b.size - a.size);
-  }
-  arr.sort((a, b) => b.size - a.size);
-  return arr;
+
+  const ariaSortFor = (key: SortKey) =>
+    sortKey === key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none';
+
+  return (
+    <div class="file-table-wrap">
+      <table class="file-table">
+        <thead>
+          <tr>
+            <th aria-sort={ariaSortFor('path')}>
+              <button
+                type="button"
+                class="sort-btn"
+                onClick={() => toggleSort('path')}
+              >
+                File
+                <SortIndicator
+                  active={sortKey === 'path'}
+                  direction={sortDir}
+                />
+              </button>
+            </th>
+            <th class="file-table-size" aria-sort={ariaSortFor('size')}>
+              <button
+                type="button"
+                class="sort-btn"
+                onClick={() => toggleSort('size')}
+              >
+                Size
+                <SortIndicator
+                  active={sortKey === 'size'}
+                  direction={sortDir}
+                />
+              </button>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((f) => (
+            <tr key={f.path}>
+              <td class="file-path">{f.path}</td>
+              <td class="file-size">{formatBytes(f.size)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
-function ContentsGroup({ group, total }: { group: FileGroup; total: number }) {
-  const pct = total === 0 ? 0 : (group.size / total) * 100;
+function SortIndicator({
+  active,
+  direction,
+}: {
+  active: boolean;
+  direction: SortDir;
+}) {
+  if (!active) return <span class="sort-indicator" aria-hidden="true" />;
   return (
-    <li class="contents-group">
-      <div class="contents-group-header">
-        <span class="contents-group-label">{group.label}</span>
-        <span class="contents-group-bar" aria-hidden="true">
-          <span
-            class="contents-group-bar-fill"
-            style={{ width: `${pct.toFixed(1)}%` }}
-          />
-        </span>
-        <span class="contents-group-size">
-          {formatBytes(group.size)}{' '}
-          <span class="contents-group-pct">{pct.toFixed(1)}%</span>
-        </span>
-      </div>
-      <ol class="contents-files">
-        {group.files.slice(0, 50).map((f) => (
-          <li key={f.path}>
-            <span class="contents-file-path">{f.path}</span>
-            <span class="contents-file-size">{formatBytes(f.size)}</span>
-          </li>
-        ))}
-        {group.files.length > 50 && (
-          <li class="contents-file-more">
-            …and {group.files.length - 50} more
-          </li>
-        )}
-      </ol>
-    </li>
+    <span class="sort-indicator sort-indicator-active" aria-hidden="true">
+      {direction === 'asc' ? '↑' : '↓'}
+    </span>
   );
 }
 
