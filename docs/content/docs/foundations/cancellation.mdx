@@ -354,6 +354,10 @@ export async function POST(request: Request) {
 }
 ```
 
+<Callout type="info">
+Calling `run.cancel()` is the same action as clicking the **Cancel** button on a run in the observability UI — both produce identical `run_cancelled` events in the event log.
+</Callout>
+
 When a run is cancelled:
 - The workflow stops at its next suspension point (step call, hook await, or sleep)
 - A `run_cancelled` event is recorded in the [event log](/docs/how-it-works/event-sourcing)
