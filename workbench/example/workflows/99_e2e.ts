@@ -1771,6 +1771,55 @@ async function stepThatThrowsIfAborted(signal: AbortSignal) {
 }
 
 /**
+ * Step that resolves via `signal.addEventListener('abort', ...)`. Tests the
+ * listener path on the deserialized signal — the path fetch's internal
+ * cancellation uses, but invoked directly. Resolves with `via: 'listener'`
+ * if the listener fired, or `via: 'timeout'` if propagation failed and the
+ * 30s safety timeout won.
+ */
+async function stepWaitingOnAbortListener(
+  signal: AbortSignal
+): Promise<{ saw: boolean; via: 'listener' | 'timeout' }> {
+  'use step';
+  return new Promise((resolve) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      resolve({ saw: true, via: 'listener' });
+    };
+    if (signal.aborted) {
+      // Already aborted — listener should fire immediately when added per spec
+      // (or we can shortcut here for clarity).
+      resolve({ saw: true, via: 'listener' });
+      return;
+    }
+    signal.addEventListener('abort', onAbort);
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      resolve({ saw: signal.aborted, via: 'timeout' });
+    }, 30_000);
+  });
+}
+
+/**
+ * Step that polls `signal.throwIfAborted()` every 500ms. When the abort
+ * fires mid-flight, throwIfAborted throws a DOMException — which the step
+ * handler wraps as FatalError before it reaches the workflow. Returns the
+ * natural-completion value if propagation fails and the loop runs out.
+ */
+async function stepPollingThrowIfAborted(signal: AbortSignal): Promise<string> {
+  'use step';
+  for (let i = 0; i < 60; i++) {
+    signal.throwIfAborted();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return 'completed';
+}
+
+/**
  * E2E: Abort reason propagation with various types.
  * Tests that string, object, and undefined reasons all propagate correctly.
  */
@@ -1906,6 +1955,112 @@ export async function abortDeterministicBranchWorkflow() {
     result,
     aborted: state.aborted,
     reason: state.reason,
+  };
+}
+
+/**
+ * E2E: Listener-based reaction to abort. Tests that
+ * `signal.addEventListener('abort', ...)` on the deserialized step-side
+ * signal actually fires when the cancellation packet arrives — the same
+ * path fetch's internal cancellation uses, but exercised directly so a
+ * regression here can't be papered over by fetch-specific behavior.
+ */
+export async function abortListenerWorkflow() {
+  'use workflow';
+  const controller = new AbortController();
+
+  // Listener step + delayed-abort step run in parallel. If listener
+  // propagation works, the listener resolves the step within ~1s.
+  const [stepResult] = await Promise.all([
+    stepWaitingOnAbortListener(controller.signal),
+    abortFromStep(controller, 1000),
+  ]);
+
+  return { stepResult };
+}
+
+/**
+ * E2E: `throwIfAborted()` mid-flight. Distinct from
+ * `abortThrowIfAbortedWorkflow` which only tests the synchronous-throw case
+ * on an already-aborted signal. Here the signal starts non-aborted, the step
+ * polls `signal.throwIfAborted()` in a loop, and a sibling step aborts after
+ * 1s. The DOMException thrown by `throwIfAborted` should bubble out of the
+ * step as a FatalError (no retries) and propagate to the workflow.
+ */
+export async function abortThrowIfAbortedMidFlightWorkflow() {
+  'use workflow';
+  const controller = new AbortController();
+
+  try {
+    const [result] = await Promise.all([
+      stepPollingThrowIfAborted(controller.signal),
+      abortFromStep(controller, 1000),
+    ]);
+    return { threw: false, result };
+  } catch (err: any) {
+    return {
+      threw: true,
+      message: err.message,
+      isFatal: err.name === 'FatalError' || err.fatal === true,
+    };
+  }
+}
+
+/**
+ * E2E: Deterministic branching when the abort comes from a STEP (not the
+ * workflow body itself). Counterpart to `abortDeterministicBranchWorkflow`,
+ * which tests the case where the workflow code calls `abort()` directly.
+ *
+ * The pair of `signal.aborted` reads must each take the same branch on the
+ * first run and on every replay — even though the abort is recorded as a
+ * `hook_received` event written by a step that runs on a different compute
+ * instance. If signal.aborted flipped at the wrong logical point during
+ * replay (e.g. immediately when the events consumer first sees the event,
+ * rather than chained through promiseQueue at the suspension boundary that
+ * matches the original flow), the branches would diverge across runs.
+ */
+export async function abortDeterministicBranchFromStepWorkflow() {
+  'use workflow';
+  const controller = new AbortController();
+
+  // Pre-abort read. MUST be false on first-run AND replay.
+  const beforeAborted = controller.signal.aborted;
+  let beforeBranch: string;
+  if (beforeAborted) {
+    beforeBranch = 'unexpected-aborted'; // Should NEVER happen
+  } else {
+    beforeBranch = 'pre-abort'; // Should ALWAYS happen
+  }
+
+  // Step that aborts the controller via the patched abort() path. Writes
+  // hook_received to the event log (and a stream cancellation packet) before
+  // returning.
+  await abortFromStep(controller);
+
+  // A suspension is required after the step before the workflow's signal
+  // reflects the abort. Step-initiated aborts go through the events consumer:
+  // when `hook_received` is processed during replay, `signal._setAborted` is
+  // chained on `promiseQueue.then(...)` in `workflow/abort-controller.ts`,
+  // which only runs at the next checkpoint that drains the promise queue —
+  // not synchronously after the step's await resolves. This mirrors how
+  // step return values become visible: only at a suspension boundary.
+  await sleep('1s');
+
+  // Post-abort read. MUST be true on first-run AND replay — the events
+  // consumer has now drained `_setAborted` for the hook_received event.
+  const afterAborted = controller.signal.aborted;
+  let afterBranch: string;
+  if (afterAborted) {
+    afterBranch = 'post-abort'; // Should ALWAYS happen
+  } else {
+    afterBranch = 'unexpected-not-aborted'; // Should NEVER happen
+  }
+
+  return {
+    beforeAborted,
+    beforeBranch,
+    afterAborted,
+    afterBranch,
   };
 }
 

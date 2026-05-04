@@ -2687,6 +2687,66 @@ describe('e2e', () => {
       }
     );
 
+    test(
+      'abortListenerWorkflow: signal.addEventListener fires on the deserialized step signal',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortListenerWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step resolves via its own abort listener (not via the safety
+        // timeout). If `via` is 'timeout', the listener never fired even
+        // though signal.aborted may have flipped — i.e. the addEventListener
+        // path on the deserialized signal is broken.
+        expect(returnValue.stepResult.saw).toBe(true);
+        expect(returnValue.stepResult.via).toBe('listener');
+      }
+    );
+
+    test(
+      'abortThrowIfAbortedMidFlightWorkflow: throwIfAborted in a polling loop bails when abort fires',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(
+          await e2e('abortThrowIfAbortedMidFlightWorkflow'),
+          []
+        );
+        const returnValue = await run.returnValue;
+
+        // The polling step's throwIfAborted() throws a DOMException once the
+        // abort fires mid-flight. The step handler wraps that as FatalError
+        // (no retries). A `result: 'completed'` would mean the abort never
+        // reached the polling step.
+        expect(returnValue.threw).toBe(true);
+        expect(returnValue.isFatal).toBe(true);
+      }
+    );
+
+    test(
+      'abortDeterministicBranchFromStepWorkflow: branches stay consistent when abort comes from a step',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(
+          await e2e('abortDeterministicBranchFromStepWorkflow'),
+          []
+        );
+        const returnValue = await run.returnValue;
+
+        // The pre-abort read MUST be false. If it ever becomes true on
+        // replay (e.g., the events consumer sets signal.aborted before the
+        // workflow code reads it), this branch would flip and break replay
+        // determinism.
+        expect(returnValue.beforeAborted).toBe(false);
+        expect(returnValue.beforeBranch).toBe('pre-abort');
+
+        // After a suspension boundary that drains the promise queue, the
+        // events consumer's pending `_setAborted` chained on hook_received
+        // has run. Post-abort read MUST be true on first-run AND replay.
+        expect(returnValue.afterAborted).toBe(true);
+        expect(returnValue.afterBranch).toBe('post-abort');
+      }
+    );
+
     // Matrix of abort + hook ordering: 4 combinations
     // Tests that the log order is deterministic across first-run and replay
     // TODO: These tests require the abort controller's internal system hook
