@@ -1,0 +1,120 @@
+---
+title: Frequently Asked Questions
+description: Common questions about Workflow DevKit covering troubleshooting, migration, compatibility, and advanced usage.
+type: guide
+summary: Answers to common questions about streaming, debugging, migration, and WorkflowChatTransport.
+---
+
+## Getting unstuck
+
+### Why does my stream stop when the user refreshes the page?
+
+With standard streaming, the response is tied to a single HTTP connection. When the page reloads, the connection closes and the response is lost. Use [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) to make the stream durable. The workflow keeps running on the server, and the client reconnects to the same run using the `runId`. See [Resumable Streams](/docs/ai/resumable-streams).
+
+### Why is my workflow step failing silently?
+
+Open the Workflow Web UI locally and inspect the step execution trace:
+
+```bash
+npx workflow inspect runs --web
+```
+
+The step debugger shows the state of each step, including failures that do not surface in console logs. Click into a run to see the full step trace, retry attempts, and error details. See [Observability](/docs/observability).
+
+### Why does `WorkflowChatTransport` ignore my custom body fields?
+
+`WorkflowChatTransport` shapes its POST body differently than the default AI SDK transport. To add custom fields, use the `prepareSendMessagesRequest` hook:
+
+```typescript
+import { WorkflowChatTransport } from "@workflow/ai";
+
+new WorkflowChatTransport({
+  prepareSendMessagesRequest: async (config) => ({
+    ...config,
+    body: {
+      ...config.body,
+      customField: "value",
+    },
+  }),
+})
+```
+
+See the [`WorkflowChatTransport` API Reference](/docs/api-reference/workflow-ai/workflow-chat-transport) for all options.
+
+### Why does streaming need to live inside a step?
+
+Workflow functions must be deterministic to support replay. Since streams bypass the [event log](/docs/how-it-works/event-sourcing) for performance, reading stream data in a workflow function would break determinism. By requiring all stream operations to happen in steps, the framework ensures consistent behavior across replays. See [Streaming](/docs/foundations/streaming#important-limitation).
+
+### My reconnection endpoint returns an empty stream. What is wrong?
+
+Check that the `runId` in the reconnection URL matches the run you want to resume. You can inspect the run in the Web UI or CLI (the run does not need to be active to connect to a stream):
+
+```bash
+npx workflow inspect runs
+```
+
+Also check that the `startIndex` query parameter is not set beyond the number of chunks the run has produced. If omitted, the stream starts from the beginning.
+
+## Migration
+
+### How do I migrate from ephemeral streaming to durable streaming?
+
+The core changes are:
+
+1. Move generation into a workflow function
+2. Stream through `DurableAgent` and `getWritable()`
+3. Return the `runId` in the response headers
+4. Add a reconnection endpoint using `getRun()`
+5. Use `WorkflowChatTransport` on the client
+
+See the full walkthrough in [Migrate from Ephemeral to Durable Streaming](/docs/foundations/migrate-ephemeral-streaming).
+
+### Can I migrate incrementally?
+
+Yes. Start with one route or feature. Workflow does not require restructuring your entire app. The `"use workflow"` directive and `"use step"` wrapper are additive changes to existing route handlers. Other routes continue working as before.
+
+### What do I get after migrating?
+
+Retries and observability come built in. You do not need to wire a separate retry system or logging infrastructure. The [local dev tools and step debugger](/docs/observability) are available immediately for debugging during development.
+
+## Compatibility
+
+### Can I run workflows locally during development?
+
+Yes. Workflow runs locally with full dev tools, including the step debugger and execution trace viewer. The [Local World](/docs/deploying/world/local-world) is bundled and requires zero configuration. Run `npx workflow inspect runs --web` to open the Web UI.
+
+### Does Workflow work with the AI SDK?
+
+Yes. Workflow integrates with `streamText`, `generateText`, and other AI SDK functions through [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent). Wrap AI SDK calls inside step functions and use `WorkflowChatTransport` on the client for durable streaming with reconnection.
+
+### Which frameworks does Workflow support?
+
+Workflow DevKit supports Next.js, Vite, Astro, Express, Fastify, Hono, Nitro, Nuxt, SvelteKit, and NestJS. See the [Getting Started](/docs/getting-started) guides for framework-specific setup instructions.
+
+### Can I use `DurableAgent` instead of manual step composition?
+
+Yes. `DurableAgent` is designed for agentic workloads where the task outlives a single request-response cycle. It fits naturally with Workflow's execution model and gives you the same retries, observability, and local tooling. See [Building Durable AI Agents](/docs/ai).
+
+## Advanced usage
+
+### How does stream reconnection work after a network failure?
+
+1. The client stores the `runId` from the initial workflow response header
+2. If the stream is interrupted before receiving a "finish" chunk, `WorkflowChatTransport` automatically reconnects
+3. The reconnection request includes the `startIndex` of the last chunk received
+4. The server returns the stream from that position forward
+5. The client continues rendering from where it left off
+
+See [Resumable Streams](/docs/ai/resumable-streams) for a complete implementation.
+
+### How do I handle user input mid-workflow?
+
+Use [hooks](/docs/foundations/hooks). Workflow hooks pause execution and wait for external input before continuing. This fits use cases like confirmations, approvals, or user choices during a multi-step AI flow. See [Human in the Loop](/docs/ai/human-in-the-loop).
+
+### What happens to in-progress runs when I redeploy?
+
+This depends on the [World](/docs/deploying) you are using. With the [Vercel World](/docs/deploying/world/vercel-world), runs continue to run on their original deployment, so deploying comes without risk. With the [Local World](/docs/deploying/world/local-world), the in-memory queue does not persist across server restarts, so in-progress runs will not resume.
+
+### Can multiple clients read the same stream?
+
+Yes. Multiple clients can connect to the same run's stream using `getRun(runId).getReadable()`. Each client gets its own `ReadableStream` instance. Use the `startIndex` parameter to control where each client starts reading from.

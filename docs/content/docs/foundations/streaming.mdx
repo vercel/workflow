@@ -12,6 +12,20 @@ related:
 
 Workflows can stream data in real-time to clients without waiting for the entire workflow to complete. This enables progress updates, AI-generated content, log messages, and other incremental data to be delivered as workflows execute.
 
+## Why durable streaming
+
+Standard streaming ties the response to a single HTTP connection. If the connection breaks, the response is lost. The server may still be generating, but the client has no way back in.
+
+Workflow streaming is durable. The stream is attached to a workflow run, not to a single request. This changes the failure model:
+
+- **Page refresh**: The client reconnects to the same run instead of starting over
+- **Network drop**: The workflow continues on the server and the client resumes from where it left off
+- **Function timeout**: The run persists and the client can reconnect to the in-progress stream
+
+For AI chat interfaces, use [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport) to handle client-side reconnection automatically. See [Resumable Streams](/docs/ai/resumable-streams) for a complete implementation.
+
+To migrate an existing app from ephemeral streaming to durable streaming, see [Migrate from Ephemeral to Durable Streaming](/docs/foundations/migrate-ephemeral-streaming).
+
 ## Getting Started with `getWritable()`
 
 Every workflow run has a default writable stream that steps can write to using [`getWritable()`](/docs/api-reference/workflow/get-writable). Data written to this stream becomes immediately available to clients consuming the workflow's output.

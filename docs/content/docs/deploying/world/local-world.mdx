@@ -12,6 +12,12 @@ related:
 
 The Local World is bundled with `workflow` and used automatically during local development. No installation or configuration required.
 
+## Why local development matters
+
+Workflow runs locally with the same execution model as production. You can inspect step traces, catch silent failures, and iterate on workflows without deploying first. The [Workflow Web UI](/docs/observability) and step debugger work against local runs, giving you full visibility into step execution, retries, and stream output during development.
+
+This means you can debug a failing step on your machine instead of reproducing it in production. If a step completes without producing the expected output, the local Web UI shows the exact execution state, including steps that failed silently.
+
 To explicitly use the local world in any environment, set the environment variable:
 
 ```bash
@@ -81,4 +87,4 @@ The local world is designed for development, not production:
 - **Single instance** - Cannot handle distributed deployments
 - **No authentication** - Suitable only for local development
 
-For production deployments, use the [Vercel World](/worlds/vercel) or [Postgres World](/worlds/postgres).
+For production deployments, use the [Vercel World](/docs/deploying/world/vercel-world) or [Postgres World](/docs/deploying/world/postgres-world).

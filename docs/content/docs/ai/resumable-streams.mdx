@@ -194,8 +194,44 @@ This avoids replaying potentially thousands of chunks and lets the UI render fas
 When using a negative `initialStartIndex`, the reconnection endpoint **must** return the `x-workflow-stream-tail-index` header (as shown in [Step 2](#add-a-stream-reconnection-endpoint) above). The transport uses this header to compute absolute chunk positions so that retries after a disconnect resume from the correct position. If the header is missing, the transport falls back to `startIndex: 0` (replaying the entire stream) and logs a warning.
 </Callout>
 
+## Common gotchas
+
+<Callout type="warn">
+**Request body customization**
+
+`WorkflowChatTransport` shapes its POST body differently than the default AI SDK transport. If you need custom fields in the request body (such as a model selector, temperature, or session metadata), use the `prepareSendMessagesRequest` hook to override the request:
+
+```typescript
+import { WorkflowChatTransport } from "@workflow/ai";
+
+new WorkflowChatTransport({
+  prepareSendMessagesRequest: async (config) => ({
+    ...config,
+    body: {
+      ...config.body,
+      model: "anthropic/claude-haiku-4.5",
+      temperature: 0.7,
+    },
+  }),
+})
+```
+</Callout>
+
+<Callout type="info">
+**Debugging reconnection locally**
+
+If reconnection is not working as expected, open the [Workflow Web UI](/docs/observability) to inspect the run state:
+
+```bash
+npx workflow inspect runs --web
+```
+
+Check that the `startIndex` in the reconnection request matches the last chunk the client received. The Web UI shows the full step trace, including stream chunk counts. Note that the run does not need to be active to connect to a stream.
+</Callout>
 ## Related Documentation
 
+- [Migrate from Ephemeral to Durable Streaming](/docs/foundations/migrate-ephemeral-streaming) - Step-by-step migration guide
 - [`WorkflowChatTransport` API Reference](/docs/api-reference/workflow-ai/workflow-chat-transport) - Full configuration options
 - [Streaming](/docs/foundations/streaming) - Understanding workflow streams
 - [`getRun()` API Reference](/docs/api-reference/workflow-api/get-run) - Retrieving existing runs
+- [FAQ](/docs/faq) - Common troubleshooting questions

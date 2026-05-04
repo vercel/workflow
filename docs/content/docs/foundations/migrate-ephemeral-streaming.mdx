@@ -1,0 +1,274 @@
+---
+title: Migrate from Ephemeral to Durable Streaming
+description: Move an existing AI chat app from brittle, single-connection streaming to durable, reconnectable streaming with Workflow DevKit.
+type: guide
+summary: Convert ephemeral AI streaming to durable streaming that survives page refreshes and network failures.
+prerequisites:
+  - /docs/foundations/streaming
+  - /docs/ai
+related:
+  - /docs/ai/resumable-streams
+  - /docs/api-reference/workflow-ai/workflow-chat-transport
+  - /docs/observability
+---
+
+If your AI app streams responses over a single HTTP connection, a page reload or network interruption kills the response. The user starts over. The server may still be generating, but the client has no way back in.
+
+This guide shows how to move from ephemeral streaming to durable streaming with Workflow DevKit. After this migration, the workflow keeps running when the client disconnects, and the client reconnects to the same in-progress run.
+
+If you are starting a new agent from scratch, start with [Building Durable AI Agents](/docs/ai). Use this guide when you already have a single-connection streaming route and want the smallest migration path to reconnectable streams.
+
+## What changes
+
+| | Ephemeral streaming | Durable streaming |
+| --- | --- | --- |
+| **Connection model** | Response tied to a single HTTP connection | Response tied to a durable workflow run |
+| **Page refresh** | Response lost, user starts over | Client reconnects to the same run |
+| **Network drop** | Response lost | Workflow continues on server, client resumes |
+| **Retries** | Manual implementation required | Built into workflow steps |
+| **Observability** | Custom logging | Built-in step tracing and Web UI |
+| **Local debugging** | Console logs | Step debugger with execution trace |
+
+## Example
+
+We will migrate a chat app that streams AI responses using the AI SDK. The app currently uses a standard route handler with `streamText`.
+
+We will start with wrapping the generation in a workflow step, then expose the `runId`, and finally swap in `WorkflowChatTransport` for reconnectable client streaming.
+
+<Steps>
+
+<Step>
+
+### Move generation into a workflow step
+
+The existing app streams directly from a route handler. The response lives and dies with the HTTP connection.
+
+```typescript title="app/api/chat/route.ts" lineNumbers
+import { streamText } from "ai";
+import { openai } from "@ai-sdk/openai";
+
+export async function POST(req: Request) {
+  const { messages } = await req.json();
+
+  const result = streamText({
+    model: openai("gpt-4o"),
+    messages,
+  });
+
+  return result.toUIMessageStreamResponse();
+}
+```
+
+Add the `"use workflow"` directive and move the generation into a workflow function using `DurableAgent`. `DurableAgent` internally executes each LLM call as a durable step, so you do not need to wrap it in a separate step function.
+
+```typescript title="workflows/chat/workflow.ts" lineNumbers
+import { DurableAgent } from "@workflow/ai/agent"; // [!code highlight]
+import { getWritable } from "workflow"; // [!code highlight]
+import type { ModelMessage, UIMessageChunk } from "ai";
+
+export async function chatWorkflow(messages: ModelMessage[]) { // [!code highlight]
+  "use workflow"; // [!code highlight]
+
+  const writable = getWritable<UIMessageChunk>(); // [!code highlight]
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    system: "You are a helpful assistant.",
+  });
+
+  await agent.stream({ // [!code highlight]
+    messages,
+    writable,
+  }); // [!code highlight]
+}
+```
+
+```typescript title="app/api/chat/route.ts" lineNumbers
+import type { UIMessage } from "ai";
+import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
+import { start } from "workflow/api"; // [!code highlight]
+import { chatWorkflow } from "@/workflows/chat/workflow";
+
+export async function POST(req: Request) {
+  const { messages }: { messages: UIMessage[] } = await req.json();
+  const modelMessages = convertToModelMessages(messages); // [!code highlight]
+
+  const run = await start(chatWorkflow, [modelMessages]); // [!code highlight]
+
+  return createUIMessageStreamResponse({ // [!code highlight]
+    stream: run.readable, // [!code highlight]
+  }); // [!code highlight]
+}
+```
+
+The generation now runs inside a durable workflow. `DurableAgent` executes each LLM call as a step, so you get automatic retries and observability for every call.
+
+Verify by running the app locally and opening the [Workflow Web UI](/docs/observability):
+
+```bash
+npx workflow inspect runs --web
+```
+
+Confirm the step appears in the execution trace.
+
+</Step>
+
+<Step>
+
+### Return the run ID for reconnection
+
+Each workflow execution gets a `runId`. The client needs this ID to reconnect after a disconnect.
+
+Return the `runId` in a response header so the client can store it:
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript title="app/api/chat/route.ts" lineNumbers
+// ... existing imports and workflow ...
+
+export async function POST(req: Request) {
+  const { messages }: { messages: UIMessage[] } = await req.json();
+  const modelMessages = convertToModelMessages(messages);
+
+  const run = await start(chatWorkflow, [modelMessages]);
+
+  return createUIMessageStreamResponse({
+    stream: run.readable,
+    headers: { // [!code highlight]
+      "x-workflow-run-id": run.runId, // [!code highlight]
+    }, // [!code highlight]
+  });
+}
+```
+
+Add a reconnection endpoint that returns the stream for an existing run:
+
+```typescript title="app/api/chat/[id]/stream/route.ts" lineNumbers
+import { createUIMessageStreamResponse } from "ai";
+import { getRun } from "workflow/api"; // [!code highlight]
+
+export async function GET(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params;
+  const { searchParams } = new URL(request.url);
+
+  const startIndexParam = searchParams.get("startIndex"); // [!code highlight]
+  const startIndex = startIndexParam
+    ? parseInt(startIndexParam, 10)
+    : undefined;
+
+  const run = getRun(id); // [!code highlight]
+  const stream = run.getReadable({ startIndex }); // [!code highlight]
+  const tailIndex = await stream.getTailIndex(); // [!code highlight]
+
+  return createUIMessageStreamResponse({
+    stream,
+    headers: { // [!code highlight]
+      "x-workflow-stream-tail-index": String(tailIndex), // [!code highlight]
+    }, // [!code highlight]
+  });
+}
+```
+
+The `startIndex` parameter lets the client resume from the last chunk it received, so no data is duplicated or lost.
+
+</Step>
+
+<Step>
+
+### Use WorkflowChatTransport on the client
+
+Replace the default transport with [`WorkflowChatTransport`](/docs/api-reference/workflow-ai/workflow-chat-transport). This transport handles storing the run ID and reconnecting to in-progress runs automatically.
+
+```typescript title="app/page.tsx" lineNumbers
+"use client";
+
+import { useChat } from "@ai-sdk/react";
+import { WorkflowChatTransport } from "@workflow/ai"; // [!code highlight]
+import { useMemo, useState } from "react";
+
+export default function ChatPage() {
+  const activeRunId = useMemo(() => {
+    if (typeof window === "undefined") return;
+    return localStorage.getItem("active-workflow-run-id") ?? undefined;
+  }, []);
+
+  const { messages, sendMessage, status } = useChat({
+    resume: Boolean(activeRunId), // [!code highlight]
+    transport: new WorkflowChatTransport({ // [!code highlight]
+      api: "/api/chat",
+      onChatSendMessage: (response) => {
+        const workflowRunId = response.headers.get("x-workflow-run-id");
+        if (workflowRunId) {
+          localStorage.setItem("active-workflow-run-id", workflowRunId);
+        }
+      },
+      onChatEnd: () => {
+        localStorage.removeItem("active-workflow-run-id");
+      },
+      prepareReconnectToStreamRequest: ({ api, ...rest }) => {
+        const runId = localStorage.getItem("active-workflow-run-id");
+        if (!runId) throw new Error("No active workflow run ID found");
+        return {
+          ...rest,
+          api: `/api/chat/${encodeURIComponent(runId)}/stream`,
+        };
+      },
+    }), // [!code highlight]
+  });
+
+  // ... render your chat UI
+}
+```
+
+Verify reconnection by starting a long response, refreshing the page mid-stream, and confirming the client picks up where it left off. Open the Workflow Web UI locally to inspect the step trace and confirm the run continued through the refresh.
+
+</Step>
+
+</Steps>
+
+## Common gotchas
+
+<Callout type="warn">
+**`WorkflowChatTransport` request body shape**
+
+`WorkflowChatTransport` shapes its POST body differently than the default AI SDK transport. If you need custom fields in the request body, use the `prepareSendMessagesRequest` hook:
+
+```typescript
+import { WorkflowChatTransport } from "@workflow/ai";
+
+new WorkflowChatTransport({
+  prepareSendMessagesRequest: async (config) => ({
+    ...config,
+    body: {
+      ...config.body,
+      customField: "value",
+    },
+  }),
+})
+```
+
+See the [`WorkflowChatTransport` API reference](/docs/api-reference/workflow-ai/workflow-chat-transport) for all configuration options.
+</Callout>
+
+<Callout type="info">
+**Streaming must live inside a step**
+
+You cannot read from or write to streams directly within a workflow function. All stream operations must happen in step functions. This constraint enables Workflow to track, retry, and observe the streaming operation as a discrete unit. See [Streaming](/docs/foundations/streaming#important-limitation) for details.
+</Callout>
+
+## What you get after migrating
+
+- **Retries** built into workflow steps, without custom retry logic
+- **Observability** through the Workflow Web UI and CLI, without wiring a separate system
+- **Local debugging** with the step debugger to inspect runs, traces, and step state on your machine
+- **Reconnectable streams** that survive page refreshes, network drops, and function timeouts
+
+## Related Documentation
+
+- [Resumable Streams](/docs/ai/resumable-streams) - Detailed guide on stream resumption with `WorkflowChatTransport`
+- [Streaming](/docs/foundations/streaming) - Core streaming concepts and patterns
+- [`WorkflowChatTransport` API Reference](/docs/api-reference/workflow-ai/workflow-chat-transport) - Full configuration options
+- [Observability](/docs/observability) - Inspecting and debugging workflows
+- [Building Durable AI Agents](/docs/ai) - Complete guide to `DurableAgent`

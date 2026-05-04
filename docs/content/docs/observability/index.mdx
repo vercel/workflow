@@ -42,6 +42,21 @@ npx workflow inspect runs --web
 
 ![Workflow SDK Web UI](/o11y-ui.png)
 
+### Debugging silent step failures
+
+The Web UI is useful for catching steps that fail without producing visible errors. Click into a run to see the full step trace. Each step shows its status, duration, retry count, and any errors.
+
+For example, if a step completes but produces no output, the Web UI shows whether the step was retried, how long it took, and what data it returned. This is information that standard console logs often miss.
+
+To debug a specific run:
+
+1. Open the Web UI with `npx workflow inspect runs --web`
+2. Click into the run that is behaving unexpectedly
+3. Inspect the step trace to find steps that failed, were retried, or returned unexpected data
+4. Check the stream output tab to verify that the expected chunks were written
+
+This workflow works against both local and production runs. Use `--backend vercel` to inspect production workflows remotely.
+
 ## Backends
 
 The Workflow SDK CLI can inspect data from any [World](/docs/deploying). By default, it inspects data in your local development environment. For example, if you are using Next.js to develop workflows locally, the

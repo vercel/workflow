@@ -6,6 +6,7 @@
     "errors-and-retries",
     "hooks",
     "streaming",
+    "migrate-ephemeral-streaming",
     "serialization",
     "idempotency"
   ],
