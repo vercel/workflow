@@ -1,4 +1,5 @@
 import type { Span } from '@opentelemetry/api';
+import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   HookNotFoundError,
@@ -21,7 +22,6 @@ import type {
 import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
-import { waitUntil } from '../util.js';
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;

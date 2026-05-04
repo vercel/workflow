@@ -1,34 +1,6 @@
 import http from 'node:http';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  buildWorkflowSuspensionMessage,
-  getWorkflowRunStreamId,
-  waitUntil,
-} from './util';
-
-const SYMBOL_FOR_REQ_CONTEXT = Symbol.for('@vercel/request-context');
-
-afterEach(() => {
-  delete (globalThis as Record<symbol, unknown>)[SYMBOL_FOR_REQ_CONTEXT];
-});
-
-describe('waitUntil', () => {
-  it('should forward promises to the Vercel request context when present', () => {
-    const promise = Promise.resolve();
-    const waitUntilMock = vi.fn();
-    (globalThis as Record<symbol, unknown>)[SYMBOL_FOR_REQ_CONTEXT] = {
-      get: () => ({ waitUntil: waitUntilMock }),
-    };
-
-    waitUntil(promise);
-
-    expect(waitUntilMock).toHaveBeenCalledWith(promise);
-  });
-
-  it('should be a no-op when the Vercel request context is absent', () => {
-    expect(() => waitUntil(Promise.resolve())).not.toThrow();
-  });
-});
+import { describe, expect, it } from 'vitest';
+import { buildWorkflowSuspensionMessage, getWorkflowRunStreamId } from './util';
 
 describe('buildWorkflowSuspensionMessage', () => {
   it('should return null when both counts are zero', () => {

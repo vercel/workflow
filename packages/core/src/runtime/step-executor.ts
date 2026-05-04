@@ -1,3 +1,4 @@
+import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -27,7 +28,6 @@ import {
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
-import { waitUntil } from '../util.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 

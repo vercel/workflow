@@ -19,6 +19,11 @@ import type { WorkflowFunction } from './start.js';
 import { start } from './start.js';
 import { setWorld } from './world.js';
 
+// Mock @vercel/functions
+vi.mock('@vercel/functions', () => ({
+  waitUntil: vi.fn(),
+}));
+
 // Mock telemetry
 vi.mock('../telemetry.js', () => ({
   serializeTraceCarrier: vi.fn().mockResolvedValue({}),

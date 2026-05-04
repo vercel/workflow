@@ -1,31 +1,5 @@
+import { waitUntil } from '@vercel/functions';
 import { pluralize } from '@workflow/utils';
-
-const SYMBOL_FOR_REQ_CONTEXT = Symbol.for('@vercel/request-context');
-
-export function waitUntil(promise: Promise<unknown>): void {
-  if (
-    promise === null ||
-    typeof promise !== 'object' ||
-    typeof promise.then !== 'function'
-  ) {
-    throw new TypeError(
-      `waitUntil can only be called with a Promise, got ${typeof promise}`
-    );
-  }
-
-  const requestContext = (
-    globalThis as Record<
-      symbol,
-      | {
-          get?: () =>
-            | { waitUntil?: (promise: Promise<unknown>) => void }
-            | undefined;
-        }
-      | undefined
-    >
-  )[SYMBOL_FOR_REQ_CONTEXT];
-  requestContext?.get?.()?.waitUntil?.(promise);
-}
 
 /**
  * Builds a workflow suspension log message based on the counts of steps,

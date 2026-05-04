@@ -1,3 +1,4 @@
+import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
   FatalError,
@@ -34,7 +35,6 @@ import {
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
-import { waitUntil } from '../util.js';
 import { MAX_QUEUE_DELIVERIES } from './constants.js';
 import {
   getQueueOverhead,
