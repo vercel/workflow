@@ -39,8 +39,11 @@ jobs:
         if: steps.find-comment.outputs.comment-id != ''
         id: get-comment
         uses: actions/github-script@v7
+        env:
+          STARTED_AT: ${{ github.run_started_at }}
         with:
           script: |
+            const fs = require('fs');
             const comment = await github.rest.issues.getComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -49,7 +52,7 @@ jobs:
             // Extract the results section (everything after the header and running message)
             const body = comment.data.body;
             // Remove any existing stale warning and running message
-            let resultsSection = body
+            const resultsSection = body
               .replace(/<!-- benchmark-results -->\n## 📊 Benchmark Results\n\n> ⚠️ \*\*Results below are stale\*\*[^\n]*\n\n/g, '')
               .replace(/<!-- benchmark-results -->\n## 📊 Benchmark Results\n\n/g, '')
               .replace(/⏳ \*\*Benchmarks are running\.\.\.\*\*\n\n---\n_Started at:[^_]*_\n\n---\n\n/g, '')
@@ -58,8 +61,25 @@ jobs:
 
             // If there's actual content left (benchmark tables), save it
             if (resultsSection && resultsSection.includes('|')) {
+              // Write the full stale-banner message to disk and pass the
+              // path to the sticky-pull-request-comment action below.
+              // Inlining the previous results via `message:` blew past
+              // ARG_MAX once the benchmark tables grew large enough.
+              const startedAt = process.env.STARTED_AT;
+              const message =
+                '<!-- benchmark-results -->\n' +
+                '## 📊 Benchmark Results\n\n' +
+                '> ⚠️ **Results below are stale** and not from the latest commit. This comment will be updated when CI completes on the latest run.\n\n' +
+                '⏳ **Benchmarks are running...**\n\n' +
+                '---\n' +
+                `_Started at: ${startedAt}_\n\n` +
+                '---\n\n' +
+                resultsSection +
+                '\n';
+              const path = `${process.env.RUNNER_TEMP}/stale-comment.md`;
+              fs.writeFileSync(path, message);
               core.setOutput('has-results', 'true');
-              core.setOutput('previous-results', resultsSection);
+              core.setOutput('stale-comment-path', path);
             } else {
               core.setOutput('has-results', 'false');
             }
@@ -78,27 +98,14 @@ jobs:
             This comment will be updated with the results when the benchmarks complete.
 
             ---
-            _Started at: ${{ github.event.pull_request.updated_at }}_
+            _Started at: ${{ github.run_started_at }}_
 
       - name: Update existing benchmark comment with stale warning
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results == 'true'
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: benchmark-results
-          message: |
-            <!-- benchmark-results -->
-            ## 📊 Benchmark Results
-
-            > ⚠️ **Results below are stale** and not from the latest commit. This comment will be updated when CI completes on the latest run.
-
-            ⏳ **Benchmarks are running...**
-
-            ---
-            _Started at: ${{ github.event.pull_request.updated_at }}_
-
-            ---
-
-            ${{ steps.get-comment.outputs.previous-results }}
+          path: ${{ steps.get-comment.outputs.stale-comment-path }}
 
       - name: Update existing benchmark comment without results
         if: steps.find-comment.outputs.comment-id != '' && steps.get-comment.outputs.has-results != 'true'
@@ -114,7 +121,7 @@ jobs:
             This comment will be updated with the results when the benchmarks complete.
 
             ---
-            _Started at: ${{ github.event.pull_request.updated_at }}_
+            _Started at: ${{ github.run_started_at }}_
 
   # Phase 1: Build all packages (not workbenches)
   build:
