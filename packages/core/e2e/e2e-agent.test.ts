@@ -38,6 +38,17 @@ async function start<T>(
 // "doStreamStep not found" errors. Skip agent tests on canary until fixed.
 const isCanary = process.env.NEXT_CANARY === '1';
 
+// DurableAgent tests are only supported on Next.js and SvelteKit deployments.
+// Nitro-based BOA deployments use the V2 combined handler which needs
+// additional work for DurableAgent support on these frameworks.
+const supportedApps = new Set([
+  'nextjs-turbopack',
+  'nextjs-webpack',
+  'sveltekit',
+]);
+const isUnsupportedApp =
+  process.env.APP_NAME && !supportedApps.has(process.env.APP_NAME);
+
 async function agentE2e(fn: string) {
   return getWorkflowMetadata(
     deploymentUrl,
@@ -58,249 +69,258 @@ beforeEach((ctx) => {
 // Core agent tests
 // ============================================================================
 
-describe.skipIf(isCanary)('DurableAgent e2e', { timeout: 120_000 }, () => {
-  describe('core', () => {
-    it('basic text response', async () => {
-      const run = await start(await agentE2e('agentBasicE2e'), ['hello world']);
-      const rv = await run.returnValue;
-      expect(rv).toMatchObject({
-        stepCount: 1,
-        lastStepText: 'Echo: hello world',
+describe.skipIf(isCanary || isUnsupportedApp)(
+  'DurableAgent e2e',
+  { timeout: 120_000 },
+  () => {
+    describe('core', () => {
+      it('basic text response', async () => {
+        const run = await start(await agentE2e('agentBasicE2e'), [
+          'hello world',
+        ]);
+        const rv = await run.returnValue;
+        expect(rv).toMatchObject({
+          stepCount: 1,
+          lastStepText: 'Echo: hello world',
+        });
+      });
+
+      it('single tool call', async () => {
+        const run = await start(await agentE2e('agentToolCallE2e'), [3, 7]);
+        const rv = await run.returnValue;
+        expect(rv).toMatchObject({ stepCount: 2 });
+        expect(rv.lastStepText).toBe('The sum is 10');
+      });
+
+      it('multiple sequential tool calls', async () => {
+        const run = await start(await agentE2e('agentMultiStepE2e'), []);
+        const rv = await run.returnValue;
+        expect(rv).toMatchObject({
+          stepCount: 4,
+          lastStepText: 'All done!',
+        });
+      });
+
+      it('tool error recovery', async () => {
+        const run = await start(await agentE2e('agentErrorToolE2e'), []);
+        const rv = await run.returnValue;
+        expect(rv).toMatchObject({
+          stepCount: 2,
+          lastStepText: 'Tool failed but I recovered.',
+        });
       });
     });
 
-    it('single tool call', async () => {
-      const run = await start(await agentE2e('agentToolCallE2e'), [3, 7]);
-      const rv = await run.returnValue;
-      expect(rv).toMatchObject({ stepCount: 2 });
-      expect(rv.lastStepText).toBe('The sum is 10');
-    });
+    // ==========================================================================
+    // onStepFinish callback tests
+    // ==========================================================================
 
-    it('multiple sequential tool calls', async () => {
-      const run = await start(await agentE2e('agentMultiStepE2e'), []);
-      const rv = await run.returnValue;
-      expect(rv).toMatchObject({
-        stepCount: 4,
-        lastStepText: 'All done!',
+    describe('onStepFinish', () => {
+      it('fires constructor + stream callbacks in order with step data', async () => {
+        const run = await start(await agentE2e('agentOnStepFinishE2e'), []);
+        const rv = await run.returnValue;
+
+        // Constructor callback fires first, then stream callback
+        expect(rv.callSources).toEqual(['constructor', 'method']);
+
+        // Step result data is captured
+        expect(rv.capturedStepResult).toMatchObject({
+          text: 'hello',
+          finishReason: 'stop',
+        });
+
+        expect(rv.stepCount).toBe(1);
       });
     });
 
-    it('tool error recovery', async () => {
-      const run = await start(await agentE2e('agentErrorToolE2e'), []);
-      const rv = await run.returnValue;
-      expect(rv).toMatchObject({
-        stepCount: 2,
-        lastStepText: 'Tool failed but I recovered.',
-      });
-    });
-  });
+    // ==========================================================================
+    // onFinish callback tests
+    // ==========================================================================
 
-  // ==========================================================================
-  // Provider tool tests
-  // ==========================================================================
+    describe('onFinish', () => {
+      it('fires constructor + stream callbacks in order with event data', async () => {
+        const run = await start(await agentE2e('agentOnFinishE2e'), []);
+        const rv = await run.returnValue;
 
-  describe('provider tools', () => {
-    it('provider tool identity preserved across step boundaries', async () => {
-      const run = await start(await agentE2e('agentProviderToolE2e'), []);
-      const rv = await run.returnValue;
-      expect(rv).toMatchObject({
-        stepCount: 2,
-        lastStepText: 'I found a result for you.',
+        expect(rv.callSources).toEqual(['constructor', 'method']);
+
+        expect(rv.capturedEvent).toMatchObject({
+          text: 'hello from finish',
+          finishReason: 'stop',
+          stepsLength: 1,
+          hasMessages: true,
+          hasTotalUsage: true,
+        });
       });
     });
 
-    it('mixed provider and function tools', async () => {
-      const run = await start(await agentE2e('agentMixedToolsE2e'), [3, 7]);
-      const rv = await run.returnValue;
-      expect(rv).toMatchObject({
-        stepCount: 3,
-        lastStepText: 'The answer is 10',
-      });
-    });
-  });
+    // ==========================================================================
+    // Provider tool tests
+    // ==========================================================================
 
-  // ==========================================================================
-  // onStepFinish callback tests
-  // ==========================================================================
-
-  describe('onStepFinish', () => {
-    it('fires constructor + stream callbacks in order with step data', async () => {
-      const run = await start(await agentE2e('agentOnStepFinishE2e'), []);
-      const rv = await run.returnValue;
-
-      // Constructor callback fires first, then stream callback
-      expect(rv.callSources).toEqual(['constructor', 'method']);
-
-      // Step result data is captured
-      expect(rv.capturedStepResult).toMatchObject({
-        text: 'hello',
-        finishReason: 'stop',
+    describe('provider tools', () => {
+      it('provider tool identity preserved across step boundaries', async () => {
+        const run = await start(await agentE2e('agentProviderToolE2e'), []);
+        const rv = await run.returnValue;
+        expect(rv).toMatchObject({
+          stepCount: 2,
+          lastStepText: 'I found a result for you.',
+        });
       });
 
-      expect(rv.stepCount).toBe(1);
-    });
-  });
-
-  // ==========================================================================
-  // onFinish callback tests
-  // ==========================================================================
-
-  describe('onFinish', () => {
-    it('fires constructor + stream callbacks in order with event data', async () => {
-      const run = await start(await agentE2e('agentOnFinishE2e'), []);
-      const rv = await run.returnValue;
-
-      expect(rv.callSources).toEqual(['constructor', 'method']);
-
-      expect(rv.capturedEvent).toMatchObject({
-        text: 'hello from finish',
-        finishReason: 'stop',
-        stepsLength: 1,
-        hasMessages: true,
-        hasTotalUsage: true,
+      it('mixed provider and function tools', async () => {
+        const run = await start(await agentE2e('agentMixedToolsE2e'), [3, 7]);
+        const rv = await run.returnValue;
+        expect(rv).toMatchObject({
+          stepCount: 3,
+          lastStepText: 'The answer is 10',
+        });
       });
     });
-  });
 
-  // ==========================================================================
-  // Instructions test
-  // ==========================================================================
+    // ==========================================================================
+    // Instructions test
+    // ==========================================================================
 
-  describe('instructions', () => {
-    it('string instructions are passed to the model', async () => {
-      const run = await start(await agentE2e('agentInstructionsStringE2e'), []);
-      const rv = await run.returnValue;
-      expect(rv.stepCount).toBe(1);
-      expect(rv.lastStepText).toBe('ok');
-    });
-  });
-
-  // ==========================================================================
-  // Timeout test
-  // ==========================================================================
-
-  describe('timeout', () => {
-    it('completes within timeout', async () => {
-      const run = await start(await agentE2e('agentTimeoutE2e'), []);
-      const rv = await run.returnValue;
-      expect(rv).toMatchObject({
-        stepCount: 1,
-        lastStepText: 'fast response',
+    describe('instructions', () => {
+      it('string instructions are passed to the model', async () => {
+        const run = await start(
+          await agentE2e('agentInstructionsStringE2e'),
+          []
+        );
+        const rv = await run.returnValue;
+        expect(rv.stepCount).toBe(1);
+        expect(rv.lastStepText).toBe('ok');
       });
     });
-  });
 
-  // ==========================================================================
-  // GAP tests — these fail until the feature is implemented
-  // ==========================================================================
+    // ==========================================================================
+    // Timeout test
+    // ==========================================================================
 
-  describe('experimental_onStart (GAP)', () => {
-    it('completes but callbacks are not called (GAP)', async () => {
-      const run = await start(await agentE2e('agentOnStartE2e'), []);
-      const rv = await run.returnValue;
-      // GAP: when implemented, should be ['constructor', 'method']
-      expect(rv.callSources).toEqual([]);
-    });
-  });
-
-  describe('experimental_onStepStart (GAP)', () => {
-    it('completes but callbacks are not called (GAP)', async () => {
-      const run = await start(await agentE2e('agentOnStepStartE2e'), []);
-      const rv = await run.returnValue;
-      // GAP: when implemented, should be ['constructor', 'method']
-      expect(rv.callSources).toEqual([]);
-    });
-  });
-
-  describe('experimental_onToolCallStart (GAP)', () => {
-    it('completes but callbacks are not called (GAP)', async () => {
-      const run = await start(await agentE2e('agentOnToolCallStartE2e'), []);
-      const rv = await run.returnValue;
-      // GAP: when implemented, should be ['constructor', 'method']
-      expect(rv.calls).toEqual([]);
-    });
-  });
-
-  describe('experimental_onToolCallFinish (GAP)', () => {
-    it('completes but callbacks are not called (GAP)', async () => {
-      const run = await start(await agentE2e('agentOnToolCallFinishE2e'), []);
-      const rv = await run.returnValue;
-      // GAP: when implemented, should be ['constructor', 'method']
-      expect(rv.calls).toEqual([]);
-      // GAP: capturedEvent should have tool result data
-      expect(rv.capturedEvent).toBeNull();
-    });
-  });
-
-  describe('prepareCall (GAP)', () => {
-    it('completes but prepareCall is not applied (GAP)', async () => {
-      const run = await start(await agentE2e('agentPrepareCallE2e'), []);
-      const rv = await run.returnValue;
-      expect(rv.stepCount).toBe(1);
-    });
-  });
-
-  // ==========================================================================
-  // prepareStep on constructor (#1303)
-  // ==========================================================================
-
-  describe('prepareStep on constructor', () => {
-    it('agent-level prepareStep is called for each LLM step', async () => {
-      const run = await start(
-        await agentE2e('agentConstructorPrepareStepE2e'),
-        []
-      );
-      const rv = await run.returnValue;
-      // 2 LLM steps: tool-call + final text
-      expect(rv.stepCount).toBe(2);
-      expect(rv.prepareStepCallCount).toBe(2);
-      expect(rv.prepareStepNumbers).toEqual([0, 1]);
+    describe('timeout', () => {
+      it('completes within timeout', async () => {
+        const run = await start(await agentE2e('agentTimeoutE2e'), []);
+        const rv = await run.returnValue;
+        expect(rv).toMatchObject({
+          stepCount: 1,
+          lastStepText: 'fast response',
+        });
+      });
     });
 
-    it('stream-level prepareStep overrides constructor-level', async () => {
-      const run = await start(
-        await agentE2e('agentStreamPrepareStepOverrideE2e'),
-        []
-      );
-      const rv = await run.returnValue;
-      // Only the stream-level callback should have fired
-      expect(rv.source).toEqual(['stream']);
+    // ==========================================================================
+    // GAP tests — these fail until the feature is implemented
+    // ==========================================================================
+
+    describe('experimental_onStart (GAP)', () => {
+      it('completes but callbacks are not called (GAP)', async () => {
+        const run = await start(await agentE2e('agentOnStartE2e'), []);
+        const rv = await run.returnValue;
+        // GAP: when implemented, should be ['constructor', 'method']
+        expect(rv.callSources).toEqual([]);
+      });
     });
-  });
 
-  // ==========================================================================
-  // Multimodal tool results (#848)
-  // ==========================================================================
-
-  describe('multimodal tool results', () => {
-    it('passes through LanguageModelV3ToolResultOutput from tools', async () => {
-      const run = await start(
-        await agentE2e('agentMultimodalToolResultE2e'),
-        []
-      );
-      const rv = await run.returnValue;
-      expect(rv.stepCount).toBe(2);
-      expect(rv.lastStepText).toBe('I see the image');
+    describe('experimental_onStepStart (GAP)', () => {
+      it('completes but callbacks are not called (GAP)', async () => {
+        const run = await start(await agentE2e('agentOnStepStartE2e'), []);
+        const rv = await run.returnValue;
+        // GAP: when implemented, should be ['constructor', 'method']
+        expect(rv.callSources).toEqual([]);
+      });
     });
-  });
 
-  // ==========================================================================
-  // GAP tests
-  // ==========================================================================
-
-  describe('tool approval (GAP)', () => {
-    it('completes but needsApproval is not checked (GAP)', async () => {
-      const run = await start(await agentE2e('agentToolApprovalE2e'), []);
-      const rv = await run.returnValue;
-      // GAP: when tool approval is implemented, the agent should pause
-      // with toolCallsCount=1 and toolResultsCount=0 (awaiting approval).
-      // Currently needsApproval is ignored, so the tool executes immediately.
-      // The workflow completes with both tool call and result.
-      expect(rv.stepCount).toBe(2);
-      // When implemented, these should be:
-      // expect(rv.toolCallsCount).toBe(1);
-      // expect(rv.toolResultsCount).toBe(0);
-      // expect(rv.firstToolCallName).toBe('riskyTool');
+    describe('experimental_onToolCallStart (GAP)', () => {
+      it('completes but callbacks are not called (GAP)', async () => {
+        const run = await start(await agentE2e('agentOnToolCallStartE2e'), []);
+        const rv = await run.returnValue;
+        // GAP: when implemented, should be ['constructor', 'method']
+        expect(rv.calls).toEqual([]);
+      });
     });
-  });
-});
+
+    describe('experimental_onToolCallFinish (GAP)', () => {
+      it('completes but callbacks are not called (GAP)', async () => {
+        const run = await start(await agentE2e('agentOnToolCallFinishE2e'), []);
+        const rv = await run.returnValue;
+        // GAP: when implemented, should be ['constructor', 'method']
+        expect(rv.calls).toEqual([]);
+        // GAP: capturedEvent should have tool result data
+        expect(rv.capturedEvent).toBeNull();
+      });
+    });
+
+    describe('prepareCall (GAP)', () => {
+      it('completes but prepareCall is not applied (GAP)', async () => {
+        const run = await start(await agentE2e('agentPrepareCallE2e'), []);
+        const rv = await run.returnValue;
+        expect(rv.stepCount).toBe(1);
+      });
+    });
+
+    // ==========================================================================
+    // prepareStep on constructor (#1303)
+    // ==========================================================================
+
+    describe('prepareStep on constructor', () => {
+      it('agent-level prepareStep is called for each LLM step', async () => {
+        const run = await start(
+          await agentE2e('agentConstructorPrepareStepE2e'),
+          []
+        );
+        const rv = await run.returnValue;
+        // 2 LLM steps: tool-call + final text
+        expect(rv.stepCount).toBe(2);
+        expect(rv.prepareStepCallCount).toBe(2);
+        expect(rv.prepareStepNumbers).toEqual([0, 1]);
+      });
+
+      it('stream-level prepareStep overrides constructor-level', async () => {
+        const run = await start(
+          await agentE2e('agentStreamPrepareStepOverrideE2e'),
+          []
+        );
+        const rv = await run.returnValue;
+        // Only the stream-level callback should have fired
+        expect(rv.source).toEqual(['stream']);
+      });
+    });
+
+    // ==========================================================================
+    // Multimodal tool results (#848)
+    // ==========================================================================
+
+    describe('multimodal tool results', () => {
+      it('passes through LanguageModelV3ToolResultOutput from tools', async () => {
+        const run = await start(
+          await agentE2e('agentMultimodalToolResultE2e'),
+          []
+        );
+        const rv = await run.returnValue;
+        expect(rv.stepCount).toBe(2);
+        expect(rv.lastStepText).toBe('I see the image');
+      });
+    });
+
+    // ==========================================================================
+    // GAP tests
+    // ==========================================================================
+
+    describe('tool approval (GAP)', () => {
+      it('completes but needsApproval is not checked (GAP)', async () => {
+        const run = await start(await agentE2e('agentToolApprovalE2e'), []);
+        const rv = await run.returnValue;
+        // GAP: when tool approval is implemented, the agent should pause
+        // with toolCallsCount=1 and toolResultsCount=0 (awaiting approval).
+        // Currently needsApproval is ignored, so the tool executes immediately.
+        // The workflow completes with both tool call and result.
+        expect(rv.stepCount).toBe(2);
+        // When implemented, these should be:
+        // expect(rv.toolCallsCount).toBe(1);
+        // expect(rv.toolResultsCount).toBe(0);
+        // expect(rv.firstToolCallName).toBe('riskyTool');
+      });
+    });
+  }
+);

@@ -1,4 +1,3 @@
-import debug from 'debug';
 import { composeLogLine } from './log-format.js';
 import { getActiveSpan } from './telemetry.js';
 
@@ -31,12 +30,47 @@ export interface Logger {
   ) => Logger;
 }
 
-function createLogger(namespace: string): Logger {
-  const baseDebug = debug(`workflow:${namespace}`);
+/**
+ * Lightweight `DEBUG=` pattern matcher. Replaces the `debug` package, which
+ * was previously a static dependency of this module — that import path
+ * pulled `debug/src/node` and its dynamic `require('tty')` into the
+ * generated Next.js webpack flow route, breaking the V2 combined-bundle
+ * build with `Dynamic require of "tty" is not supported`. Keeping this
+ * module free of `debug` is a prerequisite for V2 webpack builds.
+ */
+function matchesDebugNamespace(
+  namespace: string,
+  patternList: string | undefined
+): boolean {
+  if (!patternList) {
+    return false;
+  }
 
+  let enabled = false;
+  for (const rawPattern of patternList.split(',')) {
+    const pattern = rawPattern.trim();
+    if (!pattern) {
+      continue;
+    }
+
+    const isNegated = pattern.startsWith('-');
+    const candidate = isNegated ? pattern.slice(1) : pattern;
+    const regex = new RegExp(
+      `^${candidate.replace(/[|\\{}()[\]^$+?.]/g, '\\$&').replace(/\*/g, '.*')}$`
+    );
+
+    if (regex.test(namespace)) {
+      enabled = !isNegated;
+    }
+  }
+
+  return enabled;
+}
+
+function createLogger(namespace: string): Logger {
   const build = (parentMetadata: LogMetadata): Logger => {
     const logger = (level: string): LogFn => {
-      const levelDebug = baseDebug.extend(level);
+      const debugNamespace = `workflow:${namespace}:${level}`;
 
       return (message, metadata) => {
         const hasParent = Object.keys(parentMetadata).length > 0;
@@ -47,7 +81,7 @@ function createLogger(namespace: string): Logger {
             : undefined;
 
         // Always output error/warn to console so users see critical issues.
-        // debug/info only output when DEBUG env var is set.
+        // debug/info only output when DEBUG env var matches the namespace.
         //
         // Compose the framing + structured fields + (trimmed) stack into a
         // single string so the runtime's `console.error` / `util.inspect`
@@ -60,10 +94,13 @@ function createLogger(namespace: string): Logger {
           out(composeLogLine('[workflow-sdk]', message, merged));
         }
 
-        // Also log to debug library for verbose output when DEBUG is enabled
-        levelDebug(message, merged);
+        const debugEnabled = matchesDebugNamespace(
+          debugNamespace,
+          process.env.DEBUG
+        );
 
-        if (levelDebug.enabled) {
+        if (debugEnabled) {
+          console.debug(`[${debugNamespace}] ${message}`, merged ?? '');
           getActiveSpan()
             .then((span) => {
               span?.addEvent(`${level}.${namespace}`, { message, ...merged });

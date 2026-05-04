@@ -7,6 +7,5 @@ export {
   type HealthCheckOptions,
   type HealthCheckResult,
   setWorld,
-  stepEntrypoint,
   workflowEntrypoint,
 } from '@workflow/core/runtime';

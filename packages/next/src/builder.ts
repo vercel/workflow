@@ -6,7 +6,6 @@ export const DEFERRED_BUILDER_MIN_VERSION = '16.2.0-canary.48';
 
 export const WORKFLOW_DEFERRED_ENTRIES = [
   '/.well-known/workflow/v1/flow',
-  '/.well-known/workflow/v1/step',
   '/.well-known/workflow/v1/webhook/[token]',
 ] as const;
 

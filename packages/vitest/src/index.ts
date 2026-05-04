@@ -44,19 +44,15 @@ class VitestBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
+    // V2: Build combined bundle that includes both step registrations
+    // and workflow entrypoint in a single handler.
+    await this.createCombinedBundle({
+      inputFiles,
+      stepsOutfile: join(this.#outDir, '__step_registrations.mjs'),
+      flowOutfile: join(this.#outDir, 'combined.mjs'),
+      format: 'esm',
       bundleFinalOutput: false,
-      format: 'esm',
-      inputFiles,
-    });
-
-    await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
       externalizeNonSteps: true,
-      rewriteTsExtensions: true,
-      format: 'esm',
-      inputFiles,
     });
   }
 }
@@ -197,13 +193,10 @@ export async function setupWorkflowTests(
   });
   await world.clear();
 
+  // V2: Single combined handler for both workflow and step execution.
   world.registerHandler(
     '__wkf_workflow_',
-    createLazyHandler(join(outDir, 'workflows.mjs'))
-  );
-  world.registerHandler(
-    '__wkf_step_',
-    createLazyHandler(join(outDir, 'steps.mjs'))
+    createLazyHandler(join(outDir, 'combined.mjs'))
   );
 
   // Handlers must be registered before start(): if recoverActiveRuns is ever

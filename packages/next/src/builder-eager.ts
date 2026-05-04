@@ -15,7 +15,6 @@ export async function getNextBuilderEager() {
 
   const {
     BaseBuilder: BaseBuilderClass,
-    STEP_QUEUE_TRIGGER,
     WORKFLOW_QUEUE_TRIGGER,
     // biome-ignore lint/security/noGlobalEval: Need to use eval here to avoid TypeScript from transpiling the import statement into `require()`
   } = (await eval(
@@ -29,8 +28,6 @@ export async function getNextBuilderEager() {
 
       // Ensure output directories exist
       await mkdir(workflowGeneratedDir, { recursive: true });
-      // ignore the generated assets
-
       await writeFile(join(workflowGeneratedDir, '.gitignore'), '*');
 
       const inputFiles = await this.getInputFiles();
@@ -42,25 +39,17 @@ export async function getNextBuilderEager() {
         tsconfigPath,
       };
 
-      const { manifest: stepsManifest, context: stepsBuildContext } =
-        await this.buildStepsFunction(options);
-      const workflowsBundle = await this.buildWorkflowsFunction(options);
+      // V2: Build combined route (replaces separate step + flow routes)
+      const combinedResult = await this.buildCombinedFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
 
-      // Merge manifests from both bundles
       const manifest = {
-        steps: { ...stepsManifest.steps, ...workflowsBundle?.manifest?.steps },
-        workflows: {
-          ...stepsManifest.workflows,
-          ...workflowsBundle?.manifest?.workflows,
-        },
-        classes: {
-          ...stepsManifest.classes,
-          ...workflowsBundle?.manifest?.classes,
-        },
+        steps: { ...combinedResult?.manifest?.steps },
+        workflows: { ...combinedResult?.manifest?.workflows },
+        classes: { ...combinedResult?.manifest?.classes },
       };
 
-      // Write unified manifest to workflow generated directory
+      // Write manifest
       const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
       const manifestJson = await this.createManifest({
         workflowBundlePath,
@@ -69,7 +58,6 @@ export async function getNextBuilderEager() {
       });
 
       // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
-      // Next.js serves files from public/ at the root URL.
       if (this.shouldExposePublicManifest && manifestJson) {
         const publicManifestDir = join(
           this.config.workingDir,
@@ -85,23 +73,19 @@ export async function getNextBuilderEager() {
       await this.writeFunctionsConfig(outputDir);
 
       if (this.config.watch) {
-        if (!stepsBuildContext) {
+        // TODO: implement watch mode for combined bundle
+        // For now, fall back to full rebuild on file changes
+        let stepsCtx = combinedResult?.stepsContext;
+        if (!stepsCtx) {
           throw new Error(
             'Invariant: expected steps build context in watch mode'
           );
         }
-        if (
-          !workflowsBundle?.interimBundleCtx ||
-          !workflowsBundle?.bundleFinal
-        ) {
-          throw new Error('Invariant: expected workflows bundle in watch mode');
-        }
 
-        let stepsCtx = stepsBuildContext;
-        // These are safe to assert as non-null because we checked above
+        // Use stepsCtx for the watch rebuild (workflow interim ctx from combined)
         let workflowsCtx = {
-          interimBundleCtx: workflowsBundle.interimBundleCtx!,
-          bundleFinal: workflowsBundle.bundleFinal!,
+          interimBundleCtx: combinedResult?.interimBundleCtx!,
+          bundleFinal: combinedResult?.bundleFinal!,
         };
 
         const normalizePath = (pathname: string) =>
@@ -193,29 +177,25 @@ export async function getNextBuilderEager() {
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
 
-          await stepsCtx.dispose();
-          const { context: newStepsCtx } =
-            await this.buildStepsFunction(options);
-          if (!newStepsCtx) {
+          await stepsCtx!.dispose();
+          await workflowsCtx.interimBundleCtx.dispose();
+
+          const newCombined = await this.buildCombinedFunction(options);
+          if (!newCombined?.stepsContext) {
             throw new Error(
               'Invariant: expected steps build context after rebuild'
             );
           }
-          stepsCtx = newStepsCtx;
+          stepsCtx = newCombined.stepsContext;
 
-          await workflowsCtx.interimBundleCtx.dispose();
-          const newWorkflowsCtx = await this.buildWorkflowsFunction(options);
-          if (
-            !newWorkflowsCtx?.interimBundleCtx ||
-            !newWorkflowsCtx?.bundleFinal
-          ) {
+          if (!newCombined?.interimBundleCtx || !newCombined?.bundleFinal) {
             throw new Error(
               'Invariant: expected workflows bundle context after rebuild'
             );
           }
           workflowsCtx = {
-            interimBundleCtx: newWorkflowsCtx.interimBundleCtx,
-            bundleFinal: newWorkflowsCtx.bundleFinal,
+            interimBundleCtx: newCombined.interimBundleCtx,
+            bundleFinal: newCombined.bundleFinal,
           };
         };
 
@@ -246,7 +226,7 @@ export async function getNextBuilderEager() {
 
         const rebuildExistingFiles = async () => {
           const rebuiltStepStart = Date.now();
-          const stepsResult = await stepsCtx.rebuild();
+          const stepsResult = await stepsCtx!.rebuild();
           logBuildMessages(stepsResult, 'steps bundle');
           console.log(
             'Rebuilt steps bundle',
@@ -413,27 +393,28 @@ export async function getNextBuilderEager() {
       if (process.env.NODE_ENV === 'development') {
         return;
       }
+
+      // V2 combined config: single trigger handles both workflow and step execution.
+      // The step route no longer needs its own trigger since steps are executed
+      // inline by the combined handler or queued back to __wkf_workflow_* with stepId.
       const generatedConfig = {
         version: '0',
-        steps: {
-          maxDuration: 'max',
-          experimentalTriggers: [STEP_QUEUE_TRIGGER],
-        },
         workflows: {
           maxDuration: 'max',
           experimentalTriggers: [WORKFLOW_QUEUE_TRIGGER],
         },
       };
 
-      // We write this file to the generated directory for
-      // the Next.js builder to consume
       await writeFile(
         join(outputDir, '.well-known/workflow/v1/config.json'),
         JSON.stringify(generatedConfig, null, 2)
       );
     }
 
-    private async buildStepsFunction({
+    /**
+     * V2: Build combined route that handles both workflow and step execution.
+     */
+    private async buildCombinedFunction({
       inputFiles,
       workflowGeneratedDir,
       tsconfigPath,
@@ -442,39 +423,16 @@ export async function getNextBuilderEager() {
       workflowGeneratedDir: string;
       tsconfigPath?: string;
     }) {
-      // Create steps bundle
-      const stepsRouteDir = join(workflowGeneratedDir, 'step');
-      await mkdir(stepsRouteDir, { recursive: true });
-      return await this.createStepsBundle({
-        // If any dynamic requires are used when bundling with ESM
-        // esbuild will create a too dynamic wrapper around require
-        // which turbopack/webpack fail to analyze. If we externalize
-        // correctly this shouldn't be an issue although we might want
-        // to use cjs as alternative to avoid
-        format: 'esm',
-        inputFiles,
-        outfile: join(stepsRouteDir, 'route.js'),
-        externalizeNonSteps: true,
-        tsconfigPath,
-      });
-    }
+      const flowRouteDir = join(workflowGeneratedDir, 'flow');
+      await mkdir(flowRouteDir, { recursive: true });
 
-    private async buildWorkflowsFunction({
-      inputFiles,
-      workflowGeneratedDir,
-      tsconfigPath,
-    }: {
-      inputFiles: string[];
-      workflowGeneratedDir: string;
-      tsconfigPath?: string;
-    }) {
-      const workflowsRouteDir = join(workflowGeneratedDir, 'flow');
-      await mkdir(workflowsRouteDir, { recursive: true });
-      return await this.createWorkflowsBundle({
+      return await this.createCombinedBundle({
         format: 'esm',
-        outfile: join(workflowsRouteDir, 'route.js'),
-        bundleFinalOutput: false,
         inputFiles,
+        stepsOutfile: join(flowRouteDir, '__step_registrations.js'),
+        flowOutfile: join(flowRouteDir, 'route.js'),
+        bundleFinalOutput: false,
+        externalizeNonSteps: true,
         tsconfigPath,
       });
     }

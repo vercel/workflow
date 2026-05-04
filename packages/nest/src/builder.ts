@@ -80,18 +80,13 @@ export class NestLocalBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    const { manifest: workflowsManifest } = await this.createWorkflowsBundle({
-      outfile: join(this.#outDir, 'workflows.mjs'),
+    const { manifest } = await this.createCombinedBundle({
+      inputFiles,
+      stepsOutfile: join(this.#outDir, 'steps.mjs'),
+      flowOutfile: join(this.#outDir, 'workflows.mjs'),
+      format: 'esm',
       bundleFinalOutput: false,
-      format: 'esm',
-      inputFiles,
-    });
-
-    const { manifest: stepsManifest } = await this.createStepsBundle({
-      outfile: join(this.#outDir, 'steps.mjs'),
       externalizeNonSteps: true,
-      format: 'esm',
-      inputFiles,
     });
 
     // When the NestJS project compiles to CJS via SWC, the ESM steps bundle
@@ -106,13 +101,6 @@ export class NestLocalBuilder extends BaseBuilder {
       outfile: join(this.#outDir, 'webhook.mjs'),
       bundle: false,
     });
-
-    // Merge manifests from both bundles
-    const manifest = {
-      steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-      workflows: { ...stepsManifest.workflows, ...workflowsManifest.workflows },
-      classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-    };
 
     // Generate manifest
     await this.createManifest({
