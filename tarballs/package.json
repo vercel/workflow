@@ -1,0 +1,39 @@
+{
+  "name": "tarballs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node scripts/pack.ts",
+    "test:smoke": "node ./scripts/check-tarballs-smoke.mjs"
+  },
+  "dependencies": {
+    "@workflow/ai": "workspace:*",
+    "@workflow/astro": "workspace:*",
+    "@workflow/builders": "workspace:*",
+    "@workflow/cli": "workspace:*",
+    "@workflow/core": "workspace:*",
+    "@workflow/errors": "workspace:*",
+    "@workflow/nest": "workspace:*",
+    "@workflow/next": "workspace:*",
+    "@workflow/nitro": "workspace:*",
+    "@workflow/nuxt": "workspace:*",
+    "@workflow/rollup": "workspace:*",
+    "@workflow/serde": "workspace:*",
+    "@workflow/sveltekit": "workspace:*",
+    "@workflow/swc-plugin": "workspace:*",
+    "@workflow/typescript-plugin": "workspace:*",
+    "@workflow/utils": "workspace:*",
+    "@workflow/vite": "workspace:*",
+    "@workflow/vitest": "workspace:*",
+    "@workflow/web": "workspace:*",
+    "@workflow/web-shared": "workspace:*",
+    "@workflow/world": "workspace:*",
+    "@workflow/world-local": "workspace:*",
+    "@workflow/world-postgres": "workspace:*",
+    "@workflow/world-testing": "workspace:*",
+    "@workflow/world-vercel": "workspace:*",
+    "workflow": "workspace:*"
+  }
+}

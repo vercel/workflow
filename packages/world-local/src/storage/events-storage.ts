@@ -585,7 +585,32 @@ export function createEventsStorage(
         data.eventType === 'step_created' &&
         'eventData' in data
       ) {
-        // step_created: Creates step entity with status 'pending', attempt=0, createdAt set
+        // step_created: Creates step entity with status 'pending', attempt=0, createdAt set.
+        // Two concurrent invocations with identical correlationIds (e.g. the
+        // snapshot runtime's deterministic correlationIds across replays)
+        // must be deduped — otherwise both writes succeed and the event log
+        // ends up with duplicate step_created entries. Claim a per-(runId,
+        // correlationId) constraint file with O_CREAT|O_EXCL; the loser
+        // throws EntityConflictError so the runtime's existing catch path
+        // can swallow it and avoid double-queuing the step.
+        const stepCreatedLockName = tag
+          ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
+          : `${effectiveRunId}-${data.correlationId}.created`;
+        const stepCreatedLockPath = resolveWithinBase(
+          basedir,
+          '.locks',
+          'steps',
+          stepCreatedLockName
+        );
+        const stepCreatedClaimed = await writeExclusive(
+          stepCreatedLockPath,
+          ''
+        );
+        if (!stepCreatedClaimed) {
+          throw new EntityConflictError(
+            `Step "${data.correlationId}" already created`
+          );
+        }
         const stepData = data.eventData as {
           stepName: string;
           input: any;
@@ -896,23 +921,33 @@ export function createEventsStorage(
         }
         await deleteJSON(hookPath);
       } else if (data.eventType === 'wait_created' && 'eventData' in data) {
-        // wait_created: Creates wait entity with status 'waiting'
-        const waitData = data.eventData as {
-          resumeAt?: Date;
-        };
+        // wait_created: Creates wait entity with status 'waiting'.
+        // Atomic claim on a per-(runId, correlationId) constraint file
+        // ensures duplicate wait_created from concurrent invocations
+        // surfaces as EntityConflictError (replaces a prior TOCTOU
+        // read-then-check that could let both writers through).
         const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-        const existingWait = await readJSONWithFallback(
+        const waitCreatedLockName = tag
+          ? `${waitCompositeKey}.created.${tag}`
+          : `${waitCompositeKey}.created`;
+        const waitCreatedLockPath = resolveWithinBase(
           basedir,
+          '.locks',
           'waits',
-          waitCompositeKey,
-          WaitSchema,
-          tag
+          waitCreatedLockName
         );
-        if (existingWait) {
+        const waitCreatedClaimed = await writeExclusive(
+          waitCreatedLockPath,
+          ''
+        );
+        if (!waitCreatedClaimed) {
           throw new EntityConflictError(
             `Wait "${data.correlationId}" already exists`
           );
         }
+        const waitData = data.eventData as {
+          resumeAt?: Date;
+        };
         wait = {
           waitId: waitCompositeKey,
           runId: effectiveRunId,
