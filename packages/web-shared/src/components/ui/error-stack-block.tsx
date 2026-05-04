@@ -19,6 +19,21 @@ export function isStructuredErrorWithStack(
 }
 
 /**
+ * Pull a short, single-line title out of an error message.
+ *
+ * Workflow's structured error messages are multi-line — the first line is
+ * the headline (`Failed to serialize step return value`) and the rest are
+ * `╰▶ hint:` / `╰▶ docs:` framed details. The full message belongs in the
+ * body of the error block; the title should just be the headline so the
+ * card stays scannable.
+ */
+function deriveTitle(message: string): string {
+  const firstLine =
+    message.split('\n').find((line) => line.trim().length > 0) ?? message;
+  return firstLine.trim();
+}
+
+/**
  * Renders an error with a `stack` field as a visually distinct error block.
  * Shows the error message with an alert icon at the top, separated from
  * the stack trace below.
@@ -31,6 +46,10 @@ export function ErrorStackBlock({
   const toast = useToast();
   const stack = value.stack;
   const message = typeof value.message === 'string' ? value.message : undefined;
+  // V8's `Error.stack` already starts with `Name: message`, so when the
+  // body shows the stack it includes the full multi-line message anyway.
+  // The header just needs the first line.
+  const title = message ? deriveTitle(message) : undefined;
   const copyText = message ? `${message}\n\n${stack}` : stack;
 
   return (
@@ -65,16 +84,25 @@ export function ErrorStackBlock({
         <Copy size={12} />
       </button>
 
-      {message && (
+      {title && (
         <div
-          className="flex items-start gap-2 px-3 py-2.5 pr-10"
+          className="flex items-center gap-2 px-3 py-2.5 pr-10"
           style={{
             color: 'var(--ds-red-900)',
             borderBottom: '1px solid var(--ds-red-400)',
           }}
         >
-          <AlertCircle className="h-4 w-4 shrink-0" style={{ marginTop: 1 }} />
-          <p className="text-xs font-semibold m-0 break-words">{message}</p>
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <p
+            className="text-xs font-semibold m-0 truncate"
+            // The full multi-line message is in the stack body below; the
+            // header just shows the first line, single-line, with overflow
+            // ellipsised so a long title doesn't push the copy button or
+            // wrap into the framed hint/docs lines.
+            title={message}
+          >
+            {title}
+          </p>
         </div>
       )}
       <pre

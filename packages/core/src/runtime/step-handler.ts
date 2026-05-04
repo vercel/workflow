@@ -10,9 +10,10 @@ import {
   WorkflowRuntimeError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { pluralize } from '@workflow/utils';
+import { formatStepName, pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
+import { describeError } from '../describe-error.js';
 import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -82,13 +83,19 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
       // of the step details, etc. We simply attempt to mark the step as failed
       // and enqueue the workflow once, and if either of those fails, the message
       // is still consumed but with adequate logging that an error occurred.
+      // Scoped logger for this step invocation — attaches run/step context to
+      // every log line below so callers don't repeat it.
+      const stepNameFromQueue = metadata.queueName.slice('__wkf_step_'.length);
+      const stepRuntimeLogger = runtimeLogger.forRun(
+        workflowRunId,
+        workflowName,
+        { stepId, stepName: stepNameFromQueue }
+      );
+
       if (metadata.attempt > MAX_QUEUE_DELIVERIES) {
-        runtimeLogger.error(
+        stepRuntimeLogger.error(
           `Step handler exceeded max deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
           {
-            workflowRunId,
-            stepId,
-            stepName: metadata.queueName.slice('__wkf_step_'.length),
             attempt: metadata.attempt,
           }
         );
@@ -118,17 +125,17 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
           }
           // Can't even mark the step as failed. Consume the message to stop
           // further retries. The run will remain in its current state.
-          runtimeLogger.error(
+          stepRuntimeLogger.error(
             `Failed to mark step as failed after ${metadata.attempt} delivery attempts. ` +
               `A persistent error is preventing the step from being terminated. ` +
               `The run will remain in its current state until manually resolved. ` +
               `This is most likely due to a persistent outage of the workflow backend ` +
               `or a bug in the workflow runtime and should be reported to the Workflow team.`,
             {
-              workflowRunId,
-              stepId,
               attempt: metadata.attempt,
-              error: err instanceof Error ? err.message : String(err),
+              errorName: err instanceof Error ? err.name : 'UnknownError',
+              errorMessage: err instanceof Error ? err.message : String(err),
+              errorStack: err instanceof Error ? err.stack : undefined,
             }
           );
         }
@@ -205,7 +212,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   1,
                   typeof err.retryAfter === 'number' ? err.retryAfter : 1
                 );
-                runtimeLogger.info(
+                stepRuntimeLogger.info(
                   'Throttled again on retry, deferring to queue',
                   {
                     retryAfterSeconds: retryRetryAfter,
@@ -214,19 +221,22 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 return { timeoutSeconds: retryRetryAfter };
               }
               if (RunExpiredError.is(err)) {
-                runtimeLogger.info(
-                  `Workflow run "${workflowRunId}" has already completed, skipping step "${stepId}": ${err.message}`
+                // Expected when a run is cancelled while a step is in-flight.
+                stepRuntimeLogger.info(
+                  'Workflow run has already completed, skipping step',
+                  { errorName: err.name, errorMessage: err.message }
                 );
                 return;
               }
               if (EntityConflictError.is(err)) {
-                runtimeLogger.debug(
+                // Step already in a terminal state — another worker finished
+                // it or it was retried to completion. Re-enqueue the parent
+                // workflow so it can observe the outcome.
+                stepRuntimeLogger.debug(
                   'Step in terminal state, re-enqueuing workflow',
                   {
-                    stepName,
-                    stepId,
-                    workflowRunId,
-                    error: err.message,
+                    errorName: err.name,
+                    errorMessage: err.message,
                   }
                 );
                 span?.setAttributes({
@@ -258,11 +268,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   'delay.reason': 'retry_after_not_reached',
                   'delay.timeout_seconds': timeoutSeconds,
                 });
-                runtimeLogger.debug(
+                stepRuntimeLogger.debug(
                   'Step retryAfter timestamp not yet reached',
                   {
-                    stepName,
-                    stepId,
                     retryAfterSeconds: err.retryAfter,
                     timeoutSeconds,
                   }
@@ -273,9 +281,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               throw err;
             }
 
-            runtimeLogger.debug('Step execution details', {
-              stepName,
-              stepId: step.stepId,
+            stepRuntimeLogger.debug('Step execution details', {
               status: step.status,
               attempt: step.attempt,
             });
@@ -291,13 +297,12 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             if (!stepFn || typeof stepFn !== 'function') {
               const err = new StepNotRegisteredError(stepName);
 
-              runtimeLogger.error(
+              stepRuntimeLogger.error(
                 'Step function not registered, failing step (not run)',
                 {
-                  workflowRunId,
-                  stepName,
-                  stepId,
-                  error: err.message,
+                  errorName: err.name,
+                  errorMessage: err.message,
+                  errorStack: err.stack,
                 }
               );
 
@@ -319,13 +324,13 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 );
               } catch (stepFailErr) {
                 if (EntityConflictError.is(stepFailErr)) {
-                  runtimeLogger.info(
+                  // Step already transitioned to a terminal state — duplicate
+                  // delivery or concurrent cancellation. Drop silently.
+                  stepRuntimeLogger.info(
                     'Tried failing step for missing function, but step has already finished.',
                     {
-                      workflowRunId,
-                      stepId,
-                      stepName,
-                      message: stepFailErr.message,
+                      errorName: stepFailErr.name,
+                      errorMessage: stepFailErr.message,
                     }
                   );
                   return;
@@ -362,12 +367,20 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             // The post-failure check uses >= to decide whether to retry after a failure.
             if (step.attempt > maxRetries + 1) {
               const retryCount = step.attempt - 1;
-              const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
-              stepLogger.error('Step exceeded max retries', {
-                workflowRunId,
-                stepName,
-                retryCount,
-              });
+              // Persisted message — kept short, no machine `stepName`,
+              // since observability already attributes the event to a
+              // specific step.
+              const errorMessage = `Step exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
+              stepLogger.error(
+                `Step ${formatStepName(stepName)} exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`,
+                {
+                  workflowRunId,
+                  workflowName,
+                  stepId,
+                  stepName,
+                  retryCount,
+                }
+              );
               // Fail the step via event (event-sourced architecture)
               try {
                 await world.events.create(
@@ -385,13 +398,13 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 );
               } catch (err) {
                 if (EntityConflictError.is(err)) {
-                  runtimeLogger.info(
+                  // Step already transitioned to a terminal state — duplicate
+                  // delivery or concurrent completion. Drop silently.
+                  stepRuntimeLogger.info(
                     'Tried failing step, but step has already finished.',
                     {
-                      workflowRunId,
-                      stepId,
-                      stepName,
-                      message: err.message,
+                      errorName: err.name,
+                      errorMessage: err.message,
                     }
                   );
                   return;
@@ -425,10 +438,8 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
 
             if (!step.startedAt) {
               const errorMessage = `Step "${stepId}" has no "startedAt" timestamp`;
-              runtimeLogger.error('Fatal runtime error during step setup', {
-                workflowRunId,
-                stepId,
-                error: errorMessage,
+              stepRuntimeLogger.error('Fatal runtime error during step setup', {
+                errorMessage,
               });
               try {
                 await world.events.create(
@@ -537,6 +548,40 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               ...Attribute.QueueExecutionTimeMs(executionTimeMs),
             });
 
+            // --- Dehydrate (serialize) the step's return value ---
+            // A non-serializable return value is a user-code bug, not an
+            // infrastructure failure. Route it through the same step-failure
+            // path as a thrown error so SerializationError (which is marked
+            // `fatal: true`) short-circuits the retry loop instead of
+            // bubbling as an HTTP 500 and burning through all 4 queue
+            // deliveries on a guaranteed-to-fail message.
+            if (!userCodeFailed) {
+              try {
+                result = await trace(
+                  'step.dehydrate',
+                  {},
+                  async (dehydrateSpan) => {
+                    const startTime = Date.now();
+                    const dehydrated = await dehydrateStepReturnValue(
+                      result,
+                      workflowRunId,
+                      encryptionKey,
+                      ops
+                    );
+                    const durationMs = Date.now() - startTime;
+                    dehydrateSpan?.setAttributes({
+                      ...Attribute.QueueSerializeTimeMs(durationMs),
+                      ...Attribute.StepResultType(typeof dehydrated),
+                    });
+                    return dehydrated;
+                  }
+                );
+              } catch (err) {
+                userCodeError = err;
+                userCodeFailed = true;
+              }
+            }
+
             // --- Handle user code errors ---
             if (userCodeFailed) {
               const err = userCodeError;
@@ -589,12 +634,29 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               });
 
               if (isFatal) {
+                const description = describeError(err);
+                const friendlyStep = formatStepName(stepName);
+                const framing =
+                  description.attribution === 'sdk'
+                    ? `Step ${friendlyStep} failed with a FatalError from the SDK runtime — bubbling up to parent workflow`
+                    : `Step ${friendlyStep} threw a FatalError — bubbling up to parent workflow`;
+                // Mirror the workflow-level log formatting: put the framing +
+                // stack into the message so console.error renders the stack
+                // inline, and keep the metadata object small with only the
+                // structured fields that log drains want to index.
+                // No `hint` field here — actionable hint text lives on the
+                // error message itself (so it survives serialization →
+                // event log → observability rehydrate), and adding it
+                // again here just duplicates it on stderr.
                 stepLogger.error(
-                  'Encountered FatalError while executing step, bubbling up to parent workflow',
+                  `${framing}\n${normalizedStack || normalizedError.message}`,
                   {
                     workflowRunId,
+                    stepId,
                     stepName,
-                    errorStack: normalizedStack,
+                    errorAttribution: description.attribution,
+                    errorName: normalizedError.name,
+                    errorMessage: normalizedError.message,
                   }
                 );
                 // Fail the step via event (event-sourced architecture)
@@ -614,13 +676,12 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   );
                 } catch (stepFailErr) {
                   if (EntityConflictError.is(stepFailErr)) {
-                    runtimeLogger.info(
+                    // Step already in terminal state — idempotent.
+                    stepRuntimeLogger.info(
                       'Tried failing step, but step has already finished.',
                       {
-                        workflowRunId,
-                        stepId,
-                        stepName,
-                        message: stepFailErr.message,
+                        errorName: stepFailErr.name,
+                        errorMessage: stepFailErr.message,
                       }
                     );
                     return;
@@ -647,17 +708,32 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 if (currentAttempt >= maxRetries + 1) {
                   // Max retries reached
                   const retryCount = step.attempt - 1;
+                  const description = describeError(err);
+                  const friendlyStep = formatStepName(stepName);
+                  const framing =
+                    description.attribution === 'sdk'
+                      ? `Step ${friendlyStep} hit max retries on an SDK runtime error — bubbling to parent workflow`
+                      : `Step ${friendlyStep} hit max retries — bubbling error thrown by your step to the parent workflow`;
                   stepLogger.error(
-                    'Max retries reached, bubbling error to parent workflow',
+                    `${framing}\n${normalizedStack || normalizedError.message}`,
                     {
                       workflowRunId,
+                      workflowName,
+                      stepId,
                       stepName,
                       attempt: step.attempt,
                       retryCount,
-                      errorStack: normalizedStack,
+                      errorAttribution: description.attribution,
+                      errorName: normalizedError.name,
+                      errorMessage: normalizedError.message,
                     }
                   );
-                  const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
+                  // Don't include the machine step name in the persisted
+                  // error message — observability already shows which step
+                  // produced the event, and `stepName: 'step//./.../foo'`
+                  // in the title is just noise. The CLI logger renders
+                  // `Step foo (./...) hit max retries` separately.
+                  const errorMessage = `Step failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
                   // Fail the step via event (event-sourced architecture)
                   try {
                     await world.events.create(
@@ -675,13 +751,12 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     );
                   } catch (stepFailErr) {
                     if (EntityConflictError.is(stepFailErr)) {
-                      runtimeLogger.info(
+                      // Step already in terminal state — idempotent.
+                      stepRuntimeLogger.info(
                         'Tried failing step, but step has already finished.',
                         {
-                          workflowRunId,
-                          stepId,
-                          stepName,
-                          message: stepFailErr.message,
+                          errorName: stepFailErr.name,
+                          errorMessage: stepFailErr.message,
                         }
                       );
                       return;
@@ -700,16 +775,24 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       'Encountered RetryableError, step will be retried',
                       {
                         workflowRunId,
+                        workflowName,
+                        stepId,
                         stepName,
                         attempt: currentAttempt,
-                        message: err.message,
+                        errorName: err.name,
+                        errorMessage: err.message,
+                        errorStack: normalizedStack,
                       }
                     );
                   } else {
                     stepLogger.info('Encountered Error, step will be retried', {
                       workflowRunId,
+                      workflowName,
+                      stepId,
                       stepName,
                       attempt: currentAttempt,
+                      errorName: normalizedError.name,
+                      errorMessage: normalizedError.message,
                       errorStack: normalizedStack,
                     });
                   }
@@ -734,13 +817,12 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     );
                   } catch (stepRetryErr) {
                     if (EntityConflictError.is(stepRetryErr)) {
-                      runtimeLogger.info(
+                      // Step already in terminal state — idempotent.
+                      stepRuntimeLogger.info(
                         'Tried retrying step, but step has already finished.',
                         {
-                          workflowRunId,
-                          stepId,
-                          stepName,
-                          message: stepRetryErr.message,
+                          errorName: stepRetryErr.name,
+                          errorMessage: stepRetryErr.message,
                         }
                       );
                       return;
@@ -787,30 +869,13 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             // --- Infrastructure: complete the step ---
             // Errors here (network failures, server errors) propagate to the
             // queue handler for automatic retry.
-
-            // NOTE: None of the code from this point is guaranteed to run
-            // Since the step might fail or cause a function timeout and the process might be SIGKILL'd
-            // The workflow runtime must be resilient to the below code not executing on a failed step
-            result = await trace(
-              'step.dehydrate',
-              {},
-              async (dehydrateSpan) => {
-                const startTime = Date.now();
-                const dehydrated = await dehydrateStepReturnValue(
-                  result,
-                  workflowRunId,
-                  encryptionKey,
-                  ops
-                );
-                const durationMs = Date.now() - startTime;
-                dehydrateSpan?.setAttributes({
-                  ...Attribute.QueueSerializeTimeMs(durationMs),
-                  ...Attribute.StepResultType(typeof dehydrated),
-                });
-                return dehydrated;
-              }
-            );
-
+            //
+            // NOTE: None of the code from this point is guaranteed to run.
+            // Since the step might fail or cause a function timeout and the
+            // process might be SIGKILL'd, the workflow runtime must be
+            // resilient to the below code not executing on a failed step.
+            // (Dehydration already happened above and is accounted for in the
+            // userCodeFailed path.)
             waitUntil(
               Promise.all(ops).catch((err) => {
                 // Ignore expected client disconnect errors (e.g., browser refresh during streaming)
@@ -839,13 +904,12 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 )
                 .catch((err: unknown) => {
                   if (EntityConflictError.is(err)) {
-                    runtimeLogger.info(
+                    // Step already in terminal state — idempotent.
+                    stepRuntimeLogger.info(
                       'Tried completing step, but step has already finished.',
                       {
-                        workflowRunId,
-                        stepId,
-                        stepName,
-                        message: err.message,
+                        errorName: err.name,
+                        errorMessage: err.message,
                       }
                     );
                     stepCompleted409 = true;

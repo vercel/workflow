@@ -41,7 +41,10 @@ const Home = () => (
       <Hero title={title} description={description} />
       {isPreview && deploymentUrl && (
         <div className="fixed bottom-4 right-4 z-50">
-          <PreviewBadge deploymentUrl={deploymentUrl} tarballsUrl={tarballsUrl} />
+          <PreviewBadge
+            deploymentUrl={deploymentUrl}
+            tarballsUrl={tarballsUrl}
+          />
         </div>
       )}
       <div className="grid divide-y border-y sm:border-x">

@@ -1,3 +1,4 @@
+import { throwNotInWorkflowOrStepContext } from '../context-errors.js';
 import {
   createFlushableState,
   flushablePipe,
@@ -37,8 +38,10 @@ export function getWritable<W = any>(
 ): WritableStream<W> {
   const ctx = contextStorage.getStore();
   if (!ctx) {
-    throw new Error(
-      '`getWritable()` can only be called inside a workflow or step function'
+    throwNotInWorkflowOrStepContext(
+      'getWritable()',
+      'https://workflow-sdk.dev/docs/api-reference/workflow/get-writable',
+      getWritable
     );
   }
 

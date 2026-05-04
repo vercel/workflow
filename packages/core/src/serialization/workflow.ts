@@ -10,7 +10,7 @@
  * inside the sandboxed VM.
  */
 
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { SerializationError } from '@workflow/errors';
 import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
 import { formatSerializationError } from './errors.js';
@@ -32,10 +32,8 @@ export function serialize(value: unknown, options?: CodecOptions): Uint8Array {
       payload
     ) as Uint8Array;
   } catch (error) {
-    throw new WorkflowRuntimeError(
-      formatSerializationError('workflow value', error),
-      { slug: 'serialization-failed', cause: error }
-    );
+    const { message, hint } = formatSerializationError('workflow value', error);
+    throw new SerializationError(message, { hint, cause: error });
   }
 }
 

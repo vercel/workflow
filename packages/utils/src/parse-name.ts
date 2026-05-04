@@ -87,3 +87,33 @@ export function parseStepName(name: string) {
 export function parseClassName(name: string) {
   return parseName('class', name);
 }
+
+/**
+ * Human-friendly single-line rendering of a step or workflow name for log
+ * messages. Parses the machine name (`step//./workflows/1_simple//add`) and
+ * renders it as `add (./workflows/1_simple)` so users see the short function
+ * name and the source module specifier without the internal `//` syntax.
+ *
+ * Falls back to the raw name if parsing fails (e.g. older name formats or
+ * user-provided strings we don't recognize) so logs never silently drop
+ * information.
+ */
+export function formatStepName(name: string): string {
+  return formatParsedName(parseStepName(name), name);
+}
+
+export function formatWorkflowName(name: string): string {
+  return formatParsedName(parseWorkflowName(name), name);
+}
+
+function formatParsedName(
+  parsed: {
+    shortName: string;
+    moduleSpecifier: string;
+    functionName: string;
+  } | null,
+  fallback: string
+): string {
+  if (!parsed) return fallback;
+  return `${parsed.shortName} (${parsed.moduleSpecifier})`;
+}

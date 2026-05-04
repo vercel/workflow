@@ -1,0 +1,12 @@
+node_modules
+.DS_Store
+dist
+.nitro
+.output
+.tanstack
+.vinxi
+.workflow-data
+.well-known/
+.vercel
+_workflows.ts
+src/routeTree.gen.ts

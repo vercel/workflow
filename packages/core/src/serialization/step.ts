@@ -5,7 +5,7 @@
  * deserializing step arguments. Supports encryption as a composable layer.
  */
 
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { SerializationError } from '@workflow/errors';
 import type { CodecOptions } from './codec.js';
 import { devalueCodec } from './codec-devalue.js';
 import {
@@ -33,10 +33,8 @@ export async function serialize(
     ) as Uint8Array;
     return encryptData(prefixed, encryptionKey);
   } catch (error) {
-    throw new WorkflowRuntimeError(
-      formatSerializationError('step value', error),
-      { slug: 'serialization-failed', cause: error }
-    );
+    const { message, hint } = formatSerializationError('step value', error);
+    throw new SerializationError(message, { hint, cause: error });
   }
 }
 
