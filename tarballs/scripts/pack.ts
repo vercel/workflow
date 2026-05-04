@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import zlib from 'node:zlib';
 
 const exec = promisify(cp.exec);
 
@@ -10,9 +11,44 @@ interface PackageJson {
   name: string;
   version: string;
   private?: boolean;
+  description?: string;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
+}
+
+export interface TarballFile {
+  path: string;
+  size: number;
+}
+
+export interface PackedPackage {
+  name: string;
+  escapedName: string;
+  version: string;
+  description?: string;
+  tarballSizeBytes: number;
+  unpackedSizeBytes: number;
+  fileCount: number;
+  files: TarballFile[];
+  url: string;
+}
+
+export interface BuildContext {
+  fullSha: string;
+  shortSha: string;
+  branch?: string;
+  pr?: string;
+  repoUrl?: string;
+  commitUrl?: string;
+  branchUrl?: string;
+  prUrl?: string;
+  builtAt: string;
+}
+
+export interface Catalog {
+  build: BuildContext;
+  packages: PackedPackage[];
 }
 
 const rootDir = fileURLToPath(new URL('../../', import.meta.url));
@@ -21,11 +57,10 @@ const outDir = fileURLToPath(new URL('../public', import.meta.url));
 
 async function main() {
   const sha = await getSha();
+  const localBranch = await getLocalBranch();
 
-  // Ensure output directory exists
   await fs.mkdir(outDir, { recursive: true });
 
-  // Scan the packages directory for all packages
   const packageDirs = await fs.readdir(packagesDir);
   const packages: Array<{
     name: string;
@@ -42,13 +77,12 @@ async function main() {
       const stat = await fs.stat(packageJsonPath);
       if (!stat.isFile()) continue;
     } catch {
-      continue; // Skip directories without package.json
+      continue;
     }
 
     const originalContent = await fs.readFile(packageJsonPath, 'utf8');
     const packageJson: PackageJson = JSON.parse(originalContent);
 
-    // Skip private packages
     if (packageJson.private) continue;
 
     packages.push({
@@ -59,19 +93,21 @@ async function main() {
     });
   }
 
-  // Create a set of all package names for dependency resolution
   const packageNames = new Set(packages.map((p) => p.name));
+  const baseUrl = process.env.VERCEL_URL
+    ? `https://${process.env.VERCEL_URL}`
+    : '';
+  const packed: PackedPackage[] = [];
 
   for (const { name, dir, packageJson, originalContent } of packages) {
     const packageJsonPath = path.join(dir, 'package.json');
 
-    // Create modified package.json with preview version
     const modifiedPackageJson: PackageJson = JSON.parse(
       JSON.stringify(packageJson)
     );
-    modifiedPackageJson.version += `-${sha}`;
+    const previewVersion = `${packageJson.version}-${sha}`;
+    modifiedPackageJson.version = previewVersion;
 
-    // Update workspace dependencies to use preview tarball URLs
     const updateDeps = (deps: Record<string, string> | undefined) => {
       if (!deps) return;
       for (const depName of Object.keys(deps)) {
@@ -87,119 +123,179 @@ async function main() {
     updateDeps(modifiedPackageJson.devDependencies);
     updateDeps(modifiedPackageJson.peerDependencies);
 
-    // Write modified package.json
     await fs.writeFile(
       packageJsonPath,
       JSON.stringify(modifiedPackageJson, null, 2)
     );
 
     try {
-      // Pack the package
       await exec(`pnpm pack --out="${outDir}/%s.tgz"`, { cwd: dir });
-      console.log(`Packed ${name}`);
+
+      const escapedName = name.replace(/^@(.+)\//, '$1-');
+      const tgzPath = path.join(outDir, `${escapedName}.tgz`);
+      const stat = await fs.stat(tgzPath);
+      const files = await listTarballFiles(tgzPath);
+      const unpackedSizeBytes = files.reduce((sum, f) => sum + f.size, 0);
+
+      packed.push({
+        name,
+        escapedName,
+        version: previewVersion,
+        description: packageJson.description,
+        tarballSizeBytes: stat.size,
+        unpackedSizeBytes,
+        fileCount: files.length,
+        files,
+        url: `${baseUrl}/${escapedName}.tgz`,
+      });
+      console.log(
+        `Packed ${name} (${formatBytes(stat.size)} → ${formatBytes(unpackedSizeBytes)} unpacked, ${files.length} files)`
+      );
     } finally {
-      // Always restore original package.json (preserves trailing newline /
-      // exact byte content of the source file)
       await fs.writeFile(packageJsonPath, originalContent);
     }
   }
 
-  await writeIndexHtml(packages.map((p) => p.name).sort(), sha);
+  const catalog: Catalog = {
+    build: getBuildContext(sha, localBranch),
+    packages: packed,
+  };
+
+  await fs.writeFile(
+    path.join(outDir, 'catalog.json'),
+    JSON.stringify(catalog, null, 2)
+  );
 
   console.log(
-    `\nSuccessfully packed ${packages.length} preview packages to ${outDir}`
+    `\nPacked ${packed.length} packages into ${outDir} and wrote catalog.json`
   );
 }
 
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&#39;');
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
 }
 
-async function writeIndexHtml(
-  packageNames: string[],
-  sha: string
-): Promise<void> {
-  // Use the actual deployment URL when running on Vercel, otherwise build
-  // commands relative to the page so they remain useful when the file is
-  // viewed via a non-Vercel host or directly from disk.
-  const baseUrlExpr = process.env.VERCEL_URL
-    ? `https://${process.env.VERCEL_URL}`
-    : '';
+/**
+ * List regular files inside a `.tgz` tarball, returning `{path, size}` for
+ * each entry. Implemented as an in-process tar reader so the result is
+ * identical on macOS (BSD tar) and Linux (GNU tar) — `tar -tvzf` formats
+ * its verbose output differently on each, and parsing it is fragile.
+ *
+ * We unzip the whole tarball into memory (npm pack outputs are small) and
+ * walk 512-byte blocks. Each entry is one 512-byte ustar header followed
+ * by the file content rounded up to 512 bytes. We only emit regular files
+ * (typeflag `0` or NUL); directories, symlinks, and pax/long-name
+ * extension entries are consumed but not emitted.
+ */
+async function listTarballFiles(tgzPath: string): Promise<TarballFile[]> {
+  const compressed = await fs.readFile(tgzPath);
+  const buf = zlib.gunzipSync(compressed);
+  const files: TarballFile[] = [];
+  let offset = 0;
+  let pendingLongName: string | undefined;
 
-  const rows = packageNames
-    .map((name) => {
-      const escapedName = name.replace(/^@(.+)\//, '$1-');
-      const installCmd = `pnpm i ${baseUrlExpr}/${escapedName}.tgz`;
-      return `        <tr>
-          <td><code>${escapeHtml(name)}</code></td>
-          <td>
-            <code id="cmd-${escapeHtml(escapedName)}">${escapeHtml(installCmd)}</code>
-            <button class="copy" data-target="cmd-${escapeHtml(escapedName)}" type="button">copy</button>
-          </td>
-        </tr>`;
-    })
-    .join('\n');
+  while (offset + 512 <= buf.length) {
+    const header = buf.subarray(offset, offset + 512);
+    // The end of an archive is marked by two consecutive zero blocks.
+    if (header.every((b) => b === 0)) break;
 
-  const html = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Workflow SDK preview tarballs</title>
-    <style>
-      :root { color-scheme: light dark; }
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        max-width: 960px;
-        margin: 2rem auto;
-        padding: 0 1rem;
-        line-height: 1.5;
-      }
-      h1 { margin-bottom: 0.25rem; }
-      .meta { color: #666; font-size: 0.9rem; margin-bottom: 1.5rem; }
-      table { border-collapse: collapse; width: 100%; }
-      th, td { text-align: left; padding: 0.5rem 0.75rem; border-bottom: 1px solid #ddd; vertical-align: top; }
-      th { font-weight: 600; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; color: #555; }
-      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9rem; }
-      button.copy {
-        margin-left: 0.5rem; padding: 0.1rem 0.5rem; font-size: 0.75rem;
-        border: 1px solid #888; background: transparent; cursor: pointer; border-radius: 3px;
-      }
-      button.copy:hover { background: rgba(0,0,0,0.05); }
-    </style>
-  </head>
-  <body>
-    <h1>Workflow SDK preview tarballs</h1>
-    <p class="meta">Built from <code>${escapeHtml(sha)}</code>. Drop one of these install commands into a project to test pre-release builds.</p>
-    <table>
-      <thead><tr><th>Package</th><th>Install</th></tr></thead>
-      <tbody>
-${rows}
-      </tbody>
-    </table>
-    <script>
-      for (const button of document.querySelectorAll('button.copy')) {
-        button.addEventListener('click', () => {
-          const target = document.getElementById(button.dataset.target);
-          if (!target) return;
-          navigator.clipboard.writeText(target.textContent || '').then(() => {
-            const original = button.textContent;
-            button.textContent = 'copied';
-            setTimeout(() => { button.textContent = original; }, 1500);
-          });
-        });
-      }
-    </script>
-  </body>
-</html>
-`;
+    const name = readNullTerminatedString(header, 0, 100);
+    const sizeOctal = readNullTerminatedString(header, 124, 12).trim();
+    const size = sizeOctal ? Number.parseInt(sizeOctal, 8) : 0;
+    const typeflag = String.fromCharCode(header[156] ?? 0);
+    const prefix = readNullTerminatedString(header, 345, 155);
+    const contentBlocks = Math.ceil(size / 512);
 
-  await fs.writeFile(path.join(outDir, 'index.html'), html);
+    offset += 512;
+
+    if (typeflag === 'L') {
+      // GNU long-name entry: the next `size` bytes are the path of the
+      // following entry. Read it and stash for the next iteration.
+      pendingLongName = buf
+        .subarray(offset, offset + size)
+        .toString('utf8')
+        .replace(/\0+$/, '');
+      offset += contentBlocks * 512;
+      continue;
+    }
+
+    if (typeflag === 'x' || typeflag === 'g') {
+      // pax extended / global headers — skip.
+      offset += contentBlocks * 512;
+      continue;
+    }
+
+    const fullName = pendingLongName ?? (prefix ? `${prefix}/${name}` : name);
+    pendingLongName = undefined;
+
+    // typeflag '0' or NUL = regular file.
+    if (typeflag === '0' || typeflag === '\0') {
+      if (fullName) files.push({ path: fullName, size });
+    }
+
+    offset += contentBlocks * 512;
+  }
+
+  files.sort((a, b) => b.size - a.size);
+  return files;
+}
+
+function readNullTerminatedString(
+  buf: Buffer,
+  offset: number,
+  len: number
+): string {
+  const slice = buf.subarray(offset, offset + len);
+  const end = slice.indexOf(0);
+  return slice.subarray(0, end === -1 ? len : end).toString('utf8');
+}
+
+function getBuildContext(sha: string, localBranch?: string): BuildContext {
+  const fullSha = process.env.VERCEL_GIT_COMMIT_SHA || sha;
+  const shortSha = fullSha.slice(0, 7);
+  const branch = process.env.VERCEL_GIT_COMMIT_REF || localBranch;
+  const pr = process.env.VERCEL_GIT_PULL_REQUEST_ID;
+  const owner = process.env.VERCEL_GIT_REPO_OWNER;
+  const slug = process.env.VERCEL_GIT_REPO_SLUG;
+  const provider = process.env.VERCEL_GIT_PROVIDER;
+
+  let repoUrl: string | undefined;
+  let commitUrl: string | undefined;
+  let prUrl: string | undefined;
+  let branchUrl: string | undefined;
+
+  if (owner && slug && (!provider || provider === 'github')) {
+    repoUrl = `https://github.com/${owner}/${slug}`;
+    commitUrl = `${repoUrl}/commit/${fullSha}`;
+    if (branch) branchUrl = `${repoUrl}/tree/${branch}`;
+    if (pr) prUrl = `${repoUrl}/pull/${pr}`;
+  }
+
+  return {
+    fullSha,
+    shortSha,
+    branch,
+    pr,
+    repoUrl,
+    commitUrl,
+    branchUrl,
+    prUrl,
+    builtAt: new Date().toISOString(),
+  };
+}
+
+async function getLocalBranch(): Promise<string | undefined> {
+  try {
+    const { stdout } = await exec('git rev-parse --abbrev-ref HEAD', {
+      cwd: rootDir,
+    });
+    const branch = stdout.trim();
+    return branch && branch !== 'HEAD' ? branch : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 async function getSha(): Promise<string> {
