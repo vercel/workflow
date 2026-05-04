@@ -1,8 +1,5 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import * as Ansi from './ansi.js';
-
-// Render ANSI styles as HTML-like tags in snapshots so they're readable.
-vi.mock('chalk');
 
 describe('Ansi.frame', () => {
   it('renders a single-line title with no contents', () => {
@@ -45,16 +42,14 @@ describe('Ansi.frame', () => {
 
 describe('Ansi.code', () => {
   it('wraps a token in dim backticks and italics', () => {
-    expect(Ansi.code('fn()')).toMatchInlineSnapshot(
-      `"<i><dim>\`</dim>fn()<dim>\`</dim></i>"`
-    );
+    expect(Ansi.code('fn()')).toMatchInlineSnapshot(`"\`fn()\`"`);
   });
 });
 
 describe('Ansi.hint / note / help / docs', () => {
   it('renders a hint line', () => {
     expect(Ansi.hint('try reloading')).toMatchInlineSnapshot(
-      `"<blue><b>hint:</b> try reloading</blue>"`
+      `"hint: try reloading"`
     );
   });
 
@@ -62,13 +57,16 @@ describe('Ansi.hint / note / help / docs', () => {
     expect(
       Ansi.note(['read more:', 'https://example.com'])
     ).toMatchInlineSnapshot(
-      `"<blue><b>note:</b> read more:\nhttps://example.com</blue>"`
+      `
+      "note: read more:
+      https://example.com"
+    `
     );
   });
 
   it('renders a help line', () => {
     expect(Ansi.help('run `wf inspect run run_123`')).toMatchInlineSnapshot(
-      `"<cyan><b>help:</b> run \`wf inspect run run_123\`</cyan>"`
+      `"help: run \`wf inspect run run_123\`"`
     );
   });
 
@@ -76,7 +74,7 @@ describe('Ansi.hint / note / help / docs', () => {
     expect(
       Ansi.docs('https://workflow-sdk.dev/docs/api-reference/workflow/sleep')
     ).toMatchInlineSnapshot(
-      `"<blue><b>docs:</b> https://workflow-sdk.dev/docs/api-reference/workflow/sleep</blue>"`
+      `"docs: https://workflow-sdk.dev/docs/api-reference/workflow/sleep"`
     );
   });
 });
