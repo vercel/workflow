@@ -2027,7 +2027,7 @@ importers:
         specifier: ^5.9.2
         version: 5.9.3
       vite:
-        specifier: ^7.1.7
+        specifier: ^7.3.2
         version: 7.3.2(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3)
       vite-plugin-devtools-json:
         specifier: ^1.0.0
@@ -2201,7 +2201,7 @@ importers:
         specifier: ^6.6.0
         version: 6.6.0(ws@8.20.0)(zod@4.3.6)
       vite:
-        specifier: ^7.1.12
+        specifier: ^7.3.2
         version: 7.3.2(@types/node@24.6.2)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3)
       workflow:
         specifier: workspace:*
