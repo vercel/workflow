@@ -1,3 +1,4 @@
+import { throwNotInStepContext } from '../context-errors.js';
 import { contextStorage } from './context-storage.js';
 
 export interface StepMetadata {
@@ -47,8 +48,10 @@ export interface StepMetadata {
 export function getStepMetadata(): StepMetadata {
   const ctx = contextStorage.getStore();
   if (!ctx) {
-    throw new Error(
-      '`getStepMetadata()` can only be called inside a step function'
+    throwNotInStepContext(
+      'getStepMetadata()',
+      'https://workflow-sdk.dev/docs/api-reference/workflow/get-step-metadata',
+      getStepMetadata
     );
   }
   return ctx.stepMetadata;

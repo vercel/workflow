@@ -2,6 +2,11 @@ import { parseDurationToDate } from '@workflow/utils';
 import type { StructuredError } from '@workflow/world';
 import type { StringValue } from 'ms';
 
+// Note: `Ansi` helpers live under the `@workflow/errors/ansi` subpath so the
+// main entry point doesn't pull `chalk` (and its ESM machinery) into every
+// consumer — most places that `import from '@workflow/errors'` only want the
+// error classes and never render framed messages.
+
 const BASE_URL = 'https://workflow-sdk.dev/err';
 
 /**
@@ -17,6 +22,53 @@ function isError(value: unknown): value is { name: string; message: string } {
     'name' in value &&
     'message' in value
   );
+}
+
+/**
+ * @internal
+ * Compose a framed-detail body for an error message — same `╰▶` /
+ * `├▶` box-drawing structure used by `ContextViolationError` (in
+ * `@workflow/core`), so every error class with a hint or docs slug
+ * renders consistently:
+ *
+ *     <title>
+ *     ├▶ hint: <hint>
+ *     ╰▶ docs: https://workflow-sdk.dev/err/<slug>
+ *
+ * Plain text only — no ANSI here, since `@workflow/errors`'s main entry
+ * stays chalk-free. The runtime logger renders the same chars with
+ * dim styling at log time.
+ *
+ * Returns just `title` when there are no details to frame. Multi-line
+ * detail values are indented under their branch so the tree stays
+ * readable.
+ */
+function appendFramedDetails(
+  title: string,
+  details: ReadonlyArray<{ label: 'hint' | 'docs'; value: string }>
+): string {
+  if (details.length === 0) return title;
+  const lines = [title];
+  details.forEach((detail, index) => {
+    const isLast = index === details.length - 1;
+    const head = isLast ? '╰▶ ' : '├▶ ';
+    const cont = isLast ? '   ' : '│  ';
+    const text = `${detail.label}: ${detail.value}`;
+    text
+      .split('\n')
+      .forEach((line, i) => lines.push(`${i === 0 ? head : cont}${line}`));
+  });
+  return lines.join('\n');
+}
+
+function buildFramedDetails(
+  hint: string | undefined,
+  slug: ErrorSlug | undefined
+): ReadonlyArray<{ label: 'hint' | 'docs'; value: string }> {
+  const out: Array<{ label: 'hint' | 'docs'; value: string }> = [];
+  if (hint) out.push({ label: 'hint', value: hint });
+  if (slug) out.push({ label: 'docs', value: `${BASE_URL}/${slug}` });
+  return out;
 }
 
 /**
@@ -67,11 +119,20 @@ export class WorkflowError extends Error {
   readonly cause?: unknown;
 
   constructor(message: string, options?: WorkflowErrorOptions) {
-    const msgDocs = options?.slug
-      ? `${message}\n\nLearn more: ${BASE_URL}/${options.slug}`
-      : message;
+    const msgDocs = appendFramedDetails(
+      message,
+      buildFramedDetails(undefined, options?.slug)
+    );
     super(msgDocs, { cause: options?.cause });
-    this.cause = options?.cause;
+    // Only set `cause` when actually provided. Assigning `undefined`
+    // unconditionally makes `cause` an enumerable own property, which
+    // pollutes `util.inspect(err)` output with `{ cause: undefined, … }`
+    // on every no-cause subclass. The `super(...)` call above already
+    // conditionally sets non-enumerable `.cause` when `options.cause`
+    // is provided.
+    if (options?.cause !== undefined) {
+      this.cause = options.cause;
+    }
 
     if (options?.cause instanceof Error) {
       this.stack = `${this.stack}\nCaused by: ${options.cause.stack}`;
@@ -214,6 +275,104 @@ export class WorkflowRuntimeError extends WorkflowError {
 
   static is(value: unknown): value is WorkflowRuntimeError {
     return isError(value) && value.name === 'WorkflowRuntimeError';
+  }
+}
+
+interface WorkflowBuildErrorOptions extends ErrorOptions {
+  /**
+   * An optional actionable hint appended to the main message, explaining how
+   * the user can resolve the failure. Shown after a blank line.
+   */
+  hint?: string;
+}
+
+/**
+ * Thrown when the workflow build pipeline (esbuild, SWC transform, file
+ * discovery, bundler integration) fails in a way the user can act on.
+ *
+ * This is distinct from `WorkflowRuntimeError` (which is raised at runtime
+ * by the workflow engine) — `WorkflowBuildError` fires during `pnpm build`,
+ * `next build`, or equivalent, before any workflow has started executing.
+ *
+ * Prefer attaching a short, actionable `hint` (e.g. `run \`pnpm install workflow\``)
+ * as plain text — the rendering layer is responsible for any styling or
+ * "hint:" label. Keeping `hint` plain keeps it useful in non-TTY contexts
+ * (CI logs, structured error serialization) where ANSI escapes are noise.
+ */
+export class WorkflowBuildError extends WorkflowError {
+  readonly hint?: string;
+
+  constructor(message: string, options?: WorkflowBuildErrorOptions) {
+    // Pass `hint` framed alongside the title so `WorkflowError`'s
+    // constructor sees a complete `${title}\n├▶ hint: …` body before
+    // it appends the `╰▶ docs: …` line. Build errors don't carry a
+    // slug today, but this keeps the layout consistent if one is
+    // added later.
+    const body = appendFramedDetails(
+      message,
+      buildFramedDetails(options?.hint, undefined)
+    );
+    super(body, { cause: options?.cause });
+    this.name = 'WorkflowBuildError';
+    this.hint = options?.hint;
+  }
+
+  static is(value: unknown): value is WorkflowBuildError {
+    return isError(value) && value.name === 'WorkflowBuildError';
+  }
+}
+
+interface SerializationErrorOptions extends ErrorOptions {
+  /**
+   * An optional actionable hint appended to the main message, explaining how
+   * the user can resolve the failure (e.g. "register the class with…" or
+   * "move this call inside a step").
+   */
+  hint?: string;
+}
+
+/**
+ * Thrown when a value cannot be serialized into or deserialized out of the
+ * workflow event log.
+ *
+ * This usually indicates a user-facing mistake: passing a non-serializable
+ * value (class without `WORKFLOW_SERIALIZE`, locked stream, direct workflow
+ * function reference) into a step boundary, or an unregistered class
+ * returning from a step.
+ *
+ * Internal invariants (corrupted buffers, unknown format bytes) should use
+ * `WorkflowRuntimeError` instead — this class is scoped to things the user
+ * can fix in their own code.
+ */
+export class SerializationError extends WorkflowError {
+  readonly hint?: string;
+  /**
+   * Serialization errors are deterministic — if a step returns a non-POJO,
+   * replaying the step will always produce the same non-serializable value.
+   * Retrying is guaranteed to fail, so these errors are surfaced as fatal
+   * and skip the step-retry loop. `FatalError.is()` recognizes any error
+   * with `fatal: true` (see `packages/errors/src/index.ts`), so no other
+   * wiring is required for user-thrown SerializationErrors.
+   */
+  readonly fatal = true;
+
+  constructor(message: string, options?: SerializationErrorOptions) {
+    // The hint carries its own docs URL (pointing at the foundations
+    // serialization page, which is what users actually need to see what
+    // round-trips), so we don't add a separate `╰▶ docs:` line here.
+    // Avoids two URLs on the message — one already-actionable, the other
+    // pointing at a generic error explainer.
+    const body = appendFramedDetails(
+      message,
+      buildFramedDetails(options?.hint, undefined)
+    );
+    super(body, { cause: options?.cause });
+    this.name = 'SerializationError';
+    this.hint = options?.hint;
+  }
+
+  static is(value: unknown): value is SerializationError {
+    return isError(value) && value.name === 'SerializationError';
   }
 }
 
@@ -543,6 +702,13 @@ export class RunNotSupportedError extends WorkflowError {
  * A fatal error is an error that cannot be retried.
  * It will cause the step to fail and the error will
  * be bubbled up to the workflow logic.
+ *
+ * Any error can opt into the non-retry behavior by setting a `fatal: true`
+ * own property. This is how structured error classes that aren't direct
+ * `FatalError` subclasses (e.g. context-violation errors) signal to the
+ * step handler that retrying will never help — the user's code is calling
+ * a workflow-only API from the wrong context, or similar — and burning
+ * retry attempts just produces a wall of duplicated log output.
  */
 export class FatalError extends Error {
   fatal = true;
@@ -553,7 +719,9 @@ export class FatalError extends Error {
   }
 
   static is(value: unknown): value is FatalError {
-    return isError(value) && value.name === 'FatalError';
+    if (!isError(value)) return false;
+    if (value.name === 'FatalError') return true;
+    return (value as { fatal?: unknown }).fatal === true;
   }
 }
 

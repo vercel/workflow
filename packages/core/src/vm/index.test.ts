@@ -167,7 +167,8 @@ describe('createContext', () => {
     }
     expect(err).toBeDefined();
     expect(err).toBeInstanceOf(Error);
-    expect(err?.message).toEqual('Not implemented');
+    expect(err?.message).toContain('crypto.subtle.generateKey()');
+    expect(err?.message).toContain('not available inside a workflow function');
   });
 
   it('should call `onWorkflowError` when a workflow error occurs', async () => {

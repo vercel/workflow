@@ -1,3 +1,4 @@
+import { throwNotInWorkflowContext } from '../context-errors.js';
 import type {
   Hook,
   HookOptions,
@@ -14,8 +15,10 @@ export function createHook<T = any>(options?: HookOptions): Hook<T> {
     WORKFLOW_CREATE_HOOK
   ] as typeof createHook<T>;
   if (!createHookFn) {
-    throw new Error(
-      '`createHook()` can only be called inside a workflow function'
+    throwNotInWorkflowContext(
+      'createHook()',
+      'https://workflow-sdk.dev/docs/api-reference/workflow/create-hook',
+      createHook
     );
   }
   return createHookFn(options);

@@ -1,4 +1,5 @@
 import { runInContext, createContext as vmCreateContext } from 'node:vm';
+import { WorkflowRuntimeError } from '@workflow/errors';
 import seedrandom from 'seedrandom';
 import { installUint8ArrayBase64 } from './uint8array-base64.js';
 import { createRandomUUID } from './uuid.js';
@@ -72,7 +73,9 @@ export function createContext(options: CreateContextOptions) {
           get(target, prop) {
             if (prop === 'generateKey') {
               return () => {
-                throw new Error('Not implemented');
+                throw new WorkflowRuntimeError(
+                  '`crypto.subtle.generateKey()` is not available inside a workflow function. Move key generation to a step function where full Node.js crypto is available.'
+                );
               };
             } else if (prop === 'digest') {
               return boundDigest;
