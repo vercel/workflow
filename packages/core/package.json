@@ -64,6 +64,10 @@
       "types": "./dist/encryption.d.ts",
       "default": "./dist/encryption.js"
     },
+    "./describe-error": {
+      "types": "./dist/describe-error.d.ts",
+      "default": "./dist/describe-error.js"
+    },
     "./_workflow": "./dist/workflow/index.js"
   },
   "scripts": {

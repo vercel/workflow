@@ -1,4 +1,4 @@
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { SerializationError, WorkflowRuntimeError } from '@workflow/errors';
 import { parse, stringify } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
@@ -13,7 +13,13 @@ import {
   pollWritableLock,
 } from './flushable-stream.js';
 import { getStepFunction } from './private.js';
-import { getWorld } from './runtime/world.js';
+// V2: use getWorldLazy in step-side code paths so Turbopack can statically
+// resolve the world bridge from the step bundle without dragging the full
+// world.ts module (and its dynamic-import behaviour) into the flow route.
+// See `packages/core/src/runtime/get-world-lazy.ts` and the
+// "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
+// `docs/content/docs/changelog/eager-processing.mdx`.
+import { getWorldLazy } from './runtime/get-world-lazy.js';
 import * as clientModule from './serialization/client.js';
 import {
   decrypt,
@@ -107,6 +113,25 @@ export function getStreamType(stream: ReadableStream): 'bytes' | undefined {
  */
 const FRAME_HEADER_SIZE = 4;
 
+/**
+ * The mode-specific serializers (`./serialization/{client,step,workflow}.ts`)
+ * already throw a `SerializationError` whose `.cause` is the underlying
+ * devalue / serde failure. The outer dehydrate/hydrate wrappers want to
+ * re-frame that error with a more specific context label (e.g. "workflow
+ * arguments" instead of generic "workflow value"), so they unwrap the
+ * inner SerializationError and reformat with the original cause. Errors
+ * that aren't already SerializationError flow through unchanged.
+ */
+function unwrapSerializationCause(error: unknown): unknown {
+  if (error instanceof SerializationError && error.cause !== undefined) {
+    return error.cause;
+  }
+  if (error instanceof WorkflowRuntimeError && error.cause !== undefined) {
+    return error.cause;
+  }
+  return error;
+}
+
 export function getSerializeStream(
   reducers: Partial<Reducers>,
   cryptoKey: EncryptionKeyParam
@@ -148,11 +173,12 @@ export function getSerializeStream(
         frame.set(prefixed, FRAME_HEADER_SIZE);
         controller.enqueue(frame);
       } catch (error) {
+        const { message, hint } = formatSerializationError(
+          'stream chunk',
+          error
+        );
         controller.error(
-          new WorkflowRuntimeError(
-            formatSerializationError('stream chunk', error),
-            { slug: 'serialization-failed', cause: error }
-          )
+          new SerializationError(message, { hint, cause: error })
         );
       }
     },
@@ -279,7 +305,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
 
   constructor(runId: string, name: string, startIndex?: number) {
     if (typeof name !== 'string' || name.length === 0) {
-      throw new Error(`"name" is required, got "${name}"`);
+      throw new WorkflowRuntimeError(`"name" is required, got "${name}"`);
     }
     super({
       // @ts-expect-error Not sure why TypeScript is complaining about this
@@ -288,7 +314,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       pull: async (controller) => {
         let reader = this.#reader;
         if (!reader) {
-          const world = await getWorld();
+          const world = await getWorldLazy();
           const stream = await world.streams.get(runId, name, startIndex);
           reader = this.#reader = stream.getReader();
         }
@@ -326,12 +352,14 @@ const STREAM_FLUSH_INTERVAL_MS = 10;
 export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
   constructor(runId: string, name: string) {
     if (typeof runId !== 'string') {
-      throw new Error(`"runId" must be a string, got "${typeof runId}"`);
+      throw new WorkflowRuntimeError(
+        `"runId" must be a string, got "${typeof runId}"`
+      );
     }
     if (typeof name !== 'string' || name.length === 0) {
-      throw new Error(`"name" is required, got "${name}"`);
+      throw new WorkflowRuntimeError(`"name" is required, got "${name}"`);
     }
-    const worldPromise = getWorld();
+    const worldPromise = getWorldLazy();
 
     // Buffering state for batched writes
     // Encryption/decryption is handled at the framing level by
@@ -538,7 +566,12 @@ export function getExternalReducers(
 
       // Stream must not be locked when passing across execution boundary
       if (value.locked) {
-        throw new Error('ReadableStream is locked');
+        throw new SerializationError(
+          'ReadableStream is locked and cannot be passed across a workflow boundary.',
+          {
+            hint: 'Pass the stream before calling .getReader() / .pipeThrough() / .pipeTo(), or tee it with .tee() and pass one of the branches.',
+          }
+        );
       }
 
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
@@ -608,7 +641,7 @@ export function getWorkflowReducers(
 
       const name = value[STREAM_NAME_SYMBOL];
       if (!name) {
-        throw new Error('ReadableStream `name` is not set');
+        throw new WorkflowRuntimeError('ReadableStream `name` is not set');
       }
       const s: SerializableSpecial['ReadableStream'] = { name };
       const type = value[STREAM_TYPE_SYMBOL];
@@ -619,7 +652,7 @@ export function getWorkflowReducers(
       if (!(value instanceof global.WritableStream)) return false;
       const name = value[STREAM_NAME_SYMBOL];
       if (!name) {
-        throw new Error('WritableStream `name` is not set');
+        throw new WorkflowRuntimeError('WritableStream `name` is not set');
       }
       return { name };
     },
@@ -649,7 +682,12 @@ function getStepReducers(
 
       // Stream must not be locked when passing across execution boundary
       if (value.locked) {
-        throw new Error('ReadableStream is locked');
+        throw new SerializationError(
+          'ReadableStream is locked and cannot be passed across a workflow boundary.',
+          {
+            hint: 'Pass the stream before calling .getReader() / .pipeThrough() / .pipeTo(), or tee it with .tee() and pass one of the branches.',
+          }
+        );
       }
 
       // Check if the stream already has the name symbol set, in which case
@@ -741,16 +779,22 @@ export function getExternalRevivers(
 
     // StepFunction should not be returned from workflows to clients
     StepFunction: () => {
-      throw new Error(
-        'Step functions cannot be deserialized in client context. Step functions should not be returned from workflows.'
+      throw new SerializationError(
+        'Step functions cannot be deserialized in client context. Step functions should not be returned from workflows.',
+        {
+          hint: 'A step function reference reached the client. Return a serializable value (e.g. the step result) instead of the step itself.',
+        }
       );
     },
 
     WorkflowFunction: (value) =>
       Object.assign(
         () => {
-          throw new Error(
-            'Workflow functions cannot be called directly. Use start() to invoke them.'
+          throw new SerializationError(
+            'Workflow functions cannot be called directly. Use start() to invoke them.',
+            {
+              hint: 'Wrap the workflow with `start(workflowFn, { ... })` from `workflow` to begin a run instead of invoking it like a normal function.',
+            }
           );
         },
         { workflowId: value.workflowId }
@@ -875,8 +919,11 @@ export function getWorkflowRevivers(
         (value as any)[WEBHOOK_RESPONSE_WRITABLE] = responseWritable;
         delete value.responseWritable;
         (value as any).respondWith = () => {
-          throw new Error(
-            '`respondWith()` must be called from within a step function'
+          throw new SerializationError(
+            '`respondWith()` must be called from within a step function.',
+            {
+              hint: 'Move the `respondWith(...)` call inside a `"use step"` function — it cannot be invoked from a workflow context.',
+            }
           );
         };
       }
@@ -887,8 +934,11 @@ export function getWorkflowRevivers(
     WorkflowFunction: (value) =>
       Object.assign(
         () => {
-          throw new Error(
-            'Workflow functions cannot be called directly. Use start() to invoke them.'
+          throw new SerializationError(
+            'Workflow functions cannot be called directly. Use start() to invoke them.',
+            {
+              hint: 'Wrap the workflow with `start(workflowFn, { ... })` from `workflow` to begin a run instead of invoking it like a normal function.',
+            }
           );
         },
         { workflowId: value.workflowId }
@@ -958,8 +1008,11 @@ function getStepRevivers(
 
       const stepFn = getStepFunction(stepId);
       if (!stepFn) {
-        throw new Error(
-          `Step function "${stepId}" not found. Make sure the step function is registered.`
+        throw new SerializationError(
+          `Step function "${stepId}" not found. Make sure the step function is registered.`,
+          {
+            hint: 'Make sure the step file is included in your build (i.e. it is listed in the workflow manifest), and that the SWC plugin is configured for the file.',
+          }
         );
       }
 
@@ -971,7 +1024,7 @@ function getStepRevivers(
           const currentContext = contextStorage.getStore();
 
           if (!currentContext) {
-            throw new Error(
+            throw new WorkflowRuntimeError(
               'Cannot call step function with closure variables outside step context'
             );
           }
@@ -1009,8 +1062,11 @@ function getStepRevivers(
     WorkflowFunction: (value) =>
       Object.assign(
         () => {
-          throw new Error(
-            'Workflow functions cannot be called directly. Use start() to invoke them.'
+          throw new SerializationError(
+            'Workflow functions cannot be called directly. Use start() to invoke them.',
+            {
+              hint: 'Wrap the workflow with `start(workflowFn, { ... })` from `workflow` to begin a run instead of invoking it like a normal function.',
+            }
           );
         },
         { workflowId: value.workflowId }
@@ -1180,16 +1236,12 @@ export async function dehydrateWorkflowArguments(
       ),
     });
   } catch (error) {
-    throw new WorkflowRuntimeError(
-      formatSerializationError(
-        'workflow arguments',
-        error instanceof WorkflowRuntimeError ? error.cause : error
-      ),
-      {
-        slug: 'serialization-failed',
-        cause: error instanceof WorkflowRuntimeError ? error.cause : error,
-      }
+    const cause = unwrapSerializationCause(error);
+    const { message, hint } = formatSerializationError(
+      'workflow arguments',
+      cause
     );
+    throw new SerializationError(message, { hint, cause });
   }
 }
 
@@ -1233,16 +1285,12 @@ export async function dehydrateWorkflowReturnValue(
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
     });
   } catch (error) {
-    throw new WorkflowRuntimeError(
-      formatSerializationError(
-        'workflow return value',
-        error instanceof WorkflowRuntimeError ? error.cause : error
-      ),
-      {
-        slug: 'serialization-failed',
-        cause: error instanceof WorkflowRuntimeError ? error.cause : error,
-      }
+    const cause = unwrapSerializationCause(error);
+    const { message, hint } = formatSerializationError(
+      'workflow return value',
+      cause
     );
+    throw new SerializationError(message, { hint, cause });
   }
 }
 
@@ -1290,16 +1338,9 @@ export async function dehydrateStepArguments(
       extraReducers: getStreamAndRequestReducers(getWorkflowReducers(global)),
     });
   } catch (error) {
-    throw new WorkflowRuntimeError(
-      formatSerializationError(
-        'step arguments',
-        error instanceof WorkflowRuntimeError ? error.cause : error
-      ),
-      {
-        slug: 'serialization-failed',
-        cause: error instanceof WorkflowRuntimeError ? error.cause : error,
-      }
-    );
+    const cause = unwrapSerializationCause(error);
+    const { message, hint } = formatSerializationError('step arguments', cause);
+    throw new SerializationError(message, { hint, cause });
   }
 }
 
@@ -1348,16 +1389,12 @@ export async function dehydrateStepReturnValue(
       ),
     });
   } catch (error) {
-    throw new WorkflowRuntimeError(
-      formatSerializationError(
-        'step return value',
-        error instanceof WorkflowRuntimeError ? error.cause : error
-      ),
-      {
-        slug: 'serialization-failed',
-        cause: error instanceof WorkflowRuntimeError ? error.cause : error,
-      }
+    const cause = unwrapSerializationCause(error);
+    const { message, hint } = formatSerializationError(
+      'step return value',
+      cause
     );
+    throw new SerializationError(message, { hint, cause });
   }
 }
 

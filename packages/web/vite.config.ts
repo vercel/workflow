@@ -2,12 +2,19 @@ import { reactRouter } from '@react-router/dev/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
+// When `true`, we're building the `packages/web` project for deployment to
+// Vercel itself (as opposed to local development, publishing to npm, or being
+// packed as a tarball by the `docs` deployment — all of which produce the
+// standard self-hosted layout that `server.js` expects).
+const isVercelWebDeployment = process.env.WORKFLOW_WEB_VERCEL_BUILD === '1';
+
 export default defineConfig(({ command, isSsrBuild }) => ({
   build: {
     // Use Express server entry for self-hosting (node server.js).
-    // On Vercel, the React Router preset handles the server entry.
+    // On the web Vercel deployment, the React Router preset handles the
+    // server entry.
     rollupOptions:
-      isSsrBuild && !process.env.VERCEL
+      isSsrBuild && !isVercelWebDeployment
         ? { input: './server/app.ts' }
         : undefined,
     // Disable minification so the published npm package contains readable
@@ -29,7 +36,7 @@ export default defineConfig(({ command, isSsrBuild }) => ({
   // noExternal for dev so dependencies are loaded natively by Node.js.
   ssr: {
     noExternal: command === 'build' ? true : undefined,
-    external: process.env.VERCEL ? undefined : ['express'],
+    external: isVercelWebDeployment ? undefined : ['express'],
   },
   plugins: [tailwindcss(), reactRouter()],
   resolve: {

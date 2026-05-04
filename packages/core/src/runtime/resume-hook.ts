@@ -23,8 +23,8 @@ import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
 import { waitedUntil } from '../util.js';
+import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
-import { getWorld } from './world.js';
 
 /**
  * Internal helper that returns the hook, the associated workflow run,
@@ -35,7 +35,7 @@ async function getHookByTokenWithKey(token: string): Promise<{
   run: WorkflowRun;
   encryptionKey: CryptoKey | undefined;
 }> {
-  const world = await getWorld();
+  const world = await getWorldLazy();
   const hook = await world.hooks.getByToken(token);
   const run = await world.runs.get(hook.runId);
   const rawKey = await world.getEncryptionKeyForRun?.(run);
@@ -98,7 +98,7 @@ export async function resumeHook<T = any>(
 ): Promise<Hook> {
   return await waitedUntil(() => {
     return trace('hook.resume', async (span) => {
-      const world = await getWorld();
+      const world = await getWorldLazy();
 
       try {
         let hook: Hook;

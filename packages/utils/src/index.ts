@@ -1,5 +1,7 @@
 export { pluralize } from './pluralize.js';
 export {
+  formatStepName,
+  formatWorkflowName,
   parseClassName,
   parseStepName,
   parseWorkflowName,
