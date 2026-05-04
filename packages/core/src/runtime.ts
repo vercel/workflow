@@ -156,9 +156,6 @@ export function workflowEntrypoint(
               attempt: metadata.attempt,
               errorCode: maxDeliveriesDescription.errorCode,
               errorAttribution: maxDeliveriesDescription.attribution,
-              ...(maxDeliveriesDescription.hint
-                ? { hint: maxDeliveriesDescription.hint }
-                : {}),
             }
           );
           try {
@@ -234,9 +231,6 @@ export function workflowEntrypoint(
                 maxRetries: REPLAY_TIMEOUT_MAX_RETRIES,
                 errorCode: replayTimeoutDescription.errorCode,
                 errorAttribution: replayTimeoutDescription.attribution,
-                ...(replayTimeoutDescription.hint
-                  ? { hint: replayTimeoutDescription.hint }
-                  : {}),
               }
             );
 
@@ -395,9 +389,6 @@ export function workflowEntrypoint(
                           errorName: err.name,
                           errorMessage: err.message,
                           errorStack: err.stack,
-                          ...(description.hint
-                            ? { hint: description.hint }
-                            : {}),
                         }
                       );
                       try {
@@ -615,7 +606,6 @@ export function workflowEntrypoint(
                         errorAttribution: description.attribution,
                         errorName,
                         errorMessage,
-                        ...(description.hint ? { hint: description.hint } : {}),
                       }
                     );
 

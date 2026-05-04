@@ -16,8 +16,7 @@ describe('WorkflowBuildError', () => {
     expect(err.hint).toBe('run `pnpm install workflow` and try again');
     expect(err.message).toMatchInlineSnapshot(`
       "Build failed during steps
-
-      run \`pnpm install workflow\` and try again"
+      ╰▶ hint: run \`pnpm install workflow\` and try again"
     `);
   });
 

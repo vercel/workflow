@@ -22,12 +22,19 @@ export function formatSerializationError(
   context: string,
   error: unknown
 ): { message: string; hint: string } {
+  // `returning` for outputs, `passing` for everything that crosses the
+  // boundary the other way (arguments, stream messages, etc.).
   const verb = context.includes('return value') ? 'returning' : 'passing';
   let message = `Failed to serialize ${context}`;
   if (error instanceof DevalueError && error.path) {
     message += ` at path "${error.path}"`;
   }
-  const hint = `Ensure you're ${verb} serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`;
+  // Workflow can serialize a much richer set than the devalue defaults —
+  // classes registered via `WORKFLOW_SERIALIZE`, FatalError / RetryableError
+  // subclasses, AbortSignal, etc. Pointing at the foundations doc keeps
+  // this hint accurate as the supported set grows, instead of repeating
+  // a hardcoded list that drifts out of sync.
+  const hint = `Ensure you're ${verb} workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`;
   if (error instanceof DevalueError && error.value !== undefined) {
     runtimeLogger.error('Serialization failed', {
       context,

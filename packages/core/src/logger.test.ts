@@ -161,7 +161,7 @@ describe('logger', () => {
           user error · Error
           run    wrun_abc
           step   step_xyz
-          retry  4 attempts · 3 retries",
+          retry  4 attempts · 3 max retries",
           ],
         ]
       `);

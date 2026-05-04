@@ -641,6 +641,10 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                 // stack into the message so console.error renders the stack
                 // inline, and keep the metadata object small with only the
                 // structured fields that log drains want to index.
+                // No `hint` field here — actionable hint text lives on the
+                // error message itself (so it survives serialization →
+                // event log → observability rehydrate), and adding it
+                // again here just duplicates it on stderr.
                 stepLogger.error(
                   `${framing}\n${normalizedStack || normalizedError.message}`,
                   {
@@ -650,7 +654,6 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     errorAttribution: description.attribution,
                     errorName: normalizedError.name,
                     errorMessage: normalizedError.message,
-                    ...(description.hint ? { hint: description.hint } : {}),
                   }
                 );
                 // Fail the step via event (event-sourced architecture)
@@ -720,7 +723,6 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       errorAttribution: description.attribution,
                       errorName: normalizedError.name,
                       errorMessage: normalizedError.message,
-                      ...(description.hint ? { hint: description.hint } : {}),
                     }
                   );
                   const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;

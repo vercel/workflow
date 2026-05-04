@@ -24,10 +24,8 @@ describe('SerializationError', () => {
     expect(err.hint).toBe('Register the class with WORKFLOW_SERIALIZE.');
     expect(err.message).toMatchInlineSnapshot(`
       "boom
-
-      Register the class with WORKFLOW_SERIALIZE.
-
-      Learn more: https://workflow-sdk.dev/err/serialization-failed"
+      ├▶ hint: Register the class with WORKFLOW_SERIALIZE.
+      ╰▶ docs: https://workflow-sdk.dev/err/serialization-failed"
     `);
   });
 

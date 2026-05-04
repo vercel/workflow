@@ -26,6 +26,53 @@ function isError(value: unknown): value is { name: string; message: string } {
 
 /**
  * @internal
+ * Compose a framed-detail body for an error message — same `╰▶` /
+ * `├▶` box-drawing structure used by `ContextViolationError` (in
+ * `@workflow/core`), so every error class with a hint or docs slug
+ * renders consistently:
+ *
+ *     <title>
+ *     ├▶ hint: <hint>
+ *     ╰▶ docs: https://workflow-sdk.dev/err/<slug>
+ *
+ * Plain text only — no ANSI here, since `@workflow/errors`'s main entry
+ * stays chalk-free. The runtime logger renders the same chars with
+ * dim styling at log time.
+ *
+ * Returns just `title` when there are no details to frame. Multi-line
+ * detail values are indented under their branch so the tree stays
+ * readable.
+ */
+function appendFramedDetails(
+  title: string,
+  details: ReadonlyArray<{ label: 'hint' | 'docs'; value: string }>
+): string {
+  if (details.length === 0) return title;
+  const lines = [title];
+  details.forEach((detail, index) => {
+    const isLast = index === details.length - 1;
+    const head = isLast ? '╰▶ ' : '├▶ ';
+    const cont = isLast ? '   ' : '│  ';
+    const text = `${detail.label}: ${detail.value}`;
+    text
+      .split('\n')
+      .forEach((line, i) => lines.push(`${i === 0 ? head : cont}${line}`));
+  });
+  return lines.join('\n');
+}
+
+function buildFramedDetails(
+  hint: string | undefined,
+  slug: ErrorSlug | undefined
+): ReadonlyArray<{ label: 'hint' | 'docs'; value: string }> {
+  const out: Array<{ label: 'hint' | 'docs'; value: string }> = [];
+  if (hint) out.push({ label: 'hint', value: hint });
+  if (slug) out.push({ label: 'docs', value: `${BASE_URL}/${slug}` });
+  return out;
+}
+
+/**
+ * @internal
  * All the slugs of the errors used for documentation links.
  */
 export const ERROR_SLUGS = {
@@ -72,9 +119,10 @@ export class WorkflowError extends Error {
   readonly cause?: unknown;
 
   constructor(message: string, options?: WorkflowErrorOptions) {
-    const msgDocs = options?.slug
-      ? `${message}\n\nLearn more: ${BASE_URL}/${options.slug}`
-      : message;
+    const msgDocs = appendFramedDetails(
+      message,
+      buildFramedDetails(undefined, options?.slug)
+    );
     super(msgDocs, { cause: options?.cause });
     // Only set `cause` when actually provided. Assigning `undefined`
     // unconditionally makes `cause` an enumerable own property, which
@@ -255,7 +303,15 @@ export class WorkflowBuildError extends WorkflowError {
   readonly hint?: string;
 
   constructor(message: string, options?: WorkflowBuildErrorOptions) {
-    const body = options?.hint ? `${message}\n\n${options.hint}` : message;
+    // Pass `hint` framed alongside the title so `WorkflowError`'s
+    // constructor sees a complete `${title}\n├▶ hint: …` body before
+    // it appends the `╰▶ docs: …` line. Build errors don't carry a
+    // slug today, but this keeps the layout consistent if one is
+    // added later.
+    const body = appendFramedDetails(
+      message,
+      buildFramedDetails(options?.hint, undefined)
+    );
     super(body, { cause: options?.cause });
     this.name = 'WorkflowBuildError';
     this.hint = options?.hint;
@@ -301,11 +357,16 @@ export class SerializationError extends WorkflowError {
   readonly fatal = true;
 
   constructor(message: string, options?: SerializationErrorOptions) {
-    const body = options?.hint ? `${message}\n\n${options.hint}` : message;
-    super(body, {
-      slug: ERROR_SLUGS.SERIALIZATION_FAILED,
-      cause: options?.cause,
-    });
+    // The hint carries its own docs URL (pointing at the foundations
+    // serialization page, which is what users actually need to see what
+    // round-trips), so we don't add a separate `╰▶ docs:` line here.
+    // Avoids two URLs on the message — one already-actionable, the other
+    // pointing at a generic error explainer.
+    const body = appendFramedDetails(
+      message,
+      buildFramedDetails(options?.hint, undefined)
+    );
+    super(body, { cause: options?.cause });
     this.name = 'SerializationError';
     this.hint = options?.hint;
   }
