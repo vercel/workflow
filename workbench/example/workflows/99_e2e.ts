@@ -2019,6 +2019,31 @@ export async function abortFetchInFlightWorkflow() {
 }
 
 /**
+ * E2E: The "simpler" timeout pattern documented on the
+ * `abort-signal-timeout-in-workflow` error page —
+ * `void sleep("Ns").then(() => controller.abort())` followed by a single
+ * awaited step that consumes `controller.signal`. Validates the doc's
+ * recommended replacement for `AbortSignal.timeout()` actually works
+ * end-to-end.
+ *
+ * If the in-flight fetch finishes within the timeout, the step returns
+ * normally. If the sleep wins, the .then fires `abort()`, the abort
+ * propagates to the in-flight step's signal via the backing stream, fetch
+ * cancels, and the step's catch path returns `{ ok: false, aborted: true }`.
+ */
+export async function abortVoidSleepTimeoutWorkflow() {
+  'use workflow';
+
+  const controller = new AbortController();
+  void sleep('2s').then(() => controller.abort());
+
+  return await fetchWithSignal(
+    'https://httpbin.org/delay/30',
+    controller.signal
+  );
+}
+
+/**
  * E2E: Uncaught fetch AbortError propagates as FatalError (no retries).
  * The step does NOT catch the AbortError from fetch — it should propagate
  * as a FatalError to the workflow without the step being retried.

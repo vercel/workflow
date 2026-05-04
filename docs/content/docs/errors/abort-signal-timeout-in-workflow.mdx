@@ -1,5 +1,5 @@
 ---
-title: AbortSignal.timeout() in Workflow
+title: abort-signal-timeout-in-workflow
 description: AbortSignal.timeout() cannot be used inside workflow functions because it relies on real timers which break deterministic replay.
 type: troubleshooting
 preRelease: true
@@ -55,20 +55,9 @@ export async function workflow() {
   "use workflow";
 
   const controller = new AbortController(); // [!code highlight]
+  void sleep("10s").then(() => controller.abort()); // [!code highlight]
 
-  const result = await Promise.race([ // [!code highlight]
-    fetchData(controller.signal), // [!code highlight]
-    sleep("10s").then(() => { // [!code highlight]
-      controller.abort(); // [!code highlight]
-      return null; // [!code highlight]
-    }), // [!code highlight]
-  ]); // [!code highlight]
-
-  if (result === null) {
-    throw new Error("Request timed out after 10s");
-  }
-
-  return result;
+  return await fetchData(controller.signal);
 }
 
 async function fetchData(signal: AbortSignal) {
@@ -78,7 +67,7 @@ async function fetchData(signal: AbortSignal) {
 }
 ```
 
-The `sleep()` + `AbortController` pattern is the durable equivalent of `AbortSignal.timeout()`. The sleep is recorded in the event log, so it replays deterministically.
+The `sleep()` + `AbortController` pattern is the durable equivalent of `AbortSignal.timeout()`. The sleep is recorded in the event log, so it replays deterministically. If `fetchData` finishes within 10 seconds you get the response; if not, the timer fires `controller.abort()`, `fetch` rejects with an `AbortError`, and the step's failure propagates to the workflow as a `FatalError` (no retries — abort is intentional cancellation).
 
 <Callout type="info">
 `AbortSignal.timeout()` works normally inside step functions, since steps have full Node.js runtime access and are not replayed.

@@ -2771,6 +2771,28 @@ describe('e2e', () => {
     );
 
     test(
+      'abortVoidSleepTimeoutWorkflow: documented `void sleep().then(abort)` pattern works',
+      { timeout: 60_000 },
+      async () => {
+        // Validates the simplified timeout pattern documented on the
+        // abort-signal-timeout-in-workflow error page:
+        //   const controller = new AbortController();
+        //   void sleep('Ns').then(() => controller.abort());
+        //   return await fetchWithSignal(url, controller.signal);
+        //
+        // If the doc's recommended replacement for AbortSignal.timeout()
+        // ever stops working (e.g. fire-and-forget sleep regresses, or the
+        // .then chain doesn't reach controller.abort), the assertion below
+        // flips to ok=true,aborted=false.
+        const run = await start(await e2e('abortVoidSleepTimeoutWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        expect(returnValue.aborted).toBe(true);
+        expect(returnValue.ok).toBe(false);
+      }
+    );
+
+    test(
       'abortDeterministicBranchWorkflow: if-check takes same path on first-run and replay',
       { timeout: 60_000 },
       async () => {
