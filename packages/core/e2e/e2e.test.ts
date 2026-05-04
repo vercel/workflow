@@ -581,6 +581,22 @@ describe('e2e', () => {
     expect(elapsed).toBeLessThan(25_000);
   });
 
+  test('sleepWinsRaceWorkflow', { timeout: 60_000 }, async () => {
+    const run = await start(await e2e('sleepWinsRaceWorkflow'), []);
+    const returnValue = await run.returnValue;
+    expect(returnValue.winner).toBe('sleep');
+    // Sleep is 1s; step would take 10s. Should resolve in ~1s, well under 5s.
+    expect(returnValue.durationMs).toBeLessThan(5_000);
+  });
+
+  test('stepWinsRaceWorkflow', { timeout: 60_000 }, async () => {
+    const run = await start(await e2e('stepWinsRaceWorkflow'), []);
+    const returnValue = await run.returnValue;
+    expect(returnValue.winner).toBe('step');
+    // Step is 1s; sleep would take 10s. Should resolve in ~1s, well under 5s.
+    expect(returnValue.durationMs).toBeLessThan(5_000);
+  });
+
   test('nullByteWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('nullByteWorkflow'), []);
     const returnValue = await run.returnValue;
