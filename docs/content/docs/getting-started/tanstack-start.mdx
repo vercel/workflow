@@ -38,32 +38,20 @@ npm i workflow
 
 ### Configure TanStack Start
 
-TanStack Start runs on Vite, so the Workflow SDK is wired in via the same `workflow/vite` plugin. Add `workflow()` to the existing `plugins` array in your Vite config — don't replace the other plugins the scaffold sets up.
+TanStack Start runs on Vite, so the Workflow SDK is wired in via the same `workflow/vite` plugin. Add `workflow()` to the existing `plugins` array in your Vite config — list it first so the `"use workflow"` and `"use step"` transforms run before any other plugin processes the file.
 
 ```typescript title="vite.config.ts" lineNumbers
-import { devtools } from "@tanstack/devtools-vite";
-import { tanstackStart } from "@tanstack/react-start/plugin/vite";
-import viteReact from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
-import { nitro } from "nitro/vite";
 import { defineConfig } from "vite";
 import { workflow } from "workflow/vite";
+// ...
 
 export default defineConfig({
   plugins: [
     workflow(), // [!code highlight]
-    devtools(),
-    tanstackStart(),
-    viteReact(),
-    nitro(),
-    tailwindcss(),
+    // ...the existing tanstackStart(), nitro(), and any other plugins
   ],
 });
 ```
-
-<Callout>
-Plugin order between `workflow()` and the rest of the TanStack/Vite plugins doesn't matter for this integration; we list `workflow()` first so the `"use workflow"` and `"use step"` transforms run before anything else processes the file.
-</Callout>
 
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
@@ -100,7 +88,7 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
 Create a new file for our first workflow:
 
 ```typescript title="src/workflows/user-signup.ts" lineNumbers
-import { FatalError, sleep } from "workflow";
+import { sleep } from "workflow";
 
 export async function handleUserSignup(email: string) {
   "use workflow"; // [!code highlight]
@@ -125,6 +113,8 @@ We'll fill in those functions next, but let's take a look at this code:
 Let's now define those missing functions.
 
 ```typescript title="src/workflows/user-signup.ts" lineNumbers
+import { FatalError } from "workflow"
+
 // Our workflow function defined earlier
 
 async function createUser(email: string) {
@@ -214,8 +204,6 @@ To start your development server, run the following command in your terminal in 
 ```bash
 npm run dev
 ```
-
-The dev server listens on `http://localhost:3000`. If something else is already on `3000`, Vite silently falls through to the next free port (`3001`, `3002`, …) — adjust the URLs below to match. Pin the port by passing `--port 3000` to the dev script if that matters for you.
 
 Once your development server is running, you can trigger your workflow by running this command in the terminal:
 
