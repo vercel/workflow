@@ -367,7 +367,10 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             // The post-failure check uses >= to decide whether to retry after a failure.
             if (step.attempt > maxRetries + 1) {
               const retryCount = step.attempt - 1;
-              const errorMessage = `Step "${stepName}" exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
+              // Persisted message — kept short, no machine `stepName`,
+              // since observability already attributes the event to a
+              // specific step.
+              const errorMessage = `Step exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`;
               stepLogger.error(
                 `Step ${formatStepName(stepName)} exceeded max retries (${retryCount} ${pluralize('retry', 'retries', retryCount)})`,
                 {
@@ -725,7 +728,12 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       errorMessage: normalizedError.message,
                     }
                   );
-                  const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
+                  // Don't include the machine step name in the persisted
+                  // error message — observability already shows which step
+                  // produced the event, and `stepName: 'step//./.../foo'`
+                  // in the title is just noise. The CLI logger renders
+                  // `Step foo (./...) hit max retries` separately.
+                  const errorMessage = `Step failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
                   // Fail the step via event (event-sourced architecture)
                   try {
                     await world.events.create(
