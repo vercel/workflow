@@ -106,7 +106,7 @@ export async function runWorkflow(
 
     const startedAt = workflowRun.startedAt;
     if (!startedAt) {
-      throw new Error(
+      throw new WorkflowRuntimeError(
         `Workflow run "${workflowRun.runId}" has no "startedAt" timestamp (should not happen)`
       );
     }

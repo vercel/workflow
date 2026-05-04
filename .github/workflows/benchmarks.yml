@@ -456,6 +456,12 @@ jobs:
         with:
           install-dependencies: 'false'
           build-packages: 'false'
+          # This job never runs `pnpm install`, so the pnpm store path
+          # never exists. The post-job `actions/setup-node@v4` cache-save
+          # then fails with "Path Validation Error" and red-X's the job.
+          # Disable the cache to keep the matrix step the only failure
+          # surface.
+          cache-pnpm: 'false'
 
       - id: set-matrix
         run: |

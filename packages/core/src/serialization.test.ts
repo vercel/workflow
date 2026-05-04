@@ -1806,7 +1806,10 @@ describe('workflow arguments', () => {
     }
     expect(err).toBeDefined();
     expect(err?.message).toContain(
-      `Ensure you're passing serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
+      // Hint text comes from `formatSerializationError` and now points at
+      // the foundations docs instead of a hardcoded type list. See
+      // packages/core/src/serialization/errors.ts.
+      `Ensure you're passing workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`
     );
   });
 });
@@ -1822,7 +1825,7 @@ describe('workflow return value', () => {
     }
     expect(err).toBeDefined();
     expect(err?.message).toContain(
-      `Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
+      `Ensure you're returning workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`
     );
   });
 });
@@ -1843,7 +1846,10 @@ describe('step arguments', () => {
     }
     expect(err).toBeDefined();
     expect(err?.message).toContain(
-      `Ensure you're passing serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
+      // Hint text comes from `formatSerializationError` and now points at
+      // the foundations docs instead of a hardcoded type list. See
+      // packages/core/src/serialization/errors.ts.
+      `Ensure you're passing workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`
     );
   });
 });
@@ -1981,7 +1987,7 @@ describe('step return value', () => {
 
     expect(err).toBeDefined();
     expect(err?.message).toContain(
-      `Ensure you're returning serializable types (plain objects, arrays, primitives, Date, RegExp, Map, Set).`
+      `Ensure you're returning workflow serializable types. Check the serialization docs to see what's serializable: https://workflow-sdk.dev/docs/foundations/serialization`
     );
   });
 });
@@ -2180,7 +2186,9 @@ describe('step function serialization', () => {
 
     expect(err).toBeDefined();
     expect(err?.message).toContain('Step function "nonExistentStep" not found');
-    expect(err?.message).toContain('Make sure the step function is registered');
+    expect(err?.message).toContain(
+      'Make sure the step file is included in your build'
+    );
   });
 
   it('should dehydrate step function passed as argument to a step', async () => {

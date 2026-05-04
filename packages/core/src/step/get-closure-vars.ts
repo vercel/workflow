@@ -1,3 +1,4 @@
+import { WorkflowRuntimeError } from '@workflow/errors';
 import { contextStorage } from './context-storage.js';
 
 /**
@@ -10,7 +11,7 @@ import { contextStorage } from './context-storage.js';
 export function __private_getClosureVars(): Record<string, any> {
   const ctx = contextStorage.getStore();
   if (!ctx) {
-    throw new Error(
+    throw new WorkflowRuntimeError(
       'Closure variables can only be accessed inside a step function'
     );
   }
