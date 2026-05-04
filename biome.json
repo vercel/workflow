@@ -25,7 +25,9 @@
       "!**/.workflow-data",
       "!**/.nuxt",
       "!**/.nitro",
-      "!**/.output"
+      "!**/.output",
+      "!**/.tanstack",
+      "!**/routeTree.gen.ts"
     ],
     "ignoreUnknown": true
   },

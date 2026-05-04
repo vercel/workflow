@@ -69,6 +69,12 @@ const DEV_TEST_CONFIGS = {
     apiFileImportPath: '../..',
     workflowsDir: 'src/workflows',
   },
+  'tanstack-start': {
+    generatedStepPath: 'node_modules/.nitro/workflow/steps.mjs',
+    generatedWorkflowPath: 'node_modules/.nitro/workflow/workflows.mjs',
+    apiFilePath: 'src/routes/api/chat.ts',
+    apiFileImportPath: '../../..',
+  },
 };
 
 const matrix = {
@@ -146,6 +152,12 @@ matrix.app.push({
   name: 'astro',
   project: 'workbench-astro-workflow',
   ...DEV_TEST_CONFIGS.astro,
+});
+
+matrix.app.push({
+  name: 'tanstack-start',
+  project: 'workbench-tanstack-start-workflow',
+  ...DEV_TEST_CONFIGS['tanstack-start'],
 });
 
 console.log(JSON.stringify(matrix));
