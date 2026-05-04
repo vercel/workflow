@@ -72,6 +72,7 @@ export function App({ catalog }: { catalog: Catalog }) {
             ref={searchRef}
             type="search"
             placeholder="Filter packages…"
+            aria-label="Filter packages"
             autoComplete="off"
             value={filter}
             onInput={(e) => setFilter((e.target as HTMLInputElement).value)}
@@ -175,14 +176,14 @@ function PmTabs({
 }) {
   const options: PackageManager[] = ['pnpm', 'npm', 'yarn', 'bun'];
   return (
-    <div class="pm-tabs" role="tablist" aria-label="Package manager">
+    <div class="pm-tabs">
       {options.map((opt) => (
         <button
           key={opt}
           type="button"
           class="pm-tab"
-          role="tab"
-          aria-selected={value === opt}
+          aria-label={`Show install commands for ${opt}`}
+          aria-pressed={value === opt}
           onClick={() => onChange(opt)}
         >
           {opt}
@@ -208,8 +209,17 @@ function FeaturedCard({ pkg, pm }: { pkg: PackedPackage; pm: PackageManager }) {
       {pkg.description && <p class="featured-desc">{pkg.description}</p>}
       <div class="install-block">
         <code class="install-cmd">{cmd}</code>
-        <CopyButton text={cmd} variant="primary" />
-        <a class="download-btn" href={pkg.url} download>
+        <CopyButton
+          text={cmd}
+          variant="primary"
+          accessibleName={`Copy install command for ${pkg.name}`}
+        />
+        <a
+          class="download-btn"
+          href={pkg.url}
+          download
+          aria-label={`Download ${pkg.name} tarball`}
+        >
           <DownloadIcon />
           <span>Download</span>
         </a>
@@ -232,8 +242,17 @@ function PackageRow({ pkg, pm }: { pkg: PackedPackage; pm: PackageManager }) {
       </div>
       <code class="pkg-cmd">{cmd}</code>
       <div class="pkg-actions">
-        <CopyButton text={cmd} variant="icon" />
-        <a class="icon-btn" href={pkg.url} download aria-label="Download">
+        <CopyButton
+          text={cmd}
+          variant="icon"
+          accessibleName={`Copy install command for ${pkg.name}`}
+        />
+        <a
+          class="icon-btn"
+          href={pkg.url}
+          download
+          aria-label={`Download ${pkg.name} tarball`}
+        >
           <DownloadIcon />
         </a>
       </div>
@@ -411,11 +430,14 @@ function SortIndicator({
 function CopyButton({
   text,
   variant,
+  accessibleName = 'Copy install command',
 }: {
   text: string;
   variant: 'primary' | 'icon';
+  accessibleName?: string;
 }) {
   const [copied, setCopied] = useState(false);
+  const [failed, setFailed] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -425,23 +447,20 @@ function CopyButton({
   }, []);
 
   async function handleClick() {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        document.execCommand('copy');
-      } finally {
-        ta.remove();
-      }
-    }
-    setCopied(true);
+    const success = await writeToClipboard(text);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    timeoutRef.current = setTimeout(() => setCopied(false), 1500);
+    if (success) {
+      setFailed(false);
+      setCopied(true);
+      timeoutRef.current = setTimeout(() => setCopied(false), 1500);
+    } else {
+      setCopied(false);
+      setFailed(true);
+      timeoutRef.current = setTimeout(() => setFailed(false), 2000);
+    }
   }
+
+  const label = copied ? 'Copied' : failed ? 'Copy failed' : accessibleName;
 
   if (variant === 'icon') {
     return (
@@ -449,8 +468,9 @@ function CopyButton({
         type="button"
         class="icon-btn"
         data-copied={copied}
+        data-failed={failed}
         onClick={handleClick}
-        aria-label={copied ? 'Copied' : 'Copy install command'}
+        aria-label={label}
       >
         {copied ? <CheckIcon /> : <CopyIcon />}
       </button>
@@ -462,12 +482,48 @@ function CopyButton({
       type="button"
       class="copy-btn"
       data-copied={copied}
+      data-failed={failed}
       onClick={handleClick}
+      aria-label={label}
     >
       {copied ? <CheckIcon /> : <CopyIcon />}
-      <span class="copy-label">{copied ? 'Copied' : 'Copy'}</span>
+      <span class="copy-label">
+        {copied ? 'Copied' : failed ? 'Failed' : 'Copy'}
+      </span>
     </button>
   );
+}
+
+/**
+ * Try to write `text` to the clipboard. Returns whether the write actually
+ * succeeded — both the modern `navigator.clipboard` path and the
+ * `execCommand('copy')` fallback can fail (insecure context, denied
+ * permission, headless test runner, etc.) and in that case the caller
+ * should *not* show a "Copied" success state.
+ */
+async function writeToClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fall through to execCommand fallback
+    }
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.setAttribute('readonly', '');
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    return document.execCommand('copy');
+  } catch {
+    return false;
+  } finally {
+    ta.remove();
+  }
 }
 
 function Footer({

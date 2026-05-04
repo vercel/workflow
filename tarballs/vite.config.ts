@@ -1,17 +1,16 @@
 import preact from '@preact/preset-vite';
 import { defineConfig } from 'vite';
 
-// `pack.ts` writes tarballs and `catalog.json` into `public/` before vite
-// runs. Vite then writes the bundled SPA into the same directory without
-// emptying it (so the tarballs survive). We disable Vite's `publicDir`
-// feature (which would otherwise copy `public/` into itself) for the same
-// reason.
+// Layout:
+// - `public/` holds static assets (tarballs and `catalog.json`) that pack.ts
+//   writes before vite runs. In dev mode, vite serves them at the root of
+//   the dev server. During `vite build`, vite copies them into `dist/`.
+// - `dist/` is the final build output that Vercel serves (set as
+//   `outputDirectory` in vercel.json).
 export default defineConfig({
   plugins: [preact()],
-  publicDir: false,
   build: {
-    outDir: 'public',
-    emptyOutDir: false,
+    outDir: 'dist',
     sourcemap: true,
   },
 });

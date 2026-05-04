@@ -2,6 +2,9 @@ node_modules
 .vercel
 .env*.local
 
-# Generated tarballs and index page
+# Generated tarballs and catalog written by scripts/pack.ts
 public/*.tgz
-public/index.html
+public/catalog.json
+
+# Vite build output served by Vercel
+dist

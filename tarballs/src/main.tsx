@@ -8,7 +8,7 @@ async function load() {
   if (!root) throw new Error('No #app root element');
 
   try {
-    const res = await fetch('/catalog.json', { cache: 'no-store' });
+    const res = await fetch('/catalog.json');
     if (!res.ok) throw new Error(`Failed to load catalog.json: ${res.status}`);
     const catalog = (await res.json()) as Catalog;
     render(<App catalog={catalog} />, root);

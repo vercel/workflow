@@ -209,14 +209,14 @@ details.about code {
   color: var(--fg);
 }
 
-.pm-tab[aria-selected='true'] {
+.pm-tab[aria-pressed='true'] {
   background: var(--bg);
   color: var(--fg);
   box-shadow: var(--shadow);
 }
 
 @media (prefers-color-scheme: dark) {
-  .pm-tab[aria-selected='true'] {
+  .pm-tab[aria-pressed='true'] {
     background: var(--bg-hover);
   }
 }
@@ -385,6 +385,20 @@ details.about code {
 .copy-btn[data-copied='true'] {
   color: var(--success);
   border-color: var(--success);
+}
+
+.copy-btn[data-failed='true'],
+.icon-btn[data-failed='true'] {
+  color: #dc2626;
+  border-color: #dc2626;
+}
+
+@media (prefers-color-scheme: dark) {
+  .copy-btn[data-failed='true'],
+  .icon-btn[data-failed='true'] {
+    color: #f87171;
+    border-color: #f87171;
+  }
 }
 
 /* Other packages section */

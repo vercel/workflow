@@ -6,7 +6,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "node scripts/pack.ts && vite build",
-    "dev": "vite",
+    "dev": "node scripts/pack.ts && vite",
     "test:smoke": "node ./scripts/check-tarballs-smoke.mjs"
   },
   "dependencies": {
