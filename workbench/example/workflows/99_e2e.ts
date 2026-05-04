@@ -1776,6 +1776,12 @@ async function stepThatThrowsIfAborted(signal: AbortSignal) {
  * cancellation uses, but invoked directly. Resolves with `via: 'listener'`
  * if the listener fired, or `via: 'timeout'` if propagation failed and the
  * 30s safety timeout won.
+ *
+ * No `signal.aborted` short-circuit: we rely solely on the listener firing.
+ * Per the AbortSignal spec, calling addEventListener on an already-aborted
+ * signal fires the callback (on a microtask), so any code path that breaks
+ * that contract — present or future — surfaces as a 'timeout' result here
+ * instead of being masked by a synchronous fast-path.
  */
 async function stepWaitingOnAbortListener(
   signal: AbortSignal
@@ -1788,12 +1794,6 @@ async function stepWaitingOnAbortListener(
       settled = true;
       resolve({ saw: true, via: 'listener' });
     };
-    if (signal.aborted) {
-      // Already aborted — listener should fire immediately when added per spec
-      // (or we can shortcut here for clarity).
-      resolve({ saw: true, via: 'listener' });
-      return;
-    }
     signal.addEventListener('abort', onAbort);
     setTimeout(() => {
       if (settled) return;
