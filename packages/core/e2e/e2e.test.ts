@@ -2639,6 +2639,29 @@ describe('e2e', () => {
     );
 
     test(
+      'abortFetchInFlightWorkflow: aborting cancels an in-flight fetch',
+      { timeout: 60_000 },
+      async () => {
+        // The workflow kicks off a fetch against a slow endpoint, races it
+        // against a 2s sleep, and aborts when the sleep wins. The fetch must
+        // actually cancel mid-flight (not run to its 30s natural completion)
+        // — that requires the deserialized signal's `addEventListener` path
+        // to fire when the cancellation stream packet arrives. No other abort
+        // test exercises this path.
+        const run = await start(await e2e('abortFetchInFlightWorkflow'), [
+          deploymentUrl,
+        ]);
+        const returnValue = await run.returnValue;
+
+        expect(returnValue.winner).toBe('timeout');
+        // The step's catch path returned aborted=true (fetch threw AbortError),
+        // not the natural-completion path (which would set ok=true,aborted=false).
+        expect(returnValue.fetchResult.aborted).toBe(true);
+        expect(returnValue.fetchResult.ok).toBe(false);
+      }
+    );
+
+    test(
       'abortDeterministicBranchWorkflow: if-check takes same path on first-run and replay',
       { timeout: 60_000 },
       async () => {

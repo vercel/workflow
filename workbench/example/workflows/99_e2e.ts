@@ -1773,6 +1773,50 @@ export async function abortReasonTypesWorkflow() {
 }
 
 /**
+ * E2E: Aborting an in-flight fetch.
+ *
+ * Exercises the deserialized signal's listener path that no other abort test
+ * covers: signal starts non-aborted, the step kicks off a fetch against a
+ * slow endpoint, the workflow's abort() fires while fetch is still awaiting
+ * the response, and fetch's internal abort listener (registered via
+ * addEventListener on the signal) cancels the in-flight HTTP request.
+ *
+ * If propagation is broken — e.g. listeners don't fire on the deserialized
+ * signal, or the cancellation stream packet isn't written — the fetch runs
+ * to natural completion and `aborted` is `false`.
+ */
+export async function abortFetchInFlightWorkflow(deploymentUrl: string) {
+  'use workflow';
+
+  const controller = new AbortController();
+  const fetchPromise = fetchWithSignal(
+    `${deploymentUrl}/api/delay?ms=30000`,
+    controller.signal
+  );
+
+  // Race the fetch against a 2s sleep. Sleep wins; abort fires.
+  const winner = await Promise.race([
+    fetchPromise.then(() => 'fetch' as const),
+    sleep('2s').then(() => 'timeout' as const),
+  ]);
+
+  if (winner === 'timeout') {
+    // Abort with no reason — defaults to a DOMException("AbortError") so
+    // fetch's rejection is an Error-shaped value the step can catch by
+    // `err.name === 'AbortError'`. (Per WHATWG fetch, `controller.abort(x)`
+    // with a non-Error `x` would cause fetch to reject with `x` directly,
+    // bypassing the AbortError check in `fetchWithSignal`.)
+    controller.abort();
+  }
+
+  // Always await the fetch to see how it ended. The step's catch path returns
+  // `{ ok: false, aborted: true }` if fetch saw the abort, or `{ ok: true,
+  // aborted: false }` if propagation failed and the request ran to completion.
+  const fetchResult = await fetchPromise;
+  return { winner, fetchResult };
+}
+
+/**
  * E2E: Uncaught fetch AbortError propagates as FatalError (no retries).
  * The step does NOT catch the AbortError from fetch — it should propagate
  * as a FatalError to the workflow without the step being retried.
