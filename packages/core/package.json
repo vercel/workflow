@@ -1,6 +1,6 @@
 {
   "name": "@workflow/core",
-  "version": "5.0.0-beta.2",
+  "version": "5.0.0-beta.4",
   "description": "Core runtime and engine for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",
@@ -63,6 +63,10 @@
     "./encryption": {
       "types": "./dist/encryption.d.ts",
       "default": "./dist/encryption.js"
+    },
+    "./describe-error": {
+      "types": "./dist/describe-error.d.ts",
+      "default": "./dist/describe-error.js"
     },
     "./_workflow": "./dist/workflow/index.js"
   },

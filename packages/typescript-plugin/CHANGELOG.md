@@ -1,5 +1,12 @@
 # @workflow/typescript-plugin
 
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#1830](https://github.com/vercel/workflow/pull/1830) [`a38f140`](https://github.com/vercel/workflow/commit/a38f140ce3aee3e25f821a702d70a1fd21598faf) Thanks [@ijjk](https://github.com/ijjk)! - Make the TypeScript peer dependency optional and show a clearer error
+  when TypeScript is unavailable.
+
 ## 5.0.0-beta.2
 
 ### Patch Changes

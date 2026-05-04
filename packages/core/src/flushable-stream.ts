@@ -1,3 +1,4 @@
+import { WorkflowRuntimeError } from '@workflow/errors';
 import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
 
 /**
@@ -223,7 +224,7 @@ export async function flushablePipe(
       const readResult = await Promise.race([
         reader.read(),
         writer.closed.then(() => {
-          throw new Error('Writable stream closed prematurely');
+          throw new WorkflowRuntimeError('Writable stream closed prematurely');
         }),
       ]);
 

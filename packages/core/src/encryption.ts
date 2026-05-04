@@ -1,3 +1,5 @@
+import { WorkflowRuntimeError } from '@workflow/errors';
+
 /**
  * Browser-compatible AES-256-GCM encryption module.
  *
@@ -36,7 +38,7 @@ const KEY_LENGTH = 32; // bytes (AES-256)
  */
 export async function importKey(raw: Uint8Array) {
   if (raw.byteLength !== KEY_LENGTH) {
-    throw new Error(
+    throw new WorkflowRuntimeError(
       `Encryption key must be exactly ${KEY_LENGTH} bytes, got ${raw.byteLength}`
     );
   }
@@ -82,7 +84,7 @@ export async function decrypt(
 ): Promise<Uint8Array> {
   const minLength = NONCE_LENGTH + TAG_LENGTH / 8; // nonce + auth tag
   if (data.byteLength < minLength) {
-    throw new Error(
+    throw new WorkflowRuntimeError(
       `Encrypted data too short: expected at least ${minLength} bytes, got ${data.byteLength}`
     );
   }

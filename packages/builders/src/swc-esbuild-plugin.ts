@@ -129,9 +129,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
             specifier.startsWith('.') || specifier.startsWith('/');
 
           let resolvedPath: string | false | undefined;
-          // Determines whether the external path should be relativized
-          // (project-local file) or kept as a bare specifier (npm package).
-          let shouldMakeRelative = specifierIsPath;
+          // Path-style specifiers (./foo, ../foo, /abs/path) externalize as
+          // relative paths from `outdir`. Bare specifiers (npm packages)
+          // externalize as-is so Node can resolve them at runtime.
+          const shouldMakeRelative = specifierIsPath;
 
           if (specifierIsPath) {
             resolvedPath = await enhancedResolve(args.resolveDir, specifier);
@@ -142,8 +143,23 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               specifier
             ).catch(() => undefined); // swallow so esbuild fallback below can try
 
-            // Fall back to esbuild for aliases/tsconfig paths,
-            // but only accept project-local results
+            // Fall back to esbuild for aliases/tsconfig paths.
+            //
+            // If the specifier resolves to a project-local file via an
+            // alias/path mapping (e.g. tsconfig `paths`, esbuild `alias`,
+            // self-referencing package names like `@my-pkg/lib/foo`), we
+            // bundle it inline rather than externalizing.
+            //
+            // Externalizing such files is unsafe: we'd emit a relative
+            // import to the original source on disk, but that source can
+            // contain further alias imports. At runtime, Node's ESM loader
+            // doesn't know about tsconfig paths or build-time aliases, so
+            // those transitive imports throw `ERR_MODULE_NOT_FOUND` /
+            // `Package subpath ... is not defined by "exports"`.
+            //
+            // Bundling inline ensures alias-based imports are resolved at
+            // build time (where the alias map is known) and the runtime
+            // never sees an unresolvable specifier.
             if (!resolvedPath) {
               const esbuildResult = await build.resolve(specifier, {
                 resolveDir: args.resolveDir,
@@ -159,8 +175,10 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
                   .replace(/\\/g, '/')
                   .includes('/node_modules/');
               if (isProjectLocalFile) {
-                resolvedPath = esbuildResult.path;
-                shouldMakeRelative = true;
+                // Let esbuild bundle this aliased project-local file inline
+                // (return null to defer to esbuild's normal pipeline). The
+                // SWC `onLoad` handler will still process it.
+                return null;
               }
             }
           }

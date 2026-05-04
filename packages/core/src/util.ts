@@ -2,15 +2,15 @@ import { waitUntil } from '@vercel/functions';
 import { pluralize } from '@workflow/utils';
 
 /**
- * Builds a workflow suspension log message based on the counts of steps, hooks, and waits.
- * @param runId - The workflow run ID
+ * Builds a workflow suspension log message based on the counts of steps,
+ * hooks, and waits. The structured logger attaches the run context, so the
+ * message itself only describes what's being enqueued.
  * @param stepCount - Number of steps to be enqueued
  * @param hookCount - Number of hooks to be enqueued
  * @param waitCount - Number of waits to be enqueued
  * @returns The formatted log message or null if all counts are 0
  */
 export function buildWorkflowSuspensionMessage(
-  runId: string,
   stepCount: number,
   hookCount: number,
   waitCount: number
@@ -42,7 +42,7 @@ export function buildWorkflowSuspensionMessage(
   }
   const resumeMsg = resumeMsgParts.join(' and ');
 
-  return `[Workflows] "${runId}" - ${parts.join(' and ')} to be enqueued\n  Workflow will suspend and resume when ${resumeMsg}`;
+  return `${parts.join(' and ')} to be enqueued\n  Workflow will suspend and resume when ${resumeMsg}`;
 }
 
 /**

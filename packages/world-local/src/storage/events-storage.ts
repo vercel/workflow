@@ -6,6 +6,7 @@ import {
   RunExpiredError,
   RunNotSupportedError,
   TooEarlyError,
+  WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
 import type {
@@ -31,11 +32,13 @@ import {
 } from '@workflow/world';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
+  assertSafeEntityId,
   deleteJSON,
   jsonReplacer,
   listJSONFiles,
   paginatedFileSystemQuery,
   readJSONWithFallback,
+  resolveWithinBase,
   taggedPath,
   writeExclusive,
   writeJSON,
@@ -78,6 +81,21 @@ export function createEventsStorage(
     async create(runId, data, params): Promise<EventResult> {
       const eventId = `evnt_${monotonicUlid()}`;
       const now = new Date();
+
+      // Validate request-supplied IDs before they're concatenated into
+      // filesystem paths. This is the primary defense against path traversal
+      // attacks where a client supplies runId / correlationId values like
+      // "../../../package" to read or write files outside the storage root.
+      if (runId != null && runId !== '') {
+        assertSafeEntityId('runId', runId);
+      }
+      if (
+        'correlationId' in data &&
+        typeof data.correlationId === 'string' &&
+        data.correlationId.length > 0
+      ) {
+        assertSafeEntityId('correlationId', data.correlationId);
+      }
 
       // For run_created events, use client-provided runId or generate one server-side
       let effectiveRunId: string;
@@ -207,6 +225,14 @@ export function createEventsStorage(
             }
           }
         }
+      }
+
+      // run_failed on a non-existent run is rejected to match the
+      // postgres and vercel worlds, which both surface this as a
+      // WorkflowRunNotFoundError rather than silently persisting an
+      // event for a run that was never created.
+      if (data.eventType === 'run_failed' && !currentRun) {
+        throw new WorkflowRunNotFoundError(effectiveRunId);
       }
 
       // ============================================================
@@ -559,7 +585,32 @@ export function createEventsStorage(
         data.eventType === 'step_created' &&
         'eventData' in data
       ) {
-        // step_created: Creates step entity with status 'pending', attempt=0, createdAt set
+        // step_created: Creates step entity with status 'pending', attempt=0, createdAt set.
+        // Two concurrent invocations with identical correlationIds (e.g. the
+        // snapshot runtime's deterministic correlationIds across replays)
+        // must be deduped — otherwise both writes succeed and the event log
+        // ends up with duplicate step_created entries. Claim a per-(runId,
+        // correlationId) constraint file with O_CREAT|O_EXCL; the loser
+        // throws EntityConflictError so the runtime's existing catch path
+        // can swallow it and avoid double-queuing the step.
+        const stepCreatedLockName = tag
+          ? `${effectiveRunId}-${data.correlationId}.created.${tag}`
+          : `${effectiveRunId}-${data.correlationId}.created`;
+        const stepCreatedLockPath = resolveWithinBase(
+          basedir,
+          '.locks',
+          'steps',
+          stepCreatedLockName
+        );
+        const stepCreatedClaimed = await writeExclusive(
+          stepCreatedLockPath,
+          ''
+        );
+        if (!stepCreatedClaimed) {
+          throw new EntityConflictError(
+            `Step "${data.correlationId}" already created`
+          );
+        }
         const stepData = data.eventData as {
           stepName: string;
           input: any;
@@ -651,7 +702,7 @@ export function createEventsStorage(
           const lockName = tag
             ? `${stepCompositeKey}.terminal.${tag}`
             : `${stepCompositeKey}.terminal`;
-          const terminalLockPath = path.join(
+          const terminalLockPath = resolveWithinBase(
             basedir,
             '.locks',
             'steps',
@@ -689,7 +740,7 @@ export function createEventsStorage(
           const lockName = tag
             ? `${stepCompositeKey}.terminal.${tag}`
             : `${stepCompositeKey}.terminal`;
-          const terminalLockPath = path.join(
+          const terminalLockPath = resolveWithinBase(
             basedir,
             '.locks',
             'steps',
@@ -837,7 +888,12 @@ export function createEventsStorage(
         const hookLockName = tag
           ? `${data.correlationId}.disposed.${tag}`
           : `${data.correlationId}.disposed`;
-        const lockPath = path.join(basedir, '.locks', 'hooks', hookLockName);
+        const lockPath = resolveWithinBase(
+          basedir,
+          '.locks',
+          'hooks',
+          hookLockName
+        );
         const claimed = await writeExclusive(lockPath, '');
         if (!claimed) {
           throw new EntityConflictError(
@@ -865,23 +921,33 @@ export function createEventsStorage(
         }
         await deleteJSON(hookPath);
       } else if (data.eventType === 'wait_created' && 'eventData' in data) {
-        // wait_created: Creates wait entity with status 'waiting'
-        const waitData = data.eventData as {
-          resumeAt?: Date;
-        };
+        // wait_created: Creates wait entity with status 'waiting'.
+        // Atomic claim on a per-(runId, correlationId) constraint file
+        // ensures duplicate wait_created from concurrent invocations
+        // surfaces as EntityConflictError (replaces a prior TOCTOU
+        // read-then-check that could let both writers through).
         const waitCompositeKey = `${effectiveRunId}-${data.correlationId}`;
-        const existingWait = await readJSONWithFallback(
+        const waitCreatedLockName = tag
+          ? `${waitCompositeKey}.created.${tag}`
+          : `${waitCompositeKey}.created`;
+        const waitCreatedLockPath = resolveWithinBase(
           basedir,
+          '.locks',
           'waits',
-          waitCompositeKey,
-          WaitSchema,
-          tag
+          waitCreatedLockName
         );
-        if (existingWait) {
+        const waitCreatedClaimed = await writeExclusive(
+          waitCreatedLockPath,
+          ''
+        );
+        if (!waitCreatedClaimed) {
           throw new EntityConflictError(
             `Wait "${data.correlationId}" already exists`
           );
         }
+        const waitData = data.eventData as {
+          resumeAt?: Date;
+        };
         wait = {
           waitId: waitCompositeKey,
           runId: effectiveRunId,
@@ -904,7 +970,12 @@ export function createEventsStorage(
         const waitLockName = tag
           ? `${waitCompositeKey}.completed.${tag}`
           : `${waitCompositeKey}.completed`;
-        const lockPath = path.join(basedir, '.locks', 'waits', waitLockName);
+        const lockPath = resolveWithinBase(
+          basedir,
+          '.locks',
+          'waits',
+          waitLockName
+        );
         const claimed = await writeExclusive(lockPath, '');
         if (!claimed) {
           throw new EntityConflictError(
@@ -976,6 +1047,8 @@ export function createEventsStorage(
     },
 
     async get(runId, eventId, params) {
+      assertSafeEntityId('runId', runId);
+      assertSafeEntityId('eventId', eventId);
       const compositeKey = `${runId}-${eventId}`;
       const event = await readJSONWithFallback(
         basedir,
@@ -993,6 +1066,7 @@ export function createEventsStorage(
 
     async list(params) {
       const { runId } = params;
+      assertSafeEntityId('runId', runId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),
@@ -1022,6 +1096,7 @@ export function createEventsStorage(
 
     async listByCorrelationId(params) {
       const correlationId = params.correlationId;
+      assertSafeEntityId('correlationId', correlationId);
       const resolveData = params.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
       const result = await paginatedFileSystemQuery({
         directory: path.join(basedir, 'events'),

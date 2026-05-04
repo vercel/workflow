@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
+  FatalError,
+  RetryableError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
   WorkflowWorldError,
@@ -16,6 +18,7 @@ import {
   expect,
   test,
 } from 'vitest';
+import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
 import type { Run } from '../src/runtime';
 import {
   getHookByToken,
@@ -31,8 +34,8 @@ import {
   cliInspectJson,
   fetchManifest,
   getCollectedRunIds,
-  getProtectionBypassHeaders,
   getWorkflowMetadata,
+  hasNestedStepStackFrames,
   hasStepSourceMaps,
   hasWorkflowSourceMaps,
   isLocalDeployment,
@@ -91,6 +94,49 @@ const e2e = (fn: string) =>
   getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
 
 /**
+ * Polls `getHookByToken(token)` until it resolves or the timeout is hit.
+ * Replaces fixed `setTimeout(N)` waits in hook tests, which are flaky on
+ * slower runtimes (notably the snapshot runtime on Vercel where each
+ * workflow round-trip is several seconds longer than replay) and
+ * unnecessarily slow on faster runtimes. Throws the most recent
+ * underlying error on timeout for diagnostics.
+ */
+async function waitForHook(
+  token: string,
+  options: {
+    timeoutMs?: number;
+    intervalMs?: number;
+    runId?: string;
+  } = {}
+): Promise<Awaited<ReturnType<typeof getHookByToken>>> {
+  const { timeoutMs = 30_000, intervalMs = 250, runId } = options;
+  const deadline = Date.now() + timeoutMs;
+  let lastError: unknown = new Error(
+    `waitForHook(${token}) timed out before any attempt`
+  );
+  while (Date.now() < deadline) {
+    try {
+      const hook = await getHookByToken(token);
+      // If a runId was provided, ensure we found the hook belonging to
+      // the expected run — important for token-reuse tests where an
+      // older run may still be associated with the same token in
+      // eventually-consistent backends until cleanup catches up.
+      if (runId && hook.runId !== runId) {
+        lastError = new Error(
+          `waitForHook(${token}) saw runId=${hook.runId}, expected ${runId}`
+        );
+      } else {
+        return hook;
+      }
+    } catch (err) {
+      lastError = err;
+    }
+    await sleep(intervalMs);
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+/**
  * Triggers a workflow via HTTP POST. Used only for Pages Router tests
  * that specifically need to validate the HTTP trigger endpoint.
  */
@@ -117,7 +163,7 @@ async function startWorkflowViaHttp(
   const res = await fetch(url, {
     method: 'POST',
     headers: {
-      ...getProtectionBypassHeaders(),
+      ...(await getTrustedSourcesHeaders()),
     },
   });
   if (!res.ok) {
@@ -309,12 +355,10 @@ describe('e2e', () => {
 
     const run = await start(await e2e('hookWorkflow'), [token, customData]);
 
-    // Wait a few seconds so that the hook is registered.
-    // TODO: make this more efficient when we add subscription support.
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-    // Look up the hook and resume it with the first payload
-    let hook = await getHookByToken(token);
+    // Wait until the hook is registered using a polling-based retry loop;
+    // this is faster than a fixed sleep on quick runtimes and tolerant of
+    // slow ones like the snapshot runtime on Vercel.
+    let hook = await waitForHook(token, { runId: run.runId });
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'one',
@@ -364,11 +408,8 @@ describe('e2e', () => {
 
       const run = await start(await e2e('hookWorkflow'), [token, customData]);
 
-      // Wait for the hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-      // Verify the hook exists via server-side API
-      const hook = await getHookByToken(token);
+      // Wait until the hook is registered, then verify via server-side API.
+      const hook = await waitForHook(token, { runId: run.runId });
       expect(hook.runId).toBe(run.runId);
 
       // Attempt to resume via the public webhook endpoint — should get 404
@@ -379,7 +420,7 @@ describe('e2e', () => {
         ),
         {
           method: 'POST',
-          headers: getProtectionBypassHeaders(),
+          headers: await getTrustedSourcesHeaders(),
           body: JSON.stringify({ message: 'should-be-rejected' }),
         }
       );
@@ -434,7 +475,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({ message: 'one' }),
       }
     );
@@ -450,7 +491,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({ message: 'two' }),
       }
     );
@@ -466,7 +507,7 @@ describe('e2e', () => {
       ),
       {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
         body: JSON.stringify({ message: 'three' }),
       }
     );
@@ -511,7 +552,7 @@ describe('e2e', () => {
     );
     const res = await fetch(invalidWebhookUrl, {
       method: 'POST',
-      headers: getProtectionBypassHeaders(),
+      headers: await getTrustedSourcesHeaders(),
       body: JSON.stringify({}),
     });
     expect(res.status).toBe(404);
@@ -828,6 +869,46 @@ describe('e2e', () => {
     }
   );
 
+  // utf8StreamWorkflow emits a sequence of Uint8Array chunks containing
+  // UTF-8 encoded text. This validates that multi-byte sequences (Latin
+  // Extended, CJK, emoji, RTL) round-trip end-to-end as bytes that decode
+  // back to the original strings — the same property that the web inspector
+  // relies on to render decoded text for typed-array stream chunks.
+  test('utf8StreamWorkflow', { timeout: 120_000 }, async () => {
+    const run = await start(await e2e('utf8StreamWorkflow'), []);
+    const reader = run.getReadable().getReader();
+
+    // `fatal: true` makes the decoder throw on any invalid UTF-8 sequence,
+    // so a successful decode is itself a round-trip assertion.
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+
+    const expectedTexts = [
+      'Hello, world!',
+      'Café — naïve résumé',
+      '你好，世界！🌍✨',
+      'مرحبا بالعالم',
+    ];
+
+    for (const expected of expectedTexts) {
+      const { value } = await reader.read();
+      assert(value);
+      assert(value instanceof Uint8Array);
+      expect(decoder.decode(value)).toBe(expected);
+    }
+
+    // Final chunk: UTF-8 encoded JSON document. The web inspector also
+    // re-parses decoded text as JSON when possible, so we exercise that
+    // shape here too.
+    const expectedJson = { greeting: '안녕하세요', emoji: '🎉' };
+    const { value: jsonValue } = await reader.read();
+    assert(jsonValue);
+    assert(jsonValue instanceof Uint8Array);
+    expect(JSON.parse(decoder.decode(jsonValue))).toEqual(expectedJson);
+
+    expect((await reader.read()).done).toBe(true);
+    expect(await run.returnValue).toEqual('done');
+  });
+
   test('fetchWorkflow', { timeout: 60_000 }, async () => {
     const run = await start(await e2e('fetchWorkflow'), []);
     const returnValue = await run.returnValue;
@@ -974,8 +1055,11 @@ describe('e2e', () => {
             expect(result.message).toContain(
               'Step error from imported helper module'
             );
-            // Stack trace propagates to caught error with function names and source file
-            expect(result.stack).toContain('throwErrorFromStep');
+            // Stack trace propagates to caught error with function names and source file.
+            // Some production bundlers collapse non-exported helper frames.
+            if (hasNestedStepStackFrames()) {
+              expect(result.stack).toContain('throwErrorFromStep');
+            }
             expect(result.stack).toContain('stepThatThrowsFromHelper');
             expect(result.stack).not.toContain('evalmachine');
 
@@ -995,7 +1079,9 @@ describe('e2e', () => {
               s.stepName.includes('stepThatThrowsFromHelper')
             );
             expect(failedStep.status).toBe('failed');
-            expect(failedStep.error.stack).toContain('throwErrorFromStep');
+            if (hasNestedStepStackFrames()) {
+              expect(failedStep.error.stack).toContain('throwErrorFromStep');
+            }
             expect(failedStep.error.stack).toContain(
               'stepThatThrowsFromHelper'
             );
@@ -1176,7 +1262,7 @@ describe('e2e', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          ...getProtectionBypassHeaders(),
+          ...(await getTrustedSourcesHeaders()),
         },
         body: JSON.stringify({ x: 3, y: 5 }),
       });
@@ -1209,11 +1295,8 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-      // Send payload to first workflow
-      let hook = await getHookByToken(token);
+      // Wait until the hook is registered for run1, then send the payload.
+      let hook = await waitForHook(token, { runId: run1.runId });
       expect(hook.runId).toBe(run1.runId);
       await resumeHook(hook, {
         message: 'test-message-1',
@@ -1234,11 +1317,10 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-      // Send payload to second workflow using same token
-      hook = await getHookByToken(token);
+      // Wait until the hook is registered for run2 (eventually-consistent
+      // backends may briefly still report run1's hook after run1 completes
+      // — waitForHook with runId filters those stale entries out).
+      hook = await waitForHook(token, { runId: run2.runId });
       expect(hook.runId).toBe(run2.runId);
       await resumeHook(hook, {
         message: 'test-message-2',
@@ -1275,8 +1357,8 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for the hook to be registered by workflow 1
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      // Wait until run1 has registered the hook before starting run2.
+      await waitForHook(token, { runId: run1.runId });
 
       // Start second workflow with the SAME token while first is still running
       // This should fail because the hook token is already in use
@@ -1330,11 +1412,8 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for the hook to be registered by workflow 1
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-      // Verify the hook exists and belongs to workflow 1
-      let hook = await getHookByToken(token);
+      // Wait until run1 has registered the hook.
+      let hook = await waitForHook(token, { runId: run1.runId });
       expect(hook.runId).toBe(run1.runId);
 
       // Send payload to first workflow - this will trigger it to dispose the hook
@@ -1345,7 +1424,7 @@ describe('e2e', () => {
 
       // Wait for workflow 1 to process the payload and dispose the hook
       // The workflow has a 5s sleep after disposal, so it's still running
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await sleep(3_000);
 
       // Now start workflow 2 with the SAME token while workflow 1 is still running
       // This should succeed because workflow 1 disposed its hook
@@ -1354,11 +1433,9 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for workflow 2's hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-      // Verify the hook now belongs to workflow 2
-      hook = await getHookByToken(token);
+      // Wait until the hook is re-registered for run2 (the runId filter
+      // skips any stale lookup that still resolves to run1's hook).
+      hook = await waitForHook(token, { runId: run2.runId });
       expect(hook.runId).toBe(run2.runId);
 
       // Send payload to workflow 2
@@ -1602,7 +1679,7 @@ describe('e2e', () => {
       );
       const flowRes = await fetch(flowHealthUrl, {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
       });
       expect(flowRes.status).toBe(200);
       expect(flowRes.headers.get('Content-Type')).toBe('application/json');
@@ -1624,7 +1701,7 @@ describe('e2e', () => {
       );
       const stepRes = await fetch(stepHealthUrl, {
         method: 'POST',
-        headers: getProtectionBypassHeaders(),
+        headers: await getTrustedSourcesHeaders(),
       });
       expect(stepRes.status).toBe(200);
       expect(stepRes.headers.get('Content-Type')).toBe('application/json');
@@ -1964,6 +2041,121 @@ describe('e2e', () => {
   );
 
   test(
+    'errorSubclassRoundTripWorkflow - first-class Error subclasses survive every serialization boundary',
+    { timeout: 60_000 },
+    async () => {
+      // Round-trips one instance of each Error subclass that has a dedicated
+      // reducer/reviver pair (built-in subclasses + FatalError/RetryableError
+      // from @workflow/errors) through the full pipeline:
+      //
+      //   client (start args) → workflow → step → workflow → client (return)
+      //
+      // Each subclass reducer must run before the generic `Error` reducer
+      // (devalue uses first-match-wins). A regression that drops the
+      // ordering — or skips a subclass entirely — would silently downgrade
+      // these to plain `Error` and break the `instanceof` assertions.
+      //
+      // FatalError and RetryableError specifically are first-class
+      // serialization targets (rather than going through the SWC
+      // `WORKFLOW_SERIALIZE` class-instance pipeline) so that they round-trip
+      // even from environments that don't run the SWC plugin — e.g. this
+      // vitest runner, which constructs them directly and passes them as
+      // start() arguments.
+      const cause = new Error('underlying failure');
+      const retryAfter = new Date('2099-01-01T00:00:00.000Z');
+      const inputs: Error[] = [
+        new TypeError('bad type', { cause }),
+        new RangeError('out of range'),
+        new SyntaxError('parse failed'),
+        new URIError('bad uri'),
+        new ReferenceError('x is not defined'),
+        new EvalError('eval went wrong'),
+        new AggregateError(
+          [new Error('inner-1'), new Error('inner-2')],
+          'aggregate failed'
+        ),
+        new FatalError('fatal!'),
+        new RetryableError('try again', { retryAfter }),
+        // Plain Error included as a control: the catch-all base reducer
+        // must still match it after the subclass reducers above.
+        new Error('plain error', { cause: 'string-cause' }),
+      ];
+
+      const run = await start(await e2e('errorSubclassRoundTripWorkflow'), [
+        inputs,
+      ]);
+      const returnValue = (await run.returnValue) as unknown[];
+
+      expect(returnValue).toHaveLength(inputs.length);
+
+      // Each output must match its input's class identity, message, and
+      // (when present) cause — proving the subclass reducer/reviver pair
+      // ran on every boundary. Stack is preserved as a non-empty string;
+      // the exact frames are framework-dependent so we don't pin them.
+      const expectations: Array<{
+        ctor: new (...args: any[]) => Error;
+        message: string;
+        cause?: unknown;
+      }> = [
+        { ctor: TypeError, message: 'bad type', cause },
+        { ctor: RangeError, message: 'out of range' },
+        { ctor: SyntaxError, message: 'parse failed' },
+        { ctor: URIError, message: 'bad uri' },
+        { ctor: ReferenceError, message: 'x is not defined' },
+        { ctor: EvalError, message: 'eval went wrong' },
+        { ctor: AggregateError, message: 'aggregate failed' },
+        { ctor: FatalError, message: 'fatal!' },
+        { ctor: RetryableError, message: 'try again' },
+        { ctor: Error, message: 'plain error', cause: 'string-cause' },
+      ];
+
+      for (const [i, expected] of expectations.entries()) {
+        const actual = returnValue[i] as Error;
+        expect(actual).toBeInstanceOf(expected.ctor);
+        expect(actual.message).toBe(expected.message);
+        expect(typeof actual.stack).toBe('string');
+        expect(actual.stack!.length).toBeGreaterThan(0);
+        if ('cause' in expected) {
+          // For the Error-typed cause, compare message rather than identity
+          // (a fresh Error is reconstructed on each deserialization step).
+          if (expected.cause instanceof Error) {
+            expect(actual.cause).toBeInstanceOf(Error);
+            expect((actual.cause as Error).message).toBe(
+              expected.cause.message
+            );
+          } else {
+            expect(actual.cause).toBe(expected.cause);
+          }
+        } else {
+          expect('cause' in actual).toBe(false);
+        }
+      }
+
+      // AggregateError must preserve its `errors` array with the inner
+      // Error instances reconstructed via the base Error reviver.
+      const aggregate = returnValue[6] as AggregateError;
+      expect(aggregate.errors).toHaveLength(2);
+      expect(aggregate.errors[0]).toBeInstanceOf(Error);
+      expect((aggregate.errors[0] as Error).message).toBe('inner-1');
+      expect(aggregate.errors[1]).toBeInstanceOf(Error);
+      expect((aggregate.errors[1] as Error).message).toBe('inner-2');
+
+      // FatalError must preserve its `fatal` instance property after
+      // round-tripping (the constructor sets it on every new instance).
+      const fatal = returnValue[7] as FatalError;
+      expect(fatal.fatal).toBe(true);
+      expect(FatalError.is(fatal)).toBe(true);
+
+      // RetryableError must preserve its `retryAfter` Date with the same
+      // millisecond value across the realm boundary.
+      const retryable = returnValue[8] as RetryableError;
+      expect(retryable.retryAfter).toBeInstanceOf(Date);
+      expect(retryable.retryAfter.getTime()).toBe(retryAfter.getTime());
+      expect(RetryableError.is(retryable)).toBe(true);
+    }
+  );
+
+  test(
     'stepFunctionAsStartArgWorkflow - step function reference passed as start() argument',
     { timeout: 120_000 },
     async () => {
@@ -2138,11 +2330,9 @@ describe('e2e', () => {
 
       const run = await start(await e2e('hookWithSleepWorkflow'), [token]);
 
-      // Wait for the hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-      // Send 3 payloads: two normal ones, then one with done=true
-      let hook = await getHookByToken(token);
+      // Send 3 payloads: two normal ones, then one with done=true.
+      // Wait until the hook is registered before sending the first payload.
+      let hook = await waitForHook(token, { runId: run.runId });
       expect(hook.runId).toBe(run.runId);
       await resumeHook(hook, { type: 'subscribe', id: 1 });
 
@@ -2171,6 +2361,47 @@ describe('e2e', () => {
         id: 2,
       });
       expect(returnValue[2]).toMatchObject({ processed: true, type: 'done' });
+
+      const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
+      expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
+    'hookWithSleepFinalStepWorkflow - step only on final payload',
+    { timeout: 120_000 },
+    async () => {
+      // Regression test for the v0chat incident. Mirrors the production
+      // shape: a hook + fire-and-forget sleep, where the step runs only
+      // once the final (done) payload arrives. Replay ends up with two
+      // `hook_received` events followed by a single `step_created`, which
+      // is the race window for the deferred unconsumed-event check.
+      const token = Math.random().toString(36).slice(2);
+
+      const run = await start(await e2e('hookWithSleepFinalStepWorkflow'), [
+        token,
+      ]);
+
+      // Wait for the hook to register.
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+
+      let hook = await getHookByToken(token);
+      expect(hook.runId).toBe(run.runId);
+      await resumeHook(hook, { type: 'msg', id: 1 });
+
+      // Let the workflow replay and suspend before the next payload so the
+      // final event log contains two `hook_received` entries before any
+      // `step_created` — the exact replay shape from production.
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      hook = await getHookByToken(token);
+      await resumeHook(hook, { type: 'final', id: 2, done: true });
+
+      const returnValue = await run.returnValue;
+      expect(returnValue).toEqual({
+        seen: [1, 2],
+        finalResult: { processed: true, type: 'final', id: 2 },
+      });
 
       const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
       expect(runData.status).toBe('completed');
@@ -2347,17 +2578,16 @@ describe('e2e', () => {
         [controllerId, 60_000, 10_000] // 60s TTL, 10s grace
       );
 
-      // Wait for the hook to be registered
-      await sleep(3_000);
+      // Wait until the abort hook is registered.
+      const token = `distributed-abort:${controllerId}`;
+      const hook = await waitForHook(token, { runId: run.runId });
+      expect(hook.runId).toBe(run.runId);
 
       // Get the abort signal (reads from stream)
       const readable = await run.getReadable();
       const reader = readable.getReader();
 
       // Trigger abort via hook
-      const token = `distributed-abort:${controllerId}`;
-      const hook = await getHookByToken(token);
-      expect(hook.runId).toBe(run.runId);
       await resumeHook(token, { reason: 'User cancelled' });
 
       // Read the abort message from the stream
@@ -2413,11 +2643,8 @@ describe('e2e', () => {
         [controllerId, 60_000, 10_000]
       );
 
-      // Wait for hook to be registered
-      await sleep(3_000);
-
-      // Look up the hook - should find the same run
-      const hook = await getHookByToken(token);
+      // Wait until the hook is registered, then verify the run association.
+      const hook = await waitForHook(token, { runId: run1.runId });
       expect(hook.runId).toBe(run1.runId);
 
       // A second lookup should still find the same run (hook persists)

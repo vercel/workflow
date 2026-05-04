@@ -22,6 +22,30 @@ export default defineConfig({
 });
 ```
 
+Pass a [`WorkflowTestOptions`](#workflowtestoptions) object when your project uses a non-standard layout — for example, a monorepo where `workflows/` does not live at the Vitest config's directory, or when the default `.workflow-data` / `.workflow-vitest` output locations need to move. The plugin forwards these paths to `buildWorkflowTests()` and `setupWorkflowTests()` through Vitest's per-project provided context, so each Vitest workspace project stays isolated.
+
+{/* @skip-typecheck - @workflow/vitest not available in docs-typecheck */}
+
+```typescript
+import { defineConfig } from "vitest/config";
+import { workflow } from "@workflow/vitest";
+
+export default defineConfig({
+  plugins: [
+    workflow({
+      cwd: "./apps/api",
+      rootDir: "./apps/api/test-artifacts",
+    }),
+  ],
+});
+```
+
+**Parameters:**
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `options?` | `WorkflowTestOptions` | Optional configuration |
+
 **Returns:** `Plugin[]`
 
 ## Setup Functions
@@ -83,7 +107,10 @@ Tears down the workflow test world. Clears the global world and closes the Local
 
 | Option | Type | Default | Description |
 | --- | --- | --- | --- |
-| `cwd` | `string` | `process.cwd()` | The working directory of the project (where `workflows/` lives) |
+| `cwd` | `string` | `process.cwd()` | The working directory of the project (where `workflows/` lives). Relative paths resolve against `process.cwd()`. |
+| `rootDir` | `string` | same as `cwd` | Root directory used for default test artifacts. When set, `dataDir` and `outDir` default to `<rootDir>/.workflow-data` and `<rootDir>/.workflow-vitest`. Relative paths resolve against `cwd`. |
+| `dataDir` | `string` | `<rootDir>/.workflow-data` | Directory for workflow runtime data written by the test world. Relative paths resolve against `cwd`. |
+| `outDir` | `string` | `<rootDir>/.workflow-vitest` | Directory for generated workflow and step bundles. Relative paths resolve against `cwd`. |
 
 ## Test Helpers
 

@@ -1,0 +1,205 @@
+---
+title: Agent Cancellation
+description: Cancel a running agent from the outside — either immediately via run.cancel() or gracefully via a stop signal hook.
+type: guide
+summary: Two patterns for cancelling a running agent — Hard Cancellation via getRun(runId).cancel() for forced termination, or Stop Signal via a hook + Promise.race for a clean exit with cleanup and final stream notification.
+---
+
+Cancel a running agent from the outside — for example, a "Stop" button in a chat UI, an admin cancellation endpoint, or a timeout fallback. Two patterns are available depending on whether you need the agent to exit cleanly or just need the run to stop: **Hard Cancellation** via `getRun(runId).cancel()` for immediate forced termination, or **Stop Signal** via a hook + `Promise.race` for a graceful exit that runs cleanup and notifies streaming clients before returning.
+
+## When to use this
+
+* **Chat stop buttons** — let users cancel a long-running agent from the browser
+* **Admin cancellation** — stop an agent from a different process or API
+* **Timeout fallback** — combine with `sleep()` to auto-stop after a deadline
+
+## Choosing an approach
+
+Pick the option that matches what your endpoint needs to deliver to the caller:
+
+* **Hard Cancellation** — terminates the run immediately with no opportunity for cleanup or client notification. A single line of code, but the workflow throws `WorkflowRunCancelledError` and any streaming clients see an abrupt connection close.
+* **Stop Signal** — the workflow exits as soon as the hook fires, runs any pending cleanup, emits a final `data-stopped` part to the stream so the client can render cleanly, and returns a real result.
+
+The trade-offs at a glance:
+
+| | Hard Cancellation | Stop Signal |
+| --- | --- | --- |
+| Mechanism | `getRun(runId).cancel()` | Hook + `Promise.race` |
+| Speed to terminate | Immediate | At the next `await` boundary in the workflow |
+| Runs `finally` / cleanup | No | Yes |
+| Final stream notification | No (abrupt close) | Yes (`data-stopped` part) |
+| `run.returnValue` | Throws `WorkflowRunCancelledError` | Returns the workflow's result |
+| Code complexity | One line | Hook + race + signal step |
+| Best for | Stuck or unresponsive runs, forced termination | User-facing stop, admin cancel, timeouts |
+
+## Hard Cancellation
+
+Call `.cancel()` on a run to terminate it immediately:
+
+```typescript lineNumbers
+import { getRun } from "workflow/api";
+
+export async function POST(
+  _request: Request,
+  { params }: { params: Promise<{ runId: string }> }
+) {
+  const { runId } = await params;
+  await getRun(runId).cancel(); // [!code highlight]
+  return Response.json({ success: true });
+}
+```
+
+This is an abrupt termination — the run is stopped mid-step with no opportunity to exit cleanly:
+
+* **No cleanup runs** — `finally` blocks, defer-style step cleanup, and any logic after the current step are all skipped
+* **No final notification to the client** — the writable closes abruptly, so a streaming UI just sees the connection drop with no `data-stopped` part to render a clean ending
+* **`run.returnValue` throws** — anyone awaiting the result receives [`WorkflowRunCancelledError`](/docs/api-reference/workflow-errors/workflow-run-cancelled-error) instead of a meaningful payload
+* **Underlying step keeps running** — same caveat as the Stop Signal pattern below: the model stream or HTTP call inside the current step continues to completion in the background
+
+Hard Cancellation is the appropriate choice when the run is stuck or unresponsive, has exceeded its expected runtime, or you don't need a clean exit. For everything else — chat stop buttons, admin "stop" actions, timeout fallbacks — you typically want the Stop Signal pattern: the agent finishes its current step, emits a final stream part so the client renders a clean ending, and returns a real result.
+
+## Stop Signal
+
+<Callout type="warn">
+**Limitation:** This pattern does not cancel the underlying model stream. The agent step writing to the writable continues running in the background until it completes — tokens generated after the stop signal are still produced (and billed by your model provider). What this pattern *does* is exit the workflow function as soon as the hook fires and emit a `data-stopped` part so the client can stop rendering. For hard cross-process cancellation that signals the inner step to bail out, see [Distributed Abort Controller](/cookbook/advanced/distributed-abort-controller).
+</Callout>
+
+### Example
+
+```typescript lineNumbers
+import { DurableAgent } from "@workflow/ai/agent";
+import { defineHook, getWritable, getWorkflowMetadata } from "workflow";
+import { z } from "zod";
+import type { ModelMessage, UIMessageChunk } from "ai";
+
+export const stopHook = defineHook({
+  schema: z.object({ reason: z.string().optional() }),
+});
+
+async function searchWeb({ query }: { query: string }) {
+  "use step";
+  await new Promise((r) => setTimeout(r, 1500));
+  return { results: [{ title: `${query} - Wikipedia`, snippet: `Overview of ${query}...` }] };
+}
+
+async function analyzeData({ topic }: { topic: string }) {
+  "use step";
+  await new Promise((r) => setTimeout(r, 1200));
+  return { summary: `Analysis of ${topic}: significant developments found.`, confidence: 0.85 };
+}
+
+async function emitStopSignal(details: { reason?: string }) { // [!code highlight]
+  "use step";
+  const writer = getWritable<UIMessageChunk>().getWriter();
+  try {
+    await writer.write({ type: "data-stopped", id: "stop-signal", data: details } as UIMessageChunk);
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+export async function stoppableAgent(messages: ModelMessage[]) {
+  "use workflow";
+
+  const { workflowRunId } = getWorkflowMetadata();
+  const hook = stopHook.create({ token: `stop:${workflowRunId}` }); // [!code highlight]
+
+  const agent = new DurableAgent({
+    model: "anthropic/claude-haiku-4.5",
+    instructions: "You are a research assistant. Search and analyze data as needed.",
+    tools: {
+      searchWeb: {
+        description: "Search the web for information",
+        inputSchema: z.object({ query: z.string() }),
+        execute: searchWeb,
+      },
+      analyzeData: {
+        description: "Analyze a piece of data",
+        inputSchema: z.object({ topic: z.string() }),
+        execute: analyzeData,
+      },
+    },
+  });
+
+  const result = await Promise.race([ // [!code highlight]
+    agent
+      .stream({ messages, writable: getWritable<UIMessageChunk>(), maxSteps: 15 })
+      .then((r) => ({ type: "complete" as const, messages: r.messages })),
+    hook.then(({ reason }) => ({ type: "stopped" as const, reason })), // [!code highlight]
+  ]);
+
+  if (result.type === "stopped") {
+    await emitStopSignal({ reason: result.reason }); // [!code highlight]
+  }
+
+  return result;
+}
+```
+
+### API Route to Trigger Stop
+
+```typescript lineNumbers
+import { stopHook } from "@/workflows/stoppable-agent";
+
+export async function POST(
+  request: Request,
+  { params }: { params: Promise<{ runId: string }> }
+) {
+  const { runId } = await params;
+  const { reason } = await request.json();
+
+  await stopHook.resume(`stop:${runId}`, { // [!code highlight]
+    reason: reason || "User requested stop",
+  });
+
+  return Response.json({ success: true });
+}
+```
+
+### Client Stop Button
+
+```tsx lineNumbers
+"use client";
+
+export function StopButton({ runId }: { runId: string }) {
+  const handleStop = async () => {
+    await fetch(`/api/chat/${runId}/stop`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "User clicked stop" }),
+    });
+  };
+
+  return (
+    <button type="button" onClick={handleStop}>
+      Stop Agent
+    </button>
+  );
+}
+```
+
+## How it works
+
+1. A hook is created with token `stop:${workflowRunId}` when the workflow starts
+2. `Promise.race` runs the agent stream and the stop hook concurrently
+3. When the stop API resumes the hook, the race resolves immediately — the workflow exits
+4. Before returning, `emitStopSignal` writes a `data-stopped` part to the stream so the client knows the agent was stopped (not just disconnected)
+5. The client detects `data-stopped` and updates the UI accordingly
+
+This is the same pattern used by the [Distributed Abort Controller](/cookbook/advanced/distributed-abort-controller) — race a long-running operation against a hook signal.
+
+## Adapting this
+
+* **Add a timeout** — race a third `sleep()` promise to auto-stop after a deadline
+* **Audit logging** — include a `reason` field in the stop schema to record who stopped and why
+* **Cross-process** — the hook token is deterministic, so any process can call `stopHook.resume()` with the run ID
+* **Step limits** — combine with `maxSteps` on the agent to cap execution even without manual stop
+* **Hard Cancellation as a fallback** — wire your stop endpoint to fall back to `getRun(runId).cancel()` if the hook resume errors with `not found` / `expired` (for example, the hook was already consumed). This guarantees the run is terminated even when the Stop Signal path is unavailable.
+
+## Key APIs
+
+* [`defineHook()`](/docs/api-reference/workflow/define-hook) — type-safe hook for the stop signal
+* [`getWorkflowMetadata()`](/docs/api-reference/workflow/get-workflow-metadata) — access the run ID for deterministic hook tokens
+* [`getWritable()`](/docs/api-reference/workflow/get-writable) — stream a stop notification to the client
+* [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — the agent that gets raced against the stop hook
+* [`getRun()`](/docs/api-reference/workflow-api/get-run) — entry point for Hard Cancellation: `getRun(runId).cancel()`

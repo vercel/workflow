@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { pluralize, usesVercelWorld } from '@workflow/utils';
+import { WorkflowBuildError } from '@workflow/errors';
+import { pluralize } from '@workflow/utils';
 import chalk from 'chalk';
 import enhancedResolveOriginal from 'enhanced-resolve';
 import * as esbuild from 'esbuild';
@@ -343,8 +344,11 @@ export abstract class BaseBuilder {
       }
 
       if (throwOnError) {
-        throw new Error(
-          `Build failed during ${phase}:\n${errorMessages.join('\n')}`
+        throw new WorkflowBuildError(
+          `Build failed during ${phase}:\n${errorMessages.join('\n')}`,
+          {
+            hint: `Review the esbuild errors above — they come from the ${phase} bundle. Fix the offending source files and re-run the build.`,
+          }
         );
       }
     }
@@ -421,13 +425,12 @@ export abstract class BaseBuilder {
       dirname(outfile),
       'workflow/internal/builtins'
     ).catch((err) => {
-      throw new Error(
-        [
-          chalk.red('Failed to resolve built-in steps sources.'),
-          `${chalk.yellow.bold('hint:')} run \`${chalk.cyan.italic('npm install workflow')}\` to resolve this issue.`,
-          '',
-          `Caused by: ${chalk.red(String(err))}`,
-        ].join('\n')
+      throw new WorkflowBuildError(
+        `Failed to resolve built-in steps sources.\n\nCaused by: ${String(err)}`,
+        {
+          hint: 'run `pnpm install workflow` to resolve this issue.',
+          cause: err,
+        }
       );
     });
 
@@ -856,7 +859,9 @@ export abstract class BaseBuilder {
         !interimBundle.outputFiles ||
         interimBundle.outputFiles.length === 0
       ) {
-        throw new Error('No output files generated from esbuild');
+        throw new WorkflowBuildError('No output files generated from esbuild', {
+          hint: 'This usually indicates a misconfigured entry point or an empty workflow directory. Check that your workflow files contain a `"use workflow"` or `"use step"` directive.',
+        });
       }
 
       // Serde compliance warnings: check if workflow bundle has Node.js imports
@@ -1320,13 +1325,23 @@ export const OPTIONS = handler;`;
   }
 
   /**
-   * Whether diagnostics artifacts should be emitted to Vercel output.
-   * This is enabled when the resolved world target is Vercel.
+   * Resolves the workflow manifest diagnostics path, when this builder should
+   * emit one.
    */
-  protected get shouldEmitVercelDiagnostics(): boolean {
-    return (
-      usesVercelWorld() || this.config.buildTarget === 'vercel-build-output-api'
-    );
+  protected getDiagnosticsManifestPath(): string | undefined {
+    if (this.config.diagnosticsDir) {
+      return resolve(
+        this.config.workingDir,
+        this.config.diagnosticsDir,
+        'workflows-manifest.json'
+      );
+    }
+
+    if (this.config.buildTarget === 'vercel-build-output-api') {
+      return this.resolvePath(
+        '.vercel/output/diagnostics/workflows-manifest.json'
+      );
+    }
   }
 
   /**
@@ -1362,10 +1377,9 @@ export const OPTIONS = handler;`;
 
       await mkdir(manifestDir, { recursive: true });
       await writeFile(join(manifestDir, 'manifest.json'), manifestJson);
-      if (this.shouldEmitVercelDiagnostics) {
-        const diagnosticsManifestPath = this.resolvePath(
-          '.vercel/output/diagnostics/workflows-manifest.json'
-        );
+
+      const diagnosticsManifestPath = this.getDiagnosticsManifestPath();
+      if (diagnosticsManifestPath) {
         await this.ensureDirectory(diagnosticsManifestPath);
         await writeFile(diagnosticsManifestPath, manifestJson);
       }
