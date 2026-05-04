@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
+import zlib from 'node:zlib';
 
 const exec = promisify(cp.exec);
 
@@ -177,33 +178,78 @@ function formatBytes(bytes: number): string {
 }
 
 /**
- * List the contents of a tarball as `{path, size}` entries by parsing the
- * verbose output of `tar -tvzf`. Each line looks roughly like:
+ * List regular files inside a `.tgz` tarball, returning `{path, size}` for
+ * each entry. Implemented as an in-process tar reader so the result is
+ * identical on macOS (BSD tar) and Linux (GNU tar) — `tar -tvzf` formats
+ * its verbose output differently on each, and parsing it is fragile.
  *
- *   -rw-r--r--  0 root   root      1234 Jan  1 00:00 package/dist/index.js
- *
- * We only care about regular files (lines starting with `-`), so symlinks
- * and directories are filtered out.
+ * We unzip the whole tarball into memory (npm pack outputs are small) and
+ * walk 512-byte blocks. Each entry is one 512-byte ustar header followed
+ * by the file content rounded up to 512 bytes. We only emit regular files
+ * (typeflag `0` or NUL); directories, symlinks, and pax/long-name
+ * extension entries are consumed but not emitted.
  */
 async function listTarballFiles(tgzPath: string): Promise<TarballFile[]> {
-  const { stdout } = await exec(`tar -tvzf "${tgzPath}"`, {
-    maxBuffer: 64 * 1024 * 1024,
-  });
+  const compressed = await fs.readFile(tgzPath);
+  const buf = zlib.gunzipSync(compressed);
   const files: TarballFile[] = [];
-  for (const rawLine of stdout.split('\n')) {
-    const line = rawLine.trim();
-    if (!line || !line.startsWith('-')) continue;
-    // Split on whitespace, expect: mode links owner group size date time path
-    const parts = line.split(/\s+/);
-    if (parts.length < 9) continue;
-    const size = Number.parseInt(parts[4] ?? '', 10);
-    if (!Number.isFinite(size)) continue;
-    // Path may contain spaces — rejoin everything from index 8 onwards.
-    const filePath = parts.slice(8).join(' ');
-    files.push({ path: filePath, size });
+  let offset = 0;
+  let pendingLongName: string | undefined;
+
+  while (offset + 512 <= buf.length) {
+    const header = buf.subarray(offset, offset + 512);
+    // The end of an archive is marked by two consecutive zero blocks.
+    if (header.every((b) => b === 0)) break;
+
+    const name = readNullTerminatedString(header, 0, 100);
+    const sizeOctal = readNullTerminatedString(header, 124, 12).trim();
+    const size = sizeOctal ? Number.parseInt(sizeOctal, 8) : 0;
+    const typeflag = String.fromCharCode(header[156] ?? 0);
+    const prefix = readNullTerminatedString(header, 345, 155);
+    const contentBlocks = Math.ceil(size / 512);
+
+    offset += 512;
+
+    if (typeflag === 'L') {
+      // GNU long-name entry: the next `size` bytes are the path of the
+      // following entry. Read it and stash for the next iteration.
+      pendingLongName = buf
+        .subarray(offset, offset + size)
+        .toString('utf8')
+        .replace(/\0+$/, '');
+      offset += contentBlocks * 512;
+      continue;
+    }
+
+    if (typeflag === 'x' || typeflag === 'g') {
+      // pax extended / global headers — skip.
+      offset += contentBlocks * 512;
+      continue;
+    }
+
+    const fullName = pendingLongName ?? (prefix ? `${prefix}/${name}` : name);
+    pendingLongName = undefined;
+
+    // typeflag '0' or NUL = regular file.
+    if (typeflag === '0' || typeflag === '\0') {
+      if (fullName) files.push({ path: fullName, size });
+    }
+
+    offset += contentBlocks * 512;
   }
+
   files.sort((a, b) => b.size - a.size);
   return files;
+}
+
+function readNullTerminatedString(
+  buf: Buffer,
+  offset: number,
+  len: number
+): string {
+  const slice = buf.subarray(offset, offset + len);
+  const end = slice.indexOf(0);
+  return slice.subarray(0, end === -1 ? len : end).toString('utf8');
 }
 
 function getBuildContext(sha: string, localBranch?: string): BuildContext {
