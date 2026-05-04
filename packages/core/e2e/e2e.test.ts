@@ -2474,16 +2474,23 @@ describe('e2e', () => {
     );
 
     test(
-      'abortFromStepWorkflow: step calls abort(), workflow sees aborted state',
+      'abortFromStepWorkflow: step abort cancels an in-flight sibling step',
       { timeout: 60_000 },
       async () => {
         const run = await start(await e2e('abortFromStepWorkflow'), []);
         const returnValue = await run.returnValue;
 
-        // A step calls controller.abort('aborted from step'), then the
-        // workflow checks signal state in another step.
+        // The workflow VM's signal eventually reflects the abort (round-trip
+        // via the hook event resumed by the aborting step).
         expect(returnValue.workflowAborted).toBe(true);
         expect(returnValue.stepSawAborted).toBe(true);
+
+        // The crucial assertion: the in-flight sibling step (longStep) must
+        // see the cancellation through the backing stream and exit via the
+        // abort branch within the 1s+poll-interval window — NOT run to its
+        // 30s natural completion. If this is 'completed' instead of 'aborted',
+        // realtime cross-step cancellation is broken.
+        expect(returnValue.longStepResult).toBe('aborted');
       }
     );
 

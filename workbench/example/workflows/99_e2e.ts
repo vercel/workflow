@@ -1500,10 +1500,19 @@ async function checkSignalState(signal: AbortSignal): Promise<{
 }
 
 /**
- * Step that calls abort() on the controller and returns.
+ * Step that (optionally) waits, then calls `abort()` on the controller.
+ * The delay lets a sibling step start running before the abort fires —
+ * used by `abortFromStepWorkflow` to verify the in-flight sibling actually
+ * receives the cancellation packet through the backing stream.
  */
-async function abortFromStep(controller: AbortController): Promise<void> {
+async function abortFromStep(
+  controller: AbortController,
+  delayMs = 0
+): Promise<void> {
   'use step';
+  if (delayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
   controller.abort('aborted from step');
 }
 
@@ -1575,22 +1584,37 @@ export async function abortParallelWorkflow() {
 }
 
 /**
- * E2E: Controller returned from step, used to cancel another step.
+ * E2E: One step aborts a controller; an in-flight sibling step is cancelled.
+ *
+ * Runs `longStep` (a 30s busy-wait that polls `signal.aborted` every 500ms)
+ * in parallel with `abortFromStep` (which sleeps 1s, then calls `abort()`).
+ * The cancellation has to propagate from the aborting step → workflow's
+ * backing stream → the polling step's local AbortController, so the polling
+ * step sees `signal.aborted` flip and exits via the abort branch instead of
+ * running to its 30s natural completion. After the parallel work, we also
+ * verify the workflow VM's signal sees the abort (round-trip via hook event).
  */
 export async function abortFromStepWorkflow() {
   'use workflow';
 
   const controller = new AbortController();
 
-  // Pass controller to a step that decides to abort
-  await abortFromStep(controller);
+  // Run a long-polling step in parallel with a step that aborts after 1s.
+  // longStep returns 'aborted' if it saw signal.aborted=true mid-flight,
+  // 'completed' if it ran the full 30s without seeing the abort.
+  const [longStepResult] = await Promise.all([
+    longStep(controller.signal),
+    abortFromStep(controller, 1000),
+  ]);
 
-  // Check that the workflow sees the abort
+  // After both steps finish, check that the workflow's signal also reflects
+  // the abort (the hook event resumed the controller in the workflow VM).
   const state = await checkSignalState(controller.signal);
 
   return {
     workflowAborted: controller.signal.aborted,
     stepSawAborted: state.aborted,
+    longStepResult,
   };
 }
 
