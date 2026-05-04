@@ -58,6 +58,14 @@ export function withWorkflow(
       local?: {
         port?: number;
       };
+      /**
+       * Controls how source maps are emitted for workflow bundles. Accepts
+       * the same values as esbuild's `sourcemap` option: `true`/`'inline'`
+       * (default), `'linked'`, `'external'`, `'both'`, or `false` to omit
+       * source maps. Can also be set via the `WORKFLOW_SOURCEMAP`
+       * environment variable.
+       */
+      sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
     };
   } = {}
 ) {
@@ -133,6 +141,7 @@ export function withWorkflow(
             workflowsBundlePath: '', // not used in base
             stepsBundlePath: '', // not used in base
             webhookBundlePath: '', // node used in base
+            sourcemap: workflows?.sourcemap,
             suppressCreateWorkflowsBundleLogs: useDeferredBuilder,
             suppressCreateWorkflowsBundleWarnings: useDeferredBuilder,
             suppressCreateWebhookBundleLogs: useDeferredBuilder,

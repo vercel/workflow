@@ -63,6 +63,7 @@ export default withWorkflow(nextConfig, {
     local: {
       port: 4000,
     },
+    sourcemap: false,
   },
 });
 ```
@@ -71,6 +72,27 @@ export default withWorkflow(nextConfig, {
 | --- | --- | --- | --- |
 | `workflows.lazyDiscovery` | `boolean` | `false` | When `true`, defers workflow discovery until files are requested instead of scanning eagerly at startup. Useful for large projects where startup time matters. |
 | `workflows.local.port` | `number` | — | Overrides the `PORT` environment variable for local development. Has no effect when deployed to Vercel. |
+| `workflows.sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. See [Source maps](#source-maps) below. |
+
+### Source maps
+
+The step bundle and intermediate workflow bundle default to `'inline'` source maps so that stack traces from step errors and workflow VM errors point at your source files. The `sourcemap` option lets you change that:
+
+| Value | Behavior |
+| --- | --- |
+| `true` / `'inline'` | Base64-encode the source map and append it to the bundle (default). |
+| `'linked'` | Write a separate `.map` file and add a `sourceMappingURL` comment. |
+| `'external'` | Write a separate `.map` file without the comment. |
+| `'both'` | Emit both inline and external source maps. |
+| `false` | Omit source maps entirely. |
+
+Setting `sourcemap: false` is the main escape hatch for users hitting the Vercel 250MB function size limit — it drops the inline source map from every bundle and also skips the source-map-support runtime shim on the Vercel step function. The tradeoff is that workflow VM stack traces will reference generated code (e.g. `evalmachine.<anonymous>`) rather than your source files.
+
+<Callout type="info">
+Setting `sourcemap` explicitly affects **all** generated bundles (steps, workflows, webhook). The legacy `WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING=1` environment variable is narrower — it only toggles source maps on the final workflow wrapper and webhook bundle (which default to off). It continues to work, but new code should use the `sourcemap` option or the `WORKFLOW_SOURCEMAP` environment variable instead.
+</Callout>
+
+The option can also be set via the `WORKFLOW_SOURCEMAP` environment variable, which accepts the same values plus `'0'` / `'1'` as aliases for `false` / `true`. Precedence is: explicit config > `WORKFLOW_SOURCEMAP` > per-bundle default.
 
 <Callout type="info">
 The `workflows.local` options only affect local development. When deployed to Vercel, the runtime ignores `local` settings and uses the Vercel world automatically.

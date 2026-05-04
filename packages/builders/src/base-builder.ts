@@ -19,13 +19,54 @@ import { getImportPath } from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
-import type { WorkflowConfig } from './types.js';
+import type { SourcemapMode, WorkflowConfig } from './types.js';
 import { extractWorkflowGraphs } from './workflows-extractor.js';
 
 const enhancedResolve = promisify(enhancedResolveOriginal);
 
+/**
+ * Legacy opt-in for source maps on the final workflow wrapper + webhook
+ * bundles (which default to off, unlike the step/interim workflow bundles
+ * that default to inline). Superseded by the `sourcemap` config option and
+ * the `WORKFLOW_SOURCEMAP` environment variable; kept for back-compat.
+ */
 const EMIT_SOURCEMAPS_FOR_DEBUGGING =
   process.env.WORKFLOW_EMIT_SOURCEMAPS_FOR_DEBUGGING === '1';
+
+const VALID_SOURCEMAP_STRINGS = new Set([
+  'inline',
+  'linked',
+  'external',
+  'both',
+]);
+
+/**
+ * Parse the value of the `WORKFLOW_SOURCEMAP` environment variable into a
+ * `SourcemapMode`. Returns `undefined` if the env var is unset, empty, or
+ * unrecognized (a warning is emitted for unrecognized values).
+ */
+function parseSourcemapEnv(
+  value: string | undefined
+): SourcemapMode | undefined {
+  if (value === undefined || value === '') return undefined;
+  switch (value) {
+    case '0':
+    case 'false':
+      return false;
+    case '1':
+    case 'true':
+      return true;
+    default:
+      if (VALID_SOURCEMAP_STRINGS.has(value)) {
+        return value as SourcemapMode;
+      }
+      console.warn(
+        `Ignoring unrecognized WORKFLOW_SOURCEMAP=${value}. ` +
+          `Expected one of: true, false, 0, 1, inline, linked, external, both.`
+      );
+      return undefined;
+  }
+}
 
 /**
  * Normalize an array of file paths by appending the `realpath()` of each entry
@@ -612,7 +653,7 @@ export abstract class BaseBuilder {
       // Steps execute in Node.js context and inline sourcemaps ensure we get
       // meaningful stack traces with proper file names and line numbers when errors
       // occur in deeply nested function calls across multiple files.
-      sourcemap: 'inline',
+      sourcemap: this.resolveSourcemap('inline'),
       plugins: [
         // Handle pseudo-packages like 'server-only' and 'client-only' by providing
         // empty modules. Must run first to intercept these before other resolution.
@@ -818,7 +859,7 @@ export abstract class BaseBuilder {
       // Inline source maps for better stack traces in workflow VM execution.
       // This intermediate bundle is executed via runInContext() in a VM, so we need
       // inline source maps to get meaningful stack traces instead of "evalmachine.<anonymous>".
-      sourcemap: 'inline',
+      sourcemap: this.resolveSourcemap('inline'),
       // Use tsconfig for path alias resolution.
       // For symlinked configs this uses tsconfigRaw to preserve cwd-relative aliases.
       ...esbuildTsconfigOptions,
@@ -992,7 +1033,7 @@ export const POST = workflowEntrypoint(workflowCode);`;
           outfile,
           // Source maps for the final workflow bundle wrapper (not important since this code
           // doesn't run in the VM - only the intermediate bundle sourcemap is relevant)
-          sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+          sourcemap: this.resolveSourcemap(EMIT_SOURCEMAPS_FOR_DEBUGGING),
           absWorkingDir: this.config.workingDir,
           bundle: true,
           format,
@@ -1449,7 +1490,7 @@ export const OPTIONS = handler;`;
         '.mjs',
         '.cjs',
       ],
-      sourcemap: EMIT_SOURCEMAPS_FOR_DEBUGGING,
+      sourcemap: this.resolveSourcemap(EMIT_SOURCEMAPS_FOR_DEBUGGING),
       mainFields: ['module', 'main'],
       // Don't externalize anything - bundle everything including workflow packages
       external: [],
@@ -1573,6 +1614,28 @@ export const OPTIONS = handler;`;
         '.vercel/output/diagnostics/workflows-manifest.json'
       );
     }
+  }
+
+  /**
+   * Resolve the effective source map mode for a given call site. Precedence:
+   * explicit `sourcemap` config > `WORKFLOW_SOURCEMAP` env var > the call
+   * site's default. Returned value is passed directly to esbuild's
+   * `sourcemap` option.
+   */
+  protected resolveSourcemap(defaultMode: SourcemapMode): SourcemapMode {
+    if (this.config.sourcemap !== undefined) return this.config.sourcemap;
+    const envMode = parseSourcemapEnv(process.env.WORKFLOW_SOURCEMAP);
+    if (envMode !== undefined) return envMode;
+    return defaultMode;
+  }
+
+  /**
+   * Whether the resolved source map mode emits any source maps at all.
+   * Used by consumers like the Vercel builder to decide whether to include
+   * the source-map-support runtime shim in generated functions.
+   */
+  protected get sourcemapsEnabled(): boolean {
+    return this.resolveSourcemap(true) !== false;
   }
 
   /**

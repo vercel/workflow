@@ -40,6 +40,13 @@ export interface NestBuilderOptions {
    * @default 'dist'
    */
   distDir?: string;
+  /**
+   * Controls how source maps are emitted for workflow bundles. Accepts the
+   * same values as esbuild's `sourcemap` option: `true`/`'inline'` (default),
+   * `'linked'`, `'external'`, `'both'`, or `false` to omit source maps.
+   * Can also be set via the `WORKFLOW_SOURCEMAP` environment variable.
+   */
+  sourcemap?: boolean | 'inline' | 'linked' | 'external' | 'both';
 }
 
 export class NestLocalBuilder extends BaseBuilder {
@@ -58,6 +65,7 @@ export class NestLocalBuilder extends BaseBuilder {
         workingDir,
         watch: options.watch ?? false,
         dirs,
+        sourcemap: options.sourcemap,
       }),
       // Use 'standalone' as base target - we handle the specific bundling ourselves
       buildTarget: 'standalone',

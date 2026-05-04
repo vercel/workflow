@@ -258,12 +258,9 @@ jobs:
           - name: "astro"
             project-id: "prj_YDAXj3K8LM0hgejuIMhioz2yLgTI"
             project-slug: "workbench-astro-workflow"
-          # TODO: re-enable once a Vercel project is connected for this branch.
-          # The local-dev/local-prod/local-postgres matrices already cover
-          # tanstack-start via scripts/create-test-matrix.mjs.
-          # - name: "tanstack-start"
-          #   project-id: "prj_643jeVugTMq5ivsOFQHcbLG1qcnu"
-          #   project-slug: "workbench-tanstack-start-workflow"
+          - name: "tanstack-start"
+            project-id: "prj_643jeVugTMq5ivsOFQHcbLG1qcnu"
+            project-slug: "workbench-tanstack-start-workflow"
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}

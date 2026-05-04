@@ -62,6 +62,15 @@ function httpLog(
 const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
+ * Per-request timeout for HTTP calls to workflow-server (in ms).
+ *
+ * Without this, a hung workflow-server response would keep the caller
+ * blocked until the platform's `maxDuration` SIGTERM — burning compute
+ * and defeating upstream timeout handlers (e.g. the replay timeout).
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
  * Effective workflow-server URL override. The inline constant wins when
  * set; otherwise falls back to the `VERCEL_WORKFLOW_SERVER_URL` env var.
  *
@@ -73,6 +82,7 @@ const WORKFLOW_SERVER_URL_OVERRIDE = '';
  */
 const getWorkflowServerUrlOverride = (): string =>
   WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
+
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
@@ -353,16 +363,44 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
+      // Compose user-passed abort signal (unused at time of writing)
+      // with the max request timeout
+      const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      const signal = options.signal
+        ? AbortSignal.any([options.signal, timeoutSignal])
+        : timeoutSignal;
       const request = new Request(url, {
         ...options,
         body,
         headers,
+        signal,
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
       const fetchStart = Date.now();
-      const response = await fetch(request, {
-        dispatcher: getDispatcher(),
-      } as any);
+      let response: Response;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+        response = await fetch(request, {
+          dispatcher: getDispatcher(),
+        } as any);
+      } catch (error) {
+        const elapsed = Date.now() - fetchStart;
+        // AbortSignal.timeout() surfaces as a DOMException with name
+        // 'TimeoutError'. Map to WorkflowWorldError so existing catch
+        // sites treat it like any other world transport failure.
+        if (
+          error instanceof Error &&
+          (error.name === 'TimeoutError' || error.name === 'AbortError')
+        ) {
+          const timeoutError = new WorkflowWorldError(
+            `${method} ${endpoint} timed out after ${elapsed}ms`,
+            { url, cause: error }
+          );
+          span?.setAttributes({ ...ErrorType('TIMEOUT') });
+          span?.recordException?.(timeoutError);
+          throw timeoutError;
+        }
+        throw error;
+      }
       const fetchMs = Date.now() - fetchStart;
 
       httpLog(method, endpoint, response.status, fetchMs);

@@ -35,6 +35,7 @@ export class SvelteKitBuilder extends BaseBuilder {
       webhookBundlePath: '', // unused in base
       workingDir,
       externalPackages: [...SVELTEKIT_VIRTUAL_MODULES],
+      sourcemap: config?.sourcemap,
     });
   }
 
