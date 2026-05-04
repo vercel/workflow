@@ -1714,6 +1714,38 @@ export async function abortExternalSignalWorkflow(signal: AbortSignal) {
 }
 
 /**
+ * E2E: External signal NOT aborted at serialization time, aborted later
+ * while in-flight steps are consuming it.
+ *
+ * This is the harder external-signal path that abortExternalSignalWorkflow
+ * doesn't cover. The caller (test process) creates a fresh AbortController,
+ * passes its signal as workflow input, and aborts it ~1.5s later via the
+ * source controller's `abort()`. The serialization-time listener attached
+ * in `getExternalReducers` writes the cancellation packet to the backing
+ * stream when fired; the in-flight steps' deserialized signals — both a
+ * polling step and a listener-based step running in parallel — must see
+ * the abort propagate mid-flight.
+ *
+ * Failure mode if propagation breaks:
+ *   - pollResult: 'completed' (longStep ran the full 30s without seeing aborted=true)
+ *   - listenerResult.via: 'timeout' (addEventListener callback never fired)
+ */
+export async function abortExternalSignalInFlightWorkflow(signal: AbortSignal) {
+  'use workflow';
+
+  // Run two consumption patterns in parallel against the same external signal:
+  // a polling step (reads signal.aborted) and a listener step (addEventListener).
+  // Both must see the abort propagate from the external controller into their
+  // respective deserialized signals while the steps are mid-flight.
+  const [pollResult, listenerResult] = await Promise.all([
+    longStep(signal),
+    stepWaitingOnAbortListener(signal),
+  ]);
+
+  return { pollResult, listenerResult };
+}
+
+/**
  * E2E: Controller survives workflow replay (sleep causes suspension/resumption).
  */
 export async function abortSurvivesReplayWorkflow() {

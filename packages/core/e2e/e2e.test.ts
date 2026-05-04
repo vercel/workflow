@@ -2607,6 +2607,47 @@ describe('e2e', () => {
     );
 
     test(
+      'abortExternalSignalInFlightWorkflow: external abort fires mid-flight, propagates to nested steps',
+      { timeout: 60_000 },
+      async () => {
+        // Source controller starts NOT aborted. The serialization-time
+        // listener attached during start() must write the cancellation packet
+        // to the backing stream when the controller fires later — and the
+        // in-flight steps' deserialized signals must see the abort propagate.
+        const controller = new AbortController();
+        // Sanity: signal is not aborted at workflow-start time.
+        expect(controller.signal.aborted).toBe(false);
+
+        const run = await start(
+          await e2e('abortExternalSignalInFlightWorkflow'),
+          [controller.signal]
+        );
+
+        // Abort 1.5s after start() so both parallel steps are mid-flight on
+        // their compute instances. The listener attached at serialization time
+        // is what bridges the abort into the workflow's backing stream.
+        const abortTimer = setTimeout(() => {
+          controller.abort('external in-flight abort');
+        }, 1500);
+
+        try {
+          const returnValue = await run.returnValue;
+
+          // Polling step must have seen signal.aborted flip and exited via
+          // its abort branch (NOT its 30s natural-completion path).
+          expect(returnValue.pollResult).toBe('aborted');
+
+          // Listener step must have resolved via its addEventListener callback
+          // (NOT its 30s safety timeout).
+          expect(returnValue.listenerResult.saw).toBe(true);
+          expect(returnValue.listenerResult.via).toBe('listener');
+        } finally {
+          clearTimeout(abortTimer);
+        }
+      }
+    );
+
+    test(
       'abortSurvivesReplayWorkflow: controller state consistent across replay',
       { timeout: 60_000 },
       async () => {
