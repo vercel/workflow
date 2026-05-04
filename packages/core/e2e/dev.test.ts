@@ -1,7 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeAll, describe, expect, test } from 'vitest';
-import { getWorkbenchAppPath } from './utils';
+import {
+  getWorkbenchAppPath,
+  isNextLazyDiscoveryEnabledForTest,
+} from './utils';
 
 export interface DevTestConfig {
   generatedStepPath: string;
@@ -47,6 +50,8 @@ export function createDevTests(config?: DevTestConfig) {
     const usesDeferredBuilder = generatedStep.includes(
       path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
     );
+    const usesNextEagerBuilder =
+      !isNextLazyDiscoveryEnabledForTest() && usesDeferredBuilder;
     const workflowManifestPath = path.join(
       appPath,
       'app/.well-known/workflow/v1/manifest.json'
@@ -210,7 +215,6 @@ export async function myNewStep() {
 `
       );
       restoreFiles.push({ path: stepFile, content });
-
       await pollUntil({
         description: 'generated step outputs to include myNewStep',
         check: async () => {
@@ -318,6 +322,22 @@ ${apiFileContent}`
           description: 'generated workflow to include newWorkflowFile',
           timeoutMs: 50_000,
           check: async () => {
+            if (usesNextEagerBuilder) {
+              const manifestJson = await fs.readFile(
+                workflowManifestPath,
+                'utf8'
+              );
+              const manifest = JSON.parse(manifestJson) as {
+                workflows?: Record<string, Record<string, unknown>>;
+              };
+              expect(
+                Object.values(manifest.workflows || {}).some((workflows) =>
+                  Object.hasOwn(workflows, 'newWorkflowFile')
+                )
+              ).toBe(true);
+              return;
+            }
+
             await fetchWithTimeout('/api/chat');
             const workflowContent = await fs.readFile(
               generatedWorkflow,

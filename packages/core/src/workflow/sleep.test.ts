@@ -84,7 +84,7 @@ describe('createSleep', () => {
     const sleep = createSleep(ctx);
 
     // Start the sleep - it will process events asynchronously
-    const sleepPromise = sleep('1s');
+    sleep('1s');
 
     const workflowError = await errorReceived.promise;
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);

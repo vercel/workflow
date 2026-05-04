@@ -1,16 +1,21 @@
 export {
-  type Event,
   getHookByToken,
-  getRun,
-  Run,
   resumeHook,
   resumeWebhook,
-  runStep,
-  type StartOptions,
-  start,
-  type StopSleepOptions,
-  type StopSleepResult,
+} from '@workflow/core/runtime/resume-hook';
+export {
+  getRun,
+  Run,
   type WorkflowReadableStream,
   type WorkflowReadableStreamOptions,
-  type WorkflowRun,
+} from '@workflow/core/runtime/run';
+export {
+  type StartOptions,
+  start,
+} from '@workflow/core/runtime/start';
+export type {
+  Event,
+  StopSleepOptions,
+  StopSleepResult,
+  WorkflowRun,
 } from '@workflow/core/runtime';

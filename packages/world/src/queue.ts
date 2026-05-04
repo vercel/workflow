@@ -42,6 +42,11 @@ export const WorkflowInvokePayloadSchema = z.object({
   requestedAt: z.coerce.date().optional(),
   /** Number of times this message has been re-enqueued due to server errors (5xx) */
   serverErrorRetryCount: z.number().int().optional(),
+  /** Step ID for inline step execution in combined handler. If provided, the flow execution
+   * will jump directly to execute the step with the given ID before doing an event replay. */
+  stepId: z.string().optional(),
+  /** Step name, sent alongside stepId to avoid loading the event log just to resolve the name. */
+  stepName: z.string().optional(),
   /** Run creation data, only present on the first queue delivery from start() */
   runInput: RunInputSchema.optional(),
 });

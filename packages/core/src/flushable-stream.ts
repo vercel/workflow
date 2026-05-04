@@ -9,17 +9,17 @@ import { type PromiseWithResolvers, withResolvers } from '@workflow/utils';
  * to acquire a reader/writer. For that reason we use polling instead of a
  * fully event-driven approach here.
  *
- * 100ms is a compromise between:
- * - Latency: how quickly we notice that the user has released their lock, and
- * - Cost/CPU usage: how often timers fire, especially with many concurrent
- *   streams or in serverless environments where billed time matters.
- *
- * This value should only be changed with care, as decreasing it will
- * increase polling frequency (and thus potential cost), while increasing it
- * will add worst-case delay before the `done` promise resolves after a lock
- * is released.
+ * 10ms is chosen so the polling tick almost never sits on the critical path:
+ * the V2 step-executor's `opsSettled` race waits for this state to resolve
+ * after each step body returns, so a coarser interval (the previous 100ms)
+ * adds visible per-step latency to streaming workflows. With a uniformly
+ * distributed offset between step return and the next tick, the expected
+ * wait is half the interval — so 10ms means ~5ms average wait per step
+ * instead of ~50ms. The per-tick work is `writable.locked` plus a
+ * `getWriter()`/`releaseLock()` probe, both microsecond-scale; 10× more
+ * ticks during a stream's lifetime is not measurable in practice.
  */
-export const LOCK_POLL_INTERVAL_MS = 100;
+export const LOCK_POLL_INTERVAL_MS = 10;
 
 /**
  * State tracker for flushable stream operations.
