@@ -1,0 +1,59 @@
+name: Tarballs Checks
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "!*"
+  pull_request:
+
+concurrency:
+  # Unique group for this workflow and branch
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  tarballs-preview-smoke:
+    name: Tarballs Preview Smoke Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      deployments: read
+    env:
+      TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
+      TURBO_TEAM: ${{ vars.TURBO_TEAM }}
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node.js 22.x
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: "pnpm"
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Waiting for the Tarballs Vercel deployment
+        id: waitForTarballsDeployment
+        uses: ./.github/actions/wait-for-vercel-project
+        with:
+          project-slug: workflow-tarballs
+          timeout: 1000
+          check-interval: 15
+          environment: ${{ github.ref == 'refs/heads/main' && 'production' || 'preview' }}
+
+      - name: Verify tarball endpoints
+        # The tarballs project must be publicly accessible (no Deployment
+        # Protection) so that pnpm/npm can install from preview URLs.
+        # The smoke checks make unauthenticated requests and fail loudly
+        # if a login redirect or non-2xx response is returned.
+        run: pnpm --filter tarballs test:smoke
+        env:
+          DEPLOYMENT_URL: ${{ steps.waitForTarballsDeployment.outputs.deployment-url }}
