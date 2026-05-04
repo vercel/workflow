@@ -155,15 +155,10 @@ describe('withWorkflow builder config', () => {
       '@vercel/cli-auth',
       '@napi-rs/keyring',
     ]);
-    expect(nextConfig.outputFileTracingIncludes?.['/*']).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining('packages/world-vercel/package.json'),
-        expect.stringContaining('@vercel+queue'),
-      ])
-    );
+    expect(nextConfig.outputFileTracingIncludes).toBeUndefined();
   });
 
-  it('marks the built-in Vercel world dependencies as webpack externals after user config', async () => {
+  it('preserves user webpack externals without adding Vercel world dependency externals', async () => {
     const userWebpack = vi.fn((webpackConfig: any) => {
       webpackConfig.externals = [{ react: 'commonjs react' }];
       return webpackConfig;
@@ -186,13 +181,7 @@ describe('withWorkflow builder config', () => {
     );
 
     expect(userWebpack).toHaveBeenCalledOnce();
-    expect(webpackConfig?.externals).toEqual([
-      { react: 'commonjs react' },
-      { '@vercel/queue': 'commonjs @vercel/queue' },
-      { '@vercel/oidc': 'commonjs @vercel/oidc' },
-      { '@vercel/cli-auth': 'commonjs @vercel/cli-auth' },
-      { '@napi-rs/keyring': 'commonjs @napi-rs/keyring' },
-    ]);
+    expect(webpackConfig?.externals).toEqual([{ react: 'commonjs react' }]);
   });
 
   it('preserves an explicit lazyDiscovery disable override', () => {
