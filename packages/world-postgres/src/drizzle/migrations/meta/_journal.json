@@ -71,6 +71,13 @@
       "when": 1770500000000,
       "tag": "0009_add_is_webhook",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1771000000000,
+      "tag": "0010_add_events_entity_creation_unique_index",
+      "breakpoints": true
     }
   ]
 }
