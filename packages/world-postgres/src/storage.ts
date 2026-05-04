@@ -648,7 +648,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         // for concurrent invocations: replay is deterministic, so letting
         // multiple callers proceed with the same run is safe.  We skip
         // preloaded events here because this is a rare race-condition path
-        // — the runtime falls back to getAllWorkflowRunEvents().
+        // — the runtime falls back to loadWorkflowRunEvents().
         if (currentRun?.status === 'running') {
           const [fullRun] = await drizzle
             .select()

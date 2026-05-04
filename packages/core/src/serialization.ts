@@ -13,7 +13,13 @@ import {
   pollWritableLock,
 } from './flushable-stream.js';
 import { getStepFunction } from './private.js';
-import { getWorld } from './runtime/world.js';
+// V2: use getWorldLazy in step-side code paths so Turbopack can statically
+// resolve the world bridge from the step bundle without dragging the full
+// world.ts module (and its dynamic-import behaviour) into the flow route.
+// See `packages/core/src/runtime/get-world-lazy.ts` and the
+// "Turbopack NFT Tracing Errors in V2 Combined Flow Route" section of
+// `docs/content/docs/changelog/eager-processing.mdx`.
+import { getWorldLazy } from './runtime/get-world-lazy.js';
 import * as clientModule from './serialization/client.js';
 import {
   decrypt,
@@ -308,7 +314,7 @@ export class WorkflowServerReadableStream extends ReadableStream<Uint8Array> {
       pull: async (controller) => {
         let reader = this.#reader;
         if (!reader) {
-          const world = await getWorld();
+          const world = await getWorldLazy();
           const stream = await world.streams.get(runId, name, startIndex);
           reader = this.#reader = stream.getReader();
         }
@@ -353,7 +359,7 @@ export class WorkflowServerWritableStream extends WritableStream<Uint8Array> {
     if (typeof name !== 'string' || name.length === 0) {
       throw new WorkflowRuntimeError(`"name" is required, got "${name}"`);
     }
-    const worldPromise = getWorld();
+    const worldPromise = getWorldLazy();
 
     // Buffering state for batched writes
     // Encryption/decryption is handled at the framing level by

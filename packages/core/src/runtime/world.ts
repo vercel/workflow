@@ -1,5 +1,4 @@
 import { createRequire } from 'node:module';
-import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   isVercelWorldTarget,
@@ -9,9 +8,17 @@ import type { World } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
 import { createVercelWorld } from '@workflow/world-vercel';
 
-const require = createRequire(
-  pathToFileURL(process.cwd() + '/package.json').href
-);
+function getRuntimeRequire() {
+  // Resolve from the app root (process.cwd()) so custom world packages
+  // like @workflow/world-postgres can be found even though they're not
+  // dependencies of @workflow/core. Using import.meta.url would resolve
+  // from core's location, missing app-level packages.
+  try {
+    return createRequire(pathToFileURL(process.cwd() + '/package.json').href);
+  } catch {
+    return createRequire(import.meta.url);
+  }
+}
 
 const WorldCache = Symbol.for('@workflow/world//cache');
 const StubbedWorldCache = Symbol.for('@workflow/world//stubbedCache');
@@ -27,15 +34,12 @@ const globalSymbols: typeof globalThis & {
   [StubbedWorldCachePromise]?: Promise<World>;
 } = globalThis;
 
-/**
- * Hides the dynamic import behind `new Function` to prevent bundlers from
- * trying to resolve it at build time, since the world module may not exist
- * at build time. Falls back to `require()` in environments where
- * `new Function`-based `import()` is unavailable (e.g. CJS test runners).
- */
-const dynamicImport = new Function('specifier', 'return import(specifier)') as (
-  specifier: string
-) => Promise<any>;
+// Dynamic import for custom world modules. Uses a standard import()
+// wrapped in a try/catch with require() fallback for CJS test runners.
+// Note: the previous `new Function('specifier', 'return import(specifier)')`
+// pattern was replaced because Turbopack (Next.js) treats unresolvable
+// dynamic imports from `new Function` as fatal build errors in the V2
+// combined flow route context.
 
 function resolveModulePath(specifier: string): string {
   // Already a file:// URL
@@ -48,11 +52,13 @@ function resolveModulePath(specifier: string): string {
   }
   // Relative path - resolve relative to cwd and convert to file:// URL
   if (specifier.startsWith('./') || specifier.startsWith('../')) {
-    return pathToFileURL(resolve(process.cwd(), specifier)).href;
+    return pathToFileURL(
+      /* turbopackIgnore: true */ process.cwd() + '/' + specifier
+    ).href;
   }
   // Package specifier - use require.resolve to find the package
   try {
-    return pathToFileURL(require.resolve(specifier)).href;
+    return pathToFileURL(getRuntimeRequire().resolve(specifier)).href;
   } catch {
     return specifier;
   }
@@ -102,15 +108,15 @@ export const createWorld = async (): Promise<World> => {
     });
   }
 
-  // Try dynamic import() first — ESM-first since this PR's purpose is ESM support.
-  // Fall back to require() for environments where `new Function`-based import()
-  // is unavailable (e.g. CJS test runners).
+  // Try require() first for custom worlds — this avoids Turbopack tracing
+  // a dynamic import() that it can't statically resolve. Fall back to
+  // dynamic import() for ESM-only packages.
   let mod: any;
   try {
-    const resolvedPath = resolveModulePath(targetWorld);
-    mod = await dynamicImport(resolvedPath);
+    mod = getRuntimeRequire()(targetWorld);
   } catch {
-    mod = require(targetWorld);
+    const resolvedPath = resolveModulePath(targetWorld);
+    mod = await import(/* webpackIgnore: true */ resolvedPath);
   }
   if (typeof mod === 'function') {
     return mod() as World;
@@ -182,3 +188,13 @@ export const setWorld = (world: World | undefined): void => {
   globalSymbols[WorldCachePromise] = undefined;
   globalSymbols[StubbedWorldCachePromise] = undefined;
 };
+
+// Register getWorld on globalThis so getWorldLazy can call it directly when
+// world.ts is statically present in the bundle. This avoids the relative
+// dynamic import('./world.js') fallback, which fails after Next.js inlines
+// get-world-lazy.js into a route bundle (no sibling world.js exists at the
+// bundled location). Step bundles never reach this branch because they
+// don't statically import world.ts.
+const GetWorldFnKey = Symbol.for('@workflow/world//getWorldFn');
+(globalThis as { [GetWorldFnKey]?: () => Promise<World> })[GetWorldFnKey] ??=
+  getWorld;

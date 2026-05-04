@@ -1,5 +1,4 @@
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import {
   BaseBuilder,
   createBaseBuilderConfig,
@@ -81,63 +80,34 @@ export class LocalBuilder extends BaseBuilder {
     const inputFiles = await this.getInputFiles();
     await mkdir(this.#outDir, { recursive: true });
 
-    // Build to temporary files first, then move them into place.
-    // This prevents leaving partial/inconsistent output when a build
-    // fails mid-way (e.g., a file was deleted between discovery and
-    // compilation during dev HMR). A per-build UUID guarantees uniqueness
-    // across concurrent invocations, in case the queue is bypassed.
-    const tmpSuffix = `.tmp.${randomUUID()}`;
-    const workflowsTmpFile = join(this.#outDir, `workflows${tmpSuffix}.mjs`);
-    const stepsTmpFile = join(this.#outDir, `steps${tmpSuffix}.mjs`);
-    const webhookTmpFile = join(this.#outDir, `webhook${tmpSuffix}.mjs`);
+    // V2: The combined bundle's flow route references the steps file by
+    // name in its import statement, so we build directly to final names.
+    // (The V1 atomic tmp-file pattern doesn't work here because renaming
+    // the steps file would leave the flow route's import stale.)
+    const { manifest } = await this.createCombinedBundle({
+      inputFiles,
+      stepsOutfile: join(this.#outDir, 'steps.mjs'),
+      flowOutfile: join(this.#outDir, 'workflows.mjs'),
+      format: 'esm',
+      // bundleFinalOutput: false — Nitro externalizes the workflow build dir
+      // during dev, and its own rollup pipeline handles bundling for prod.
+      // Using true causes "Dynamic require of X is not supported" errors
+      // because esbuild wraps CJS require() calls in ESM output.
+      bundleFinalOutput: false,
+      externalizeNonSteps: true,
+    });
 
-    try {
-      const { manifest: workflowsManifest } = await this.createWorkflowsBundle({
-        outfile: workflowsTmpFile,
-        bundleFinalOutput: false,
-        format: 'esm',
-        inputFiles,
-      });
+    await this.createWebhookBundle({
+      outfile: join(this.#outDir, 'webhook.mjs'),
+      bundle: false,
+    });
 
-      const { manifest: stepsManifest } = await this.createStepsBundle({
-        outfile: stepsTmpFile,
-        externalizeNonSteps: true,
-        format: 'esm',
-        inputFiles,
-      });
-
-      await this.createWebhookBundle({
-        outfile: webhookTmpFile,
-        bundle: false,
-      });
-
-      // All builds succeeded — atomically move files into place
-      await rename(workflowsTmpFile, join(this.#outDir, 'workflows.mjs'));
-      await rename(stepsTmpFile, join(this.#outDir, 'steps.mjs'));
-      await rename(webhookTmpFile, join(this.#outDir, 'webhook.mjs'));
-
-      // Merge manifests from both bundles
-      const manifest = {
-        steps: { ...stepsManifest.steps, ...workflowsManifest.steps },
-        workflows: {
-          ...stepsManifest.workflows,
-          ...workflowsManifest.workflows,
-        },
-        classes: { ...stepsManifest.classes, ...workflowsManifest.classes },
-      };
-
-      // Generate manifest
-      const workflowBundlePath = join(this.#outDir, 'workflows.mjs');
-      await this.createManifest({
-        workflowBundlePath,
-        manifestDir: this.#outDir,
-        manifest,
-      });
-    } finally {
-      // Clean up temporary files on success or failure
-      await unlink(workflowsTmpFile).catch(() => {});
-      await unlink(stepsTmpFile).catch(() => {});
-      await unlink(webhookTmpFile).catch(() => {});
-    }
+    // Generate manifest
+    const workflowBundlePath = join(this.#outDir, 'workflows.mjs');
+    await this.createManifest({
+      workflowBundlePath,
+      manifestDir: this.#outDir,
+      manifest,
+    });
   }
 }

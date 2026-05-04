@@ -725,7 +725,7 @@ jobs:
           NODE_OPTIONS: "--enable-source-maps"
           APP_NAME: "nextjs-turbopack"
           DEPLOYMENT_URL: "http://localhost:3000"
-          DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/step/route.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
+          DEV_TEST_CONFIG: '{"generatedStepPath":"app/.well-known/workflow/v1/flow/__step_registrations.js","generatedWorkflowPath":"app/.well-known/workflow/v1/flow/route.js","apiFilePath":"app/api/chat/route.ts","apiFileImportPath":"../../..","port":3000}'
 
       - name: Print Next.js server logs
         if: always()
