@@ -1,4 +1,3 @@
-import { waitUntil } from '@vercel/functions';
 import {
   ERROR_SLUGS,
   HookNotFoundError,
@@ -22,7 +21,7 @@ import {
 import { WEBHOOK_RESPONSE_WRITABLE } from '../symbols.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanContextForTraceCarrier, trace } from '../telemetry.js';
-import { waitedUntil } from '../util.js';
+import { waitedUntil, waitUntil } from '../util.js';
 import { getWorldLazy } from './get-world-lazy.js';
 import { getWorkflowQueueName } from './helpers.js';
 

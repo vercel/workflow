@@ -55,11 +55,6 @@ const {
 // Mock version module to avoid missing generated file
 vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
-// Mock @vercel/functions
-vi.mock('@vercel/functions', () => ({
-  waitUntil: vi.fn(),
-}));
-
 // Mock the world module - createQueueHandler captures the handler
 vi.mock('./world.js', () => ({
   getWorld: vi.fn(async () => ({
