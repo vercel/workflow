@@ -219,10 +219,9 @@ export function withWorkflow(
     nextConfig.serverExternalPackages = [
       ...new Set([
         ...(nextConfig.serverExternalPackages || []),
-        // The core runtime imports this package with a literal dynamic import
-        // so Next.js can trace it for Vercel deployments. Keep the Vercel
-        // world and its native-prone dependencies external so local builds do
-        // not try to parse @vercel/queue's keyring dependency tree.
+        // Keep the Vercel world and its native-prone dependencies external so
+        // local builds do not try to parse @vercel/queue's keyring dependency
+        // tree.
         ...VERCEL_WORLD_SERVER_EXTERNAL_PACKAGES,
       ]),
     ];

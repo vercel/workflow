@@ -6,6 +6,7 @@ import {
 } from '@workflow/utils';
 import type { World } from '@workflow/world';
 import { createLocalWorld } from '@workflow/world-local';
+import { createVercelWorld } from '@workflow/world-vercel';
 
 function getRuntimeRequire() {
   // Resolve from the app root (process.cwd()) so custom world packages
@@ -98,9 +99,6 @@ export const createWorld = async (): Promise<World> => {
       );
     }
 
-    // Keep the built-in Vercel world import literal so deploy bundlers such as
-    // Next.js output file tracing can include it in serverless functions.
-    const { createVercelWorld } = await import('@workflow/world-vercel');
     return createVercelWorld();
   }
 
