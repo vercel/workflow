@@ -12,6 +12,7 @@ import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
+
 import {
   ErrorType,
   getSpanKind,

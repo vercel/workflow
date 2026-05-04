@@ -3358,7 +3358,7 @@ describe('runWorkflow', () => {
       ).toEqual('sleep with date completed');
     });
 
-    it('should reject with WorkflowRuntimeError when event log has duplicate wait_completed', async () => {
+    it('should reject with WorkflowRuntimeError for duplicate wait_completed in event log', async () => {
       const ops: Promise<any>[] = [];
       const workflowRunId = 'test-run-123';
       const workflowRun: WorkflowRun = {
@@ -3396,7 +3396,11 @@ describe('runWorkflow', () => {
           createdAt: new Date('2024-01-01T00:00:05.000Z'),
         },
         {
-          // Duplicate wait_completed - should trigger WorkflowRuntimeError
+          // Duplicate wait_completed — all worlds enforce one wait_completed
+          // per correlationId, so this shape indicates a corrupted event log.
+          // Its position between the sleep's completion and the subsequent
+          // step events means it blocks event consumption until onUnconsumedEvent
+          // fires.
           eventId: 'event-2',
           runId: workflowRunId,
           eventType: 'wait_completed',
@@ -3425,16 +3429,16 @@ describe('runWorkflow', () => {
       await expect(
         runWorkflow(
           `const doWork = globalThis[Symbol.for("WORKFLOW_USE_STEP")]("doWork");
-          const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-          async function workflow() {
-            await sleep('5s');
-            const result = await doWork();
-            return result;
-          }${getWorkflowTransformCode('workflow')}`,
+            const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
+            async function workflow() {
+              await sleep('5s');
+              const result = await doWork();
+              return result;
+            }${getWorkflowTransformCode('workflow')}`,
           workflowRun,
           events
         )
-      ).rejects.toThrow(WorkflowRuntimeError);
+      ).rejects.toThrow('Unconsumed event in event log');
     });
 
     it('should reject with WorkflowRuntimeError for duplicate step_completed blocking subsequent events', async () => {

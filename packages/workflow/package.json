@@ -29,6 +29,7 @@
     ".": {
       "types": "./dist/index.d.ts",
       "workflow": "./dist/workflow.js",
+      "node": "./dist/index.js",
       "require": "./dist/typescript-plugin.cjs",
       "default": "./dist/index.js"
     },

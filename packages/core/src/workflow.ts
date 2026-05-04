@@ -5,7 +5,7 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
-import { getPort } from '@workflow/utils/get-port';
+import { getPortLazy } from './runtime/get-port-lazy.js';
 import { parseWorkflowName } from '@workflow/utils/parse-name';
 import type { Event, WorkflowRun } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -100,7 +100,11 @@ export async function runWorkflow(
     // Get the port before creating VM context to avoid async operations
     // affecting the deterministic timestamp
     const isVercel = process.env.VERCEL_URL !== undefined;
-    const port = isVercel ? undefined : await getPort();
+    // Load getPort lazily to prevent Turbopack from tracing get-port's
+    // fs ops (readdir, readFile) into the flow route bundle.
+    // Uses globalThis.__wkf_getPort as a lazy-initialized cache to avoid
+    // bundler static analysis while staying compatible with CJS/ESM/VM.
+    const port = isVercel ? undefined : await getPortLazy();
 
     const {
       context,

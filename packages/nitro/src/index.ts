@@ -176,12 +176,9 @@ export default {
         'workflow/webhook.mjs'
       );
 
-      addVirtualHandler(
-        nitro,
-        '/.well-known/workflow/v1/step',
-        'workflow/steps.mjs'
-      );
-
+      // V2: single combined handler for both workflow and step execution.
+      // The step registrations are imported as side effects by the combined
+      // handler — no separate step route needed.
       addVirtualHandler(
         nitro,
         '/.well-known/workflow/v1/flow',

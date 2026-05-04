@@ -1803,6 +1803,16 @@ export async function startFromWorkflow(inputValue: number) {
 /**
  * Recursive Fibonacci workflow. start() is called directly to spawn
  * child workflows for fib(n-1) and fib(n-2).
+ *
+ * WORKER POOL CAVEAT: each `runA.returnValue` / `runB.returnValue` await
+ * resolves by polling the child run's status inside a step that holds a
+ * worker slot until the child completes. In worker-based worlds (notably
+ * `world-postgres`), the peak number of these in-flight polls must fit
+ * within `queueConcurrency`, or the workflow will deadlock — all slots
+ * end up held by parents waiting for children that can't get a slot to
+ * start. For `fib(n)`, the recursion tree produces roughly `2·(T(n)−leaves)`
+ * concurrent polls at peak; fib(6) needs ~24 slots, fib(10) needs
+ * hundreds. If you raise `n`, raise `queueConcurrency` accordingly.
  */
 export async function fibonacciWorkflow(n: number): Promise<number> {
   'use workflow';

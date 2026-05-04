@@ -5,7 +5,6 @@ export {
   Run,
   resumeHook,
   resumeWebhook,
-  runStep,
   type StartOptions,
   start,
   type StopSleepOptions,

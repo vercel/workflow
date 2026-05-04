@@ -21,7 +21,7 @@ import {
   type StopSleepResult,
   wakeUpRun,
 } from './runs.js';
-import { getWorld } from './world.js';
+import { getWorldLazy } from './get-world-lazy.js';
 
 /**
  * A `ReadableStream` extended with workflow-specific helpers.
@@ -92,7 +92,7 @@ export class Run<TResult> {
    */
   #worldPromise: Promise<World> | undefined;
   get #lazyWorldPromise() {
-    if (!this.#worldPromise) this.#worldPromise = getWorld();
+    if (!this.#worldPromise) this.#worldPromise = getWorldLazy();
     return this.#worldPromise;
   }
 
@@ -300,6 +300,13 @@ export class Run<TResult> {
     const NOT_FOUND_MAX_RETRIES = this.#resilientStart ? 3 : 0;
     const NOT_FOUND_DELAYS = [1_000, 3_000, 6_000];
 
+    // NOTE: when this poll runs inside a step (e.g. the step that a parent
+    // workflow uses to await a child workflow's `returnValue`), it blocks
+    // a queue worker slot for as long as the child run takes to finish.
+    // Worker-based worlds like `world-postgres` must be sized to cover the
+    // peak number of such polls in flight — see the `queueConcurrency`
+    // default on the Postgres world and the notes in the eager-processing
+    // changelog for details.
     while (true) {
       try {
         const run = await world.runs.get(this.runId);
@@ -321,6 +328,7 @@ export class Run<TResult> {
           throw new WorkflowRunFailedError(this.runId, run.error);
         }
 
+        // Run not completed yet — sleep and poll again.
         throw new WorkflowRunNotCompletedError(this.runId, run.status);
       } catch (error) {
         if (WorkflowRunNotCompletedError.is(error)) {

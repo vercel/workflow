@@ -8,7 +8,6 @@ import { POST as flowPOST } from '../.well-known/workflow/v1/flow.mjs';
 import manifest from '../.well-known/workflow/v1/manifest.json' with {
   type: 'json',
 };
-import { POST as stepPOST } from '../.well-known/workflow/v1/step.mjs';
 
 if (!process.env.WORKFLOW_TARGET_WORLD) {
   console.error(
@@ -42,12 +41,38 @@ const Invoke = z
     };
   });
 
+// Track flow handler invocations per run for testing inline execution
+const flowInvocationCounts = new Map<string, number>();
+
 const app = new Hono()
-  .post('/.well-known/workflow/v1/flow', (ctx) => {
-    return flowPOST(ctx.req.raw);
+  .post('/.well-known/workflow/v1/flow', async (ctx) => {
+    // Clone the request to read the body for tracking without consuming it
+    const cloned = ctx.req.raw.clone();
+    const response = await flowPOST(ctx.req.raw);
+    // Extract runId from the request body (queue message payload)
+    try {
+      const body = (await cloned.json()) as Record<string, unknown>;
+      const runId =
+        typeof body?.runId === 'string'
+          ? body.runId
+          : typeof (body.payload as Record<string, unknown> | undefined)
+                ?.runId === 'string'
+            ? ((body.payload as Record<string, unknown>).runId as string)
+            : undefined;
+      if (runId) {
+        flowInvocationCounts.set(
+          runId,
+          (flowInvocationCounts.get(runId) ?? 0) + 1
+        );
+      }
+    } catch {
+      // Health check or non-JSON messages — ignore
+    }
+    return response;
   })
-  .post('/.well-known/workflow/v1/step', (ctx) => {
-    return stepPOST(ctx.req.raw);
+  .get('/_flow-invocations/:runId', (ctx) => {
+    const count = flowInvocationCounts.get(ctx.req.param('runId')) ?? 0;
+    return ctx.json({ count });
   })
   .get('/_manifest', (ctx) => ctx.json(manifest))
   .post('/invoke', async (ctx) => {
@@ -85,6 +110,28 @@ const app = new Hono()
     const runId = ctx.req.param('runId');
     const run = getRun(runId);
     return new Response(run.getReadable());
+  })
+  .get('/runs/:runId/events', async (ctx) => {
+    const runId = ctx.req.param('runId');
+    const world = await getWorld();
+    const allEvents: { eventType: string; correlationId?: string }[] = [];
+    let cursor: string | undefined = undefined;
+    while (true) {
+      const page = await world.events.list({
+        runId,
+        pagination: { sortOrder: 'asc', cursor },
+      });
+      for (const e of page.data) {
+        allEvents.push({
+          eventType: e.eventType,
+          correlationId: e.correlationId,
+        });
+      }
+      if (!page.hasMore) break;
+      cursor = page.cursor ?? undefined;
+      if (!cursor) break;
+    }
+    return ctx.json({ events: allEvents });
   });
 
 serve(

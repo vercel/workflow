@@ -3,6 +3,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   FatalError,
+  HookNotFoundError,
   RetryableError,
   WorkflowRunCancelledError,
   WorkflowRunFailedError,
@@ -1405,6 +1406,21 @@ describe('e2e', () => {
     async () => {
       const token = Math.random().toString(36).slice(2);
       const customData = Math.random().toString(36).slice(2);
+      const waitForHookDisposal = async () => {
+        const timeoutAt = Date.now() + 20_000;
+        while (Date.now() < timeoutAt) {
+          try {
+            await getHookByToken(token);
+          } catch (error) {
+            if (HookNotFoundError.is(error)) {
+              return;
+            }
+            throw error;
+          }
+          await sleep(1_000);
+        }
+        throw new Error(`Timed out waiting for hook ${token} to be disposed`);
+      };
 
       // Start first workflow - it will create a hook, receive one payload, then dispose and sleep
       const run1 = await start(await e2e('hookDisposeTestWorkflow'), [
@@ -1422,9 +1438,9 @@ describe('e2e', () => {
         customData: (hook.metadata as any)?.customData,
       });
 
-      // Wait for workflow 1 to process the payload and dispose the hook
-      // The workflow has a 5s sleep after disposal, so it's still running
-      await sleep(3_000);
+      // Wait for workflow 1 to release the token before starting workflow 2.
+      // The workflow sleeps for 5s after disposal, so the run should still be active.
+      await waitForHookDisposal();
 
       // Now start workflow 2 with the SAME token while workflow 1 is still running
       // This should succeed because workflow 1 disposed its hook
@@ -1669,10 +1685,17 @@ describe('e2e', () => {
   // queue-based `healthCheck(world, endpoint, options)` function instead, which
   // bypasses protection by sending messages through the Queue infrastructure.
   test.skipIf(!isLocalDeployment())(
-    'health check endpoint (HTTP) - workflow and step endpoints respond to __health query parameter',
+    'health check endpoint (HTTP) - workflow endpoint responds to __health query parameter',
     { timeout: 30_000 },
     async () => {
-      // Test the flow endpoint health check
+      // NOTE: This tests the HTTP-based health check using the `?__health` query parameter.
+      // This approach requires direct HTTP access and works when running locally (for port detection)
+      //
+      // For production use on Vercel with Deployment Protection enabled, use the
+      // queue-based `healthCheck(world, endpoint, options)` function instead, which
+      // bypasses protection by sending messages through the Queue infrastructure.
+
+      // Test the flow endpoint health check (V2: combined handler for both workflow + step)
       const flowHealthUrl = new URL(
         '/.well-known/workflow/v1/flow?__health',
         deploymentUrl
@@ -1693,31 +1716,12 @@ describe('e2e', () => {
         workflowCoreVersion: expect.any(String),
       });
       expect(flowBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
-
-      // Test the step endpoint health check
-      const stepHealthUrl = new URL(
-        '/.well-known/workflow/v1/step?__health',
-        deploymentUrl
-      );
-      const stepRes = await fetch(stepHealthUrl, {
-        method: 'POST',
-        headers: await getTrustedSourcesHeaders(),
-      });
-      expect(stepRes.status).toBe(200);
-      expect(stepRes.headers.get('Content-Type')).toBe('application/json');
-      const stepBody = await stepRes.json();
-      expect(stepBody).toEqual({
-        healthy: true,
-        endpoint: '/.well-known/workflow/v1/step',
-        specVersion: expect.any(Number),
-        workflowCoreVersion: expect.any(String),
-      });
-      expect(stepBody.specVersion).toBeGreaterThanOrEqual(SPEC_VERSION_CURRENT);
+      // V2: no separate step endpoint — combined into the flow handler.
     }
   );
 
   test(
-    'health check (queue-based) - workflow and step endpoints respond to health check messages',
+    'health check (queue-based) - workflow endpoint responds to health check messages',
     { timeout: 60_000 },
     async () => {
       // Tests the queue-based health check using healthCheck() directly.
@@ -1725,15 +1729,11 @@ describe('e2e', () => {
       // through the Queue infrastructure rather than direct HTTP.
       const world = await getWorld();
 
-      // Test workflow endpoint health check
+      // Test workflow endpoint health check (V2: combined handler)
       const workflowResult = await healthCheck(world, 'workflow', {
         timeout: 30000,
       });
       expect(workflowResult.healthy).toBe(true);
-
-      // Test step endpoint health check
-      const stepResult = await healthCheck(world, 'step', { timeout: 30000 });
-      expect(stepResult.healthy).toBe(true);
     }
   );
 
@@ -1745,26 +1745,18 @@ describe('e2e', () => {
       // queue-based health check under the hood. The CLI provides a convenient
       // way to check endpoint health from the command line.
 
-      // Test checking both endpoints (default behavior)
-      const result = await cliHealthJson({ timeout: 30000 });
+      // V2: Only check the workflow endpoint since the combined handler
+      // replaces the separate step route.
+      const result = await cliHealthJson({
+        endpoint: 'workflow',
+        timeout: 30000,
+      });
       expect(result.json.allHealthy).toBe(true);
-      expect(result.json.results).toHaveLength(2);
-
-      // Verify workflow endpoint result
-      const workflowResult = result.json.results.find(
-        (r: { endpoint: string }) => r.endpoint === 'workflow'
-      );
-      expect(workflowResult).toBeDefined();
+      expect(result.json.results).toHaveLength(1);
+      const workflowResult = result.json.results[0];
+      expect(workflowResult.endpoint).toBe('workflow');
       expect(workflowResult.healthy).toBe(true);
       expect(workflowResult.latencyMs).toBeGreaterThan(0);
-
-      // Verify step endpoint result
-      const stepResult = result.json.results.find(
-        (r: { endpoint: string }) => r.endpoint === 'step'
-      );
-      expect(stepResult).toBeDefined();
-      expect(stepResult.healthy).toBe(true);
-      expect(stepResult.latencyMs).toBeGreaterThan(0);
     }
   );
 
