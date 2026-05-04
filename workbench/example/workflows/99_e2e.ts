@@ -1890,12 +1890,17 @@ export async function abortReasonTypesWorkflow() {
  * signal, or the cancellation stream packet isn't written — the fetch runs
  * to natural completion and `aborted` is `false`.
  */
-export async function abortFetchInFlightWorkflow(deploymentUrl: string) {
+export async function abortFetchInFlightWorkflow() {
   'use workflow';
 
   const controller = new AbortController();
+  // httpbin.org/delay/N holds the response open for N seconds — used here
+  // as a slow endpoint that the abort can cancel mid-flight. Same external-
+  // service pattern as other e2e workflows in this file (jsonplaceholder,
+  // example.com). Avoids needing a per-workbench /api/delay route, which
+  // would only exist on the one workbench it was added to.
   const fetchPromise = fetchWithSignal(
-    `${deploymentUrl}/api/delay?ms=30000`,
+    'https://httpbin.org/delay/30',
     controller.signal
   );
 

@@ -2723,9 +2723,7 @@ describe('e2e', () => {
         // — that requires the deserialized signal's `addEventListener` path
         // to fire when the cancellation stream packet arrives. No other abort
         // test exercises this path.
-        const run = await start(await e2e('abortFetchInFlightWorkflow'), [
-          deploymentUrl,
-        ]);
+        const run = await start(await e2e('abortFetchInFlightWorkflow'), []);
         const returnValue = await run.returnValue;
 
         expect(returnValue.winner).toBe('timeout');
