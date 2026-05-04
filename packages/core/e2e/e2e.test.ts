@@ -2648,6 +2648,42 @@ describe('e2e', () => {
     );
 
     test(
+      'abortAnyInWorkflowWorkflow: AbortSignal.any composes signals inside the workflow VM',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortAnyInWorkflowWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // Composite must reflect the source signal's state synchronously
+        // through the WorkflowAbortSignal listener path inside the VM —
+        // no stream packet, no replay round-trip.
+        expect(returnValue.beforeCombinedAborted).toBe(false);
+        expect(returnValue.afterCombinedAborted).toBe(true);
+        expect(returnValue.afterCombinedReason).toBe('via c2');
+        // c1 was never aborted; the composite firing must not have flipped it.
+        expect(returnValue.c1Aborted).toBe(false);
+      }
+    );
+
+    test(
+      'abortAnyInStepWorkflow: AbortSignal.any inside a step composes deserialized signals',
+      { timeout: 60_000 },
+      async () => {
+        const run = await start(await e2e('abortAnyInStepWorkflow'), []);
+        const returnValue = await run.returnValue;
+
+        // The step uses native AbortSignal.any over two deserialized signals;
+        // its listener on the composite must fire when ANY source signal's
+        // abort arrives via the backing stream.
+        expect(returnValue.stepResult.saw).toBe(true);
+        expect(returnValue.stepResult.via).toBe('listener');
+        // Only c2 was aborted; c1 stays clean to confirm we didn't mass-abort.
+        expect(returnValue.c2Aborted).toBe(true);
+        expect(returnValue.c1Aborted).toBe(false);
+      }
+    );
+
+    test(
       'abortSurvivesReplayWorkflow: controller state consistent across replay',
       { timeout: 60_000 },
       async () => {

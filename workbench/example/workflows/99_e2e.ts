@@ -1746,6 +1746,67 @@ export async function abortExternalSignalInFlightWorkflow(signal: AbortSignal) {
 }
 
 /**
+ * E2E: `AbortSignal.any` composing signals INSIDE the workflow VM.
+ *
+ * The workflow VM provides its own `AbortSignal.any` impl
+ * (workflow/abort-controller.ts) that produces a `WorkflowAbortSignal`
+ * composite which listens to each source `WorkflowAbortSignal` via
+ * `addEventListener`. When any source aborts, the composite fires
+ * synchronously through the VM's listener firing path — no stream packet,
+ * no replay round-trip, just in-VM signal composition.
+ */
+export async function abortAnyInWorkflowWorkflow() {
+  'use workflow';
+  const c1 = new AbortController();
+  const c2 = new AbortController();
+  const combined = AbortSignal.any([c1.signal, c2.signal]);
+
+  const beforeCombinedAborted = combined.aborted;
+
+  // Abort c2; the composite must reflect the abort synchronously
+  // (the WorkflowAbortSignal listener fires sync inside the VM).
+  c2.abort('via c2');
+
+  const afterCombinedAborted = combined.aborted;
+  const afterCombinedReason = combined.reason;
+  const c1Aborted = c1.signal.aborted;
+
+  return {
+    beforeCombinedAborted,
+    afterCombinedAborted,
+    afterCombinedReason,
+    c1Aborted,
+  };
+}
+
+/**
+ * E2E: `AbortSignal.any` INSIDE a step.
+ *
+ * The step receives two deserialized native `AbortSignal`s (revived via
+ * `reviveAbortSignal`) and composes them with the native `AbortSignal.any`.
+ * A sibling step aborts one of the source controllers ~1s in. The chain
+ * that has to work: source controller aborts → workflow VM signal flips →
+ * stream packet written → step's deserialized signal fires → composite from
+ * `AbortSignal.any` fires → user listener fires.
+ */
+export async function abortAnyInStepWorkflow() {
+  'use workflow';
+  const c1 = new AbortController();
+  const c2 = new AbortController();
+
+  const [stepResult] = await Promise.all([
+    stepCombiningSignals(c1.signal, c2.signal),
+    abortFromStep(c2, 1000),
+  ]);
+
+  return {
+    stepResult,
+    c1Aborted: c1.signal.aborted,
+    c2Aborted: c2.signal.aborted,
+  };
+}
+
+/**
  * E2E: Controller survives workflow replay (sleep causes suspension/resumption).
  */
 export async function abortSurvivesReplayWorkflow() {
@@ -1849,6 +1910,37 @@ async function stepPollingThrowIfAborted(signal: AbortSignal): Promise<string> {
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   return 'completed';
+}
+
+/**
+ * Step that combines two abort signals with native `AbortSignal.any` and
+ * waits for the composite to fire via addEventListener. The composite is
+ * a real native AbortSignal (Node's `AbortSignal.any`); each input signal
+ * is the deserialized step-side native AbortSignal. Tests that the listener
+ * chain (source signal aborts → composite fires → user listener fires)
+ * works end-to-end through the deserialization layer.
+ */
+async function stepCombiningSignals(
+  s1: AbortSignal,
+  s2: AbortSignal
+): Promise<{ saw: boolean; via: 'listener' | 'timeout' }> {
+  'use step';
+  const combined = AbortSignal.any([s1, s2]);
+  return new Promise((resolve) => {
+    let settled = false;
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      resolve({ saw: true, via: 'listener' });
+    };
+    combined.addEventListener('abort', onAbort);
+    setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      combined.removeEventListener('abort', onAbort);
+      resolve({ saw: combined.aborted, via: 'timeout' });
+    }, 30_000);
+  });
 }
 
 /**
