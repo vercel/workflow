@@ -28,12 +28,19 @@ const {
     },
     mockEventsCreate: vi.fn(),
     mockQueue: vi.fn().mockResolvedValue({ messageId: 'msg_test' }),
-    mockRuntimeLogger: {
-      warn: vi.fn(),
-      debug: vi.fn(),
-      info: vi.fn(),
-      error: vi.fn(),
-    },
+    mockRuntimeLogger: (() => {
+      const logger = {
+        warn: vi.fn(),
+        debug: vi.fn(),
+        info: vi.fn(),
+        error: vi.fn(),
+        forRun: vi.fn(),
+        child: vi.fn(),
+      };
+      logger.forRun.mockReturnValue(logger);
+      logger.child.mockReturnValue(logger);
+      return logger;
+    })(),
     mockStepLogger: {
       warn: vi.fn(),
       debug: vi.fn(),
@@ -284,9 +291,16 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried completing step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      // Workflow/step context is attached via the scoped logger (forRun),
+      // not repeated in every log call.
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
       // Should NOT have queued a workflow continuation
       expect(mockQueueMessage).not.toHaveBeenCalled();
@@ -333,9 +347,14 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
     });
   });
@@ -379,9 +398,14 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried failing step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
       // Step function should NOT have been called (pre-execution guard)
       expect(mockStepFn).not.toHaveBeenCalled();
@@ -428,9 +452,14 @@ describe('step-handler 409 handling', () => {
       expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
         'Tried retrying step, but step has already finished.',
         expect.objectContaining({
-          workflowRunId: 'wrun_test123',
-          stepId: 'step_abc',
+          errorName: 'EntityConflictError',
+          errorMessage: expect.stringContaining('already completed'),
         })
+      );
+      expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+        'wrun_test123',
+        expect.any(String),
+        expect.objectContaining({ stepId: 'step_abc' })
       );
     });
 
@@ -560,7 +589,12 @@ describe('step-handler max deliveries', () => {
     expect(mockQueueMessage).toHaveBeenCalled();
     expect(mockRuntimeLogger.error).toHaveBeenCalledWith(
       expect.stringContaining('exceeded max deliveries'),
-      expect.objectContaining({ workflowRunId: 'wrun_test123' })
+      expect.objectContaining({ attempt: MAX_QUEUE_DELIVERIES + 1 })
+    );
+    expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.any(String),
+      expect.objectContaining({ stepId: 'step_abc' })
     );
   });
 
@@ -719,11 +753,139 @@ describe('step-handler step not found', () => {
     expect(mockRuntimeLogger.info).toHaveBeenCalledWith(
       'Tried failing step for missing function, but step has already finished.',
       expect.objectContaining({
-        workflowRunId: 'wrun_test123',
-        stepId: 'step_abc',
+        errorName: 'EntityConflictError',
+        errorMessage: expect.stringContaining('Step already completed'),
       })
+    );
+    expect(mockRuntimeLogger.forRun).toHaveBeenCalledWith(
+      'wrun_test123',
+      expect.any(String),
+      expect.objectContaining({ stepName: 'missingStep' })
     );
     // Should NOT re-queue the workflow since step was already resolved
     expect(mockQueueMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Regression gate for the most user-visible behavior change in this PR:
+ * fatal user errors (`FatalError`, `ContextViolationError`,
+ * `SerializationError`) should produce exactly one `step_failed` event
+ * — no retries — while a non-fatal user `Error` should retry up to
+ * `maxRetries`. Asserting on the live retry-loop wiring catches the
+ * silent-regression case where someone removes `fatal = true` later
+ * and the unit-level FatalError.is() tests stay green.
+ */
+describe('step-handler fatal vs retryable behavior', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(getStepFunction).mockReturnValue(mockStepFn);
+    vi.mocked(normalizeUnknownError).mockImplementation(
+      async (err: unknown) => ({
+        message: err instanceof Error ? err.message : String(err),
+        name: err instanceof Error ? err.name : 'UnknownError',
+        stack: err instanceof Error ? err.stack : undefined,
+      })
+    );
+    vi.mocked(getErrorName).mockImplementation((err: unknown) =>
+      err instanceof Error ? err.name : 'UnknownError'
+    );
+    vi.mocked(getErrorStack).mockImplementation((err: unknown) =>
+      err instanceof Error ? (err.stack ?? '') : ''
+    );
+    mockQueueMessage.mockResolvedValue(undefined);
+    vi.mocked(getWorld).mockResolvedValue({
+      events: { create: mockEventsCreate },
+      queue: mockQueue,
+      getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
+    } as any);
+    mockEventsCreate.mockReset().mockResolvedValue({
+      step: {
+        stepId: 'step_abc',
+        status: 'running',
+        attempt: 1,
+        startedAt: new Date(),
+        input: [],
+      },
+      event: {},
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('emits exactly one step_failed and does not re-queue when the step throws an error with fatal=true', async () => {
+    // Simulates a `ContextViolationError` / `SerializationError` —
+    // both opt into the no-retry path via a `fatal: true` own property
+    // that `FatalError.is()` recognizes.
+    class FatalUserError extends Error {
+      readonly fatal = true;
+      name = 'FatalUserError';
+    }
+    mockStepFn.mockReset().mockRejectedValue(new FatalUserError('boom'));
+    mockStepFn.maxRetries = 3;
+
+    await capturedHandler(createMessage(), createMetadata('myStep'));
+
+    const stepFailedCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_failed'
+    );
+    expect(stepFailedCalls).toHaveLength(1);
+    // The retry path uses `step_retrying`; the fatal path skips it.
+    const stepRetryingCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_retrying'
+    );
+    expect(stepRetryingCalls).toHaveLength(0);
+  });
+
+  it('schedules a retry (and does not fail the step) on the first attempt of a non-fatal Error', async () => {
+    mockStepFn
+      .mockReset()
+      .mockRejectedValue(new Error('Transient failure, will succeed later'));
+    mockStepFn.maxRetries = 3;
+
+    await capturedHandler(
+      createMessage(),
+      createMetadata('myStep', { attempt: 1 })
+    );
+
+    // Non-fatal first attempt: re-queue via step_retrying, no terminal failure.
+    const stepRetryingCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_retrying'
+    );
+    expect(stepRetryingCalls).toHaveLength(1);
+    const stepFailedCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_failed'
+    );
+    expect(stepFailedCalls).toHaveLength(0);
+  });
+
+  it('emits step_failed once the non-fatal retry budget is exhausted', async () => {
+    mockStepFn.mockReset().mockRejectedValue(new Error('Transient failure'));
+    mockStepFn.maxRetries = 3;
+    // Final attempt: total attempts = maxRetries + 1.
+    mockEventsCreate.mockReset().mockResolvedValueOnce({
+      step: {
+        stepId: 'step_abc',
+        status: 'running',
+        attempt: 4,
+        startedAt: new Date(),
+        input: [],
+      },
+      event: {},
+    });
+    // Subsequent emissions (e.g. step_failed) get a generic ack.
+    mockEventsCreate.mockResolvedValue({ event: {} });
+
+    await capturedHandler(
+      createMessage(),
+      createMetadata('myStep', { attempt: 4 })
+    );
+
+    const stepFailedCalls = mockEventsCreate.mock.calls.filter(
+      ([, event]) => event.eventType === 'step_failed'
+    );
+    expect(stepFailedCalls).toHaveLength(1);
   });
 });

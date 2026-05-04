@@ -1,3 +1,4 @@
+import { WorkflowRuntimeError } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import type { Serializable } from './schemas.js';
 
@@ -125,5 +126,7 @@ export class WorkflowSuspension extends Error {
 }
 
 export function ENOTSUP(): never {
-  throw new Error('Not supported in workflow functions');
+  throw new WorkflowRuntimeError(
+    'This API is not available inside a workflow function. Workflow functions run in a deterministic VM; move the call to a step function for full Node.js access.'
+  );
 }
