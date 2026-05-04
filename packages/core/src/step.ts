@@ -8,7 +8,7 @@ import {
   type WorkflowOrchestratorContext,
 } from './private.js';
 import type { Serializable } from './schemas.js';
-import { hydrateStepReturnValue } from './serialization.js';
+import { hydrateStepError, hydrateStepReturnValue } from './serialization.js';
 
 export function createUseStep(ctx: WorkflowOrchestratorContext) {
   return function useStep<Args extends Serializable[], Result>(
@@ -117,26 +117,38 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           ctx.invocationsQueue.delete(event.correlationId);
           // Step failed - chain through promiseQueue to ensure
           // deterministic ordering of all promise resolutions/rejections.
-          ctx.promiseQueue = ctx.promiseQueue.then(() => {
-            const errorData = event.eventData.error;
-            const isErrorObject =
-              typeof errorData === 'object' && errorData !== null;
-
-            const errorMessage = isErrorObject
-              ? (errorData.message ?? 'Unknown error')
-              : typeof errorData === 'string'
-                ? errorData
-                : 'Unknown error';
-
-            const errorStack =
-              (isErrorObject ? errorData.stack : undefined) ??
-              event.eventData.stack;
-
-            const error = new FatalError(errorMessage);
-            if (errorStack) {
-              error.stack = errorStack;
+          // Hydrate the serialized thrown value from the event log so the
+          // original type identity and custom properties are preserved.
+          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+            try {
+              const hydrated = await hydrateStepError(
+                event.eventData.error,
+                ctx.runId,
+                ctx.encryptionKey,
+                ctx.globalThis
+              );
+              reject(hydrated);
+            } catch (hydrateErr) {
+              // If hydration fails for any reason, fall back to a generic
+              // FatalError so the workflow doesn't hang. This should be
+              // extremely rare in practice (corrupted event data).
+              stepLogger.error('Failed to hydrate step_failed error', {
+                correlationId: event.correlationId,
+                error:
+                  hydrateErr instanceof Error
+                    ? hydrateErr.message
+                    : String(hydrateErr),
+              });
+              reject(
+                new FatalError(
+                  `Failed to hydrate step error: ${
+                    hydrateErr instanceof Error
+                      ? hydrateErr.message
+                      : String(hydrateErr)
+                  }`
+                )
+              );
             }
-            reject(error);
           });
           return EventConsumerResult.Finished;
         }

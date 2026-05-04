@@ -137,4 +137,80 @@ describe('withWorkflow builder config', () => {
       diagnosticsDir: 'build-output/diagnostics',
     });
   });
+
+  it('externalizes the built-in Vercel world while preserving user externals', async () => {
+    const config = withWorkflow({
+      serverExternalPackages: ['@node-rs/xxhash'],
+    });
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+
+    expect(nextConfig.serverExternalPackages).toEqual([
+      '@node-rs/xxhash',
+      '@workflow/world-vercel',
+      '@vercel/queue',
+      '@vercel/oidc',
+      '@vercel/cli-auth',
+      '@napi-rs/keyring',
+    ]);
+    expect(nextConfig.outputFileTracingIncludes).toBeUndefined();
+  });
+
+  it('preserves user webpack externals without adding Vercel world dependency externals', async () => {
+    const userWebpack = vi.fn((webpackConfig: any) => {
+      webpackConfig.externals = [{ react: 'commonjs react' }];
+      return webpackConfig;
+    });
+    const config = withWorkflow({
+      webpack: userWebpack,
+    });
+
+    const nextConfig = await config('phase-production-build', {
+      defaultConfig: {},
+    });
+    const webpackConfig = nextConfig.webpack?.(
+      {
+        externals: [],
+        module: {
+          rules: [],
+        },
+      },
+      {} as any
+    );
+
+    expect(userWebpack).toHaveBeenCalledOnce();
+    expect(webpackConfig?.externals).toEqual([{ react: 'commonjs react' }]);
+  });
+
+  it('preserves an explicit lazyDiscovery disable override', () => {
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '0';
+
+    withWorkflow(
+      {},
+      {
+        workflows: {
+          lazyDiscovery: true,
+        },
+      }
+    );
+
+    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('0');
+  });
+
+  it('treats an empty lazyDiscovery env override as unset', () => {
+    process.env.WORKFLOW_NEXT_LAZY_DISCOVERY = '';
+
+    withWorkflow(
+      {},
+      {
+        workflows: {
+          lazyDiscovery: true,
+        },
+      }
+    );
+
+    expect(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY).toBe('1');
+  });
 });

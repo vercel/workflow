@@ -266,6 +266,55 @@ export const client = { provider: providerName };`
     expect(output).not.toMatch(/from\s+["'].*node_modules/);
   });
 
+  it('externalizes nested bare package imports that only resolve from a bundled package', async () => {
+    const outdir = join(testRoot, 'out');
+    const srcDir = join(testRoot, 'src');
+    const stepFile = join(srcDir, 'step.ts');
+    const parentPkgDir = join(testRoot, 'node_modules', 'parent-pkg');
+    const parentPkgIndex = join(parentPkgDir, 'index.js');
+    const nativePkgDir = join(parentPkgDir, 'node_modules', 'optional-native');
+
+    writeFile(
+      join(parentPkgDir, 'package.json'),
+      JSON.stringify({ name: 'parent-pkg', main: 'index.js' })
+    );
+    writeFile(
+      parentPkgIndex,
+      `const native = require('optional-native');\nexports.value = native.value;`
+    );
+    writeFile(
+      join(nativePkgDir, 'package.json'),
+      JSON.stringify({ name: 'optional-native', main: 'binding.node' })
+    );
+    writeFile(join(nativePkgDir, 'binding.node'), '');
+    writeFile(
+      stepFile,
+      `import { value } from 'parent-pkg';\nconsole.log(value);`
+    );
+
+    const result = await esbuild.build({
+      entryPoints: [stepFile],
+      absWorkingDir: testRoot,
+      outdir,
+      bundle: true,
+      format: 'esm',
+      platform: 'node',
+      write: false,
+      plugins: [
+        createSwcPlugin({
+          mode: 'step',
+          entriesToBundle: [stepFile, parentPkgIndex],
+          outdir,
+        }),
+      ],
+    });
+
+    expect(result.errors).toHaveLength(0);
+    const output = result.outputFiles[0].text;
+    expect(output).toContain('optional-native');
+    expect(output).not.toContain('binding.node');
+  });
+
   it.each([
     '.ts',
     '.tsx',

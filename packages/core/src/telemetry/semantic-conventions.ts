@@ -56,7 +56,7 @@ export const WorkflowName = SemanticConvention<string>('workflow.name');
 
 /** The operation being performed on the workflow */
 export const WorkflowOperation = SemanticConvention<
-  'start' | 'execute' | 'run'
+  'start' | 'execute' | 'execute_v2' | 'run'
 >('workflow.operation');
 
 /** Unique identifier for a specific workflow run instance */

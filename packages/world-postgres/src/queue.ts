@@ -495,7 +495,16 @@ export function createQueue(
 
     runner = await run({
       pgPool: pool,
-      concurrency: config.queueConcurrency || 10,
+      // Default of 50 is high enough to avoid worker-pool exhaustion in
+      // workflows that use parent→child polling patterns (e.g. awaiting a
+      // child workflow via `childRun.returnValue` inside the parent).
+      // Every such poll holds a worker slot for the duration of the child
+      // run. Recursive workflows like `fibonacciWorkflow` fan out quickly
+      // — fib(6) produces ~24 concurrent polling steps at peak, and at
+      // concurrency=10 (the previous default) it would deadlock on the
+      // default Postgres setup. See packages/core/src/runtime/run.ts and
+      // docs/content/docs/changelog/eager-processing.mdx for context.
+      concurrency: config.queueConcurrency || 50,
       logger: graphileLogger,
       pollInterval: 500, // 500ms = 0.5s (graphile-worker uses LISTEN/NOTIFY when available)
       taskList,

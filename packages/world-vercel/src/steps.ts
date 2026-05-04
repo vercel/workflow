@@ -4,6 +4,7 @@ import {
   type ListWorkflowRunStepsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
+  SerializedDataSchema,
   type Step,
   StepSchema,
   type StepWithoutData,
@@ -19,25 +20,15 @@ import {
 
 /**
  * Wire format schema for steps coming from the backend.
- * Handles error deserialization from wire format.
+ *
+ * `error` is SerializedData (Uint8Array) produced by dehydrateStepError.
+ * For backward compatibility with legacy wire formats, we also accept
+ * any other shape and let the resolved `errorRef` supersede it when present.
  */
 export const StepWireSchema = StepSchema.omit({
   error: true,
 }).extend({
-  // Backend returns error either as:
-  // - A JSON string (legacy/lazy mode)
-  // - An object {message, stack} (when errorRef is resolved)
-  // This will be deserialized and mapped to error
-  error: z
-    .union([
-      z.string(),
-      z.object({
-        message: z.string(),
-        stack: z.string().optional(),
-        code: z.string().optional(),
-      }),
-    ])
-    .optional(),
+  error: z.union([SerializedDataSchema, z.any()]).optional(),
   errorRef: z.any().optional(),
 });
 
@@ -55,49 +46,18 @@ const StepWireWithRefsSchema = StepWireSchema.omit({
 
 /**
  * Transform step from wire format to Step interface format.
- * Maps:
- * - error/errorRef → error (deserializing JSON string to StructuredError)
+ *
+ * The `error` field on Step is SerializedData (Uint8Array) from the
+ * serialization pipeline — we pass through the wire-format `error` (or
+ * the resolved `errorRef`) as-is. Consumers hydrate via `hydrateStepError`.
  */
 export function deserializeStep(wireStep: any): Step {
   const { error, errorRef, ...rest } = wireStep;
-
-  const result: any = {
-    ...rest,
-  };
-
-  // Deserialize error to StructuredError
-  // The backend returns error as:
-  // - error: JSON string (legacy) or object (when resolved)
-  // - errorRef: resolved object {message, stack} when remoteRefBehavior=resolve
+  const result: any = { ...rest };
   const errorSource = error ?? errorRef;
-  if (errorSource) {
-    if (typeof errorSource === 'string') {
-      try {
-        const parsed = JSON.parse(errorSource);
-        if (typeof parsed === 'object' && parsed.message !== undefined) {
-          result.error = {
-            message: parsed.message,
-            stack: parsed.stack,
-            code: parsed.code,
-          };
-        } else {
-          // Parsed but not an object with message
-          result.error = { message: String(parsed) };
-        }
-      } catch {
-        // Not JSON, treat as plain string
-        result.error = { message: errorSource };
-      }
-    } else if (typeof errorSource === 'object' && errorSource !== null) {
-      // Already an object (from resolved ref)
-      result.error = {
-        message: errorSource.message ?? 'Unknown error',
-        stack: errorSource.stack,
-        code: errorSource.code,
-      };
-    }
+  if (errorSource !== undefined && errorSource !== null) {
+    result.error = errorSource;
   }
-
   return result as Step;
 }
 

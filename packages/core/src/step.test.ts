@@ -3,13 +3,28 @@ import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { registerSerializationClass } from './class-serialization.js';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
 import type { WorkflowOrchestratorContext } from './private.js';
-import { dehydrateStepReturnValue } from './serialization.js';
+import {
+  dehydrateStepError,
+  dehydrateStepReturnValue,
+} from './serialization.js';
 import { createUseStep } from './step.js';
+import { WORKFLOW_CLASS_REGISTRY } from './symbols.js';
 import { createContext } from './vm/index.js';
+
+// In production, the SWC plugin auto-discovers FatalError/RetryableError
+// (classes with WORKFLOW_SERIALIZE/DESERIALIZE) and registers them. In unit
+// tests we simulate this by manually registering the class on both the host
+// registry (for dehydration calls that use the default globalThis) and the
+// VM globalThis (used by step.ts during hydration). We use Symbol.for-based
+// keys so the VM registry can be seeded directly.
+beforeAll(() => {
+  registerSerializationClass('@workflow/errors//FatalError', FatalError);
+});
 
 // Helper to setup context to simulate a workflow run
 function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
@@ -17,6 +32,12 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     seed: 'test',
     fixedTimestamp: 1753481739458,
   });
+  // Propagate the host class registry to the VM globalThis so that
+  // hydrateStepError can reconstruct FatalError inside the VM realm.
+  const hostRegistry = (globalThis as any)[WORKFLOW_CLASS_REGISTRY];
+  if (hostRegistry) {
+    (context.globalThis as any)[WORKFLOW_CLASS_REGISTRY] = hostRegistry;
+  }
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
@@ -59,7 +80,12 @@ describe('createUseStep', () => {
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
 
-  it('should reject with a fatal error if the step fails', async () => {
+  it('should reject with the hydrated thrown value if the step fails', async () => {
+    const serializedError = await dehydrateStepError(
+      new FatalError('test'),
+      'wrun_test',
+      undefined
+    );
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -67,7 +93,7 @@ describe('createUseStep', () => {
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          error: 'test',
+          error: serializedError,
         },
         createdAt: new Date(),
       },
@@ -81,7 +107,7 @@ describe('createUseStep', () => {
       error = err_ as Error;
     }
     expect(error).toBeInstanceOf(FatalError);
-    expect((error as FatalError).message).toContain('test');
+    expect((error as FatalError).message).toBe('test');
     expect((error as FatalError).fatal).toBe(true);
     expect(ctx.onWorkflowError).not.toHaveBeenCalled();
   });
@@ -303,7 +329,10 @@ describe('createUseStep', () => {
         runId: 'wrun_123',
         eventType: 'step_created',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          stepName: 'add',
+          input: new Uint8Array(),
+        },
         createdAt: new Date(),
       },
     ]);
@@ -385,7 +414,9 @@ describe('createUseStep', () => {
         runId: 'wrun_123',
         eventType: 'step_retrying',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
+        eventData: {
+          error: new Uint8Array(),
+        },
         createdAt: new Date(),
       },
     ]);
@@ -438,6 +469,11 @@ describe('createUseStep', () => {
   });
 
   it('should remove queue item when step_failed (terminal state)', async () => {
+    const serializedError = await dehydrateStepError(
+      new FatalError('test error'),
+      'wrun_test',
+      undefined
+    );
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -445,7 +481,7 @@ describe('createUseStep', () => {
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          error: 'test error',
+          error: serializedError,
         },
         createdAt: new Date(),
       },
@@ -466,7 +502,18 @@ describe('createUseStep', () => {
     expect(ctx.invocationsQueue.size).toBe(0);
   });
 
-  it('should extract message and stack from object error in step_failed', async () => {
+  it('should preserve Error subclass identity and stack through serialization round-trip', async () => {
+    // Build a real Error with a specific stack and serialize it through the
+    // same pipeline that the step handler uses on write.
+    const originalError = new FatalError('Custom error message');
+    originalError.stack =
+      'Error: Custom error message\n    at someFunction (file.js:10:5)';
+    const serializedError = await dehydrateStepError(
+      originalError,
+      'wrun_test',
+      undefined
+    );
+
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -474,11 +521,7 @@ describe('createUseStep', () => {
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          error: {
-            message: 'Custom error message',
-            stack:
-              'Error: Custom error message\n    at someFunction (file.js:10:5)',
-          },
+          error: serializedError,
         },
         createdAt: new Date(),
       },
@@ -500,7 +543,17 @@ describe('createUseStep', () => {
     expect(error?.stack).toContain('file.js:10:5');
   });
 
-  it('should fallback to eventData.stack when error object has no stack', async () => {
+  it('should preserve plain Error (not FatalError) through serialization round-trip', async () => {
+    // Non-FatalError Errors should also round-trip. The hydrated error is
+    // reconstructed against the VM realm's Error constructor, so we check
+    // via duck-typing (name/message) rather than host `instanceof Error`.
+    const originalError = new Error('Plain error message');
+    const serializedError = await dehydrateStepError(
+      originalError,
+      'wrun_test',
+      undefined
+    );
+
     const ctx = setupWorkflowContext([
       {
         eventId: 'evnt_0',
@@ -508,11 +561,7 @@ describe('createUseStep', () => {
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
-          error: {
-            message: 'Error without stack',
-          },
-          stack:
-            'Fallback stack trace\n    at fallbackFunction (fallback.js:20:10)',
+          error: serializedError,
         },
         createdAt: new Date(),
       },
@@ -521,16 +570,15 @@ describe('createUseStep', () => {
     const useStep = createUseStep(ctx);
     const add = useStep('add');
 
-    let error: Error | undefined;
+    let error: Error | { name: string; message: string } | undefined;
     try {
       await add(1, 2);
     } catch (err_) {
       error = err_ as Error;
     }
 
-    expect(error).toBeInstanceOf(FatalError);
-    expect(error?.message).toBe('Error without stack');
-    expect(error?.stack).toContain('fallbackFunction');
+    expect(error?.name).toBe('Error');
+    expect(error?.message).toBe('Plain error message');
   });
 
   it('should invoke workflow error handler with WorkflowRuntimeError for unexpected event type', async () => {
@@ -542,7 +590,6 @@ describe('createUseStep', () => {
         runId: 'wrun_123',
         eventType: 'wait_completed', // Wrong event type for a step!
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCV',
-        eventData: {},
         createdAt: new Date(),
       },
     ]);

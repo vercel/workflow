@@ -14,12 +14,13 @@ import { formatStepName, pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
 import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
 import { describeError } from '../describe-error.js';
-import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
+  dehydrateStepError,
   dehydrateStepReturnValue,
   hydrateStepArguments,
+  hydrateStepError,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -40,6 +41,7 @@ import {
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
+  memoizeEncryptionKey,
   parseHealthCheckPayload,
   queueMessage,
   withHealthCheck,
@@ -101,6 +103,10 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
         );
         try {
           const world = await getWorld();
+          const getEncryptionKey = memoizeEncryptionKey(world, workflowRunId);
+          const err = new FatalError(
+            `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`
+          );
           await world.events.create(
             workflowRunId,
             {
@@ -108,7 +114,11 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
               eventData: {
-                error: `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
+                error: await dehydrateStepError(
+                  err,
+                  workflowRunId,
+                  await getEncryptionKey()
+                ),
               },
             },
             { requestId }
@@ -149,6 +159,15 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
         const stepName = metadata.queueName.slice('__wkf_step_'.length);
         const world = await getWorld();
         const isVercel = process.env.VERCEL_URL !== undefined;
+
+        // Memoized accessor for the per-run AES-256 encryption key. The first
+        // caller (typically `hydrateStepArguments` for input deserialization,
+        // or one of the early-return dehydrateStepError paths if step_started
+        // fails) triggers the actual fetch / HKDF derivation; subsequent
+        // callers await the cached promise. Steps that fail before any
+        // encryption-aware work happens (e.g. an immediate step_started
+        // conflict) skip the fetch entirely.
+        const getEncryptionKey = memoizeEncryptionKey(world, workflowRunId);
 
         // Resolve local async values concurrently before entering the trace span
         const [port, spanKind] = await Promise.all([
@@ -316,8 +335,11 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
-                      error: err.message,
-                      stack: err.stack,
+                      error: await dehydrateStepError(
+                        err,
+                        workflowRunId,
+                        await getEncryptionKey()
+                      ),
                     },
                   },
                   { requestId }
@@ -381,7 +403,25 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   retryCount,
                 }
               );
-              // Fail the step via event (event-sourced architecture)
+              // Fail the step via event (event-sourced architecture).
+              // Preserve the prior attempt's serialized error as the cause so
+              // the underlying failure is recoverable from `step.error.cause`
+              // after hydration, without forcing consumers to walk the
+              // step_retrying event history. Mirrors the post-failure path
+              // below that wraps the live `err` as cause.
+              const wrappedError = new FatalError(errorMessage);
+              if (step.error != null) {
+                try {
+                  (wrappedError as Error).cause = await hydrateStepError(
+                    step.error,
+                    workflowRunId,
+                    await getEncryptionKey()
+                  );
+                } catch {
+                  // Ignore: best-effort cause attachment, the wrapping
+                  // FatalError stack/message still surface the failure.
+                }
+              }
               try {
                 await world.events.create(
                   workflowRunId,
@@ -390,8 +430,11 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
-                      error: errorMessage,
-                      stack: step.error?.stack,
+                      error: await dehydrateStepError(
+                        wrappedError,
+                        workflowRunId,
+                        await getEncryptionKey()
+                      ),
                     },
                   },
                   { requestId }
@@ -449,8 +492,11 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
-                      error: errorMessage,
-                      stack: new Error(errorMessage).stack ?? '',
+                      error: await dehydrateStepError(
+                        new FatalError(errorMessage),
+                        workflowRunId,
+                        await getEncryptionKey()
+                      ),
                     },
                   },
                   { requestId }
@@ -472,13 +518,18 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
             // Capture startedAt for use in async callback (TypeScript narrowing doesn't persist)
             const stepStartedAt = step.startedAt;
 
+            // Resolve the encryption key now that we're committed to running
+            // user code: input hydration needs it, and `contextStorage` (and
+            // any user-code paths that run inside it) capture the resolved
+            // value. Triggers the underlying world / KMS fetch once, with
+            // subsequent dehydrate paths reusing the memoized result.
+            const encryptionKey = await getEncryptionKey();
+
             // Hydrate the step input arguments, closure variables, and thisVal
             // NOTE: This captures only the synchronous portion of hydration. Any async
             // operations (e.g., stream loading) are added to `ops` and executed later
             // via Promise.all(ops) - their timing is not included in this measurement.
             const ops: Promise<void>[] = [];
-            const rawKey = await world.getEncryptionKeyForRun?.(workflowRunId);
-            const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
             const hydratedInput = await trace(
               'step.hydrate',
               {},
@@ -659,7 +710,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     errorMessage: normalizedError.message,
                   }
                 );
-                // Fail the step via event (event-sourced architecture)
+                // Fail the step via event (event-sourced architecture).
+                // Serialize the original thrown value so its full type identity
+                // and custom properties round-trip through the event log.
                 try {
                   await world.events.create(
                     workflowRunId,
@@ -668,8 +721,11 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       specVersion: SPEC_VERSION_CURRENT,
                       correlationId: stepId,
                       eventData: {
-                        error: normalizedError.message,
-                        stack: normalizedStack,
+                        error: await dehydrateStepError(
+                          err,
+                          workflowRunId,
+                          encryptionKey
+                        ),
                       },
                     },
                     { requestId }
@@ -734,7 +790,13 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   // in the title is just noise. The CLI logger renders
                   // `Step foo (./...) hit max retries` separately.
                   const errorMessage = `Step failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
-                  // Fail the step via event (event-sourced architecture)
+                  // Fail the step via event (event-sourced architecture).
+                  // Wrap the original error with a FatalError that preserves
+                  // the wrapped message plus the original thrown value as
+                  // `cause` so it's recoverable after hydration.
+                  const wrappedError = new FatalError(errorMessage);
+                  (wrappedError as Error).cause = err;
+                  if (normalizedStack) wrappedError.stack = normalizedStack;
                   try {
                     await world.events.create(
                       workflowRunId,
@@ -743,8 +805,11 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         specVersion: SPEC_VERSION_CURRENT,
                         correlationId: stepId,
                         eventData: {
-                          error: errorMessage,
-                          stack: normalizedStack,
+                          error: await dehydrateStepError(
+                            wrappedError,
+                            workflowRunId,
+                            encryptionKey
+                          ),
                         },
                       },
                       { requestId }
@@ -797,7 +862,9 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     });
                   }
                   // Set step to pending for retry via event (event-sourced architecture)
-                  // step_retrying records the error and sets status to pending
+                  // step_retrying records the error and sets status to pending.
+                  // Serialize the original thrown value so its full type identity
+                  // and custom properties round-trip through the event log.
                   try {
                     await world.events.create(
                       workflowRunId,
@@ -806,8 +873,11 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         specVersion: SPEC_VERSION_CURRENT,
                         correlationId: stepId,
                         eventData: {
-                          error: normalizedError.message,
-                          stack: normalizedStack,
+                          error: await dehydrateStepError(
+                            err,
+                            workflowRunId,
+                            encryptionKey
+                          ),
                           ...(RetryableError.is(err) && {
                             retryAfter: err.retryAfter,
                           }),

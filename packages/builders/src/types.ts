@@ -9,6 +9,18 @@ export const validBuildTargets = [
 export type BuildTarget = (typeof validBuildTargets)[number];
 
 /**
+ * Source map emission mode for generated workflow bundles. Matches esbuild's
+ * `sourcemap` option vocabulary:
+ *
+ * - `true` / `'linked'`: write a separate `.map` file and add a `sourceMappingURL` comment
+ * - `'inline'`: emit a base64-encoded source map at the end of the bundle
+ * - `'external'`: write a separate `.map` file without the comment
+ * - `'both'`: emit both inline and external source maps
+ * - `false`: omit source maps entirely
+ */
+export type SourcemapMode = boolean | 'inline' | 'linked' | 'external' | 'both';
+
+/**
  * Common configuration options shared across all builder types.
  */
 interface BaseWorkflowConfig {
@@ -56,6 +68,25 @@ interface BaseWorkflowConfig {
 
   // Node.js runtime version for Vercel Functions (e.g., "nodejs22.x", "nodejs24.x")
   runtime?: string;
+
+  /**
+   * Controls how source maps are emitted for workflow bundles. Accepts the
+   * same values as esbuild's `sourcemap` option.
+   *
+   * Default is `'inline'` for the step bundle and intermediate workflow
+   * bundle (gives readable stack traces for step errors and workflow VM
+   * errors). Setting `false` omits source maps entirely, which produces
+   * smaller bundles — useful for staying under the Vercel 250MB function
+   * limit — at the cost of stack traces that reference generated code.
+   *
+   * `'external'` and `'linked'` write a separate `.map` file; use these
+   * when you want to ship source maps to observability tooling but keep
+   * them out of the function bundle.
+   *
+   * Can also be set via the `WORKFLOW_SOURCEMAP` environment variable;
+   * config wins over env var, env var wins over the default.
+   */
+  sourcemap?: SourcemapMode;
 }
 
 /**

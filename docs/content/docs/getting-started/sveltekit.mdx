@@ -46,6 +46,12 @@ export default defineConfig({
 });
 ```
 
+`workflowPlugin()` accepts an options object:
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Set to `false` for smaller function bundles (useful for staying under the Vercel 250MB function size limit) at the cost of stack traces pointing at generated code. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
     <AccordionTrigger className="text-sm">

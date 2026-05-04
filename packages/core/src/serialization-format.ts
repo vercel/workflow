@@ -420,10 +420,11 @@ export const observabilityRevivers: Revivers = {
  * Hydrate the data fields of a step resource.
  */
 function hydrateStepIO<
-  T extends { stepId?: string; input?: any; output?: any },
+  T extends { stepId?: string; input?: any; output?: any; error?: any },
 >(resource: T, revivers: Revivers): T {
   let hydratedInput = resource.input;
   let hydratedOutput = resource.output;
+  let hydratedError = resource.error;
 
   if (resource.input != null) {
     try {
@@ -441,18 +442,34 @@ function hydrateStepIO<
     }
   }
 
-  return { ...resource, input: hydratedInput, output: hydratedOutput };
+  // The `error` field is `SerializedData` (Uint8Array) produced by
+  // `dehydrateStepError`. Hydrate it so observability tools (CLI, web UI)
+  // can read `step.error.message`, `step.error.stack`, etc.
+  if (resource.error != null) {
+    try {
+      hydratedError = hydrateData(resource.error, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
+  return {
+    ...resource,
+    input: hydratedInput,
+    output: hydratedOutput,
+    error: hydratedError,
+  };
 }
 
 /**
  * Hydrate the data fields of a workflow run resource.
  */
-function hydrateWorkflowIO<T extends { input?: any; output?: any }>(
-  resource: T,
-  revivers: Revivers
-): T {
+function hydrateWorkflowIO<
+  T extends { input?: any; output?: any; error?: any },
+>(resource: T, revivers: Revivers): T {
   let hydratedInput = resource.input;
   let hydratedOutput = resource.output;
+  let hydratedError = resource.error;
 
   if (resource.input != null) {
     try {
@@ -470,7 +487,23 @@ function hydrateWorkflowIO<T extends { input?: any; output?: any }>(
     }
   }
 
-  return { ...resource, input: hydratedInput, output: hydratedOutput };
+  // The `error` field is `SerializedData` (Uint8Array) produced by
+  // `dehydrateRunError`. Hydrate it so observability tools (CLI, web UI)
+  // can read `run.error.message`, `run.error.stack`, etc.
+  if (resource.error != null) {
+    try {
+      hydratedError = hydrateData(resource.error, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
+  return {
+    ...resource,
+    input: hydratedInput,
+    output: hydratedOutput,
+    error: hydratedError,
+  };
 }
 
 /**
@@ -524,6 +557,18 @@ function hydrateEventData<T extends { eventId?: string; eventData?: any }>(
   if ('payload' in eventData && eventData.payload != null) {
     try {
       eventData.payload = hydrateData(eventData.payload, revivers);
+    } catch {
+      // Leave un-hydrated
+    }
+  }
+
+  // step_failed / step_retrying / run_failed events have eventData.error
+  // (the thrown value, serialized via the error pipeline). Without this,
+  // event listings in o11y tooling would surface the raw `Uint8Array`
+  // payload instead of a hydrated `{ name, message, stack, … }` object.
+  if ('error' in eventData && eventData.error != null) {
+    try {
+      eventData.error = hydrateData(eventData.error, revivers);
     } catch {
       // Leave un-hydrated
     }

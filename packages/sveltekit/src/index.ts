@@ -15,6 +15,8 @@ process.on('beforeExit', () => {
   if (!process.env.VERCEL_DEPLOYMENT_ID) {
     return;
   }
+  // V2: Only the combined flow handler needs queue triggers.
+  // The separate step route was removed.
   for (const { file, config } of [
     {
       file: '.vercel/output/functions/.well-known/workflow/v1/flow.func/.vc-config.json',
@@ -31,36 +33,21 @@ process.on('beforeExit', () => {
         ],
       },
     },
-    {
-      file: '.vercel/output/functions/.well-known/workflow/v1/step.func/.vc-config.json',
-      config: {
-        maxDuration: 'max',
-        experimentalTriggers: [
-          {
-            type: 'queue/v2beta',
-            topic: '__wkf_step_*',
-            consumer: 'default',
-            retryAfterSeconds: 5,
-            initialDelaySeconds: 0,
-          },
-        ],
-      },
-    },
   ]) {
+    const funcDir = path.dirname(file);
+    if (!fs.existsSync(funcDir)) {
+      continue;
+    }
     // Un-symlink these as they can't be shared due to different
     // experimental triggers config
-    const toCopy = fs.readdirSync(path.dirname(file));
-    fs.removeSync(path.dirname(file));
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const toCopy = fs.readdirSync(funcDir);
+    fs.removeSync(funcDir);
+    fs.mkdirSync(funcDir, { recursive: true });
 
     for (const item of toCopy) {
       fs.copySync(
-        path.join(
-          path.dirname(file).replace(/\.func$/, ''),
-          '__data.json.func',
-          item
-        ),
-        path.join(path.dirname(file), item)
+        path.join(funcDir.replace(/\.func$/, ''), '__data.json.func', item),
+        path.join(funcDir, item)
       );
     }
 

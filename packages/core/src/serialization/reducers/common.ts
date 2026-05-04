@@ -335,11 +335,21 @@ export function getCommonRevivers(
     // Error subclass revivers reconstruct the correct built-in Error type.
     // See `makeErrorSubclassReviver` for implementation details.
     EvalError: makeErrorSubclassReviver(global, 'EvalError'),
-    // FatalError and RetryableError are imported directly rather than read
-    // from `global` because they are not built-ins; they live in the
-    // `@workflow/errors` package which is bundled into every context.
+    // `FatalError` and `RetryableError` are not built-ins, so we resolve them
+    // from the consumer's `globalThis` via a `Symbol.for(...)` key registered
+    // by `@workflow/errors` on load. This makes `instanceof FatalError` work
+    // in user code that lives in a different realm than this reducer module
+    // (e.g. when the host hydrates a value destined for a workflow VM
+    // context). See the registration block at the bottom of
+    // `packages/errors/src/index.ts` for details. Falls back to the imported
+    // class for environments where no bundled `@workflow/errors` has loaded
+    // in the consumer realm.
     FatalError: (value) => {
-      const error = new FatalError(value.message);
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//FatalError')
+        ] as typeof FatalError | undefined) ?? FatalError;
+      const error = new Ctor(value.message);
       if (value.stack !== undefined) error.stack = value.stack;
       if ('cause' in value) error.cause = value.cause;
       return error;
@@ -349,8 +359,14 @@ export function getCommonRevivers(
     RetryableError: (value) => {
       // Use the context's `Date` constructor (matching the rest of this
       // module) so the resulting `retryAfter` Date passes `instanceof
-      // global.Date` checks in the target realm.
-      const error = new RetryableError(value.message, {
+      // global.Date` checks in the target realm. See the FatalError reviver
+      // above for why we resolve `RetryableError` from the consumer's
+      // globalThis instead of the imported class.
+      const Ctor =
+        ((global as Record<symbol, unknown>)[
+          Symbol.for('@workflow/errors//RetryableError')
+        ] as typeof RetryableError | undefined) ?? RetryableError;
+      const error = new Ctor(value.message, {
         retryAfter: new global.Date(value.retryAfter),
       });
       if (value.stack !== undefined) error.stack = value.stack;

@@ -9,7 +9,7 @@ export {
   getDecoratorOptionsForDirectory,
   getDecoratorOptionsForDirectoryWithConfigPath,
 } from './config-helpers.js';
-export { STEP_QUEUE_TRIGGER, WORKFLOW_QUEUE_TRIGGER } from './constants.js';
+export { WORKFLOW_QUEUE_TRIGGER } from './constants.js';
 export { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 export {
   clearModuleSpecifierCache,

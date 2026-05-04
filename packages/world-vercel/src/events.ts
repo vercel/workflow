@@ -481,10 +481,10 @@ async function createWorkflowRunEventInner(
     schema: EventResultLazyWireSchema,
   });
 
-  // Transform wire format to interface format.
-  // The run entity from the wire may have error as a string (legacy) or
-  // undefined (lazy ref mode), so deserializeError normalizes it into the
-  // StructuredError shape expected by WorkflowRun consumers.
+  // Transform wire format to interface format. In the current event-sourced
+  // model, the run/step error fields are SerializedData (Uint8Array) — the
+  // deserializeError/deserializeStep helpers are pass-throughs that handle
+  // any legacy wire-format variants.
   return {
     event: wireResult.event
       ? stripEventAndLegacyRefs(wireResult.event, resolveData)
