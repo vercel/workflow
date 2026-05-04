@@ -5070,9 +5070,13 @@ describe('AbortController serialization', () => {
       // reviveAbortController processes it correctly (not masked by the
       // default immediately-closed stream mock).
       const { getWorld } = await import('./runtime/world.js');
-      const abortPayload = new TextEncoder().encode(
-        JSON.stringify({ reason: 'stream-abort-reason' })
-      );
+      // Encode the payload through the same machinery the writer uses so
+      // hydrateStepArguments on the read side decodes to {reason: ...}.
+      const abortPayload = (await dehydrateStepArguments(
+        { aborted: true, reason: 'stream-abort-reason' },
+        mockRunId,
+        noEncryptionKey
+      )) as Uint8Array;
       const getStreamMock = vi.fn().mockResolvedValue(
         new ReadableStream({
           start(c) {

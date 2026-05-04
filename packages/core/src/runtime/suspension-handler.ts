@@ -233,6 +233,10 @@ export async function handleSuspension({
           });
 
           // Write stream cancellation packet for real-time step propagation.
+          // Reuse the same dehydrated payload as the hook event so the reason
+          // round-trips through `dehydrateStepArguments` / `hydrateStepArguments`
+          // (handles DOMException, custom errors, encryption, etc.) instead of
+          // bare JSON.stringify which loses type information and drops undefined.
           // streamName is set on the queue item at controller construction time
           // (see workflow/abort-controller.ts).
           try {
@@ -240,9 +244,7 @@ export async function handleSuspension({
             await world.streams.write(
               runId,
               streamName,
-              new TextEncoder().encode(
-                JSON.stringify({ reason: queueItem.abortReason })
-              )
+              abortPayload as Uint8Array
             );
             await world.streams.close(runId, streamName);
           } catch {

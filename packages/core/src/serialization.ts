@@ -1005,8 +1005,18 @@ function setupAbortStreamReader(
         reader.releaseLock();
         if (result.value && !result.done) {
           try {
-            const data = JSON.parse(new TextDecoder().decode(result.value));
-            controller.abort(data.reason);
+            // Hydrate via the same machinery the writer used so the reason
+            // round-trips with full type fidelity. Encryption key (if any)
+            // comes from the step context — set up by the step handler before
+            // this reader runs. Fallback to undefined for external-context
+            // revives (the hydrate path is encryption-key-tolerant).
+            const ctxForKey = contextStorage.getStore();
+            const data = (await hydrateStepArguments(
+              result.value,
+              runId,
+              ctxForKey?.encryptionKey
+            )) as { reason?: unknown } | undefined;
+            controller.abort(data?.reason);
           } catch {
             controller.abort();
           }
@@ -1104,14 +1114,22 @@ function reviveAbortController(
       ctx.ops.push(
         (async () => {
           try {
+            // Dehydrate the abort payload through the same machinery the hook
+            // event uses so the `reason` round-trips with full type fidelity
+            // (DOMException, custom errors, etc.) and respects the run's
+            // encryption key — symmetric with what the suspension handler
+            // writes for workflow-initiated aborts.
+            const payload = await dehydrateStepArguments(
+              { aborted: true, reason },
+              ctx.workflowMetadata.workflowRunId,
+              ctx.encryptionKey
+            );
             const writable = new WorkflowServerWritableStream(
               ctx.workflowMetadata.workflowRunId,
               value.streamName
             );
             const writer = writable.getWriter();
-            await writer.write(
-              new TextEncoder().encode(JSON.stringify({ reason }))
-            );
+            await writer.write(payload as Uint8Array);
             await writer.close();
           } catch {
             // Best-effort stream write
