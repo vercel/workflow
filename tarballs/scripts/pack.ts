@@ -148,8 +148,8 @@ function escapeHtml(value: string): string {
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
 }
 
 interface BuildContext {
@@ -693,7 +693,7 @@ ${rowsHtml}
         Built ${ctx.commitUrl ? `from <a href="${escapeHtml(ctx.commitUrl)}" target="_blank" rel="noopener">${escapeHtml(ctx.shortSha)}</a>` : `from <code>${escapeHtml(ctx.shortSha)}</code>`} · ${escapeHtml(packages.length.toString())} packages totaling ${escapeHtml(formatBytes(totalSize))}
       </footer>
     </div>
-    <script id="catalog" type="application/json">${escapeHtml(JSON.stringify(catalog))}</script>
+    <script id="catalog" type="application/json">${JSON.stringify(catalog).replace(/</g, '\\u003c')}</script>
     <script>
       (function () {
         const catalog = JSON.parse(document.getElementById('catalog').textContent);
