@@ -1418,7 +1418,10 @@ export const POST = workflowEntrypoint(workflowCode);`;
 
     // Create a static route that calls resumeWebhook
     // This route works for both Next.js and Vercel Build Output API
-    const routeContent = `import { resumeWebhook } from 'workflow/api';
+    // Bundled Build Output API webhook functions need world.ts statically
+    // present so getWorldLazy() can use the global getWorld registration
+    // instead of falling back to a missing sibling import("./world.js").
+    const routeContent = `${bundle ? "import 'workflow/runtime';\n" : ''}import { resumeWebhook } from 'workflow/api';
 
 async function handler(request) {
   const url = new URL(request.url);
