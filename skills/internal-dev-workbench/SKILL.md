@@ -1,12 +1,12 @@
 ---
-name: dev-tmux
+name: internal-dev-workbench
 description: Spin up a portless + tmux dev session for the Workflow SDK that gives each git worktree isolated `<branch>.<name>.localhost` URLs for the Next.js workbench and the observability UI, plus a Claude statusline that surfaces those URLs. Use only when the user asks for a "portless dev session", a "tmux dev layout for workflow", "worktree-isolated dev URLs", or wants to wire workflow dev URLs into the Claude statusline. Do not activate for the generic "start the dev server" / "run pnpm dev" task.
 metadata:
-  author: Vercel Inc.
-  version: '1.5'
+  author: Pranay Prakash
+  version: '0.1'
 ---
 
-# dev-tmux
+# internal-dev-workbench
 
 Bootstraps an opinionated 3-pane tmux session for end-to-end Workflow SDK development. Each pane is launched through [portless](https://github.com/aleclarson/portless) so URLs are stable and worktree-scoped (e.g. `https://<branch>.turbopack.localhost`), letting multiple worktrees run concurrently without port conflicts. A companion statusline script surfaces the active URLs in Claude Code's prompt.
 
@@ -45,8 +45,8 @@ Pane indices in tmux depend on `pane-base-index` (0 by default, 1 with the commo
 ```bash
 REPO=/path/to/workflow--<worktree-suffix>
 # Session name = basename of the branch (matches portless's subdomain prefix
-# and the statusline's `tmux:<prefix>` indicator). For branch `pgp/foo-bar`
-# this resolves to `foo-bar`.
+# and the statusline's `tmux attach -t <prefix>` indicator). For branch
+# `pgp/foo-bar` this resolves to `foo-bar`.
 SESSION=$(git -C "$REPO" rev-parse --abbrev-ref HEAD)
 SESSION="${SESSION##*/}"
 
@@ -82,13 +82,13 @@ Once both servers are ready, `portless list` shows the routes. With `portless ru
 
 ## Claude statusline integration
 
-The skill ships a statusline helper at `skills/dev-tmux/statusline.sh` that derives the worktree prefix from the current branch and emits a compact line:
+The skill ships a statusline helper at `skills/internal-dev-workbench/statusline.sh` that derives the worktree prefix from the current branch and emits a compact line:
 
 ```
  dev  ·   obs  ·   tmux attach -t <worktree-prefix>
 ```
 
-` dev` and ` obs` (Nerd Font rocket / graph glyphs) are OSC 8 hyperlinks — clickable in iTerm2, Kitty, WezTerm, Terminal.app, Ghostty — styled bold + underlined + bright cyan so they read unambiguously as links. The tmux fragment (Nerd Font copy glyph) is bold bright green, signaling "copy this" rather than "click this". It's shown only when a session named exactly the worktree prefix exists, and it's printed as a full ready-to-paste `tmux attach -t <prefix>` invocation. The font must include Nerd Font glyphs for the icons to render correctly; without them you'll see substitution boxes but the layout still works. Each piece is independent — if portless has no `<prefix>.turbopack.localhost` route, `[dev]` is omitted, and so on. With nothing to show, the script prints nothing and the statusline stays silent.
+The dev / obs labels (Nerd Font rocket / graph glyphs) are OSC 8 hyperlinks — clickable in iTerm2, Kitty, WezTerm, Terminal.app, Ghostty — styled bold + underlined + bright cyan so they read unambiguously as links. The tmux fragment (Nerd Font copy glyph) is bold bright green, signaling "copy this" rather than "click this". It's shown only when a session named exactly the worktree prefix exists, and it's printed as a full ready-to-paste `tmux attach -t <prefix>` invocation. The font must include Nerd Font glyphs for the icons to render correctly; without them you'll see substitution boxes but the layout still works. Each piece is independent — if portless has no `<prefix>.turbopack.localhost` route, the dev fragment is omitted, and so on. With nothing to show, the script prints nothing and the statusline stays silent.
 
 Wire it into `~/.claude/settings.json` so it works across all sessions and worktrees. **Point the path at your primary checkout, not at a worktree** — worktrees get deleted, so any path like `~/github/vercel/workflow--<branch>/...` will break the day you remove that worktree:
 
@@ -96,7 +96,7 @@ Wire it into `~/.claude/settings.json` so it works across all sessions and workt
 {
   "statusLine": {
     "type": "command",
-    "command": "$HOME/github/vercel/workflow/skills/dev-tmux/statusline.sh"
+    "command": "$HOME/github/vercel/workflow/skills/internal-dev-workbench/statusline.sh"
   }
 }
 ```
@@ -105,10 +105,10 @@ Adjust the prefix if your main checkout lives elsewhere. The script itself is wo
 
 Output rules:
 - Nothing to show (no matching portless route, no matching tmux session) → empty output.
-- Each piece appears independently — start a server but no tmux session and you'll see just `[dev]`; the reverse shows just `tmux:<prefix>`.
+- Each piece appears independently — start a server but no tmux session and you'll see just the dev/obs fragments; the reverse shows just the tmux fragment.
 - No git context but routes exist → falls back to the first matching `turbopack`/`workflow-obs` route, no tmux indicator.
 
-If you already use a statusline and want to append the dev-tmux info, run the helper and concatenate in your existing wrapper script instead of replacing `command` outright.
+If you already use a statusline and want to append the internal-dev-workbench info, run the helper and concatenate in your existing wrapper script instead of replacing `command` outright.
 
 ## Restarting after editing workflow files
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Claude Code statusline helper for the `dev-tmux` skill.
+# Claude Code statusline helper for the `internal-dev-workbench` skill.
 #
 # Reads `portless list` and emits a single line summarizing the active dev
 # session for the current git worktree:
@@ -19,7 +19,7 @@
 #   {
 #     "statusLine": {
 #       "type": "command",
-#       "command": "$HOME/github/vercel/workflow/skills/dev-tmux/statusline.sh"
+#       "command": "$HOME/github/vercel/workflow/skills/internal-dev-workbench/statusline.sh"
 #     }
 #   }
 #
@@ -43,7 +43,7 @@ fi
 
 # Resolve the worktree's portless prefix (basename of the branch — same
 # convention `portless run` uses for linked worktrees, and the same name
-# the dev-tmux skill assigns to its tmux session).
+# the internal-dev-workbench skill assigns to its tmux session).
 prefix=""
 if command -v git >/dev/null 2>&1; then
   branch=$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
