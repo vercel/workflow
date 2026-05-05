@@ -4,16 +4,18 @@
  * In workflow mode, step functions are replaced by the SWC plugin with
  * proxies created by `globalThis[Symbol.for("WORKFLOW_USE_STEP")]("stepId")`.
  * These proxies have a `.stepId` property and optionally a `.__closureVarsFn`
- * for captured closure variables. They may additionally have a
- * `.__boundThis` property when the SWC plugin emitted `useStep(...).bind(this)`
- * for a nested arrow step that lexically captured `this` (see
- * `packages/swc-plugin-workflow/spec.md` → "Lexical `this` Capture in
- * Nested Arrow Steps").
+ * for captured closure variables. They may additionally have `.__boundThis`
+ * (and rarely `.__boundArgs`) when the SWC plugin emitted
+ * `useStep(...).bind(this)` for a nested arrow step that lexically
+ * captured `this` (see `packages/swc-plugin-workflow/spec.md` → "Lexical
+ * `this` Capture in Nested Arrow Steps").
  *
- * The reducer serializes them as `{ stepId, closureVars?, boundThis? }`.
+ * The reducer serializes them as
+ *   `{ stepId, closureVars?, boundThis?, boundArgs? }`.
  * The reviver reconstructs them by calling WORKFLOW_USE_STEP and, when
- * `boundThis` is present, re-binding the resulting proxy so the caller's
- * captured `this` survives the round trip.
+ * `boundThis` (or `boundArgs`) is present, re-binding the resulting
+ * proxy so the caller's captured `this` (and prefilled args) survive the
+ * round trip.
  */
 
 import type { Reducers, Revivers } from '../types.js';
@@ -33,20 +35,28 @@ export function getStepFunctionReducer(): Partial<Reducers> {
           ? closureVarsFn()
           : undefined;
 
-      // `__boundThis` is a marker property added by the step proxy's
-      // overridden `.bind` (see step.ts) to record the captured lexical
-      // `this`. Use `in` so we round-trip even when the bound `this` is
-      // `undefined`/`null`.
+      // `__boundThis` / `__boundArgs` are marker properties added by the
+      // step proxy's overridden `.bind` (see step.ts) to record the
+      // bound receiver and any prefilled arguments. Use `in` for
+      // `__boundThis` so we round-trip even when the bound `this` is
+      // `undefined`/`null`. `__boundArgs` is only set when the user
+      // actually supplied prefilled args, so a missing property means
+      // "no prefilled args".
       const hasBoundThis = '__boundThis' in (value as any);
       const boundThis = hasBoundThis ? (value as any).__boundThis : undefined;
+      const boundArgs = (value as any).__boundArgs as unknown[] | undefined;
 
       const payload: {
         stepId: string;
         closureVars?: Record<string, any>;
         boundThis?: unknown;
+        boundArgs?: unknown[];
       } = { stepId };
       if (closureVars !== undefined) payload.closureVars = closureVars;
       if (hasBoundThis) payload.boundThis = boundThis;
+      if (Array.isArray(boundArgs) && boundArgs.length > 0) {
+        payload.boundArgs = boundArgs;
+      }
 
       return payload;
     },
@@ -60,10 +70,11 @@ export function getStepFunctionReducer(): Partial<Reducers> {
  *
  * The reviver calls WORKFLOW_USE_STEP to create the step proxy,
  * restoring the ability to call the step from workflow code. If the
- * serialized payload includes `boundThis`, the reviver also re-binds the
- * freshly-created proxy so a step proxy that was constructed with
- * `.bind(this)` in the workflow bundle continues to carry that `this`
- * after being deserialized in another bundle (e.g. when passed as a step
+ * serialized payload includes `boundThis` (and optionally `boundArgs`),
+ * the reviver also re-binds the freshly-created proxy so a step proxy
+ * that was constructed with `.bind(this, …)` in the workflow bundle
+ * continues to carry that receiver and any prefilled arguments after
+ * being deserialized in another bundle (e.g. when passed as a step
  * argument).
  */
 export function getStepFunctionReviver(
@@ -92,7 +103,8 @@ export function getStepFunctionReviver(
         : useStep(stepId);
 
       if ('boundThis' in value) {
-        return (proxy as any).bind(value.boundThis);
+        const boundArgs = Array.isArray(value.boundArgs) ? value.boundArgs : [];
+        return (proxy as any).bind(value.boundThis, ...boundArgs);
       }
       return proxy;
     },

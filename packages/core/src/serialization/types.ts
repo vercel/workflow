@@ -115,6 +115,16 @@ export interface SerializableSpecial {
      * binding survives serialization round-trips.
      */
     boundThis?: unknown;
+    /**
+     * Prefilled arguments captured when the user (rather than the SWC
+     * plugin) called `useStep(...).bind(thisArg, x, y)`. The reviver
+     * re-applies these alongside `boundThis` so partial application
+     * survives serialization. The SWC plugin only ever emits
+     * `.bind(this)` with no extra args today; this slot exists so a
+     * hand-written `.bind(thisArg, x)` doesn't silently lose `x` after
+     * round-tripping through the reducer/reviver.
+     */
+    boundArgs?: unknown[];
   };
   TypeError: { message: string; stack?: string; cause?: unknown };
   URIError: { message: string; stack?: string; cause?: unknown };
