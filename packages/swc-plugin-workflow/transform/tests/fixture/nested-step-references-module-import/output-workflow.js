@@ -12,7 +12,7 @@
 //    step proxy looks it up). Both must namespace the step under the
 //    workflow function name (e.g. `step//./input//w/_anonymousStep0`).
 import { tool, z } from 'some-agent-lib'; // step-mode: stripped (only referenced by replaced workflow body); workflow-mode: kept
-/**__internal_workflows{"workflows":{"input.js":{"w":{"workflowId":"workflow//./input//w"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"w":{"workflowId":"workflow//./input//w"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//w/_anonymousStep0"}}}}*/;
 async function w() {
     const agent = new WorkflowAgent({
         model: 'anthropic/claude-opus-4.5',

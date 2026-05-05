@@ -13,7 +13,7 @@
 //    workflow function name (e.g. `step//./input//w/_anonymousStep0`).
 import { db } from './db'; // step-mode: kept (used by hoisted step)
 import * as logger from './logger'; // step-mode: kept (used by hoisted step)
-/**__internal_workflows{"workflows":{"input.js":{"w":{"workflowId":"workflow//./input//w"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"}}}}*/;
+/**__internal_workflows{"workflows":{"input.js":{"w":{"workflowId":"workflow//./input//w"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//w/_anonymousStep0"}}}}*/;
 var w$_anonymousStep0 = async (input)=>{
     logger.info('querying', input.query);
     return db.query(input.query);
