@@ -1,3 +1,4 @@
+import { gateway } from 'ai';
 /**__internal_workflows{"workflows":{"input.js":{"wflow":{"workflowId":"workflow//./input//wflow"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"},"_anonymousStep2":{"stepId":"step//./input//_anonymousStep2"},"_anonymousStep3":{"stepId":"step//./input//_anonymousStep3"},"_anonymousStep4":{"stepId":"step//./input//_anonymousStep4"},"f":{"stepId":"step//./input//f"},"fn":{"stepId":"step//./input//fn"},"namedStepWithClosureVars":{"stepId":"step//./input//namedStepWithClosureVars"}}}}*/;
 var stepWrapperReturnArrowFunctionVar$fn = async ()=>{
     const { a, b, c } = function() {

@@ -1,3 +1,4 @@
+import { gateway } from 'ai';
 /**__internal_workflows{"workflows":{"input.js":{"test":{"workflowId":"workflow//./input//test"}}},"steps":{"input.js":{"_anonymousStep0":{"stepId":"step//./input//_anonymousStep0"},"_anonymousStep1":{"stepId":"step//./input//_anonymousStep1"}}}}*/;
 var test$_anonymousStep0 = async ()=>gateway('openai/gpt-5');
 (function(__wf_fn, __wf_id) {

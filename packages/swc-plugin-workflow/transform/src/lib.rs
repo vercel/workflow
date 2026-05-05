@@ -6072,6 +6072,14 @@ impl VisitMut for StepTransform {
 
                 // Note: workflowId assignments are now handled in visit_mut_module_items
 
+                // Run dead-code elimination after nested step functions have
+                // been hoisted to the module top level. Running DCE earlier
+                // (e.g. inside `visit_mut_module_items`) would incorrectly
+                // strip imports referenced only by hoisted step bodies — such
+                // as a step nested inside a workflow function that references
+                // a module-level import.
+                self.remove_dead_code(&mut module.body);
+
                 // Add metadata comment at the beginning of the file
                 let metadata_comment = self.generate_metadata_comment();
                 if !metadata_comment.is_empty() {
@@ -7172,8 +7180,10 @@ impl VisitMut for StepTransform {
             }
         }
 
-        // Perform dead code elimination in workflow and step mode
-        self.remove_dead_code(items);
+        // Note: dead-code elimination runs once at the end of
+        // `visit_mut_program` (after nested step functions have been hoisted
+        // to the module top level). Running it here would prematurely strip
+        // imports referenced only by hoisted step bodies.
     }
 
     fn visit_mut_fn_decl(&mut self, fn_decl: &mut FnDecl) {
