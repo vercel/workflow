@@ -4,7 +4,7 @@
 # Reads `portless list` and emits a single line summarizing the active dev
 # session for the current git worktree:
 #
-#     [dev]  [obs]  tmux:<worktree-prefix>
+#     [dev]  [obs]  tmux attach -t <worktree-prefix>
 #
 # `[dev]` and `[obs]` are OSC 8 hyperlinks (clickable in any modern
 # terminal: iTerm2, Kitty, WezTerm, Terminal.app, Ghostty). The tmux
@@ -110,7 +110,7 @@ if [ -n "$obs_url" ]; then
 fi
 if [ -n "$session" ]; then
   sep
-  printf 'tmux:%s' "$session"
+  printf 'tmux attach -t %s' "$session"
 fi
 
 printf '\033[0m\n'

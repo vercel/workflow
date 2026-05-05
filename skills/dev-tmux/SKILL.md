@@ -3,7 +3,7 @@ name: dev-tmux
 description: Spin up a portless + tmux dev session for the Workflow SDK that gives each git worktree isolated `<branch>.<name>.localhost` URLs for the Next.js workbench and the observability UI, plus a Claude statusline that surfaces those URLs. Use only when the user asks for a "portless dev session", a "tmux dev layout for workflow", "worktree-isolated dev URLs", or wants to wire workflow dev URLs into the Claude statusline. Do not activate for the generic "start the dev server" / "run pnpm dev" task.
 metadata:
   author: Vercel Inc.
-  version: '1.3'
+  version: '1.4'
 ---
 
 # dev-tmux
@@ -85,10 +85,10 @@ Once both servers are ready, `portless list` shows the routes. With `portless ru
 The skill ships a statusline helper at `skills/dev-tmux/statusline.sh` that derives the worktree prefix from the current branch and emits a compact line:
 
 ```
-[dev]  ·  [obs]  ·  tmux:<worktree-prefix>
+[dev]  ·  [obs]  ·  tmux attach -t <worktree-prefix>
 ```
 
-`[dev]` and `[obs]` are OSC 8 hyperlinks (clickable in iTerm2, Kitty, WezTerm, Terminal.app, Ghostty), styled with cyan + underline so they stand out against the dim line. `tmux:<prefix>` is shown only if a tmux session named exactly the worktree prefix exists. Each piece is independent — if portless has no `<prefix>.turbopack.localhost` route, `[dev]` is omitted, and so on. With nothing to show, the script prints nothing and the statusline stays silent.
+`[dev]` and `[obs]` are OSC 8 hyperlinks (clickable in iTerm2, Kitty, WezTerm, Terminal.app, Ghostty), styled with cyan + underline so they stand out against the dim line. The tmux fragment is shown only when a session named exactly the worktree prefix exists; it's printed as a full ready-to-paste `tmux attach -t <prefix>` invocation so you can copy-paste it directly into another shell. Each piece is independent — if portless has no `<prefix>.turbopack.localhost` route, `[dev]` is omitted, and so on. With nothing to show, the script prints nothing and the statusline stays silent.
 
 Wire it into `~/.claude/settings.json` so it works across all sessions and worktrees. **Point the path at your primary checkout, not at a worktree** — worktrees get deleted, so any path like `~/github/vercel/workflow--<branch>/...` will break the day you remove that worktree:
 
