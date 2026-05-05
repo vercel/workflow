@@ -2,4 +2,4 @@
 "@workflow/core": patch
 ---
 
-Preserve `stepId` and `__closureVarsFn` metadata when calling `.bind(thisArg)` on a step proxy, so bound proxies still serialize correctly through the `StepFunction` reducer (e.g. when passed as step arguments).
+Round-trip the `this` binding of bound step proxies through workflow serialization. Calling `.bind(thisArg)` on a step proxy now stashes `__boundThis` on the bound function in addition to preserving `stepId`/`__closureVarsFn`; the workflow-side reducer serializes that as `boundThis`, and the workflow- and step-bundle revivers re-bind / `apply()` the deserialized step body to the captured value. Without this, a `useStep(...).bind(this)` proxy passed as a step argument would lose its receiver and the body would see `this === undefined` when invoked from the step bundle.

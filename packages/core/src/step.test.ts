@@ -316,6 +316,10 @@ describe('createUseStep', () => {
     expect((boundStep as any).__closureVarsFn).toBe(
       (stepProxy as any).__closureVarsFn
     );
+    // `__boundThis` is the marker the reducer uses to serialize the
+    // captured `this`, so a deserialized proxy in another bundle can
+    // re-bind to the same value.
+    expect((boundStep as any).__boundThis).toBe(instance);
 
     let error: Error | undefined;
     try {

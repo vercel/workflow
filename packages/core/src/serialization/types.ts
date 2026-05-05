@@ -107,6 +107,14 @@ export interface SerializableSpecial {
   StepFunction: {
     stepId: string;
     closureVars?: Record<string, any>;
+    /**
+     * Captured lexical `this` for step proxies that were created via
+     * `useStep(...).bind(thisArg)` (the SWC plugin emits this for nested
+     * arrow steps that close over their enclosing function's `this`).
+     * The reviver re-binds the freshly-created proxy to this value so the
+     * binding survives serialization round-trips.
+     */
+    boundThis?: unknown;
   };
   TypeError: { message: string; stack?: string; cause?: unknown };
   URIError: { message: string; stack?: string; cause?: unknown };

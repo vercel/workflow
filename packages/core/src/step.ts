@@ -223,12 +223,20 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
 
     // Override `.bind` so the bound function preserves the step proxy
     // metadata that `getStepFunctionReducer` relies on for serialization
-    // (`stepId`, `__closureVarsFn`). Without this override, the SWC plugin
-    // emitting `useStep(...).bind(this)` for nested arrow steps that
-    // lexically capture `this` would produce a bound function whose
-    // `.stepId` is `undefined`, causing the StepFunction reducer to treat
-    // it as a non-serializable plain function if it ever flows through
-    // workflow serialization (e.g. as a step argument or return value).
+    // (`stepId`, `__closureVarsFn`, `__boundThis`). Without this override,
+    // the SWC plugin emitting `useStep(...).bind(this)` for nested arrow
+    // steps that lexically capture `this` would produce a bound function
+    // whose `.stepId` is `undefined`, causing the StepFunction reducer to
+    // treat it as a non-serializable plain function.
+    //
+    // We also stash the bound `this` value as `__boundThis` so the bound
+    // proxy can round-trip through serialization with the binding intact:
+    // when the bound proxy is passed as a step argument, the reducer
+    // serializes the captured `this` alongside the `stepId`, and the
+    // reviver in the step bundle re-binds a fresh proxy to the same
+    // `this`. Without this, a deserialized proxy would lose its binding
+    // and the step body would see `this === undefined` when the
+    // downstream caller invokes it without an explicit receiver.
     Object.defineProperty(stepFunction, 'bind', {
       value: function (
         this: typeof stepFunction,
@@ -254,6 +262,12 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             configurable: false,
           });
         }
+        Object.defineProperty(bound, '__boundThis', {
+          value: thisArg,
+          writable: false,
+          enumerable: false,
+          configurable: false,
+        });
         return bound;
       },
       writable: false,
