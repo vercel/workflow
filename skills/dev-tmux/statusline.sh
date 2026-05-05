@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 # Claude Code statusline helper for the `dev-tmux` skill.
 #
-# Reads `portless list` and emits a single line containing the active dev
-# server and observability URLs (filtered to the current git worktree when
-# possible). Wire it into ~/.claude/settings.json with the path pointing at
-# your *primary* checkout — NOT at a worktree, since worktrees get deleted:
+# Reads `portless list` and emits a single line summarizing the active dev
+# session for the current git worktree:
+#
+#     [dev]  [obs]  tmux:<worktree-prefix>
+#
+# `[dev]` and `[obs]` are OSC 8 hyperlinks (clickable in any modern
+# terminal: iTerm2, Kitty, WezTerm, Terminal.app, Ghostty). The tmux
+# indicator is shown when a session named exactly the worktree prefix
+# exists (the dev-tmux skill creates one with that name).
+#
+# Wire it into ~/.claude/settings.json with the path pointing at your
+# *primary* checkout — NOT a worktree, since worktrees get deleted:
 #
 #   {
 #     "statusLine": {
@@ -13,17 +21,13 @@
 #     }
 #   }
 #
-# The script is worktree-aware: Claude passes the current session's working
-# directory in stdin JSON (`workspace.current_dir`), and we derive the
-# branch from that. So the same script invocation from the primary checkout
-# correctly surfaces routes for whichever worktree the Claude session is
-# running in. With no input or no portless routes, the script prints
-# nothing — a blank statusline is the right behavior when no dev session
-# is running.
+# Worktree-aware: uses Claude's `workspace.current_dir` (stdin JSON) to
+# derive the current branch and filter portless routes / tmux sessions
+# to the active worktree. With no input or no matching session/routes,
+# the script prints nothing.
 
 set -u
 
-# Discard Claude's stdin payload but capture cwd if provided.
 input=""
 if [ ! -t 0 ]; then
   input=$(cat)
@@ -35,24 +39,24 @@ if [ -n "$input" ] && command -v jq >/dev/null 2>&1; then
   [ -n "$parsed_cwd" ] && cwd="$parsed_cwd"
 fi
 
-# Resolve the worktree's portless prefix (basename of the branch — matches
-# how `portless run` derives the subdomain for linked worktrees).
+# Resolve the worktree's portless prefix (basename of the branch — same
+# convention `portless run` uses for linked worktrees, and the same name
+# the dev-tmux skill assigns to its tmux session).
 prefix=""
 if command -v git >/dev/null 2>&1; then
   branch=$(git -C "$cwd" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
   [ -n "$branch" ] && [ "$branch" != "HEAD" ] && prefix="${branch##*/}"
 fi
 
-# Bail quietly if portless isn't installed or has no routes.
-command -v portless >/dev/null 2>&1 || exit 0
-routes=$(portless list 2>/dev/null) || exit 0
+# Portless routes (silent if portless is missing or has nothing).
+routes=""
+if command -v portless >/dev/null 2>&1; then
+  routes=$(portless list 2>/dev/null || true)
+fi
 
-# Pick the first route matching `<prefix>.<name>.localhost` if a prefix is
-# known, otherwise fall back to the first `<name>.localhost` match. This
-# handles both worktree-prefixed and bare names without losing output when
-# a route exists but the cwd isn't a git checkout.
 pick_route() {
   local name="$1" url
+  [ -z "$routes" ] && return
   if [ -n "$prefix" ]; then
     url=$(printf '%s\n' "$routes" \
       | awk -v p="$prefix" -v n="$name" \
@@ -66,14 +70,47 @@ pick_route() {
 dev_url=$(pick_route turbopack)
 obs_url=$(pick_route workflow-obs)
 
-parts=()
-[ -n "$dev_url" ] && parts+=("dev: $dev_url")
-[ -n "$obs_url" ] && parts+=("obs: $obs_url")
+# Tmux session named exactly the worktree prefix.
+session=""
+if [ -n "$prefix" ] && command -v tmux >/dev/null 2>&1; then
+  if tmux has-session -t "=$prefix" 2>/dev/null; then
+    session="$prefix"
+  fi
+fi
 
-[ ${#parts[@]} -eq 0 ] && exit 0
+# Bail quietly if there's nothing to show.
+[ -z "$dev_url" ] && [ -z "$obs_url" ] && [ -z "$session" ] && exit 0
 
-printf '%s' "${parts[0]}"
-for p in "${parts[@]:1}"; do
-  printf '  ·  %s' "$p"
-done
-printf '\n'
+# OSC 8 hyperlink with underline + cyan, returning to dim afterwards.
+# Format: ESC ] 8 ;; URL ESC \  TEXT  ESC ] 8 ;; ESC \
+emit_link() {
+  local url="$1" label="$2"
+  printf '\033]8;;%s\033\\\033[4;36m%s\033[24;39m\033]8;;\033\\' "$url" "$label"
+}
+
+# Whole line is dim; link bodies brighten via emit_link.
+printf '\033[2m'
+
+first=1
+sep() {
+  if [ $first -eq 1 ]; then
+    first=0
+  else
+    printf '  ·  '
+  fi
+}
+
+if [ -n "$dev_url" ]; then
+  sep
+  emit_link "$dev_url" '[dev]'
+fi
+if [ -n "$obs_url" ]; then
+  sep
+  emit_link "$obs_url" '[obs]'
+fi
+if [ -n "$session" ]; then
+  sep
+  printf 'tmux:%s' "$session"
+fi
+
+printf '\033[0m\n'

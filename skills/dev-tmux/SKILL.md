@@ -3,7 +3,7 @@ name: dev-tmux
 description: Spin up a portless + tmux dev session for the Workflow SDK that gives each git worktree isolated `<branch>.<name>.localhost` URLs for the Next.js workbench and the observability UI, plus a Claude statusline that surfaces those URLs. Use only when the user asks for a "portless dev session", a "tmux dev layout for workflow", "worktree-isolated dev URLs", or wants to wire workflow dev URLs into the Claude statusline. Do not activate for the generic "start the dev server" / "run pnpm dev" task.
 metadata:
   author: Vercel Inc.
-  version: '1.2'
+  version: '1.3'
 ---
 
 # dev-tmux
@@ -38,13 +38,17 @@ This is **opt-in contributor tooling**. The repo's standard dev path (`pnpm dev`
 
 ## Setup
 
-Always run `tmux ls` first and pick a session name that doesn't collide. Default `workflow-dev`; if taken, use `workflow-dev-<branch>`.
+The session name **must** match the worktree's portless prefix — the basename of the current branch — so the statusline (and any other tooling that derives the prefix from the branch) can locate it. Always run `tmux ls` first to confirm there's no pre-existing session with that name; never kill an existing one.
 
 Pane indices in tmux depend on `pane-base-index` (0 by default, 1 with the common dotfile override). To stay correct under either, capture each pane's ID at split time with `-P -F '#{pane_id}'` and use those IDs as targets:
 
 ```bash
 REPO=/path/to/workflow--<worktree-suffix>
-SESSION=workflow-dev
+# Session name = basename of the branch (matches portless's subdomain prefix
+# and the statusline's `tmux:<prefix>` indicator). For branch `pgp/foo-bar`
+# this resolves to `foo-bar`.
+SESSION=$(git -C "$REPO" rev-parse --abbrev-ref HEAD)
+SESSION="${SESSION##*/}"
 
 # Create the session and capture the initial pane ID
 PANE_DEV=$(tmux new-session -d -s "$SESSION" -c "$REPO" -P -F '#{pane_id}')
@@ -78,11 +82,13 @@ Once both servers are ready, `portless list` shows the routes. With `portless ru
 
 ## Claude statusline integration
 
-The skill ships a statusline helper at `skills/dev-tmux/statusline.sh` that reads `portless list`, filters routes to the current worktree, and emits a single line like:
+The skill ships a statusline helper at `skills/dev-tmux/statusline.sh` that derives the worktree prefix from the current branch and emits a compact line:
 
 ```
-dev: https://stepflow-test.turbopack.localhost  ·  obs: https://stepflow-test.workflow-obs.localhost
+[dev]  ·  [obs]  ·  tmux:<worktree-prefix>
 ```
+
+`[dev]` and `[obs]` are OSC 8 hyperlinks (clickable in iTerm2, Kitty, WezTerm, Terminal.app, Ghostty), styled with cyan + underline so they stand out against the dim line. `tmux:<prefix>` is shown only if a tmux session named exactly the worktree prefix exists. Each piece is independent — if portless has no `<prefix>.turbopack.localhost` route, `[dev]` is omitted, and so on. With nothing to show, the script prints nothing and the statusline stays silent.
 
 Wire it into `~/.claude/settings.json` so it works across all sessions and worktrees. **Point the path at your primary checkout, not at a worktree** — worktrees get deleted, so any path like `~/github/vercel/workflow--<branch>/...` will break the day you remove that worktree:
 
@@ -98,11 +104,11 @@ Wire it into `~/.claude/settings.json` so it works across all sessions and workt
 Adjust the prefix if your main checkout lives elsewhere. The script itself is worktree-aware: it reads Claude's `workspace.current_dir` from stdin to derive the current branch, so the *same script invocation* from `~/github/vercel/workflow/...` correctly surfaces routes for whichever worktree the Claude session is running in.
 
 Output rules:
-- No portless routes running → empty output (statusline is silent, as expected).
-- A worktree prefix is detected from the cwd's git branch → only that worktree's routes are shown.
-- No git context but routes exist → falls back to the first matching `turbopack`/`workflow-obs` route.
+- Nothing to show (no matching portless route, no matching tmux session) → empty output.
+- Each piece appears independently — start a server but no tmux session and you'll see just `[dev]`; the reverse shows just `tmux:<prefix>`.
+- No git context but routes exist → falls back to the first matching `turbopack`/`workflow-obs` route, no tmux indicator.
 
-If you already use a statusline and want to append portless info, run the helper and concatenate in your existing wrapper script instead of replacing `command` outright.
+If you already use a statusline and want to append the dev-tmux info, run the helper and concatenate in your existing wrapper script instead of replacing `command` outright.
 
 ## Restarting after editing workflow files
 
@@ -112,7 +118,7 @@ The workflow manifest is built at dev-server startup. New workflows or steps add
 tmux send-keys -t "$PANE_DEV" C-c
 # Wait for the prompt to return
 tmux send-keys -t "$PANE_DEV" \
-  'WORKFLOW_PUBLIC_MANIFEST=1 portless run --name turbopack pnpm dev' C-m
+  'cd workbench/nextjs-turbopack && WORKFLOW_PUBLIC_MANIFEST=1 portless run --name turbopack pnpm dev' C-m
 ```
 
 Verify the new workflow is registered (use the portless-assigned local port from `portless list`, or the `.localhost` URL with the trusted CA):
@@ -145,7 +151,7 @@ NODE_EXTRA_CA_CERTS=/tmp/portless/ca.pem \
 ## Teardown
 
 ```bash
-tmux kill-session -t workflow-dev
+tmux kill-session -t "$SESSION"
 ```
 
 Portless removes routes when each child process exits (Ctrl+C the panes first if you want a clean `portless list`). The proxy itself keeps running for other sessions; stop it explicitly with `portless proxy stop` if needed.
