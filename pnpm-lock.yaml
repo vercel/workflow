@@ -1228,6 +1228,9 @@ importers:
       '@types/react-dom':
         specifier: '19'
         version: 19.1.9(@types/react@19.1.13)
+      '@workflow/errors':
+        specifier: workspace:*
+        version: link:../errors
       '@workflow/tsconfig':
         specifier: workspace:*
         version: link:../tsconfig
