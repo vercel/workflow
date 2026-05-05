@@ -1,5 +1,6 @@
 import { EventConsumerResult } from '../events-consumer.js';
 import type { WorkflowOrchestratorContext } from '../private.js';
+import { hydrateStepReturnValue } from '../serialization.js';
 import { ABORT_HOOK_TOKEN, ABORT_STREAM_NAME } from '../symbols.js';
 import { getAbortStreamId } from '../util.js';
 
@@ -147,13 +148,39 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
           // abort() call, or from a step/external abort). Update signal
           // state and fire listeners at this deterministic point in the
           // promiseQueue — same ordering as hook payload delivery.
-          const payload = event.eventData?.payload;
-          const reason =
-            payload && typeof payload === 'object' && 'reason' in payload
-              ? payload.reason
-              : undefined;
-
-          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          //
+          // The payload is the dehydrated form written by the suspension
+          // handler (a Uint8Array, possibly encrypted). Hydrate it via the
+          // same machinery as regular hook payloads (workflow/hook.ts:117)
+          // so the reason round-trips with full type fidelity. Reading the
+          // raw payload here is a bug — it's not a plain object after
+          // dehydration, so `'reason' in payload` is false and reason
+          // ends up undefined on replay.
+          const rawPayload = event.eventData?.payload;
+          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+            let reason: unknown = undefined;
+            if (rawPayload !== undefined) {
+              try {
+                const hydrated = (await hydrateStepReturnValue(
+                  rawPayload,
+                  ctx.runId,
+                  ctx.encryptionKey,
+                  ctx.globalThis
+                )) as { reason?: unknown } | undefined;
+                if (
+                  hydrated &&
+                  typeof hydrated === 'object' &&
+                  'reason' in hydrated
+                ) {
+                  reason = hydrated.reason;
+                }
+              } catch {
+                // Best-effort: if hydration fails, fall back to undefined
+                // reason. The signal still aborts; the user just won't see
+                // the original reason. Matches WorkflowAbortSignal's spec
+                // fallback (DOMException AbortError).
+              }
+            }
             this.signal._setAborted(reason);
           });
 

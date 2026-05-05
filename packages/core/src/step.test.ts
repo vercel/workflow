@@ -725,6 +725,17 @@ describe('AbortController hook integration', () => {
       new DryAbortController();
       const correlationId = [...dryCtx.invocationsQueue.keys()][0];
 
+      // Production stores `payload` as a dehydrated Uint8Array (the
+      // suspension handler dehydrates `{ aborted: true, reason }` before
+      // creating the hook_received event). The events consumer hydrates
+      // the payload before reading the reason, so the test must pass a
+      // dehydrated payload to match production.
+      const dehydratedPayload = await dehydrateStepReturnValue(
+        { aborted: true, reason: 'aborted!' },
+        'wrun_test',
+        undefined
+      );
+
       // Now create the real context with the hook_created and hook_received events
       const ctx = setupWorkflowContext([
         {
@@ -740,7 +751,7 @@ describe('AbortController hook integration', () => {
           runId: 'wrun_test',
           eventType: 'hook_received',
           correlationId,
-          eventData: { payload: { reason: 'aborted!' } },
+          eventData: { payload: dehydratedPayload as any },
           createdAt: new Date(),
         },
       ]);
