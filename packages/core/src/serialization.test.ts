@@ -40,23 +40,32 @@ import {
 } from './symbols.js';
 import { createContext } from './vm/index.js';
 
+const makeMockWorld = () => ({
+  streams: {
+    write: vi.fn().mockResolvedValue(undefined),
+    writeMulti: vi.fn().mockResolvedValue(undefined),
+    close: vi.fn().mockResolvedValue(undefined),
+    get: vi.fn().mockResolvedValue(
+      new ReadableStream({
+        start(c) {
+          c.close();
+        },
+      })
+    ),
+    list: vi.fn().mockResolvedValue([]),
+    getInfo: vi.fn().mockResolvedValue(undefined),
+  },
+});
+
 vi.mock('./runtime/world.js', () => ({
-  getWorld: vi.fn(() => ({
-    streams: {
-      write: vi.fn().mockResolvedValue(undefined),
-      writeMulti: vi.fn().mockResolvedValue(undefined),
-      close: vi.fn().mockResolvedValue(undefined),
-      get: vi.fn().mockResolvedValue(
-        new ReadableStream({
-          start(c) {
-            c.close();
-          },
-        })
-      ),
-      list: vi.fn().mockResolvedValue([]),
-      getInfo: vi.fn().mockResolvedValue(undefined),
-    },
-  })),
+  getWorld: vi.fn(() => makeMockWorld()),
+}));
+
+// V2 step-side code paths use getWorldLazy. Mock it identically to getWorld
+// so tests that exercise stream writes (e.g. abort listener tests) work in
+// both the legacy and V2 paths.
+vi.mock('./runtime/get-world-lazy.js', () => ({
+  getWorldLazy: vi.fn(() => makeMockWorld()),
 }));
 
 const mockRunId = 'wrun_mockidnumber0001';
@@ -5479,7 +5488,7 @@ describe('AbortController serialization', () => {
           },
         })
       );
-      vi.mocked(getWorld).mockReturnValueOnce({
+      const oneShotWorld = {
         streams: {
           write: vi.fn().mockResolvedValue(undefined),
           writeMulti: vi.fn().mockResolvedValue(undefined),
@@ -5488,7 +5497,10 @@ describe('AbortController serialization', () => {
           list: vi.fn().mockResolvedValue([]),
           getInfo: vi.fn().mockResolvedValue(undefined),
         },
-      } as any);
+      } as any;
+      vi.mocked(getWorld).mockReturnValueOnce(oneShotWorld);
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      vi.mocked(getWorldLazy).mockReturnValueOnce(oneShotWorld);
 
       try {
         const controller: any = {};
@@ -5548,7 +5560,8 @@ describe('AbortController serialization', () => {
 
       const writeMock = vi.fn().mockResolvedValue(undefined);
       const { getWorld } = await import('./runtime/world.js');
-      vi.mocked(getWorld).mockReturnValue({
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
+      const mockWorld = {
         streams: {
           write: writeMock,
           writeMulti: vi.fn().mockResolvedValue(undefined),
@@ -5563,7 +5576,9 @@ describe('AbortController serialization', () => {
           list: vi.fn().mockResolvedValue([]),
           getInfo: vi.fn().mockResolvedValue(undefined),
         },
-      } as any);
+      } as any;
+      vi.mocked(getWorld).mockReturnValue(mockWorld);
+      vi.mocked(getWorldLazy).mockReturnValue(mockWorld);
 
       try {
         // External (non-workflow) controller — native AbortController.
@@ -5609,6 +5624,7 @@ describe('AbortController serialization', () => {
       } finally {
         (globalThis as any)[STABLE_ULID] = originalStableUlid;
         vi.mocked(getWorld).mockReset();
+        vi.mocked(getWorldLazy).mockReset();
       }
     });
 
@@ -5660,6 +5676,7 @@ describe('AbortController serialization', () => {
       });
 
       const { getWorld } = await import('./runtime/world.js');
+      const { getWorldLazy } = await import('./runtime/get-world-lazy.js');
       const mockWorld = {
         streams: {
           write: writeMock,
@@ -5671,6 +5688,7 @@ describe('AbortController serialization', () => {
         },
       } as any;
       vi.mocked(getWorld).mockReturnValue(mockWorld);
+      vi.mocked(getWorldLazy).mockReturnValue(mockWorld);
 
       try {
         const controller = new AbortController();
@@ -5712,6 +5730,7 @@ describe('AbortController serialization', () => {
       } finally {
         (globalThis as any)[STABLE_ULID] = originalStableUlid;
         vi.mocked(getWorld).mockReset();
+        vi.mocked(getWorldLazy).mockReset();
       }
     });
 
