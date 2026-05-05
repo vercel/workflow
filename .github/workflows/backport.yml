@@ -6,22 +6,34 @@ on:
   pull_request_target:
     types: [labeled]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit SHA on `main` to back-port. Defaults to the current HEAD of `main`.'
+        required: false
+        type: string
+      model:
+        description: 'AI model used for AI-assisted decisions and conflict resolution. Format: `<provider>/<model>` (the `vercel/` prefix is added automatically). Leave blank to use the workflow default.'
+        required: false
+        type: string
 
 concurrency: backport-stable
 
 # AI model used by every opencode invocation in this workflow. The
 # `vercel/` provider prefix is added at each use site, so this should
 # be specified as `<provider>/<model>` (e.g. `anthropic/claude-opus-4.7`).
+# Manual `workflow_dispatch` runs may override this via the `model` input.
 env:
-  AI_MODEL: anthropic/claude-opus-4.7
+  AI_MODEL: ${{ inputs.model || 'anthropic/claude-opus-4.7' }}
 
 jobs:
   backport:
     name: Backport to stable
     # Run on every push to main, OR when the `backport-stable` label is added
-    # to a merged PR (manual override / re-trigger).
+    # to a merged PR (manual override / re-trigger), OR on manual dispatch.
     if: |
       github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_target' &&
        github.event.pull_request.merged == true &&
        github.event.label.name == 'backport-stable')
@@ -38,6 +50,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_SHA: ${{ github.event.after }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          DISPATCH_REF: ${{ inputs.ref }}
         run: |
           # On push, we only consider the head commit of the push
           # (`github.event.after`). This matches our merge model: PRs land on
@@ -47,13 +60,36 @@ jobs:
           # considered for backport — those edge cases can be handled by
           # adding the `backport-stable` label to the relevant PRs to
           # re-trigger this workflow against each one.
-          if [ "$EVENT_NAME" = "push" ]; then
-            SHA="$PUSH_SHA"
-            echo "trigger=push" >> "$GITHUB_OUTPUT"
-          else
-            SHA="$MERGE_SHA"
-            echo "trigger=label" >> "$GITHUB_OUTPUT"
-          fi
+          #
+          # On manual `workflow_dispatch`, the `ref` input may specify a
+          # particular SHA on `main` (or any commit-ish that resolves to a
+          # SHA via `gh api`); when blank we default to the current
+          # `main` HEAD.
+          case "$EVENT_NAME" in
+            push)
+              SHA="$PUSH_SHA"
+              echo "trigger=push" >> "$GITHUB_OUTPUT"
+              ;;
+            workflow_dispatch)
+              if [ -n "$DISPATCH_REF" ]; then
+                # Resolve the user-supplied ref to a full SHA so downstream
+                # steps can compare/re-use it.
+                SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${DISPATCH_REF}" --jq '.sha')
+                if [ -z "$SHA" ]; then
+                  echo "::error::Could not resolve workflow_dispatch input ref '${DISPATCH_REF}' to a SHA."
+                  exit 1
+                fi
+              else
+                # Default to the current HEAD of `main`.
+                SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')
+              fi
+              echo "trigger=dispatch" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              SHA="$MERGE_SHA"
+              echo "trigger=label" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "Resolved commit SHA: $SHA"
 
@@ -100,7 +136,8 @@ jobs:
             exit 0
           fi
 
-          # Push trigger: look up PR associated with this commit (if any).
+          # Push or workflow_dispatch trigger: look up PR associated with
+          # this commit (if any).
           PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" --jq '.[0] // empty')
 
           if [ -z "$PR_JSON" ]; then
@@ -108,7 +145,13 @@ jobs:
             echo "pr_number=" >> "$GITHUB_OUTPUT"
             echo "pr_title=" >> "$GITHUB_OUTPUT"
             echo "pr_body=" >> "$GITHUB_OUTPUT"
-            echo "force_backport=false" >> "$GITHUB_OUTPUT"
+            # Manual dispatch always forces a backport (explicit user
+            # intent), even when no associated PR is found.
+            if [ "$TRIGGER" = "dispatch" ]; then
+              echo "force_backport=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "force_backport=false" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
 
@@ -121,7 +164,12 @@ jobs:
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           write_multiline_output "pr_title" "$PR_TITLE"
           write_multiline_output "pr_body" "$PR_BODY"
-          echo "force_backport=$HAS_LABEL" >> "$GITHUB_OUTPUT"
+          # Manual dispatch always forces; otherwise honor the label.
+          if [ "$TRIGGER" = "dispatch" ] || [ "$HAS_LABEL" = "true" ]; then
+            echo "force_backport=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "force_backport=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Check if backport PR already exists
         id: existing-pr
@@ -797,15 +845,21 @@ jobs:
             fi
             echo ""
 
-            if [ "$TRIGGER" = "label" ]; then
-              echo "Triggered by the \`backport-stable\` label."
-            else
-              echo "**AI recommendation:** $AI_REASONING"
-            fi
+            case "$TRIGGER" in
+              label)
+                echo "Triggered by the \`backport-stable\` label."
+                ;;
+              dispatch)
+                echo "Triggered manually via \`workflow_dispatch\`."
+                ;;
+              *)
+                echo "**AI recommendation:** $AI_REASONING"
+                ;;
+            esac
 
             if [ "$CHERRY_PICK_STATUS" = "conflict" ]; then
               echo ""
-              echo "Merge conflicts were resolved by AI ([opencode](https://opencode.ai) with Claude Opus). **Please review the conflict resolution carefully before merging.**"
+              echo "Merge conflicts were resolved by AI ([opencode](https://opencode.ai) with \`${AI_MODEL}\`). **Please review the conflict resolution carefully before merging.**"
             fi
           } > /tmp/pr-body.md
 
