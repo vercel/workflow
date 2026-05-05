@@ -577,15 +577,32 @@ jobs:
           STATUS=$(jq -r '.status' "$OUTCOME_FILE")
           case "$STATUS" in
             resolved)
-              # Sanity check: AI claims resolved, but ensure no conflict
-              # markers remain in the index. If conflicts remain despite
-              # the AI's claim, treat it as unresolved.
-              REMAINING=$(git diff --name-only --diff-filter=U || true)
-              if [ -n "$REMAINING" ]; then
-                echo "::warning::AI claimed conflicts were resolved but ${REMAINING} still has unresolved entries; treating as unresolved."
+              # Sanity-check the AI's claim before committing the
+              # cherry-pick. Two failure modes to defend against:
+              #
+              # 1. Files left as unmerged index entries (the AI didn't
+              #    `git add` them, or didn't resolve them at all).
+              UNMERGED=$(git diff --name-only --diff-filter=U || true)
+              if [ -n "$UNMERGED" ]; then
+                echo "::warning::AI claimed conflicts were resolved but the following files still have unmerged index entries; treating as unresolved:"
+                echo "$UNMERGED"
                 echo "resolved=false" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
+              # 2. Files that were `git add`-ed but still contain conflict
+              #    markers in their content. `git diff --check --cached`
+              #    flags lines like `file.txt:1: leftover conflict marker`
+              #    when any staged file contains the standard markers; we
+              #    grep specifically for that phrase so an unrelated
+              #    whitespace warning doesn't trip the check.
+              CHECK_OUTPUT=$(git diff --check --cached 2>&1 || true)
+              if echo "$CHECK_OUTPUT" | grep -q "leftover conflict marker"; then
+                echo "::warning::AI claimed conflicts were resolved but staged files still contain conflict markers (<<<<<<<, =======, >>>>>>>); treating as unresolved:"
+                echo "$CHECK_OUTPUT" | grep "leftover conflict marker"
+                echo "resolved=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+
               GIT_EDITOR=true git cherry-pick --continue
               echo "resolved=true" >> "$GITHUB_OUTPUT"
               echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
