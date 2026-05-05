@@ -171,13 +171,24 @@ jobs:
         id: decide
         if: steps.existing-pr.outputs.exists != 'true'
         env:
-          OPENCODE_PERMISSION: '{"allow":["*"]}'
+          # Allow opencode tools to run without prompting. The value is the
+          # entire `permission` config (see https://opencode.ai/docs/permissions/);
+          # the bare string "allow" applies allow-everything to every scope,
+          # including `external_directory` (which defaults to "ask" and would
+          # otherwise auto-reject in non-interactive `opencode run`).
+          OPENCODE_PERMISSION: '"allow"'
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
           PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}
           PR_BODY: ${{ steps.pr-lookup.outputs.pr_body }}
           FORCE_BACKPORT: ${{ steps.pr-lookup.outputs.force_backport }}
         run: |
+          # Fail the entire job on any unhandled error or unset variable so
+          # AI/infra failures (auth errors, gateway down, opencode crashes)
+          # surface as a red workflow run instead of being silently masked
+          # as a "no backport" decision.
+          set -euo pipefail
+
           # Explicit override: backport-stable label was applied (or label
           # event triggered this run). Skip AI analysis.
           if [ "$FORCE_BACKPORT" = "true" ]; then
@@ -192,16 +203,24 @@ jobs:
           CHANGED_FILES=$(git show --name-only --format='' "$SHA")
 
           # Capture the diff with a generous but bounded size cap so we don't
-          # blow up the prompt for huge refactors.
-          git show --format='' "$SHA" > /tmp/commit-diff.patch
-          DIFF_SIZE=$(wc -c < /tmp/commit-diff.patch)
+          # blow up the prompt for huge refactors. We write it inside the
+          # repo working directory (same dir opencode runs in) so opencode's
+          # `read` tool doesn't need `external_directory` permission.
+          git show --format='' "$SHA" > .backport-commit-diff.patch
+          DIFF_SIZE=$(wc -c < .backport-commit-diff.patch)
           MAX_DIFF_BYTES=200000
           if [ "$DIFF_SIZE" -gt "$MAX_DIFF_BYTES" ]; then
-            head -c "$MAX_DIFF_BYTES" /tmp/commit-diff.patch > /tmp/commit-diff-truncated.patch
-            echo "" >> /tmp/commit-diff-truncated.patch
-            echo "[... diff truncated at ${MAX_DIFF_BYTES} bytes; full size was ${DIFF_SIZE} bytes ...]" >> /tmp/commit-diff-truncated.patch
-            mv /tmp/commit-diff-truncated.patch /tmp/commit-diff.patch
+            head -c "$MAX_DIFF_BYTES" .backport-commit-diff.patch > .backport-commit-diff-truncated.patch
+            echo "" >> .backport-commit-diff-truncated.patch
+            echo "[... diff truncated at ${MAX_DIFF_BYTES} bytes; full size was ${DIFF_SIZE} bytes ...]" >> .backport-commit-diff-truncated.patch
+            mv .backport-commit-diff-truncated.patch .backport-commit-diff.patch
           fi
+
+          # Decision file lives inside the working directory for the same
+          # reason: opencode's `write` tool treats anything outside its cwd as
+          # an `external_directory` access, which auto-rejects in headless
+          # mode unless explicitly allowed.
+          DECISION_FILE=".backport-decision.json"
 
           {
             echo "You are deciding whether a commit on the \`main\` branch should be backported to the \`stable\` branch."
@@ -230,7 +249,7 @@ jobs:
             echo ""
             echo "## Output format"
             echo ""
-            echo "Write your decision to /tmp/backport-decision.json as a single JSON object with EXACTLY these two keys (and nothing else):"
+            echo "Write your decision to ${DECISION_FILE} (relative to the current working directory) as a single JSON object with EXACTLY these two keys (and nothing else):"
             echo "- \`decision\`: either the string \"yes\" or \"no\""
             echo "- \`reasoning\`: a 1-3 sentence explanation in Markdown (no headings, no code fences around the whole thing)"
             echo ""
@@ -265,27 +284,36 @@ jobs:
             echo ""
             echo "Diff:"
             echo "\`\`\`diff"
-            cat /tmp/commit-diff.patch
+            cat .backport-commit-diff.patch
             echo "\`\`\`"
-          } > /tmp/decision-prompt.txt
+          } > .backport-decision-prompt.txt
 
-          rm -f /tmp/backport-decision.json
-          opencode run --model vercel/anthropic/claude-opus-4.7 "$(cat /tmp/decision-prompt.txt)"
+          rm -f "$DECISION_FILE"
 
-          if [ ! -f /tmp/backport-decision.json ]; then
-            echo "::warning::AI did not produce a decision file; defaulting to no backport."
-            echo "decision=no" >> "$GITHUB_OUTPUT"
-            echo "reasoning=AI analysis did not produce a decision file." >> "$GITHUB_OUTPUT"
-            exit 0
+          # Run the AI. `opencode run` exits 0 even when the AI Gateway auth
+          # fails or a tool call is rejected, so we can't rely on its exit
+          # code alone — but with `set -e` above, any non-zero exit will also
+          # fail the job. The real signal is whether the decision file was
+          # produced.
+          opencode run --model vercel/anthropic/claude-opus-4.7 "$(cat .backport-decision-prompt.txt)"
+
+          if [ ! -f "$DECISION_FILE" ]; then
+            echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, add the \`backport-stable\` label to the source PR."
+            exit 1
           fi
 
-          DECISION=$(jq -r '.decision' /tmp/backport-decision.json)
-          REASONING=$(jq -r '.reasoning' /tmp/backport-decision.json)
+          if ! jq empty "$DECISION_FILE" 2>/dev/null; then
+            echo "::error::AI decision file at ${DECISION_FILE} is not valid JSON:"
+            cat "$DECISION_FILE"
+            exit 1
+          fi
+
+          DECISION=$(jq -r '.decision' "$DECISION_FILE")
+          REASONING=$(jq -r '.reasoning' "$DECISION_FILE")
 
           if [ "$DECISION" != "yes" ] && [ "$DECISION" != "no" ]; then
-            echo "::warning::AI returned invalid decision '$DECISION'; defaulting to no backport."
-            DECISION="no"
-            REASONING="AI returned an unrecognized decision value. Original reasoning: $REASONING"
+            echo "::error::AI returned invalid decision '$DECISION' (expected 'yes' or 'no'). Reasoning: $REASONING"
+            exit 1
           fi
 
           echo "AI decision: $DECISION"
@@ -397,7 +425,9 @@ jobs:
         id: ai-resolve
         continue-on-error: true
         env:
-          OPENCODE_PERMISSION: '{"allow":["*"]}'
+          # Allow opencode tools to run without prompting. See the matching
+          # comment on the `Decide whether to backport` step for details.
+          OPENCODE_PERMISSION: '"allow"'
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}
         run: |
