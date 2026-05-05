@@ -1,8 +1,10 @@
 name: Backport to stable
 
 on:
+  push:
+    branches: [main]
   pull_request_target:
-    types: [closed, labeled]
+    types: [labeled]
     branches: [main]
 
 concurrency: backport-stable
@@ -10,34 +12,365 @@ concurrency: backport-stable
 jobs:
   backport:
     name: Backport to stable
-    if: github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'backport-stable')
+    # Run on every push to main, OR when the `backport-stable` label is added
+    # to a merged PR (manual override / re-trigger).
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.merged == true &&
+       github.event.label.name == 'backport-stable')
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
       issues: write
     steps:
+      - name: Resolve commit SHA
+        id: resolve
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_SHA: ${{ github.event.after }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          # On push, we only consider the head commit of the push
+          # (`github.event.after`). This matches our merge model: PRs land on
+          # `main` as a single squash-merge commit, and direct pushes to
+          # `main` are forbidden by AGENTS.md. Multi-commit pushes (e.g. an
+          # accidental rebase merge) would only have their head commit
+          # considered for backport — those edge cases can be handled by
+          # adding the `backport-stable` label to the relevant PRs to
+          # re-trigger this workflow against each one.
+          if [ "$EVENT_NAME" = "push" ]; then
+            SHA="$PUSH_SHA"
+            echo "trigger=push" >> "$GITHUB_OUTPUT"
+          else
+            SHA="$MERGE_SHA"
+            echo "trigger=label" >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Resolved commit SHA: $SHA"
+
       - name: Checkout Repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ steps.resolve.outputs.sha }}
+
+      - name: Look up associated PR
+        id: pr-lookup
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          TRIGGER: ${{ steps.resolve.outputs.trigger }}
+          LABEL_PR_NUMBER: ${{ github.event.pull_request.number }}
+          LABEL_PR_TITLE: ${{ github.event.pull_request.title }}
+          LABEL_PR_BODY: ${{ github.event.pull_request.body }}
+          LABEL_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: |
+          # Helper: write a multiline value to $GITHUB_OUTPUT using a random
+          # delimiter so user-controlled content (PR title, body, AI reasoning)
+          # cannot collide with or inject into the heredoc terminator.
+          write_multiline_output() {
+            local key="$1"
+            local value="$2"
+            local delim
+            delim="EOF_$(uuidgen | tr -d -)"
+            {
+              printf '%s<<%s\n' "$key" "$delim"
+              printf '%s\n' "$value"
+              printf '%s\n' "$delim"
+            } >> "$GITHUB_OUTPUT"
+          }
+
+          # When triggered by a label event, we already have the PR context.
+          if [ "$TRIGGER" = "label" ]; then
+            echo "pr_number=$LABEL_PR_NUMBER" >> "$GITHUB_OUTPUT"
+            write_multiline_output "pr_title" "$LABEL_PR_TITLE"
+            write_multiline_output "pr_body" "$LABEL_PR_BODY"
+            # Label trigger always forces a backport (explicit user intent).
+            echo "force_backport=true" >> "$GITHUB_OUTPUT"
+            echo "Triggered by label on PR #$LABEL_PR_NUMBER"
+            exit 0
+          fi
+
+          # Push trigger: look up PR associated with this commit (if any).
+          PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" --jq '.[0] // empty')
+
+          if [ -z "$PR_JSON" ]; then
+            echo "No PR associated with commit ${SHA}"
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            echo "pr_title=" >> "$GITHUB_OUTPUT"
+            echo "pr_body=" >> "$GITHUB_OUTPUT"
+            echo "force_backport=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
+          PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
+          PR_BODY=$(echo "$PR_JSON" | jq -r '.body // ""')
+          HAS_LABEL=$(echo "$PR_JSON" | jq -r '[.labels[].name] | index("backport-stable") != null')
+
+          echo "Found PR #$PR_NUMBER (backport-stable label: $HAS_LABEL)"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          write_multiline_output "pr_title" "$PR_TITLE"
+          write_multiline_output "pr_body" "$PR_BODY"
+          echo "force_backport=$HAS_LABEL" >> "$GITHUB_OUTPUT"
+
+      - name: Check if backport PR already exists
+        id: existing-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+        run: |
+          # Branch name is keyed off PR number when available, else commit SHA.
+          if [ -n "$PR_NUMBER" ]; then
+            BRANCH="backport/pr-${PR_NUMBER}-to-stable"
+          else
+            BRANCH="backport/commit-${SHA:0:12}-to-stable"
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          EXISTING=$(gh pr list --state open --base stable --head "$BRANCH" --json url --jq '.[0].url' || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Backport PR already exists: $EXISTING"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "url=$EXISTING" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if backport PR already open
+        if: steps.existing-pr.outputs.exists == 'true'
+        run: echo "Backport PR already exists for this commit; skipping."
 
       - name: Setup pnpm
+        if: steps.existing-pr.outputs.exists != 'true'
         uses: pnpm/action-setup@v5
 
       - name: Setup Node.js
+        if: steps.existing-pr.outputs.exists != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: 22.x
 
+      - name: Install opencode
+        if: steps.existing-pr.outputs.exists != 'true'
+        run: npm install -g opencode-ai@1.4.3
+
+      - name: Configure opencode
+        if: steps.existing-pr.outputs.exists != 'true'
+        env:
+          AI_GATEWAY_TOKEN: ${{ secrets.AI_GATEWAY_API_KEY }}
+        run: |
+          mkdir -p ~/.local/share/opencode
+          jq -n --arg key "$AI_GATEWAY_TOKEN" '{vercel:{type:"api",key:$key}}' > ~/.local/share/opencode/auth.json
+
+      - name: Decide whether to backport
+        id: decide
+        if: steps.existing-pr.outputs.exists != 'true'
+        env:
+          # Allow opencode tools to run without prompting. The value is the
+          # entire `permission` config (see https://opencode.ai/docs/permissions/);
+          # the bare string "allow" applies allow-everything to every scope,
+          # including `external_directory` (which defaults to "ask" and would
+          # otherwise auto-reject in non-interactive `opencode run`).
+          OPENCODE_PERMISSION: '"allow"'
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+          PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}
+          PR_BODY: ${{ steps.pr-lookup.outputs.pr_body }}
+          FORCE_BACKPORT: ${{ steps.pr-lookup.outputs.force_backport }}
+        run: |
+          # Fail the entire job on any unhandled error or unset variable so
+          # AI/infra failures (auth errors, gateway down, opencode crashes)
+          # surface as a red workflow run instead of being silently masked
+          # as a "no backport" decision.
+          set -euo pipefail
+
+          # Explicit override: backport-stable label was applied (or label
+          # event triggered this run). Skip AI analysis.
+          if [ "$FORCE_BACKPORT" = "true" ]; then
+            echo "Label override: forcing backport (skipping AI analysis)."
+            echo "decision=yes" >> "$GITHUB_OUTPUT"
+            echo "reasoning=The \`backport-stable\` label was applied, forcing this commit to be backported." >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          COMMIT_MSG=$(git log -1 --format='%B' "$SHA")
+          COMMIT_SUBJECT=$(git log -1 --format='%s' "$SHA")
+          CHANGED_FILES=$(git show --name-only --format='' "$SHA")
+
+          # Capture the diff with a generous but bounded size cap so we don't
+          # blow up the prompt for huge refactors. We write it inside the
+          # repo working directory (same dir opencode runs in) so opencode's
+          # `read` tool doesn't need `external_directory` permission.
+          git show --format='' "$SHA" > .backport-commit-diff.patch
+          DIFF_SIZE=$(wc -c < .backport-commit-diff.patch)
+          MAX_DIFF_BYTES=200000
+          if [ "$DIFF_SIZE" -gt "$MAX_DIFF_BYTES" ]; then
+            head -c "$MAX_DIFF_BYTES" .backport-commit-diff.patch > .backport-commit-diff-truncated.patch
+            echo "" >> .backport-commit-diff-truncated.patch
+            echo "[... diff truncated at ${MAX_DIFF_BYTES} bytes; full size was ${DIFF_SIZE} bytes ...]" >> .backport-commit-diff-truncated.patch
+            mv .backport-commit-diff-truncated.patch .backport-commit-diff.patch
+          fi
+
+          # Decision file lives inside the working directory for the same
+          # reason: opencode's `write` tool treats anything outside its cwd as
+          # an `external_directory` access, which auto-rejects in headless
+          # mode unless explicitly allowed.
+          DECISION_FILE=".backport-decision.json"
+
+          {
+            echo "You are deciding whether a commit on the \`main\` branch should be backported to the \`stable\` branch."
+            echo ""
+            echo "## Decision criteria"
+            echo ""
+            echo "Recommend a backport for any commit that does NOT specifically build on behavior that exists only on \`main\`. In particular, recommend backport for:"
+            echo "- Bug fixes to existing functionality that at least partially exists on \`stable\`"
+            echo "- Added test cases or changes for edge cases that might also exist on \`stable\`"
+            echo "- Minor feature additions that are self-contained and not dependent on \`main\`-only changes"
+            echo "- Documentation fixes/improvements to content already on \`stable\`"
+            echo "- Dependency bumps, build/CI fixes, and other infrastructure changes that affect both branches"
+            echo ""
+            echo "Recommend AGAINST backport for:"
+            echo "- Changes that explicitly build on or require new APIs/behavior introduced only on \`main\`"
+            echo "- Major breaking changes intended exclusively for the next major release"
+            echo "- Changes to files/directories that are not maintained on \`stable\` (the \`docs/\` app outside of \`docs/content/\`, and anything under \`skills/\`)"
+            echo "- Changesets-only commits, version bump commits (\"Version Packages\"), and similar release plumbing"
+            echo "- Commits that revert something that only exists on \`main\`"
+            echo ""
+            echo "## Your task"
+            echo ""
+            echo "Analyze the commit below and decide whether to recommend a backport."
+            echo ""
+            echo "When in doubt, lean toward recommending a backport — humans review the resulting PR and can close it if it's not worth merging."
+            echo ""
+            echo "## Output format"
+            echo ""
+            echo "Write your decision to ${DECISION_FILE} (relative to the current working directory) as a single JSON object with EXACTLY these two keys (and nothing else):"
+            echo "- \`decision\`: either the string \"yes\" or \"no\""
+            echo "- \`reasoning\`: a 1-3 sentence explanation in Markdown (no headings, no code fences around the whole thing)"
+            echo ""
+            echo "Use the \`write\` tool to create the file. Do not print the JSON to stdout. Do not include any additional keys."
+            echo ""
+            echo "## Commit context"
+            echo ""
+            echo "Commit SHA: ${SHA}"
+            if [ -n "$PR_NUMBER" ]; then
+              echo "Associated PR: #${PR_NUMBER}"
+              echo "PR title: ${PR_TITLE}"
+              if [ -n "$PR_BODY" ]; then
+                echo ""
+                echo "PR body:"
+                echo "\`\`\`"
+                echo "$PR_BODY"
+                echo "\`\`\`"
+              fi
+            fi
+            echo ""
+            echo "Commit subject: ${COMMIT_SUBJECT}"
+            echo ""
+            echo "Full commit message:"
+            echo "\`\`\`"
+            echo "$COMMIT_MSG"
+            echo "\`\`\`"
+            echo ""
+            echo "Changed files:"
+            echo "\`\`\`"
+            echo "$CHANGED_FILES"
+            echo "\`\`\`"
+            echo ""
+            echo "Diff:"
+            echo "\`\`\`diff"
+            cat .backport-commit-diff.patch
+            echo "\`\`\`"
+          } > .backport-decision-prompt.txt
+
+          rm -f "$DECISION_FILE"
+
+          # Run the AI. `opencode run` exits 0 even when the AI Gateway auth
+          # fails or a tool call is rejected, so we can't rely on its exit
+          # code alone — but with `set -e` above, any non-zero exit will also
+          # fail the job. The real signal is whether the decision file was
+          # produced.
+          opencode run --model vercel/anthropic/claude-opus-4.7 "$(cat .backport-decision-prompt.txt)"
+
+          if [ ! -f "$DECISION_FILE" ]; then
+            echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, add the \`backport-stable\` label to the source PR."
+            exit 1
+          fi
+
+          if ! jq empty "$DECISION_FILE" 2>/dev/null; then
+            echo "::error::AI decision file at ${DECISION_FILE} is not valid JSON:"
+            cat "$DECISION_FILE"
+            exit 1
+          fi
+
+          DECISION=$(jq -r '.decision' "$DECISION_FILE")
+          REASONING=$(jq -r '.reasoning' "$DECISION_FILE")
+
+          if [ "$DECISION" != "yes" ] && [ "$DECISION" != "no" ]; then
+            echo "::error::AI returned invalid decision '$DECISION' (expected 'yes' or 'no'). Reasoning: $REASONING"
+            exit 1
+          fi
+
+          echo "AI decision: $DECISION"
+          echo "AI reasoning: $REASONING"
+          echo "decision=$DECISION" >> "$GITHUB_OUTPUT"
+
+          # Use a randomized heredoc delimiter so AI-generated reasoning
+          # cannot collide with or inject into the terminator.
+          REASONING_DELIM="EOF_$(uuidgen | tr -d -)"
+          {
+            printf 'reasoning<<%s\n' "$REASONING_DELIM"
+            printf '%s\n' "$REASONING"
+            printf '%s\n' "$REASONING_DELIM"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Comment on PR (no backport)
+        if: |
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.decide.outputs.decision == 'no' &&
+          steps.pr-lookup.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        env:
+          REASONING: ${{ steps.decide.outputs.reasoning }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const reasoning = process.env.REASONING;
+            const sha = process.env.SHA.slice(0, 7);
+            const prNumber = Number(process.env.PR_NUMBER);
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: [
+                `**No backport to \`stable\`** for ${sha} (AI decision).`,
+                '',
+                reasoning,
+                '',
+                'To override, add the `backport-stable` label to this PR.'
+              ].join('\n')
+            });
+
       - name: Cherry-pick to stable
         id: cherry-pick
+        if: |
+          steps.existing-pr.outputs.exists != 'true' &&
+          steps.decide.outputs.decision == 'yes'
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
         run: |
-          MERGE_SHA="${{ github.event.pull_request.merge_commit_sha }}"
-          git config user.name "$(git log -1 --format='%an' "$MERGE_SHA")"
-          git config user.email "$(git log -1 --format='%ae' "$MERGE_SHA")"
+          git config user.name "$(git log -1 --format='%an' "$SHA")"
+          git config user.email "$(git log -1 --format='%ae' "$SHA")"
+          git fetch origin stable
           git checkout stable
-          if git cherry-pick "$MERGE_SHA" --no-edit --signoff; then
+          if git cherry-pick "$SHA" --no-edit --signoff; then
             echo "status=clean" >> "$GITHUB_OUTPUT"
             echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
@@ -87,32 +420,18 @@ jobs:
             fi
           fi
 
-      - name: Push clean backport
-        if: steps.cherry-pick.outputs.status == 'clean'
-        run: git push origin stable
-
-      - name: Install opencode
-        if: steps.cherry-pick.outputs.status == 'conflict'
-        run: npm install -g opencode-ai@1.4.3
-
-      - name: Configure opencode
-        if: steps.cherry-pick.outputs.status == 'conflict'
-        env:
-          AI_GATEWAY_TOKEN: ${{ secrets.AI_GATEWAY_API_KEY }}
-        run: |
-          mkdir -p ~/.local/share/opencode
-          jq -n --arg key "$AI_GATEWAY_TOKEN" '{vercel:{type:"api",key:$key}}' > ~/.local/share/opencode/auth.json
-
       - name: Resolve conflicts with opencode
         if: steps.cherry-pick.outputs.status == 'conflict'
         id: ai-resolve
         continue-on-error: true
         env:
-          OPENCODE_PERMISSION: '{"allow":["*"]}'
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          # Allow opencode tools to run without prompting. See the matching
+          # comment on the `Decide whether to backport` step for details.
+          OPENCODE_PERMISSION: '"allow"'
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}
         run: |
-          COMMIT_MSG=$(git log -1 --format='%B' "$MERGE_SHA")
+          COMMIT_MSG=$(git log -1 --format='%B' "$SHA")
 
           cat > /tmp/backport-prompt.txt <<PROMPT
           The working tree has git merge conflicts from a failed cherry-pick.
@@ -155,100 +474,337 @@ jobs:
             echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create backport PR with AI-resolved conflicts
-        if: steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true'
+      - name: Push backport branch via GitHub API
+        # Branch protection on this repo requires verified signatures on
+        # every ref (an enterprise-level ruleset matching `~ALL`). A normal
+        # `git push` of a locally-cherry-picked commit is rejected because
+        # CI doesn't have a signing key. To work around this, we replay the
+        # cherry-pick through the GitHub GraphQL `createCommitOnBranch`
+        # mutation, which signs commits automatically with GitHub's
+        # internal key (the same way commits made via the web UI are
+        # signed). The resulting commit is attributed to the token owner
+        # (`github-actions[bot]`), not the original author.
+        if: |
+          steps.cherry-pick.outputs.status == 'clean' ||
+          (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
+        id: push-branch
+        uses: actions/github-script@v7
+        env:
+          BRANCH: ${{ steps.existing-pr.outputs.branch }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { execFileSync } = require('node:child_process');
+
+            const branch = process.env.BRANCH;
+            const cherrySha = process.env.SHA;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const git = (...args) =>
+              execFileSync('git', args, { encoding: 'utf8' }).trim();
+
+            // The cherry-pick was just performed on top of `stable` in the
+            // working tree, so HEAD is the local cherry-pick commit and its
+            // first parent is the `stable` HEAD we want to base on.
+            const localHead = git('rev-parse', 'HEAD');
+            const parentSha = git('rev-parse', 'HEAD~1');
+            const commitMessage = git('log', '-1', '--format=%B', localHead);
+
+            core.info(
+              `Replaying ${cherrySha} (local ${localHead}) on top of ${parentSha} via GraphQL createCommitOnBranch`,
+            );
+
+            // Diff against the parent to find every path that changed.
+            // Status codes: A=added, M=modified, D=deleted, R=renamed (Rxx),
+            // C=copied (Cxx), T=type-changed.
+            const diffOutput = git(
+              'diff',
+              '--name-status',
+              '-z',
+              parentSha,
+              localHead,
+            );
+            // -z output: <status>\0<path>\0 (or for R/C: <status>\0<old>\0<new>\0)
+            const diffParts = diffOutput
+              .split('\0')
+              .filter((s) => s.length > 0);
+            const additions = []; // [{ path, contents (base64) }]
+            const deletions = []; // [{ path }]
+
+            const addPath = (path) => {
+              // Look up the mode + blob in the local commit so we can
+              // detect unsupported file types (executable bit, symlinks,
+              // submodules) — GraphQL FileChanges doesn't support those.
+              const lsTree = git('ls-tree', localHead, '--', path);
+              const match = lsTree.match(
+                /^(\d{6}) (\w+) ([0-9a-f]{40})\t/,
+              );
+              if (!match) {
+                throw new Error(
+                  `Unexpected ls-tree output for ${path}: ${lsTree}`,
+                );
+              }
+              const [, mode, type, blobSha] = match;
+              if (type !== 'blob') {
+                throw new Error(
+                  `Unsupported tree entry for ${path}: type=${type} mode=${mode}. ` +
+                  `GraphQL createCommitOnBranch only supports regular files.`,
+                );
+              }
+              if (mode !== '100644') {
+                core.warning(
+                  `File ${path} has mode ${mode} in the cherry-pick, but ` +
+                  `GraphQL createCommitOnBranch only supports mode 100644. ` +
+                  `The backport will lose the executable bit / symlink — ` +
+                  `please review the resulting PR carefully.`,
+                );
+              }
+              // Read raw bytes (binary-safe) from the git object store.
+              const blobBytes = execFileSync(
+                'git',
+                ['cat-file', 'blob', blobSha],
+                { maxBuffer: 256 * 1024 * 1024 }, // 256MB cap
+              );
+              additions.push({
+                path,
+                contents: blobBytes.toString('base64'),
+              });
+            };
+
+            for (let i = 0; i < diffParts.length; ) {
+              const status = diffParts[i++];
+              const code = status[0];
+              if (code === 'R' || code === 'C') {
+                const oldPath = diffParts[i++];
+                const newPath = diffParts[i++];
+                addPath(newPath);
+                deletions.push({ path: oldPath });
+                continue;
+              }
+              const path = diffParts[i++];
+              if (code === 'D') {
+                deletions.push({ path });
+              } else {
+                addPath(path);
+              }
+            }
+
+            if (additions.length === 0 && deletions.length === 0) {
+              core.warning(
+                'Cherry-pick produced no file changes; skipping backport push.',
+              );
+              core.setOutput('pushed', 'false');
+              return;
+            }
+
+            // Ensure the branch exists on the remote and points at the
+            // current `stable` HEAD before invoking `createCommitOnBranch`.
+            // The mutation requires the named branch to already exist and
+            // its `expectedHeadOid` to match — it doesn't create new
+            // branches itself. If the branch is stale or absent, force it
+            // to the parent commit.
+            const refName = `heads/${branch}`;
+            let needsCreate = false;
+            try {
+              const { data: existingRef } = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: refName,
+              });
+              if (existingRef.object.sha !== parentSha) {
+                core.info(
+                  `Resetting existing branch ${branch} from ${existingRef.object.sha} -> ${parentSha} (stable HEAD)`,
+                );
+                await github.rest.git.updateRef({
+                  owner,
+                  repo,
+                  ref: refName,
+                  sha: parentSha,
+                  force: true,
+                });
+              }
+            } catch (err) {
+              if (err.status === 404) {
+                needsCreate = true;
+              } else {
+                throw err;
+              }
+            }
+            if (needsCreate) {
+              core.info(`Creating branch ${branch} at ${parentSha}`);
+              await github.rest.git.createRef({
+                owner,
+                repo,
+                ref: `refs/${refName}`,
+                sha: parentSha,
+              });
+            }
+
+            // Split the commit message into headline (first line) + body
+            // (everything after the first blank line), per the
+            // CommitMessage GraphQL input type.
+            const firstNewline = commitMessage.indexOf('\n');
+            let headline;
+            let body;
+            if (firstNewline === -1) {
+              headline = commitMessage;
+              body = '';
+            } else {
+              headline = commitMessage.slice(0, firstNewline);
+              // Skip exactly one blank line if present, so we don't
+              // double-blank the body when the message has the standard
+              // "subject\n\nbody" shape.
+              const rest = commitMessage.slice(firstNewline + 1);
+              body = rest.startsWith('\n') ? rest.slice(1) : rest;
+            }
+
+            // Run the mutation. GitHub signs the commit automatically.
+            const mutation = `
+              mutation($input: CreateCommitOnBranchInput!) {
+                createCommitOnBranch(input: $input) {
+                  commit { oid url }
+                }
+              }
+            `;
+            const result = await github.graphql(mutation, {
+              input: {
+                branch: {
+                  repositoryNameWithOwner: `${owner}/${repo}`,
+                  branchName: branch,
+                },
+                expectedHeadOid: parentSha,
+                message: { headline, body },
+                fileChanges: { additions, deletions },
+              },
+            });
+            const newOid = result.createCommitOnBranch.commit.oid;
+            core.info(
+              `Created signed commit ${newOid} on branch ${branch} (${result.createCommitOnBranch.commit.url})`,
+            );
+
+            core.setOutput('pushed', 'true');
+            core.setOutput('commit_sha', newOid);
+
+      - name: Create backport PR
+        if: steps.push-branch.outputs.pushed == 'true'
         id: backport-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
+          PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}
+          BRANCH: ${{ steps.existing-pr.outputs.branch }}
+          CHERRY_PICK_STATUS: ${{ steps.cherry-pick.outputs.status }}
+          AI_REASONING: ${{ steps.decide.outputs.reasoning }}
+          TRIGGER: ${{ steps.resolve.outputs.trigger }}
         run: |
-          BRANCH="backport/pr-${PR_NUMBER}-to-stable"
-          git checkout -B "$BRANCH"
-          git push --force-with-lease origin "$BRANCH"
+          # Build the PR title.
+          if [ -n "$PR_NUMBER" ]; then
+            TITLE="Backport #${PR_NUMBER}: ${PR_TITLE}"
+          else
+            COMMIT_SUBJECT=$(git log -1 --format='%s' "$SHA")
+            TITLE="Backport ${SHA:0:7}: ${COMMIT_SUBJECT}"
+          fi
 
-          EXISTING_PR=$(gh pr list --state open --base stable --head "$BRANCH" --json url --jq '.[0].url')
+          # Build the PR body.
+          {
+            if [ -n "$PR_NUMBER" ]; then
+              echo "Automated backport of #${PR_NUMBER} to \`stable\`."
+            else
+              echo "Automated backport of ${SHA} to \`stable\`."
+            fi
+            echo ""
 
+            if [ "$TRIGGER" = "label" ]; then
+              echo "Triggered by the \`backport-stable\` label."
+            else
+              echo "**AI recommendation:** $AI_REASONING"
+            fi
+
+            if [ "$CHERRY_PICK_STATUS" = "conflict" ]; then
+              echo ""
+              echo "Merge conflicts were resolved by AI ([opencode](https://opencode.ai) with Claude Opus). **Please review the conflict resolution carefully before merging.**"
+            fi
+          } > /tmp/pr-body.md
+
+          # If a PR already exists for this branch (e.g. an earlier failed
+          # attempt left one behind), reuse it instead of erroring.
+          EXISTING_PR=$(gh pr list --state open --base stable --head "$BRANCH" --json url --jq '.[0].url' || true)
           if [ -n "$EXISTING_PR" ]; then
             PR_URL="$EXISTING_PR"
+            echo "Reusing existing backport PR: $PR_URL"
           else
             PR_URL=$(gh pr create \
               --base stable \
               --head "$BRANCH" \
-              --title "Backport #${PR_NUMBER}: $PR_TITLE" \
-              --body "$(cat <<'BODY'
-          Automated backport of #${{ github.event.pull_request.number }} to `stable`.
-
-          Merge conflicts were resolved by AI ([opencode](https://opencode.ai) with Claude Opus). **Please review the conflict resolution before merging.**
-          BODY
-          )")
+              --title "$TITLE" \
+              --body-file /tmp/pr-body.md)
+            echo "Created backport PR: $PR_URL"
           fi
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Comment on clean backport
-        if: steps.cherry-pick.outputs.status == 'clean'
+      - name: Comment on source PR (backport created)
+        if: |
+          steps.backport-pr.outputs.pr_url != '' &&
+          steps.pr-lookup.outputs.pr_number != ''
         uses: actions/github-script@v7
+        env:
+          CHERRY_PICK_STATUS: ${{ steps.cherry-pick.outputs.status }}
+          PR_URL: ${{ steps.backport-pr.outputs.pr_url }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const originalSha = '${{ github.event.pull_request.merge_commit_sha }}'.slice(0, 7);
-            const cherryPickSha = '${{ steps.cherry-pick.outputs.cherry_pick_sha }}'.slice(0, 7);
+            const cherryPickStatus = process.env.CHERRY_PICK_STATUS;
+            const prUrl = process.env.PR_URL;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const conflictNote = cherryPickStatus === 'conflict'
+              ? ' Merge conflicts were resolved by AI — please review carefully.'
+              : '';
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body: `Backported to \`stable\` (${originalSha} -> ${cherryPickSha}).`
-            });
-
-      - name: Comment on AI-resolved backport
-        if: steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body: 'Cherry-pick to `stable` had conflicts that were resolved by AI. Please review the backport PR: ${{ steps.backport-pr.outputs.pr_url }}'
+              issue_number: prNumber,
+              body: `Backport PR opened against \`stable\`: ${prUrl}.${conflictNote}`
             });
 
       - name: Comment on conflict failure
-        if: always() && steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved != 'true'
+        if: |
+          always() &&
+          steps.cherry-pick.outputs.status == 'conflict' &&
+          steps.ai-resolve.outputs.resolved != 'true' &&
+          steps.pr-lookup.outputs.pr_number != ''
         uses: actions/github-script@v7
+        env:
+          SHA: ${{ steps.resolve.outputs.sha }}
+          PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const sha = '${{ github.event.pull_request.merge_commit_sha }}';
+            const sha = process.env.SHA;
+            const prNumber = Number(process.env.PR_NUMBER);
+            const shortSha = sha.slice(0, 12);
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
+              issue_number: prNumber,
               body: [
                 '**Backport to `stable` failed** — the cherry-pick had conflicts that could not be resolved automatically.',
                 '',
-                'To resolve manually:',
+                'To resolve manually, push a backport branch and open a PR against `stable` (the workflow never pushes directly to `stable`). Note: this repository requires verified signatures on every branch, so your local commits must be signed (`git config commit.gpgsign true` with a configured GPG/SSH signing key, or `git cherry-pick -S`).',
                 '```bash',
                 'git fetch origin stable',
-                'git checkout stable',
-                `git cherry-pick ${sha}`,
+                `git checkout -b backport/pr-${prNumber}-to-stable origin/stable`,
+                `git cherry-pick -S ${sha}    # -S signs the commit`,
                 '# Fix conflicts, then:',
+                'git add -A',
                 'git cherry-pick --continue',
-                'git push origin stable',
+                `git push -u origin backport/pr-${prNumber}-to-stable`,
+                `gh pr create --base stable --head backport/pr-${prNumber}-to-stable \\`,
+                `  --title "Backport #${prNumber}: <original PR title>" \\`,
+                `  --body "Manual backport of #${prNumber} (cherry-pick ${shortSha}) to \\\`stable\\\`."`,
                 '```'
               ].join('\n')
-            });
-
-      - name: Comment on unexpected failure
-        if: always() && steps.cherry-pick.outputs.status != 'clean' && steps.cherry-pick.outputs.status != 'conflict'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.payload.pull_request.number,
-              body: `**Backport to \`stable\` failed** — unexpected error before the cherry-pick could be attempted. [See workflow run](${runUrl}).`
             });

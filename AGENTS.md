@@ -225,9 +225,23 @@ When backporting changes to `stable`, any conflicts involving docs app files (ou
 
 ### Backporting to `stable`
 
-To backport a change from `main` to `stable`, add the `backport-stable` label to the PR on `main`. A GitHub Action (`.github/workflows/backport.yml`) will automatically cherry-pick the squashed commit to `stable`. The label can be added before or after merging — the action triggers on both merge and label events. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
+Backports are handled by a GitHub Action (`.github/workflows/backport.yml`) that runs on every push to `main`. For each commit, AI analyzes the change and decides whether to recommend a backport. The action **always opens a PR** against `stable` for human review — it never pushes directly. The changeset file is included in the cherry-pick, so the correct semver bump type is preserved on `stable`.
 
-If the cherry-pick fails due to conflicts, the action first auto-resolves conflicts in directories that are not maintained on `stable` (docs app files under `docs/` except `docs/content/`, and any files under `skills/`) by keeping the `stable` branch version. It also auto-resolves `pnpm-lock.yaml` conflicts by re-running `pnpm install`. If those resolve everything, the cherry-pick is pushed directly to `stable`. Otherwise, it attempts to resolve remaining conflicts using [opencode](https://opencode.ai) (AI-powered conflict resolution). If successful, it creates a PR targeting `stable` for human review instead of pushing directly. If the AI cannot resolve the conflicts, the action will comment on the original PR with instructions for manual resolution.
+**Decision criteria.** AI is instructed to recommend a backport for any commit that doesn't specifically build on `main`-only behavior, including:
+
+- Bug fixes to existing functionality that at least partially exists on `stable`
+- Added test cases or edge-case fixes that may also apply on `stable`
+- Self-contained minor feature additions
+- Documentation fixes for content already on `stable`
+- Dependency bumps and infrastructure/CI changes
+
+When in doubt, AI is told to lean toward recommending a backport — a human reviews the resulting PR and can close it if it isn't worth merging. AI is told NOT to recommend backports for changes that build on `main`-only APIs, major breaking changes for the next major release, changes confined to directories not maintained on `stable` (the `docs/` app outside `docs/content/`, and `skills/`), or release plumbing like changeset/version-bump commits.
+
+**Manual override.** Adding the `backport-stable` label to a merged PR forces a backport regardless of AI's verdict (it skips AI analysis entirely). Use this when AI declined a backport that you want to ship to `stable`, or when AI hasn't run yet and you want to express intent up front. The label can be applied before or after merging — the action triggers on both push events and label events.
+
+**No-backport notification.** When AI decides against a backport, it leaves a comment on the source PR (if one is associated with the commit) explaining its reasoning, with instructions for forcing a backport via the `backport-stable` label.
+
+**Conflict handling.** If the cherry-pick fails due to conflicts, the action first auto-resolves conflicts in directories that are not maintained on `stable` (docs app files under `docs/` except `docs/content/`, and any files under `skills/`) by keeping the `stable` branch version. It also auto-resolves `pnpm-lock.yaml` conflicts by re-running `pnpm install`. Any remaining conflicts are resolved using [opencode](https://opencode.ai) (AI-powered conflict resolution); the resulting backport PR notes that conflicts were AI-resolved and must be reviewed carefully. If AI cannot resolve the conflicts, the action comments on the original PR with instructions for manual resolution.
 
 ### Pre-release Lifecycle
 

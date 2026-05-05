@@ -882,9 +882,26 @@ export function workflowEntrypoint(
 
                         // Pick one owned step to execute inline (if any).
                         // The rest of the pending steps are queued below.
+                        //
+                        // Skip inline execution entirely when the suspension
+                        // also has a pending wait (sleep): an inline `await
+                        // executeStep(...)` blocks the handler for the full
+                        // step duration, so the wait timer never has a chance
+                        // to fire on time. That defeats `Promise.race(step,
+                        // sleep)` semantics — if the sleep is shorter than
+                        // the step, replay still picks the step because
+                        // wait_completed is only created on the *next* loop
+                        // iteration, which doesn't run until the step
+                        // finishes. Queueing every step in this case lets
+                        // the wait timeout drive a continuation in parallel,
+                        // matching V1's behavior where each step ran in a
+                        // separate function invocation.
                         const inlineStep:
                           | (typeof pendingSteps)[number]
-                          | undefined = ownedPendingSteps[0];
+                          | undefined =
+                          suspensionResult.timeoutSeconds === undefined
+                            ? ownedPendingSteps[0]
+                            : undefined;
 
                         // Queue every pending step except the one we're
                         // executing inline. This mirrors V1's unconditional
