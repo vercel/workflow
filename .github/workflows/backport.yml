@@ -474,10 +474,221 @@ jobs:
             echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Create backport PR
+      - name: Push backport branch via GitHub API
+        # Branch protection on this repo requires verified signatures on
+        # every ref (an enterprise-level ruleset matching `~ALL`). A normal
+        # `git push` of a locally-cherry-picked commit is rejected because
+        # CI doesn't have a signing key. To work around this, we replay the
+        # cherry-pick through the GitHub GraphQL `createCommitOnBranch`
+        # mutation, which signs commits automatically with GitHub's
+        # internal key (the same way commits made via the web UI are
+        # signed). The resulting commit is attributed to the token owner
+        # (`github-actions[bot]`), not the original author.
         if: |
           steps.cherry-pick.outputs.status == 'clean' ||
           (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
+        id: push-branch
+        uses: actions/github-script@v7
+        env:
+          BRANCH: ${{ steps.existing-pr.outputs.branch }}
+          SHA: ${{ steps.resolve.outputs.sha }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { execFileSync } = require('node:child_process');
+
+            const branch = process.env.BRANCH;
+            const cherrySha = process.env.SHA;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const git = (...args) =>
+              execFileSync('git', args, { encoding: 'utf8' }).trim();
+
+            // The cherry-pick was just performed on top of `stable` in the
+            // working tree, so HEAD is the local cherry-pick commit and its
+            // first parent is the `stable` HEAD we want to base on.
+            const localHead = git('rev-parse', 'HEAD');
+            const parentSha = git('rev-parse', 'HEAD~1');
+            const commitMessage = git('log', '-1', '--format=%B', localHead);
+
+            core.info(
+              `Replaying ${cherrySha} (local ${localHead}) on top of ${parentSha} via GraphQL createCommitOnBranch`,
+            );
+
+            // Diff against the parent to find every path that changed.
+            // Status codes: A=added, M=modified, D=deleted, R=renamed (Rxx),
+            // C=copied (Cxx), T=type-changed.
+            const diffOutput = git(
+              'diff',
+              '--name-status',
+              '-z',
+              parentSha,
+              localHead,
+            );
+            // -z output: <status>\0<path>\0 (or for R/C: <status>\0<old>\0<new>\0)
+            const diffParts = diffOutput
+              .split('\0')
+              .filter((s) => s.length > 0);
+            const additions = []; // [{ path, contents (base64) }]
+            const deletions = []; // [{ path }]
+
+            const addPath = (path) => {
+              // Look up the mode + blob in the local commit so we can
+              // detect unsupported file types (executable bit, symlinks,
+              // submodules) — GraphQL FileChanges doesn't support those.
+              const lsTree = git('ls-tree', localHead, '--', path);
+              const match = lsTree.match(
+                /^(\d{6}) (\w+) ([0-9a-f]{40})\t/,
+              );
+              if (!match) {
+                throw new Error(
+                  `Unexpected ls-tree output for ${path}: ${lsTree}`,
+                );
+              }
+              const [, mode, type, blobSha] = match;
+              if (type !== 'blob') {
+                throw new Error(
+                  `Unsupported tree entry for ${path}: type=${type} mode=${mode}. ` +
+                  `GraphQL createCommitOnBranch only supports regular files.`,
+                );
+              }
+              if (mode !== '100644') {
+                core.warning(
+                  `File ${path} has mode ${mode} in the cherry-pick, but ` +
+                  `GraphQL createCommitOnBranch only supports mode 100644. ` +
+                  `The backport will lose the executable bit / symlink — ` +
+                  `please review the resulting PR carefully.`,
+                );
+              }
+              // Read raw bytes (binary-safe) from the git object store.
+              const blobBytes = execFileSync(
+                'git',
+                ['cat-file', 'blob', blobSha],
+                { maxBuffer: 256 * 1024 * 1024 }, // 256MB cap
+              );
+              additions.push({
+                path,
+                contents: blobBytes.toString('base64'),
+              });
+            };
+
+            for (let i = 0; i < diffParts.length; ) {
+              const status = diffParts[i++];
+              const code = status[0];
+              if (code === 'R' || code === 'C') {
+                const oldPath = diffParts[i++];
+                const newPath = diffParts[i++];
+                addPath(newPath);
+                deletions.push({ path: oldPath });
+                continue;
+              }
+              const path = diffParts[i++];
+              if (code === 'D') {
+                deletions.push({ path });
+              } else {
+                addPath(path);
+              }
+            }
+
+            if (additions.length === 0 && deletions.length === 0) {
+              core.warning(
+                'Cherry-pick produced no file changes; skipping backport push.',
+              );
+              core.setOutput('pushed', 'false');
+              return;
+            }
+
+            // Ensure the branch exists on the remote and points at the
+            // current `stable` HEAD before invoking `createCommitOnBranch`.
+            // The mutation requires the named branch to already exist and
+            // its `expectedHeadOid` to match — it doesn't create new
+            // branches itself. If the branch is stale or absent, force it
+            // to the parent commit.
+            const refName = `heads/${branch}`;
+            let needsCreate = false;
+            try {
+              const { data: existingRef } = await github.rest.git.getRef({
+                owner,
+                repo,
+                ref: refName,
+              });
+              if (existingRef.object.sha !== parentSha) {
+                core.info(
+                  `Resetting existing branch ${branch} from ${existingRef.object.sha} -> ${parentSha} (stable HEAD)`,
+                );
+                await github.rest.git.updateRef({
+                  owner,
+                  repo,
+                  ref: refName,
+                  sha: parentSha,
+                  force: true,
+                });
+              }
+            } catch (err) {
+              if (err.status === 404) {
+                needsCreate = true;
+              } else {
+                throw err;
+              }
+            }
+            if (needsCreate) {
+              core.info(`Creating branch ${branch} at ${parentSha}`);
+              await github.rest.git.createRef({
+                owner,
+                repo,
+                ref: `refs/${refName}`,
+                sha: parentSha,
+              });
+            }
+
+            // Split the commit message into headline (first line) + body
+            // (everything after the first blank line), per the
+            // CommitMessage GraphQL input type.
+            const firstNewline = commitMessage.indexOf('\n');
+            let headline;
+            let body;
+            if (firstNewline === -1) {
+              headline = commitMessage;
+              body = '';
+            } else {
+              headline = commitMessage.slice(0, firstNewline);
+              // Skip exactly one blank line if present, so we don't
+              // double-blank the body when the message has the standard
+              // "subject\n\nbody" shape.
+              const rest = commitMessage.slice(firstNewline + 1);
+              body = rest.startsWith('\n') ? rest.slice(1) : rest;
+            }
+
+            // Run the mutation. GitHub signs the commit automatically.
+            const mutation = `
+              mutation($input: CreateCommitOnBranchInput!) {
+                createCommitOnBranch(input: $input) {
+                  commit { oid url }
+                }
+              }
+            `;
+            const result = await github.graphql(mutation, {
+              input: {
+                branch: {
+                  repositoryNameWithOwner: `${owner}/${repo}`,
+                  branchName: branch,
+                },
+                expectedHeadOid: parentSha,
+                message: { headline, body },
+                fileChanges: { additions, deletions },
+              },
+            });
+            const newOid = result.createCommitOnBranch.commit.oid;
+            core.info(
+              `Created signed commit ${newOid} on branch ${branch} (${result.createCommitOnBranch.commit.url})`,
+            );
+
+            core.setOutput('pushed', 'true');
+            core.setOutput('commit_sha', newOid);
+
+      - name: Create backport PR
+        if: steps.push-branch.outputs.pushed == 'true'
         id: backport-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -489,9 +700,6 @@ jobs:
           AI_REASONING: ${{ steps.decide.outputs.reasoning }}
           TRIGGER: ${{ steps.resolve.outputs.trigger }}
         run: |
-          git checkout -B "$BRANCH"
-          git push --force-with-lease origin "$BRANCH"
-
           # Build the PR title.
           if [ -n "$PR_NUMBER" ]; then
             TITLE="Backport #${PR_NUMBER}: ${PR_TITLE}"
@@ -521,13 +729,21 @@ jobs:
             fi
           } > /tmp/pr-body.md
 
-          PR_URL=$(gh pr create \
-            --base stable \
-            --head "$BRANCH" \
-            --title "$TITLE" \
-            --body-file /tmp/pr-body.md)
+          # If a PR already exists for this branch (e.g. an earlier failed
+          # attempt left one behind), reuse it instead of erroring.
+          EXISTING_PR=$(gh pr list --state open --base stable --head "$BRANCH" --json url --jq '.[0].url' || true)
+          if [ -n "$EXISTING_PR" ]; then
+            PR_URL="$EXISTING_PR"
+            echo "Reusing existing backport PR: $PR_URL"
+          else
+            PR_URL=$(gh pr create \
+              --base stable \
+              --head "$BRANCH" \
+              --title "$TITLE" \
+              --body-file /tmp/pr-body.md)
+            echo "Created backport PR: $PR_URL"
+          fi
           echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
-          echo "Created backport PR: $PR_URL"
 
       - name: Comment on source PR (backport created)
         if: |
@@ -577,11 +793,11 @@ jobs:
               body: [
                 '**Backport to `stable` failed** — the cherry-pick had conflicts that could not be resolved automatically.',
                 '',
-                'To resolve manually, push a backport branch and open a PR against `stable` (the workflow never pushes directly to `stable`):',
+                'To resolve manually, push a backport branch and open a PR against `stable` (the workflow never pushes directly to `stable`). Note: this repository requires verified signatures on every branch, so your local commits must be signed (`git config commit.gpgsign true` with a configured GPG/SSH signing key, or `git cherry-pick -S`).',
                 '```bash',
                 'git fetch origin stable',
                 `git checkout -b backport/pr-${prNumber}-to-stable origin/stable`,
-                `git cherry-pick ${sha}`,
+                `git cherry-pick -S ${sha}    # -S signs the commit`,
                 '# Fix conflicts, then:',
                 'git add -A',
                 'git cherry-pick --continue',
