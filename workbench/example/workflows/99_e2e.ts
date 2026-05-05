@@ -215,6 +215,36 @@ export async function parallelSleepWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+async function delayMsStep(ms: number, label: string) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return label;
+}
+
+export async function sleepWinsRaceWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  const winner = await Promise.race([
+    delayMsStep(10_000, 'step'),
+    sleep('1s').then(() => 'sleep'),
+  ]);
+  const endTime = Date.now();
+  return { winner, durationMs: endTime - startTime };
+}
+
+export async function stepWinsRaceWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  const winner = await Promise.race([
+    delayMsStep(1_000, 'step'),
+    sleep('10s').then(() => 'sleep'),
+  ]);
+  const endTime = Date.now();
+  return { winner, durationMs: endTime - startTime };
+}
+
+//////////////////////////////////////////////////////////
+
 async function nullByteStep() {
   'use step';
   return 'null byte \0';
