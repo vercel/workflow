@@ -104,8 +104,9 @@ const StepFailedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_failed'),
   correlationId: z.string(),
   eventData: z.object({
-    error: z.any(),
-    stack: z.string().optional(),
+    // The thrown value, serialized via the workflow serialization pipeline.
+    // Can be any JavaScript value (string, number, object, Error, etc.)
+    error: SerializedDataSchema,
   }),
 });
 
@@ -118,8 +119,9 @@ const StepRetryingEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_retrying'),
   correlationId: z.string(),
   eventData: z.object({
-    error: z.any(),
-    stack: z.string().optional(),
+    // The thrown value, serialized via the workflow serialization pipeline.
+    // Can be any JavaScript value (string, number, object, Error, etc.)
+    error: SerializedDataSchema,
     retryAfter: z.coerce.date().optional(),
   }),
 });
@@ -259,7 +261,13 @@ const RunCompletedEventSchema = BaseEventSchema.extend({
 const RunFailedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('run_failed'),
   eventData: z.object({
-    error: z.any(),
+    // The thrown value, serialized via the workflow serialization pipeline.
+    // Can be any JavaScript value (string, number, object, Error, etc.)
+    error: SerializedDataSchema,
+    // The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) used
+    // for routing and classification. Kept as plaintext metadata so
+    // observability tools can filter/categorize without needing to decrypt
+    // the full error payload.
     errorCode: z.string().optional(),
   }),
 });

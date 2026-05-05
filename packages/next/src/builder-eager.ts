@@ -1,6 +1,7 @@
 import { constants } from 'node:fs';
 import { access, copyFile, mkdir, stat, writeFile } from 'node:fs/promises';
 import { extname, join, resolve } from 'node:path';
+import type { WorkflowManifest } from '@workflow/builders';
 import Watchpack from 'watchpack';
 
 let CachedNextBuilderEager: any;
@@ -43,32 +44,38 @@ export async function getNextBuilderEager() {
       const combinedResult = await this.buildCombinedFunction(options);
       await this.buildWebhookRoute({ workflowGeneratedDir });
 
-      const manifest = {
-        steps: { ...combinedResult?.manifest?.steps },
-        workflows: { ...combinedResult?.manifest?.workflows },
-        classes: { ...combinedResult?.manifest?.classes },
+      const writeManifest = async (
+        sourceManifest: WorkflowManifest | undefined
+      ) => {
+        const manifest = {
+          steps: { ...sourceManifest?.steps },
+          workflows: { ...sourceManifest?.workflows },
+          classes: { ...sourceManifest?.classes },
+        };
+
+        // Write manifest
+        const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
+        const manifestJson = await this.createManifest({
+          workflowBundlePath,
+          manifestDir: workflowGeneratedDir,
+          manifest,
+        });
+
+        // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
+        if (this.shouldExposePublicManifest && manifestJson) {
+          const publicManifestDir = join(
+            this.config.workingDir,
+            'public/.well-known/workflow/v1'
+          );
+          await mkdir(publicManifestDir, { recursive: true });
+          await copyFile(
+            join(workflowGeneratedDir, 'manifest.json'),
+            join(publicManifestDir, 'manifest.json')
+          );
+        }
       };
 
-      // Write manifest
-      const workflowBundlePath = join(workflowGeneratedDir, 'flow/route.js');
-      const manifestJson = await this.createManifest({
-        workflowBundlePath,
-        manifestDir: workflowGeneratedDir,
-        manifest,
-      });
-
-      // Expose manifest as a static file when WORKFLOW_PUBLIC_MANIFEST=1.
-      if (this.shouldExposePublicManifest && manifestJson) {
-        const publicManifestDir = join(
-          this.config.workingDir,
-          'public/.well-known/workflow/v1'
-        );
-        await mkdir(publicManifestDir, { recursive: true });
-        await copyFile(
-          join(workflowGeneratedDir, 'manifest.json'),
-          join(publicManifestDir, 'manifest.json')
-        );
-      }
+      await writeManifest(combinedResult?.manifest);
 
       await this.writeFunctionsConfig(outputDir);
 
@@ -197,6 +204,8 @@ export async function getNextBuilderEager() {
             interimBundleCtx: newCombined.interimBundleCtx,
             bundleFinal: newCombined.bundleFinal,
           };
+
+          await writeManifest(newCombined.manifest);
         };
 
         const logBuildMessages = (

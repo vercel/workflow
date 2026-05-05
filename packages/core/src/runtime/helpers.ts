@@ -2,6 +2,7 @@ import type {
   Event,
   HealthCheckPayload,
   ValidQueueName,
+  WorkflowRun,
   World,
 } from '@workflow/world';
 import {
@@ -11,6 +12,7 @@ import {
 } from '@workflow/world';
 import { monotonicFactory } from 'ulid';
 
+import { type CryptoKey, importKey } from '../encryption.js';
 import { runtimeLogger } from '../logger.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
 import { getSpanKind, trace } from '../telemetry.js';
@@ -475,4 +477,48 @@ export function getQueueOverhead(message: { requestedAt?: Date }) {
   } catch {
     return;
   }
+}
+
+/**
+ * Returns a memoized accessor for the per-run AES-256 encryption key.
+ *
+ * The first call resolves the key via `world.getEncryptionKeyForRun` (which
+ * may do HKDF derivation locally on Vercel, or a network fetch from
+ * external contexts) and imports it as a `CryptoKey`; subsequent calls
+ * await the same cached promise. If the world doesn't support encryption
+ * or the run has no key configured, the cached value is `undefined`.
+ *
+ * Used by step / workflow handlers to defer the (potentially expensive)
+ * key fetch until the first code path that actually needs it — typically
+ * input hydration on the success path, or error dehydration on a failure
+ * path. Both paths can race-call the accessor without triggering duplicate
+ * fetches.
+ *
+ * Errors thrown by `getEncryptionKeyForRun` propagate to every caller
+ * (the cached promise rejects). This is intentional: when encryption is
+ * configured, we never want to silently fall back to plaintext
+ * serialization. A propagated error in an event-emission path leaves the
+ * outer try/catch to log and surface the issue; the queue's redelivery
+ * semantics will retry the key fetch on the next attempt.
+ */
+export function memoizeEncryptionKey(
+  world: World,
+  runOrId: WorkflowRun | string
+): () => Promise<CryptoKey | undefined> {
+  let cached: Promise<CryptoKey | undefined> | undefined;
+  return () => {
+    if (!cached) {
+      cached = (async () => {
+        // The `getEncryptionKeyForRun` overload set takes either a
+        // `WorkflowRun` or a `runId: string` (with optional context). Branch
+        // here so TypeScript picks the right overload for each shape.
+        const rawKey =
+          typeof runOrId === 'string'
+            ? await world.getEncryptionKeyForRun?.(runOrId)
+            : await world.getEncryptionKeyForRun?.(runOrId);
+        return rawKey ? await importKey(rawKey) : undefined;
+      })();
+    }
+    return cached;
+  };
 }

@@ -624,6 +624,10 @@ const attributeToDisplayFn: Record<
     if (!hasDisplayContent(value)) return null;
     return <DetailCard summary="Event Data">{JsonBlock(value)}</DetailCard>;
   },
+  errorCode: (value: unknown) => {
+    if (typeof value !== 'string' || value.length === 0) return null;
+    return String(value);
+  },
 };
 
 const resolvableAttributes = [

@@ -1,6 +1,7 @@
 import semver from 'semver';
 import { getNextBuilderDeferred } from './builder-deferred.js';
 import { getNextBuilderEager } from './builder-eager.js';
+import { parseEnvironmentFlag } from './environment-flag.js';
 
 export const DEFERRED_BUILDER_MIN_VERSION = '16.2.0-canary.48';
 
@@ -12,7 +13,8 @@ export const WORKFLOW_DEFERRED_ENTRIES = [
 let warnedAboutFlagAndVersion = false;
 
 export function shouldUseDeferredBuilder(nextVersion: string): boolean {
-  const flagEnabled = Boolean(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY);
+  const flagEnabled =
+    parseEnvironmentFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY) ?? false;
   const versionCompatible = semver.gte(
     nextVersion,
     DEFERRED_BUILDER_MIN_VERSION

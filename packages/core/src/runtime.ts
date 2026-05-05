@@ -1,5 +1,7 @@
+import { types } from 'node:util';
 import {
   EntityConflictError,
+  FatalError,
   RUN_ERROR_CODES,
   RunExpiredError,
   WorkflowRuntimeError,
@@ -13,7 +15,6 @@ import {
 } from '@workflow/world';
 import { classifyRunError } from './classify-error.js';
 import { describeError } from './describe-error.js';
-import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
 import {
@@ -22,10 +23,11 @@ import {
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
 import {
-  loadWorkflowRunEvents,
   getQueueOverhead,
   getWorkflowQueueName,
   handleHealthCheckMessage,
+  loadWorkflowRunEvents,
+  memoizeEncryptionKey,
   parseHealthCheckPayload,
   queueMessage,
   withHealthCheck,
@@ -37,6 +39,7 @@ import {
   getWorldHandlers,
   type WorldHandlers,
 } from './runtime/world.js';
+import { dehydrateRunError } from './serialization.js';
 import { remapErrorStack } from './source-map.js';
 import * as Attribute from './telemetry/semantic-conventions.js';
 import {
@@ -167,15 +170,21 @@ export function workflowEntrypoint(
           );
           try {
             const world = await getWorld();
+            const getEncryptionKey = memoizeEncryptionKey(world, runId);
+            const err = new FatalError(
+              `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`
+            );
             await world.events.create(
               runId,
               {
                 eventType: 'run_failed',
                 specVersion: SPEC_VERSION_CURRENT,
                 eventData: {
-                  error: {
-                    message: `Workflow exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
-                  },
+                  error: await dehydrateRunError(
+                    err,
+                    runId,
+                    await getEncryptionKey()
+                  ),
                   errorCode: RUN_ERROR_CODES.MAX_DELIVERIES_EXCEEDED,
                 },
               },
@@ -243,15 +252,21 @@ export function workflowEntrypoint(
 
             try {
               const world = await getWorld();
+              const getEncryptionKey = memoizeEncryptionKey(world, runId);
+              const timeoutErr = new FatalError(
+                `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s) after ${metadata.attempt} attempts`
+              );
               await world.events.create(
                 runId,
                 {
                   eventType: 'run_failed',
                   specVersion: SPEC_VERSION_CURRENT,
                   eventData: {
-                    error: {
-                      message: `Workflow replay exceeded maximum duration (${REPLAY_TIMEOUT_MS / 1000}s) after ${metadata.attempt} attempts`,
-                    },
+                    error: await dehydrateRunError(
+                      timeoutErr,
+                      runId,
+                      await getEncryptionKey()
+                    ),
                     errorCode: RUN_ERROR_CODES.REPLAY_TIMEOUT,
                   },
                 },
@@ -499,16 +514,21 @@ export function workflowEntrypoint(
                           { workflowRunId: runId, error: err.message }
                         );
                         try {
+                          const getEncryptionKey = memoizeEncryptionKey(
+                            world,
+                            runId
+                          );
                           await world.events.create(
                             runId,
                             {
                               eventType: 'run_failed',
                               specVersion: SPEC_VERSION_CURRENT,
                               eventData: {
-                                error: {
-                                  message: err.message,
-                                  stack: err.stack,
-                                },
+                                error: await dehydrateRunError(
+                                  err,
+                                  runId,
+                                  await getEncryptionKey()
+                                ),
                                 errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
                               },
                             },
@@ -556,13 +576,17 @@ export function workflowEntrypoint(
                     }
                   } // end if (!workflowRun)
 
-                  // Resolve the encryption key once before the loop since
-                  // it doesn't change within a run.
-                  const rawKey =
-                    await world.getEncryptionKeyForRun?.(workflowRun);
-                  const encryptionKey = rawKey
-                    ? await importKey(rawKey)
-                    : undefined;
+                  // Resolve the encryption key for this run's deployment.
+                  // Used eagerly here since both runWorkflow (input
+                  // hydration / hook payload decryption) and the run_failed
+                  // dehydrate path below need it. Memoized accessor: first
+                  // call triggers the actual fetch / HKDF derivation,
+                  // subsequent calls await the cached promise.
+                  const getEncryptionKey = memoizeEncryptionKey(
+                    world,
+                    workflowRun
+                  );
+                  const encryptionKey = await getEncryptionKey();
 
                   // Main replay loop
                   // biome-ignore lint/correctness/noConstantCondition: intentional loop
@@ -858,9 +882,26 @@ export function workflowEntrypoint(
 
                         // Pick one owned step to execute inline (if any).
                         // The rest of the pending steps are queued below.
+                        //
+                        // Skip inline execution entirely when the suspension
+                        // also has a pending wait (sleep): an inline `await
+                        // executeStep(...)` blocks the handler for the full
+                        // step duration, so the wait timer never has a chance
+                        // to fire on time. That defeats `Promise.race(step,
+                        // sleep)` semantics — if the sleep is shorter than
+                        // the step, replay still picks the step because
+                        // wait_completed is only created on the *next* loop
+                        // iteration, which doesn't run until the step
+                        // finishes. Queueing every step in this case lets
+                        // the wait timeout drive a continuation in parallel,
+                        // matching V1's behavior where each step ran in a
+                        // separate function invocation.
                         const inlineStep:
                           | (typeof pendingSteps)[number]
-                          | undefined = ownedPendingSteps[0];
+                          | undefined =
+                          suspensionResult.timeoutSeconds === undefined
+                            ? ownedPendingSteps[0]
+                            : undefined;
 
                         // Queue every pending step except the one we're
                         // executing inline. This mirrors V1's unconditional
@@ -1030,6 +1071,22 @@ export function workflowEntrypoint(
                           errorStack,
                         });
 
+                        // Apply the source-map-remapped stack to the thrown
+                        // value so that the serialized error preserves it
+                        // for consumers. `types.isNativeError()` is used
+                        // instead of `err instanceof Error` because the
+                        // workflow runs in a separate VM realm — its Error
+                        // class is distinct from the host's, so `instanceof
+                        // Error` is `false` for VM-thrown errors. The V8
+                        // type tag works across realms.
+                        if (types.isNativeError(err) && errorStack) {
+                          (err as Error).stack = errorStack;
+                        }
+
+                        // Fail the workflow run via event (event-sourced).
+                        // Serialize the original thrown value so its full
+                        // type identity and custom properties round-trip
+                        // through the event log.
                         try {
                           await world.events.create(
                             runId,
@@ -1037,10 +1094,11 @@ export function workflowEntrypoint(
                               eventType: 'run_failed',
                               specVersion: SPEC_VERSION_CURRENT,
                               eventData: {
-                                error: {
-                                  message: errorMessage,
-                                  stack: errorStack,
-                                },
+                                error: await dehydrateRunError(
+                                  err,
+                                  runId,
+                                  encryptionKey
+                                ),
                                 errorCode,
                               },
                             },

@@ -81,82 +81,94 @@ const DEV_TEST_CONFIGS = {
   },
 };
 
+function createMatrixEntry(name, project, config, overrides = {}) {
+  const canary = overrides.canary === true;
+
+  return {
+    name,
+    project,
+    ...config,
+    runLabel: canary ? 'canary' : 'stable',
+    artifactSuffix: canary ? 'canary' : 'stable',
+    ...overrides,
+  };
+}
+
 const matrix = {
-  app: [
-    {
-      name: 'nextjs-turbopack',
-      project: 'example-nextjs-workflow-turbopack',
-      ...DEV_TEST_CONFIGS['nextjs-turbopack'],
-    },
-    {
-      name: 'nextjs-webpack',
-      project: 'example-nextjs-workflow-webpack',
-      ...DEV_TEST_CONFIGS['nextjs-webpack'],
-    },
-  ],
+  app: [],
 };
 
-const newItems = [];
-
-for (const item of matrix.app) {
-  newItems.push({ ...item, canary: true });
+for (const app of [
+  {
+    name: 'nextjs-turbopack',
+    project: 'example-nextjs-workflow-turbopack',
+  },
+  {
+    name: 'nextjs-webpack',
+    project: 'example-nextjs-workflow-webpack',
+  },
+]) {
+  matrix.app.push(
+    createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name], {
+      lazyDiscovery: true,
+      runLabel: 'stable lazyDiscovery enabled',
+      artifactSuffix: 'stable-lazy-discovery-enabled',
+    })
+  );
+  matrix.app.push(
+    createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name], {
+      lazyDiscovery: false,
+      runLabel: 'stable lazyDiscovery disabled',
+      artifactSuffix: 'stable-lazy-discovery-disabled',
+    })
+  );
+  matrix.app.push(
+    createMatrixEntry(app.name, app.project, DEV_TEST_CONFIGS[app.name], {
+      canary: true,
+      lazyDiscovery: true,
+    })
+  );
 }
-matrix.app.push(...newItems);
 
-// Manually add nitro
-matrix.app.push({
-  name: 'nitro',
-  project: 'workbench-nitro-workflow',
-  ...DEV_TEST_CONFIGS.nitro,
-});
-
-matrix.app.push({
-  name: 'sveltekit',
-  project: 'workbench-sveltekit-workflow',
-  ...DEV_TEST_CONFIGS.sveltekit,
-});
-
-matrix.app.push({
-  name: 'nuxt',
-  project: 'workbench-nuxt-workflow',
-  ...DEV_TEST_CONFIGS.nuxt,
-});
-
-matrix.app.push({
-  name: 'hono',
-  project: 'workbench-hono-workflow',
-  ...DEV_TEST_CONFIGS.hono,
-});
-
-matrix.app.push({
-  name: 'vite',
-  project: 'workbench-vite-workflow',
-  ...DEV_TEST_CONFIGS.vite,
-});
-
-matrix.app.push({
-  name: 'express',
-  project: 'workbench-express-workflow',
-  ...DEV_TEST_CONFIGS.express,
-});
-
-matrix.app.push({
-  name: 'fastify',
-  project: 'workbench-fastify-workflow',
-  ...DEV_TEST_CONFIGS.fastify,
-});
-
-matrix.app.push({
-  name: 'nest',
-  project: 'workbench-nest-workflow',
-  ...DEV_TEST_CONFIGS.nest,
-});
-
-matrix.app.push({
-  name: 'astro',
-  project: 'workbench-astro-workflow',
-  ...DEV_TEST_CONFIGS.astro,
-});
+matrix.app.push(
+  createMatrixEntry('nitro', 'workbench-nitro-workflow', DEV_TEST_CONFIGS.nitro)
+);
+matrix.app.push(
+  createMatrixEntry(
+    'sveltekit',
+    'workbench-sveltekit-workflow',
+    DEV_TEST_CONFIGS.sveltekit
+  )
+);
+matrix.app.push(
+  createMatrixEntry('nuxt', 'workbench-nuxt-workflow', DEV_TEST_CONFIGS.nuxt)
+);
+matrix.app.push(
+  createMatrixEntry('hono', 'workbench-hono-workflow', DEV_TEST_CONFIGS.hono)
+);
+matrix.app.push(
+  createMatrixEntry('vite', 'workbench-vite-workflow', DEV_TEST_CONFIGS.vite)
+);
+matrix.app.push(
+  createMatrixEntry(
+    'express',
+    'workbench-express-workflow',
+    DEV_TEST_CONFIGS.express
+  )
+);
+matrix.app.push(
+  createMatrixEntry(
+    'fastify',
+    'workbench-fastify-workflow',
+    DEV_TEST_CONFIGS.fastify
+  )
+);
+matrix.app.push(
+  createMatrixEntry('nest', 'workbench-nest-workflow', DEV_TEST_CONFIGS.nest)
+);
+matrix.app.push(
+  createMatrixEntry('astro', 'workbench-astro-workflow', DEV_TEST_CONFIGS.astro)
+);
 
 matrix.app.push({
   name: 'tanstack-start',

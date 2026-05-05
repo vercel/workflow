@@ -1,4 +1,4 @@
-import { WorkflowWorldError, WorkflowRunNotFoundError } from '@workflow/errors';
+import { WorkflowRunNotFoundError, WorkflowWorldError } from '@workflow/errors';
 import {
   type CancelWorkflowRunParams,
   type CreateWorkflowRunRequest,
@@ -6,7 +6,7 @@ import {
   type ListWorkflowRunsParams,
   type PaginatedResponse,
   PaginatedResponseSchema,
-  StructuredErrorSchema,
+  SerializedDataSchema,
   type WorkflowRun,
   WorkflowRunBaseSchema,
   type WorkflowRunWithoutData,
@@ -21,20 +21,20 @@ import {
 
 /**
  * Wire format schema for workflow runs coming from the backend.
- * The backend may return error either as:
- * - A JSON string (legacy format) that needs deserialization
- * - An already structured object (new format) with { message, stack?, code? }
  *
- * This is used for validation in makeRequest(), then deserializeError()
- * normalizes both formats into the expected StructuredError object.
+ * `error` is SerializedData produced by `dehydrateRunError` in the new
+ * (specVersion >= 2) format. For backward compatibility with legacy
+ * records, we also accept any other shape and let `deserializeError`
+ * normalize it.
+ *
+ * `errorCode` is a separate plaintext metadata field used for routing
+ * and classification.
  */
 export const WorkflowRunWireBaseSchema = WorkflowRunBaseSchema.omit({
   error: true,
+  errorCode: true,
 }).extend({
-  // Backend returns error as either a JSON string or structured object
-  error: z.union([z.string(), StructuredErrorSchema]).optional(),
-  // errorCode is stored inline on the run entity (not inside errorRef).
-  // It's merged into StructuredError.code by deserializeError().
+  error: z.union([SerializedDataSchema, z.any()]).optional(),
   errorCode: z.string().optional(),
   // Not part of the World interface, but passed through for direct consumers and debugging
   blobStorageBytes: z.number().optional(),

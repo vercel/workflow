@@ -1,5 +1,5 @@
 import { SerializationError, WorkflowRuntimeError } from '@workflow/errors';
-import { parse, stringify } from 'devalue';
+import { parse, stringify, unflatten } from 'devalue';
 import { monotonicFactory } from 'ulid';
 import {
   decrypt as aesGcmDecrypt,
@@ -1399,6 +1399,181 @@ export async function dehydrateStepReturnValue(
 }
 
 /**
+ * Called from the step handler when a step throws. Dehydrates the thrown
+ * value from within the step execution environment into a format that can
+ * be saved to the database in a `step_failed` or `step_retrying` event.
+ *
+ * Any JavaScript value can be thrown (strings, numbers, objects, Errors,
+ * Error subclasses), so the same serialization pipeline used for step
+ * arguments and return values is applied here.
+ *
+ * @param value - The thrown value to serialize (can be any type)
+ * @param runId - Run ID for encryption context
+ * @param key - Encryption key (undefined to skip encryption)
+ * @param ops - Promise array for stream operations
+ * @param global - Global object for serialization context
+ * @returns The dehydrated value as binary data (Uint8Array) with format prefix
+ */
+export async function dehydrateStepError(
+  value: unknown,
+  runId: string,
+  key: CryptoKey | undefined,
+  ops: Promise<any>[] = [],
+  global: Record<string, any> = globalThis
+): Promise<Uint8Array> {
+  try {
+    const str = stringify(value, getStepReducers(global, ops, runId, key));
+    const payload = new TextEncoder().encode(str);
+    const serialized = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      payload
+    ) as Uint8Array;
+    return (await maybeEncrypt(serialized, key)) as Uint8Array;
+  } catch (error) {
+    const cause = unwrapSerializationCause(error);
+    const { message, hint } = formatSerializationError('step error', cause);
+    throw new SerializationError(message, { hint, cause });
+  }
+}
+
+/**
+ * Called from the workflow handler when replaying the event log of a
+ * `step_failed` or `step_retrying` event. Hydrates the thrown value from
+ * the database so the workflow can see the original thrown value.
+ *
+ * @param value - Binary serialized data (Uint8Array) with format prefix
+ * @param runId - Run ID for decryption context
+ * @param key - Encryption key (undefined to skip decryption)
+ * @param global - Global object for deserialization context
+ * @param extraRevivers - Additional revivers for custom types
+ * @returns The hydrated thrown value, ready to reject the step promise
+ */
+export async function hydrateStepError(
+  value: Uint8Array | unknown,
+  _runId: string,
+  key: CryptoKey | undefined,
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): Promise<unknown> {
+  const decrypted = await maybeDecrypt(value, key);
+
+  if (!(decrypted instanceof Uint8Array)) {
+    // Treated as a devalue "flattened" array. In production this branch is
+    // exercised by legacy code paths that bypassed `dehydrateStepError`; the
+    // SDK version is pinned per workflow run via skew protection, so a
+    // current-version producer always emits a Uint8Array here. If a
+    // misshapen value reaches us, `unflatten` throws — that's intentional:
+    // the higher-level hydration helpers (`hydrateStepIO`,
+    // `hydrateResourceIO`) already wrap us in a try/catch that leaves the
+    // field un-hydrated for o11y display, and surfacing the throw to logs
+    // is more debuggable than silently masking the unsupported shape.
+    return unflatten(decrypted as any[], {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  const { format, payload } = decodeFormatPrefix(decrypted);
+
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    return parse(str, {
+      ...getWorkflowRevivers(global),
+      ...extraRevivers,
+    });
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
+}
+
+/**
+ * Called from the workflow handler when the workflow itself throws.
+ * Dehydrates the thrown value from within the workflow execution environment
+ * into a format that can be saved to the database in a `run_failed` event.
+ *
+ * @param value - The thrown value to serialize (can be any type)
+ * @param runId - Run ID for encryption context
+ * @param key - Encryption key (undefined to skip encryption)
+ * @param global - Global object for serialization context
+ * @returns The dehydrated value as binary data (Uint8Array) with format prefix
+ */
+export async function dehydrateRunError(
+  value: unknown,
+  _runId: string,
+  key: CryptoKey | undefined,
+  global: Record<string, any> = globalThis
+): Promise<Uint8Array> {
+  try {
+    const str = stringify(value, getWorkflowReducers(global));
+    const payload = new TextEncoder().encode(str);
+    const serialized = encodeWithFormatPrefix(
+      SerializationFormat.DEVALUE_V1,
+      payload
+    ) as Uint8Array;
+    return (await maybeEncrypt(serialized, key)) as Uint8Array;
+  } catch (error) {
+    const cause = unwrapSerializationCause(error);
+    const { message, hint } = formatSerializationError('run error', cause);
+    throw new SerializationError(message, { hint, cause });
+  }
+}
+
+/**
+ * Called from the client side (or observability tools) to hydrate the run
+ * error value of a failed workflow run.
+ *
+ * @param value - Binary serialized data (Uint8Array) with format prefix
+ * @param runId - Run ID for decryption context
+ * @param key - Encryption key (undefined to skip decryption)
+ * @param ops - Promise array for stream operations
+ * @param global - Global object for deserialization context
+ * @param extraRevivers - Additional revivers for custom types
+ * @returns The hydrated thrown value, ready to be consumed by the client
+ */
+export async function hydrateRunError(
+  value: Uint8Array | unknown,
+  runId: string,
+  key: CryptoKey | undefined,
+  ops: Promise<void>[] = [],
+  global: Record<string, any> = globalThis,
+  extraRevivers: Record<string, (value: any) => any> = {}
+): Promise<unknown> {
+  const decrypted = await maybeDecrypt(value, key);
+
+  if (!(decrypted instanceof Uint8Array)) {
+    // See the matching note in `hydrateStepError`: this branch is for
+    // devalue flattened arrays from legacy callers; current SDK versions
+    // always emit a Uint8Array, and a misshapen value here intentionally
+    // throws via `unflatten` so the surrounding try/catch in o11y helpers
+    // surfaces the issue rather than masking it.
+    return unflatten(decrypted as any[], {
+      ...getExternalRevivers(global, ops, runId, key),
+      ...extraRevivers,
+    });
+  }
+
+  const { format, payload } = decodeFormatPrefix(decrypted);
+
+  if (format === SerializationFormat.DEVALUE_V1) {
+    const str = new TextDecoder().decode(payload);
+    return parse(str, {
+      ...getExternalRevivers(global, ops, runId, key),
+      ...extraRevivers,
+    });
+  }
+
+  throw new Error(`Unsupported serialization format: ${format}`);
+}
+
+/**
+ * Called from the workflow handler when replaying the event log of a `step_completed` event.
+ * Hydrates the return value of a step from the database.
+ *
+ * @param value - Binary serialized data (Uint8Array) with format prefix
+ * @param runId - Run ID for decryption context
+ * @param key - Encryption key (undefined to skip decryption)
+ * @param global - Global object for deserialization context
+ * @param extraRevivers - Additional revivers for custom types
  * Called from the workflow handler when replaying the event log
  * of a `step_completed` event.
  */

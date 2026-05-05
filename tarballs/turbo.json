@@ -3,7 +3,7 @@
   "extends": ["//"],
   "tasks": {
     "build": {
-      "outputs": ["public/*.tgz", "public/index.html"]
+      "outputs": ["public/*.tgz", "public/catalog.json", "dist/**"]
     }
   }
 }

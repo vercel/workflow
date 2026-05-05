@@ -230,7 +230,15 @@ When an inline step fails with retries remaining:
 
 ### Mixed Suspensions
 
-A suspension may contain steps, hooks, and waits simultaneously. The handler creates events for all, executes any pending step inline, and returns with the wait timeout if applicable. The workflow will re-suspend on next replay for the still-pending hooks/waits.
+A suspension may contain steps, hooks, and waits simultaneously. The handler creates events for all, then chooses between inline execution and queue dispatch:
+
+- **Steps only** (no waits): one owned step is executed inline; the rest are queued. The loop continues after the inline step completes.
+- **Steps + at least one wait**: every step is queued (no inline execution). The handler returns with the wait timeout. Whichever lands first — a step's continuation or the wait timer — drives the next replay.
+- **Hooks / waits only**: handler returns with the wait timeout (or no timeout, for hook-only suspensions). The next continuation is driven by external resume or the wait timer.
+
+The "no inline when there's a wait" carve-out is necessary to preserve `Promise.race(step, sleep)` semantics. Inline `await executeStep(...)` blocks the handler for the full step duration, and `wait_completed` events are only created on the *next* loop iteration's "complete elapsed waits" pass — so a longer-running step would always swallow the shorter sleep and `Promise.race` would resolve incorrectly. Queueing the step in this case lets the wait timer drive a continuation in parallel, matching V1's behavior where each step ran in a separate function invocation.
+
+Pure step suspensions (without waits) still benefit from inline execution; the carve-out only costs an extra queue roundtrip when a step and a sleep coexist.
 
 ### Hook Conflicts
 

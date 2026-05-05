@@ -1,5 +1,5 @@
 import { parseDurationToDate } from '@workflow/utils';
-import type { StructuredError } from '@workflow/world';
+
 import type { StringValue } from 'ms';
 
 // Note: `Ansi` helpers live under the `@workflow/errors/ansi` subpath so the
@@ -211,24 +211,46 @@ export class WorkflowWorldError extends WorkflowError {
  */
 export class WorkflowRunFailedError extends WorkflowError {
   runId: string;
-  declare cause: Error & { code?: string };
+  /**
+   * The high-level error category (e.g. USER_ERROR, RUNTIME_ERROR) for the
+   * failed run, from the run_failed event's `errorCode` field.
+   */
+  errorCode?: string;
+  /**
+   * The original thrown value from the failed workflow run, hydrated through
+   * the workflow serialization pipeline. Preserves the original type identity
+   * (Error subclasses, FatalError, custom classes with WORKFLOW_SERIALIZE, etc.)
+   * and custom properties (cause chains, etc.).
+   *
+   * Note: any JavaScript value can be thrown, so this is typed as `unknown`.
+   * Typical values are Error instances, but strings, objects, etc. are also
+   * possible.
+   */
+  declare cause: unknown;
 
-  constructor(runId: string, error: StructuredError) {
-    // Create a proper Error instance from the StructuredError to set as cause
-    // NOTE: custom error types do not get serialized/deserialized. Everything is an Error
-    const causeError = new Error(error.message);
-    if (error.stack) {
-      causeError.stack = error.stack;
-    }
-    if (error.code) {
-      (causeError as any).code = error.code;
-    }
+  constructor(
+    runId: string,
+    error: unknown,
+    options: { errorCode?: string } = {}
+  ) {
+    // Derive a human-readable message from the hydrated thrown value.
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === 'string'
+          ? error
+          : error && typeof error === 'object' && 'message' in error
+            ? String((error as { message: unknown }).message)
+            : 'Unknown error';
 
-    super(`Workflow run "${runId}" failed: ${error.message}`, {
-      cause: causeError,
+    super(`Workflow run "${runId}" failed: ${message}`, {
+      cause: error,
     });
     this.name = 'WorkflowRunFailedError';
     this.runId = runId;
+    if (options.errorCode !== undefined) {
+      this.errorCode = options.errorCode;
+    }
   }
 
   static is(value: unknown): value is WorkflowRunFailedError {
@@ -765,3 +787,43 @@ export const VERCEL_403_ERROR_MESSAGE =
   'Your current vercel account does not have access to this resource. Use `vercel login` or `vercel switch` to ensure you are linked to the right account.';
 
 export { RUN_ERROR_CODES, type RunErrorCode } from './error-codes.js';
+
+// ---------------------------------------------------------------------------
+// Cross-realm class registration
+// ---------------------------------------------------------------------------
+//
+// `FatalError` and `RetryableError` are not built-ins, so different realms
+// (e.g. the workflow VM context vs. the host context that runs the queue
+// handler) bundle and load their own copies of this module — meaning each
+// realm has its own distinct class identity. Cross-realm `instanceof` fails
+// because the prototype chains never meet.
+//
+// To let serialization revivers reconstruct a value as the *consumer's*
+// FatalError (so user-code `err instanceof FatalError` passes), each bundled
+// copy of this module self-registers its class on `globalThis` via a known
+// Symbol.for key. Revivers in `@workflow/core` look up the class via the
+// consumer's globalThis at hydration time.
+//
+// First registration in a given realm wins. The descriptor is non-writable
+// and non-configurable to make accidental clobbering loud.
+const FATAL_ERROR_KEY = Symbol.for('@workflow/errors//FatalError');
+const RETRYABLE_ERROR_KEY = Symbol.for('@workflow/errors//RetryableError');
+
+if (typeof globalThis !== 'undefined') {
+  if (!Object.hasOwn(globalThis, FATAL_ERROR_KEY)) {
+    Object.defineProperty(globalThis, FATAL_ERROR_KEY, {
+      value: FatalError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  if (!Object.hasOwn(globalThis, RETRYABLE_ERROR_KEY)) {
+    Object.defineProperty(globalThis, RETRYABLE_ERROR_KEY, {
+      value: RetryableError,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+}

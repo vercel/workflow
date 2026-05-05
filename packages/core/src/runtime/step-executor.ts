@@ -1,3 +1,4 @@
+import { types } from 'node:util';
 import { waitUntil } from '@vercel/functions';
 import {
   EntityConflictError,
@@ -9,16 +10,16 @@ import {
   WorkflowRuntimeError,
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
-import { getPortLazy } from './get-port-lazy.js';
 import type { World } from '@workflow/world';
 import { SPEC_VERSION_CURRENT } from '@workflow/world';
 import type { CryptoKey } from '../encryption.js';
-import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
 import {
+  dehydrateStepError,
   dehydrateStepReturnValue,
   hydrateStepArguments,
+  hydrateStepError,
 } from '../serialization.js';
 import { contextStorage } from '../step/context-storage.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
@@ -28,6 +29,8 @@ import {
   getErrorStack,
   normalizeUnknownError,
 } from '../types.js';
+import { getPortLazy } from './get-port-lazy.js';
+import { memoizeEncryptionKey } from './helpers.js';
 
 const DEFAULT_STEP_MAX_RETRIES = 3;
 
@@ -81,6 +84,12 @@ export async function executeStep(
       ...Attribute.StepId(stepId),
     });
 
+    // Memoized accessor for the per-run encryption key. The first caller
+    // (input hydration on the success path, or one of the early-return
+    // dehydrateStepError paths if step_started fails) triggers the actual
+    // fetch / HKDF derivation; subsequent callers await the cached promise.
+    const getEncryptionKey = memoizeEncryptionKey(world, workflowRunId);
+
     const stepFn = getStepFunction(stepName);
     if (!stepFn || typeof stepFn !== 'function') {
       // Step function not registered — fail the step immediately (not the run).
@@ -98,7 +107,11 @@ export async function executeStep(
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
-            error: errorMessage,
+            error: await dehydrateStepError(
+              new FatalError(errorMessage),
+              workflowRunId,
+              await getEncryptionKey()
+            ),
           },
         });
       } catch (stepFailErr) {
@@ -203,14 +216,34 @@ export async function executeStep(
         stepName,
         retryCount,
       });
+      // Preserve the prior attempt's serialized error as the cause so the
+      // underlying failure is recoverable from `step.error.cause` after
+      // hydration, without forcing consumers to walk the step_retrying
+      // event history. Best-effort: if hydration of the prior `step.error`
+      // throws, fall back to a FatalError without cause.
+      const wrappedError = new FatalError(errorMessage);
+      if (step.error != null) {
+        try {
+          (wrappedError as Error).cause = await hydrateStepError(
+            step.error,
+            workflowRunId,
+            await getEncryptionKey()
+          );
+        } catch {
+          // Ignore — best-effort cause attachment.
+        }
+      }
       try {
         await world.events.create(workflowRunId, {
           eventType: 'step_failed',
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
-            error: errorMessage,
-            stack: step.error?.stack,
+            error: await dehydrateStepError(
+              wrappedError,
+              workflowRunId,
+              await getEncryptionKey()
+            ),
           },
         });
       } catch (err) {
@@ -244,14 +277,10 @@ export async function executeStep(
         );
       }
       const stepStartedAt = step.startedAt;
-
       const ops: Promise<void>[] = [];
-      // Use provided encryption key or resolve one
-      let encryptionKey = params.encryptionKey;
-      if (!encryptionKey) {
-        const rawKey = await world.getEncryptionKeyForRun?.(workflowRunId);
-        encryptionKey = rawKey ? await importKey(rawKey) : undefined;
-      }
+      // Use the provided encryption key when available, otherwise resolve
+      // through the memoized accessor declared at the top of this trace.
+      const encryptionKey = params.encryptionKey ?? (await getEncryptionKey());
       const hydratedInput = await trace(
         'step.hydrate',
         {},
@@ -426,14 +455,24 @@ export async function executeStep(
           'Encountered FatalError while executing step, bubbling up to parent workflow',
           { workflowRunId, stepName, errorStack: normalizedStack }
         );
+        // Apply the normalized stack to the thrown value so the serialized
+        // error preserves it for consumers. `types.isNativeError()` works
+        // across VM realms (a workflow-thrown error is an instance of the
+        // VM's Error class, not the host's).
+        if (types.isNativeError(err) && normalizedStack) {
+          (err as Error).stack = normalizedStack;
+        }
         try {
           await world.events.create(workflowRunId, {
             eventType: 'step_failed',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
             eventData: {
-              error: normalizedError.message,
-              stack: normalizedStack,
+              error: await dehydrateStepError(
+                err,
+                workflowRunId,
+                await getEncryptionKey()
+              ),
             },
           });
         } catch (stepFailErr) {
@@ -480,12 +519,25 @@ export async function executeStep(
           }
         );
         const errorMessage = `Step "${stepName}" failed after ${maxRetries} ${pluralize('retry', 'retries', maxRetries)}: ${normalizedError.message}`;
+        // Wrap the original thrown value as `cause` on a fresh FatalError
+        // so the wrapping message + retry-count framing is the user-facing
+        // error while the original failure remains recoverable from
+        // `err.cause` after hydration.
+        const wrappedError = new FatalError(errorMessage);
+        (wrappedError as Error).cause = err;
+        if (normalizedStack) wrappedError.stack = normalizedStack;
         try {
           await world.events.create(workflowRunId, {
             eventType: 'step_failed',
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
-            eventData: { error: errorMessage, stack: normalizedStack },
+            eventData: {
+              error: await dehydrateStepError(
+                wrappedError,
+                workflowRunId,
+                await getEncryptionKey()
+              ),
+            },
           });
         } catch (stepFailErr) {
           if (EntityConflictError.is(stepFailErr)) {
@@ -526,14 +578,23 @@ export async function executeStep(
         });
       }
 
+      // Apply the normalized stack to the thrown value so it survives
+      // serialization. See the FatalError site above for why we use
+      // `types.isNativeError` instead of `err instanceof Error`.
+      if (types.isNativeError(err) && normalizedStack) {
+        (err as Error).stack = normalizedStack;
+      }
       try {
         await world.events.create(workflowRunId, {
           eventType: 'step_retrying',
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: stepId,
           eventData: {
-            error: normalizedError.message,
-            stack: normalizedStack,
+            error: await dehydrateStepError(
+              err,
+              workflowRunId,
+              await getEncryptionKey()
+            ),
             ...(RetryableError.is(err) && { retryAfter: err.retryAfter }),
           },
         });

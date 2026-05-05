@@ -8,7 +8,9 @@ import { decrypt, encrypt, importKey } from './encryption.js';
 import { getStepFunction, registerStepFunction } from './private.js';
 import {
   decodeFormatPrefix,
+  dehydrateRunError,
   dehydrateStepArguments,
+  dehydrateStepError,
   dehydrateStepReturnValue,
   dehydrateWorkflowArguments,
   dehydrateWorkflowReturnValue,
@@ -17,7 +19,9 @@ import {
   getSerializeStream,
   getStreamType,
   getWorkflowReducers,
+  hydrateRunError,
   hydrateStepArguments,
+  hydrateStepError,
   hydrateStepReturnValue,
   hydrateWorkflowArguments,
   hydrateWorkflowReturnValue,
@@ -3654,6 +3658,305 @@ describe('FatalError and RetryableError serialization', () => {
     const hydrated = (await roundTrip(error)) as RetryableError;
     expect(hydrated.retryAfter).toBeInstanceOf(Date);
     expect(hydrated.retryAfter.getTime()).toBe(retryDate.getTime());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dehydrate/hydrate{Step,Run}Error helpers
+//
+// These dedicated helpers wrap the step/workflow reducers + format-prefix
+// encoding + optional encryption for the values that flow through
+// `step_failed` / `step_retrying` / `run_failed` events. The tests below
+// exercise the public API directly (rather than through a workflow context)
+// to lock down the round-trip contract.
+// ---------------------------------------------------------------------------
+describe('dehydrate/hydrateStepError', () => {
+  // FatalError needs to be registered (the SWC plugin does this in production
+  // by inlining the registration; in unit tests we register manually).
+  beforeAll(() => {
+    registerSerializationClass('@workflow/errors//FatalError', FatalError);
+    registerSerializationClass(
+      '@workflow/errors//RetryableError',
+      RetryableError
+    );
+  });
+
+  it('should round-trip a FatalError preserving class identity, message, and stack', async () => {
+    const original = new FatalError('boom');
+    original.stack = 'Error: boom\n    at someFn (file.js:1:1)';
+    const serialized = await dehydrateStepError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    expect(serialized).toBeInstanceOf(Uint8Array);
+
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as FatalError;
+
+    expect(hydrated).toBeInstanceOf(FatalError);
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('boom');
+    expect(hydrated.stack).toBe(original.stack);
+    expect(hydrated.fatal).toBe(true);
+  });
+
+  it('should round-trip a generic Error preserving name, message, and stack', async () => {
+    const original = new Error('plain error');
+    original.stack = 'Error: plain error\n    at somewhere (a.js:1:1)';
+    const serialized = await dehydrateStepError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as Error;
+
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.name).toBe('Error');
+    expect(hydrated.message).toBe('plain error');
+    expect(hydrated.stack).toBe(original.stack);
+  });
+
+  it('should round-trip a built-in Error subclass (TypeError) with its identity', async () => {
+    const original = new TypeError('bad type');
+    const serialized = await dehydrateStepError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as TypeError;
+
+    expect(hydrated).toBeInstanceOf(TypeError);
+    expect(hydrated.name).toBe('TypeError');
+    expect(hydrated.message).toBe('bad type');
+  });
+
+  it('should round-trip non-Error thrown values (string)', async () => {
+    // Steps may throw any JS value, not only Errors. Ensure the helper
+    // round-trips strings, numbers, and plain objects without coercion.
+    const serialized = await dehydrateStepError(
+      'thrown string',
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    );
+    expect(hydrated).toBe('thrown string');
+  });
+
+  it('should round-trip non-Error thrown values (plain object)', async () => {
+    const obj = { code: 'X', detail: { nested: true } };
+    const serialized = await dehydrateStepError(
+      obj,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as typeof obj;
+    expect(hydrated).toEqual(obj);
+    expect(hydrated).not.toBe(obj);
+  });
+
+  it('should round-trip an Error cause chain', async () => {
+    const root = new Error('root cause');
+    const wrapped = new FatalError('wrapped');
+    (wrapped as Error).cause = root;
+    const serialized = await dehydrateStepError(
+      wrapped,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as FatalError;
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('wrapped');
+    expect((hydrated as Error).cause).toBeInstanceOf(Error);
+    expect(((hydrated as Error).cause as Error).message).toBe('root cause');
+  });
+
+  it('should round-trip through encryption when a key is provided', async () => {
+    const key = await importKey(crypto.getRandomValues(new Uint8Array(32)));
+    const original = new FatalError('encrypted');
+    const serialized = await dehydrateStepError(original, mockRunId, key);
+    expect(serialized).toBeInstanceOf(Uint8Array);
+    // The ciphertext should not contain the plaintext message.
+    expect(new TextDecoder().decode(serialized)).not.toContain('encrypted');
+
+    const hydrated = (await hydrateStepError(
+      serialized,
+      mockRunId,
+      key
+    )) as FatalError;
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('encrypted');
+  });
+
+  it('should produce binary output prefixed with the DEVALUE_V1 format byte', async () => {
+    // Lock down the wire contract so storage backends keep working.
+    const serialized = await dehydrateStepError(
+      new Error('x'),
+      mockRunId,
+      noEncryptionKey
+    );
+    const { format } = decodeFormatPrefix(serialized);
+    expect(format).toBe(SerializationFormat.DEVALUE_V1);
+  });
+
+  it('should throw WorkflowRuntimeError when given an unserializable value', async () => {
+    // A class instance with no WORKFLOW_SERIALIZE/registration is not
+    // serializable and must surface a runtime error rather than producing
+    // bogus output.
+    class Unregistered {
+      foo = 'bar';
+    }
+    let err: WorkflowRuntimeError | undefined;
+    try {
+      await dehydrateStepError(new Unregistered(), mockRunId, noEncryptionKey);
+    } catch (e) {
+      err = e as WorkflowRuntimeError;
+    }
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('step error');
+  });
+
+  it('hydrateStepError should reject unknown format prefixes', async () => {
+    // Manufacture a payload with a bogus format byte to assert the
+    // helper rejects it instead of returning garbage.
+    const bogus = new Uint8Array([0xff, 0, 0, 0, 0]);
+    await expect(
+      hydrateStepError(bogus, mockRunId, noEncryptionKey)
+    ).rejects.toThrow(/(Unknown|Invalid) (serialization )?format/i);
+  });
+});
+
+describe('dehydrate/hydrateRunError', () => {
+  // The run-error helpers use the workflow reducers (vs. the step reducers
+  // used above), but the surface contract is the same. These tests cover the
+  // run-side specifically so the two pipelines can evolve independently.
+  beforeAll(() => {
+    registerSerializationClass('@workflow/errors//FatalError', FatalError);
+  });
+
+  it('should round-trip a FatalError preserving class identity', async () => {
+    const original = new FatalError('run-level fatal');
+    const serialized = await dehydrateRunError(
+      original,
+      mockRunId,
+      noEncryptionKey
+    );
+    expect(serialized).toBeInstanceOf(Uint8Array);
+
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as FatalError;
+
+    expect(hydrated).toBeInstanceOf(FatalError);
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('run-level fatal');
+    expect(hydrated.fatal).toBe(true);
+  });
+
+  it('should round-trip a custom property bag thrown by the workflow', async () => {
+    // Workflows may throw arbitrary values; ensure plain object shape is
+    // preserved including nested structures.
+    const value = {
+      reason: 'bad-input',
+      attempted: [1, 2, 3],
+      meta: { user: 'alice' },
+    };
+    const serialized = await dehydrateRunError(
+      value,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    );
+    expect(hydrated).toEqual(value);
+  });
+
+  it('should round-trip through encryption when a key is provided', async () => {
+    const key = await importKey(crypto.getRandomValues(new Uint8Array(32)));
+    const original = new Error('top-secret message');
+    const serialized = await dehydrateRunError(original, mockRunId, key);
+    expect(new TextDecoder().decode(serialized)).not.toContain('top-secret');
+
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      key
+    )) as Error;
+    expect(hydrated).toBeInstanceOf(Error);
+    expect(hydrated.message).toBe('top-secret message');
+  });
+
+  it('should preserve the cause chain on a thrown FatalError', async () => {
+    const root = new TypeError('root type error');
+    const wrapped = new FatalError('outer fatal');
+    (wrapped as Error).cause = root;
+    const serialized = await dehydrateRunError(
+      wrapped,
+      mockRunId,
+      noEncryptionKey
+    );
+    const hydrated = (await hydrateRunError(
+      serialized,
+      mockRunId,
+      noEncryptionKey
+    )) as FatalError;
+    expect(FatalError.is(hydrated)).toBe(true);
+    expect(hydrated.message).toBe('outer fatal');
+    const cause = (hydrated as Error).cause as Error;
+    expect(cause).toBeInstanceOf(TypeError);
+    expect(cause.message).toBe('root type error');
+  });
+
+  it('should produce DEVALUE_V1-prefixed binary output', async () => {
+    const serialized = await dehydrateRunError(
+      new Error('x'),
+      mockRunId,
+      noEncryptionKey
+    );
+    const { format } = decodeFormatPrefix(serialized);
+    expect(format).toBe(SerializationFormat.DEVALUE_V1);
+  });
+
+  it('should throw WorkflowRuntimeError when given an unserializable value', async () => {
+    class Unregistered {
+      foo = 'bar';
+    }
+    let err: WorkflowRuntimeError | undefined;
+    try {
+      await dehydrateRunError(new Unregistered(), mockRunId, noEncryptionKey);
+    } catch (e) {
+      err = e as WorkflowRuntimeError;
+    }
+    expect(err).toBeDefined();
+    expect(err?.message).toContain('run error');
   });
 });
 

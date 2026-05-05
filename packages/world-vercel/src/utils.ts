@@ -8,7 +8,7 @@ import {
   TooEarlyError,
   WorkflowWorldError,
 } from '@workflow/errors';
-import { type StructuredError, StructuredErrorSchema } from '@workflow/world';
+import type { SerializedData } from '@workflow/world';
 import { decode, encode } from 'cbor-x';
 import type { z } from 'zod';
 import { getDispatcher } from './http-client.js';
@@ -62,6 +62,15 @@ function httpLog(
 const WORKFLOW_SERVER_URL_OVERRIDE = '';
 
 /**
+ * Per-request timeout for HTTP calls to workflow-server (in ms).
+ *
+ * Without this, a hung workflow-server response would keep the caller
+ * blocked until the platform's `maxDuration` SIGTERM — burning compute
+ * and defeating upstream timeout handlers (e.g. the replay timeout).
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+
+/**
  * Effective workflow-server URL override. The inline constant wins when
  * set; otherwise falls back to the `VERCEL_WORKFLOW_SERVER_URL` env var.
  *
@@ -73,6 +82,7 @@ const WORKFLOW_SERVER_URL_OVERRIDE = '';
  */
 const getWorkflowServerUrlOverride = (): string =>
   WORKFLOW_SERVER_URL_OVERRIDE || process.env.VERCEL_WORKFLOW_SERVER_URL || '';
+
 export interface APIConfig {
   token?: string;
   headers?: RequestInit['headers'];
@@ -89,101 +99,31 @@ export interface APIConfig {
 export const DEFAULT_RESOLVE_DATA_OPTION = 'all';
 
 /**
- * Helper to serialize error into a JSON string in the error field.
- * The error field can be either:
- * - A plain string (legacy format, just the error message)
- * - A JSON string with { message, stack, code } (new format)
+ * Pass-through helper that preserves the wire-format error field as-is.
+ *
+ * In the current event-sourced model (specVersion >= 2), the `error` field
+ * on run/step entities is `SerializedData` (a Uint8Array) produced by
+ * `dehydrateStepError` / `dehydrateRunError`. Consumers hydrate it via
+ * `hydrateStepError` / `hydrateRunError` to reconstruct the original
+ * thrown value.
+ *
+ * This helper exists for backward compatibility with the old API that
+ * expected a domain-level transformation. New code should treat the
+ * `error` field as opaque `SerializedData`.
  */
-export function serializeError<T extends { error?: StructuredError }>(
-  data: T
-): Omit<T, 'error'> & { error?: string } {
-  const { error, ...rest } = data;
-
-  // If we have an error, serialize as JSON string
-  if (error !== undefined) {
-    return {
-      ...rest,
-      error: JSON.stringify({
-        message: error.message,
-        stack: error.stack,
-        code: error.code,
-      }),
-    } as Omit<T, 'error'> & { error: string };
-  }
-
-  return data as Omit<T, 'error'>;
+export function deserializeError<T extends Record<string, any>>(obj: any): T {
+  return obj as T;
 }
 
 /**
- * Helper to deserialize error field from the backend into a StructuredError object.
- * Handles multiple formats from the backend:
- * - If error is already a structured object → validate and use directly
- * - If error is a JSON string with {message, stack, code} → parse into StructuredError
- * - If error is a plain string → treat as error message with no stack
- * - If no error → undefined
- *
- * This function transforms objects from wire format (where error may be a JSON string
- * or already structured) to domain format (where error is a StructuredError object).
- * The generic type parameter should be the expected output type (WorkflowRun or Step).
- *
- * Note: The type assertion is necessary because the wire format types from Zod schemas
- * have `error?: string | StructuredError` while the domain types have complex error types
- * (e.g., discriminated unions with `error: void` or `error: StructuredError` depending on
- * status), but the transformation preserves all other fields correctly.
+ * Pass-through helper for outgoing update requests. In the current
+ * event-sourced model, the `error` field on `UpdateStepRequest` is
+ * `SerializedData` (Uint8Array) and does not need transformation.
  */
-export function deserializeError<T extends Record<string, any>>(obj: any): T {
-  const { error, errorCode, ...rest } = obj;
-
-  if (!error) {
-    return obj as T;
-  }
-
-  // errorCode is stored as a separate inline field on the run entity (not
-  // inside errorRef). Merge it into StructuredError.code so consumers see it.
-  // If the error already has a code from the ref, errorCode takes precedence.
-
-  // If error is already an object (new format), validate and use directly
-  if (typeof error === 'object' && error !== null) {
-    const result = StructuredErrorSchema.safeParse(error);
-    if (result.success) {
-      return {
-        ...rest,
-        error: {
-          message: result.data.message,
-          stack: result.data.stack,
-          code: errorCode ?? result.data.code,
-        },
-      } as T;
-    }
-    // Fall through to treat as unknown format
-  }
-
-  // If error is a string, try to parse as structured error JSON
-  if (typeof error === 'string') {
-    try {
-      const parsed = StructuredErrorSchema.parse(JSON.parse(error));
-      return {
-        ...rest,
-        error: {
-          message: parsed.message,
-          stack: parsed.stack,
-          code: errorCode ?? parsed.code,
-        },
-      } as T;
-    } catch {
-      // Backwards compatibility: error is just a plain string
-      return {
-        ...rest,
-        error: {
-          message: error,
-          code: errorCode,
-        },
-      } as T;
-    }
-  }
-
-  // Unknown format - return as-is and let downstream handle it
-  return obj as T;
+export function serializeError<T extends { error?: SerializedData }>(
+  data: T
+): T {
+  return data;
 }
 
 const getUserAgent = () => {
@@ -353,16 +293,44 @@ export async function makeRequest<T>({
         body = encode(data);
       }
 
+      // Compose user-passed abort signal (unused at time of writing)
+      // with the max request timeout
+      const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      const signal = options.signal
+        ? AbortSignal.any([options.signal, timeoutSignal])
+        : timeoutSignal;
       const request = new Request(url, {
         ...options,
         body,
         headers,
+        signal,
       });
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
       const fetchStart = Date.now();
-      const response = await fetch(request, {
-        dispatcher: getDispatcher(),
-      } as any);
+      let response: Response;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
+        response = await fetch(request, {
+          dispatcher: getDispatcher(),
+        } as any);
+      } catch (error) {
+        const elapsed = Date.now() - fetchStart;
+        // AbortSignal.timeout() surfaces as a DOMException with name
+        // 'TimeoutError'. Map to WorkflowWorldError so existing catch
+        // sites treat it like any other world transport failure.
+        if (
+          error instanceof Error &&
+          (error.name === 'TimeoutError' || error.name === 'AbortError')
+        ) {
+          const timeoutError = new WorkflowWorldError(
+            `${method} ${endpoint} timed out after ${elapsed}ms`,
+            { url, cause: error }
+          );
+          span?.setAttributes({ ...ErrorType('TIMEOUT') });
+          span?.recordException?.(timeoutError);
+          throw timeoutError;
+        }
+        throw error;
+      }
       const fetchMs = Date.now() - fetchStart;
 
       httpLog(method, endpoint, response.status, fetchMs);

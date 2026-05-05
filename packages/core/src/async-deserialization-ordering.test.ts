@@ -2,14 +2,26 @@ import { FatalError } from '@workflow/errors';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { registerSerializationClass } from './class-serialization.js';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
-import { dehydrateStepReturnValue } from './serialization.js';
+import {
+  dehydrateStepError,
+  dehydrateStepReturnValue,
+} from './serialization.js';
 import { createUseStep } from './step.js';
+import { WORKFLOW_CLASS_REGISTRY } from './symbols.js';
 import { createContext } from './vm/index.js';
 import { createCreateHook } from './workflow/hook.js';
 import { createSleep } from './workflow/sleep.js';
+
+// In production, the SWC plugin auto-discovers FatalError (class with
+// WORKFLOW_SERIALIZE/DESERIALIZE) and registers it with a classId. In unit
+// tests we simulate this by manually registering the class.
+beforeAll(() => {
+  registerSerializationClass('@workflow/errors//FatalError', FatalError);
+});
 
 /**
  * These tests verify that when `hydrateStepReturnValue` performs real async
@@ -26,6 +38,12 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     seed: 'test',
     fixedTimestamp: 1753481739458,
   });
+  // Propagate the host class registry to the VM globalThis so that
+  // hydrateStepError can reconstruct FatalError inside the VM realm.
+  const hostRegistry = (globalThis as any)[WORKFLOW_CLASS_REGISTRY];
+  if (hostRegistry) {
+    (context.globalThis as any)[WORKFLOW_CLASS_REGISTRY] = hostRegistry;
+  }
   const ulid = monotonicFactory(() => context.globalThis.Math.random());
   const workflowStartedAt = context.globalThis.Date.now();
   return {
@@ -299,6 +317,11 @@ describe('async deserialization ordering', () => {
       'wrun_test',
       undefined
     );
+    const errorB = await dehydrateStepError(
+      new FatalError('step B failed'),
+      'wrun_test',
+      undefined
+    );
 
     const ctx = setupWorkflowContext([
       {
@@ -314,7 +337,7 @@ describe('async deserialization ordering', () => {
         runId: 'wrun_test',
         eventType: 'step_failed',
         correlationId: 'step_01K11TFZ62YS0YYFDQ3E8B9YCW',
-        eventData: { error: 'step B failed' },
+        eventData: { error: errorB },
         createdAt: new Date(),
       },
       {

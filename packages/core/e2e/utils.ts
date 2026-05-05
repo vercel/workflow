@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createVercelWorld } from '@workflow/world-vercel';
 import { onTestFailed } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
+import { parseEnvironmentFlag } from '../../next/src/environment-flag.js';
 import type { Run } from '../src/runtime';
 import { getWorld, setWorld } from '../src/runtime';
 
@@ -18,6 +19,10 @@ function splitArgs(raw: string): string[] {
   const value = raw.trim();
   if (!value) return [];
   return value.split(/\s+/);
+}
+
+export function isNextLazyDiscoveryEnabledForTest(): boolean {
+  return parseEnvironmentFlag(process.env.WORKFLOW_NEXT_LAZY_DISCOVERY) ?? true;
 }
 
 export function getWorkbenchAppPath(overrideAppName?: string): string {

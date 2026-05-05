@@ -1,4 +1,9 @@
-import chalk from 'chalk';
+// Imported from a sibling module rather than `chalk` proper so this file
+// (and everything that statically imports it — including the workflow-VM
+// reachable `context-violation-error.ts`) doesn't pull in chalk's
+// `supports-color` / `require('os')` chain. See `./internal-chalk.ts`
+// for the full rationale and the test mock that swaps it out.
+import chalk from './internal-chalk.js';
 
 /**
  * Helpers for composing structured, human-friendly error messages.

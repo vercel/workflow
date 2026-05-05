@@ -13,6 +13,7 @@ import {
 import { type CryptoKey, importKey } from '../encryption.js';
 import {
   getExternalRevivers,
+  hydrateRunError,
   hydrateWorkflowReturnValue,
 } from '../serialization.js';
 import { getWorkflowRunStreamId } from '../util.js';
@@ -325,7 +326,26 @@ export class Run<TResult> {
         }
 
         if (run.status === 'failed') {
-          throw new WorkflowRunFailedError(this.runId, run.error);
+          // Hydrate the serialized run error so the original thrown value
+          // (with its type identity, cause chain, etc.) is set as the
+          // `cause` on WorkflowRunFailedError.
+          const encryptionKey = await this.#getEncryptionKey();
+          let hydratedError: unknown;
+          try {
+            hydratedError = await hydrateRunError(
+              run.error,
+              this.runId,
+              encryptionKey
+            );
+          } catch {
+            // If hydration fails, surface a generic fallback rather than
+            // leaving the user with a raw Uint8Array. The run's errorCode
+            // is still preserved on the thrown WorkflowRunFailedError.
+            hydratedError = new Error('Failed to hydrate workflow run error');
+          }
+          throw new WorkflowRunFailedError(this.runId, hydratedError, {
+            errorCode: run.errorCode,
+          });
         }
 
         // Run not completed yet — sleep and poll again.
