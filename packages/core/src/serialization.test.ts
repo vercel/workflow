@@ -4854,6 +4854,89 @@ describe('AbortController serialization', () => {
       }
     });
 
+    it('revived signal addEventListener fires when signal aborts (regression: was no-op stub)', async () => {
+      // Regression: workflow-VM revivers previously produced plain objects
+      // with addEventListener: () => {}. signal.addEventListener('abort', fn)
+      // after hydration silently dropped the listener. Now revivers use
+      // WorkflowAbortSignal so listeners actually fire.
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000ADD';
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        let fired = 0;
+        hydrated.signal.addEventListener('abort', () => {
+          fired += 1;
+        });
+
+        // Drive the abort through _setAborted (the same path the events
+        // consumer uses on replay) — the listener must fire.
+        hydrated.signal._setAborted('addEventListener-fires-reason');
+
+        expect(fired).toBe(1);
+        expect(hydrated.signal.aborted).toBe(true);
+        expect(hydrated.signal.reason).toBe('addEventListener-fires-reason');
+
+        // throwIfAborted on the revived signal must throw with the reason
+        expect(() => hydrated.signal.throwIfAborted()).toThrow(
+          'addEventListener-fires-reason'
+        );
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
+    it('revived already-aborted signal fires addEventListener synchronously', async () => {
+      // Native AbortSignal fires addEventListener('abort', fn) microtask-async
+      // when already-aborted; WorkflowAbortSignal fires synchronously for
+      // deterministic replay. Either way, the listener must fire.
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000ADX';
+      try {
+        const controller = new AbortController();
+        controller.abort('pre-aborted');
+        const ops: Promise<void>[] = [];
+
+        const serialized = await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        const hydrated = await hydrateWorkflowArguments(
+          serialized,
+          mockRunId,
+          noEncryptionKey,
+          vmGlobalThis
+        );
+
+        let fired = 0;
+        hydrated.signal.addEventListener('abort', () => {
+          fired += 1;
+        });
+        // Synchronous on WorkflowAbortSignal (deterministic for replay).
+        expect(fired).toBe(1);
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+      }
+    });
+
     it('already-aborted AbortController: signal.aborted === true after hydration', async () => {
       const originalStableUlid = (globalThis as any)[STABLE_ULID];
       (globalThis as any)[STABLE_ULID] = () => '01ABORT0000000000002';
@@ -5205,15 +5288,124 @@ describe('AbortController serialization', () => {
         expect(runIdArg).toBe(mockRunId);
         expect(String(streamNameArg)).toContain('_system_abort');
         // writeMulti path flattens into chunks[]; write path passes a single
-        // Uint8Array. Normalize to a single decoded JSON object.
-        const decoded = Array.isArray(chunks)
-          ? new TextDecoder().decode(
-              new Uint8Array(chunks.flatMap((c: Uint8Array) => Array.from(c)))
-            )
-          : new TextDecoder().decode(chunks as Uint8Array);
-        expect(JSON.parse(decoded)).toEqual({
+        // Uint8Array. Normalize to a single Uint8Array and hydrate via the
+        // same machinery the real reader uses — the listener writes a
+        // dehydrated payload, not raw JSON.
+        const buffer = Array.isArray(chunks)
+          ? new Uint8Array(chunks.flatMap((c: Uint8Array) => Array.from(c)))
+          : (chunks as Uint8Array);
+        const hydrated = (await hydrateStepArguments(
+          buffer,
+          mockRunId,
+          noEncryptionKey
+        )) as { aborted: boolean; reason: unknown };
+        expect(hydrated).toEqual({
+          aborted: true,
           reason: 'aborted-after-serialization',
         });
+      } finally {
+        (globalThis as any)[STABLE_ULID] = originalStableUlid;
+        vi.mocked(getWorld).mockReset();
+      }
+    });
+
+    it('listener-side abort writes a packet the reader can hydrate (regression: bare JSON.stringify did not survive hydrateStepArguments)', async () => {
+      // Regression: attachAbortListenerOnce previously wrote
+      //   JSON.stringify({ reason: signal.reason })
+      // but the reader hydrates with hydrateStepArguments, which expects the
+      // dehydrated envelope. With a structured reason (DOMException), the
+      // bare JSON.stringify path drops the reason entirely (string-coerces
+      // to "[object DOMException]") and the reader's catch falls back to
+      // controller.abort() with no reason. Exercise the round-trip end to end.
+      const originalStableUlid = (globalThis as any)[STABLE_ULID];
+      (globalThis as any)[STABLE_ULID] = () => '01ABORTDOMEX00000001';
+
+      let writtenPayload: Uint8Array | undefined;
+      const streamData = new Map<string, Uint8Array>();
+      const writeMock = vi
+        .fn()
+        .mockImplementation(async (...args: unknown[]) => {
+          const last = args[args.length - 1];
+          const payload =
+            last instanceof Uint8Array
+              ? last
+              : Array.isArray(last)
+                ? new Uint8Array(
+                    (last as Uint8Array[]).flatMap((c) => Array.from(c))
+                  )
+                : undefined;
+          if (payload) {
+            writtenPayload = payload;
+            streamData.set(String(args[1]), payload);
+          }
+        });
+      const getMock = vi.fn().mockImplementation(async (_runId, name) => {
+        const payload = streamData.get(String(name));
+        if (!payload) {
+          return new ReadableStream({
+            start(c) {
+              c.close();
+            },
+          });
+        }
+        return new ReadableStream({
+          start(c) {
+            c.enqueue(payload);
+            c.close();
+          },
+        });
+      });
+
+      const { getWorld } = await import('./runtime/world.js');
+      const mockWorld = {
+        streams: {
+          write: writeMock,
+          writeMulti: vi.fn().mockResolvedValue(undefined),
+          close: vi.fn().mockResolvedValue(undefined),
+          get: getMock,
+          list: vi.fn().mockResolvedValue([]),
+          getInfo: vi.fn().mockResolvedValue(undefined),
+        },
+      } as any;
+      vi.mocked(getWorld).mockReturnValue(mockWorld);
+
+      try {
+        const controller = new AbortController();
+        const ops: Promise<void>[] = [];
+
+        // External → workflow reducer attaches the listener.
+        await dehydrateWorkflowArguments(
+          controller,
+          mockRunId,
+          noEncryptionKey,
+          ops
+        );
+
+        // Now abort the *original* (external) controller with a DOMException.
+        // The bug was: the listener wrote bare JSON.stringify({reason}),
+        // which (a) string-coerces DOMException to "[object DOMException]"
+        // and (b) is not in the format `hydrateStepArguments` expects, so
+        // the reader's catch falls through to `controller.abort()` with no
+        // reason. The fix dehydrates via the same machinery the reader uses.
+        const reason = new DOMException('user cancelled', 'AbortError');
+        controller.abort(reason);
+
+        await Promise.all(ops);
+
+        expect(writeMock).toHaveBeenCalled();
+        expect(writtenPayload).toBeDefined();
+
+        // The written packet must hydrate cleanly with full type fidelity —
+        // not as raw JSON, and not with a stringified reason.
+        const decoded = (await hydrateStepArguments(
+          writtenPayload as Uint8Array,
+          mockRunId,
+          noEncryptionKey
+        )) as { aborted: boolean; reason: unknown };
+        expect(decoded.aborted).toBe(true);
+        expect(decoded.reason).toBeInstanceOf(DOMException);
+        expect((decoded.reason as DOMException).name).toBe('AbortError');
+        expect((decoded.reason as DOMException).message).toBe('user cancelled');
       } finally {
         (globalThis as any)[STABLE_ULID] = originalStableUlid;
         vi.mocked(getWorld).mockReset();

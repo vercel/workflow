@@ -2905,7 +2905,7 @@ describe('e2e', () => {
       description,
       resumeBeforeAbort,
     } of orderingVariants) {
-      test.skip(
+      test(
         `abortHookOrderingWorkflow [${variant}]: ${description}`,
         { timeout: 90_000 },
         async () => {

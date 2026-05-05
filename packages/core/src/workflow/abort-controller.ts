@@ -14,7 +14,7 @@ import { getAbortStreamId } from '../util.js';
  * On replay, `abort()` in the workflow code becomes a no-op since
  * `_setAborted` was already called by the events consumer.
  */
-class WorkflowAbortSignal {
+export class WorkflowAbortSignal {
   aborted = false;
   reason: unknown = undefined;
 
@@ -192,7 +192,7 @@ export function createCreateAbortController(ctx: WorkflowOrchestratorContext) {
 /**
  * Creates a workflow-context `AbortSignal` object with static methods.
  */
-export function createAbortSignalStatics(_vmGlobalThis: Record<string, any>): {
+export function createAbortSignalStatics(): {
   abort: (reason?: unknown) => WorkflowAbortSignal;
   any: (
     signals: Iterable<{
@@ -217,26 +217,50 @@ export function createAbortSignalStatics(_vmGlobalThis: Record<string, any>): {
         aborted: boolean;
         reason?: unknown;
         addEventListener?: Function;
+        removeEventListener?: Function;
       }>
     ): WorkflowAbortSignal {
       const composite = new WorkflowAbortSignal('', '');
 
-      for (const signal of signals) {
+      // Materialize the iterable once. Native AbortSignal.any does the same:
+      // single-shot iterables (e.g. generators) would otherwise produce zero
+      // entries on the second pass below.
+      const arr = Array.from(signals);
+
+      for (const signal of arr) {
         if (signal.aborted) {
           composite._setAborted(signal.reason);
           return composite;
         }
       }
 
-      // Listen to each signal — first one to abort wins
-      for (const signal of signals) {
-        if (signal.addEventListener) {
-          signal.addEventListener('abort', () => {
-            if (!composite.aborted) {
-              composite._setAborted(signal.reason);
-            }
-          });
+      // Listen to each signal — first one to abort wins. Track listeners so
+      // we can remove them after the composite aborts; otherwise the closures
+      // (capturing `composite`) prevent GC for any input signal that outlives
+      // the composite (e.g. a long-lived external controller).
+      const listeners: Array<{
+        signal: (typeof arr)[number];
+        listener: () => void;
+      }> = [];
+      const cleanup = () => {
+        for (const { signal, listener } of listeners) {
+          if (signal.removeEventListener) {
+            signal.removeEventListener('abort', listener);
+          }
         }
+        listeners.length = 0;
+      };
+
+      for (const signal of arr) {
+        if (!signal.addEventListener) continue;
+        const listener = () => {
+          if (!composite.aborted) {
+            composite._setAborted(signal.reason);
+            cleanup();
+          }
+        };
+        listeners.push({ signal, listener });
+        signal.addEventListener('abort', listener);
       }
 
       return composite;

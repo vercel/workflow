@@ -2301,8 +2301,12 @@ export async function abortHookOrderingWorkflow(
     log.push('after-abort');
   }
 
-  // Wait for any pending hook resolution
-  await sleep('1s');
+  // Wait long enough for the test harness to resume the hook (test sleeps
+  // a few seconds before resumeHook). The `void hook.then(...)` callback
+  // appends 'hook-resolved:hello' to the log on replay once the hook is
+  // received; this sleep keeps the workflow alive so that resumption lands
+  // before the workflow returns and `using hook` disposes it.
+  await sleep('10s');
 
   return log;
 }

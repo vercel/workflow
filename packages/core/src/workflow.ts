@@ -71,6 +71,22 @@ async function drainPendingQueueItems(
   outcome: 'completed' | 'failed'
 ): Promise<void> {
   if (pendingQueue.size === 0) return;
+  // Implicitly dispose any abort hooks (system hooks) that are still alive at
+  // workflow completion so they don't leak rows in the hooks table for the
+  // run's lifetime. Skip hooks that already have an abort in flight — those
+  // will emit hook_received via the abort processing path. User hooks
+  // (isSystem !== true) are intentionally left alone: their lifetime is
+  // managed by the user's code, not the runtime.
+  for (const item of pendingQueue.values()) {
+    if (
+      item.type === 'hook' &&
+      item.isSystem &&
+      !item.disposed &&
+      !item.abortRequested
+    ) {
+      item.disposed = true;
+    }
+  }
   try {
     const world = await getWorld();
     const synthesized = new WorkflowSuspension(pendingQueue, vmGlobalThis);
@@ -284,7 +300,7 @@ export async function runWorkflow(
     // and signal.aborted is updated when the hook event is processed during replay.
     (vmGlobalThis as any).AbortController =
       createCreateAbortController(workflowContext);
-    const abortSignalStatics = createAbortSignalStatics(vmGlobalThis);
+    const abortSignalStatics = createAbortSignalStatics();
     (vmGlobalThis as any).AbortSignal = {
       abort: abortSignalStatics.abort,
       any: abortSignalStatics.any,

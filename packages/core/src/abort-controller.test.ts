@@ -185,7 +185,7 @@ describe('AbortController in workflow VM', () => {
   describe('AbortSignal static methods', () => {
     it('AbortSignal.abort() returns a pre-aborted signal', () => {
       ctx = setupWorkflowContext([]);
-      const statics = createAbortSignalStatics(ctx.globalThis);
+      const statics = createAbortSignalStatics();
       const signal = statics.abort();
       expect(signal.aborted).toBe(true);
       expect(signal.reason).toBeInstanceOf(DOMException);
@@ -194,7 +194,7 @@ describe('AbortController in workflow VM', () => {
 
     it('AbortSignal.abort(reason) returns a pre-aborted signal with reason', () => {
       ctx = setupWorkflowContext([]);
-      const statics = createAbortSignalStatics(ctx.globalThis);
+      const statics = createAbortSignalStatics();
       const reason = new Error('custom');
       const signal = statics.abort(reason);
       expect(signal.aborted).toBe(true);
@@ -204,7 +204,7 @@ describe('AbortController in workflow VM', () => {
     it('AbortSignal.any([signal1, signal2]) fires when any input signal fires', () => {
       ctx = setupWorkflowContext([]);
       const AbortController = createCreateAbortController(ctx);
-      const statics = createAbortSignalStatics(ctx.globalThis);
+      const statics = createAbortSignalStatics();
 
       const c1 = new AbortController();
       const c2 = new AbortController();
@@ -226,7 +226,7 @@ describe('AbortController in workflow VM', () => {
     it('AbortSignal.any() with a pre-aborted input is immediately aborted', () => {
       ctx = setupWorkflowContext([]);
       const AbortController = createCreateAbortController(ctx);
-      const statics = createAbortSignalStatics(ctx.globalThis);
+      const statics = createAbortSignalStatics();
 
       const c1 = new AbortController();
       c1.signal._setAborted(new Error('already aborted'));
@@ -238,9 +238,63 @@ describe('AbortController in workflow VM', () => {
       expect(composite.reason).toEqual(new Error('already aborted'));
     });
 
+    it('AbortSignal.any() works with single-shot iterables (regression: was iterated twice)', () => {
+      // Regression: AbortSignal.any used to iterate `signals` twice — once
+      // to check pre-aborted, once to attach listeners. A generator (or any
+      // single-shot iterable) is exhausted after the first pass, so the
+      // second pass would attach zero listeners. Native AbortSignal.any
+      // materializes the iterable into an array first; this implementation
+      // must do the same.
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+      const statics = createAbortSignalStatics();
+
+      const c1 = new AbortController();
+      const c2 = new AbortController();
+
+      function* makeIterable() {
+        yield c1.signal;
+        yield c2.signal;
+      }
+
+      const composite = statics.any(makeIterable());
+      expect(composite.aborted).toBe(false);
+
+      // Abort one of the inputs after `any()` has consumed the iterable.
+      // Without Array.from(), no listener was attached and this would never
+      // fire the composite.
+      c2.signal._setAborted(new Error('after-iterable'));
+      expect(composite.aborted).toBe(true);
+      expect(composite.reason).toEqual(new Error('after-iterable'));
+    });
+
+    it('AbortSignal.any() removes listeners from inputs after the composite aborts', () => {
+      // Regression: input signals retained the listener even after the
+      // composite aborted, so closures (capturing `composite`) prevented GC
+      // for any input signal that outlived the composite.
+      ctx = setupWorkflowContext([]);
+      const AbortController = createCreateAbortController(ctx);
+      const statics = createAbortSignalStatics();
+
+      const c1 = new AbortController();
+      const c2 = new AbortController();
+
+      const removeSpyC1 = vi.spyOn(c1.signal, 'removeEventListener');
+      const removeSpyC2 = vi.spyOn(c2.signal, 'removeEventListener');
+
+      const composite = statics.any([c1.signal, c2.signal]);
+      expect(composite.aborted).toBe(false);
+
+      c2.signal._setAborted(new Error('input-aborted'));
+
+      expect(composite.aborted).toBe(true);
+      expect(removeSpyC1).toHaveBeenCalledWith('abort', expect.any(Function));
+      expect(removeSpyC2).toHaveBeenCalledWith('abort', expect.any(Function));
+    });
+
     it('AbortSignal.timeout() throws an error with ABORT_SIGNAL_TIMEOUT_IN_WORKFLOW slug', () => {
       ctx = setupWorkflowContext([]);
-      const statics = createAbortSignalStatics(ctx.globalThis);
+      const statics = createAbortSignalStatics();
 
       expect(() => statics.timeout()).toThrow(
         'AbortSignal.timeout() is not supported in workflow functions'
