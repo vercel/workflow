@@ -11,12 +11,18 @@ import { join } from 'pathe';
  * Forward string entries from Nitro's `externals.external` config to the
  * workflow builder's esbuild `external` option. RegExp and function entries
  * are skipped since esbuild's `external` only supports literal strings.
+ *
+ * Note: `externals.external` is on Nitro v2's options shape — v3 dropped it
+ * in favour of `noExternals`. The cast lets us still read it on v2 setups;
+ * on v3 the chained optional access just returns undefined.
  */
 function getNitroStringExternals(nitro: Nitro): string[] | undefined {
-  const externals = nitro.options.externals?.external?.filter(
+  const external = (nitro.options as { externals?: { external?: unknown[] } })
+    .externals?.external;
+  const strings = external?.filter(
     (entry): entry is string => typeof entry === 'string'
   );
-  return externals && externals.length > 0 ? externals : undefined;
+  return strings && strings.length > 0 ? strings : undefined;
 }
 
 export class VercelBuilder extends VercelBuildOutputAPIBuilder {
