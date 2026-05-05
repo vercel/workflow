@@ -92,9 +92,12 @@ emit_link() {
 }
 
 # Bright green tmux command — visually distinct from the cyan-underline
-# links; signals "copy this" rather than "click this".
+# links; signals "copy this" rather than "click this". The copy-glyph
+# icon is sourced from the ICON_CP variable defined below to avoid the
+# Nerd Font byte being stripped by editors that don't preserve the
+# Private Use Area.
 emit_tmux() {
-  printf '\033[1;92m tmux attach -t %s\033[0m' "$1"
+  printf '\033[1;92m%s tmux attach -t %s\033[0m' "${ICON_CP}" "$1"
 }
 
 # Bold separator so it reads at the same weight as the surrounding tokens.
@@ -111,13 +114,19 @@ sep() {
   fi
 }
 
+# Nerd Font glyphs (octicon rocket, octicon graph, fa copy) embedded as
+# Unicode escapes so the source survives any encoding round-trip.
+ICON_DEV=$''
+ICON_OBS=$''
+ICON_CP=$''
+
 if [ -n "$dev_url" ]; then
   sep
-  emit_link "$dev_url" $' dev'
+  emit_link "$dev_url" "${ICON_DEV} dev"
 fi
 if [ -n "$obs_url" ]; then
   sep
-  emit_link "$obs_url" $' obs'
+  emit_link "$obs_url" "${ICON_OBS} obs"
 fi
 if [ -n "$session" ]; then
   sep
