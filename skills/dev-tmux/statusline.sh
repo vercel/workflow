@@ -4,12 +4,14 @@
 # Reads `portless list` and emits a single line summarizing the active dev
 # session for the current git worktree:
 #
-#     [dev]  [obs]  tmux attach -t <worktree-prefix>
+#      dev   ·   obs   ·   tmux attach -t <worktree-prefix>
 #
-# `[dev]` and `[obs]` are OSC 8 hyperlinks (clickable in any modern
-# terminal: iTerm2, Kitty, WezTerm, Terminal.app, Ghostty). The tmux
-# indicator is shown when a session named exactly the worktree prefix
-# exists (the dev-tmux skill creates one with that name).
+# ` dev` and ` obs` are OSC 8 hyperlinks (clickable in any modern
+# terminal: iTerm2, Kitty, WezTerm, Terminal.app, Ghostty), styled bold +
+# underlined + bright cyan. The tmux fragment is shown when a session
+# named exactly the worktree prefix exists, in bold bright green to
+# signal "copy this" rather than "click this". Nerd Font glyphs are used
+# for the leading icons.
 #
 # Wire it into ~/.claude/settings.json with the path pointing at your
 # *primary* checkout — NOT a worktree, since worktrees get deleted:
@@ -81,36 +83,45 @@ fi
 # Bail quietly if there's nothing to show.
 [ -z "$dev_url" ] && [ -z "$obs_url" ] && [ -z "$session" ] && exit 0
 
-# OSC 8 hyperlink with underline + cyan, returning to dim afterwards.
-# Format: ESC ] 8 ;; URL ESC \  TEXT  ESC ] 8 ;; ESC \
+# OSC 8 hyperlink, styled bold + underlined + bright cyan so it reads as
+# a clickable link. Each emission resets its own styling so callers don't
+# need to re-establish color state.
 emit_link() {
   local url="$1" label="$2"
-  printf '\033]8;;%s\033\\\033[4;36m%s\033[24;39m\033]8;;\033\\' "$url" "$label"
+  printf '\033]8;;%s\033\\\033[1;4;96m%s\033[0m\033]8;;\033\\' "$url" "$label"
 }
 
-# Whole line is dim; link bodies brighten via emit_link.
-printf '\033[2m'
+# Bright green tmux command — visually distinct from the cyan-underline
+# links; signals "copy this" rather than "click this".
+emit_tmux() {
+  printf '\033[1;92m tmux attach -t %s\033[0m' "$1"
+}
+
+# Bold separator so it reads at the same weight as the surrounding tokens.
+emit_sep() {
+  printf '\033[1m  ·  \033[0m'
+}
 
 first=1
 sep() {
   if [ $first -eq 1 ]; then
     first=0
   else
-    printf '  ·  '
+    emit_sep
   fi
 }
 
 if [ -n "$dev_url" ]; then
   sep
-  emit_link "$dev_url" '[dev]'
+  emit_link "$dev_url" $' dev'
 fi
 if [ -n "$obs_url" ]; then
   sep
-  emit_link "$obs_url" '[obs]'
+  emit_link "$obs_url" $' obs'
 fi
 if [ -n "$session" ]; then
   sep
-  printf 'tmux attach -t %s' "$session"
+  emit_tmux "$session"
 fi
 
-printf '\033[0m\n'
+printf '\n'
