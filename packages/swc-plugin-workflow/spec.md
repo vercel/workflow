@@ -1241,7 +1241,7 @@ instances without custom serialization will fail at proxy-invocation time.
   2. **Nested arrow steps that lexically capture `this`** (see "Lexical `this` Capture in Nested Arrow Steps" above). The compiler emits `.bind(this)` on the proxy in workflow mode and hoists the body as a regular `function` in step mode so `stepFn.apply(thisVal, args)` rebinds correctly.
 
   Other shapes (a top-level `async function` step that references `this`, an arrow step assigned to a module-level variable, etc.) compile without error but `this` will be whatever the caller of the step proxy passes — typically `null`/`undefined` — so referencing it is rarely useful.
-- The `arguments` object is not allowed in step functions
+- `arguments` is allowed inside `function`-form step bodies (it reflects the positional arguments the runtime passes via `stepFn.apply(thisVal, args)`). It does **not** work inside arrow-form steps — arrows don't have their own `arguments` binding, and the compiler doesn't capture the enclosing scope's `arguments` the way it does for `this`. Use rest parameters (`...args`) instead if you need that pattern in an arrow step.
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection
 - Module-level declarations (functions, variables, classes) are excluded from closure variable detection, since they are available directly in the step bundle and should not be serialized as closure values
