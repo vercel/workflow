@@ -284,6 +284,49 @@ describe('createUseStep', () => {
     });
   });
 
+  // The SWC plugin emits `useStep(stepId, closureFn).bind(this)` for nested
+  // arrow steps that lexically capture `this`. The runtime relies on the
+  // step proxy being a regular `function` (not an arrow) so that `.bind(this)`
+  // works and the bound `this` is recorded as `thisVal` on the queue item.
+  it('captures `this` via .bind(this) on the step proxy (lexical-this support)', async () => {
+    const ctx = setupWorkflowContext([]);
+    let workflowErrorReject: (err: Error) => void;
+    const workflowErrorPromise = new Promise<Error>((_, reject) => {
+      workflowErrorReject = reject;
+    });
+    ctx.onWorkflowError = (err) => {
+      workflowErrorReject(err);
+    };
+
+    const useStep = createUseStep(ctx);
+
+    // Simulate the SWC plugin output:
+    //   globalThis[Symbol.for('WORKFLOW_USE_STEP')]("step_id").bind(this)
+    // executed inside an enclosing method whose `this` is `instance`.
+    const instance = { name: 'enclosing-this' };
+    const boundStep = useStep('step//input.js//withThis').bind(instance);
+
+    let error: Error | undefined;
+    try {
+      await Promise.race([boundStep(7), workflowErrorPromise]);
+    } catch (err_) {
+      error = err_ as Error;
+    }
+
+    expect(error).toBeInstanceOf(WorkflowSuspension);
+
+    // The bound `this` should have been captured on the queue item so the
+    // step runtime can `apply(thisVal, args)` when executing the step.
+    expect(ctx.invocationsQueue.size).toBe(1);
+    const queueItem = [...ctx.invocationsQueue.values()][0];
+    expect(queueItem).toMatchObject({
+      type: 'step',
+      stepName: 'step//input.js//withThis',
+      args: [7],
+      thisVal: instance,
+    });
+  });
+
   it('should handle empty closure variables', async () => {
     // Use empty events to check queue state before step completes
     const ctx = setupWorkflowContext([]);
