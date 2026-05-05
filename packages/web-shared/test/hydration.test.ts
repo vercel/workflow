@@ -104,4 +104,20 @@ describe('getWebRevivers — error family', () => {
     expect(revived.retryAfter).toBeInstanceOf(Date);
     expect(revived.retryAfter.toISOString()).toBe(retryAt.toISOString());
   });
+
+  it('omits retryAfter when missing from the payload (older runtime)', () => {
+    // Defensive path: a payload produced by an older runtime that predates
+    // the `retryAfter` field would be missing it. The reviver must not
+    // produce `new Date(undefined)` (an Invalid Date) — the field should
+    // simply be absent from the resulting Error.
+    const retryableReviver = (REVIVERS as Record<string, (v: any) => unknown>)
+      .RetryableError;
+    const revived = retryableReviver({
+      message: 'try again',
+      stack: 'RetryableError: try again',
+    }) as Error & { retryAfter?: Date };
+    expect(revived.name).toBe('RetryableError');
+    expect(revived.message).toBe('try again');
+    expect(revived.retryAfter).toBeUndefined();
+  });
 });

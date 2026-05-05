@@ -66,9 +66,11 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
  * `Error` (with `name` set) if the global isn't available, which keeps the
  * o11y UI rendering even on exotic browsers.
  *
- * `cause` is preserved when present in the serialized payload — it's not a
- * positional ctor argument on Error subclasses, so we set it manually after
- * construction (matching the runtime reviver behavior).
+ * `cause` is passed through `ErrorOptions` to the constructor when present,
+ * matching `getCommonRevivers` in `@workflow/core` so the resulting `cause`
+ * property has the same semantics (non-enumerable, set by the engine) as a
+ * freshly thrown Error in the consumer realm. The `'cause' in value` check
+ * preserves the distinction between "no cause" and "cause is undefined".
  */
 function makeWebErrorSubclassReviver(
   name:
@@ -80,17 +82,20 @@ function makeWebErrorSubclassReviver(
     | 'URIError'
 ) {
   return (value: { message: string; stack?: string; cause?: unknown }) => {
+    const opts = 'cause' in value ? { cause: value.cause } : undefined;
     const Ctor = (globalThis as Record<string, any>)[name] as
       | ErrorConstructor
       | undefined;
-    const error =
-      typeof Ctor === 'function'
-        ? new Ctor(value.message)
-        : Object.assign(new Error(value.message), { name });
-    if (value.stack !== undefined) error.stack = value.stack;
-    if ('cause' in value) {
-      (error as Error & { cause?: unknown }).cause = value.cause;
+    let error: Error;
+    if (typeof Ctor === 'function') {
+      error = new Ctor(value.message, opts);
+    } else {
+      // Fallback path: no built-in subclass available (exotic env). Construct
+      // a plain Error with the right `name` and copy `cause` manually since
+      // the base Error constructor is what we actually called.
+      error = Object.assign(new Error(value.message, opts), { name });
     }
+    if (value.stack !== undefined) error.stack = value.stack;
     return error;
   };
 }
@@ -188,7 +193,12 @@ export function getWebRevivers(): Revivers {
       // `retryAfter` is serialized as an epoch ms number (see the runtime
       // RetryableError reducer for the rationale around realm-safety).
       // Rehydrate as a Date so o11y consumers can render it directly.
-      error.retryAfter = new Date(value.retryAfter);
+      // Guard against payloads from older runtime versions that predate
+      // the field — without this check, `new Date(undefined)` would
+      // produce an Invalid Date rather than omitting the property.
+      if (value.retryAfter != null) {
+        error.retryAfter = new Date(value.retryAfter);
+      }
       return error;
     },
     DOMException: (value) => {
