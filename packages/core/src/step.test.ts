@@ -304,7 +304,18 @@ describe('createUseStep', () => {
     //   globalThis[Symbol.for('WORKFLOW_USE_STEP')]("step_id").bind(this)
     // executed inside an enclosing method whose `this` is `instance`.
     const instance = { name: 'enclosing-this' };
-    const boundStep = useStep('step//input.js//withThis').bind(instance);
+    const stepProxy = useStep('step//input.js//withThis', () => ({ x: 42 }));
+    const boundStep = stepProxy.bind(instance);
+
+    // The bound proxy MUST retain the `stepId` and `__closureVarsFn`
+    // metadata that `getStepFunctionReducer` reads when serializing step
+    // function references — otherwise a bound proxy that flows through
+    // workflow serialization (e.g. as a step argument or return value)
+    // would be treated as a non-serializable plain function.
+    expect((boundStep as any).stepId).toBe('step//input.js//withThis');
+    expect((boundStep as any).__closureVarsFn).toBe(
+      (stepProxy as any).__closureVarsFn
+    );
 
     let error: Error | undefined;
     try {
@@ -324,6 +335,7 @@ describe('createUseStep', () => {
       stepName: 'step//input.js//withThis',
       args: [7],
       thisVal: instance,
+      closureVars: { x: 42 },
     });
   });
 

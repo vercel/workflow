@@ -1236,7 +1236,11 @@ instances without custom serialization will fail at proxy-invocation time.
 ## Notes
 
 - Arguments and return values must be serializable (JSON-compatible or using custom serialization)
-- `this` is allowed in step functions; arrow-function steps that capture `this` lexically (see above) are rebound at runtime via `stepFn.apply(thisVal, args)`
+- `this` is syntactically allowed inside step bodies, but it only carries a meaningful value in two shapes that both flow through the runtime's `thisVal` plumbing:
+  1. **Instance-method steps** on a class with custom serialization (e.g. `Counter#add`). Calling `instance.add(...)` captures `instance` as `thisVal` so the step body sees `this === instance`.
+  2. **Nested arrow steps that lexically capture `this`** (see "Lexical `this` Capture in Nested Arrow Steps" above). The compiler emits `.bind(this)` on the proxy in workflow mode and hoists the body as a regular `function` in step mode so `stepFn.apply(thisVal, args)` rebinds correctly.
+
+  Other shapes (a top-level `async function` step that references `this`, an arrow step assigned to a module-level variable, etc.) compile without error but `this` will be whatever the caller of the step proxy passes — typically `null`/`undefined` — so referencing it is rarely useful.
 - The `arguments` object is not allowed in step functions
 - `super` calls are not allowed in step functions
 - Imports from the module are excluded from closure variable detection

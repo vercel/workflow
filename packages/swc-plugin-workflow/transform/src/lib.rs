@@ -1469,6 +1469,12 @@ impl VisitMut for ClosureVariableNormalizer {
 // we recurse into nested arrows but stop at non-arrow function/method/class
 // member boundaries (a `this` inside one of those is bound by the inner
 // function, not by the outer scope).
+//
+// Class bodies are also boundaries: `this` inside class property initializers,
+// methods, getters/setters, constructors, and static blocks is bound to the
+// class instance/static class, not to the enclosing arrow. We still traverse
+// `extends` expressions and computed-key expressions because those are
+// evaluated in the surrounding scope.
 struct LexicalThisDetector {
     found: bool,
 }
@@ -1480,6 +1486,11 @@ impl LexicalThisDetector {
 
     fn detect_in_arrow(arrow: &ArrowExpr) -> bool {
         let mut detector = Self::new();
+        // Walk both params (default values, destructuring initializers can
+        // contain `this`, e.g. `(x = this.foo) => ...`) and the body.
+        for param in &arrow.params {
+            param.visit_with(&mut detector);
+        }
         arrow.body.visit_with(&mut detector);
         detector.found
     }
@@ -1503,6 +1514,42 @@ impl Visit for LexicalThisDetector {
     fn visit_class_method(&mut self, _: &ClassMethod) {}
     fn visit_private_method(&mut self, _: &PrivateMethod) {}
     fn visit_static_block(&mut self, _: &StaticBlock) {}
+
+    // Class declarations / expressions: `this` inside a class body member is
+    // bound to the class instance/static class, not the enclosing arrow. We
+    // still need to visit `extends` clauses and computed property keys
+    // because those are evaluated in the outer scope.
+    fn visit_class(&mut self, class: &Class) {
+        if let Some(super_class) = &class.super_class {
+            super_class.visit_with(self);
+        }
+        for member in &class.body {
+            // For each member, only walk the parts evaluated in the outer
+            // scope (computed keys); the value/body is evaluated with `this`
+            // bound to the class.
+            match member {
+                ClassMember::ClassProp(p) => {
+                    if let PropName::Computed(computed) = &p.key {
+                        computed.expr.visit_with(self);
+                    }
+                }
+                ClassMember::PrivateProp(_) => { /* private name keys are not expressions */ }
+                ClassMember::Method(m) => {
+                    if let PropName::Computed(computed) = &m.key {
+                        computed.expr.visit_with(self);
+                    }
+                }
+                ClassMember::PrivateMethod(_) => { /* private name keys are not expressions */ }
+                ClassMember::Constructor(c) => {
+                    if let PropName::Computed(computed) = &c.key {
+                        computed.expr.visit_with(self);
+                    }
+                }
+                ClassMember::StaticBlock(_) => { /* `this` inside is class itself */ }
+                ClassMember::Empty(_) | ClassMember::TsIndexSignature(_) | ClassMember::AutoAccessor(_) => {}
+            }
+        }
+    }
 }
 
 impl StepTransform {

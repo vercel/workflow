@@ -221,6 +221,46 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
       });
     }
 
+    // Override `.bind` so the bound function preserves the step proxy
+    // metadata that `getStepFunctionReducer` relies on for serialization
+    // (`stepId`, `__closureVarsFn`). Without this override, the SWC plugin
+    // emitting `useStep(...).bind(this)` for nested arrow steps that
+    // lexically capture `this` would produce a bound function whose
+    // `.stepId` is `undefined`, causing the StepFunction reducer to treat
+    // it as a non-serializable plain function if it ever flows through
+    // workflow serialization (e.g. as a step argument or return value).
+    Object.defineProperty(stepFunction, 'bind', {
+      value: function (
+        this: typeof stepFunction,
+        thisArg: unknown,
+        ...partialArgs: unknown[]
+      ) {
+        const bound = Function.prototype.bind.call(
+          this,
+          thisArg,
+          ...partialArgs
+        );
+        Object.defineProperty(bound, 'stepId', {
+          value: stepName,
+          writable: false,
+          enumerable: false,
+          configurable: false,
+        });
+        if (closureVarsFn) {
+          Object.defineProperty(bound, '__closureVarsFn', {
+            value: closureVarsFn,
+            writable: false,
+            enumerable: false,
+            configurable: false,
+          });
+        }
+        return bound;
+      },
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+
     return stepFunction;
   };
 }
