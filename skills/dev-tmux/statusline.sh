@@ -3,18 +3,21 @@
 #
 # Reads `portless list` and emits a single line containing the active dev
 # server and observability URLs (filtered to the current git worktree when
-# possible). Designed to be wired into ~/.claude/settings.json:
+# possible). Wire it into ~/.claude/settings.json with the path pointing at
+# your *primary* checkout — NOT at a worktree, since worktrees get deleted:
 #
 #   {
 #     "statusLine": {
 #       "type": "command",
-#       "command": "/abs/path/to/skills/dev-tmux/statusline.sh"
+#       "command": "$HOME/github/vercel/workflow/skills/dev-tmux/statusline.sh"
 #     }
 #   }
 #
-# Claude passes a small JSON blob on stdin describing the session; we use
-# `workspace.current_dir` (when present) to derive the worktree branch and
-# filter routes. With no input or no portless routes, the script prints
+# The script is worktree-aware: Claude passes the current session's working
+# directory in stdin JSON (`workspace.current_dir`), and we derive the
+# branch from that. So the same script invocation from the primary checkout
+# correctly surfaces routes for whichever worktree the Claude session is
+# running in. With no input or no portless routes, the script prints
 # nothing — a blank statusline is the right behavior when no dev session
 # is running.
 

@@ -3,7 +3,7 @@ name: dev-tmux
 description: Spin up a portless + tmux dev session for the Workflow SDK that gives each git worktree isolated `<branch>.<name>.localhost` URLs for the Next.js workbench and the observability UI, plus a Claude statusline that surfaces those URLs. Use only when the user asks for a "portless dev session", a "tmux dev layout for workflow", "worktree-isolated dev URLs", or wants to wire workflow dev URLs into the Claude statusline. Do not activate for the generic "start the dev server" / "run pnpm dev" task.
 metadata:
   author: Vercel Inc.
-  version: '1.1'
+  version: '1.2'
 ---
 
 # dev-tmux
@@ -84,16 +84,18 @@ The skill ships a statusline helper at `skills/dev-tmux/statusline.sh` that read
 dev: https://stepflow-test.turbopack.localhost  ·  obs: https://stepflow-test.workflow-obs.localhost
 ```
 
-Wire it into Claude Code's settings (use `~/.claude/settings.json` for cross-session, or the project's `.claude/settings.local.json` to scope to this checkout):
+Wire it into `~/.claude/settings.json` so it works across all sessions and worktrees. **Point the path at your primary checkout, not at a worktree** — worktrees get deleted, so any path like `~/github/vercel/workflow--<branch>/...` will break the day you remove that worktree:
 
 ```json
 {
   "statusLine": {
     "type": "command",
-    "command": "/absolute/path/to/workflow/skills/dev-tmux/statusline.sh"
+    "command": "$HOME/github/vercel/workflow/skills/dev-tmux/statusline.sh"
   }
 }
 ```
+
+Adjust the prefix if your main checkout lives elsewhere. The script itself is worktree-aware: it reads Claude's `workspace.current_dir` from stdin to derive the current branch, so the *same script invocation* from `~/github/vercel/workflow/...` correctly surfaces routes for whichever worktree the Claude session is running in.
 
 Output rules:
 - No portless routes running → empty output (statusline is silent, as expected).
