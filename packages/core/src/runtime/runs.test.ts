@@ -1,5 +1,7 @@
 import {
   EntityConflictError,
+  FatalError,
+  WorkflowRunFailedError,
   WorkflowRunNotFoundError,
   WorkflowWorldError,
 } from '@workflow/errors';
@@ -12,6 +14,7 @@ vi.mock('../version.js', () => ({ version: '0.0.0-test' }));
 
 import { registerSerializationClass } from '../class-serialization.js';
 import {
+  dehydrateRunError,
   dehydrateStepReturnValue,
   hydrateStepReturnValue,
 } from '../serialization.js';
@@ -272,5 +275,174 @@ describe('Run custom serialization', () => {
 
     expect(hydrated).toBeInstanceOf(Run);
     expect((hydrated as Run<unknown>).runId).toBe('wrun_roundtrip');
+  });
+});
+
+describe('Run.returnValue when run.status === "failed"', () => {
+  // Register the FatalError class so the run-error serialization pipeline
+  // can find it during hydration (the SWC plugin does this in production).
+  registerSerializationClass('@workflow/errors//FatalError', FatalError);
+
+  afterEach(() => {
+    setWorld(undefined as unknown as World);
+  });
+
+  function makeFailedRunWorld(error: Uint8Array, errorCode?: string): World {
+    return {
+      runs: {
+        get: vi.fn().mockResolvedValue({
+          runId: 'wrun_failed',
+          workflowName: 'failing-workflow',
+          status: 'failed',
+          specVersion: 2,
+          input: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+          startedAt: new Date(),
+          completedAt: new Date(),
+          deploymentId: 'test-deployment',
+          error,
+          errorCode,
+        }),
+      },
+      events: {
+        list: vi.fn().mockResolvedValue({
+          data: [],
+          hasMore: false,
+          cursor: null,
+        }),
+        create: vi.fn(),
+      },
+      queue: vi.fn().mockResolvedValue(undefined),
+    } as unknown as World;
+  }
+
+  it('should throw WorkflowRunFailedError with the original FatalError as cause', async () => {
+    const original = new FatalError('boom');
+    const serialized = await dehydrateRunError(
+      original,
+      'wrun_failed',
+      undefined
+    );
+    setWorld(makeFailedRunWorld(serialized, 'USER_ERROR'));
+
+    const run = new Run('wrun_failed');
+    let caught: WorkflowRunFailedError | undefined;
+    try {
+      await run.returnValue;
+    } catch (err) {
+      caught = err as WorkflowRunFailedError;
+    }
+
+    expect(caught).toBeInstanceOf(WorkflowRunFailedError);
+    expect(caught?.runId).toBe('wrun_failed');
+    expect(caught?.errorCode).toBe('USER_ERROR');
+
+    // The original thrown value flows through verbatim — preserving the
+    // FatalError class identity, message, and the `fatal` marker.
+    const cause = caught?.cause;
+    expect(FatalError.is(cause)).toBe(true);
+    expect(cause).toBeInstanceOf(FatalError);
+    expect((cause as FatalError).message).toBe('boom');
+    expect((cause as FatalError).fatal).toBe(true);
+  });
+
+  it('should preserve a plain Error cause through hydration', async () => {
+    const original = new Error('unexpected');
+    original.stack = 'Error: unexpected\n    at someFn (a.js:1:1)';
+    const serialized = await dehydrateRunError(
+      original,
+      'wrun_failed',
+      undefined
+    );
+    setWorld(makeFailedRunWorld(serialized, 'RUNTIME_ERROR'));
+
+    const run = new Run('wrun_failed');
+    let caught: WorkflowRunFailedError | undefined;
+    try {
+      await run.returnValue;
+    } catch (err) {
+      caught = err as WorkflowRunFailedError;
+    }
+
+    expect(caught).toBeInstanceOf(WorkflowRunFailedError);
+    expect(caught?.errorCode).toBe('RUNTIME_ERROR');
+    expect(caught?.cause).toBeInstanceOf(Error);
+    expect((caught?.cause as Error).message).toBe('unexpected');
+    expect((caught?.cause as Error).stack).toBe(original.stack);
+  });
+
+  it('should preserve a non-Error thrown value (string) as cause', async () => {
+    const serialized = await dehydrateRunError(
+      'thrown string',
+      'wrun_failed',
+      undefined
+    );
+    setWorld(makeFailedRunWorld(serialized));
+
+    const run = new Run('wrun_failed');
+    let caught: WorkflowRunFailedError | undefined;
+    try {
+      await run.returnValue;
+    } catch (err) {
+      caught = err as WorkflowRunFailedError;
+    }
+
+    expect(caught).toBeInstanceOf(WorkflowRunFailedError);
+    expect(caught?.cause).toBe('thrown string');
+    // Message should be derived from the thrown string itself.
+    expect(caught?.message).toContain('thrown string');
+  });
+
+  it('should preserve an Error cause chain across hydration', async () => {
+    const root = new TypeError('bad input');
+    const wrapped = new FatalError('outer');
+    (wrapped as Error).cause = root;
+    const serialized = await dehydrateRunError(
+      wrapped,
+      'wrun_failed',
+      undefined
+    );
+    setWorld(makeFailedRunWorld(serialized, 'USER_ERROR'));
+
+    const run = new Run('wrun_failed');
+    let caught: WorkflowRunFailedError | undefined;
+    try {
+      await run.returnValue;
+    } catch (err) {
+      caught = err as WorkflowRunFailedError;
+    }
+
+    expect(caught).toBeInstanceOf(WorkflowRunFailedError);
+    const cause = caught?.cause;
+    expect(FatalError.is(cause)).toBe(true);
+    expect((cause as FatalError).message).toBe('outer');
+    const nested = (cause as Error).cause;
+    expect(nested).toBeInstanceOf(TypeError);
+    expect((nested as TypeError).message).toBe('bad input');
+  });
+
+  it('should fall back to a generic Error when hydration fails', async () => {
+    // Pass a corrupted payload (random bytes that are not a valid prefix)
+    // to force hydrateRunError to throw inside Run.returnValue, exercising
+    // the catch branch that surfaces a generic fallback.
+    const corrupt = new Uint8Array([0xff, 0x00, 0x00, 0x00, 0x00]);
+    setWorld(makeFailedRunWorld(corrupt, 'RUNTIME_ERROR'));
+
+    const run = new Run('wrun_failed');
+    let caught: WorkflowRunFailedError | undefined;
+    try {
+      await run.returnValue;
+    } catch (err) {
+      caught = err as WorkflowRunFailedError;
+    }
+
+    expect(caught).toBeInstanceOf(WorkflowRunFailedError);
+    // Even on hydration failure, errorCode is still surfaced from the run.
+    expect(caught?.errorCode).toBe('RUNTIME_ERROR');
+    expect(caught?.cause).toBeInstanceOf(Error);
+    expect((caught?.cause as Error).message).toContain(
+      'Failed to hydrate workflow run error'
+    );
   });
 });

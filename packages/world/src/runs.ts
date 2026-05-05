@@ -1,10 +1,6 @@
 import { z } from 'zod';
 import { type SerializedData, SerializedDataSchema } from './serialization.js';
-import {
-  type PaginationOptions,
-  type ResolveData,
-  StructuredErrorSchema,
-} from './shared.js';
+import type { PaginationOptions, ResolveData } from './shared.js';
 
 // Workflow run schemas
 export const WorkflowRunStatusSchema = z.enum([
@@ -53,7 +49,20 @@ export const WorkflowRunBaseSchema = z.object({
   executionContext: z.record(z.string(), z.any()).optional(),
   input: SerializedDataSchema,
   output: SerializedDataSchema.optional(),
-  error: StructuredErrorSchema.optional(),
+  /**
+   * The thrown value from a run_failed event, serialized via the workflow
+   * serialization pipeline. To display the error to a user, hydrate it via
+   * `hydrateRunError` (with the encryption key if encryption is enabled).
+   * Observability tools cannot view the error without going through the
+   * decryption + hydration pipeline.
+   */
+  error: SerializedDataSchema.optional(),
+  /**
+   * The high-level error category (USER_ERROR, RUNTIME_ERROR, etc.) from a
+   * run_failed event. Kept as plaintext metadata for routing and filtering
+   * without needing to decrypt the full error payload.
+   */
+  errorCode: z.string().optional(),
   expiredAt: z.coerce.date().optional(),
   startedAt: z.coerce.date().optional(),
   completedAt: z.coerce.date().optional(),
@@ -66,29 +75,29 @@ export const WorkflowRunSchema = z.discriminatedUnion('status', [
   // Non-final states
   WorkflowRunBaseSchema.extend({
     status: z.enum(['pending', 'running']),
-    output: z.undefined(),
-    error: z.undefined(),
-    completedAt: z.undefined(),
+    output: z.undefined().optional(),
+    error: z.undefined().optional(),
+    completedAt: z.undefined().optional(),
   }),
   // Cancelled state
   WorkflowRunBaseSchema.extend({
     status: z.literal('cancelled'),
-    output: z.undefined(),
-    error: z.undefined(),
+    output: z.undefined().optional(),
+    error: z.undefined().optional(),
     completedAt: z.coerce.date(),
   }),
   // Completed state - output can be v1 or v2 format
   WorkflowRunBaseSchema.extend({
     status: z.literal('completed'),
     output: SerializedDataSchema,
-    error: z.undefined(),
+    error: z.undefined().optional(),
     completedAt: z.coerce.date(),
   }),
   // Failed state
   WorkflowRunBaseSchema.extend({
     status: z.literal('failed'),
-    output: z.undefined(),
-    error: StructuredErrorSchema,
+    output: z.undefined().optional(),
+    error: SerializedDataSchema,
     completedAt: z.coerce.date(),
   }),
 ]);

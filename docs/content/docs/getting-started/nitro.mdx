@@ -46,6 +46,28 @@ export default defineConfig({
 
 ```
 
+### Module options
+
+The `workflow/nitro` module reads its options from `workflow` on your Nitro config.
+
+```typescript title="nitro.config.ts" lineNumbers
+import { defineConfig } from "nitro";
+
+export default defineConfig({
+  modules: ["workflow/nitro"],
+  workflow: {
+    runtime: "nodejs22.x",
+    sourcemap: "inline",
+  },
+});
+```
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `dirs` | `string[]` | — | Directories to scan for workflows and steps. By default, `workflows/` is scanned from the project root and all layer source directories. |
+| `runtime` | `string` | `'nodejs22.x'` | Node.js runtime version for Vercel Functions (e.g. `'nodejs22.x'`, `'nodejs24.x'`). |
+| `sourcemap` | `boolean \| 'inline' \| 'linked' \| 'external' \| 'both'` | `'inline'` | Controls source maps on generated workflow bundles. Accepts the same values as esbuild's `sourcemap` option. Set to `false` for smaller function bundles (useful for staying under the Vercel 250MB function size limit) at the cost of stack traces pointing at generated code. Can also be set via the `WORKFLOW_SOURCEMAP` environment variable. |
+
 <Accordion type="single" collapsible>
   <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
     <AccordionTrigger className="[&_p]:my-0 text-lg [&_p]:text-foreground">

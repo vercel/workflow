@@ -75,8 +75,22 @@
     {
       "idx": 10,
       "version": "7",
+      "when": 1771000000000,
+      "tag": "0010_add_events_entity_creation_unique_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1771500000000,
+      "tag": "0011_add_error_code",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
       "when": 1775600000000,
-      "tag": "0010_add_is_system",
+      "tag": "0012_add_is_system",
       "breakpoints": true
     }
   ]

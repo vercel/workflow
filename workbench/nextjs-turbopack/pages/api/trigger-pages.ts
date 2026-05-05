@@ -157,16 +157,24 @@ async function handleGet(req: NextApiRequest, res: NextApiResponse) {
       }
 
       if (WorkflowRunFailedError.is(error)) {
+        // `cause` is the original thrown value hydrated from the workflow
+        // serialization pipeline; it can be any JS value. Defensively extract
+        // Error-shaped fields when present.
         const cause = error.cause;
+        const causePayload =
+          cause instanceof Error
+            ? {
+                message: cause.message,
+                stack: cause.stack,
+                code: (cause as Error & { code?: string }).code,
+              }
+            : { value: cause };
         return res.status(400).json({
           ...error,
           name: error.name,
           message: error.message,
-          cause: {
-            message: cause.message,
-            stack: cause.stack,
-            code: cause.code,
-          },
+          errorCode: error.errorCode,
+          cause: causePayload,
         });
       }
     }

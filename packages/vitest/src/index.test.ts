@@ -12,8 +12,7 @@ const workflowTransformPlugin = vi.fn((options) => ({
 }));
 const createBaseBuilderConfig = vi.fn((config) => config);
 const getInputFiles = vi.fn(async () => ['workflows/example.ts']);
-const createWorkflowsBundle = vi.fn(async () => {});
-const createStepsBundle = vi.fn(async () => {});
+const createCombinedBundle = vi.fn(async () => {});
 const baseBuilderConfigs: unknown[] = [];
 
 vi.mock('@workflow/builders', () => {
@@ -26,12 +25,8 @@ vi.mock('@workflow/builders', () => {
       return getInputFiles();
     }
 
-    async createWorkflowsBundle(args: unknown) {
-      return createWorkflowsBundle(args);
-    }
-
-    async createStepsBundle(args: unknown) {
-      return createStepsBundle(args);
+    async createCombinedBundle(args: unknown) {
+      return createCombinedBundle(args);
     }
   }
 
@@ -113,14 +108,14 @@ describe('@workflow/vitest', () => {
       dirs: ['.'],
     });
     expect(baseBuilderConfigs).toHaveLength(1);
-    expect(createWorkflowsBundle).toHaveBeenCalledWith(
+    expect(createCombinedBundle).toHaveBeenCalledWith(
       expect.objectContaining({
-        outfile: path.join(rootDir, '.workflow-vitest', 'workflows.mjs'),
-      })
-    );
-    expect(createStepsBundle).toHaveBeenCalledWith(
-      expect.objectContaining({
-        outfile: path.join(rootDir, '.workflow-vitest', 'steps.mjs'),
+        stepsOutfile: path.join(
+          rootDir,
+          '.workflow-vitest',
+          '__step_registrations.mjs'
+        ),
+        flowOutfile: path.join(rootDir, '.workflow-vitest', 'combined.mjs'),
       })
     );
     expect(initDataDir).toHaveBeenCalledWith(
@@ -135,12 +130,8 @@ describe('@workflow/vitest', () => {
     const dataDir = path.join(tmpDir, 'data');
     await mkdir(outDir, { recursive: true });
     await writeFile(
-      path.join(outDir, 'workflows.mjs'),
-      `export async function POST() { return Response.json({ bundle: 'workflow' }); }`
-    );
-    await writeFile(
-      path.join(outDir, 'steps.mjs'),
-      `export async function POST() { return Response.json({ bundle: 'step' }); }`
+      path.join(outDir, 'combined.mjs'),
+      `export async function POST() { return Response.json({ bundle: 'combined' }); }`
     );
 
     process.env.VITEST_POOL_ID = '7';
@@ -159,23 +150,20 @@ describe('@workflow/vitest', () => {
       tag: 'vitest-7',
     });
     expect(mockWorld.clear).toHaveBeenCalledTimes(1);
-    expect(mockWorld.registerHandler).toHaveBeenCalledTimes(2);
+    // V2 only registers a single combined handler; the separate step route is gone.
+    expect(mockWorld.registerHandler).toHaveBeenCalledTimes(1);
     expect(mockWorld.start).toHaveBeenCalledTimes(1);
-    expect(mockWorld.registerHandler.mock.invocationCallOrder[1]).toBeLessThan(
+    expect(mockWorld.registerHandler.mock.invocationCallOrder[0]).toBeLessThan(
       mockWorld.start.mock.invocationCallOrder[0]
     );
     expect(setWorld).toHaveBeenCalledWith(mockWorld);
 
-    const workflowHandler = mockWorld.handlers.get('__wkf_workflow_');
-    const stepHandler = mockWorld.handlers.get('__wkf_step_');
-    expect(workflowHandler).toBeDefined();
-    expect(stepHandler).toBeDefined();
+    const combinedHandler = mockWorld.handlers.get('__wkf_workflow_');
+    expect(combinedHandler).toBeDefined();
+    expect(mockWorld.handlers.has('__wkf_step_')).toBe(false);
 
-    const workflowResponse = await workflowHandler!(new Request('http://test'));
-    expect(await workflowResponse.json()).toEqual({ bundle: 'workflow' });
-
-    const stepResponse = await stepHandler!(new Request('http://test'));
-    expect(await stepResponse.json()).toEqual({ bundle: 'step' });
+    const combinedResponse = await combinedHandler!(new Request('http://test'));
+    expect(await combinedResponse.json()).toEqual({ bundle: 'combined' });
   });
 
   it('provides project-scoped directory options without mutating process env', async () => {

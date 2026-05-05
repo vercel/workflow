@@ -17,19 +17,11 @@ import {
 import type { Run } from './run.js';
 import type { WorkflowFunction } from './start.js';
 import { start } from './start.js';
-import { getWorld } from './world.js';
+import { setWorld } from './world.js';
 
 // Mock @vercel/functions
 vi.mock('@vercel/functions', () => ({
   waitUntil: vi.fn(),
-}));
-
-// Mock the world module with all required exports
-vi.mock('./world.js', () => ({
-  getWorld: vi.fn(),
-  getWorldHandlers: vi.fn(() => ({
-    createQueueHandler: vi.fn(() => vi.fn()),
-  })),
 }));
 
 // Mock telemetry
@@ -103,7 +95,7 @@ describe('start', () => {
       });
       mockQueue = vi.fn().mockResolvedValue(undefined);
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -111,6 +103,7 @@ describe('start', () => {
     });
 
     afterEach(() => {
+      setWorld(undefined);
       vi.clearAllMocks();
     });
 
@@ -136,7 +129,7 @@ describe('start', () => {
       vi.clearAllMocks();
 
       // Mock world with specVersion 3 → uses it
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         specVersion: SPEC_VERSION_CURRENT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
@@ -210,7 +203,7 @@ describe('start', () => {
       mockQueue = vi.fn().mockResolvedValue(undefined);
       mockGetEncryptionKeyForRun = vi.fn().mockResolvedValue(undefined);
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_resolved'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -219,6 +212,7 @@ describe('start', () => {
     });
 
     afterEach(() => {
+      setWorld(undefined);
       vi.clearAllMocks();
     });
 
@@ -274,6 +268,7 @@ describe('start', () => {
     });
 
     afterEach(() => {
+      setWorld(undefined);
       vi.clearAllMocks();
     });
 
@@ -282,7 +277,7 @@ describe('start', () => {
         .fn()
         .mockResolvedValue('dpl_resolved_abc123');
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -319,7 +314,7 @@ describe('start', () => {
         .mockResolvedValue('dpl_resolved_abc123');
       const mockGetEncryptionKeyForRun = vi.fn();
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -345,7 +340,7 @@ describe('start', () => {
     });
 
     it('should throw WorkflowRuntimeError when "latest" is used with a World that does not implement resolveLatestDeploymentId', async () => {
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -368,7 +363,7 @@ describe('start', () => {
         .fn()
         .mockResolvedValue('dpl_resolved_abc123');
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -396,7 +391,7 @@ describe('start', () => {
         .fn()
         .mockResolvedValue('dpl_resolved_abc123');
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('dpl_default_789'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -426,6 +421,7 @@ describe('start', () => {
     });
 
     afterEach(() => {
+      setWorld(undefined);
       vi.clearAllMocks();
     });
 
@@ -436,7 +432,7 @@ describe('start', () => {
       });
       const mockEventsCreate = vi.fn().mockRejectedValue(serverError);
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         // World declares specVersion 3 to enable CBOR queue transport + runInput
         specVersion: SPEC_VERSION_SUPPORTS_CBOR_QUEUE_TRANSPORT,
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
@@ -467,7 +463,7 @@ describe('start', () => {
         .fn()
         .mockRejectedValue(new Error('Queue unavailable'));
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,
@@ -485,7 +481,7 @@ describe('start', () => {
       const mockEventsCreate = vi.fn().mockRejectedValue(badRequest);
       const mockQueue = vi.fn().mockResolvedValue({ messageId: null });
 
-      vi.mocked(getWorld).mockReturnValue({
+      setWorld({
         getDeploymentId: vi.fn().mockResolvedValue('deploy_123'),
         events: { create: mockEventsCreate },
         queue: mockQueue,

@@ -23,25 +23,6 @@ import { runtimeLogger } from '../logger.js';
 import { dehydrateStepArguments } from '../serialization.js';
 import { getAbortStreamIdFromToken } from '../util.js';
 import * as Attribute from '../telemetry/semantic-conventions.js';
-import { serializeTraceCarrier } from '../telemetry.js';
-import { queueMessage } from './helpers.js';
-
-/**
- * Extracts W3C trace context headers from a trace carrier for HTTP propagation.
- * Returns an object with `traceparent` and optionally `tracestate` headers.
- */
-function extractTraceHeaders(
-  traceCarrier: Record<string, string>
-): Record<string, string> {
-  const headers: Record<string, string> = {};
-  if (traceCarrier.traceparent) {
-    headers.traceparent = traceCarrier.traceparent;
-  }
-  if (traceCarrier.tracestate) {
-    headers.tracestate = traceCarrier.tracestate;
-  }
-  return headers;
-}
 
 export interface SuspensionHandlerParams {
   suspension: WorkflowSuspension;
@@ -51,18 +32,36 @@ export interface SuspensionHandlerParams {
   requestId?: string;
 }
 
+/**
+ * Result of handling a suspension. Returns pending step items so the caller
+ * can decide which to execute inline vs queue to background.
+ */
 export interface SuspensionHandlerResult {
+  /** Pending step items with events created but NOT queued */
+  pendingSteps: StepInvocationQueueItem[];
+  /**
+   * Correlation IDs for which this suspension call actually wrote the
+   * step_created event (as opposed to catching EntityConflictError because
+   * a concurrent handler wrote it first). Only the handler that wrote the
+   * step_created event should queue / inline-execute the step — this
+   * guarantees a single owner per step, even when multiple handlers race
+   * into the same batch boundary.
+   */
+  createdStepCorrelationIds: Set<string>;
+  /** Timeout from waits, if any */
   timeoutSeconds?: number;
+  /** Whether a hook conflict was detected (should re-invoke immediately) */
+  hasHookConflict: boolean;
 }
 
 /**
  * Handles a workflow suspension by processing all pending operations (hooks, steps, waits).
- * Uses an event-sourced architecture where entities (steps, hooks) are created atomically
- * with their corresponding events via events.create().
+ * Creates events for all operations but does NOT queue step messages — returns the pending
+ * steps so the caller can decide which to execute inline vs queue to background.
  *
  * Processing order:
  * 1. Hooks are processed first to prevent race conditions with webhook receivers
- * 2. Steps and waits are processed in parallel after hooks complete
+ * 2. Step events and wait events are created in parallel
  */
 export async function handleSuspension({
   suspension,
@@ -72,8 +71,6 @@ export async function handleSuspension({
   requestId,
 }: SuspensionHandlerParams): Promise<SuspensionHandlerResult> {
   const runId = run.runId;
-  const workflowName = run.workflowName;
-  const workflowStartedAt = run.startedAt ? +run.startedAt : Date.now();
   // Separate queue items by type
   const stepItems = suspension.steps.filter(
     (item): item is StepInvocationQueueItem => item.type === 'step'
@@ -89,15 +86,13 @@ export async function handleSuspension({
   const hooksNeedingCreation = allHookItems.filter(
     (item) => !item.hasCreatedEvent
   );
-  // Hooks needing disposal: any disposed hook (including those needing creation first)
-  // Hooks are created before disposal in the processing order below
   const hooksNeedingDisposal = allHookItems.filter((item) => item.disposed);
 
   // Resolve encryption key for this run
   const rawKey = await world.getEncryptionKeyForRun?.(run);
   const encryptionKey = rawKey ? await importKey(rawKey) : undefined;
 
-  // Build hook_created events (World will atomically create hook entities)
+  // Build and process hook_created events (same as V1)
   const hookEvents: CreateEventRequest[] = await Promise.all(
     hooksNeedingCreation.map(async (queueItem) => {
       const hookMetadata: SerializedData | undefined =
@@ -123,9 +118,10 @@ export async function handleSuspension({
     })
   );
 
-  // Process hooks first to prevent race conditions with webhook receivers
-  // All hook creations run in parallel
-  // Track any hook conflicts that occur - these will be handled by re-enqueueing the workflow
+  // Process hooks first to prevent race conditions with webhook receivers.
+  // All hook creations run in parallel.
+  // Track any hook conflicts that occur — these are returned to the caller
+  // so the V2 handler can re-invoke immediately.
   let hasHookConflict = false;
 
   if (hookEvents.length > 0) {
@@ -135,9 +131,9 @@ export async function handleSuspension({
           const result = await world.events.create(runId, hookEvent, {
             requestId,
           });
-          // Check if the world returned a hook_conflict event instead of hook_created
+          // Check if the world returned a hook_conflict event instead of hook_created.
           // The hook_conflict event is stored in the event log and will be replayed
-          // on the next workflow invocation, causing the hook's promise to reject
+          // on the next workflow invocation, causing the hook's promise to reject.
           // Note: hook events always create an event (legacy runs throw, not return undefined)
           if (result.event!.eventType === 'hook_conflict') {
             hasHookConflict = true;
@@ -159,7 +155,7 @@ export async function handleSuspension({
     );
   }
 
-  // Process hook disposals - these release hook tokens for reuse by other workflows
+  // Process hook disposals — these release hook tokens for reuse by other workflows.
   if (hooksNeedingDisposal.length > 0) {
     await Promise.all(
       hooksNeedingDisposal.map(async (queueItem) => {
@@ -275,24 +271,29 @@ export async function handleSuspension({
     );
   }
 
-  // Build a map of stepId -> step event for steps that need creation
+  // Create step events for steps that don't have them yet.
+  // Unlike V1, we do NOT queue step messages from here — the caller
+  // decides which steps to execute inline vs. queue to background.
+  // Wait events are also created in parallel below.
   const stepsNeedingCreation = new Set(
     stepItems
       .filter((queueItem) => !queueItem.hasCreatedEvent)
       .map((queueItem) => queueItem.correlationId)
   );
 
-  // Process steps and waits in parallel
-  // Each step: create event (if needed) -> queue message
-  // Each wait: create event (if needed)
+  // Correlation IDs for which THIS suspension call actually wrote the
+  // step_created event. Populated by the ops below after a successful
+  // events.create — used by the caller to claim ownership and avoid
+  // racing with concurrent handlers on step execution.
+  const createdStepCorrelationIds = new Set<string>();
+
   const ops: Promise<void>[] = [];
 
-  // Steps: create event then queue message, all in parallel
+  // Steps: create step_created events (no queuing — V2 returns pending steps to caller)
   for (const queueItem of stepItems) {
-    ops.push(
-      (async () => {
-        // Create step event if not already created
-        if (stepsNeedingCreation.has(queueItem.correlationId)) {
+    if (stepsNeedingCreation.has(queueItem.correlationId)) {
+      ops.push(
+        (async () => {
           const dehydratedInput = await dehydrateStepArguments(
             {
               args: queueItem.args,
@@ -314,6 +315,7 @@ export async function handleSuspension({
           };
           try {
             await world.events.create(runId, stepEvent, { requestId });
+            createdStepCorrelationIds.add(queueItem.correlationId);
           } catch (err) {
             if (EntityConflictError.is(err)) {
               runtimeLogger.info('Step already exists, continuing', {
@@ -325,36 +327,12 @@ export async function handleSuspension({
               throw err;
             }
           }
-        }
-
-        // Queue step execution message
-        // Serialize trace context once and include in both payload and headers
-        // Payload: for manual context restoration in step handler
-        // Headers: for automatic trace propagation by Vercel's infrastructure
-        const traceCarrier = await serializeTraceCarrier();
-        await queueMessage(
-          world,
-          `__wkf_step_${queueItem.stepName}`,
-          {
-            workflowName,
-            workflowRunId: runId,
-            workflowStartedAt,
-            stepId: queueItem.correlationId,
-            traceCarrier,
-            requestedAt: new Date(),
-          },
-          {
-            idempotencyKey: queueItem.correlationId,
-            headers: {
-              ...extractTraceHeaders(traceCarrier),
-            },
-          }
-        );
-      })()
-    );
+        })()
+      );
+    }
   }
 
-  // Waits: create events in parallel (no queueing needed for waits)
+  // Create wait events (same as V1)
   for (const queueItem of waitItems) {
     if (!queueItem.hasCreatedEvent) {
       ops.push(
@@ -385,7 +363,6 @@ export async function handleSuspension({
     }
   }
 
-  // Wait for all step and wait operations to complete
   waitUntil(
     Promise.all(ops).catch((opErr) => {
       const isAbortError =
@@ -415,18 +392,10 @@ export async function handleSuspension({
     ...Attribute.WorkflowWaitsCreated(waitItems.length),
   });
 
-  // If any hook conflicts occurred, re-enqueue the workflow immediately
-  // On the next iteration, the hook consumer will see the hook_conflict event
-  // and reject the promise with a WorkflowRuntimeError
-  // We do this after processing all other operations (steps, waits) to ensure
-  // they are recorded in the event log before the re-execution
-  if (hasHookConflict) {
-    return { timeoutSeconds: 0 };
-  }
-
-  if (minTimeoutSeconds !== null) {
-    return { timeoutSeconds: minTimeoutSeconds };
-  }
-
-  return {};
+  return {
+    pendingSteps: stepItems,
+    createdStepCorrelationIds,
+    timeoutSeconds: hasHookConflict ? 0 : (minTimeoutSeconds ?? undefined),
+    hasHookConflict,
+  };
 }

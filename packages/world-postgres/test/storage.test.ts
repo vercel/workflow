@@ -268,12 +268,15 @@ describe('Storage (Postgres integration)', () => {
           input: new Uint8Array(),
         });
 
+        // The `error` field is opaque SerializedData (Uint8Array) produced by
+        // dehydrateRunError. The storage layer persists it verbatim.
+        const serializedError = new Uint8Array([1, 2, 3]);
         const updated = await updateRun(events, created.runId, 'run_failed', {
-          error: 'Something went wrong',
+          error: serializedError,
         });
 
         expect(updated.status).toBe('failed');
-        expect(updated.error?.message).toBe('Something went wrong');
+        expect(updated.error).toEqual(serializedError);
         expect(updated.completedAt).toBeInstanceOf(Date);
       });
     });
@@ -459,16 +462,19 @@ describe('Storage (Postgres integration)', () => {
           input: new Uint8Array([1]),
         });
 
+        // The `error` field is opaque SerializedData (Uint8Array) produced by
+        // dehydrateStepError. The storage layer persists it verbatim.
+        const serializedError = new Uint8Array([1, 2, 3]);
         const updated = await updateStep(
           events,
           testRunId,
           'step-123',
           'step_failed',
-          { error: 'Step failed' }
+          { error: serializedError }
         );
 
         expect(updated.status).toBe('failed');
-        expect(updated.error?.message).toBe('Step failed');
+        expect(updated.error).toEqual(serializedError);
         expect(updated.completedAt).toBeInstanceOf(Date);
       });
     });
@@ -1116,6 +1122,111 @@ describe('Storage (Postgres integration)', () => {
     });
   });
 
+  describe('concurrent entity-creation races', () => {
+    let testRunId: string;
+    beforeEach(async () => {
+      const run = await createRun(events, {
+        deploymentId: 'deployment-123',
+        workflowName: 'test-workflow',
+        input: new Uint8Array(),
+      });
+      testRunId = run.runId;
+      await updateRun(events, testRunId, 'run_started');
+    });
+
+    it('should reject concurrent step_created with the same correlationId', async () => {
+      // Two concurrent step_created calls with identical correlationIds
+      // (as produced by the snapshot runtime's deterministic ULIDs across
+      // concurrent VM invocations of the same resumption) must produce
+      // exactly one step_created event in the log. The unique partial
+      // index on workflow_events ensures the loser's INSERT raises a
+      // unique-violation, which storage translates to EntityConflictError
+      // for the runtime's existing dedup catch path.
+      const results = await Promise.allSettled([
+        createStep(events, testRunId, {
+          stepId: 'step_dup_1',
+          stepName: 'test-step',
+          input: new Uint8Array([1]),
+        }),
+        createStep(events, testRunId, {
+          stepId: 'step_dup_1',
+          stepName: 'test-step',
+          input: new Uint8Array([2]),
+        }),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({
+        name: 'EntityConflictError',
+      });
+
+      // Verify only one step_created event exists in the log.
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const stepCreated = evts.data.filter(
+        (e) =>
+          e.eventType === 'step_created' && e.correlationId === 'step_dup_1'
+      );
+      expect(stepCreated).toHaveLength(1);
+    });
+
+    it('should reject sequential duplicate step_created with EntityConflictError', async () => {
+      await createStep(events, testRunId, {
+        stepId: 'step_seq_dup',
+        stepName: 'test-step',
+        input: new Uint8Array(),
+      });
+      await expect(
+        createStep(events, testRunId, {
+          stepId: 'step_seq_dup',
+          stepName: 'test-step',
+          input: new Uint8Array(),
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+    });
+
+    it('should reject duplicate wait_created with EntityConflictError', async () => {
+      // Sequential duplicate wait_created — the wait_created insert path
+      // uses `INSERT ... onConflictDoNothing()` plus an existence check, so
+      // the second insert is silently dropped at the SQL level. The unique
+      // partial index on workflow_events still provides a stronger
+      // concurrent guarantee here, and the storage layer translates the
+      // resulting unique-violation into an EntityConflictError matching the
+      // step_created behavior.
+      await events.create(testRunId, {
+        eventType: 'wait_created',
+        correlationId: 'wait_seq_dup',
+        eventData: { resumeAt: new Date('2099-01-01') },
+      });
+      await expect(
+        events.create(testRunId, {
+          eventType: 'wait_created',
+          correlationId: 'wait_seq_dup',
+          eventData: { resumeAt: new Date('2099-01-02') },
+        })
+      ).rejects.toMatchObject({ name: 'EntityConflictError' });
+
+      // Mirror the step_created test: assert exactly one wait_created
+      // event landed in the log, so a regression that allowed both
+      // inserts through would fail this test even if the second
+      // insert's translation to EntityConflictError still worked.
+      const evts = await events.list({
+        runId: testRunId,
+        pagination: {},
+      });
+      const waitCreated = evts.data.filter(
+        (e) =>
+          e.eventType === 'wait_created' && e.correlationId === 'wait_seq_dup'
+      );
+      expect(waitCreated).toHaveLength(1);
+    });
+  });
+
   describe('step terminal state validation', () => {
     let testRunId: string;
 
@@ -1706,17 +1817,20 @@ describe('Storage (Postgres integration)', () => {
       });
       await updateStep(events, testRunId, 'step_retry_1', 'step_started');
 
+      // The `error` field is opaque SerializedData (Uint8Array) produced by
+      // dehydrateStepError. The storage layer persists it verbatim.
+      const serializedError = new Uint8Array([9, 9, 9]);
       const result = await events.create(testRunId, {
         eventType: 'step_retrying',
         correlationId: 'step_retry_1',
         eventData: {
-          error: 'Temporary failure',
+          error: serializedError,
           retryAfter: new Date(Date.now() + 5000),
         },
       });
 
       expect(result.step?.status).toBe('pending');
-      expect(result.step?.error?.message).toBe('Temporary failure');
+      expect(result.step?.error).toEqual(serializedError);
       expect(result.step?.retryAfter).toBeInstanceOf(Date);
     });
 
@@ -2109,11 +2223,14 @@ describe('Storage (Postgres integration)', () => {
       });
     });
 
-    describe('legacy error parsing', () => {
-      it('should parse legacy errorJson field on runs', async () => {
+    describe('legacy error column handling', () => {
+      // In the current event-sourced model, the `error` field on runs/steps
+      // is SerializedData (Uint8Array) produced by dehydrate*Error, stored in
+      // the `error_cbor` column. Legacy records written pre-serialization-
+      // pipeline (to the `error` text column) cannot be hydrated into the
+      // original thrown value and are surfaced as `undefined` on read.
+      it('should surface legacy errorJson field on runs as undefined', async () => {
         const runId = 'wrun_legacy_error';
-        // Create a run with legacy error format (error column is the text/JSON one)
-        // Failed runs need completed_at set
         const inputCbor = encode(new Uint8Array());
         await pool.query(
           `INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input_cbor, error, created_at, updated_at, completed_at)
@@ -2122,35 +2239,17 @@ describe('Storage (Postgres integration)', () => {
         );
 
         const run = await runs.get(runId);
-        expect(run.error?.message).toBe('Legacy error');
-        expect(run.error?.stack).toBe('at foo()');
+        expect(run.status).toBe('failed');
+        expect(run.error).toBeUndefined();
       });
 
-      it('should parse legacy errorJson as plain string', async () => {
-        const runId = 'wrun_legacy_string_error';
-        // Create a run with plain string error
-        // Failed runs need completed_at set
-        const inputCbor = encode(new Uint8Array());
-        await pool.query(
-          `INSERT INTO workflow.workflow_runs (id, deployment_id, name, spec_version, status, input_cbor, error, created_at, updated_at, completed_at)
-          VALUES ($1, 'deployment', 'workflow', 2, 'failed', $2, $3, NOW(), NOW(), NOW())`,
-          [runId, inputCbor, '"Simple error message"']
-        );
-
-        const run = await runs.get(runId);
-        expect(run.error?.message).toBe('Simple error message');
-      });
-
-      it('should parse legacy errorJson field on steps', async () => {
-        // First create a run and step
+      it('should surface legacy errorJson on steps as undefined', async () => {
         const run = await createRun(events, {
           deploymentId: 'deployment',
           workflowName: 'workflow',
           input: new Uint8Array(),
         });
 
-        // Insert a step directly with legacy error format (error column is the text/JSON one)
-        // Failed steps need completed_at set
         const inputCbor = encode(new Uint8Array());
         await pool.query(
           `INSERT INTO workflow.workflow_steps (run_id, step_id, step_name, status, input_cbor, error, attempt, created_at, updated_at, completed_at)
@@ -2159,8 +2258,8 @@ describe('Storage (Postgres integration)', () => {
         );
 
         const step = await steps.get(run.runId, 'step_legacy_err');
-        expect(step.error?.message).toBe('Step error');
-        expect(step.error?.stack).toBe('at bar()');
+        expect(step.status).toBe('failed');
+        expect(step.error).toBeUndefined();
       });
     });
   });

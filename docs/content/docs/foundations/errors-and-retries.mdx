@@ -141,7 +141,7 @@ callApi.maxRetries = 5; // Retry up to 5 times on failure (6 total attempts)
 
 ## Error Codes
 
-When a workflow run fails, the error may include a `code` that classifies the failure. You can access it programmatically via the `Run` class:
+When a workflow run fails, the error includes an `errorCode` that classifies the failure, alongside the original thrown value (preserved as `cause`):
 
 ```typescript lineNumbers
 import { WorkflowRunFailedError } from "@workflow/errors";
@@ -153,8 +153,12 @@ try {
   const result = await run.returnValue;
 } catch (err) {
   if (WorkflowRunFailedError.is(err)) {
-    console.log(err.cause.code); // "USER_ERROR", "RUNTIME_ERROR", or undefined
-    console.log(err.cause.message); // The error message
+    console.log(err.errorCode); // "USER_ERROR", "RUNTIME_ERROR", or undefined
+    // `cause` is the original thrown value, hydrated through the workflow
+    // serialization pipeline. It can be any thrown value, so check shape.
+    if (err.cause instanceof Error) {
+      console.log(err.cause.message); // The error message
+    }
   }
 }
 ```

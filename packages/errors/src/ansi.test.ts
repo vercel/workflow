@@ -1,8 +1,30 @@
 import { describe, expect, it, vi } from 'vitest';
-import * as Ansi from './ansi.js';
 
-// Render ANSI styles as HTML-like tags in snapshots so they're readable.
-vi.mock('chalk');
+// Render styles as readable HTML-like tags in snapshots so a reviewer can
+// see at a glance which fragments are colored and how. The production
+// implementation in `./internal-chalk.ts` emits ANSI SGR escapes and
+// short-circuits to identity functions when there's no TTY (and in the
+// workflow VM, where `globalThis.process` is undefined).
+vi.mock('./internal-chalk.js', () => {
+  const tag =
+    (name: string) =>
+    (s: string): string =>
+      `<${name}>${s}</${name}>`;
+  return {
+    default: {
+      bold: tag('b'),
+      dim: tag('dim'),
+      italic: tag('i'),
+      red: tag('red'),
+      blue: tag('blue'),
+      cyan: tag('cyan'),
+      yellow: tag('yellow'),
+      magenta: tag('magenta'),
+    },
+  };
+});
+
+const Ansi = await import('./ansi.js');
 
 describe('Ansi.frame', () => {
   it('renders a single-line title with no contents', () => {
@@ -62,7 +84,10 @@ describe('Ansi.hint / note / help / docs', () => {
     expect(
       Ansi.note(['read more:', 'https://example.com'])
     ).toMatchInlineSnapshot(
-      `"<blue><b>note:</b> read more:\nhttps://example.com</blue>"`
+      `
+      "<blue><b>note:</b> read more:
+      https://example.com</blue>"
+    `
     );
   });
 

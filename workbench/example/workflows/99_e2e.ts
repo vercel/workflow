@@ -215,6 +215,36 @@ export async function parallelSleepWorkflow() {
 
 //////////////////////////////////////////////////////////
 
+async function delayMsStep(ms: number, label: string) {
+  'use step';
+  await new Promise((resolve) => setTimeout(resolve, ms));
+  return label;
+}
+
+export async function sleepWinsRaceWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  const winner = await Promise.race([
+    delayMsStep(10_000, 'step'),
+    sleep('1s').then(() => 'sleep'),
+  ]);
+  const endTime = Date.now();
+  return { winner, durationMs: endTime - startTime };
+}
+
+export async function stepWinsRaceWorkflow() {
+  'use workflow';
+  const startTime = Date.now();
+  const winner = await Promise.race([
+    delayMsStep(1_000, 'step'),
+    sleep('10s').then(() => 'sleep'),
+  ]);
+  const endTime = Date.now();
+  return { winner, durationMs: endTime - startTime };
+}
+
+//////////////////////////////////////////////////////////
+
 async function nullByteStep() {
   'use step';
   return 'null byte \0';
@@ -958,6 +988,125 @@ export async function errorFatalCatchable() {
     return { caught: false, isFatal: false };
   } catch (e: any) {
     return { caught: true, isFatal: FatalError.is(e) };
+  }
+}
+
+/**
+ * Test: a step throws a FatalError; the workflow catches it and inspects
+ * the hydrated thrown value. Exercises the step error serialization
+ * pipeline (step throw → step_failed event → workflow catch).
+ */
+async function throwFatalErrorWithCause() {
+  'use step';
+  const root = new TypeError('underlying type error');
+  const wrapped = new FatalError('fatal with cause');
+  (wrapped as Error).cause = root;
+  throw wrapped;
+}
+
+export async function errorStepThrowFatalRoundTrip() {
+  'use workflow';
+  try {
+    await throwFatalErrorWithCause();
+    return { caught: false } as any;
+  } catch (err: any) {
+    return {
+      caught: true,
+      isFatal: FatalError.is(err),
+      isInstanceOf: err instanceof FatalError,
+      message: err.message,
+      name: err.name,
+      hasFatalProp: err.fatal === true,
+      causeIsTypeError: err.cause instanceof TypeError,
+      causeName: err.cause?.name,
+      causeMessage: err.cause?.message,
+    };
+  }
+}
+
+// ---
+
+/**
+ * Test: a workflow itself throws a FatalError with a cause chain.
+ * Exercises the run-error serialization pipeline (workflow throw →
+ * run_failed event → WorkflowRunFailedError.cause on the client side).
+ */
+export async function errorWorkflowThrowFatalRoundTrip() {
+  'use workflow';
+  const root = new RangeError('out of bounds');
+  const top = new FatalError('workflow exploded');
+  (top as Error).cause = root;
+  throw top;
+}
+
+// ---
+
+/**
+ * Test: a workflow throws a non-Error value (a plain object). The
+ * client-side hydrated `cause` on WorkflowRunFailedError should be
+ * exactly that object — not coerced into an Error.
+ */
+export async function errorWorkflowThrowNonErrorValue() {
+  'use workflow';
+  const value: Record<string, unknown> = {
+    kind: 'business-rule-violation',
+    code: 'INVOICE_LOCKED',
+    detail: { invoiceId: 'inv_123', userId: 'usr_456' },
+  };
+  // Throw a non-Error value (any JS value can be thrown). The serialization
+  // pipeline must round-trip this verbatim — not coerce it into an Error.
+  throw value;
+}
+
+// ---
+
+/**
+ * Test: a step throws a non-Error value (a plain object). Non-Error
+ * throws are NOT recognized as `FatalError` (no `name === 'FatalError'`)
+ * nor as `RetryableError`, so they take the transient retry path. With
+ * `maxRetries = 0` the step fails on first attempt; the runtime wraps
+ * the original thrown value as `cause` on a `FatalError` and the
+ * workflow catches that.
+ */
+async function throwNonErrorFromStep() {
+  'use step';
+  // Same shape as `errorWorkflowThrowNonErrorValue` so the test asserts
+  // a parallel round-trip on both throw boundaries.
+  const value: Record<string, unknown> = {
+    kind: 'business-rule-violation',
+    code: 'INVOICE_LOCKED',
+    detail: { invoiceId: 'inv_123', userId: 'usr_456' },
+  };
+  throw value;
+}
+throwNonErrorFromStep.maxRetries = 0;
+
+export async function errorStepThrowNonErrorValue() {
+  'use workflow';
+  try {
+    await throwNonErrorFromStep();
+    return { caught: false } as any;
+  } catch (err: any) {
+    // After max retries the step handler wraps the underlying thrown value
+    // as `cause` on a FatalError. The wrapping FatalError is what reaches
+    // the workflow's catch; the original non-Error object is on `err.cause`.
+    return {
+      caught: true,
+      isFatal: FatalError.is(err),
+      isInstanceOf: err instanceof FatalError,
+      // The wrapping message includes the retry count + the original
+      // non-Error value's `JSON.stringify` form.
+      messageIncludesKind:
+        typeof err?.message === 'string' &&
+        err.message.includes('business-rule-violation'),
+      causeIsObject:
+        err?.cause !== null &&
+        typeof err?.cause === 'object' &&
+        !(err.cause instanceof Error),
+      causeKind: err?.cause?.kind,
+      causeCode: err?.cause?.code,
+      causeDetail: err?.cause?.detail,
+    };
   }
 }
 
@@ -2641,6 +2790,16 @@ export async function startFromWorkflow(inputValue: number) {
 /**
  * Recursive Fibonacci workflow. start() is called directly to spawn
  * child workflows for fib(n-1) and fib(n-2).
+ *
+ * WORKER POOL CAVEAT: each `runA.returnValue` / `runB.returnValue` await
+ * resolves by polling the child run's status inside a step that holds a
+ * worker slot until the child completes. In worker-based worlds (notably
+ * `world-postgres`), the peak number of these in-flight polls must fit
+ * within `queueConcurrency`, or the workflow will deadlock — all slots
+ * end up held by parents waiting for children that can't get a slot to
+ * start. For `fib(n)`, the recursion tree produces roughly `2·(T(n)−leaves)`
+ * concurrent polls at peak; fib(6) needs ~24 slots, fib(10) needs
+ * hundreds. If you raise `n`, raise `queueConcurrency` accordingly.
  */
 export async function fibonacciWorkflow(n: number): Promise<number> {
   'use workflow';
