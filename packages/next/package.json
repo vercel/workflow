@@ -29,7 +29,7 @@
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "tsc --build --clean && rm -rf dist docs",
-    "prepack": "mkdir -p docs && cp ../../docs/content/docs/getting-started/next.mdx ./docs/ && cp -r ../../docs/content/docs/api-reference/workflow-next ./docs/api-reference",
+    "prepack": "mkdir -p docs && cp ../../docs/content/docs/v5/getting-started/next.mdx ./docs/ && cp -r ../../docs/content/docs/v5/api-reference/workflow-next ./docs/api-reference",
     "postpack": "rm -rf docs"
   },
   "dependencies": {

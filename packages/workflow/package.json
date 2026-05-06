@@ -61,7 +61,7 @@
     "dev": "tsc --watch",
     "test": "vitest run src",
     "typecheck": "tsc --noEmit",
-    "prepack": "cp -r ../../docs/content/docs ./docs",
+    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/v5/. ./docs/",
     "postpack": "rm -rf docs"
   },
   "dependencies": {
