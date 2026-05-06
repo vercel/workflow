@@ -10,6 +10,7 @@ import {
   NavigationMenuList,
 } from '@/components/ui/navigation-menu';
 import { useIsMobile } from '@/hooks/use-mobile';
+import { useVersion } from '@/hooks/geistdocs/use-version';
 import { cn } from '@/lib/utils';
 
 interface DesktopMenuProps {
@@ -21,10 +22,28 @@ export const DesktopMenu = ({ items, className }: DesktopMenuProps) => {
   const isMobile = useIsMobile();
   const pathname = usePathname() ?? '/';
   const { lang } = useParams<{ lang?: string }>();
+  const { activeVersion } = useVersion();
+
+  // Prepend the active version prefix to versioned links (/docs and /cookbook)
+  // so the navbar stays in sync with the selected version.
+  const resolveHref = (href: string) => {
+    if (
+      !href.startsWith('http') &&
+      (href.startsWith('/docs') || href.startsWith('/cookbook'))
+    ) {
+      return `${activeVersion.prefix}${href}`;
+    }
+    return href;
+  };
 
   const matchesHref = (href: string) => {
-    const candidates = [href];
-    if (lang) candidates.push(`/${lang}${href}`);
+    const resolved = resolveHref(href);
+    // Check both the raw href and the version-resolved href so the active
+    // state highlights correctly on both v4 and v5 doc paths.
+    const candidates = [href, resolved];
+    if (lang) {
+      candidates.push(`/${lang}${href}`, `/${lang}${resolved}`);
+    }
     return candidates.some(
       (candidate) =>
         pathname === candidate || pathname.startsWith(`${candidate}/`)
@@ -55,7 +74,7 @@ export const DesktopMenu = ({ items, className }: DesktopMenuProps) => {
                     <IconArrowUpRightSmall aria-hidden="true" size={12} />
                   </a>
                 ) : (
-                  <DynamicLink href={`/[lang]${item.href}`}>
+                  <DynamicLink href={`/[lang]${resolveHref(item.href)}`}>
                     {item.label}
                   </DynamicLink>
                 )}

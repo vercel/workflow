@@ -1,0 +1,337 @@
+---
+title: Migrating from trigger.dev
+description: Move a trigger.dev v3 TypeScript app to the Workflow SDK by replacing task(), schemaTask(), wait.for / wait.forToken, triggerAndWait, and metadata streams with Workflows, Steps, Hooks, and start() / getRun().
+type: guide
+summary: Translate a trigger.dev v3 app into the Workflow SDK with side-by-side code examples.
+prerequisites:
+  - /docs/getting-started/next
+  - /docs/foundations/workflows-and-steps
+related:
+  - /docs/foundations/starting-workflows
+  - /docs/foundations/errors-and-retries
+  - /docs/foundations/hooks
+  - /docs/foundations/streaming
+  - /docs/deploying/world/vercel-world
+---
+
+<Callout type="info">
+Install the Workflow SDK migration skill:
+
+```bash
+npx skills add https://github.com/vercel/workflow --skill migrating-to-workflow-sdk
+```
+</Callout>
+
+## Why migrate to the Workflow SDK?
+
+- Streaming is built in via named streams (`getWritable()` and `getWritable({ namespace })`). Durable status writes replace `metadata.stream()` and `metadata.set()`, and clients read from the end of the stream for current status.
+- Orchestration and infrastructure live in a single deployment. There is no separate trigger.dev cloud or self-hosted worker fleet to operate.
+- TypeScript-first DX: plain async/await control flow, no `task()` factory, no `schemaTask()` wrapper for payloads you already type with TypeScript.
+- Agent-first tooling: the `npx workflow` CLI, `@workflow/ai` for durable AI agents, and a Claude skill for generating workflows.
+- Retry policy is per step. Throw `RetryableError` to retry with a delay, or `FatalError` to stop. There is no central task-level retry config.
+
+## What changes when you leave trigger.dev?
+
+trigger.dev v3 defines durable work with `task()` or `schemaTask()` from `@trigger.dev/sdk` (trigger.dev v3), deploys tasks to the trigger.dev cloud or a self-hosted instance, and triggers runs via `tasks.trigger()`. A separate worker fleet picks up runs, applies retry policies, and routes `wait.for`, `wait.forToken`, and `metadata.stream` calls through the platform.
+
+The Workflow SDK replaces that with `"use workflow"` functions that orchestrate `"use step"` functions in plain TypeScript. There is no task registry, separate deploy target, or SDK client. Durable replay, retries, and event history ship with the runtime.
+
+Migration collapses the task abstraction into plain async functions. Business logic stays the same.
+
+## Concept mapping
+
+| trigger.dev | Workflow SDK | Migration note |
+| --- | --- | --- |
+| `task({ id, run })` | `"use workflow"` function started with `start()` | No factory or id registry. |
+| `schemaTask({ schema, run })` | Typed function + `"use workflow"` | Validate inputs at the call site. |
+| Inline `run` body | `"use step"` function | Side effects move into named steps. |
+| `logger` / `metadata.set` | `console` + `getWritable({ namespace: 'status' })` | Logs flow through the run timeline. Status writes go on a named stream. |
+| `wait.for({ seconds \| minutes \| hours \| days })` / `wait.until({ date })` | `sleep()` | Import from `workflow`. |
+| `wait.forToken({ timeout })` | `createHook()` + `Promise.race` with `sleep()` | Hooks carry a typed token. |
+| `tasks.trigger()` / `triggerAndWait()` | `start()` and `getRun(runId).returnValue` | Wrap both in `"use step"` functions. |
+| `batch.triggerAndWait()` | `Promise.all(runIds.map(collectResult))` | Fan out via standard concurrency. |
+| `AbortTaskRunError` | `FatalError` | Stops retries immediately. |
+| `retry.onThrow` / `retry.fetch` | `RetryableError`, `FatalError`, `maxRetries` | Retry count lives on the step via `myStep.maxRetries = N` (default 3). Control delay between attempts by throwing `new RetryableError(msg, { retryAfter: '5s' })` — there is no built-in exponential helper; compute the delay yourself based on `getStepMetadata().attempt` if you need one. |
+| `metadata.stream()` / Realtime | `getWritable()` / `getWritable({ namespace })` | For granular business status (progress updates, current-stage messages), prefer writing to `getWritable({ namespace: 'status' })` from a step and reading from the end of the named stream on the client. Use `getRun(runId).status` for terminal/lifecycle state only. |
+| Self-hosted worker + dashboard | Managed execution + built-in UI | No worker fleet to operate. |
+
+## Translate your first workflow
+
+<Callout type="warn">
+trigger.dev's `task.run` body has full Node.js access. The SDK's `'use workflow'` body runs in a sandboxed VM — side effects (I/O, `Date.now()`, `Math.random()`, DB, fetch) must live inside `'use step'` functions. Orchestration stays in the workflow body.
+</Callout>
+
+Start with the shell. trigger.dev wraps the handler in `task()`; the Workflow SDK marks the function with a directive.
+
+```typescript title="trigger/order.ts (trigger.dev)"
+import { task } from '@trigger.dev/sdk';
+
+export const processOrder = task({
+  id: 'process-order',
+  run: async (payload: { orderId: string }) => {
+    return { orderId: payload.orderId, status: 'completed' };
+  },
+});
+```
+
+```typescript title="trigger/order.ts (Workflow SDK)"
+export async function processOrder(orderId: string) {
+  'use workflow'; // [!code highlight]
+  return { orderId, status: 'completed' };
+}
+```
+
+**What changed:** the `task()` factory and its `id` field disappear. The function is a plain export tagged with `"use workflow"`.
+
+### Add a step
+
+The body of `run` becomes one or more `"use step"` functions.
+
+```typescript title="workflow/workflows/order.ts"
+async function loadOrder(orderId: string) {
+  'use step'; // [!code highlight]
+  const res = await fetch(`https://example.com/api/orders/${orderId}`);
+  return res.json() as Promise<{ id: string }>;
+}
+```
+
+Call it from the workflow with a plain `await`. Each additional side effect (`reserveInventory`, `chargePayment`) follows the same shape.
+
+### Start the run
+
+trigger.dev dispatches with `tasks.trigger<typeof processOrder>('process-order', { orderId })`. The Workflow SDK calls `start()` directly:
+
+```typescript title="app/api/orders/route.ts"
+import { start } from 'workflow/api';
+import { processOrder } from '@/workflows/order';
+
+export async function POST(request: Request) {
+  const { orderId } = (await request.json()) as { orderId: string };
+  const run = await start(processOrder, [orderId]); // [!code highlight]
+  return Response.json({ runId: run.runId });
+}
+```
+
+No id lookup, no API key, no separate worker. `start()` returns a handle immediately.
+
+## Wait for an external signal
+
+`wait.forToken()` becomes `createHook()` plus `await`.
+
+{/* @skip-typecheck: trigger.dev SDK types not available */}
+```typescript title="workflow/workflows/refund.ts (trigger.dev, abbreviated)"
+// import { wait } from '@trigger.dev/sdk';
+const token = await wait.createToken({ timeout: '7d' });
+const approval = await wait.forToken<{ approved: boolean }>(token.id).unwrap();
+// External system resumes with: await wait.completeToken(token.id, { approved: true });
+```
+
+{/* @skip-typecheck: snippet without imports */}
+```typescript title="workflow/workflows/refund.ts (Workflow SDK)"
+using approval = createHook<{ approved: boolean }>({ // [!code highlight]
+  token: `refund:${refundId}:approval`,
+});
+const payload = await approval;
+```
+
+**What changed:** the platform-issued opaque token becomes an app-owned string. The caller that resumes the run supplies that same string, so there is no token lookup. (trigger.dev also exposes `token.url` for external callers; the SDK analog is `createWebhook().url`).
+
+### Resume from an API route
+
+There are two shapes of resume, and `wait.forToken` can map to either:
+
+- **Server-side resume (known token):** `createHook<T>({ token: 'business-token' })` + `resumeHook(token, payload)` from an API route. Use this when your app knows the token shape and controls the resume call.
+- **Third-party callback URL (generated token):** `createWebhook({ respondWith: 'default' })` + pass `webhook.url` to the external system. The external system hits the URL to resume.
+
+See [`/docs/foundations/hooks`](/docs/foundations/hooks) for both surfaces.
+
+trigger.dev completes a token with `wait.completeToken(tokenId, { approved })`. The SDK equivalent is `resumeHook`:
+
+```typescript title="app/api/refunds/[refundId]/approve/route.ts"
+import { resumeHook } from 'workflow/api';
+
+export async function POST(request: Request, { params }: { params: Promise<{ refundId: string }> }) {
+  const { refundId } = await params;
+  const { approved } = (await request.json()) as { approved: boolean };
+  await resumeHook(`refund:${refundId}:approval`, { approved }); // [!code highlight]
+  return Response.json({ ok: true });
+}
+```
+
+### Add a timeout and branch on the payload
+
+trigger.dev's `timeout: '7d'` option maps to a `Promise.race()` with `sleep()`:
+
+{/* @skip-typecheck: continuation snippet */}
+```typescript title="workflow/workflows/refund.ts"
+const result = await Promise.race([
+  approval.then((p) => ({ type: 'decision' as const, approved: p.approved })),
+  sleep('7d').then(() => ({ type: 'timeout' as const })), // [!code highlight]
+]);
+
+if (result.type === 'timeout') return { refundId, status: 'timed-out' };
+if (!result.approved) return { refundId, status: 'rejected' };
+return { refundId, status: 'approved' };
+```
+
+<Callout type="info">
+A hook is an inbound write channel. The caller that knows the token resumes the run with a typed payload. For granular business status (progress updates, current-stage messages), prefer writing to `getWritable({ namespace: 'status' })` from a step and reading from the end of the named stream on the client. Use `getRun(runId).status` for terminal/lifecycle state only.
+</Callout>
+
+## Spawn a child workflow
+
+`triggerAndWait()` splits into two steps: spawn and collect. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Return the full `Run` object from `spawnChild` so observability tooling can deep-link to the child run.
+
+You can return either the full `Run` object (enables deep-linking) or just `run.runId` (simpler). The runtime serializes `Run` to its `runId` in the event log either way.
+
+```typescript title="workflow/workflows/parent.ts"
+import { start } from 'workflow/api';
+
+async function spawnChild(item: string) {
+  'use step';
+  return start(childWorkflow, [item]); // [!code highlight]
+}
+```
+
+Await the result in a second step, then orchestrate both from the parent:
+
+```typescript title="workflow/workflows/parent.ts"
+import { getRun } from 'workflow/api';
+
+async function collectResult(runId: string) {
+  'use step';
+  const run = getRun(runId);
+  return (await run.returnValue) as { item: string; result: string }; // [!code highlight]
+}
+
+export async function parentWorkflow(item: string) {
+  'use workflow';
+  const child = await spawnChild(item);
+  return await collectResult(child.runId);
+}
+```
+
+To fan out, call `spawnChild` inside a loop, then `Promise.all` the `collectResult` calls. That replaces `batch.triggerAndWait()`.
+
+`Promise.all` rejects on first failure; use `Promise.allSettled` if you need batch-mode error tolerance similar to trigger.dev's `{ ok, output, error }` per-run result.
+
+## What you stop operating
+
+Dropping the trigger.dev SDK removes several moving parts:
+
+- **No task registry or `id` strings.** Workflow files carry directive annotations and export plain functions.
+- **No `@trigger.dev/sdk` client or API key.** `start()` launches runs directly from API routes or server actions.
+- **No worker fleet or self-hosted instance.** The runtime schedules execution inside the app's deploy target.
+- **No separate Realtime channel.** `getWritable()` streams updates from steps over the run's durable stream.
+- **No dashboard account.** The built-in observability UI (`npx workflow web`) reads the same event log the runtime writes.
+
+Workflows suspended on `sleep()` or a hook consume no compute until resumed.
+
+## Step-by-step first migration
+
+Pick one trigger.dev task and migrate it end-to-end before touching the rest. The steps below describe the smallest viable path.
+
+### Step 1: Install the Workflow SDK
+
+Add the runtime. Framework integrations (Next.js, Nitro, Nuxt, SvelteKit, Astro, Nest) are subpath exports of the same `workflow` package, e.g. `workflow/next` — no additional install needed.
+
+```bash
+pnpm add workflow
+```
+
+### Step 2: Convert `task()` to a `"use workflow"` export
+
+Drop the factory call and the `id`. Move the handler body up and replace the payload object with typed function arguments.
+
+```ts title="workflows/order.ts"
+// Before (trigger.dev)
+// export const processOrder = task({
+//   id: "process-order",
+//   run: async ({ orderId }: { orderId: string }) => { ... },
+// });
+
+// After (Workflow SDK)
+export async function processOrder(orderId: string) {
+  "use workflow"; // [!code highlight]
+  // ...
+}
+```
+
+### Step 3: Convert the task body into `"use step"` named functions
+
+Each side effect becomes a named function with `"use step"` on the first line. The workflow calls them with a plain `await`. `schemaTask()` validation moves to the call site: validate with zod before calling `start()`.
+
+```ts
+async function loadOrder(id: string) {
+  "use step"; // [!code highlight]
+  return fetch(`/api/orders/${id}`).then((r) => r.json());
+}
+```
+
+### Step 4: Replace `wait.*` with hooks and `sleep`
+
+- `wait.for({ seconds | minutes | hours | days })` / `wait.until({ date })` → `sleep('5m')` or `sleep(date)` from `workflow`.
+- `wait.forToken(token)` → `createHook({ token })` + `await`. Complete it with `resumeHook(token, payload)` from an API route.
+- `wait.forToken({ timeout })` → `Promise.race([hook, sleep(timeout)])`.
+- `triggerAndWait(payload)` → wrap `start(child, [payload])` in a `"use step"` function and return the `Run` object, then read the result with a second step that calls `getRun(runId).returnValue`.
+
+### Step 5: Start runs from the app
+
+Delete the trigger.dev client setup. Launch runs directly from an API route or server action:
+
+```ts title="app/api/orders/route.ts"
+import { start } from "workflow/api";
+import { processOrder } from "@/workflows/order";
+
+export async function POST(req: Request) {
+  const { orderId } = await req.json();
+  const run = await start(processOrder, [orderId]);
+  return Response.json({ runId: run.runId });
+}
+```
+
+### Step 6: Retire trigger.dev infrastructure
+
+Remove the `@trigger.dev/sdk` dependency, the `trigger.config.ts` file, the `trigger/` directory, and any self-hosted worker deployment. Delete dashboard API keys from the environment. Verify the run in `npx workflow web` before shipping.
+
+## Retries on steps
+
+Retry count lives on the step function itself. Set it as a property on the step:
+
+```typescript
+async function chargePayment(orderId: string) {
+  "use step";
+  // ...
+}
+chargePayment.maxRetries = 5;
+```
+
+Throw `new RetryableError(msg, { retryAfter: '5s' })` to control delay between attempts, or `FatalError` to stop retries immediately. See [`/docs/foundations/errors-and-retries`](/docs/foundations/errors-and-retries).
+
+## Features without a 1:1 equivalent
+
+- **`schedules.task()` / cron triggers.** The SDK has no built-in scheduler. Trigger runs from Vercel Cron or a system cron calling `start()`.
+- **Concurrency keys / queue concurrency limits.** No direct analog. Enforce limits inside steps (semaphores, external coordinator) or debounce at the publisher.
+- **`machine` presets / custom images.** Machine specs are per-task in trigger.dev; in the SDK, function resources are per-deployment (configure via your hosting platform).
+- **Realtime / `subscribeToRun`.** Use `getRun(runId).getReadable()` plus named `getWritable()` streams for live progress.
+- **`onFailure` lifecycle hook.** No equivalent. Handle cleanup in the workflow body with a try/catch + compensation-stack pattern.
+- **Trigger.dev dashboard.** Workflow SDK ships `npx workflow web` for local inspection and the Vercel Observability tab for deployed runs.
+
+## Quick-start checklist
+
+- Replace `task({ id, run })` with a `"use workflow"` function; launch it with `start()`.
+- Convert each task body into named `"use step"` functions.
+- Swap `wait.for` / `wait.until` for `sleep()` from `workflow`.
+- Swap `wait.forToken` for `createHook()` (internal) or `createWebhook()` (HTTP).
+- Model `wait.forToken` timeouts as `Promise.race()` between the hook and `sleep()`.
+- Replace `triggerAndWait()` with `"use step"` wrappers around `start()` and `getRun()`.
+- Replace `batch.triggerAndWait()` with `Promise.all` over the collected child `Run` handles.
+- Move `schemaTask` validation to the call site; pass typed arguments into the workflow.
+- Replace `AbortTaskRunError` with `FatalError`; model retries per step with `RetryableError` and `maxRetries`.
+- Use `getStepMetadata().stepId` as the idempotency key for external side effects.
+- Replace `metadata.stream()` and Realtime with `getWritable()`.
+- Remove the `@trigger.dev/sdk` dependency, `trigger.config.ts`, and any self-hosted worker.
+- Deploy and verify runs end-to-end with the built-in observability UI.
+
+---
+*Verified against `workflow@5.0.0-beta.1` and `@trigger.dev/sdk` v3 on 2026-04-16.*

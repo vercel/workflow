@@ -77,7 +77,7 @@
     "test": "cross-env WORKFLOW_TARGET_WORLD=local vitest run src",
     "test:e2e": "vitest run e2e",
     "typecheck": "genversion --es6 src/version.ts && tsc --noEmit",
-    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/foundations ./docs/ && cp -r ../../docs/content/docs/how-it-works ./docs/ && cp -r ../../docs/content/docs/api-reference/workflow ./docs/api-reference",
+    "prepack": "mkdir -p docs && cp -r ../../docs/content/docs/v5/foundations ./docs/ && cp -r ../../docs/content/docs/v5/how-it-works ./docs/ && cp -r ../../docs/content/docs/v5/api-reference/workflow ./docs/api-reference",
     "postpack": "rm -rf docs"
   },
   "dependencies": {

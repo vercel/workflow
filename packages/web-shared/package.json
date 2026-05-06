@@ -71,6 +71,7 @@
     "@types/node": "catalog:",
     "@types/react": "19",
     "@types/react-dom": "19",
+    "@workflow/errors": "workspace:*",
     "@workflow/tsconfig": "workspace:*",
     "ai": "catalog:",
     "typescript": "catalog:",

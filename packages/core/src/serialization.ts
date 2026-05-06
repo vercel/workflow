@@ -1571,10 +1571,29 @@ function getStepRevivers(
     ...getCommonRevivers(global),
 
     // StepFunction reviver for step context - returns raw step function
-    // with closure variable support via AsyncLocalStorage
+    // with closure variable support via AsyncLocalStorage.
+    //
+    // Handles four independent flags from the serialized payload:
+    //   - `closureVars`: invoke the body inside an AsyncLocalStorage frame
+    //     so the SWC-emitted `WORKFLOW_STEP_CONTEXT_STORAGE` IIFE in the
+    //     hoisted body can pull the closure variables back out.
+    //   - `boundThis`:   a `this` value captured by
+    //     `useStep(...).bind(this)` in the workflow bundle (lexical-`this`
+    //     arrow steps). The wrapper invokes the body via
+    //     `stepFn.apply(boundThis, args)` so the body sees the same
+    //     `this` it would have had in the workflow bundle. Property
+    //     presence — not truthiness — is significant because
+    //     `bind(null)` and `bind(undefined)` are both legal and should
+    //     round-trip faithfully.
+    //   - `boundArgs`:   prefilled args from
+    //     `useStep(...).bind(thisArg, x, y)`. Prepended to the call args
+    //     so partial application survives serialization.
     StepFunction: (value) => {
       const stepId = value.stepId;
       const closureVars = value.closureVars;
+      const hasBoundThis = 'boundThis' in value;
+      const boundThis = hasBoundThis ? value.boundThis : undefined;
+      const boundArgs = Array.isArray(value.boundArgs) ? value.boundArgs : [];
 
       const stepFn = getStepFunction(stepId);
       if (!stepFn) {
@@ -1586,47 +1605,47 @@ function getStepRevivers(
         );
       }
 
-      // If closure variables were serialized, return a wrapper function
-      // that sets up AsyncLocalStorage context when invoked
-      if (closureVars) {
-        const wrappedStepFn = ((...args: any[]) => {
-          // Get the current context from AsyncLocalStorage
-          const currentContext = contextStorage.getStore();
+      // Fast path: nothing to wrap.
+      if (!closureVars && !hasBoundThis && boundArgs.length === 0) {
+        return stepFn;
+      }
 
+      const wrappedStepFn = function (this: unknown, ...args: any[]) {
+        const callThis = hasBoundThis ? boundThis : this;
+        const callArgs = boundArgs.length > 0 ? [...boundArgs, ...args] : args;
+        if (closureVars) {
+          const currentContext = contextStorage.getStore();
           if (!currentContext) {
             throw new WorkflowRuntimeError(
               'Cannot call step function with closure variables outside step context'
             );
           }
-
-          // Create a new context with the closure variables merged in
           const newContext = {
             ...currentContext,
             closureVars,
           };
-
-          // Run the step function with the new context that includes closure vars
-          return contextStorage.run(newContext, () => stepFn(...args));
-        }) as any;
-
-        // Copy properties from original step function
-        Object.defineProperty(wrappedStepFn, 'name', {
-          value: stepFn.name,
-        });
-        Object.defineProperty(wrappedStepFn, 'stepId', {
-          value: stepId,
-          writable: false,
-          enumerable: false,
-          configurable: false,
-        });
-        if (stepFn.maxRetries !== undefined) {
-          wrappedStepFn.maxRetries = stepFn.maxRetries;
+          return contextStorage.run(newContext, () =>
+            stepFn.apply(callThis, callArgs)
+          );
         }
+        return stepFn.apply(callThis, callArgs);
+      } as any;
 
-        return wrappedStepFn;
+      // Copy properties from original step function
+      Object.defineProperty(wrappedStepFn, 'name', {
+        value: stepFn.name,
+      });
+      Object.defineProperty(wrappedStepFn, 'stepId', {
+        value: stepId,
+        writable: false,
+        enumerable: false,
+        configurable: false,
+      });
+      if (stepFn.maxRetries !== undefined) {
+        wrappedStepFn.maxRetries = stepFn.maxRetries;
       }
 
-      return stepFn;
+      return wrappedStepFn;
     },
 
     WorkflowFunction: (value) =>

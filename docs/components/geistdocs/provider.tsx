@@ -7,6 +7,7 @@ import { RootProvider } from 'fumadocs-ui/provider/next';
 import { type ComponentProps, useCallback } from 'react';
 import { Toaster } from '@/components/ui/sonner';
 import { useChatContext } from '@/hooks/geistdocs/use-chat';
+import { VersionProvider } from '@/hooks/geistdocs/use-version';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { i18n, i18nProvider } from '@/lib/geistdocs/i18n';
 import { cn } from '@/lib/utils';
@@ -36,26 +37,28 @@ export const GeistdocsProvider = ({
   );
 
   return (
-    <div
-      className={cn(
-        'transition-all',
-        isSidebarVisible ? 'pr-96!' : null,
-        className
-      )}
-    >
-      <TooltipProvider>
-        <RootProvider
-          i18n={i18nProvider(lang)}
-          search={{
-            SearchDialog: SearchDialogComponent,
-            ...search,
-          }}
-          {...props}
-        />
-      </TooltipProvider>
-      <Analytics />
-      <Toaster />
-      <SpeedInsights />
-    </div>
+    <VersionProvider>
+      <div
+        className={cn(
+          'transition-all',
+          isSidebarVisible ? 'pr-96!' : null,
+          className
+        )}
+      >
+        <TooltipProvider>
+          <RootProvider
+            i18n={i18nProvider(lang)}
+            search={{
+              SearchDialog: SearchDialogComponent,
+              ...search,
+            }}
+            {...props}
+          />
+        </TooltipProvider>
+        <Analytics />
+        <Toaster />
+        <SpeedInsights />
+      </div>
+    </VersionProvider>
   );
 };

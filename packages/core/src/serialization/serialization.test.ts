@@ -755,6 +755,45 @@ describe('step function reducer', () => {
   it('should return false for functions without stepId', () => {
     expect(reducers.StepFunction!(() => {})).toBe(false);
   });
+
+  it('should include `boundThis` when the proxy has the marker property', () => {
+    // Simulates a step proxy that was created via `useStep(...).bind(thisArg)`.
+    // The actual `.bind` override on real proxies (in step.ts) attaches
+    // `__boundThis` so the reducer can serialize the captured `this`.
+    const instance = { kind: 'workflow-side' };
+    const fn = Object.defineProperties(() => {}, {
+      stepId: { value: 'step//test//withBoundThis' },
+      __boundThis: { value: instance },
+    });
+    const result = reducers.StepFunction!(fn);
+    expect(result).toEqual({
+      stepId: 'step//test//withBoundThis',
+      boundThis: instance,
+    });
+  });
+
+  it('should round-trip a `null`/`undefined` bound `this`', () => {
+    // `Function.prototype.bind(null)` and `bind(undefined)` are valid; the
+    // reducer must use property presence rather than truthiness so the
+    // distinction round-trips faithfully.
+    const fnNull = Object.defineProperties(() => {}, {
+      stepId: { value: 'step//test//boundNull' },
+      __boundThis: { value: null },
+    });
+    expect(reducers.StepFunction!(fnNull)).toEqual({
+      stepId: 'step//test//boundNull',
+      boundThis: null,
+    });
+
+    const fnUndef = Object.defineProperties(() => {}, {
+      stepId: { value: 'step//test//boundUndef' },
+      __boundThis: { value: undefined },
+    });
+    expect(reducers.StepFunction!(fnUndef)).toEqual({
+      stepId: 'step//test//boundUndef',
+      boundThis: undefined,
+    });
+  });
 });
 
 describe('step function reviver', () => {
@@ -797,6 +836,38 @@ describe('step function reviver', () => {
     expect(() =>
       revivers.StepFunction!({ stepId: 'step//test//myStep' })
     ).toThrow(/WORKFLOW_USE_STEP not found/);
+  });
+
+  it('should re-bind the proxy when `boundThis` is present in the payload', () => {
+    // Simulates the round trip for a step proxy that was created via
+    // `useStep(...).bind(thisArg)` in the workflow bundle and then passed
+    // as a step argument: the reducer captures `boundThis`, and the
+    // reviver in the step bundle must re-bind the freshly created proxy
+    // so the original `this` survives the serialization round trip.
+    const recordedThisVals: unknown[] = [];
+    const proxy = function (this: unknown) {
+      recordedThisVals.push(this);
+      return 'result';
+    };
+    const mockUseStep = vi.fn().mockReturnValue(proxy);
+    const global = {
+      [Symbol.for('WORKFLOW_USE_STEP')]: mockUseStep,
+    };
+
+    const instance = { restored: true };
+    const revivers = getStepFunctionReviver(global);
+    const result = revivers.StepFunction!({
+      stepId: 'step//test//withBoundThis',
+      boundThis: instance,
+    }) as () => unknown;
+
+    expect(typeof result).toBe('function');
+    expect(mockUseStep).toHaveBeenCalledWith('step//test//withBoundThis');
+
+    // Invoking the revived proxy without an explicit receiver should
+    // observe the bound `this`, not `undefined`.
+    result();
+    expect(recordedThisVals).toEqual([instance]);
   });
 });
 

@@ -6,16 +6,34 @@ on:
   pull_request_target:
     types: [labeled]
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit SHA on `main` to back-port. Defaults to the current HEAD of `main`.'
+        required: false
+        type: string
+      model:
+        description: 'AI model used for AI-assisted decisions and conflict resolution. Format: `<provider>/<model>` (the `vercel/` prefix is added automatically). Leave blank to use the workflow default.'
+        required: false
+        type: string
 
 concurrency: backport-stable
+
+# AI model used by every opencode invocation in this workflow. The
+# `vercel/` provider prefix is added at each use site, so this should
+# be specified as `<provider>/<model>` (e.g. `anthropic/claude-opus-4.7`).
+# Manual `workflow_dispatch` runs may override this via the `model` input.
+env:
+  AI_MODEL: ${{ inputs.model || 'anthropic/claude-opus-4.7' }}
 
 jobs:
   backport:
     name: Backport to stable
     # Run on every push to main, OR when the `backport-stable` label is added
-    # to a merged PR (manual override / re-trigger).
+    # to a merged PR (manual override / re-trigger), OR on manual dispatch.
     if: |
       github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request_target' &&
        github.event.pull_request.merged == true &&
        github.event.label.name == 'backport-stable')
@@ -32,6 +50,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_SHA: ${{ github.event.after }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          DISPATCH_REF: ${{ inputs.ref }}
         run: |
           # On push, we only consider the head commit of the push
           # (`github.event.after`). This matches our merge model: PRs land on
@@ -41,13 +60,36 @@ jobs:
           # considered for backport — those edge cases can be handled by
           # adding the `backport-stable` label to the relevant PRs to
           # re-trigger this workflow against each one.
-          if [ "$EVENT_NAME" = "push" ]; then
-            SHA="$PUSH_SHA"
-            echo "trigger=push" >> "$GITHUB_OUTPUT"
-          else
-            SHA="$MERGE_SHA"
-            echo "trigger=label" >> "$GITHUB_OUTPUT"
-          fi
+          #
+          # On manual `workflow_dispatch`, the `ref` input may specify a
+          # particular SHA on `main` (or any commit-ish that resolves to a
+          # SHA via `gh api`); when blank we default to the current
+          # `main` HEAD.
+          case "$EVENT_NAME" in
+            push)
+              SHA="$PUSH_SHA"
+              echo "trigger=push" >> "$GITHUB_OUTPUT"
+              ;;
+            workflow_dispatch)
+              if [ -n "$DISPATCH_REF" ]; then
+                # Resolve the user-supplied ref to a full SHA so downstream
+                # steps can compare/re-use it.
+                SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${DISPATCH_REF}" --jq '.sha')
+                if [ -z "$SHA" ]; then
+                  echo "::error::Could not resolve workflow_dispatch input ref '${DISPATCH_REF}' to a SHA."
+                  exit 1
+                fi
+              else
+                # Default to the current HEAD of `main`.
+                SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq '.sha')
+              fi
+              echo "trigger=dispatch" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              SHA="$MERGE_SHA"
+              echo "trigger=label" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
           echo "Resolved commit SHA: $SHA"
 
@@ -94,7 +136,8 @@ jobs:
             exit 0
           fi
 
-          # Push trigger: look up PR associated with this commit (if any).
+          # Push or workflow_dispatch trigger: look up PR associated with
+          # this commit (if any).
           PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" --jq '.[0] // empty')
 
           if [ -z "$PR_JSON" ]; then
@@ -102,7 +145,13 @@ jobs:
             echo "pr_number=" >> "$GITHUB_OUTPUT"
             echo "pr_title=" >> "$GITHUB_OUTPUT"
             echo "pr_body=" >> "$GITHUB_OUTPUT"
-            echo "force_backport=false" >> "$GITHUB_OUTPUT"
+            # Manual dispatch always forces a backport (explicit user
+            # intent), even when no associated PR is found.
+            if [ "$TRIGGER" = "dispatch" ]; then
+              echo "force_backport=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "force_backport=false" >> "$GITHUB_OUTPUT"
+            fi
             exit 0
           fi
 
@@ -115,7 +164,12 @@ jobs:
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           write_multiline_output "pr_title" "$PR_TITLE"
           write_multiline_output "pr_body" "$PR_BODY"
-          echo "force_backport=$HAS_LABEL" >> "$GITHUB_OUTPUT"
+          # Manual dispatch always forces; otherwise honor the label.
+          if [ "$TRIGGER" = "dispatch" ] || [ "$HAS_LABEL" = "true" ]; then
+            echo "force_backport=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "force_backport=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Check if backport PR already exists
         id: existing-pr
@@ -171,12 +225,12 @@ jobs:
         id: decide
         if: steps.existing-pr.outputs.exists != 'true'
         env:
-          # Allow opencode tools to run without prompting. The value is the
-          # entire `permission` config (see https://opencode.ai/docs/permissions/);
-          # the bare string "allow" applies allow-everything to every scope,
-          # including `external_directory` (which defaults to "ask" and would
-          # otherwise auto-reject in non-interactive `opencode run`).
-          OPENCODE_PERMISSION: '"allow"'
+          # Allow opencode tools to run without prompting. We pass the full
+          # object form (see https://opencode.ai/docs/permissions/) — the
+          # bare string "allow" shortcut was observed not to override
+          # `external_directory` (which defaults to "ask" and auto-rejects
+          # in non-interactive `opencode run`), so we list it explicitly.
+          OPENCODE_PERMISSION: '{"*":"allow","external_directory":"allow"}'
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
           PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}
@@ -295,7 +349,7 @@ jobs:
           # code alone — but with `set -e` above, any non-zero exit will also
           # fail the job. The real signal is whether the decision file was
           # produced.
-          opencode run --model vercel/anthropic/claude-opus-4.7 "$(cat .backport-decision-prompt.txt)"
+          opencode run --model "vercel/${AI_MODEL}" < .backport-decision-prompt.txt
 
           if [ ! -f "$DECISION_FILE" ]; then
             echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, add the \`backport-stable\` label to the source PR."
@@ -423,17 +477,40 @@ jobs:
       - name: Resolve conflicts with opencode
         if: steps.cherry-pick.outputs.status == 'conflict'
         id: ai-resolve
-        continue-on-error: true
+        # We don't use `continue-on-error` here because we want to
+        # distinguish two outcomes:
+        #   1. opencode ran cleanly but couldn't fully resolve conflicts
+        #      (the legitimate "needs human help" path) — we set
+        #      `resolved=false` and the next step posts a manual-resolution
+        #      comment on the source PR.
+        #   2. opencode itself errored (auth failure, permission rejection,
+        #      crash, etc.) — that's an infra problem; we exit non-zero so
+        #      the workflow fails loudly and we notice instead of silently
+        #      claiming the conflicts couldn't be resolved.
         env:
           # Allow opencode tools to run without prompting. See the matching
           # comment on the `Decide whether to backport` step for details.
-          OPENCODE_PERMISSION: '"allow"'
+          OPENCODE_PERMISSION: '{"*":"allow","external_directory":"allow"}'
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}
         run: |
+          # Fail loudly on any unhandled error; we explicitly handle the
+          # "AI ran cleanly but couldn't resolve all conflicts" case below
+          # by setting `resolved=false` and exiting 0.
+          set -euo pipefail
+
           COMMIT_MSG=$(git log -1 --format='%B' "$SHA")
 
-          cat > /tmp/backport-prompt.txt <<PROMPT
+          # The AI writes its outcome here. The presence of this file (with
+          # a recognized status) is how we tell "AI ran cleanly" apart from
+          # "opencode itself crashed / hit an auth or permission error",
+          # which we treat as an infra failure.
+          OUTCOME_FILE=".backport-conflict-outcome.json"
+          rm -f "$OUTCOME_FILE"
+
+          # Prompt file lives inside the workspace so opencode never needs
+          # `external_directory` access just to read it.
+          cat > .backport-conflict-prompt.txt <<PROMPT
           The working tree has git merge conflicts from a failed cherry-pick.
           A commit is being cherry-picked from the main branch to the stable branch.
 
@@ -460,19 +537,87 @@ jobs:
           <<<<<<< HEAD and ======= is the current stable branch. The content between
           ======= and >>>>>>> is the incoming change from main.
 
-          After resolving each file, run git add on it to mark it as resolved.
-          Do NOT run git cherry-pick --continue or git commit.
+          When working with intermediate scratch files (diffs, notes, etc.),
+          keep them inside the current working directory rather than under
+          /tmp — the working directory is already part of your workspace and
+          doesn't require the \`external_directory\` permission.
+
+          After resolving each file, run \`git add\` on it to mark it as
+          resolved. Do NOT run \`git cherry-pick --continue\` or \`git commit\`.
+
+          When you are done, write a JSON file at \`$OUTCOME_FILE\` (relative
+          to the current working directory) with EXACTLY one of these shapes:
+
+            {"status":"resolved"}      // every conflict was resolved cleanly
+            {"status":"unresolved","reason":"<short explanation>"}   // some
+                                       // conflicts couldn't be resolved (or
+                                       // were too risky to resolve safely)
+
+          Use the \`write\` tool to create the file. The file is the only
+          signal we use for whether the resolution succeeded; do not skip it.
           PROMPT
 
-          opencode run --model vercel/anthropic/claude-opus-4.7 "$(cat /tmp/backport-prompt.txt)"
+          # `opencode run` may exit 0 even on infra failures (auth errors,
+          # rejected tool calls). The outcome-file presence + `set -e` on
+          # this step's exit are what we rely on to distinguish infra vs.
+          # AI-said-no.
+          opencode run --model "vercel/${AI_MODEL}" < .backport-conflict-prompt.txt
 
-          # Verify all conflicts are resolved
-          REMAINING=$(git diff --name-only --diff-filter=U || true)
-          if [ -z "$REMAINING" ]; then
-            GIT_EDITOR=true git cherry-pick --continue
-            echo "resolved=true" >> "$GITHUB_OUTPUT"
-            echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          if [ ! -f "$OUTCOME_FILE" ]; then
+            echo "::error::AI conflict resolution did not produce ${OUTCOME_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, rejected tool call, opencode crash) — check the step output above. To resolve manually, see the source PR for instructions."
+            exit 1
           fi
+
+          if ! jq empty "$OUTCOME_FILE" 2>/dev/null; then
+            echo "::error::AI outcome file at ${OUTCOME_FILE} is not valid JSON:"
+            cat "$OUTCOME_FILE"
+            exit 1
+          fi
+
+          STATUS=$(jq -r '.status' "$OUTCOME_FILE")
+          case "$STATUS" in
+            resolved)
+              # Sanity-check the AI's claim before committing the
+              # cherry-pick. Two failure modes to defend against:
+              #
+              # 1. Files left as unmerged index entries (the AI didn't
+              #    `git add` them, or didn't resolve them at all).
+              UNMERGED=$(git diff --name-only --diff-filter=U || true)
+              if [ -n "$UNMERGED" ]; then
+                echo "::warning::AI claimed conflicts were resolved but the following files still have unmerged index entries; treating as unresolved:"
+                echo "$UNMERGED"
+                echo "resolved=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              # 2. Files that were `git add`-ed but still contain conflict
+              #    markers in their content. `git diff --check --cached`
+              #    flags lines like `file.txt:1: leftover conflict marker`
+              #    when any staged file contains the standard markers; we
+              #    grep specifically for that phrase so an unrelated
+              #    whitespace warning doesn't trip the check.
+              CHECK_OUTPUT=$(git diff --check --cached 2>&1 || true)
+              if echo "$CHECK_OUTPUT" | grep -q "leftover conflict marker"; then
+                echo "::warning::AI claimed conflicts were resolved but staged files still contain conflict markers (<<<<<<<, =======, >>>>>>>); treating as unresolved:"
+                echo "$CHECK_OUTPUT" | grep "leftover conflict marker"
+                echo "resolved=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+
+              GIT_EDITOR=true git cherry-pick --continue
+              echo "resolved=true" >> "$GITHUB_OUTPUT"
+              echo "cherry_pick_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+              ;;
+            unresolved)
+              REASON=$(jq -r '.reason // "(no reason given)"' "$OUTCOME_FILE")
+              echo "AI could not fully resolve conflicts: $REASON"
+              echo "resolved=false" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::AI returned unexpected status '$STATUS' (expected 'resolved' or 'unresolved'). Outcome file:"
+              cat "$OUTCOME_FILE"
+              exit 1
+              ;;
+          esac
 
       - name: Push backport branch via GitHub API
         # Branch protection on this repo requires verified signatures on
@@ -717,15 +862,21 @@ jobs:
             fi
             echo ""
 
-            if [ "$TRIGGER" = "label" ]; then
-              echo "Triggered by the \`backport-stable\` label."
-            else
-              echo "**AI recommendation:** $AI_REASONING"
-            fi
+            case "$TRIGGER" in
+              label)
+                echo "Triggered by the \`backport-stable\` label."
+                ;;
+              dispatch)
+                echo "Triggered manually via \`workflow_dispatch\`."
+                ;;
+              *)
+                echo "**AI recommendation:** $AI_REASONING"
+                ;;
+            esac
 
             if [ "$CHERRY_PICK_STATUS" = "conflict" ]; then
               echo ""
-              echo "Merge conflicts were resolved by AI ([opencode](https://opencode.ai) with Claude Opus). **Please review the conflict resolution carefully before merging.**"
+              echo "Merge conflicts were resolved by AI ([opencode](https://opencode.ai) with \`${AI_MODEL}\`). **Please review the conflict resolution carefully before merging.**"
             fi
           } > /tmp/pr-body.md
 
@@ -771,10 +922,15 @@ jobs:
             });
 
       - name: Comment on conflict failure
+        # Only post the manual-resolution comment when the AI ran cleanly
+        # but couldn't resolve all conflicts (`resolved=false`). Infra
+        # failures (auth errors, opencode crashes, etc.) cause the
+        # `Resolve conflicts with opencode` step to exit non-zero, which
+        # fails the job — we don't want to also post a misleading
+        # "couldn't resolve" comment in that case.
         if: |
-          always() &&
           steps.cherry-pick.outputs.status == 'conflict' &&
-          steps.ai-resolve.outputs.resolved != 'true' &&
+          steps.ai-resolve.outputs.resolved == 'false' &&
           steps.pr-lookup.outputs.pr_number != ''
         uses: actions/github-script@v7
         env:

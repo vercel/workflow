@@ -2112,6 +2112,11 @@ describe('e2e', () => {
       // 3. counter.multiply(3) -> 5 * 3 = 15
       // 4. counter.describe('test counter') -> { label: 'test counter', value: 5 }
       // 5. Create Counter(100), call counter2.add(50) -> 100 + 50 = 150
+      // 6. counter.makeAdder(7).add(2) -> 5 + 2 + 7 = 14   (lexical `this`,
+      //    direct invocation — `bind(this)` carries `thisVal` to the queue)
+      // 7. invokeAdderFromStep(counter.makeAdder(7).add, 3) -> 5 + 3 + 7 = 15
+      //    (lexical `this` round-tripped through step-arg serialization —
+      //     the reducer captures `__boundThis`, the reviver re-binds)
       const run = await start(await e2e('instanceMethodStepWorkflow'), [5]);
       const returnValue = await run.returnValue;
 
@@ -2121,6 +2126,8 @@ describe('e2e', () => {
         multiplied: 15, // 5 * 3
         description: { label: 'test counter', value: 5 },
         added2: 150, // 100 + 50
+        adderResult: 14, // 5 + 2 + 7 (lexical `this` capture)
+        adderViaStep: 15, // 5 + 3 + 7 (lexical `this` survives serialization)
       });
 
       // Verify the run completed successfully
@@ -2134,9 +2141,15 @@ describe('e2e', () => {
         multiplied: 15,
         description: { label: 'test counter', value: 5 },
         added2: 150,
+        adderResult: 14,
+        adderViaStep: 15,
       });
 
-      // Verify the steps were executed (should have 4 steps: add, multiply, describe, add)
+      // Verify the steps were executed:
+      // - 4 Counter instance method steps (add, multiply, describe, add)
+      // - 2 lexical-`this` arrow steps from `makeAdder` (direct + via-step)
+      // - 1 invokeAdderFromStep wrapper (which itself triggers another
+      //   makeAdder arrow step inside it)
       const { json: steps } = await cliInspectJson(
         `steps --runId ${run.runId}`
       );
@@ -2151,6 +2164,32 @@ describe('e2e', () => {
       expect(counterSteps.every((s: any) => s.status === 'completed')).toBe(
         true
       );
+
+      // The lexical-`this` arrow step inside `Counter#makeAdder` is
+      // hoisted by the SWC plugin under an `_anonymousStep` name. It
+      // ran once as its own step (`adder.add(2)` invoked directly from
+      // the workflow). The second call (inside `invokeAdderFromStep`)
+      // executes inline because steps invoked from another step body
+      // run inline rather than queueing a new step — so we only see one
+      // `_anonymousStep` event in the log, even though the body executed
+      // twice. Asserting `=== 1` here pins down both:
+      //   1. the direct invocation actually creates a step (i.e. the
+      //      `bind(this)` proxy still goes through `useStep`), and
+      //   2. the round-tripped proxy correctly runs inline rather than
+      //      somehow re-queuing a duplicate step.
+      const adderArrowSteps = steps.filter((s: any) =>
+        s.stepName.includes('_anonymousStep')
+      );
+      expect(adderArrowSteps.length).toBe(1);
+      expect(adderArrowSteps[0].status).toBe('completed');
+
+      // The `invokeAdderFromStep` wrapper itself runs as its own step;
+      // its body invokes the round-tripped `add` proxy inline.
+      const invokeAdderSteps = steps.filter((s: any) =>
+        s.stepName.includes('invokeAdderFromStep')
+      );
+      expect(invokeAdderSteps.length).toBe(1);
+      expect(invokeAdderSteps[0].status).toBe('completed');
     }
   );
 

@@ -1,0 +1,165 @@
+---
+title: Python
+description: Build durable workflows and AI agents in Python with the Vercel SDK.
+type: guide
+summary: Set up the Workflow Python SDK in your Python application.
+prerequisites:
+  - /docs/getting-started
+related:
+  - /docs/foundations
+  - /docs/foundations/workflows-and-steps
+---
+
+<Callout type="warn">
+The Python SDK is currently in **beta**. APIs and behavior may change. For the latest documentation and updates, see the [official Vercel Workflow Python documentation](https://vercel.com/docs/workflow/python?language=py).
+</Callout>
+
+You can build durable workflows in Python using the [`vercel` Python SDK](https://pypi.org/project/vercel/). Your workflow code can pause, resume, and maintain state, just like the JavaScript and TypeScript Workflow SDK.
+
+## Getting Started
+
+Install the `vercel` package:
+
+```bash filename="Terminal"
+pip install vercel
+```
+
+Configure `experimentalServices` in your `vercel.json`:
+
+```json filename="vercel.json"
+{
+  "experimentalServices": {
+    "ai_content_workflow": {
+      "type": "worker",
+      "entrypoint": "app/workflows/ai_content_workflow.py",
+      "topics": ["__wkf_*"]
+    }
+  }
+}
+```
+
+## Workflows
+
+A workflow is a stateful function that coordinates multi-step logic over time. Create a `Workflows` instance and use the `@wf.workflow` decorator to mark a function as durable:
+
+```python filename="app/workflow.py" {3}
+from vercel import workflow
+
+wf = workflow.Workflows()
+```
+
+```python filename="app/workflows/ai_content_workflow.py" {3}
+from app.workflow import wf
+
+@wf.workflow
+async def ai_content_workflow(*, topic: str):
+    draft = await generate_draft(topic=topic)
+    summary = await summarize_draft(draft=draft)
+
+    return {
+        "draft": draft,
+        "summary": summary,
+    }
+```
+
+Under the hood, the workflow compiles into a route that orchestrates execution. All inputs and outputs are recorded in an event log. If a deploy or crash happens, the system replays execution deterministically from where it stopped.
+
+## Steps
+
+A step is a stateless function that runs a unit of durable work inside a workflow. Use `@wf.step` to mark a function as a step:
+
+```python filename="app/steps/generate_draft.py" {4,8}
+import random
+from app.workflow import wf
+
+@wf.step
+async def generate_draft(*, topic: str):
+    return await ai_generate(prompt=f"Write a blog post about {topic}")
+
+@wf.step
+async def summarize_draft(*, draft: str):
+    summary = await ai_summarize(text=draft)
+
+    # Simulate a transient error. The step automatically retries.
+    if random.random() < 0.3:
+        raise Exception("Transient AI provider error")
+
+    return summary
+```
+
+Each step compiles into an isolated route. While the step executes, the workflow suspends without consuming resources. When the step completes, the workflow resumes automatically where it left off.
+
+## Sleep
+
+Sleep pauses a workflow for a specified duration without consuming compute resources:
+
+```python filename="app/workflows/ai_refine.py" {7}
+from vercel import workflow
+
+@wf.workflow
+async def ai_refine_workflow(*, draft_id: str):
+    draft = await fetch_draft(draft_id)
+
+    await workflow.sleep("7 days")  # Wait 7 days to gather more signals.
+
+    refined = await refine_draft(draft)
+
+    return {
+        "draft_id": draft_id,
+        "refined": refined,
+    }
+```
+
+The sleep call pauses the workflow and consumes no resources. The workflow resumes automatically when the time expires.
+
+## Hooks
+
+A hook lets a workflow wait for external events such as user actions, webhooks, or third-party API responses.
+
+Define a hook model with Pydantic and `workflow.BaseHook`:
+
+```python filename="app/workflows/approval.py" {3,14}
+from vercel import workflow
+
+class Approval(BaseModel, workflow.BaseHook):
+    """Human approval for AI-generated drafts"""
+
+    decision: Literal["approved", "changes"]
+    notes: str | None = None
+
+@wf.workflow
+async def ai_approval_workflow(*, topic: str):
+    draft = await generate_draft(topic=topic)
+
+    # Wait for human approval events
+    async for event in Approval.wait(token="draft-123"):
+        if event.decision == "approved":
+            await publish_draft(draft)
+            break
+
+        revised = await refine_draft(draft, event.notes)
+        await publish_draft(revised)
+```
+
+Resume the workflow when data arrives:
+
+```python filename="app/api/resume.py" {5}
+@app.post("/api/resume")
+async def resume(approval: Approval):
+    """Resume the workflow when an approval is received"""
+
+    await approval.resume("draft-123")
+    return {"ok": True}
+```
+
+When a hook receives data, the workflow resumes automatically. You don&apos;t need polling, message queues, or manual state management.
+
+## Learn More
+
+For comprehensive documentation, examples, and the latest updates, visit the [official Vercel Workflow Python documentation](https://vercel.com/docs/workflow/python).
+
+## Next Steps
+
+- Learn more about the [Foundations](/docs/foundations).
+- Check [Errors](/docs/errors) if you encounter issues.
+- Explore the [API Reference](/docs/api-reference).
