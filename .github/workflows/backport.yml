@@ -349,7 +349,7 @@ jobs:
           # code alone — but with `set -e` above, any non-zero exit will also
           # fail the job. The real signal is whether the decision file was
           # produced.
-          opencode run --model "vercel/${AI_MODEL}" "$(cat .backport-decision-prompt.txt)"
+          opencode run --model "vercel/${AI_MODEL}" < .backport-decision-prompt.txt
 
           if [ ! -f "$DECISION_FILE" ]; then
             echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, add the \`backport-stable\` label to the source PR."
@@ -561,7 +561,7 @@ jobs:
           # rejected tool calls). The outcome-file presence + `set -e` on
           # this step's exit are what we rely on to distinguish infra vs.
           # AI-said-no.
-          opencode run --model "vercel/${AI_MODEL}" "$(cat .backport-conflict-prompt.txt)"
+          opencode run --model "vercel/${AI_MODEL}" < .backport-conflict-prompt.txt
 
           if [ ! -f "$OUTCOME_FILE" ]; then
             echo "::error::AI conflict resolution did not produce ${OUTCOME_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, rejected tool call, opencode crash) — check the step output above. To resolve manually, see the source PR for instructions."
