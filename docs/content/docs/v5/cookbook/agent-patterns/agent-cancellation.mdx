@@ -72,7 +72,7 @@ export async function stoppableAgent(messages: ModelMessage[]) {
       .stream({
         messages,
         writable: getWritable<UIMessageChunk>(),
-        signal: controller.signal, // [!code highlight]
+        abortSignal: controller.signal, // [!code highlight]
         maxSteps: 15,
       })
       .then((r) => ({ type: "complete" as const, messages: r.messages })),
