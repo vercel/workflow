@@ -532,6 +532,28 @@ Additional changes for Turbopack compatibility:
 - Lazy-loaded `getPort` via `createRequire` with opaque specifier to prevent `@workflow/utils/get-port` filesystem operations from being traced
 - `getRuntimeRequire()` uses `process.cwd()` as primary resolution base (for custom world packages like `@workflow/world-postgres` that are app-level deps, not `@workflow/core` deps), with `import.meta.url` fallback
 
+### Cold-Start `MODULE_NOT_FOUND: './world.js'` From `getWorldLazy` Fallback
+
+The `getWorldLazy()` design assumed one of two paths would always succeed: either `globalThis[GetWorldFnKey]` is populated (because some prior code reached `world.ts`'s module body), or the dynamic `import('./world.js')` fallback resolves at runtime.
+
+Both assumptions break for routes that consume `start` (or any other `getWorldLazy` consumer) without going through the queue-driven flow handler first:
+
+1. Webpack and Turbopack tree-shake the named import `{ getWorld } from './runtime/world.js'` out of `runtime.ts` once a consumer only uses `start`. `world.ts` is dropped from the bundle entirely, so its module-load `globalThis[GetWorldFnKey] ??= getWorld` registration never fires.
+2. The dynamic-import fallback inside `get-world-lazy.ts` builds the specifier `./world.js` at runtime to evade bundler tracing — but webpack inlines `get-world-lazy.js` into the route bundle, so the relative specifier resolves against `/var/task/<app>/.next/server/app/<route>/route.js` where no sibling `world.js` exists. Node throws `MODULE_NOT_FOUND`.
+
+The symptom: the very first request that goes through `start()` on a cold serverless invocation fails. Once any other code path (typically the queue-driven `/.well-known/workflow/v1/flow` route, which uses `getWorld` directly via `workflowEntrypoint`) has loaded `world.ts`, subsequent `start()` calls succeed for the rest of the process lifetime — making the failure flake-shaped: hard to reproduce in dev where everything tends to be warmed, but reliable on first user traffic into a fresh function instance.
+
+**Fix**: Added `@workflow/core/runtime/world-init`, a server-only side-effect module that imports `./world.js` purely for its module-load side effect (the globalThis registration). It's exported via package conditions:
+
+- `default` → `./dist/runtime/world-init.js` (real, loads `world.ts`)
+- `workflow` → `./dist/workflow/world-init-stub.js` (empty, used by VM/step bundles)
+
+`packages/workflow/src/api.ts` (the host file behind `workflow/api`'s `default` condition) imports it for its side effect. The matching VM/step entry `api-workflow.ts` does not, so `world.ts` and its server-only deps (`@workflow/world-local`, `@workflow/world-vercel`, `cbor-x`, …) stay out of the workflow sandbox bundle.
+
+Reverification: built bundles for `vade-review` (Next.js webpack) show `createLocalWorld`/`createVercelWorld`/`GetWorldFnKey` present in the route's vendor chunk for `@workflow/core` (zero before the fix), and the workflow VM bundle's `flow/route.js` and `__step_registrations.js` continue to have zero references to either the world-init module or `world.ts`. Cold-start `POST /api/review/submit` succeeds on the first request after a fresh server boot — the regression case.
+
+The dynamic-import fallback in `get-world-lazy.ts` is preserved as defense-in-depth for environments outside the documented configurations (CJS test runners, scripts that import deeply into `@workflow/core` without going through `workflow/api`).
+
 ### Run#returnValue Worker Deadlock in V2 Inline Execution
 
 When a workflow calls `start()` to spawn child workflows (e.g., `fibonacciWorkflow`), the parent's `Run#returnValue` step polls the child's completion status in a blocking loop (`while (true) { ... sleep(1000) ... }`). In V2, this step is executed inline by the step executor, holding a worker thread slot. If the child workflow's queue message is waiting for the same worker pool, the parent blocks the child from starting — a classic deadlock.

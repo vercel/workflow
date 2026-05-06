@@ -48,6 +48,11 @@
       "types": "./dist/runtime/resume-hook.d.ts",
       "default": "./dist/runtime/resume-hook.js"
     },
+    "./runtime/world-init": {
+      "types": "./dist/runtime/world-init.d.ts",
+      "workflow": "./dist/workflow/world-init-stub.js",
+      "default": "./dist/runtime/world-init.js"
+    },
     "./class-serialization": {
       "types": "./dist/class-serialization.d.ts",
       "default": "./dist/class-serialization.js"
