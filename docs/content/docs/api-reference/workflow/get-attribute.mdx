@@ -1,0 +1,78 @@
+---
+title: getAttribute
+description: Read a single attribute from the current workflow run.
+type: reference
+preRelease: true
+summary: Use getAttribute to look up a key on the current run's attribute snapshot.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+  - /docs/foundations/attributes
+related:
+  - /docs/foundations/attributes
+  - /docs/api-reference/workflow/get-attributes
+  - /docs/api-reference/workflow/set-attribute
+---
+
+Returns the current value of a single attribute on the workflow run, or `undefined` if the key is not set. Synchronous — `getAttribute` reads from the in-memory snapshot the runtime maintains for the run; it does not hit the network.
+
+```typescript lineNumbers
+import { getAttribute, setAttribute } from "workflow"
+
+async function exampleWorkflow() {
+    "use workflow"
+    await setAttribute("phase", "init")
+    const phase = getAttribute("phase") // "init" // [!code highlight]
+}
+```
+
+## Read-your-writes
+
+Within the same workflow or step body, `getAttribute` reflects any writes you have already issued, even if the underlying event has not yet round-tripped to the server.
+
+```typescript lineNumbers
+import { getAttribute, setAttribute } from "workflow"
+
+async function readStep() {
+    "use step"
+    await setAttribute("orderId", "ord_1")
+    const value = getAttribute("orderId") // "ord_1" — local update is visible
+}
+```
+
+## Reading initial attributes from `start()`
+
+If the run was started with [`start(workflow, input, { attributes })`](/docs/foundations/starting-workflows), those attributes are visible to `getAttribute` from the very first line of the workflow body:
+
+```typescript lineNumbers
+import { getAttribute } from "workflow"
+import { start } from "workflow/api"
+declare const order: any; // @setup
+declare const myWorkflow: (order: any) => Promise<void>; // @setup
+
+// caller:
+await start(myWorkflow, [order], { attributes: { tenantId: "t_acme" } } as any)
+// TODO(attributes V1): drop the cast once StartOptions accepts attributes.
+
+// inside myWorkflow:
+async function myWorkflowImpl(order: any) {
+    "use workflow"
+    const tenantId = getAttribute("tenantId") // "t_acme" // [!code highlight]
+}
+```
+
+## Workflow context vs step context
+
+`getAttribute` works in both contexts. The values are eventually consistent:
+
+- Inside a **step**, the step sees the run's attribute snapshot at step start, plus any of its own writes (read-your-writes).
+- Inside a **workflow** body, the workflow sees the snapshot up to the most-recent observed event. While the workflow is suspended waiting on a step, the workflow does not observe attribute writes the step is doing — those become visible once the step completes and the workflow resumes.
+
+## Errors
+
+`getAttribute` throws if called outside any workflow or step context. Otherwise it never throws — unset keys simply return `undefined`.
+
+## See also
+
+- [Attributes guide](/docs/foundations/attributes)
+- [`getAttributes`](/docs/api-reference/workflow/get-attributes) — read all attributes at once.
+- [`setAttribute`](/docs/api-reference/workflow/set-attribute) — write a single attribute.

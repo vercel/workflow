@@ -1,0 +1,205 @@
+---
+title: Attributes
+description: Attach searchable, plaintext metadata to workflow runs for observability and filtering.
+type: conceptual
+preRelease: true
+summary: Use attributes to label runs with business data so you can find, filter, and group them later.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+  - /docs/foundations/starting-workflows
+related:
+  - /docs/api-reference/workflow/set-attribute
+  - /docs/api-reference/workflow/set-attributes
+  - /docs/api-reference/workflow/get-attribute
+  - /docs/api-reference/workflow/get-attributes
+---
+
+Attributes are small, plaintext key-value pairs you can attach to a workflow run. They're meant for the data you want to see, search, and filter on in observability — things like `tenantId`, `orderId`, `phase`, `region`, `customerEmail`. They are **not** meant for arbitrary structured data; for that, use step inputs/outputs.
+
+## Why attributes
+
+Step inputs and outputs are encrypted and live behind remote refs. That's the right call for sensitive data, but it means the observability UI can't display them inline, and the platform can't index them for search. You end up with a list of runs identified only by opaque IDs, with no way to find "all runs for `tenantId: t_acme`" without fetching each run individually.
+
+Attributes solve that. They're stored unencrypted on the run row itself, indexed by the platform, and surfaced directly in the observability UI. You can:
+
+- See which runs belong to which tenant / order / customer at a glance.
+- Filter the run list by attribute key/value combinations.
+- Build dashboards that group by attribute (e.g. "runs per region per day").
+- Drive support flows: paste a customer's order ID into a search box and see exactly the runs that handled their order.
+
+## Three ways to set attributes
+
+### 1. At start time
+
+Pass `attributes` as the third argument to `start()`. These become the run's birth state — they're visible to the workflow body from the very first line.
+
+```typescript lineNumbers
+import { start } from "workflow/api"
+declare const processOrder: (orderId: string) => Promise<void>; // @setup
+declare const orderId: string; // @setup
+
+await start(processOrder, [orderId], {
+    attributes: { tenantId: "t_acme", orderId, channel: "web" }, // [!code highlight]
+} as any) // TODO(attributes V1): drop the cast once StartOptions accepts attributes.
+```
+
+This is the most common pattern: known-at-call-time data goes in `start()`. Use it whenever the caller knows the values.
+
+### 2. From inside a workflow
+
+Use [`setAttribute`](/docs/api-reference/workflow/set-attribute) or [`setAttributes`](/docs/api-reference/workflow/set-attributes) to record attributes the workflow itself computes:
+
+```typescript lineNumbers
+import { setAttribute } from "workflow"
+declare const doExpensiveWork: (orderId: string) => Promise<unknown>; // @setup
+
+async function processOrder(orderId: string) {
+    "use workflow"
+    await setAttribute("phase", "init") // [!code highlight]
+
+    const result = await doExpensiveWork(orderId)
+
+    await setAttribute("phase", "done") // [!code highlight]
+    return result
+}
+```
+
+The event log records the writer as `{ type: 'workflow' }` so observability can show which writes came from the workflow body vs. from steps.
+
+### 3. From inside a step
+
+Same API, same syntax — but the event log records the writer as `{ type: 'step', stepId, attempt }`, so you can trace each attribute change to the exact step (and retry attempt) that produced it.
+
+```typescript lineNumbers
+import { setAttribute } from "workflow"
+declare const externalCall: (orderId: string) => Promise<{ requestId: string }>; // @setup
+
+async function processOrderStep(orderId: string) {
+    "use step"
+    await setAttribute("orderId", orderId) // [!code highlight]
+
+    const result = await externalCall(orderId)
+    await setAttribute("externalRequestId", result.requestId)
+
+    return result
+}
+```
+
+Step writes fire immediately — observability sees them mid-step. If the step retries, the new attempt re-emits whatever `setAttribute` calls it makes; the run's current snapshot reflects last-write-wins.
+
+## Searching and filtering
+
+Once a run has attributes, the observability UI and the runs list API can filter on them.
+
+### List runs matching a single attribute
+
+```typescript
+const { data } = await world.runs.list({
+    attributes: { tenantId: "t_acme" },
+})
+```
+
+### AND-combined multi-attribute filter
+
+```typescript
+const { data } = await world.runs.list({
+    attributes: { tenantId: "t_acme", phase: "done" },
+})
+```
+
+All listed key/value pairs must match exactly. There is no OR-combinator in V1; for multi-value lookups, issue separate queries and union the results client-side.
+
+### Building filter UIs
+
+To power the "key dropdown → value dropdown" pattern in a filter builder, the world exposes:
+
+```typescript
+// "What attribute keys exist across all runs?"
+const { data: keys } = await world.runs.listAttributeKeys({
+    prefix: "ten", // optional fuzzy prefix
+})
+// → [{ key: "tenant", runCount: 1245 }, { key: "tenantId", runCount: 89 }, ...]
+
+// "What values does `tenantId` have?"
+const { data: values } = await world.runs.listAttributeValues({
+    key: "tenantId",
+    prefix: "t_a",
+})
+// → [{ value: "t_acme", runCount: 312 }, { value: "t_alpha", runCount: 22 }, ...]
+```
+
+Both are paginated and accept an optional `prefix` for incremental search.
+
+## Limits and validation
+
+V1 enforces these limits — exceeding any of them throws [`FatalError`](/docs/api-reference/workflow/fatal-error) **before** the event hits the wire, so an invalid batch never leaves the runtime:
+
+- **Key**: 1–256 characters; must not start with `$` (the `$`-prefix is reserved for future system keys like `$ai.model`).
+- **Value**: ≤ 256 bytes UTF-8.
+- **Per-run cap**: ≤ 64 attributes.
+
+`setAttributes({})` is an explicit no-op (no event emitted), so it's safe to compute updates conditionally without special-casing the empty path.
+
+## What attributes are NOT
+
+- **Not for sensitive data.** Attributes are stored plaintext and surfaced in observability. Keep secrets, PII, and tokens out of them — that's what step inputs/outputs (encrypted, behind refs) are for.
+- **Not for arbitrary structured data.** Values are strings, capped at 256 bytes. If you need to attach a JSON blob to a run, return it from the workflow or persist it externally.
+- **Not idempotency keys.** V1 has no `unique: true` semantics; concurrent writes to the same key are last-write-wins by event arrival. For idempotency on external API calls, see the [idempotency guide](/docs/foundations/idempotency).
+- **Not retroactive.** Attributes set after a run completes are not allowed; the API only works while the run is active.
+
+## Pattern: phases as attributes
+
+A useful pattern is to track a workflow's high-level lifecycle as a single `phase` attribute, updated as the workflow advances:
+
+```typescript lineNumbers
+import { setAttribute } from "workflow"
+declare const validateCart: (cartId: string) => Promise<void>; // @setup
+declare const createShipment: (cartId: string) => Promise<void>; // @setup
+
+async function checkout(cartId: string) {
+    "use workflow"
+    await setAttribute("phase", "validating")
+    await validateCart(cartId)
+
+    await setAttribute("phase", "charging")
+    await chargePayment(cartId)
+
+    await setAttribute("phase", "fulfilling")
+    await createShipment(cartId)
+
+    await setAttribute("phase", "done")
+}
+```
+
+In the observability UI, you can then filter `phase = charging` to find runs currently mid-payment, or `phase = fulfilling` to find runs awaiting shipment. Combined with `status = running`, this gives you a live operational view.
+
+## Pattern: business identifiers at start time
+
+When a workflow's identity is known at the trigger site, set those identifiers up-front so they're visible from the first event:
+
+```typescript lineNumbers
+import { start } from "workflow/api"
+declare const processOrder: (orderId: string) => Promise<void>; // @setup
+
+export async function POST(req: Request) {
+    const { customerId, orderId, channel } = (await req.json()) as {
+        customerId: string;
+        orderId: string;
+        channel: string;
+    };
+
+    await start(processOrder, [orderId], {
+        attributes: { customerId, orderId, channel }, // [!code highlight]
+    } as any) // TODO(attributes V1): drop the cast once StartOptions accepts attributes.
+}
+```
+
+This means support tools that key off `customerId` or `orderId` can find the run instantly, without needing to know the run ID up-front.
+
+## See also
+
+- [`setAttribute`](/docs/api-reference/workflow/set-attribute) — write a single attribute.
+- [`setAttributes`](/docs/api-reference/workflow/set-attributes) — write many attributes at once.
+- [`getAttribute`](/docs/api-reference/workflow/get-attribute) — read a single attribute.
+- [`getAttributes`](/docs/api-reference/workflow/get-attributes) — read the full attribute snapshot.
+- [Starting workflows](/docs/foundations/starting-workflows) — passing initial attributes via `start()`.

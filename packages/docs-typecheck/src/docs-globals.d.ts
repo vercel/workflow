@@ -186,6 +186,9 @@ declare global {
     runs: {
       get: (...args: any[]) => Promise<any>;
       list: (...args: any[]) => Promise<any>;
+      // TODO(attributes V1): remove these once Storage.runs ships them.
+      listAttributeKeys: (...args: any[]) => Promise<any>;
+      listAttributeValues: (...args: any[]) => Promise<any>;
     };
     steps: {
       get: (...args: any[]) => Promise<any>;
@@ -261,4 +264,22 @@ declare global {
   const myWorkflow: (...args: any[]) => Promise<any>;
   const childWorkflow: (...args: any[]) => Promise<any>;
   const orderId: string;
+}
+
+// ============================================================================
+// TODO(attributes V1): remove this entire block once setAttribute /
+// setAttributes / getAttribute / getAttributes are exported from `workflow`
+// and `start()` accepts an `attributes` option natively.
+//
+// These ambient shims exist only so the documentation samples for the
+// upcoming Attributes feature typecheck before the implementation lands.
+// See PR #1933.
+// ============================================================================
+declare module 'workflow' {
+  function setAttribute(key: string, value: string | undefined): Promise<void>;
+  function setAttributes(
+    attrs: Record<string, string | undefined>
+  ): Promise<void>;
+  function getAttribute(key: string): string | undefined;
+  function getAttributes(): Record<string, string>;
 }

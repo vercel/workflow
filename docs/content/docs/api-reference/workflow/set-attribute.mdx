@@ -1,0 +1,96 @@
+---
+title: setAttribute
+description: Set a single attribute on the current workflow run from inside a workflow or step.
+type: reference
+preRelease: true
+summary: Use setAttribute to record a key-value attribute on the current run for observability and filtering.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+  - /docs/foundations/attributes
+related:
+  - /docs/foundations/attributes
+  - /docs/api-reference/workflow/set-attributes
+  - /docs/api-reference/workflow/get-attribute
+---
+
+Sets a single key-value attribute on the current workflow run. Attributes are small, plaintext metadata that you can search, filter, and display in the observability UI without exposing step inputs/outputs.
+
+You can call `setAttribute` from either a workflow function or a step function. The runtime records who wrote what (workflow body vs. specific step + attempt) in the event log so observability can attribute each change to its source.
+
+```typescript lineNumbers
+import { setAttribute } from "workflow"
+
+async function processOrderWorkflow(orderId: string) {
+    "use workflow"
+    await setAttribute("orderId", orderId) // [!code highlight]
+}
+```
+
+## Unsetting an attribute
+
+Pass `undefined` as the value to remove a previously-set attribute:
+
+```typescript lineNumbers
+import { setAttribute } from "workflow"
+
+async function checkoutWorkflow() {
+    "use workflow"
+    await setAttribute("phase", "init")
+    // ... later, after the work finishes:
+    await setAttribute("phase", undefined) // [!code highlight]
+}
+```
+
+## Setting attributes from a step
+
+`setAttribute` works the same way inside a step function. The only difference is that the event log records the step's `stepId` and `attempt` number against the change, so observability can show "set by step `processOrder` (attempt 2)".
+
+```typescript lineNumbers
+import { setAttribute } from "workflow"
+
+async function processOrderStep(orderId: string) {
+    "use step"
+    await setAttribute("orderId", orderId) // [!code highlight]
+    // ... do the actual work
+}
+```
+
+If the step retries, the new attempt re-emits whatever `setAttribute` calls the step makes. The event log shows both attempts; the run's current attribute snapshot reflects the most-recent write.
+
+## Setting many attributes at once
+
+If you have several attributes to set at the same point in time, prefer [`setAttributes`](/docs/api-reference/workflow/set-attributes) — it batches all the changes into a single event for slightly lower overhead and a cleaner event log.
+
+```typescript lineNumbers
+import { setAttribute, setAttributes } from "workflow"
+
+async function startStep() {
+    "use step"
+    // Three separate events:
+    await setAttribute("orderId", "ord_1")
+    await setAttribute("region", "us-east-1")
+    await setAttribute("stepKind", "process")
+
+    // One event with three changes:
+    await setAttributes({
+        orderId: "ord_1",
+        region: "us-east-1",
+        stepKind: "process",
+    })
+}
+```
+
+## Limits and validation
+
+V1 enforces these limits — violations throw [`FatalError`](/docs/api-reference/workflow/fatal-error):
+
+- `key`: 1–256 characters, must not start with `$` (the `$`-prefix is reserved for future system keys).
+- `value`: ≤ 256 bytes UTF-8 (or `undefined` to unset).
+- ≤ 64 attributes per run.
+
+## See also
+
+- [Attributes guide](/docs/foundations/attributes) — concepts, use cases, and the search/filter story.
+- [`setAttributes`](/docs/api-reference/workflow/set-attributes) — batch helper.
+- [`getAttribute`](/docs/api-reference/workflow/get-attribute) — read a single attribute.
+- [`getAttributes`](/docs/api-reference/workflow/get-attributes) — read all attributes.

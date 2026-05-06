@@ -1,0 +1,76 @@
+---
+title: getAttributes
+description: Read all attributes on the current workflow run as a record.
+type: reference
+preRelease: true
+summary: Use getAttributes to retrieve the full attribute snapshot for the current run.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+  - /docs/foundations/attributes
+related:
+  - /docs/foundations/attributes
+  - /docs/api-reference/workflow/get-attribute
+  - /docs/api-reference/workflow/set-attributes
+---
+
+Returns the full set of attributes on the current workflow run as a `Record<string, string>`. The returned object is a snapshot — mutating it has no effect on the run.
+
+```typescript lineNumbers
+import { getAttributes, setAttribute } from "workflow"
+
+async function exampleWorkflow() {
+    "use workflow"
+    await setAttribute("phase", "init")
+    await setAttribute("orderId", "ord_1")
+
+    const attrs = getAttributes() // [!code highlight]
+    // { phase: "init", orderId: "ord_1" }
+}
+```
+
+`getAttributes` is the bulk equivalent of [`getAttribute`](/docs/api-reference/workflow/get-attribute). Use it when you need to inspect or log the full state — for example, attaching the full attribute set to a log line:
+
+```typescript lineNumbers
+import { getAttributes, getWorkflowMetadata } from "workflow"
+
+function logWithAttributes(message: string) {
+    const { workflowRunId } = getWorkflowMetadata()
+    const attrs = getAttributes()
+    console.log(`[${workflowRunId}]`, message, attrs)
+}
+```
+
+## Read-your-writes
+
+Inside a single workflow or step body, `getAttributes` reflects any prior `setAttribute` / `setAttributes` calls in that body, including unsets:
+
+```typescript lineNumbers
+import { getAttributes, setAttribute, setAttributes } from "workflow"
+
+async function step() {
+    "use step"
+    await setAttributes({ a: "1", b: "2" })
+    await setAttribute("a", undefined)
+
+    getAttributes() // { b: "2" } — `a` was unset
+}
+```
+
+## When `getAttributes` is empty
+
+`getAttributes()` returns `{}` (an empty record) when:
+
+- The run was started without `start({ attributes })`, and
+- No `setAttribute` / `setAttributes` calls have been made.
+
+It never returns `undefined`.
+
+## Errors
+
+`getAttributes` throws if called outside any workflow or step context.
+
+## See also
+
+- [Attributes guide](/docs/foundations/attributes)
+- [`getAttribute`](/docs/api-reference/workflow/get-attribute) — read a single attribute.
+- [`setAttributes`](/docs/api-reference/workflow/set-attributes) — write many attributes at once.

@@ -1,0 +1,110 @@
+---
+title: setAttributes
+description: Set multiple attributes on the current workflow run in a single batched event.
+type: reference
+preRelease: true
+summary: Use setAttributes to record several key-value attributes at once with merge semantics.
+prerequisites:
+  - /docs/foundations/workflows-and-steps
+  - /docs/foundations/attributes
+related:
+  - /docs/foundations/attributes
+  - /docs/api-reference/workflow/set-attribute
+  - /docs/api-reference/workflow/get-attributes
+---
+
+Sets multiple attributes on the current workflow run in a single batched event. Use this whenever you have several attributes to write at the same point in time — it produces one event with multiple changes, instead of one event per attribute.
+
+```typescript lineNumbers
+import { setAttributes } from "workflow"
+
+async function processOrderStep(orderId: string) {
+    "use step"
+    await setAttributes({ // [!code highlight]
+        orderId, // [!code highlight]
+        region: "us-east-1", // [!code highlight]
+        stepKind: "process", // [!code highlight]
+    }) // [!code highlight]
+}
+```
+
+## Merge semantics
+
+`setAttributes` is **additive**: only the keys you pass are touched. Other attributes already on the run remain unchanged.
+
+```typescript lineNumbers
+import { setAttributes } from "workflow"
+
+async function fanOutStep() {
+    "use step"
+    await setAttributes({ a: "1", b: "2" })
+    // run.attributes is now { a: "1", b: "2" }
+
+    await setAttributes({ b: "two", c: "3" })
+    // run.attributes is now { a: "1", b: "two", c: "3" }
+    //   - `a` is preserved (not in the second call)
+    //   - `b` is overwritten
+    //   - `c` is added
+}
+```
+
+To clear an attribute, pass `undefined` as its value — the same convention as [`setAttribute`](/docs/api-reference/workflow/set-attribute):
+
+```typescript lineNumbers
+import { setAttributes } from "workflow"
+
+async function cleanupStep() {
+    "use step"
+    await setAttributes({
+        phase: "done",
+        region: undefined, // [!code highlight] — removes `region`
+    })
+}
+```
+
+## Empty record is a no-op
+
+Calling `setAttributes({})` does nothing — no event is emitted. This makes it safe to compute attribute updates conditionally without special-casing the empty path.
+
+```typescript lineNumbers
+import { setAttributes } from "workflow"
+
+async function maybeStep(updates: Record<string, string | undefined>) {
+    "use step"
+    await setAttributes(updates) // safe even if `updates` is {}
+}
+```
+
+## When to prefer `setAttribute`
+
+For one-off single-key writes, [`setAttribute`](/docs/api-reference/workflow/set-attribute) reads more naturally:
+
+```typescript lineNumbers
+import { setAttribute, setAttributes } from "workflow"
+
+async function exampleWorkflow() {
+    "use workflow"
+    // Single key — prefer setAttribute:
+    await setAttribute("phase", "init")
+
+    // Multiple keys at once — prefer setAttributes:
+    await setAttributes({ tenantId: "t_1", region: "us-east-1" })
+}
+```
+
+Under the hood, both produce the same event type (`attr_set`); `setAttribute(k, v)` is shorthand for `setAttributes({ [k]: v })`.
+
+## Limits and validation
+
+V1 enforces these limits across the merged result — violations throw [`FatalError`](/docs/api-reference/workflow/fatal-error):
+
+- Each `key`: 1–256 characters, must not start with `$` (reserved).
+- Each `value`: ≤ 256 bytes UTF-8 (or `undefined` to unset).
+- ≤ 64 attributes per run **after** the merge is applied.
+
+## See also
+
+- [Attributes guide](/docs/foundations/attributes) — concepts, use cases, and the search/filter story.
+- [`setAttribute`](/docs/api-reference/workflow/set-attribute) — single-key write.
+- [`getAttribute`](/docs/api-reference/workflow/get-attribute) — read a single attribute.
+- [`getAttributes`](/docs/api-reference/workflow/get-attributes) — read all attributes.
