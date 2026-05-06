@@ -1,0 +1,150 @@
+---
+title: Durable Agent
+description: Replace a stateless AI agent with a durable one that survives crashes, retries tool calls, and streams output.
+type: guide
+summary: Convert an AI SDK Agent into a DurableAgent backed by a workflow, with tools as retryable steps.
+---
+
+Use this pattern to make any AI SDK agent durable. The agent becomes a workflow, tools become steps, and the framework handles retries, streaming, and state persistence automatically.
+
+## When to use this
+
+- Any AI agent with tool calls that should survive crashes and restarts
+- Agents where tool calls hit external APIs that need automatic retries
+- Long-running agent sessions where losing progress is unacceptable
+- Agents that need per-step observability in the workflow event log
+
+## Pattern
+
+Replace `Agent` with `DurableAgent`, wrap the function in `"use workflow"`, mark each tool with `"use step"`, and stream output through `getWritable()`.
+
+### Workflow
+
+```typescript
+import { DurableAgent } from "@workflow/ai/agent";
+import { getWritable } from "workflow";
+import { z } from "zod";
+import type { ModelMessage, UIMessageChunk } from "ai";
+
+async function searchFlights({ from, to, date }: {
+  from: string;
+  to: string;
+  date: string;
+}) {
+  "use step"; // [!code highlight]
+  const res = await fetch(
+    `https://api.example.com/flights?from=${from}&to=${to}&date=${date}`
+  );
+  if (!res.ok) throw new Error(`Search failed: ${res.status}`);
+  return res.json();
+}
+
+async function bookFlight({ flightId, passenger }: {
+  flightId: string;
+  passenger: string;
+}) {
+  "use step"; // [!code highlight]
+  const res = await fetch("https://api.example.com/bookings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ flightId, passenger }),
+  });
+  if (!res.ok) throw new Error(`Booking failed: ${res.status}`);
+  return res.json();
+}
+
+async function checkWeather({ city }: { city: string }) {
+  "use step"; // [!code highlight]
+  const res = await fetch(`https://api.weather.com/forecast?city=${city}`);
+  return res.json();
+}
+
+export async function flightAgent(messages: ModelMessage[]) {
+  "use workflow";
+
+  const agent = new DurableAgent({ // [!code highlight]
+    model: "anthropic/claude-haiku-4.5",
+    instructions: "You are a helpful flight booking assistant.",
+    tools: {
+      searchFlights: {
+        description: "Search for available flights between two airports",
+        inputSchema: z.object({
+          from: z.string().describe("Departure airport code"),
+          to: z.string().describe("Arrival airport code"),
+          date: z.string().describe("Travel date (YYYY-MM-DD)"),
+        }),
+        execute: searchFlights,
+      },
+      bookFlight: {
+        description: "Book a specific flight for a passenger",
+        inputSchema: z.object({
+          flightId: z.string().describe("Flight ID from search results"),
+          passenger: z.string().describe("Passenger full name"),
+        }),
+        execute: bookFlight,
+      },
+      checkWeather: {
+        description: "Check the weather forecast for a city",
+        inputSchema: z.object({
+          city: z.string().describe("City name"),
+        }),
+        execute: checkWeather,
+      },
+    },
+  });
+
+  const result = await agent.stream({ // [!code highlight]
+    messages,
+    writable: getWritable<UIMessageChunk>(), // [!code highlight]
+    maxSteps: 10,
+  });
+
+  return { messages: result.messages };
+}
+```
+
+### API route
+
+```typescript
+import type { UIMessage } from "ai";
+import { convertToModelMessages, createUIMessageStreamResponse } from "ai";
+import { start } from "workflow/api";
+import { flightAgent } from "@/app/workflows/flight-agent";
+
+export async function POST(req: Request) {
+  const { messages }: { messages: UIMessage[] } = await req.json();
+  const modelMessages = await convertToModelMessages(messages); // [!code highlight]
+
+  const run = await start(flightAgent, [modelMessages]); // [!code highlight]
+
+  return createUIMessageStreamResponse({ // [!code highlight]
+    stream: run.readable,
+    headers: {
+      "x-workflow-run-id": run.runId,
+    },
+  });
+}
+```
+
+## How it works
+
+1. **DurableAgent wraps Agent** — same API as AI SDK's `Agent`, but backed by a workflow. If the process crashes, the agent resumes from the last completed step on replay.
+2. **Tools as steps** — each tool's `execute` function uses `"use step"`, giving it automatic retries, full Node.js access, and an entry in the workflow event log.
+3. **Streaming** — `getWritable<UIMessageChunk>()` streams the agent's output (text chunks, tool calls, tool results) to the client in real time via `createUIMessageStreamResponse`.
+4. **maxSteps** — limits the total number of LLM calls the agent can make, preventing runaway tool loops.
+
+## Adapting to your use case
+
+- **Change the model** — replace `"anthropic/claude-haiku-4.5"` with any AI Gateway model string (e.g. `"openai/gpt-4o"`, `"anthropic/claude-sonnet-4-5"`).
+- **Add tools** — define a new `"use step"` function with a Zod schema. Each tool automatically gets retries and persistence.
+- **Workflow-level tools** — if a tool needs workflow primitives like `sleep()` or `createHook()`, omit `"use step"` so it runs in the workflow context instead.
+- **Multi-turn** — pass `result.messages` plus new user messages to subsequent `agent.stream()` calls for multi-turn conversations.
+- **Client integration** — use `useChat()` from `@ai-sdk/react` with `WorkflowChatTransport` from `@workflow/ai` for a full chat UI with reconnection support.
+
+## Key APIs
+
+- [`"use workflow"`](/docs/api-reference/workflow/use-workflow) — declares the orchestrator function
+- [`"use step"`](/docs/api-reference/workflow/use-step) — declares step functions with retries and full Node.js access
+- [`DurableAgent`](/docs/api-reference/workflow-ai/durable-agent) — durable wrapper around AI SDK's Agent
+- [`getWritable()`](/docs/api-reference/workflow/get-writable) — streams agent output to the client
+- [`start()`](/docs/api-reference/workflow-api/start) — starts a workflow run from an API route

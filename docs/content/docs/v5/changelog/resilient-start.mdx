@@ -1,0 +1,327 @@
+---
+title: Resilient run start
+description: Overhaul run start logic to tolerate world storage unavailability, as long as the queue is healthy, and significantly speeds up run start.
+---
+
+# Resilient `start()`
+
+## Motivation
+
+When `world` storage is unavailable but the queue is up,
+`start()` previously failed entirely because `world.events.create(run_created)`
+is called before `world.queue()`. This change decouples run creation from queue
+dispatch so that runs can still be accepted when storage is degraded.
+
+Additionally, the runtime previously called `world.runs.get(runId)` before
+`run_started`, adding an extra round-trip. By always calling `run_started`
+directly, we save that round-trip and can return pre-loaded events in the
+response to skip the initial `events.list` call, reducing TTFB.
+
+## Design
+
+### `start()` changes (packages/core)
+
+- `world.events.create` (run_created) and `world.queue` are now called **in parallel**
+  via `Promise.allSettled`.
+- If `events.create` errors with **429 or 5xx**, we log a warning saying that run
+  creation failed but the run was accepted — creation will be re-tried async by the
+  runtime when it processes the queue message. The returned `Run` instance is marked
+  with `resilientStart = true`.
+- If `events.create` errors with **409** (EntityConflictError), the run already exists
+  (e.g., the queue handler's resilient start path created it first due to a cold-start
+  race). This is treated as success.
+- If `world.queue` fails, we still throw — the run truly failed and was not enqueued.
+- The queue invocation now receives all the run inputs (`input`, `deploymentId`,
+  `workflowName`, `specVersion`, `executionContext`) via `runInput` so the runtime can
+  create the run later if needed.
+- When the runtime re-enqueues itself, it does **not** pass these inputs — only the
+  first queue cycle carries them.
+
+### `workflowEntrypoint` changes (packages/core)
+
+- When calling `world.events.create` with `run_started`, we now also always pass the
+  run input that was sent through the queue, if available. The response will still be on off:
+  - **200 with event (now running)**: As usual, but the server could have used the run input to create the run if it didn't exist yet. The response will be opaque to the runtime.
+  - **200 without event (already running)**: As usual
+  - **409 or 410 (already finished)**: As usual
+
+### `Run.returnValue` polling (packages/core)
+
+- When `resilientStart` is true on the Run instance (run_created failed), the
+  `pollReturnValue` loop retries on `WorkflowRunNotFoundError` up to 3 times
+  (1s + 3s + 6s = 10s total) to give the queue time to deliver and the runtime
+  to create the run via `run_started`.
+- When `resilientStart` is false (normal path), 404 fails immediately — no delay
+  for the common case of a wrong run ID.
+
+### World / workflow-server changes
+
+- Posting `run_started` to a **non-existent** run is now allowed when the run input is
+  sent along with the payload. The server:
+  1. Creates a `run_created` event first (so the event log is consistent).
+  2. Strips the input from the `run_started` event data (it lives on `run_created`).
+  3. Then creates the `run_started` event normally.
+  4. Emits a log and a Datadog metric (`workflow_server.resilient_start.run_created_via_run_started`)
+     to track when this fallback path is hit.
+- When `run_started` encounters an **already-running** run, all worlds return `{ run }`
+  with `event: undefined` instead of throwing. No duplicate event is created.
+
+### Queue transport changes
+
+`Uint8Array` values (the serialized workflow input in `runInput`) don't survive plain
+JSON serialization. Each world uses a transport that preserves binary data:
+
+- **world-vercel**: CBOR transport — CBOR-encodes the entire queue payload into a
+  `Buffer` and uses `BufferTransport` from `@vercel/queue`. Uint8Array survives natively.
+- **world-local**: `TypedJsonTransport` — uses the existing `jsonReplacer`/`jsonReviver`
+  from `fs.ts` that encode Uint8Array as `{ __type: 'Uint8Array', data: '<base64>' }`.
+- **world-postgres**: Inline typed JSON transport — same tagged-envelope approach as
+  world-local, inlined since world-postgres doesn't import from world-local.
+
+## Decisions
+
+1. **Parallel not sequential**: We chose `Promise.allSettled` over sequential calls to
+   minimize latency in the happy path.
+
+2. **Already-running returns run without event**: When `run_started` encounters an
+   already-running run, all worlds return `{ run }` with `event: undefined` (no
+   `events` array) instead of throwing. The runtime detects this by checking for
+   `result.event === undefined`. This avoids an extra `world.runs.get` round-trip.
+
+3. **Events in 200 response**: We only return events on the 200 path (first caller).
+   On the already-running path, we fall back to the normal `events.list` call. This is
+   correct because only on 200 can we be certain we know the full event history.
+
+4. **Conditional 404 retry on Run.returnValue**: Only when `resilientStart = true`
+   (run_created failed). Normal runs fail fast on 404.
+
+## Known concerns
+
+### Cold-start race on Vercel (observed in CI)
+
+On Vercel, the parallel dispatch can cause the queue message to be processed before
+`run_created` completes, if `run_created` hits a cold-start lambda. Confirmed via
+Datadog: the `run_started` request hit a warm lambda (23ms) while `run_created` hit
+a cold lambda (727ms), even though `run_created` arrived at the edge 116ms earlier.
+When this happens:
+
+1. The runtime's resilient start path creates the run from `run_started`.
+2. The original `run_created` arrives and gets 409 (EntityConflictError).
+3. `start()` treats the 409 as success (the run exists).
+
+This is handled correctly. The `resilientStart` flag is NOT set on the Run instance
+in this case (409 is not a retryable error), so `returnValue` fails fast on 404.
+
+### Local Prod test flakiness (resolved)
+
+On world-local, the queue's async IIFE can deliver the message before
+`events.create(run_created)` finishes writing to the shared filesystem. The
+resilient start path should handle this, but Local Prod tests showed occasional
+runs stuck at `pending` (no `run_started` event), and Windows CI showed
+"Unconsumed event in event log" errors from duplicate `run_created` events.
+
+**Root cause:** A TOCTOU race between the normal `run_created` path and the
+resilient start path. Both used `writeJSON` which checks existence with
+`fs.access()` (non-atomic), so both could pass the check and write separate
+`run_created` events with different event IDs. Fixed by switching both paths to
+`writeExclusive` (O_CREAT|O_EXCL) — see retrospective items 12 and 16.
+
+## Follow-up work
+
+- [x] ~~Investigate Local Prod test flakiness~~ — resolved via `writeExclusive`
+  for run entity creation (retrospective items 12, 16).
+- [ ] Monitor the Datadog metric in production to understand how often the fallback is hit.
+- [x] ~~Events optimization for re-enqueue cycles~~ — decided against. The
+  already-running path returns early without writing an event, so preloading
+  events there would require an extra filesystem/DB query on every re-enqueue.
+  More importantly, on Vercel with at-least-once delivery, multiple lambdas can
+  process the same run concurrently — the event snapshot could be stale or
+  incomplete. The runtime's fallback to `events.list` is the correct behavior
+  for re-enqueue cycles.
+- [x] ~~CborTransport pass-through~~ — refactored. `encode()`/`decode()` now
+  live inside `CborTransport.serialize()`/`deserialize()`, matching the pattern
+  used by TypedJsonTransport (world-local) and the inline transport
+  (world-postgres). Call sites pass plain objects instead of pre-encoded buffers.
+
+## Development retrospective
+
+Chronological log of mistakes, misunderstandings, and reverted approaches during
+development. Included for future reference when working on similar cross-cutting
+runtime changes.
+
+### 1. Uint8Array corruption through JSON queue transport
+
+The initial implementation passed `runInput.input` (a `Uint8Array`) directly through
+the queue payload. `Uint8Array` doesn't survive `JSON.stringify` — it becomes
+`{"0":72,"1":101,...}`. This corrupted the workflow input when the resilient start
+path tried to recreate the run from the queue-delivered data.
+
+Caught by the `spawnWorkflowFromStepWorkflow` e2e test and the `world-testing`
+embedded tests, which failed with "Invalid input" from devalue's `unflatten()`.
+
+Three approaches were tried before landing on the final solution:
+
+1. **Base64 encoding** (`btoa`/`atob`) — worked but fragile. The decode side used
+   `typeof runInput.input === 'string'` as a discriminant, which was flagged as
+   dangerous since non-binary inputs could also be strings.
+2. **`Array.from()`/`new Uint8Array()`** — replaced base64 with a plain number array.
+   Two problems: (a) 3x JSON size regression vs base64, and (b) `Array.isArray()`
+   false-positives on v1Compat runs where `dehydrateWorkflowArguments` returns
+   devalue's flat Array format.
+3. **CBOR + BufferTransport** (final) — world-vercel CBOR-encodes the queue payload;
+   world-local and world-postgres use a `TypedJsonTransport` with a tagged envelope.
+
+### 2. Forgot to commit world-postgres transport fix (twice)
+
+After fixing world-local and world-vercel queue transports, the same `JsonTransport`
+corruption bug existed in world-postgres. The fix was written during a session but
+never committed — lost when the working directory was reset via stash/checkout. This
+happened twice. The fix only landed on the third attempt when it was committed and
+pushed immediately. All 14 Postgres e2e jobs failed each time.
+
+### 3. Incorrect diagnosis of Vercel Prod 409 errors
+
+Multiple Vercel Prod e2e tests failed with `EntityConflictError: Workflow run with
+ID wrun_... already exists` on `run_created`. The initial assumption was that VQS
+couldn't deliver the queue message fast enough to beat the `run_created` call.
+
+Datadog logs showed otherwise: the `run_created` request arrived at Vercel's edge
+116ms before `run_started`, but `run_created` hit a cold-start lambda (727ms) while
+`run_started` hit a warm one (23ms). Cold starts can invert expected execution order.
+
+### 4. Removed EntityConflictError catch, then had to restore it
+
+The `workflowEntrypoint` error handler originally caught both `EntityConflictError`
+and `RunExpiredError`. When adding the "already-running returns run without event"
+behavior, `EntityConflictError` was removed from the catch since the new worlds
+wouldn't throw it. Reviewer flagged this: old worlds or world-vercel hitting an
+older workflow-server could still throw it. The catch was restored.
+
+### 5. Duplicate `startedAt` check
+
+After refactoring the `run_started` flow, a `workflowRun.startedAt` null check
+existed both inside the `try` block and after the `catch` block. The second was
+unreachable. Removed after review.
+
+### 6. WORKFLOW_SERVER_URL_OVERRIDE left set
+
+During development, `WORKFLOW_SERVER_URL_OVERRIDE` was set to a test URL pointing
+at the workflow-server preview deployment and accidentally committed. The Vercel
+bot flagged this. Reset to empty string.
+
+### 7. e2e test assertion was wrong
+
+The resilient start e2e test stubbed `world.events.create` and asserted
+`createCallCount >= 2`. But the stub only intercepts calls from the test runner
+process — the server uses its own world. `createCallCount` was always 1. Changed
+to `expect(createCallCount).toBe(1)`.
+
+### 8. Misattributed Local Prod timeouts as "pre-existing"
+
+Local Prod tests showed 60-second timeouts across various tests. Initially dismissed
+as CI flakes. Checking main's CI showed all Local Prod tests pass on main — the
+timeouts are caused by our changes. Should have compared against main immediately.
+
+### 9. Attempted to revert parallel dispatch
+
+After identifying Local Prod timeouts, `start()` was partially reverted back to
+sequential dispatch. The user pointed out that parallel dispatch is the core value
+proposition of the PR. The revert was undone.
+
+### 10. WorkflowRunNotFoundError retry was unconditional
+
+The initial `pollReturnValue` retry on `WorkflowRunNotFoundError` applied to all
+`Run` instances. A user calling `getRun()` with a wrong ID would wait 10 seconds
+before getting a 404. Fixed by adding a `resilientStart` flag: only retries when
+`run_created` actually failed.
+
+### 11. Changeset `minor` vs `patch`
+
+The changeset was created with `"@workflow/core": minor`. Reviewer flagged this as
+violating repo rules ("all changes should be patch"). Changed after discussion.
+
+### 12. world-local TOCTOU race causing duplicate `run_created` events (Windows CI)
+
+The resilient start path AND the normal `run_created` path in `world-local/events-storage.ts`
+both used `writeJSON` to create the run entity. `writeJSON` checks file existence with
+`fs.access()` then writes via temp+rename — a classic TOCTOU race. On the local world,
+the queue delivers via an async IIFE in the same event loop, so `events.create(run_created)`
+and `events.create(run_started)` (with resilient start) run concurrently:
+
+1. Both paths call `fs.access(runPath)` → ENOENT (file doesn't exist yet)
+2. Both proceed to write → the last `fs.rename` wins
+3. Both succeed → both write their own `run_created` event with different event IDs
+4. During replay, the consumer sees two `run_created` events → "Unconsumed event" error
+
+This caused consistent failures in `world-testing` embedded tests on Windows CI (`hooks`,
+`supports null bytes in step results`, `retriable and fatal errors` — all timing out at
+60s with "Unconsumed event in event log" errors). Linux CI was not affected because the
+timing was different enough that the race window was rarely hit.
+
+Fixed by switching BOTH paths to `writeExclusive` (O_CREAT|O_EXCL), which is atomic at
+the OS level — exactly one writer wins, the other gets EEXIST. The normal `run_created`
+path throws `EntityConflictError` on conflict (handled by `start()` as 409). The resilient
+start path re-reads the run from disk on conflict. Either way, only one `run_created`
+event is written.
+
+### 13. Non-atomic run + run_created event in world-postgres resilient path
+
+The resilient start path in `world-postgres/storage.ts` did two separate writes (run
+insert, then event insert) without a transaction. If the process crashed between them,
+the run would exist without a `run_created` event — an inconsistent event log.
+
+A `drizzle.transaction()` wrapper was attempted but dropped due to TypeScript inference
+issues with drizzle's transaction callback and the insert builder's overloads. The current
+fix keeps the two writes sequential but adds the same conflict-aware re-read pattern as
+world-local: when `onConflictDoNothing` produces no result (run already existed), the run
+is re-read so downstream logic sees the real state. The narrow crash window between the
+two writes is acceptable — if the run insert succeeds but the event insert crashes, the
+run exists and `run_started` will still proceed normally (the event log will be missing a
+`run_created` entry, but the run itself is functional).
+
+### 14. Missing `WorkflowRunStatus` span attribute after parallel refactor
+
+The `start()` span previously set `Attribute.WorkflowRunStatus(result.run.status)`, but
+this was dropped in the parallel refactor because `result.run` is only available when
+`runCreatedResult` fulfilled. The attribute is now conditionally set when the result is
+available. In the resilient start case (run_created failed), the attribute is omitted
+rather than erroring.
+
+### 15. `run_started` eventData leak in world-postgres result
+
+The `...data` spread in the result construction leaked `eventData` from `run_started`
+into the returned event object. Storage was already correct (`storedEventData` is
+`undefined` for `run_started`), but the returned result carried the input data. While
+harmless (the runtime doesn't use `result.event.eventData`), it was restored to match
+the pre-refactor behavior where eventData was explicitly stripped from the result.
+
+### 16. Normal `run_created` path also needed `writeExclusive` (Windows CI)
+
+The initial TOCTOU fix (item 12) only changed the resilient start path to use
+`writeExclusive`. The normal `run_created` entity write still used `writeJSON` which
+checks existence with `fs.access()` then writes via temp+rename — not atomic. On
+Windows CI, the local queue's async IIFE delivered fast enough for both paths to pass
+their existence checks simultaneously, producing two `run_created` events with different
+event IDs. The events consumer saw the duplicate as "Unconsumed event in event log,"
+causing `hooks`, `supports null bytes in step results`, and `retriable and fatal errors`
+tests to time out at 60s. Fixed by also switching the normal `run_created` entity write to
+`writeExclusive`, making both paths use the same atomic gate.
+
+### 17. CborTransport was a pass-through wrapper
+
+`world-vercel/queue.ts` had `CborTransport` implementing `Transport<Buffer>` with a
+no-op `serialize` (identity function) and a `deserialize` that reassembled chunks into
+a Buffer without decoding. The actual CBOR `encode()`/`decode()` calls happened at the
+call sites — `queue()` pre-encoded before calling `client.send()`, and the handler
+post-decoded after receiving from `client.handleCallback()`. This violated the transport
+abstraction (every other transport does its encoding inside serialize/deserialize) and
+meant the call site had to remember to pre-encode. Refactored to move `encode()`/`decode()`
+into the transport methods and changed the type from `Transport<Buffer>` to
+`Transport<unknown>`.
+
+## Follow-up work (additional)
+
+- [x] ~~**CborTransport is a pass-through**~~ — Resolved. Moved `encode()`/`decode()`
+  into `CborTransport.serialize()`/`CborTransport.deserialize()`. The transport is now
+  self-contained: call sites pass plain objects, and the handler receives decoded objects.
+  See retrospective item 17.

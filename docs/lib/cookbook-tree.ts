@@ -3,6 +3,11 @@ export type Recipe = {
   title: string;
   description: string;
   category: string;
+  /**
+   * Version IDs (e.g. 'v5', 'v6') where this recipe should not appear.
+   * Omit to show in all versions.
+   */
+  skipVersions?: string[];
 };
 
 export type RecipeCategory =
@@ -141,7 +146,7 @@ export const recipes: Record<string, Recipe> = {
     slug: 'agent-cancellation',
     title: 'Agent Cancellation',
     description:
-      'Cancel a running agent from the outside — Hard Cancellation via getRun(runId).cancel() for forced termination, or Stop Signal via a hook for a graceful exit.',
+      'Cancel a running agent from the outside using AbortSignal — a stop hook fires controller.abort(), the agent step bails out of the model stream, and the client gets a clean stop notification.',
     category: 'agent-patterns',
   },
 
@@ -182,6 +187,7 @@ export const recipes: Record<string, Recipe> = {
     description:
       'Build a cross-process abort controller using workflow streams and hooks to coordinate cancellation by semantic ID.',
     category: 'advanced',
+    skipVersions: ['v5'],
   },
   'serializable-steps': {
     slug: 'serializable-steps',

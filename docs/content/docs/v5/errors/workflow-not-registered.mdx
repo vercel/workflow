@@ -1,0 +1,64 @@
+---
+title: workflow-not-registered
+description: A workflow function is not registered in the current deployment.
+type: troubleshooting
+summary: Resolve workflow not registered errors caused by deployment targeting or build issues.
+prerequisites:
+  - /docs/foundations/starting-workflows
+related:
+  - /docs/errors/step-not-registered
+  - /docs/api-reference/workflow-errors/workflow-not-registered-error
+---
+
+This error occurs when the Workflow runtime tries to execute a workflow function that is not registered in the current deployment. When this happens, the run fails with a `RUNTIME_ERROR` error code.
+
+## Error Message
+
+```
+Workflow "<workflowName>" is not registered in the current deployment.
+This usually means a run was started against a deployment that does not
+have this workflow, or there was a build/bundling issue.
+```
+
+## Why This Happens
+
+This error means the deployment that received the workflow execution request does not have the specified workflow function in its bundle. This is an **infrastructure error**, not a user code error.
+
+## Common Causes
+
+### Run started against a deployment without the workflow
+
+A run was started (or restarted from the dashboard UI) targeting a deployment where the workflow was renamed, moved to a different file, or removed entirely.
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript lineNumbers title="workflows/order.ts (original)"
+export async function processOrder(orderId: string) {
+  "use workflow";
+  // workflow logic
+}
+```
+
+{/* @skip-typecheck: incomplete code sample */}
+```typescript lineNumbers title="workflows/order.ts (current deployment)"
+// Renamed from processOrder to handleOrder
+export async function handleOrder(orderId: string) { // [!code highlight]
+  "use workflow";
+  // workflow logic
+}
+```
+
+If a new run is started targeting the current deployment using the old name `processOrder`, the runtime will not find it.
+
+### Build tooling issue
+
+Something went wrong during the build process that caused the workflow function to not be included in the workflow bundle. Check your build logs for errors related to workflow bundling. Common issues include:
+
+- The workflow file is missing a valid `"use workflow"` directive
+- The workflow function is not exported from the workflow file
+- An esbuild or SWC plugin error silently excluded the workflow
+
+## How to Resolve
+
+1. **If the workflow was renamed or moved:** Deploy with the workflow restored to its original name and location, then retry the run. Alternatively, start a new run using the updated workflow name against the current deployment.
+
+2. **If it's a build issue:** Check your build logs for errors related to workflow bundling. Ensure the workflow file contains a valid `"use workflow"` directive and is properly exported.
