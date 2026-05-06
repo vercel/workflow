@@ -1,0 +1,14 @@
+{
+  "title": "Foundations",
+  "pages": [
+    "workflows-and-steps",
+    "starting-workflows",
+    "errors-and-retries",
+    "hooks",
+    "streaming",
+    "cancellation",
+    "serialization",
+    "idempotency"
+  ],
+  "defaultOpen": true
+}

@@ -1,19 +1,14 @@
 'use client';
 
 import { Check, ChevronDown } from 'lucide-react';
-import { usePathname, useRouter } from 'next/navigation';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  buildVersionUrl,
-  type DocsVersion,
-  getVersionFromPathname,
-  VERSIONS,
-} from '@/lib/geistdocs/versions';
+import { useVersion } from '@/hooks/geistdocs/use-version';
+import { type DocsVersion, VERSIONS } from '@/lib/geistdocs/versions';
 import { cn } from '@/lib/utils';
 
 const VersionIcon = ({ version }: { version: DocsVersion }) => {
@@ -50,9 +45,7 @@ const VersionIcon = ({ version }: { version: DocsVersion }) => {
 };
 
 export const VersionSwitcher = () => {
-  const pathname = usePathname();
-  const router = useRouter();
-  const active = getVersionFromPathname(pathname);
+  const { activeVersion, switchVersion } = useVersion();
 
   return (
     <DropdownMenu>
@@ -63,11 +56,13 @@ export const VersionSwitcher = () => {
           'hover:bg-background-200 focus-visible:outline-hidden'
         )}
       >
-        <VersionIcon version={active} />
+        <VersionIcon version={activeVersion} />
         <div className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate font-medium text-sm">{active.label}</span>
+          <span className="truncate font-medium text-sm">
+            {activeVersion.label}
+          </span>
           <span className="truncate text-fd-muted-foreground text-xs">
-            {active.subtitle}
+            {activeVersion.subtitle}
           </span>
         </div>
         <ChevronDown
@@ -80,14 +75,14 @@ export const VersionSwitcher = () => {
         className="w-(--radix-dropdown-menu-trigger-width) min-w-56"
       >
         {VERSIONS.map((version) => {
-          const isActive = version.id === active.id;
+          const isActive = version.id === activeVersion.id;
           return (
             <DropdownMenuItem
               key={version.id}
               className="flex items-center gap-3 py-2"
               onSelect={() => {
                 if (isActive) return;
-                router.push(buildVersionUrl(pathname, version));
+                switchVersion(version);
               }}
             >
               <VersionIcon version={version} />

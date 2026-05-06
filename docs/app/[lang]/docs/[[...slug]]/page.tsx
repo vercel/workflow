@@ -46,12 +46,6 @@ const Page = async ({ params }: PageProps<'/[lang]/docs/[[...slug]]'>) => {
     notFound();
   }
 
-  // preRelease pages are only reachable under /v5/docs/*. Block direct
-  // access via /docs/* so the v4 tree doesn't expose unreleased content.
-  if (page.data.preRelease) {
-    notFound();
-  }
-
   const markdown = await getLLMText(page);
   const MDX = page.data.body;
 
