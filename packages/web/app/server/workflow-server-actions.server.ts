@@ -408,21 +408,23 @@ async function getWorldFromEnv(userEnvMap: EnvMap): Promise<World> {
   // and we instantiate the world per-user directly to avoid having to set
   // process.env.
   if (isVercelWorld) {
+    // All-or-nothing: if the client supplies an auth token, take the whole
+    // env from the client (per-user-env model). Otherwise, ignore the
+    // client's env entirely and fall back to process.env (deployer-scoped
+    // model). Never merge per-field. Mixing lets a client-supplied
+    // teamId / projectId ride the server's auth token, which breaks the
+    // deployer's intended UI scoping (the env vars are the only mechanism
+    // the README offers for constraining the UI to a single team/project).
+    const env: EnvMap = userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN
+      ? userEnvMap
+      : (process.env as EnvMap);
     return createVercelWorld({
-      token:
-        userEnvMap.WORKFLOW_VERCEL_AUTH_TOKEN ||
-        process.env.WORKFLOW_VERCEL_AUTH_TOKEN,
+      token: env.WORKFLOW_VERCEL_AUTH_TOKEN,
       projectConfig: {
-        environment:
-          userEnvMap.WORKFLOW_VERCEL_ENV || process.env.WORKFLOW_VERCEL_ENV,
-        projectId:
-          userEnvMap.WORKFLOW_VERCEL_PROJECT ||
-          process.env.WORKFLOW_VERCEL_PROJECT,
-        projectName:
-          userEnvMap.WORKFLOW_VERCEL_PROJECT_NAME ||
-          process.env.WORKFLOW_VERCEL_PROJECT_NAME,
-        teamId:
-          userEnvMap.WORKFLOW_VERCEL_TEAM || process.env.WORKFLOW_VERCEL_TEAM,
+        environment: env.WORKFLOW_VERCEL_ENV,
+        projectId: env.WORKFLOW_VERCEL_PROJECT,
+        projectName: env.WORKFLOW_VERCEL_PROJECT_NAME,
+        teamId: env.WORKFLOW_VERCEL_TEAM,
       },
     });
   }
