@@ -443,6 +443,10 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
   const selectedSpanName = useMemo(() => {
     if (!selectedSpan?.data) return 'Details';
     const data = selectedSpan.data as Record<string, unknown>;
+    if (selectedSpan.resource === 'hook') {
+      return (data.token as string | undefined) ?? (data.hookId as string);
+    }
+
     const stepName = data.stepName as string | undefined;
     const workflowName = data.workflowName as string | undefined;
     return (
@@ -453,19 +457,23 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
       (data.hookId as string) ??
       'Details'
     );
-  }, [selectedSpan?.data]);
+  }, [selectedSpan?.data, selectedSpan?.resource]);
 
   const selectedResource = selectedSpan?.resource as string | undefined;
   const selectedResourceId = useMemo(() => {
     if (!selectedSpan?.data) return undefined;
     const data = selectedSpan.data as Record<string, unknown>;
+    if (selectedSpan.resource === 'hook') {
+      return (data.hookId as string | undefined) ?? selectedSpan.spanId;
+    }
+
     return (
       (data.stepId as string) ??
       (data.runId as string) ??
       (data.hookId as string) ??
       selectedSpan.spanId
     );
-  }, [selectedSpan?.data, selectedSpan?.spanId]);
+  }, [selectedSpan?.data, selectedSpan?.resource, selectedSpan?.spanId]);
 
   return (
     <div

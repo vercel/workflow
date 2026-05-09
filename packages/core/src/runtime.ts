@@ -680,7 +680,7 @@ export function workflowEntrypoint(
                         // when there are events, so this signals a bug in
                         // the World. Fall back to a full reload to avoid
                         // stale data.
-                        runtimeLogger.error(
+                        runtimeLogger.warn(
                           'Event cursor missing after initial load — falling back to full reload. ' +
                             'This indicates a bug in the World implementation.',
                           { workflowRunId: runId }
