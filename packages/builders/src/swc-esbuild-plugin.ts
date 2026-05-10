@@ -33,6 +33,15 @@ export interface SwcPluginOptions {
    */
   rewriteTsExtensions?: boolean;
   /**
+   * Bundle project-local files that are transitively imported by step entries.
+   *
+   * Keep this disabled when a downstream bundler consumes the generated step
+   * bundle because that bundler can resolve the externalized local imports.
+   * Enable it for direct runtime loading, where Node imports the generated step
+   * bundle from disk without a later bundling pass.
+   */
+  bundleTransitiveLocalStepDependencies?: boolean;
+  /**
    * Absolute file paths of discovered workflow/step/serde entries whose
    * imports must be treated as side-effectful.
    *
@@ -246,6 +255,7 @@ export function createSwcPlugin(options: SwcPluginOptions): Plugin {
               // unless they are themselves in entriesToBundle or are parents
               // of a discovered workflow/step/serde file via the check above.
               if (
+                options.bundleTransitiveLocalStepDependencies &&
                 isProjectLocalFile(normalizedResolvedPath, projectRoot) &&
                 parentHasChild(normalizedEntry, normalizedResolvedPath)
               ) {
