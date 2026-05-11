@@ -412,7 +412,6 @@ export function RunDetailView({
         return;
       }
       setEncryptionKey(keyResult);
-      toast.success('Run data decrypted successfully');
     } finally {
       setIsDecrypting(false);
     }
