@@ -1,5 +1,15 @@
 # @workflow/web
 
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#1955](https://github.com/vercel/workflow/pull/1955) [`f20c706`](https://github.com/vercel/workflow/commit/f20c70672e4f9c4aad60779ba9624521a5403cc7) Thanks [@mitul-s](https://github.com/mitul-s)! - Show hook name on trace viewer + no toast on decrypt
+
+- [#1815](https://github.com/vercel/workflow/pull/1815) [`45d1eb2`](https://github.com/vercel/workflow/commit/45d1eb23402f034faf1c5a8a8e8925f9ca7e910d) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Configure `vercelPreset()` from `@vercel/react-router/vite` in `react-router.config.ts` when building the `packages/web` project for the Vercel deployment, enabling per-route bundle splitting, function-level configuration, and an accurate Deployment Summary.
+
+  The preset is gated on a new `WORKFLOW_WEB_VERCEL_BUILD` environment variable (rather than the ambient `VERCEL` var) so that the standard build layout consumed by `server.js` (self-hosted deployments and the CLI's in-process server via `@workflow/web/server`) is still produced when the package is packed as a tarball by the `docs` Vercel deployment. Set `WORKFLOW_WEB_VERCEL_BUILD=1` in the web Vercel project's environment variables to enable the preset there. The existing `VERCEL`-based checks in `vite.config.ts` have been migrated to this same variable for consistency.
+
 ## 5.0.0-beta.4
 
 ### Patch Changes

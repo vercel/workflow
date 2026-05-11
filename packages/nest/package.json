@@ -1,6 +1,6 @@
 {
   "name": "@workflow/nest",
-  "version": "5.0.0-beta.4",
+  "version": "5.0.0-beta.5",
   "description": "NestJS integration for Workflow SDK",
   "type": "module",
   "main": "dist/index.js",

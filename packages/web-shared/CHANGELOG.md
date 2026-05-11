@@ -1,5 +1,20 @@
 # @workflow/web-shared
 
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#1955](https://github.com/vercel/workflow/pull/1955) [`f20c706`](https://github.com/vercel/workflow/commit/f20c70672e4f9c4aad60779ba9624521a5403cc7) Thanks [@mitul-s](https://github.com/mitul-s)! - Show hook name on trace viewer + no toast on decrypt
+
+- [#1952](https://github.com/vercel/workflow/pull/1952) [`b940748`](https://github.com/vercel/workflow/commit/b940748743ac4c5a04f07b7191555c2a09655b90) Thanks [@mitul-s](https://github.com/mitul-s)! - Fix old trace viewer layout to be in a row rather than column
+
+- [#1942](https://github.com/vercel/workflow/pull/1942) [`c80b747`](https://github.com/vercel/workflow/commit/c80b747af8a98682ae5ed998d9f574ea5f78385f) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix "Unknown type FatalError" / "Failed to load resource details" in the o11y UI by adding the missing reviver entries (`FatalError`, `RetryableError`, the built-in `Error` subclasses, `AggregateError`, and `DOMException`) to `getWebRevivers()` so it stays in sync with the runtime reducer set.
+
+- Updated dependencies [[`aee5699`](https://github.com/vercel/workflow/commit/aee56993c777e6fc8d40af8d90ec3d4fbd86cdfe), [`e7ea068`](https://github.com/vercel/workflow/commit/e7ea0684f44b3743dbc56543ea103786ab7144bc), [`74b13cd`](https://github.com/vercel/workflow/commit/74b13cd3ed3412d4e99af55587c69dc458fa5400), [`aee5699`](https://github.com/vercel/workflow/commit/aee56993c777e6fc8d40af8d90ec3d4fbd86cdfe), [`3535caf`](https://github.com/vercel/workflow/commit/3535caf44924cf9561e8b768c418fe1eb37d96cf), [`5374148`](https://github.com/vercel/workflow/commit/537414849b0f7022640879786ff85c918672e7d0), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`00a011d`](https://github.com/vercel/workflow/commit/00a011dee43b3ba7c399a97b9ed072cf4ce66816), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104), [`aee5699`](https://github.com/vercel/workflow/commit/aee56993c777e6fc8d40af8d90ec3d4fbd86cdfe), [`9f3516e`](https://github.com/vercel/workflow/commit/9f3516ec28f15d8bb5bfa9ee57aed858301fa4fd), [`d0e3f27`](https://github.com/vercel/workflow/commit/d0e3f2722b744472a90e48062e3876040e21de82), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a), [`72911f7`](https://github.com/vercel/workflow/commit/72911f7356238b0ef803455641f8ef5c9dd1545c)]:
+  - @workflow/core@5.0.0-beta.5
+  - @workflow/world@5.0.0-beta.2
+  - @workflow/utils@5.0.0-beta.2
+
 ## 5.0.0-beta.4
 
 ### Patch Changes
