@@ -43,6 +43,45 @@ function createGraphileLogger() {
 
 const graphileLogger = createGraphileLogger();
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
+
+/**
+ * Stable arbitrary 64-bit integer key for the Postgres advisory lock that
+ * serializes graphile-worker schema bootstrap (`installSchema`) across
+ * processes. Computed once and inlined here so it doesn't depend on the
+ * connected database or schema name. Chosen to be unlikely to collide
+ * with locks used by other tools.
+ */
+const GRAPHILE_BOOTSTRAP_LOCK_KEY = '6826297669740838987';
+
+/**
+ * Run `fn` while holding a transaction-scoped Postgres advisory lock so
+ * that concurrent callers across processes are serialized. We use a
+ * transaction-scoped lock (`pg_advisory_xact_lock`) so the lock is
+ * automatically released if the connection dies mid-bootstrap.
+ */
+async function withGraphileBootstrapLock<T>(
+  pool: Pool,
+  fn: () => Promise<T>
+): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [
+      GRAPHILE_BOOTSTRAP_LOCK_KEY,
+    ]);
+    try {
+      const result = await fn();
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    }
+  } finally {
+    client.release();
+  }
+}
+
 const GraphileHelpers = z.object({
   job: z.object({
     attempts: z.number().int().positive(),
@@ -333,12 +372,24 @@ export function createQueue(
     if (!startPromise) {
       startPromise = (async () => {
         try {
-          workerUtils = await makeWorkerUtils({
-            pgPool: pool,
-            logger: graphileLogger,
+          // Acquire a Postgres advisory lock around graphile-worker
+          // initialization so that concurrent processes (e.g. the dev
+          // server + the test runner, or multiple serverless invocations)
+          // don't race on `CREATE SCHEMA IF NOT EXISTS graphile_worker`.
+          // PostgreSQL DDL with IF NOT EXISTS is not race-safe under
+          // concurrent transactions and can throw `duplicate key value
+          // violates unique constraint "pg_namespace_nspname_index"`.
+          // graphile-worker itself does not lock its bootstrap path.
+          const utils = await withGraphileBootstrapLock(pool, async () => {
+            const u = await makeWorkerUtils({
+              pgPool: pool,
+              logger: graphileLogger,
+            });
+            await u.migrate();
+            return u;
           });
-          await workerUtils.migrate();
-          await migratePgBossJobs(workerUtils);
+          workerUtils = utils;
+          await migratePgBossJobs(utils);
           await setupListeners();
         } catch (err) {
           startPromise = null;

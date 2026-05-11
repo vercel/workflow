@@ -48,6 +48,10 @@ describe('postgres queue http execution', () => {
   const createQueueHandler = vi.fn(() => wrappedHandler);
   const pool = {
     query: vi.fn(async () => ({ rows: [{ exists: false }] })),
+    connect: vi.fn(async () => ({
+      query: vi.fn(async () => ({ rows: [] })),
+      release: vi.fn(),
+    })),
   } as any;
 
   beforeEach(() => {

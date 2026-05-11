@@ -71,6 +71,10 @@ describe('re-enqueue active runs on start', () => {
   const pool = {
     query: vi.fn(async () => ({ rows: [{ exists: false }] })),
     end: vi.fn(),
+    connect: vi.fn(async () => ({
+      query: vi.fn(async () => ({ rows: [] })),
+      release: vi.fn(),
+    })),
   } as any;
 
   function mockRunsList(
