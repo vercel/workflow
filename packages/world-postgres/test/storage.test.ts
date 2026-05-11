@@ -1225,6 +1225,38 @@ describe('Storage (Postgres integration)', () => {
       );
       expect(waitCreated).toHaveLength(1);
     });
+
+    it('should serialize concurrent hook_created attempts for the same token', async () => {
+      const token = 'concurrent-token-test';
+      const run2 = await createRun(events, {
+        deploymentId: 'deployment-456',
+        workflowName: 'test-workflow-2',
+        input: new Uint8Array(),
+      });
+      await updateRun(events, run2.runId, 'run_started');
+
+      const results = await Promise.all([
+        events.create(testRunId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_concurrent_1',
+          eventData: { token },
+        }),
+        events.create(run2.runId, {
+          eventType: 'hook_created',
+          correlationId: 'hook_concurrent_2',
+          eventData: { token },
+        }),
+      ]);
+
+      const eventTypes = results.map((result) => result.event.eventType).sort();
+      expect(eventTypes).toEqual(['hook_conflict', 'hook_created']);
+
+      const { rows } = await pool.query(
+        'SELECT COUNT(*)::int AS count FROM workflow.workflow_hooks WHERE token = $1',
+        [token]
+      );
+      expect(rows[0].count).toBe(1);
+    });
   });
 
   describe('step terminal state validation', () => {

@@ -1029,13 +1029,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           isSystem?: boolean;
         };
 
-        // Check for duplicate token using prepared statement
-        const [existingHook] = await getHookByToken.execute({
-          token: eventData.token,
-        });
-        if (existingHook) {
-          // Create hook_conflict event instead of throwing 409
-          // This allows the workflow to continue and fail gracefully when the hook is awaited
+        const createHookConflictEvent = async () => {
           const conflictEventData = {
             token: eventData.token,
           };
@@ -1074,6 +1068,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
             step,
             hook: undefined,
           };
+        };
+
+        // Check for duplicate token using prepared statement
+        const [existingHook] = await getHookByToken.execute({
+          token: eventData.token,
+        });
+        if (existingHook) {
+          // Create hook_conflict event instead of throwing 409
+          // This allows the workflow to continue and fail gracefully when the hook is awaited
+          return createHookConflictEvent();
         }
 
         const [hookValue] = await drizzle
@@ -1096,6 +1100,16 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
         if (hookValue) {
           hookValue.metadata ||= hookValue.metadataJson;
           hook = HookSchema.parse(compact(hookValue));
+        } else {
+          const [conflictingHook] = await getHookByToken.execute({
+            token: eventData.token,
+          });
+          if (conflictingHook) {
+            return createHookConflictEvent();
+          }
+          throw new EntityConflictError(
+            `Hook "${data.correlationId}" already exists`
+          );
         }
       }
 
