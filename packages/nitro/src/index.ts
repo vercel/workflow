@@ -91,41 +91,53 @@ export default {
         (_nitro: Nitro, config: RollupConfig) => {
           (config.plugins as Array<unknown>).unshift({
             name: 'workflow:force-inline',
-            async resolveId(
-              this: { resolve: Function },
-              source: string,
-              importer: string | undefined,
-              options: { skipSelf?: boolean }
-            ) {
-              if (!importer) return null;
-              // Let other plugins resolve first to get the file path
-              const resolved = await this.resolve(source, importer, {
-                ...options,
-                skipSelf: true,
-              });
-              if (!resolved) return null;
-              if (!resolved.external) return null;
-              // Force workflow packages and their internal imports
-              // to be bundled (not external). We match both the
-              // package specifier (e.g., `@workflow/core/runtime`)
-              // and resolved file paths within workflow packages.
-              const isWorkflowPkg =
-                /^@?workflow(\/|$)/.test(source) ||
-                /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|web|web-shared|astro|sveltekit|nest)[\\/]/.test(
-                  resolved.id
-                );
-              if (isWorkflowPkg) {
-                // Strip file:// protocol if present — Rollup needs
-                // a plain filesystem path to load the module.
-                // `fileURLToPath` correctly handles Windows paths
-                // (e.g., file:///C:/... -> C:\...) and percent-decoding.
+            // `order: 'pre'` is required: Nitro's `nitro:externals` plugin
+            // uses `order: 'pre'` for its resolveId hook and spreads our
+            // resolution result while forcing `external: true`. Without
+            // `pre` here, our `external: false` decision gets overwritten
+            // and `@workflow/*` imports end up externalized in the dev
+            // bundle — which means the SWC-injected `static classId` IIFE
+            // in (e.g.) `@workflow/core/dist/runtime/run.js` is never
+            // applied, and step return values that include `Run`
+            // instances fail to serialize at runtime.
+            resolveId: {
+              order: 'pre',
+              async handler(
+                this: { resolve: Function },
+                source: string,
+                importer: string | undefined,
+                options: { skipSelf?: boolean }
+              ) {
+                if (!importer) return null;
+                // Match workflow package specifiers OR direct paths into
+                // packages/<name>/. Bail out early on non-workflow imports
+                // so we don't intercept the rest of the resolution chain.
+                const isWorkflowPkg =
+                  /^@?workflow(\/|$)/.test(source) ||
+                  /[\\/]packages[\\/](workflow|core|serde|errors|utils|builders|rollup|ai|world|world-local|world-vercel|world-postgres|world-testing|cli|next|nitro|nuxt|vite|vitest|web|web-shared|astro|sveltekit|nest)[\\/]/.test(
+                    source
+                  );
+                if (!isWorkflowPkg) return null;
+                // Resolve via other resolvers, skipping ourselves so we
+                // get a path. We don't gate on `resolved.external` because
+                // `nitro:externals` spreads our result and overrides
+                // `external: true` regardless of what we return — we want
+                // to win that race by returning first under `order: 'pre'`.
+                const resolved = await this.resolve(source, importer, {
+                  ...options,
+                  skipSelf: true,
+                });
+                if (!resolved) return null;
                 let resolvedId = resolved.id;
+                // Strip file:// protocol if present — Rollup needs a plain
+                // filesystem path to load the module. `fileURLToPath`
+                // correctly handles Windows paths (e.g., file:///C:/...
+                // -> C:\...) and percent-decoding.
                 if (resolvedId.startsWith('file://')) {
                   resolvedId = fileURLToPath(resolvedId);
                 }
                 return { id: resolvedId, external: false };
-              }
-              return null;
+              },
             },
           });
         }
