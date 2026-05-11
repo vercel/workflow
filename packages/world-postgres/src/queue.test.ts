@@ -332,6 +332,60 @@ describe('postgres queue http execution', () => {
       vi.useRealTimers();
     }
   });
+
+  it('serializes graphile-worker schema bootstrap with a pg advisory lock before initializing graphile-worker', async () => {
+    // Regression: PostgreSQL DDL with IF NOT EXISTS is not race-safe under
+    // concurrent transactions, so two processes calling world.start() against
+    // a fresh database could both pass the schema-existence check and one
+    // would fail with `duplicate key value violates unique constraint
+    // "pg_namespace_nspname_index"`. We protect graphile-worker's schema
+    // installation with a pg_advisory_xact_lock on a dedicated short-lived
+    // connection that's released before makeWorkerUtils() runs (so we can't
+    // deadlock against the same pool when its max size is small).
+    const callOrder: string[] = [];
+    const lockPool = {
+      ...pool,
+      connect: vi.fn(async () => {
+        callOrder.push('pool.connect');
+        return {
+          query: vi.fn(async (sql: string) => {
+            if (sql.startsWith('BEGIN')) callOrder.push('BEGIN');
+            else if (sql.startsWith('COMMIT')) callOrder.push('COMMIT');
+            else if (/pg_advisory_xact_lock/.test(sql))
+              callOrder.push('pg_advisory_xact_lock');
+            else if (/create schema/i.test(sql))
+              callOrder.push('create schema graphile_worker');
+            return { rows: [] };
+          }),
+          release: () => callOrder.push('client.release'),
+        };
+      }),
+    } as any;
+    vi.mocked(makeWorkerUtils).mockImplementation(async () => {
+      callOrder.push('makeWorkerUtils');
+      return workerUtilsMock;
+    });
+    vi.mocked(workerUtilsMock.migrate).mockImplementation(async () => {
+      callOrder.push('workerUtils.migrate');
+    });
+
+    const queue = buildQueue({ connectionString: 'postgres://test' }, lockPool);
+    await queue.start();
+
+    // The advisory lock must be acquired before the bootstrap DDL runs,
+    // and the locked connection must be released before makeWorkerUtils
+    // tries to check out its own connection(s) from the pool.
+    expect(callOrder).toEqual([
+      'pool.connect',
+      'BEGIN',
+      'pg_advisory_xact_lock',
+      'create schema graphile_worker',
+      'COMMIT',
+      'client.release',
+      'makeWorkerUtils',
+      'workerUtils.migrate',
+    ]);
+  });
 });
 
 function buildQueue(

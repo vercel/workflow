@@ -46,33 +46,55 @@ const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
 
 /**
  * Stable arbitrary 64-bit integer key for the Postgres advisory lock that
- * serializes graphile-worker schema bootstrap (`installSchema`) across
- * processes. Computed once and inlined here so it doesn't depend on the
- * connected database or schema name. Chosen to be unlikely to collide
- * with locks used by other tools.
+ * serializes graphile-worker schema bootstrap across processes. Chosen to
+ * be unlikely to collide with locks used by other tools.
  */
 const GRAPHILE_BOOTSTRAP_LOCK_KEY = '6826297669740838987';
 
 /**
- * Run `fn` while holding a transaction-scoped Postgres advisory lock so
- * that concurrent callers across processes are serialized. We use a
- * transaction-scoped lock (`pg_advisory_xact_lock`) so the lock is
- * automatically released if the connection dies mid-bootstrap.
+ * Pre-create the `graphile_worker` schema and `migrations` table under a
+ * transaction-scoped Postgres advisory lock so that concurrent processes
+ * (e.g. the dev server + the test runner, or multiple serverless
+ * invocations) don't race on graphile-worker's `installSchema`.
+ *
+ * PostgreSQL DDL with `IF NOT EXISTS` is not race-safe under concurrent
+ * transactions: two sessions can both pass the existence check at their
+ * MVCC snapshot and one then fails with `duplicate key value violates
+ * unique constraint "pg_namespace_nspname_index"` (schema) or
+ * `pg_class_relname_nsp_index` (table). graphile-worker's own
+ * `installSchema` does no locking. We mirror its DDL here so that when
+ * `makeWorkerUtils()` later runs, it finds the schema present and skips
+ * the race-prone bootstrap path entirely.
+ *
+ * Once the lock is released, the rest of graphile-worker's migrations
+ * (`insert into migrations ...`) are protected by graphile-worker itself
+ * — it catches unique-constraint violations on the migrations primary
+ * key and treats them as "another worker did this migration".
+ *
+ * We use a dedicated short-lived connection and release it before
+ * calling `makeWorkerUtils()` so the bootstrap can't deadlock against
+ * its own pool when `maxPoolSize` is small (the default is 10, but
+ * users may configure 1 via `WORKFLOW_POSTGRES_MAX_POOL_SIZE`).
  */
-async function withGraphileBootstrapLock<T>(
-  pool: Pool,
-  fn: () => Promise<T>
-): Promise<T> {
+async function bootstrapGraphileWorkerSchema(pool: Pool): Promise<void> {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [
-      GRAPHILE_BOOTSTRAP_LOCK_KEY,
-    ]);
     try {
-      const result = await fn();
+      await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [
+        GRAPHILE_BOOTSTRAP_LOCK_KEY,
+      ]);
+      // Mirror graphile-worker's installSchema DDL. Kept in sync with
+      // node_modules/graphile-worker/dist/migrate.js:installSchema.
+      await client.query(`
+        create schema if not exists "graphile_worker";
+        create table if not exists "graphile_worker".migrations(
+          id int primary key,
+          ts timestamptz default now() not null
+        );
+        alter table "graphile_worker".migrations add column if not exists breaking boolean not null default false;
+      `);
       await client.query('COMMIT');
-      return result;
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
       throw err;
@@ -372,24 +394,19 @@ export function createQueue(
     if (!startPromise) {
       startPromise = (async () => {
         try {
-          // Acquire a Postgres advisory lock around graphile-worker
-          // initialization so that concurrent processes (e.g. the dev
-          // server + the test runner, or multiple serverless invocations)
-          // don't race on `CREATE SCHEMA IF NOT EXISTS graphile_worker`.
-          // PostgreSQL DDL with IF NOT EXISTS is not race-safe under
-          // concurrent transactions and can throw `duplicate key value
-          // violates unique constraint "pg_namespace_nspname_index"`.
-          // graphile-worker itself does not lock its bootstrap path.
-          const utils = await withGraphileBootstrapLock(pool, async () => {
-            const u = await makeWorkerUtils({
-              pgPool: pool,
-              logger: graphileLogger,
-            });
-            await u.migrate();
-            return u;
+          // Pre-create the graphile-worker schema under an advisory
+          // lock so concurrent processes don't race on the not-race-safe
+          // `CREATE SCHEMA IF NOT EXISTS` DDL. See
+          // `bootstrapGraphileWorkerSchema` for details. The lock is
+          // released before we call `makeWorkerUtils` so we don't risk
+          // deadlocking against the same pool when its max size is small.
+          await bootstrapGraphileWorkerSchema(pool);
+          workerUtils = await makeWorkerUtils({
+            pgPool: pool,
+            logger: graphileLogger,
           });
-          workerUtils = utils;
-          await migratePgBossJobs(utils);
+          await workerUtils.migrate();
+          await migratePgBossJobs(workerUtils);
           await setupListeners();
         } catch (err) {
           startPromise = null;
