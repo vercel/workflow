@@ -1,5 +1,24 @@
 # @workflow/world-local
 
+## 5.0.0-beta.4
+
+### Major Changes
+
+- [#1851](https://github.com/vercel/workflow/pull/1851) [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Run and step errors are now serialized through the workflow serialization pipeline, preserving original class identity and cause chains on `WorkflowRunFailedError.cause`. Pre-upgrade failed runs in the `world-postgres` legacy `error` text column surface as `error: undefined` on read; the original payload is still readable directly from the `errorJson` column for manual inspection.
+
+### Patch Changes
+
+- [#1877](https://github.com/vercel/workflow/pull/1877) [`92dc826`](https://github.com/vercel/workflow/commit/92dc82608ab7526e930eeedd4752c68872bae639) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix race in `events.create()` where concurrent `step_created` / `wait_created` writes with the same `correlationId` would both succeed instead of one losing with `EntityConflictError`.
+
+- [#1895](https://github.com/vercel/workflow/pull/1895) [`2f52d14`](https://github.com/vercel/workflow/commit/2f52d14f3844c999f6b89baeb8e04289d6dd34a9) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Fix local-world recovery isolation in Vitest and support custom test directories
+
+- [#1894](https://github.com/vercel/workflow/pull/1894) [`c1163eb`](https://github.com/vercel/workflow/commit/c1163eb146991a4924d80bcc9cfcc8bb89e05067) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Throw `WorkflowRunNotFoundError` when `run_failed` is recorded against a run that doesn't exist, matching the behaviour of `world-postgres` and `world-vercel`.
+
+- Updated dependencies [[`540a2ef`](https://github.com/vercel/workflow/commit/540a2efb99c137b0d60c7368376e9533ea662a4c), [`5374148`](https://github.com/vercel/workflow/commit/537414849b0f7022640879786ff85c918672e7d0), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a)]:
+  - @workflow/errors@5.0.0-beta.2
+  - @workflow/world@5.0.0-beta.2
+  - @workflow/utils@5.0.0-beta.2
+
 ## 5.0.0-beta.3
 
 ### Patch Changes

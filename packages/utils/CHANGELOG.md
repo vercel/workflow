@@ -1,5 +1,11 @@
 # @workflow/utils
 
+## 5.0.0-beta.2
+
+### Patch Changes
+
+- [#1849](https://github.com/vercel/workflow/pull/1849) [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd) Thanks [@pranaygp](https://github.com/pranaygp)! - Friendlier workflow error messages. New `SerializationError`, `WorkflowBuildError`, and structured context-violation classes (e.g. `NotInWorkflowContextError`) with actionable hints and docs links applied to user-facing throw sites; `FatalError.is()` recognizes any error with `fatal: true` so context violations and serialization failures now fail fast instead of burning retry attempts. Runtime logs are namespaced under `[workflow-sdk]` and gain `errorAttribution` (`user` vs `sdk`) plus class-aware hints
+
 ## 5.0.0-beta.1
 
 ### Patch Changes

@@ -1,5 +1,17 @@
 # @workflow/world
 
+## 5.0.0-beta.2
+
+### Major Changes
+
+- [#1851](https://github.com/vercel/workflow/pull/1851) [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Run and step errors are now serialized through the workflow serialization pipeline, preserving original class identity and cause chains on `WorkflowRunFailedError.cause`. Pre-upgrade failed runs in the `world-postgres` legacy `error` text column surface as `error: undefined` on read; the original payload is still readable directly from the `errorJson` column for manual inspection.
+
+### Patch Changes
+
+- [#1939](https://github.com/vercel/workflow/pull/1939) [`5374148`](https://github.com/vercel/workflow/commit/537414849b0f7022640879786ff85c918672e7d0) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Fix compatibility with Zod 4.4.x in `WorkflowRunSchema` by marking `output`, `error`, and `completedAt` as `.optional()` on non-final / cancelled / completed / failed run states.
+
+- [#1338](https://github.com/vercel/workflow/pull/1338) [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a) Thanks [@VaguelySerious](https://github.com/VaguelySerious)! - Merge flow and step routes into a single combined handler that executes steps inline when possible, reducing function invocations and queue overhead.
+
 ## 5.0.0-beta.1
 
 ### Major Changes

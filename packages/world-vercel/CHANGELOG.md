@@ -1,5 +1,23 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.4
+
+### Major Changes
+
+- [#1851](https://github.com/vercel/workflow/pull/1851) [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104) Thanks [@TooTallNate](https://github.com/TooTallNate)! - **BREAKING CHANGE**: Run and step errors are now serialized through the workflow serialization pipeline, preserving original class identity and cause chains on `WorkflowRunFailedError.cause`. Pre-upgrade failed runs in the `world-postgres` legacy `error` text column surface as `error: undefined` on read; the original payload is still readable directly from the `errorJson` column for manual inspection.
+
+### Minor Changes
+
+- [#1882](https://github.com/vercel/workflow/pull/1882) [`cd50618`](https://github.com/vercel/workflow/commit/cd50618d1fc01ee6049047e415b794dd7ca54af9) Thanks [@TooTallNate](https://github.com/TooTallNate)! - Switch the workflow-server Deployment Protection bypass to OIDC Trusted Sources. The `VERCEL_WORKFLOW_SERVER_PROTECTION_BYPASS` env var is no longer used; the `x-vercel-trusted-oidc-idp-token` header is now sourced from `getVercelOidcToken()`.
+
+### Patch Changes
+
+- [#1807](https://github.com/vercel/workflow/pull/1807) [`5eb0b79`](https://github.com/vercel/workflow/commit/5eb0b792b8a7f04d6558f27d4b0d29daa57a788d) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Add a default request timeout to world-vercel HTTP calls so hanging responses can be re-tried sooner and run less risk of continuing until a function timeout
+
+- Updated dependencies [[`540a2ef`](https://github.com/vercel/workflow/commit/540a2efb99c137b0d60c7368376e9533ea662a4c), [`5374148`](https://github.com/vercel/workflow/commit/537414849b0f7022640879786ff85c918672e7d0), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`1203dae`](https://github.com/vercel/workflow/commit/1203dae70c802eef114909e9476e19ec528550cd), [`5f22832`](https://github.com/vercel/workflow/commit/5f228326757f7da349edfed89845bd109c98f104), [`8ea1532`](https://github.com/vercel/workflow/commit/8ea1532e48ed86ef9a66231e474851bed85c737a)]:
+  - @workflow/errors@5.0.0-beta.2
+  - @workflow/world@5.0.0-beta.2
+
 ## 5.0.0-beta.3
 
 ### Minor Changes
