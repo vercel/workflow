@@ -3,9 +3,6 @@ name: Backport to stable
 on:
   push:
     branches: [main]
-  pull_request_target:
-    types: [labeled]
-    branches: [main]
   workflow_dispatch:
     inputs:
       ref:
@@ -29,14 +26,10 @@ env:
 jobs:
   backport:
     name: Backport to stable
-    # Run on every push to main, OR when the `backport-stable` label is added
-    # to a merged PR (manual override / re-trigger), OR on manual dispatch.
-    if: |
-      github.event_name == 'push' ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request_target' &&
-       github.event.pull_request.merged == true &&
-       github.event.label.name == 'backport-stable')
+    # Runs automatically on every push to `main` (AI decides whether to
+    # backport), or manually via `workflow_dispatch` (always forces a
+    # backport). To force a backport after the fact, re-run this workflow
+    # via `workflow_dispatch` with the relevant commit SHA.
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -49,7 +42,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVENT_NAME: ${{ github.event_name }}
           PUSH_SHA: ${{ github.event.after }}
-          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
           DISPATCH_REF: ${{ inputs.ref }}
         run: |
           # On push, we only consider the head commit of the push
@@ -58,8 +50,8 @@ jobs:
           # `main` are forbidden by AGENTS.md. Multi-commit pushes (e.g. an
           # accidental rebase merge) would only have their head commit
           # considered for backport — those edge cases can be handled by
-          # adding the `backport-stable` label to the relevant PRs to
-          # re-trigger this workflow against each one.
+          # re-running this workflow via `workflow_dispatch` with the
+          # relevant commit SHA.
           #
           # On manual `workflow_dispatch`, the `ref` input may specify a
           # particular SHA on `main` (or any commit-ish that resolves to a
@@ -86,8 +78,8 @@ jobs:
               echo "trigger=dispatch" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              SHA="$MERGE_SHA"
-              echo "trigger=label" >> "$GITHUB_OUTPUT"
+              echo "::error::Unexpected event name '$EVENT_NAME'. This workflow only supports 'push' and 'workflow_dispatch'."
+              exit 1
               ;;
           esac
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
@@ -105,10 +97,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SHA: ${{ steps.resolve.outputs.sha }}
           TRIGGER: ${{ steps.resolve.outputs.trigger }}
-          LABEL_PR_NUMBER: ${{ github.event.pull_request.number }}
-          LABEL_PR_TITLE: ${{ github.event.pull_request.title }}
-          LABEL_PR_BODY: ${{ github.event.pull_request.body }}
-          LABEL_PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
           # Helper: write a multiline value to $GITHUB_OUTPUT using a random
           # delimiter so user-controlled content (PR title, body, AI reasoning)
@@ -125,19 +113,7 @@ jobs:
             } >> "$GITHUB_OUTPUT"
           }
 
-          # When triggered by a label event, we already have the PR context.
-          if [ "$TRIGGER" = "label" ]; then
-            echo "pr_number=$LABEL_PR_NUMBER" >> "$GITHUB_OUTPUT"
-            write_multiline_output "pr_title" "$LABEL_PR_TITLE"
-            write_multiline_output "pr_body" "$LABEL_PR_BODY"
-            # Label trigger always forces a backport (explicit user intent).
-            echo "force_backport=true" >> "$GITHUB_OUTPUT"
-            echo "Triggered by label on PR #$LABEL_PR_NUMBER"
-            exit 0
-          fi
-
-          # Push or workflow_dispatch trigger: look up PR associated with
-          # this commit (if any).
+          # Look up PR associated with this commit (if any).
           PR_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" --jq '.[0] // empty')
 
           if [ -z "$PR_JSON" ]; then
@@ -158,14 +134,13 @@ jobs:
           PR_NUMBER=$(echo "$PR_JSON" | jq -r '.number')
           PR_TITLE=$(echo "$PR_JSON" | jq -r '.title')
           PR_BODY=$(echo "$PR_JSON" | jq -r '.body // ""')
-          HAS_LABEL=$(echo "$PR_JSON" | jq -r '[.labels[].name] | index("backport-stable") != null')
 
-          echo "Found PR #$PR_NUMBER (backport-stable label: $HAS_LABEL)"
+          echo "Found PR #$PR_NUMBER"
           echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
           write_multiline_output "pr_title" "$PR_TITLE"
           write_multiline_output "pr_body" "$PR_BODY"
-          # Manual dispatch always forces; otherwise honor the label.
-          if [ "$TRIGGER" = "dispatch" ] || [ "$HAS_LABEL" = "true" ]; then
+          # Manual dispatch always forces a backport (explicit user intent).
+          if [ "$TRIGGER" = "dispatch" ]; then
             echo "force_backport=true" >> "$GITHUB_OUTPUT"
           else
             echo "force_backport=false" >> "$GITHUB_OUTPUT"
@@ -243,12 +218,11 @@ jobs:
           # as a "no backport" decision.
           set -euo pipefail
 
-          # Explicit override: backport-stable label was applied (or label
-          # event triggered this run). Skip AI analysis.
+          # Explicit override: manual workflow_dispatch run. Skip AI analysis.
           if [ "$FORCE_BACKPORT" = "true" ]; then
-            echo "Label override: forcing backport (skipping AI analysis)."
+            echo "Manual dispatch: forcing backport (skipping AI analysis)."
             echo "decision=yes" >> "$GITHUB_OUTPUT"
-            echo "reasoning=The \`backport-stable\` label was applied, forcing this commit to be backported." >> "$GITHUB_OUTPUT"
+            echo "reasoning=This workflow was triggered manually via \`workflow_dispatch\`, forcing this commit to be backported." >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -352,7 +326,7 @@ jobs:
           opencode run --model "vercel/${AI_MODEL}" < .backport-decision-prompt.txt
 
           if [ ! -f "$DECISION_FILE" ]; then
-            echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, add the \`backport-stable\` label to the source PR."
+            echo "::error::AI did not produce a decision file at ${DECISION_FILE}. This usually indicates an opencode/AI Gateway infrastructure failure (e.g. expired API key, gateway down, or rejected tool call) — check the step output above. To force a backport regardless of the AI decision, re-run this workflow via \`workflow_dispatch\` with the relevant commit SHA."
             exit 1
           fi
 
@@ -408,7 +382,7 @@ jobs:
                 '',
                 reasoning,
                 '',
-                'To override, add the `backport-stable` label to this PR.'
+                'To override, re-run the [Backport to stable](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/workflows/backport.yml) workflow manually via `workflow_dispatch` with this commit SHA.'
               ].join('\n')
             });
 
@@ -863,9 +837,6 @@ jobs:
             echo ""
 
             case "$TRIGGER" in
-              label)
-                echo "Triggered by the \`backport-stable\` label."
-                ;;
               dispatch)
                 echo "Triggered manually via \`workflow_dispatch\`."
                 ;;
