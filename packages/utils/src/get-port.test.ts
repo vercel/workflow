@@ -250,9 +250,12 @@ describe('getWorkflowPort', () => {
 
     // Workflow server (returns 200 for health check endpoint)
     const workflowServer = http.createServer((req, res) => {
-      if (req.url?.includes('__health')) {
+      if (req.url?.includes('__health') && req.method === 'POST') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
+      } else if (req.url?.includes('__health')) {
+        res.writeHead(405, { Allow: 'POST' });
+        res.end();
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Missing required headers' }));
@@ -302,9 +305,12 @@ describe('getWorkflowPort', () => {
     });
     // Fast workflow server (returns 200 for health check)
     const fastServer = http.createServer((req, res) => {
-      if (req.url?.includes('__health')) {
+      if (req.url?.includes('__health') && req.method === 'POST') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
+      } else if (req.url?.includes('__health')) {
+        res.writeHead(405, { Allow: 'POST' });
+        res.end();
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);
         res.end();
@@ -331,9 +337,12 @@ describe('getWorkflowPort', () => {
 
   it('should handle concurrent getWorkflowPort calls', async () => {
     const server = http.createServer((req, res) => {
-      if (req.url?.includes('__health')) {
+      if (req.url?.includes('__health') && req.method === 'POST') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
+      } else if (req.url?.includes('__health')) {
+        res.writeHead(405, { Allow: 'POST' });
+        res.end();
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);
         res.end();
