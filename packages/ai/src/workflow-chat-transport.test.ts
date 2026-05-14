@@ -212,6 +212,16 @@ describe('WorkflowChatTransport', () => {
   });
 
   describe('abort signal propagation', () => {
+    function abortingStream() {
+      return new ReadableStream({
+        start(controller) {
+          controller.error(
+            new DOMException('BodyStreamBuffer was aborted', 'AbortError')
+          );
+        },
+      });
+    }
+
     it('should pass abortSignal to reconnect fetch calls', async () => {
       const controller = new AbortController();
 
@@ -252,6 +262,57 @@ describe('WorkflowChatTransport', () => {
           signal: controller.signal,
         }
       );
+    });
+
+    it('should not log or retry intentional reconnect aborts', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      transport = new WorkflowChatTransport({ fetch: mockFetch });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        body: abortingStream(),
+      });
+
+      const stream = await transport.reconnectToStream({
+        chatId: 'test-chat',
+      });
+
+      const reader = stream!.getReader();
+      await expect(reader.read()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not log or reconnect intentional send stream aborts', async () => {
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      transport = new WorkflowChatTransport({ fetch: mockFetch });
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'x-workflow-run-id': 'test-workflow-abort' }),
+        body: abortingStream(),
+      });
+
+      const stream = await transport.sendMessages({
+        trigger: 'submit-message',
+        chatId: 'test-chat',
+        messages: [],
+      });
+
+      const reader = stream.getReader();
+      await expect(reader.read()).resolves.toEqual({
+        done: true,
+        value: undefined,
+      });
+
+      expect(errorSpy).not.toHaveBeenCalled();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
     it('should reuse abortSignal for reconnect fetch after sendMessages interruption', async () => {
