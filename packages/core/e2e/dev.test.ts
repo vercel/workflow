@@ -143,11 +143,11 @@ export function createDevTests(config?: DevTestConfig) {
     });
 
     afterEach(async () => {
-      // Restore file contents before clearing any added files. Next's generated
-      // step route imports deferred copies, so temporary workflow files need to
-      // keep their real contents until the dev server shuts down. Emptying them
-      // can make the builder remove a copied step file while the route still
-      // imports it. Other builders should return to the original file tree.
+      // Restore file contents before clearing any added files. Dev servers can
+      // keep generated imports alive briefly after a rebuild. Next's generated
+      // step route imports deferred copies, so added workflow files need to keep
+      // their real contents until shutdown. Other builders can use empty
+      // placeholders to drop workflow directives while avoiding missing imports.
       const toRestore = restoreFiles.filter((item) => item.content !== '');
       const toClear = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
@@ -157,8 +157,6 @@ export function createDevTests(config?: DevTestConfig) {
         await prewarm();
         if (!supportsDeferredStepCopies) {
           await Promise.all(toClear.map((item) => fs.writeFile(item.path, '')));
-          await prewarm();
-          await Promise.all(toClear.map((item) => fs.unlink(item.path)));
           await prewarm();
         }
       }
