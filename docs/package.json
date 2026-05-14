@@ -10,6 +10,7 @@
     "postinstall": "fumadocs-mdx",
     "lint": "biome check",
     "lint:links": "bun ./scripts/lint.ts",
+    "lint:rendered-links": "bun ./scripts/lint-rendered-links.ts",
     "format": "biome format --write",
     "test:smoke": "node ./scripts/check-docs-smoke.mjs",
     "translate": "npx @vercel/geistdocs translate"
