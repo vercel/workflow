@@ -137,21 +137,24 @@ export function createDevTests(config?: DevTestConfig) {
     });
 
     afterEach(async () => {
-      // Restore file contents before deleting any files. If a deletion races
-      // ahead of an api-file restore, the dev server briefly sees an import
-      // pointing at a missing module and fails compilation. On Windows that
-      // failure can stick — Turbopack leaves stale imports in the generated
-      // step route bundle — and every subsequent step request returns 500.
+      // Restore file contents before clearing any added files. If a deletion
+      // races ahead of an api-file restore, the dev server briefly sees an
+      // import pointing at a missing module and fails compilation. On Windows
+      // that failure can stick - Turbopack leaves stale imports in the
+      // generated step route bundle — and every subsequent step request
+      // returns 500.
       const toRestore = restoreFiles.filter((item) => item.content !== '');
       const toDelete = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
         toRestore.map((item) => fs.writeFile(item.path, item.content))
       );
       if (toDelete.length > 0) {
+        await Promise.all(toDelete.map((item) => fs.writeFile(item.path, '')));
+        await prewarm();
+        await new Promise((res) => setTimeout(res, 2000));
+        await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
         await prewarm();
       }
-      await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
-      await prewarm();
       restoreFiles.length = 0;
     });
 

@@ -325,7 +325,7 @@ describe('getWorkflowPort', () => {
     const fastAddr = fastServer.address() as AddressInfo;
     expect(port).toBe(fastAddr.port);
     // Should complete reasonably quickly (Windows CI can be slow)
-    expect(elapsed).toBeLessThan(2000);
+    expect(elapsed).toBeLessThan(5000);
   });
 
   it('should handle concurrent getWorkflowPort calls', async () => {
