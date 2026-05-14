@@ -358,7 +358,7 @@ describe('createQueue', () => {
       });
     });
 
-    it('should ask VQS to retry handler errors immediately', () => {
+    it('should ask VQS to retry handler errors with bounded backoff', () => {
       mockHandleCallback.mockReturnValue(async () => new Response('ok'));
 
       const queue = createQueue();
@@ -370,7 +370,19 @@ describe('createQueue', () => {
           messageId: 'msg-123',
           deliveryCount: 1,
         })
-      ).toEqual({ afterSeconds: 0 });
+      ).toEqual({ afterSeconds: 5 });
+      expect(
+        options.retry(new Error('workflow server unavailable'), {
+          messageId: 'msg-123',
+          deliveryCount: 4,
+        })
+      ).toEqual({ afterSeconds: 8 });
+      expect(
+        options.retry(new Error('workflow server unavailable'), {
+          messageId: 'msg-123',
+          deliveryCount: 8,
+        })
+      ).toEqual({ afterSeconds: 60 });
     });
 
     it('should send new message with delaySeconds when handler returns timeoutSeconds', async () => {
