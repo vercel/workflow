@@ -603,7 +603,7 @@ export abstract class BaseBuilder {
     // Serde files for cross-context class registration
     ${serdeImports}
     // API entrypoint
-    export { stepEntrypoint as POST } from 'workflow/runtime';`;
+    export { stepEntrypoint as HEAD, stepEntrypoint as POST } from 'workflow/runtime';`;
 
     // Bundle with esbuild and our custom SWC plugin
     const entriesToBundle = externalizeNonSteps
@@ -1006,7 +1006,10 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+const handler = workflowEntrypoint(workflowCode);
+
+export const HEAD = handler;
+export const POST = handler;`;
 
         // we skip the final bundling step for Next.js so it can bundle itself
         if (!bundleFinalOutput) {

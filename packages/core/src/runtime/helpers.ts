@@ -392,6 +392,12 @@ export function withHealthCheck(
           headers: HEALTH_CHECK_CORS_HEADERS,
         });
       }
+      if (req.method === 'HEAD') {
+        return new Response(null, {
+          status: 200,
+          headers: HEALTH_CHECK_CORS_HEADERS,
+        });
+      }
       return new Response(
         JSON.stringify({
           healthy: true,

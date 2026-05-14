@@ -122,12 +122,15 @@ export class SvelteKitBuilder extends BaseBuilder {
 
     // Replace the default export with SvelteKit-compatible handler
     stepsRouteContent = stepsRouteContent.replace(
-      /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
+      /export\s*\{\s*stepEntrypoint\s+as\s+HEAD\s*,\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
       `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const handleStepRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return stepEntrypoint(normalRequest);
-}`
+};
+
+export const HEAD = handleStepRequest;
+export const POST = handleStepRequest;`
     );
 
     await writeFile(stepsRouteFile, stepsRouteContent);
@@ -161,12 +164,15 @@ export const POST = async ({request}) => {
 
     // Replace the default export with SvelteKit-compatible handler
     workflowsRouteContent = workflowsRouteContent.replace(
-      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
+      /const handler = workflowEntrypoint\(workflowCode\);\n\nexport const HEAD = handler;\nexport const POST = handler;?$/m,
       `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const handleWorkflowRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode)(normalRequest);
-}`
+};
+
+export const HEAD = handleWorkflowRequest;
+export const POST = handleWorkflowRequest;`
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 

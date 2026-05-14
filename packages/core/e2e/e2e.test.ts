@@ -1529,6 +1529,12 @@ describe('e2e', () => {
         '/.well-known/workflow/v1/flow?__health',
         deploymentUrl
       );
+      const flowHeadRes = await fetch(flowHealthUrl, {
+        method: 'HEAD',
+        headers: await getTrustedSourcesHeaders(),
+      });
+      expect(flowHeadRes.status).toBe(200);
+
       const flowRes = await fetch(flowHealthUrl, {
         method: 'POST',
         headers: await getTrustedSourcesHeaders(),
@@ -1551,6 +1557,12 @@ describe('e2e', () => {
         '/.well-known/workflow/v1/step?__health',
         deploymentUrl
       );
+      const stepHeadRes = await fetch(stepHealthUrl, {
+        method: 'HEAD',
+        headers: await getTrustedSourcesHeaders(),
+      });
+      expect(stepHeadRes.status).toBe(200);
+
       const stepRes = await fetch(stepHealthUrl, {
         method: 'POST',
         headers: await getTrustedSourcesHeaders(),

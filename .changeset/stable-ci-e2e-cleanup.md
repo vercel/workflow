@@ -1,4 +1,11 @@
 ---
+"@workflow/astro": patch
+"@workflow/builders": patch
+"@workflow/core": patch
+"@workflow/next": patch
+"@workflow/sveltekit": patch
+"@workflow/utils": patch
+"workflow": patch
 ---
 
-Fix stable CI test harness failures without releasing package changes.
+Fix local workflow port detection and make generated health endpoints respond to HEAD requests.

@@ -1945,7 +1945,7 @@ export async function getNextBuilderDeferred() {
         serdeImports
           ? `// Serde files for cross-context class registration\n${serdeImports}`
           : '',
-        "export { stepEntrypoint as POST } from 'workflow/runtime';",
+        "export { stepEntrypoint as HEAD, stepEntrypoint as POST } from 'workflow/runtime';",
       ]
         .filter(Boolean)
         .join('\n');

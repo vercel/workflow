@@ -250,11 +250,11 @@ describe('getWorkflowPort', () => {
 
     // Workflow server (returns 200 for health check endpoint)
     const workflowServer = http.createServer((req, res) => {
-      if (req.url?.includes('__health') && req.method === 'POST') {
+      if (req.url?.includes('__health') && req.method === 'HEAD') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
       } else if (req.url?.includes('__health')) {
-        res.writeHead(405, { Allow: 'POST' });
+        res.writeHead(405, { Allow: 'HEAD' });
         res.end();
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -305,11 +305,11 @@ describe('getWorkflowPort', () => {
     });
     // Fast workflow server (returns 200 for health check)
     const fastServer = http.createServer((req, res) => {
-      if (req.url?.includes('__health') && req.method === 'POST') {
+      if (req.url?.includes('__health') && req.method === 'HEAD') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
       } else if (req.url?.includes('__health')) {
-        res.writeHead(405, { Allow: 'POST' });
+        res.writeHead(405, { Allow: 'HEAD' });
         res.end();
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);
@@ -337,11 +337,11 @@ describe('getWorkflowPort', () => {
 
   it('should handle concurrent getWorkflowPort calls', async () => {
     const server = http.createServer((req, res) => {
-      if (req.url?.includes('__health') && req.method === 'POST') {
+      if (req.url?.includes('__health') && req.method === 'HEAD') {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Workflow SDK endpoint is healthy');
       } else if (req.url?.includes('__health')) {
-        res.writeHead(405, { Allow: 'POST' });
+        res.writeHead(405, { Allow: 'HEAD' });
         res.end();
       } else if (req.url?.startsWith('/.well-known/workflow/v1/')) {
         res.writeHead(400);

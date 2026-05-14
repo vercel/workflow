@@ -289,7 +289,7 @@ export interface ProbeOptions {
 
 /**
  * Probes a port to check if it's serving the workflow HTTP server.
- * Uses the same POST health check method as the generated workflow endpoint.
+ * Uses HEAD request to minimize overhead.
  *
  * @returns true if the port responds with a 200 status from the health check endpoint
  */
@@ -304,7 +304,7 @@ async function probePort(
 
   try {
     const response = await fetch(`http://localhost:${port}${endpoint}`, {
-      method: 'POST',
+      method: 'HEAD',
       signal: controller.signal,
     });
 

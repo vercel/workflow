@@ -120,12 +120,15 @@ export const prerender = false;\n`
 
     // Normalize request, needed for preserving request through astro
     stepsRouteContent = stepsRouteContent.replace(
-      /export\s*\{\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
+      /export\s*\{\s*stepEntrypoint\s+as\s+HEAD\s*,\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
       `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const handleStepRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return stepEntrypoint(normalRequest);
-}
+};
+
+export const HEAD = handleStepRequest;
+export const POST = handleStepRequest;
 
 export const prerender = false;`
     );
@@ -157,12 +160,15 @@ export const prerender = false;`
 
     // Normalize request, needed for preserving request through astro
     workflowsRouteContent = workflowsRouteContent.replace(
-      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
+      /const handler = workflowEntrypoint\(workflowCode\);\n\nexport const HEAD = handler;\nexport const POST = handler;?$/m,
       `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const handleWorkflowRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode)(normalRequest);
-}
+};
+
+export const HEAD = handleWorkflowRequest;
+export const POST = handleWorkflowRequest;
 
 export const prerender = false;`
     );
