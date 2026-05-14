@@ -135,7 +135,7 @@ function getAnchorHrefs(html: string): string[] {
 
   let match = anchorHrefPattern.exec(html);
   while (match !== null) {
-    hrefs.push(match[1] || match[2] || match[3]);
+    hrefs.push(match[1] ?? match[2] ?? match[3] ?? '');
     match = anchorHrefPattern.exec(html);
   }
 
