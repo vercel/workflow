@@ -94,6 +94,12 @@ export function createDevTests(config?: DevTestConfig) {
       await Promise.all([
         fetchWithTimeout('/').catch(() => {}),
         fetchWithTimeout('/api/chat').catch(() => {}),
+        fetchWithTimeout('/.well-known/workflow/v1/flow?__health').catch(
+          () => {}
+        ),
+        fetchWithTimeout('/.well-known/workflow/v1/step?__health').catch(
+          () => {}
+        ),
       ]);
     };
 
@@ -137,22 +143,17 @@ export function createDevTests(config?: DevTestConfig) {
     });
 
     afterEach(async () => {
-      // Restore file contents before clearing any added files. If a deletion
-      // races ahead of an api-file restore, the dev server briefly sees an
-      // import pointing at a missing module and fails compilation. On Windows
-      // that failure can stick - Turbopack leaves stale imports in the
-      // generated step route bundle — and every subsequent step request
-      // returns 500.
+      // Restore file contents before clearing any added files. Keeping empty
+      // placeholders avoids dev-server races where generated imports briefly
+      // point at a missing module between the dev test and the follow-on e2e
+      // suite.
       const toRestore = restoreFiles.filter((item) => item.content !== '');
-      const toDelete = restoreFiles.filter((item) => item.content === '');
+      const toClear = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
         toRestore.map((item) => fs.writeFile(item.path, item.content))
       );
-      if (toDelete.length > 0) {
-        await Promise.all(toDelete.map((item) => fs.writeFile(item.path, '')));
-        await prewarm();
-        await new Promise((res) => setTimeout(res, 2000));
-        await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
+      if (toClear.length > 0) {
+        await Promise.all(toClear.map((item) => fs.writeFile(item.path, '')));
         await prewarm();
       }
       restoreFiles.length = 0;

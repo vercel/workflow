@@ -239,6 +239,7 @@ const PROBE_ENDPOINT = '/.well-known/workflow/v1/flow?__health';
 export interface ProbeOptions {
   endpoint?: string;
   timeout?: number;
+  candidatePorts?: number[];
 }
 
 /**
@@ -283,7 +284,7 @@ async function probePort(
 export async function getWorkflowPort(
   options?: ProbeOptions
 ): Promise<number | undefined> {
-  const ports = await getAllPorts();
+  const ports = options?.candidatePorts ?? (await getAllPorts());
 
   if (ports.length === 0) {
     return undefined;
