@@ -243,7 +243,7 @@ describe('getWorkflowPort', () => {
 
   it('should identify workflow server among multiple ports', async () => {
     // Non-workflow server (returns 404 for all requests)
-    const nonWorkflowServer = http.createServer((req, res) => {
+    const nonWorkflowServer = http.createServer((_req, res) => {
       res.writeHead(404);
       res.end();
     });
@@ -275,11 +275,11 @@ describe('getWorkflowPort', () => {
 
   it('should fall back to first port when probing fails', async () => {
     // Two non-workflow servers (both return 404)
-    const server1 = http.createServer((req, res) => {
+    const server1 = http.createServer((_req, res) => {
       res.writeHead(404);
       res.end();
     });
-    const server2 = http.createServer((req, res) => {
+    const server2 = http.createServer((_req, res) => {
       res.writeHead(404);
       res.end();
     });
@@ -318,12 +318,10 @@ describe('getWorkflowPort', () => {
     await new Promise<void>((resolve) => slowServer.listen(0, resolve));
     await new Promise<void>((resolve) => fastServer.listen(0, resolve));
 
-    const slowAddr = slowServer.address() as AddressInfo;
     const fastAddr = fastServer.address() as AddressInfo;
     const start = Date.now();
     const port = await getWorkflowPort({
       timeout: 100,
-      candidatePorts: [slowAddr.port, fastAddr.port],
     });
     const elapsed = Date.now() - start;
 
