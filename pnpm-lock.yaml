@@ -22,8 +22,8 @@ catalogs:
       specifier: 3.2.0
       version: 3.2.0
     '@vercel/queue':
-      specifier: 0.1.4
-      version: 0.1.4
+      specifier: 0.1.7
+      version: 0.1.7
     '@vitest/coverage-v8':
       specifier: ^4.0.18
       version: 4.0.18
@@ -1319,7 +1319,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.1.4
+        version: 0.1.7
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1365,7 +1365,7 @@ importers:
     dependencies:
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.1.4
+        version: 0.1.7
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -1472,7 +1472,7 @@ importers:
         version: 3.2.0
       '@vercel/queue':
         specifier: 'catalog:'
-        version: 0.1.4
+        version: 0.1.7
       '@workflow/errors':
         specifier: workspace:*
         version: link:../errors
@@ -8197,8 +8197,8 @@ packages:
       '@opentelemetry/sdk-metrics': '>=1.19.0 <2.0.0'
       '@opentelemetry/sdk-trace-base': '>=1.19.0 <2.0.0'
 
-  '@vercel/queue@0.1.4':
-    resolution: {integrity: sha512-wo+jCycmCX078vQSbkX+RcLvySONDCK0f9aQp5UMKQD1+B+xKt3YVbIYbZukvoHQpbm5nnk6If+ADSeK/PmCgQ==}
+  '@vercel/queue@0.1.7':
+    resolution: {integrity: sha512-4Uk9LOvDPVYqBJGrNDk4fdLte4CmFERXCUJI2y7SRYX1d//dI96Ww7sgKZF4+YDj/YaBXoCZ11AU0HYkVwW9Eg==}
     engines: {node: '>=20.0.0'}
 
   '@vercel/react-router@1.2.6':
@@ -12172,8 +12172,8 @@ packages:
     resolution: {integrity: sha512-RAoaOSXnMLrfUfmFbNynRYjeMru/bhgAYRy/GQVI8gmRq7vm9V9c2gGVYnYoQ008X6YTmRIu5b0397U7vb0bIA==}
     engines: {node: '>=22.0.0'}
 
-  mixpart@0.0.5:
-    resolution: {integrity: sha512-TpWi9/2UIr7VWCVAM7NB4WR4yOglAetBkuKfxs3K0vFcUukqAaW1xsgX0v1gNGiDKzYhPHFcHgarC7jmnaOy4w==}
+  mixpart@0.0.6:
+    resolution: {integrity: sha512-CRdXtgfQH2jARmtNmPR0Q7jL20fiESbaYk1b0KvLD0jCdUuemepREtsbd8nbiY6BHV9OGGddAZITNXklupUPUQ==}
     engines: {node: '>=20.0.0'}
 
   mkdirp-classic@0.5.3:
@@ -22988,11 +22988,11 @@ snapshots:
       '@opentelemetry/sdk-metrics': 1.30.1(@opentelemetry/api@1.9.1)
       '@opentelemetry/sdk-trace-base': 1.30.1(@opentelemetry/api@1.9.1)
 
-  '@vercel/queue@0.1.4':
+  '@vercel/queue@0.1.7':
     dependencies:
       '@vercel/oidc': 3.2.0
       minimatch: 10.2.4
-      mixpart: 0.0.5
+      mixpart: 0.0.6
       picocolors: 1.1.1
 
   '@vercel/react-router@1.2.6(@react-router/dev@7.13.1(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(react-router@7.13.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(terser@5.44.0)(tsx@4.20.6)(typescript@5.9.3)(vite@6.4.1(@types/node@22.19.0)(jiti@2.6.1)(lightningcss@1.32.0)(terser@5.44.0)(tsx@4.20.6)(yaml@2.8.3))(yaml@2.8.3))(@react-router/node@7.13.1(react-router@7.13.1(react-dom@19.1.0(react@19.1.0))(react@19.1.0))(typescript@5.9.3))(isbot@5.1.35)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)':
@@ -27926,7 +27926,7 @@ snapshots:
 
   mixpart@0.0.4: {}
 
-  mixpart@0.0.5: {}
+  mixpart@0.0.6: {}
 
   mkdirp-classic@0.5.3: {}
 
