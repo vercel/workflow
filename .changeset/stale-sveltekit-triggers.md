@@ -2,4 +2,4 @@
 '@workflow/sveltekit': patch
 ---
 
-Remove stale workflow queue triggers from shared SvelteKit Vercel function configs.
+Fix duplicate Workflow queue consumers in SvelteKit deployments by removing stale workflow queue triggers from shared Vercel function configs.

@@ -2,8 +2,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import { SvelteKitBuilder } from './builder.js';
-
-const WORKFLOW_QUEUE_TOPICS = new Set(['__wkf_workflow_*', '__wkf_step_*']);
+import { stripWorkflowQueueTriggers } from './vc-config.js';
 
 const builder = new SvelteKitBuilder();
 
@@ -11,34 +10,6 @@ const builder = new SvelteKitBuilder();
 // entries before svelte plugin is started or the entries are
 // a race to be created before svelte discovers entries
 await builder.build();
-
-function stripWorkflowQueueTriggers(file: string) {
-  if (!fs.existsSync(file)) {
-    return;
-  }
-
-  const existingConfig = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const experimentalTriggers = existingConfig.experimentalTriggers;
-  if (!Array.isArray(experimentalTriggers)) {
-    return;
-  }
-
-  const filteredTriggers = experimentalTriggers.filter(
-    (trigger) => !WORKFLOW_QUEUE_TOPICS.has(trigger?.topic)
-  );
-  if (filteredTriggers.length === experimentalTriggers.length) {
-    return;
-  }
-
-  const nextConfig = { ...existingConfig };
-  if (filteredTriggers.length > 0) {
-    nextConfig.experimentalTriggers = filteredTriggers;
-  } else {
-    delete nextConfig.experimentalTriggers;
-  }
-
-  fs.writeFileSync(file, JSON.stringify(nextConfig));
-}
 
 process.on('beforeExit', () => {
   // Don't patch functions output if not in Vercel adapter
