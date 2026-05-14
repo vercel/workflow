@@ -353,7 +353,24 @@ describe('createQueue', () => {
       queue.createQueueHandler('__wkf_workflow_', async () => undefined);
 
       expect(mockHandleCallback).toHaveBeenCalledTimes(1);
-      expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function));
+      expect(mockHandleCallback).toHaveBeenCalledWith(expect.any(Function), {
+        retry: expect.any(Function),
+      });
+    });
+
+    it('should ask VQS to retry handler errors immediately', () => {
+      mockHandleCallback.mockReturnValue(async () => new Response('ok'));
+
+      const queue = createQueue();
+      queue.createQueueHandler('__wkf_workflow_', async () => undefined);
+
+      const options = mockHandleCallback.mock.calls[0][1];
+      expect(
+        options.retry(new Error('workflow server unavailable'), {
+          messageId: 'msg-123',
+          deliveryCount: 1,
+        })
+      ).toEqual({ afterSeconds: 0 });
     });
 
     it('should send new message with delaySeconds when handler returns timeoutSeconds', async () => {

@@ -290,6 +290,9 @@ export function createQueue(config?: APIConfig): Queue {
           // we may get a duplicate invocation but won't lose the scheduled wakeup.
           await queue(queueName, payload, { deploymentId, delaySeconds });
         }
+      },
+      {
+        retry: () => ({ afterSeconds: 0 }),
       }
     );
 
