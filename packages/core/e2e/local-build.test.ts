@@ -64,6 +64,28 @@ async function runCommandWithLiveOutput(
   });
 }
 
+function isRetryableTurbopackLoaderFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes('TurbopackInternalError') &&
+    message.includes('failed to receive message') &&
+    message.includes('evaluate_webpack_loader')
+  );
+}
+
+async function runBuildWithRetry(cwd: string): Promise<CommandResult> {
+  try {
+    return await runCommandWithLiveOutput('pnpm', ['build'], cwd);
+  } catch (error) {
+    if (!isRetryableTurbopackLoaderFailure(error)) {
+      throw error;
+    }
+
+    console.warn('Retrying build after Turbopack loader transport failure.');
+    return await runCommandWithLiveOutput('pnpm', ['build'], cwd);
+  }
+}
+
 /**
  * Read a file if it exists, return null otherwise.
  */
@@ -105,11 +127,7 @@ describe.each([
       return;
     }
 
-    const result = await runCommandWithLiveOutput(
-      'pnpm',
-      ['build'],
-      getWorkbenchAppPath(project)
-    );
+    const result = await runBuildWithRetry(getWorkbenchAppPath(project));
 
     expect(result.output).not.toContain('Error:');
 
