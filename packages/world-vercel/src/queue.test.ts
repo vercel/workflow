@@ -370,7 +370,13 @@ describe('createQueue', () => {
           messageId: 'msg-123',
           deliveryCount: 1,
         })
-      ).toEqual({ afterSeconds: 5 });
+      ).toEqual({ afterSeconds: 1 });
+      expect(
+        options.retry(new Error('workflow server unavailable'), {
+          messageId: 'msg-123',
+          deliveryCount: 2,
+        })
+      ).toEqual({ afterSeconds: 2 });
       expect(
         options.retry(new Error('workflow server unavailable'), {
           messageId: 'msg-123',

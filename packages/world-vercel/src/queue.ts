@@ -134,7 +134,7 @@ const MAX_DELAY_SECONDS = Number(
   process.env.VERCEL_QUEUE_MAX_DELAY_SECONDS || 82800 // 23 hours - leave 1h buffer before 24h retention limit
 );
 
-const HANDLER_ERROR_RETRY_AFTER_SECONDS = 5;
+const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 60;
 
 function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
@@ -304,10 +304,10 @@ export function createQueue(config?: APIConfig): Queue {
       {
         // Without an explicit retry directive, @vercel/queue leaves failed
         // handler messages invisible until the default 300s visibility timeout
-        // expires. Use the same 5s floor as the generated queue trigger, then
-        // back off by delivery count so an outage or poison message cannot
-        // hot-loop. Workflow handlers are event-sourced and must remain
-        // idempotent because queue retries can happen close together.
+        // expires. Start retrying quickly, then back off by delivery count so
+        // an outage or poison message cannot hot-loop. Workflow handlers are
+        // event-sourced and must remain idempotent because queue retries can
+        // happen close together.
         retry: (_error, { deliveryCount }) => ({
           afterSeconds: getHandlerErrorRetryAfterSeconds(deliveryCount),
         }),
