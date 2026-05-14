@@ -143,10 +143,10 @@ export function createDevTests(config?: DevTestConfig) {
     });
 
     afterEach(async () => {
-      // Restore file contents before clearing any added files. Keeping empty
-      // placeholders avoids dev-server races where generated imports briefly
-      // point at a missing module between the dev test and the follow-on e2e
-      // suite.
+      // Restore file contents before clearing any added files. Next's generated
+      // step route imports deferred copies, so it needs the empty placeholders
+      // to avoid a missing-module race between this suite and the follow-on e2e
+      // suite. Other builders should return to the original file tree.
       const toRestore = restoreFiles.filter((item) => item.content !== '');
       const toClear = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
@@ -155,6 +155,10 @@ export function createDevTests(config?: DevTestConfig) {
       if (toClear.length > 0) {
         await Promise.all(toClear.map((item) => fs.writeFile(item.path, '')));
         await prewarm();
+        if (!supportsDeferredStepCopies) {
+          await Promise.all(toClear.map((item) => fs.unlink(item.path)));
+          await prewarm();
+        }
       }
       restoreFiles.length = 0;
     });
