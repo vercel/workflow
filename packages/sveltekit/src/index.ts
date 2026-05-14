@@ -3,12 +3,42 @@ import fs from 'fs-extra';
 
 import { SvelteKitBuilder } from './builder.js';
 
+const WORKFLOW_QUEUE_TOPICS = new Set(['__wkf_workflow_*', '__wkf_step_*']);
+
 const builder = new SvelteKitBuilder();
 
 // This needs to be in the top-level as we need to create these
 // entries before svelte plugin is started or the entries are
 // a race to be created before svelte discovers entries
 await builder.build();
+
+function stripWorkflowQueueTriggers(file: string) {
+  if (!fs.existsSync(file)) {
+    return;
+  }
+
+  const existingConfig = JSON.parse(fs.readFileSync(file, 'utf8'));
+  const experimentalTriggers = existingConfig.experimentalTriggers;
+  if (!Array.isArray(experimentalTriggers)) {
+    return;
+  }
+
+  const filteredTriggers = experimentalTriggers.filter(
+    (trigger) => !WORKFLOW_QUEUE_TOPICS.has(trigger?.topic)
+  );
+  if (filteredTriggers.length === experimentalTriggers.length) {
+    return;
+  }
+
+  const nextConfig = { ...existingConfig };
+  if (filteredTriggers.length > 0) {
+    nextConfig.experimentalTriggers = filteredTriggers;
+  } else {
+    delete nextConfig.experimentalTriggers;
+  }
+
+  fs.writeFileSync(file, JSON.stringify(nextConfig));
+}
 
 process.on('beforeExit', () => {
   // Don't patch functions output if not in Vercel adapter
@@ -47,21 +77,24 @@ process.on('beforeExit', () => {
       },
     },
   ]) {
+    const funcDir = path.dirname(file);
+    if (!fs.existsSync(funcDir)) {
+      continue;
+    }
+
+    const sourceFuncDir = path.join(
+      funcDir.replace(/\.func$/, ''),
+      '__data.json.func'
+    );
+
     // Un-symlink these as they can't be shared due to different
     // experimental triggers config
-    const toCopy = fs.readdirSync(path.dirname(file));
-    fs.removeSync(path.dirname(file));
-    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const toCopy = fs.readdirSync(funcDir);
+    fs.removeSync(funcDir);
+    fs.mkdirSync(funcDir, { recursive: true });
 
     for (const item of toCopy) {
-      fs.copySync(
-        path.join(
-          path.dirname(file).replace(/\.func$/, ''),
-          '__data.json.func',
-          item
-        ),
-        path.join(path.dirname(file), item)
-      );
+      fs.copySync(path.join(sourceFuncDir, item), path.join(funcDir, item));
     }
 
     // Update .vc-config.json with the new experimental triggers config
@@ -73,6 +106,10 @@ process.on('beforeExit', () => {
         ...config,
       })
     );
+
+    // The source function may be a shared catchall. It must not keep stale
+    // workflow queue triggers after the dedicated function is copied out.
+    stripWorkflowQueueTriggers(path.join(sourceFuncDir, '.vc-config.json'));
   }
 });
 
