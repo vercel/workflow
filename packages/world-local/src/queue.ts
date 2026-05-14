@@ -69,7 +69,7 @@ export type LocalQueue = Queue & {
 const DETACHED_ARRAYBUFFER_ERROR =
   'Cannot perform ArrayBuffer.prototype.slice on a detached ArrayBuffer';
 const PROXY_HANDLER_DOCS_URL =
-  'https://useworkflow.dev/docs/getting-started/next#configure-proxy-handler';
+  'https://workflow-sdk.dev/docs/getting-started/next#configure-proxy-handler';
 
 function isDetachedArrayBufferQueueError(error: unknown): boolean {
   let current = error;

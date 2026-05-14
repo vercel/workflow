@@ -74,12 +74,7 @@ To enable helpful hints in your IDE, setup the workflow plugin in `tsconfig.json
   </AccordionItem>
 </Accordion>
 
-<Accordion type="single" collapsible>
-  <AccordionItem value="typescript-intellisense" className="[&_h3]:my-0">
-    <AccordionTrigger className="text-sm">
-      ### Configure Proxy Handler
-    </AccordionTrigger>
-    <AccordionContent className="[&_p]:my-2">
+## Configure Proxy Handler
 
 If your Next.js app has a [proxy handler](https://nextjs.org/docs/app/api-reference/file-conventions/proxy)
 (formerly known as "middleware"), you'll need to update the matcher pattern to exclude Workflow's
@@ -109,9 +104,6 @@ export const config = {
 ```
 
 This ensures that internal Workflow paths are not intercepted by your middleware, which could interfere with workflow execution and resumption.
-    </AccordionContent>
-  </AccordionItem>
-</Accordion>
 
 </Step>
 
