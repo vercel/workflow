@@ -1,21 +1,12 @@
-import { join, resolve, relative } from 'pathe';
-
-/**
- * Regex to match named imports from relative .ts/.tsx files (externalized by esbuild).
- * esbuild's externalized output emits named imports (`import { ... } from "..."`).
- * Namespace imports (import * as) and default imports are not emitted for externalized
- * source files in this context.
- */
-export const TS_IMPORT_REGEX =
-  /import\s*\{([^}]+)\}\s*from\s*["']((?:\.\.?\/)+[^"']+\.tsx?)["']\s*;?/g;
+import { type ModuleItem, parseSync } from '@swc/core';
+import { join, relative, resolve } from 'pathe';
 
 /**
  * Rewrite externalized .ts/.tsx imports in steps bundle content to use require()
  * for CommonJS compatibility.
  *
  * @returns Object with rewritten content and the number of imports rewritten.
- * matchCount is 0 when no .ts/.tsx imports were found (valid when no externalized
- * imports exist, or could indicate esbuild output format change).
+ * matchCount is 0 when no relative .ts/.tsx imports were found.
  */
 export function rewriteTsImportsInContent(
   stepsContent: string,
@@ -27,39 +18,44 @@ export function rewriteTsImportsInContent(
   }
 ): { content: string; matchCount: number } {
   const { outDir, workingDir, distDir, dirs } = options;
-  const countRegex = new RegExp(TS_IMPORT_REGEX.source, TS_IMPORT_REGEX.flags);
-  const matches: Array<{ fullMatch: string; imports: string; path: string }> =
-    [];
-  let m;
-  while ((m = countRegex.exec(stepsContent)) !== null) {
-    matches.push({ fullMatch: m[0], imports: m[1], path: m[2] });
-  }
+  const module = parseSync(stepsContent, {
+    syntax: 'ecmascript',
+    target: 'es2022',
+    comments: false,
+  });
 
-  if (matches.length === 0) {
+  if (module.body.length === 0) return { content: stepsContent, matchCount: 0 };
+
+  // SWC spans are global across parse calls and skip leading comments.
+  const toStringIndex = createBytePositionMapper(
+    stepsContent,
+    module.span.start - getLeadingSyntaxByteOffset(stepsContent) - 1
+  );
+
+  const replacements = module.body.flatMap((item, index) => {
+    const rewriteOptions = {
+      importIndex: index,
+      toStringIndex,
+      outDir,
+      workingDir,
+      distDir,
+      dirs,
+    };
+    return getImportRewrite(item, rewriteOptions);
+  });
+
+  if (replacements.length === 0)
     return { content: stepsContent, matchCount: 0 };
+
+  let rewritten = stepsContent;
+  for (const replacement of [...replacements].reverse()) {
+    rewritten =
+      rewritten.slice(0, replacement.start) +
+      replacement.code +
+      rewritten.slice(replacement.end);
   }
 
-  const replaceRegex = new RegExp(
-    TS_IMPORT_REGEX.source,
-    TS_IMPORT_REGEX.flags
-  );
-  const rewritten = stepsContent.replace(
-    replaceRegex,
-    (_match, imports: string, tsRelativePath: string) => {
-      const absSourcePath = resolve(outDir, tsRelativePath);
-      const relToWorkingDir = relative(workingDir, absSourcePath);
-      const distRelPath = mapSourceToDistPath(relToWorkingDir, dirs, distDir);
-      const distAbsPath = join(workingDir, distRelPath);
-      let newRelPath = relative(outDir, distAbsPath).replace(/\\/g, '/');
-      if (!newRelPath.startsWith('.')) {
-        newRelPath = `./${newRelPath}`;
-      }
-      const cjsImports = imports.replace(/\s+as\s+/g, ': ');
-      return `const {${cjsImports}} = require("${newRelPath}");`;
-    }
-  );
-
-  return { content: rewritten, matchCount: matches.length };
+  return { content: rewritten, matchCount: replacements.length };
 }
 
 /**
@@ -87,4 +83,221 @@ export function mapSourceToDistPath(
   }
 
   return join(distDir, normalized).replace(/\.tsx?$/, '.js');
+}
+
+type ImportRewriteOptions = {
+  importIndex: number;
+  toStringIndex: (swcBytePosition: number) => number;
+  outDir: string;
+  workingDir: string;
+  distDir: string;
+  dirs: string[];
+};
+
+type Replacement = {
+  start: number;
+  end: number;
+  code: string;
+};
+
+function getImportRewrite(
+  item: ModuleItem,
+  options: ImportRewriteOptions
+): Replacement[] {
+  if (item.type !== 'ImportDeclaration') return [];
+
+  const source = item.source.value;
+  if (!isRelativeTypeScriptImport(source)) return [];
+
+  const requirePath = getRequirePath(source, options);
+  const code = importDeclarationToRequire(
+    item,
+    requirePath,
+    options.importIndex
+  );
+
+  return [
+    {
+      start: options.toStringIndex(item.span.start),
+      end: options.toStringIndex(item.span.end),
+      code,
+    },
+  ];
+}
+
+function isRelativeTypeScriptImport(source: string): boolean {
+  return (
+    (source.startsWith('./') || source.startsWith('../')) &&
+    /\.tsx?$/.test(source)
+  );
+}
+
+function getRequirePath(
+  tsRelativePath: string,
+  { outDir, workingDir, distDir, dirs }: ImportRewriteOptions
+): string {
+  const absSourcePath = resolve(outDir, tsRelativePath);
+  const relToWorkingDir = relative(workingDir, absSourcePath);
+  const distRelPath = mapSourceToDistPath(relToWorkingDir, dirs, distDir);
+  const distAbsPath = join(workingDir, distRelPath);
+  let newRelPath = relative(outDir, distAbsPath).replace(/\\/g, '/');
+  if (!newRelPath.startsWith('.')) {
+    newRelPath = `./${newRelPath}`;
+  }
+  return newRelPath;
+}
+
+function importDeclarationToRequire(
+  declaration: Extract<ModuleItem, { type: 'ImportDeclaration' }>,
+  requirePath: string,
+  importIndex: number
+): string {
+  const requireCall = `require(${JSON.stringify(requirePath)})`;
+  const bindings = getImportBindings(declaration);
+
+  if (declaration.specifiers.length === 0) {
+    return `${requireCall};`;
+  }
+
+  if (bindings.defaultLocal || bindings.namespaceLocal) {
+    return moduleBindingToRequire(bindings, requireCall, importIndex);
+  }
+
+  return `const { ${bindings.namedProperties.join(', ')} } = ${requireCall};`;
+}
+
+type ImportBindings = {
+  defaultLocal?: string;
+  namespaceLocal?: string;
+  namedProperties: string[];
+};
+
+function getImportBindings(
+  declaration: Extract<ModuleItem, { type: 'ImportDeclaration' }>
+): ImportBindings {
+  const bindings: ImportBindings = { namedProperties: [] };
+
+  for (const specifier of declaration.specifiers) {
+    if (specifier.type === 'ImportDefaultSpecifier')
+      bindings.defaultLocal = specifier.local.value;
+    if (specifier.type === 'ImportNamespaceSpecifier')
+      bindings.namespaceLocal = specifier.local.value;
+    if (specifier.type === 'ImportSpecifier') {
+      bindings.namedProperties.push(getNamedProperty(specifier));
+    }
+  }
+
+  return bindings;
+}
+
+function getNamedProperty(
+  specifier: Extract<
+    Extract<ModuleItem, { type: 'ImportDeclaration' }>['specifiers'][number],
+    { type: 'ImportSpecifier' }
+  >
+): string {
+  const imported =
+    specifier.imported?.type === 'StringLiteral'
+      ? JSON.stringify(specifier.imported.value)
+      : (specifier.imported?.value ?? specifier.local.value);
+  const local = specifier.local.value;
+  return imported === local ? local : `${imported}: ${local}`;
+}
+
+function moduleBindingToRequire(
+  bindings: ImportBindings,
+  requireCall: string,
+  importIndex: number
+): string {
+  const moduleBinding = `__workflow_cjs_import_${importIndex}`;
+  const statements = [`const ${moduleBinding} = ${requireCall};`];
+
+  if (bindings.defaultLocal) {
+    statements.push(
+      defaultBindingToRequire(bindings.defaultLocal, moduleBinding)
+    );
+  }
+  if (bindings.namespaceLocal) {
+    statements.push(`const ${bindings.namespaceLocal} = ${moduleBinding};`);
+  }
+  if (bindings.namedProperties.length > 0) {
+    statements.push(
+      `const { ${bindings.namedProperties.join(', ')} } = ${moduleBinding};`
+    );
+  }
+
+  return statements.join('\n');
+}
+
+function defaultBindingToRequire(
+  localName: string,
+  moduleBinding: string
+): string {
+  return (
+    `const ${localName} = ${moduleBinding} != null && ` +
+    `Object.prototype.hasOwnProperty.call(${moduleBinding}, "default") ` +
+    `? ${moduleBinding}.default : ${moduleBinding};`
+  );
+}
+
+function createBytePositionMapper(
+  source: string,
+  swcBasePosition: number
+): (swcBytePosition: number) => number {
+  const byteOffsetToStringIndex = new Map<number, number>();
+  const encoder = new TextEncoder();
+  let byteOffset = 0;
+
+  for (let index = 0; index < source.length; ) {
+    byteOffsetToStringIndex.set(byteOffset, index);
+    const codePoint = source.codePointAt(index);
+    if (codePoint === undefined) break;
+    const character = String.fromCodePoint(codePoint);
+    byteOffset += encoder.encode(character).byteLength;
+    index += character.length;
+  }
+  byteOffsetToStringIndex.set(byteOffset, source.length);
+
+  return (swcBytePosition: number) => {
+    // SWC positions are 1-based UTF-8 byte offsets.
+    const byteOffset = swcBytePosition - swcBasePosition - 1;
+    const stringIndex = byteOffsetToStringIndex.get(byteOffset);
+    if (stringIndex === undefined) {
+      throw new Error(
+        `Unable to map SWC byte position ${swcBytePosition} to a string index`
+      );
+    }
+    return stringIndex;
+  };
+}
+
+function getLeadingSyntaxByteOffset(source: string): number {
+  let index = source.startsWith('#!') ? skipLineComment(source, 0) : 0;
+
+  while (index < source.length) {
+    if (/\s/.test(source[index])) {
+      index += 1;
+      continue;
+    }
+
+    if (source.startsWith('//', index)) {
+      index = skipLineComment(source, index);
+      continue;
+    }
+
+    if (source.startsWith('/*', index)) {
+      const commentEnd = source.indexOf('*/', index + 2);
+      index = commentEnd === -1 ? source.length : commentEnd + 2;
+      continue;
+    }
+
+    break;
+  }
+
+  return new TextEncoder().encode(source.slice(0, index)).byteLength;
+}
+
+function skipLineComment(source: string, index: number): number {
+  const newlineIndex = source.indexOf('\n', index);
+  return newlineIndex === -1 ? source.length : newlineIndex + 1;
 }
