@@ -47,6 +47,8 @@ if (!deploymentUrl) {
   throw new Error('`DEPLOYMENT_URL` environment variable is not set');
 }
 
+const remoteE2ETimeout = process.env.WORKFLOW_VERCEL_ENV ? 360_000 : 60_000;
+
 /**
  * Tracked wrapper around start() that automatically registers runs
  * for diagnostics on test failure and observability metadata collection.
@@ -163,7 +165,7 @@ describe('e2e', () => {
       workflowFile: 'workflows/98_duplicate_case.ts',
       workflowFn: 'addTenWorkflow',
     },
-  ])('addTenWorkflow', { timeout: 60_000 }, async (workflow) => {
+  ])('addTenWorkflow', { timeout: remoteE2ETimeout }, async (workflow) => {
     const run = await start(
       await getWorkflowMetadata(
         deploymentUrl,
