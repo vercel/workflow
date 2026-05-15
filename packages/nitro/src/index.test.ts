@@ -5,11 +5,13 @@ import nitroModule from './index.js';
 function createNitroStub({
   routing,
   externals,
+  workflow,
 }: {
   routing: boolean;
   externals?: {
     external?: Array<string | RegExp | ((id: string) => boolean)>;
   };
+  workflow?: Record<string, unknown>;
 }) {
   return {
     routing,
@@ -23,7 +25,7 @@ function createNitroStub({
       rootDir: '/tmp/project',
       typescript: {},
       virtual: {},
-      workflow: {},
+      workflow: workflow ?? {},
     },
     hooks: {
       hook() {},
@@ -96,6 +98,32 @@ describe('@workflow/nitro externals forwarding', () => {
         });
         const builder = new Builder(nitro) as any;
         expect(builder.config.externalPackages).toBeUndefined();
+      });
+    });
+  }
+});
+
+describe('@workflow/nitro workflow.dirs forwarding', () => {
+  for (const [label, Builder] of [
+    ['VercelBuilder', VercelBuilder],
+    ['LocalBuilder', LocalBuilder],
+  ] as const) {
+    describe(label, () => {
+      it('keeps the Nitro-wide scan default when workflow.dirs is unset', () => {
+        const nitro = createNitroStub({ routing: true });
+        const builder = new Builder(nitro) as any;
+
+        expect(builder.config.dirs).toEqual(['.']);
+      });
+
+      it('forwards workflow.dirs to the workflow builder', () => {
+        const nitro = createNitroStub({
+          routing: true,
+          workflow: { dirs: ['workflows', 'src/jobs'] },
+        });
+        const builder = new Builder(nitro) as any;
+
+        expect(builder.config.dirs).toEqual(['workflows', 'src/jobs']);
       });
     });
   }
