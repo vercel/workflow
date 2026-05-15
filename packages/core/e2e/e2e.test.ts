@@ -349,12 +349,12 @@ describe('e2e', () => {
 
     const run = await start(await e2e('hookWorkflow'), [token, customData]);
 
-    // Wait a few seconds so that the hook is registered.
-    // TODO: make this more efficient when we add subscription support.
-    await new Promise((resolve) => setTimeout(resolve, 5_000));
-
     // Look up the hook and resume it with the first payload
-    let hook = await getHookByToken(token);
+    let hook = await waitForHookState(
+      token,
+      (candidate) => candidate?.runId === run.runId
+    );
+    assert(hook, 'Expected hook to be registered');
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'one',
@@ -365,7 +365,11 @@ describe('e2e', () => {
     await expect(getHookByToken('invalid')).rejects.toThrow(/not found/i);
 
     // Resume with second payload
-    hook = await getHookByToken(token);
+    hook = await waitForHookState(
+      token,
+      (candidate) => candidate?.runId === run.runId
+    );
+    assert(hook, 'Expected hook to be registered after first payload');
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'two',
@@ -373,7 +377,11 @@ describe('e2e', () => {
     });
 
     // Resume with third (final) payload
-    hook = await getHookByToken(token);
+    hook = await waitForHookState(
+      token,
+      (candidate) => candidate?.runId === run.runId
+    );
+    assert(hook, 'Expected hook to be registered after second payload');
     expect(hook.runId).toBe(run.runId);
     await resumeHook(hook, {
       message: 'three',
@@ -404,11 +412,12 @@ describe('e2e', () => {
 
       const run = await start(await e2e('hookWorkflow'), [token, customData]);
 
-      // Wait for the hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
       // Verify the hook exists via server-side API
-      const hook = await getHookByToken(token);
+      const hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run.runId
+      );
+      assert(hook, 'Expected hook to be registered');
       expect(hook.runId).toBe(run.runId);
 
       // Attempt to resume via the public webhook endpoint — should get 404
@@ -1253,11 +1262,12 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
       // Send payload to first workflow
-      let hook = await getHookByToken(token);
+      let hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
+      assert(hook, 'Expected hook to be registered by workflow 1');
       expect(hook.runId).toBe(run1.runId);
       await resumeHook(hook, {
         message: 'test-message-1',
@@ -1278,11 +1288,12 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
       // Send payload to second workflow using same token
-      hook = await getHookByToken(token);
+      hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run2.runId
+      );
+      assert(hook, 'Expected hook to be registered by workflow 2');
       expect(hook.runId).toBe(run2.runId);
       await resumeHook(hook, {
         message: 'test-message-2',
@@ -1319,8 +1330,10 @@ describe('e2e', () => {
         customData,
       ]);
 
-      // Wait for the hook to be registered by workflow 1
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
 
       // Start second workflow with the SAME token while first is still running
       // This should fail because the hook token is already in use
@@ -1342,7 +1355,11 @@ describe('e2e', () => {
       expect(run2Data.status).toBe('failed');
 
       // Now send a payload to complete workflow 1
-      const hook = await getHookByToken(token);
+      const hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
+      assert(hook, 'Expected hook to still belong to workflow 1');
       await resumeHook(hook, {
         message: 'test-concurrent',
         customData: (hook.metadata as any)?.customData,
@@ -2131,23 +2148,32 @@ describe('e2e', () => {
 
       const run = await start(await e2e('hookWithSleepWorkflow'), [token]);
 
-      // Wait for the hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
       // Send 3 payloads: two normal ones, then one with done=true
-      let hook = await getHookByToken(token);
+      let hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run.runId
+      );
+      assert(hook, 'Expected hook to be registered');
       expect(hook.runId).toBe(run.runId);
       await resumeHook(hook, { type: 'subscribe', id: 1 });
 
       // Wait for the first payload to be processed (step must complete)
       await new Promise((resolve) => setTimeout(resolve, 3_000));
 
-      hook = await getHookByToken(token);
+      hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run.runId
+      );
+      assert(hook, 'Expected hook to be registered after first payload');
       await resumeHook(hook, { type: 'subscribe', id: 2 });
 
       await new Promise((resolve) => setTimeout(resolve, 3_000));
 
-      hook = await getHookByToken(token);
+      hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run.runId
+      );
+      assert(hook, 'Expected hook to be registered after second payload');
       await resumeHook(hook, { type: 'done', done: true });
 
       const returnValue = await run.returnValue;
