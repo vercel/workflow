@@ -23,6 +23,24 @@ const WORKFLOW_ROUTES = [
   },
 ];
 
+function replaceGeneratedRouteExport(
+  content: string,
+  pattern: RegExp,
+  replacement: string,
+  errorMessage: string
+) {
+  const sourceMapMarker = '\n//# sourceMappingURL=';
+  const sourceMapIndex = content.lastIndexOf(sourceMapMarker);
+  const routeCode =
+    sourceMapIndex === -1 ? content : content.slice(0, sourceMapIndex);
+  const sourceMap = sourceMapIndex === -1 ? '' : content.slice(sourceMapIndex);
+  const wrappedRouteCode = routeCode.replace(pattern, replacement);
+  if (wrappedRouteCode === routeCode) {
+    throw new Error(errorMessage);
+  }
+  return wrappedRouteCode + sourceMap;
+}
+
 export class LocalBuilder extends BaseBuilder {
   constructor() {
     super({
@@ -119,8 +137,9 @@ export const prerender = false;\n`
     let stepsRouteContent = await readFile(stepsRouteFile, 'utf-8');
 
     // Normalize request, needed for preserving request through astro
-    stepsRouteContent = stepsRouteContent.replace(
-      /export\s*\{\s*stepEntrypoint\s+as\s+HEAD\s*,\s*stepEntrypoint\s+as\s+POST\s*\}\s*;?$/m,
+    stepsRouteContent = replaceGeneratedRouteExport(
+      stepsRouteContent,
+      /export\s*\{\s*stepEntrypoint\w*\s+as\s+HEAD\s*,\s*stepEntrypoint\w*\s+as\s+POST\s*\}\s*;?\s*$/m,
       `${NORMALIZE_REQUEST_CODE}
 const handleStepRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
@@ -130,7 +149,8 @@ const handleStepRequest = async ({request}) => {
 export const HEAD = handleStepRequest;
 export const POST = handleStepRequest;
 
-export const prerender = false;`
+export const prerender = false;`,
+      'Failed to wrap generated Astro step route'
     );
     await writeFile(stepsRouteFile, stepsRouteContent);
 
@@ -159,8 +179,8 @@ export const prerender = false;`
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
 
     // Normalize request, needed for preserving request through astro
-    workflowsRouteContent = workflowsRouteContent.replace(
-      /const handler = workflowEntrypoint\(workflowCode\);\n\nexport const HEAD = handler;\nexport const POST = handler;?$/m,
+    const wrappedWorkflowsRouteContent = workflowsRouteContent.replace(
+      /const handler = workflowEntrypoint\(workflowCode\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
       `${NORMALIZE_REQUEST_CODE}
 const handleWorkflowRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
@@ -172,6 +192,10 @@ export const POST = handleWorkflowRequest;
 
 export const prerender = false;`
     );
+    if (wrappedWorkflowsRouteContent === workflowsRouteContent) {
+      throw new Error('Failed to wrap generated Astro workflow route');
+    }
+    workflowsRouteContent = wrappedWorkflowsRouteContent;
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
     return manifest;
