@@ -136,11 +136,20 @@ const MAX_DELAY_SECONDS = Number(
 
 const HANDLER_ERROR_RETRY_AFTER_SECONDS = 1;
 const HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS = 60;
+const HANDLER_ERROR_RETRY_JITTER_RATIO = 0.25;
 
 function getHandlerErrorRetryAfterSeconds(deliveryCount: number): number {
-  return Math.min(
+  const backoffSeconds = Math.min(
     Math.max(HANDLER_ERROR_RETRY_AFTER_SECONDS, 2 ** (deliveryCount - 1)),
     HANDLER_ERROR_MAX_RETRY_AFTER_SECONDS
+  );
+  const jitterSeconds = Math.floor(
+    Math.random() *
+      (Math.ceil(backoffSeconds * HANDLER_ERROR_RETRY_JITTER_RATIO) + 1)
+  );
+  return Math.max(
+    HANDLER_ERROR_RETRY_AFTER_SECONDS,
+    backoffSeconds - jitterSeconds
   );
 }
 
@@ -304,10 +313,10 @@ export function createQueue(config?: APIConfig): Queue {
       {
         // Without an explicit retry directive, @vercel/queue leaves failed
         // handler messages invisible until the default 300s visibility timeout
-        // expires. Start retrying quickly, then back off by delivery count so
-        // an outage or poison message cannot hot-loop. Workflow handlers are
-        // event-sourced and must remain idempotent because queue retries can
-        // happen close together.
+        // expires. Start retrying quickly, then back off by delivery count
+        // with jitter so an outage or poison message cannot hot-loop or
+        // redrive in lockstep. Workflow handlers are event-sourced and must
+        // remain idempotent because queue retries can happen close together.
         retry: (_error, { deliveryCount }) => ({
           afterSeconds: getHandlerErrorRetryAfterSeconds(deliveryCount),
         }),
