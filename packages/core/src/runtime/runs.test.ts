@@ -19,7 +19,7 @@ import {
   hydrateStepReturnValue,
 } from '../serialization.js';
 import { Run } from './run.js';
-import { wakeUpRun } from './runs.js';
+import { cancelRun, wakeUpRun } from './runs.js';
 import { setWorld } from './world.js';
 
 function createMockWorld(
@@ -105,6 +105,41 @@ describe('wakeUpRun', () => {
     const world = createMockWorld({ events, createError: serverError });
 
     await expect(wakeUpRun(world, 'wrun_123')).rejects.toThrow(AggregateError);
+  });
+});
+
+describe('cancelRun', () => {
+  it('should create a run_cancelled event with the run specVersion', async () => {
+    const world = createMockWorld({ run: { specVersion: 2 } });
+
+    await cancelRun(world, 'wrun_123');
+
+    expect(world.runs.get).toHaveBeenCalledWith('wrun_123', {
+      resolveData: 'none',
+    });
+    expect(world.events.create).toHaveBeenCalledWith(
+      'wrun_123',
+      {
+        eventType: 'run_cancelled',
+        specVersion: 2,
+      },
+      { v1Compat: false }
+    );
+  });
+
+  it('should use the legacy cancel endpoint for legacy runs', async () => {
+    const world = createMockWorld({ run: { specVersion: undefined } });
+
+    await cancelRun(world, 'wrun_123');
+
+    expect(world.events.create).toHaveBeenCalledWith(
+      'wrun_123',
+      {
+        eventType: 'run_cancelled',
+        specVersion: 1,
+      },
+      { v1Compat: true }
+    );
   });
 });
 
