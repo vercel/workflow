@@ -12,7 +12,11 @@ import {
 } from '@workflow/errors';
 import { pluralize } from '@workflow/utils';
 import { getPort } from '@workflow/utils/get-port';
-import { SPEC_VERSION_CURRENT, StepInvokePayloadSchema } from '@workflow/world';
+import {
+  SPEC_VERSION_CURRENT,
+  type Step,
+  StepInvokePayloadSchema,
+} from '@workflow/world';
 import { importKey } from '../encryption.js';
 import { runtimeLogger, stepLogger } from '../logger.js';
 import { getStepFunction } from '../private.js';
@@ -178,7 +182,7 @@ const stepHandler = createQueueHandler(
           // - Step not in terminal state (returns 409)
           // - retryAfter timestamp reached (returns 425 with Retry-After header)
           // - Workflow still active (returns 410 if completed)
-          let step;
+          let step: Step;
           try {
             const startResult = await world.events.create(
               workflowRunId,
@@ -780,12 +784,14 @@ const stepHandler = createQueueHandler(
           // The workflow runtime must be resilient to the below code not executing on a failed step
           result = await trace('step.dehydrate', {}, async (dehydrateSpan) => {
             const startTime = Date.now();
+            const returnValueOpsStart = ops.length;
             const dehydrated = await dehydrateStepReturnValue(
               result,
               workflowRunId,
               encryptionKey,
               ops
             );
+            await Promise.all(ops.slice(returnValueOpsStart));
             const durationMs = Date.now() - startTime;
             dehydrateSpan?.setAttributes({
               ...Attribute.QueueSerializeTimeMs(durationMs),
