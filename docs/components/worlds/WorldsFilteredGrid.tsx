@@ -12,7 +12,13 @@ interface WorldsFilteredGridProps {
 }
 
 const managedIds = new Set(['vercel']);
-const embeddedIds = new Set(['local', 'redis', 'turso']);
+const embeddedIds = new Set([
+  'local',
+  'redis',
+  'turso',
+  'fantasticfour-redis',
+  'fantasticfour-redis-bullmq',
+]);
 
 const sections = [
   {
