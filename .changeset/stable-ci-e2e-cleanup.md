@@ -9,4 +9,4 @@
 "workflow": patch
 ---
 
-Fix local workflow port detection, make generated health endpoints respond to HEAD requests, materialize manual webhook response bodies before returning them, and allow remote Vercel e2e CLI inspections enough time to fetch run data.
+Fix local workflow port detection, make generated health endpoints respond to HEAD requests, materialize manual webhook response bodies before returning them, and stabilize remote Vercel e2e checks around CLI inspection, sleep timing, and hook disposal.

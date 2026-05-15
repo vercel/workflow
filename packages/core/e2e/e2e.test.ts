@@ -49,6 +49,44 @@ if (!deploymentUrl) {
 
 const remoteE2ETimeout = process.env.WORKFLOW_VERCEL_ENV ? 360_000 : 60_000;
 
+type E2EEvent = {
+  eventType: string;
+  createdAt?: string | Date;
+};
+
+function getEventCreatedAt(events: E2EEvent[], eventType: string): number {
+  const event = events.find((candidate) => candidate.eventType === eventType);
+  assert(event?.createdAt, `Could not find ${eventType} event timestamp`);
+  return new Date(event.createdAt).getTime();
+}
+
+async function waitForHookState(
+  token: string,
+  predicate: (
+    hook: Awaited<ReturnType<typeof getHookByToken>> | undefined
+  ) => boolean,
+  timeoutMs = process.env.WORKFLOW_VERCEL_ENV ? 30_000 : 10_000
+) {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < timeoutMs) {
+    let hook: Awaited<ReturnType<typeof getHookByToken>> | undefined;
+    try {
+      hook = await getHookByToken(token);
+    } catch {
+      hook = undefined;
+    }
+
+    if (predicate(hook)) {
+      return hook;
+    }
+
+    await sleep(500);
+  }
+
+  throw new Error(`Timed out waiting for hook token "${token}" state`);
+}
+
 /**
  * Tracked wrapper around start() that automatically registers runs
  * for diagnostics on test failure and observability metadata collection.
@@ -525,7 +563,13 @@ describe('e2e', () => {
     const run = await start(await e2e('sleepingWorkflow'), []);
     const returnValue = await run.returnValue;
     expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
-    expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
+
+    const { json: events } = await cliInspectJson(
+      `events --run ${run.runId} --json`
+    );
+    const runStartedAt = getEventCreatedAt(events, 'run_started');
+    const waitCompletedAt = getEventCreatedAt(events, 'wait_completed');
+    expect(waitCompletedAt - runStartedAt).toBeGreaterThan(9999);
   });
 
   test('parallelSleepWorkflow', { timeout: 60_000 }, async () => {
@@ -1331,11 +1375,11 @@ describe('e2e', () => {
       ]);
 
       // Wait for the hook to be registered by workflow 1
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-      // Verify the hook exists and belongs to workflow 1
-      let hook = await getHookByToken(token);
-      expect(hook.runId).toBe(run1.runId);
+      let hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run1.runId
+      );
+      assert(hook, 'Expected hook to be registered by workflow 1');
 
       // Send payload to first workflow - this will trigger it to dispose the hook
       await resumeHook(hook, {
@@ -1345,7 +1389,7 @@ describe('e2e', () => {
 
       // Wait for workflow 1 to process the payload and dispose the hook
       // The workflow has a 5s sleep after disposal, so it's still running
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      await waitForHookState(token, (candidate) => candidate === undefined);
 
       // Now start workflow 2 with the SAME token while workflow 1 is still running
       // This should succeed because workflow 1 disposed its hook
@@ -1355,11 +1399,11 @@ describe('e2e', () => {
       ]);
 
       // Wait for workflow 2's hook to be registered
-      await new Promise((resolve) => setTimeout(resolve, 5_000));
-
-      // Verify the hook now belongs to workflow 2
-      hook = await getHookByToken(token);
-      expect(hook.runId).toBe(run2.runId);
+      hook = await waitForHookState(
+        token,
+        (candidate) => candidate?.runId === run2.runId
+      );
+      assert(hook, 'Expected hook to be registered by workflow 2');
 
       // Send payload to workflow 2
       await resumeHook(hook, {
@@ -2065,7 +2109,13 @@ describe('e2e', () => {
       );
       const returnValue = await run.returnValue;
       expect(returnValue.startTime).toBeLessThan(returnValue.endTime);
-      expect(returnValue.endTime - returnValue.startTime).toBeGreaterThan(9999);
+
+      const { json: events } = await cliInspectJson(
+        `events --run ${run.runId} --json`
+      );
+      const runStartedAt = getEventCreatedAt(events, 'run_started');
+      const waitCompletedAt = getEventCreatedAt(events, 'wait_completed');
+      expect(waitCompletedAt - runStartedAt).toBeGreaterThan(9999);
     });
   });
 
