@@ -26,6 +26,19 @@ import { waitedUntil } from '../util.js';
 import { getWorkflowQueueName } from './helpers.js';
 import { getWorld } from './world.js';
 
+async function materializeResponseBody(response: Response): Promise<Response> {
+  if (!response.body) {
+    return response;
+  }
+
+  const body = await response.arrayBuffer();
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}
+
 /**
  * Internal helper that returns the hook, the associated workflow run,
  * and the resolved encryption key.
@@ -297,9 +310,9 @@ export async function resumeWebhook(
     const reader = responseReadable.getReader();
     const chunk = await reader.read();
     if (chunk.value) {
-      response = chunk.value;
+      response = await materializeResponseBody(chunk.value);
     }
-    reader.cancel();
+    await reader.cancel();
   }
 
   if (!response) {

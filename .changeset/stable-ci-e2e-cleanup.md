@@ -9,4 +9,4 @@
 "workflow": patch
 ---
 
-Fix local workflow port detection and make generated health endpoints respond to HEAD requests.
+Fix local workflow port detection, make generated health endpoints respond to HEAD requests, and materialize manual webhook response bodies before returning them.
