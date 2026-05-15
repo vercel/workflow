@@ -2,32 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   mapSourceToDistPath,
   rewriteTsImportsInContent,
-  TS_IMPORT_REGEX,
 } from './cjs-rewrite.js';
-
-describe('TS_IMPORT_REGEX', () => {
-  const testRegex = () =>
-    new RegExp(TS_IMPORT_REGEX.source, TS_IMPORT_REGEX.flags);
-
-  it('matches named imports from .ts files', () => {
-    const s = 'import { foo, bar } from "../src/services/helper.ts";';
-    expect(testRegex().test(s)).toBe(true);
-  });
-
-  it('matches named imports from .tsx files', () => {
-    const s = 'import { foo } from "./components/Widget.tsx";';
-    expect(testRegex().test(s)).toBe(true);
-  });
-
-  it('matches imports with "as" alias', () => {
-    const s = 'import { hasValue as hv } from "../utils.ts";';
-    expect(testRegex().test(s)).toBe(true);
-  });
-
-  it('does not match imports from node_modules', () => {
-    expect(testRegex().test('import { x } from "@workflow/core";')).toBe(false);
-  });
-});
 
 describe('rewriteTsImportsInContent', () => {
   const opts = {
@@ -53,6 +28,27 @@ describe('rewriteTsImportsInContent', () => {
     expect(result).toMatch(/\bfoo\b.*\bbar\b/);
   });
 
+  it('rewrites multiline named imports', () => {
+    const content = [
+      'import {',
+      '  foo,',
+      '  bar as renamedBar,',
+      '} from "../../src/services/helper.ts";',
+      'const x = foo;',
+    ].join('\n');
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toContain(
+      'const { foo, bar: renamedBar } = require("../../dist/services/helper.js");'
+    );
+    expect(result).toContain('const x = foo;');
+  });
+
   it('rewrites imports with "as" alias', () => {
     const content = 'import { hasValue as hv } from "../../src/utils.ts";';
 
@@ -64,6 +60,93 @@ describe('rewriteTsImportsInContent', () => {
     expect(matchCount).toBe(1);
     expect(result).toContain('hasValue: hv');
     expect(result).toContain('require("../../dist/utils.js")');
+  });
+
+  it('rewrites default imports through a module binding', () => {
+    const content = 'import helper from "../../src/services/helper.ts";';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toContain(
+      'const __workflow_cjs_import_0 = require("../../dist/services/helper.js");'
+    );
+    expect(result).toContain(
+      'const helper = __workflow_cjs_import_0 != null && Object.prototype.hasOwnProperty.call(__workflow_cjs_import_0, "default") ? __workflow_cjs_import_0.default : __workflow_cjs_import_0;'
+    );
+  });
+
+  it('rewrites mixed default and named imports', () => {
+    const content =
+      'import helper, { foo, bar as renamedBar } from "../../src/services/helper.ts";';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toContain(
+      'const __workflow_cjs_import_0 = require("../../dist/services/helper.js");'
+    );
+    expect(result).toContain(
+      'const helper = __workflow_cjs_import_0 != null && Object.prototype.hasOwnProperty.call(__workflow_cjs_import_0, "default") ? __workflow_cjs_import_0.default : __workflow_cjs_import_0;'
+    );
+    expect(result).toContain(
+      'const { foo, bar: renamedBar } = __workflow_cjs_import_0;'
+    );
+  });
+
+  it('rewrites namespace imports', () => {
+    const content = 'import * as helper from "../../src/services/helper.ts";';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toBe(
+      'const __workflow_cjs_import_0 = require("../../dist/services/helper.js");\n' +
+        'const helper = __workflow_cjs_import_0;'
+    );
+  });
+
+  it('rewrites side-effect imports', () => {
+    const content = 'import "../../src/setup.ts";';
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toBe('require("../../dist/setup.js");');
+  });
+
+  it('rewrites imports after non-ascii content', () => {
+    const content = [
+      '// 你好',
+      'import { foo } from "../../src/services/helper.ts";',
+      'const x = foo;',
+    ].join('\n');
+
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(1);
+    expect(result).toBe(
+      [
+        '// 你好',
+        'const { foo } = require("../../dist/services/helper.js");',
+        'const x = foo;',
+      ].join('\n')
+    );
   });
 
   it('handles .tsx files', () => {
@@ -80,6 +163,18 @@ describe('rewriteTsImportsInContent', () => {
 
   it('returns matchCount 0 when no .ts/.tsx imports', () => {
     const content = 'import { x } from "@workflow/core";\nconst y = 1;';
+    const { content: result, matchCount } = rewriteTsImportsInContent(
+      content,
+      opts
+    );
+
+    expect(matchCount).toBe(0);
+    expect(result).toBe(content);
+  });
+
+  it('does not rewrite non-relative imports', () => {
+    const content = 'import { x } from "@workflow/core";';
+
     const { content: result, matchCount } = rewriteTsImportsInContent(
       content,
       opts
