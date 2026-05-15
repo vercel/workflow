@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import { ChevronDownIcon } from 'lucide-react';
 import { Accordion as AccordionPrimitive } from 'radix-ui';
 import type * as React from 'react';
@@ -9,7 +10,38 @@ import { cn } from '@/lib/utils';
 function Accordion({
   ...props
 }: React.ComponentProps<typeof AccordionPrimitive.Root>) {
-  return <AccordionPrimitive.Root data-slot="accordion" {...props} />;
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const syncHashTarget = () => {
+      const hash = window.location.hash.slice(1);
+      if (!hash || !ref.current) return;
+
+      const target = document.getElementById(decodeURIComponent(hash));
+      if (!target || !ref.current.contains(target)) return;
+
+      const item = target.closest<HTMLElement>('[data-slot="accordion-item"]');
+      const trigger = item?.querySelector<HTMLElement>(
+        '[data-slot="accordion-trigger"]'
+      );
+
+      if (item?.dataset.state !== 'open') {
+        trigger?.click();
+      }
+
+      requestAnimationFrame(() => {
+        target.scrollIntoView({ block: 'start' });
+      });
+    };
+
+    syncHashTarget();
+    window.addEventListener('hashchange', syncHashTarget);
+    return () => {
+      window.removeEventListener('hashchange', syncHashTarget);
+    };
+  }, []);
+
+  return <AccordionPrimitive.Root data-slot="accordion" ref={ref} {...props} />;
 }
 
 function AccordionItem({

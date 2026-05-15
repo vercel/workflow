@@ -798,7 +798,6 @@ jobs:
       world-package: ${{ matrix.world.package }}
       service-type: ${{ matrix.world.service-type }}
       env-vars: ${{ matrix.world.env-vars }}
-      setup-command: ${{ matrix.world.setup-command }}
     secrets: inherit
 
   # Final job: Aggregate all E2E results and update PR comment
