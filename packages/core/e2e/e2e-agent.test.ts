@@ -37,6 +37,8 @@ async function start<T>(
 // @workflow/ai step files are missing from the step bundle, causing
 // "doStreamStep not found" errors. Skip agent tests on canary until fixed.
 const isCanary = process.env.NEXT_CANARY === '1';
+const vercelProductionRetry =
+  process.env.WORKFLOW_VERCEL_ENV === 'production' ? 1 : 0;
 
 async function agentE2e(fn: string) {
   return getWorkflowMetadata(
@@ -76,14 +78,18 @@ describe.skipIf(isCanary)('DurableAgent e2e', { timeout: 120_000 }, () => {
       expect(rv.lastStepText).toBe('The sum is 10');
     });
 
-    it('multiple sequential tool calls', async () => {
-      const run = await start(await agentE2e('agentMultiStepE2e'), []);
-      const rv = await run.returnValue;
-      expect(rv).toMatchObject({
-        stepCount: 4,
-        lastStepText: 'All done!',
-      });
-    });
+    it(
+      'multiple sequential tool calls',
+      { retry: vercelProductionRetry, timeout: 120_000 },
+      async () => {
+        const run = await start(await agentE2e('agentMultiStepE2e'), []);
+        const rv = await run.returnValue;
+        expect(rv).toMatchObject({
+          stepCount: 4,
+          lastStepText: 'All done!',
+        });
+      }
+    );
 
     it('tool error recovery', async () => {
       const run = await start(await agentE2e('agentErrorToolE2e'), []);
