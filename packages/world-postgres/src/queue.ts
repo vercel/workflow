@@ -17,7 +17,7 @@ import {
   run,
   type WorkerUtils,
 } from 'graphile-worker';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { monotonicFactory } from 'ulid';
 import { z } from 'zod/v4';
 import type { PostgresWorldConfig } from './config.js';
@@ -330,25 +330,38 @@ export function createQueue(
     }
   }
 
+  async function withGraphileMigrationLock<T>(
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const client: PoolClient = await pool.connect();
+    try {
+      await client.query('SELECT pg_advisory_lock(hashtext($1))', [
+        GRAPHILE_MIGRATION_LOCK_KEY,
+      ]);
+      try {
+        return await fn();
+      } finally {
+        await client.query('SELECT pg_advisory_unlock(hashtext($1))', [
+          GRAPHILE_MIGRATION_LOCK_KEY,
+        ]);
+      }
+    } finally {
+      client.release();
+    }
+  }
+
   async function start(): Promise<void> {
     if (!startPromise) {
       startPromise = (async () => {
         try {
-          await pool.query('SELECT pg_advisory_lock(hashtext($1))', [
-            GRAPHILE_MIGRATION_LOCK_KEY,
-          ]);
-          try {
+          await withGraphileMigrationLock(async () => {
             workerUtils = await makeWorkerUtils({
               pgPool: pool,
               logger: graphileLogger,
             });
             await workerUtils.migrate();
             await migratePgBossJobs(workerUtils);
-          } finally {
-            await pool.query('SELECT pg_advisory_unlock(hashtext($1))', [
-              GRAPHILE_MIGRATION_LOCK_KEY,
-            ]);
-          }
+          });
           await setupListeners();
         } catch (err) {
           startPromise = null;

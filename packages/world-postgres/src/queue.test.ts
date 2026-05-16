@@ -44,8 +44,13 @@ describe('postgres queue http execution', () => {
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
   const localWorldClose = vi.fn();
   const createQueueHandler = vi.fn(() => wrappedHandler);
+  const advisoryClient = {
+    query: vi.fn(),
+    release: vi.fn(),
+  };
   const pool = {
     query: vi.fn(async () => ({ rows: [{ exists: false }] })),
+    connect: vi.fn(async () => advisoryClient),
   } as any;
 
   beforeEach(() => {
@@ -65,27 +70,31 @@ describe('postgres queue http execution', () => {
 
     await queue.start();
 
-    expect(pool.query).toHaveBeenCalledWith(
+    expect(pool.connect).toHaveBeenCalled();
+    expect(advisoryClient.query).toHaveBeenCalledWith(
       'SELECT pg_advisory_lock(hashtext($1))',
       ['workflow_graphile_worker_migrate']
     );
-    expect(pool.query).toHaveBeenCalledWith(
+    expect(advisoryClient.query).toHaveBeenCalledWith(
       'SELECT pg_advisory_unlock(hashtext($1))',
       ['workflow_graphile_worker_migrate']
     );
+    expect(advisoryClient.release).toHaveBeenCalledOnce();
 
-    const lockOrder = pool.query.mock.invocationCallOrder[0];
+    const lockOrder = advisoryClient.query.mock.invocationCallOrder[0];
     const migrateOrder = vi.mocked(workerUtilsMock.migrate).mock
       .invocationCallOrder[0];
     const unlockOrder =
-      pool.query.mock.invocationCallOrder[
-        pool.query.mock.calls.findIndex(
+      advisoryClient.query.mock.invocationCallOrder[
+        advisoryClient.query.mock.calls.findIndex(
           ([query]) => query === 'SELECT pg_advisory_unlock(hashtext($1))'
         )
       ];
+    const releaseOrder = advisoryClient.release.mock.invocationCallOrder[0];
 
     expect(lockOrder).toBeLessThan(migrateOrder);
     expect(migrateOrder).toBeLessThan(unlockOrder);
+    expect(unlockOrder).toBeLessThan(releaseOrder);
   });
 
   afterEach(async () => {
