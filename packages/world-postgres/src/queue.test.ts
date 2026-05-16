@@ -2,21 +2,19 @@ import { createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { MessageId, type QueuePayload } from '@workflow/world';
+import { createLocalWorld } from '@workflow/world-local';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createLocalWorld } from '@workflow/world-local';
 import { stepEntrypoint } from '../../core/dist/runtime/step-handler.js';
-import { createQueue } from './queue.js';
 import { MessageData } from './message.js';
+import { createQueue } from './queue.js';
 
 const transport = new JsonTransport();
 const createdQueues: Array<ReturnType<typeof createQueue>> = [];
 const createdServers: Server[] = [];
 
 vi.mock('graphile-worker', () => ({
-  Logger: class Logger {
-    constructor(_: unknown) {}
-  },
+  Logger: class Logger {},
   makeWorkerUtils: vi.fn(),
   run: vi.fn(),
 }));
@@ -60,6 +58,34 @@ describe('postgres queue http execution', () => {
       createQueueHandler,
       close: localWorldClose,
     } as any);
+  });
+
+  it('serializes graphile migrations with an advisory lock', async () => {
+    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
+
+    await queue.start();
+
+    expect(pool.query).toHaveBeenCalledWith(
+      'SELECT pg_advisory_lock(hashtext($1))',
+      ['workflow_graphile_worker_migrate']
+    );
+    expect(pool.query).toHaveBeenCalledWith(
+      'SELECT pg_advisory_unlock(hashtext($1))',
+      ['workflow_graphile_worker_migrate']
+    );
+
+    const lockOrder = pool.query.mock.invocationCallOrder[0];
+    const migrateOrder = vi.mocked(workerUtilsMock.migrate).mock
+      .invocationCallOrder[0];
+    const unlockOrder =
+      pool.query.mock.invocationCallOrder[
+        pool.query.mock.calls.findIndex(
+          ([query]) => query === 'SELECT pg_advisory_unlock(hashtext($1))'
+        )
+      ];
+
+    expect(lockOrder).toBeLessThan(migrateOrder);
+    expect(migrateOrder).toBeLessThan(unlockOrder);
   });
 
   afterEach(async () => {

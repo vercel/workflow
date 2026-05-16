@@ -43,6 +43,7 @@ function createGraphileLogger() {
 
 const graphileLogger = createGraphileLogger();
 const COMPLETED_IDEMPOTENCY_CACHE_LIMIT = 10_000;
+const GRAPHILE_MIGRATION_LOCK_KEY = 'workflow_graphile_worker_migrate';
 const GraphileHelpers = z.object({
   job: z.object({
     attempts: z.number().int().positive(),
@@ -333,12 +334,21 @@ export function createQueue(
     if (!startPromise) {
       startPromise = (async () => {
         try {
-          workerUtils = await makeWorkerUtils({
-            pgPool: pool,
-            logger: graphileLogger,
-          });
-          await workerUtils.migrate();
-          await migratePgBossJobs(workerUtils);
+          await pool.query('SELECT pg_advisory_lock(hashtext($1))', [
+            GRAPHILE_MIGRATION_LOCK_KEY,
+          ]);
+          try {
+            workerUtils = await makeWorkerUtils({
+              pgPool: pool,
+              logger: graphileLogger,
+            });
+            await workerUtils.migrate();
+            await migratePgBossJobs(workerUtils);
+          } finally {
+            await pool.query('SELECT pg_advisory_unlock(hashtext($1))', [
+              GRAPHILE_MIGRATION_LOCK_KEY,
+            ]);
+          }
           await setupListeners();
         } catch (err) {
           startPromise = null;
