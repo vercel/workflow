@@ -501,6 +501,8 @@ export class WorkflowRunNotFoundError extends WorkflowError {
  */
 export class HookConflictError extends WorkflowError {
   token: string;
+  // TODO: Make this required once all persisted hook_conflict events and World
+  // implementations always include the active hook owner's run ID.
   conflictingRunId?: string;
 
   constructor(token: string, conflictingRunId?: string) {

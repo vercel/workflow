@@ -62,6 +62,7 @@ export interface SerializableSpecial {
     stack?: string;
     cause?: unknown;
     token: string;
+    // TODO: Make this required when HookConflictError.conflictingRunId is required.
     conflictingRunId?: string;
   };
   Int8Array: string; // base64 string
