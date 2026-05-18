@@ -1,0 +1,238 @@
+---
+title: Versioning
+description: Understand how workflow runs are pinned to deployments, how to recover runs after a fix, and how to opt in to newer code explicitly.
+type: guide
+summary: Keep in-flight runs stable by default, then choose explicit upgrade boundaries when you need them.
+prerequisites:
+  - /docs/foundations/starting-workflows
+related:
+  - /docs/api-reference/workflow-api/start
+  - /docs/foundations/cancellation
+  - /cookbook/common-patterns/workflow-composition
+---
+
+Workflow runs are pinned to the deployment that starts them. When a run begins on Vercel, Workflow SDK records the deployment for that run and continues executing the run on that same copy of your code.
+
+That default is intentional. Durable workflows can pause for minutes, days, or months. If the code underneath a paused run changed every time you deployed, an in-flight run could resume into a different function body, different step names, or different input types than the ones it started with. That can make type safety fragile and can break long-running work in hard-to-debug ways.
+
+With Workflow SDK, you can keep shipping. New runs use new deployments, while existing runs keep the version they already understand.
+
+## Default behavior
+
+Start a workflow normally:
+
+```typescript title="app/api/orders/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { fulfillOrder } from "@/workflows/fulfill-order";
+
+export async function POST(request: Request) {
+  const { orderId } = await request.json();
+
+  const run = await start(fulfillOrder, [orderId]); // [!code highlight]
+
+  return Response.json({ runId: run.runId });
+}
+```
+
+The run is tied to the deployment that handled this request. If you deploy a new version while the workflow is sleeping, waiting on a hook, retrying a step, or processing later queue messages, that existing run still resumes on the original deployment.
+
+```typescript title="workflows/fulfill-order.ts" lineNumbers
+import { sleep } from "workflow";
+
+export async function fulfillOrder(orderId: string) {
+  "use workflow";
+
+  await reserveInventory(orderId);
+  await sleep("2d");
+  await chargeCustomer(orderId);
+  await shipOrder(orderId);
+}
+
+async function reserveInventory(orderId: string) {
+  "use step";
+  // ...
+}
+
+async function chargeCustomer(orderId: string) {
+  "use step";
+  // ...
+}
+
+async function shipOrder(orderId: string) {
+  "use step";
+  // ...
+}
+```
+
+If you deploy a change to `chargeCustomer()` while a run is in the two-day sleep, the existing run does not suddenly resume into the new implementation. It continues on the deployment it started on. The next order starts on the latest deployment and uses the new code from the beginning.
+
+## Fixing in-flight runs
+
+Sometimes you deploy because the old code had a bug. The safest fix is usually explicit:
+
+1. Deploy the fixed code.
+2. Find the affected runs in observability or with the CLI.
+3. Cancel the old runs if they are still running.
+4. Rerun them on the latest deployment with the same inputs.
+
+This keeps the version boundary visible. The old run ends as cancelled or failed, and the replacement run starts fresh on the fixed deployment.
+
+```bash
+# Inspect affected runs
+npx workflow inspect runs --backend vercel
+
+# Cancel one run, or bulk-cancel matching running runs
+npx workflow cancel <run-id> --backend vercel
+npx workflow cancel --status=running --workflowName=fulfillOrder --backend vercel
+```
+
+In the observability UI, use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
+
+If you are writing your own recovery route, call `start()` with the same arguments and `deploymentId: "latest"`:
+
+```typescript title="app/api/orders/rerun/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { fulfillOrder } from "@/workflows/fulfill-order";
+
+export async function POST(request: Request) {
+  const { orderId } = await request.json();
+
+  const run = await start(fulfillOrder, [orderId], {
+    deploymentId: "latest", // [!code highlight]
+  });
+
+  return Response.json({ runId: run.runId });
+}
+```
+
+<Callout type="warn">
+`deploymentId: "latest"` is currently a Vercelism. Other Worlds may implement the same option differently to match their own deployment runtimes, and the World spec may rename this option from `deploymentId` to `version` in a future SDK version to make the concept more generic. Because the caller and target deployment can be different, keep the workflow function name, file path, arguments, and return value backward-compatible across the deployments you plan to bridge.
+</Callout>
+
+## Continuing on newer code
+
+Some workflows are expected to run for a very long time. Scheduled loops, recurring jobs, agents, and chat sessions often should not stay on one deployment forever.
+
+Model those as a sequence of runs. Each run does a bounded piece of work, then starts the next run on the latest deployment and exits. This is similar to `continueAsNew` in other durable execution systems, but in Workflow SDK it is just explicit recursion through `start()`.
+
+```typescript title="workflows/daily-digest.ts" lineNumbers
+import { sleep } from "workflow";
+import { start } from "workflow/api";
+
+type DigestState = {
+  userId: string;
+  lastSentAt?: string;
+};
+
+export async function dailyDigest(state: DigestState) {
+  "use workflow";
+
+  const sentAt = await sendDigest(state.userId);
+  await sleep("1d");
+
+  const nextRunId = await continueDigest({
+    ...state,
+    lastSentAt: sentAt,
+  });
+
+  return { continuedAs: nextRunId };
+}
+
+async function continueDigest(state: DigestState) {
+  "use step";
+
+  const run = await start(dailyDigest, [state], {
+    deploymentId: "latest", // [!code highlight]
+  });
+
+  return run.runId;
+}
+
+async function sendDigest(userId: string) {
+  "use step";
+  // ...
+  return new Date().toISOString();
+}
+```
+
+This pattern gives every run a clear lifecycle:
+
+- The current run stays on its original deployment.
+- The next run starts on the latest deployment.
+- The serialized `state` is the migration boundary between versions.
+- Observability can link parent and child runs when a workflow starts another run.
+
+## Carrying context forward
+
+Anything that is serializable by Workflow SDK can be passed from one run to the next as an argument. That includes plain state objects, `ReadableStream`, `WritableStream`, `AbortSignal`, and other supported serialized values.
+
+For example, an agent or chat system can keep a stable session workflow that owns the hook, shared state, and stream, then start per-turn child workflows on the latest deployment:
+
+```typescript title="workflows/chat-session.ts" lineNumbers
+import { createHook, getWritable } from "workflow";
+import { start } from "workflow/api";
+import type { UIMessageChunk } from "ai";
+
+type TurnInput = {
+  threadId: string;
+  message: string;
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+};
+
+export async function chatSession(threadId: string) {
+  "use workflow";
+
+  const writable = getWritable<UIMessageChunk>();
+  const history: TurnInput["history"] = [];
+
+  using nextMessage = createHook<{ message: string }>({
+    token: `chat:${threadId}:next-message`,
+  });
+
+  const { message } = await nextMessage;
+
+  const turnRunId = await startTurnOnLatest(
+    {
+      threadId,
+      message,
+      history,
+    },
+    writable
+  );
+
+  return { turnRunId };
+}
+
+async function startTurnOnLatest(
+  input: TurnInput,
+  writable: WritableStream<UIMessageChunk>
+) {
+  "use step";
+
+  const run = await start(chatTurn, [input, writable], {
+    deploymentId: "latest", // [!code highlight]
+  });
+
+  return run.runId;
+}
+
+export async function chatTurn(
+  input: TurnInput,
+  writable: WritableStream<UIMessageChunk>
+) {
+  "use workflow";
+
+  // Generate this turn using the latest deployed code,
+  // while writing into the session's stream.
+}
+```
+
+The stable session run can remain responsible for the long-lived hook and stream, while each turn runs with newer code. If you want the top-level session workflow itself to upgrade too, make the session run hand off its state to a new session run with `deploymentId: "latest"` and exit after the handoff.
+
+## Choosing a pattern
+
+Use default version pinning for most workflows. It gives the strongest reliability and type-safety story: a run keeps executing against the code it started with.
+
+Use one-off reruns when you fixed a bug and need specific affected runs to restart on the latest deployment.
+
+Use explicit recursion when a workflow is intentionally long-lived and should adopt newer code over time. Keep each upgrade boundary visible by passing only the state and handles the next run needs.
