@@ -3,13 +3,13 @@
   "pages": [
     "workflows-and-steps",
     "starting-workflows",
-    "versioning",
     "errors-and-retries",
     "hooks",
     "streaming",
     "cancellation",
     "serialization",
-    "idempotency"
+    "idempotency",
+    "versioning"
   ],
   "defaultOpen": true
 }
