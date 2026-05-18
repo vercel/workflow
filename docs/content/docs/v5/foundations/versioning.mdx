@@ -11,7 +11,7 @@ related:
   - /cookbook/common-patterns/workflow-composition
 ---
 
-Workflow runs are pinned to the deployment that starts them. When a run begins on Vercel, Workflow SDK records the deployment for that run and continues executing the run on that same copy of your code.
+Workflow runs are pinned to the deployment that starts them. When a run begins, Workflow SDK records the deployment for that run and continues executing the run on that same copy of your code.
 
 That default is intentional. Durable workflows can pause for minutes, days, or months. If the code underneath a paused run changed every time you deployed, an in-flight run could resume into a different function body, different step names, or different input types than the ones it started with. That can make type safety fragile and can break long-running work in hard-to-debug ways.
 
