@@ -130,22 +130,15 @@ export async function dailyDigest(state: DigestState) {
   const sentAt = await sendDigest(state.userId);
   await sleep("1d");
 
-  const nextRunId = await continueDigest({
-    ...state,
-    lastSentAt: sentAt,
-  });
+  const run = await start(
+    dailyDigest,
+    [{ ...state, lastSentAt: sentAt }],
+    {
+      deploymentId: "latest", // [!code highlight]
+    }
+  );
 
-  return { continuedAs: nextRunId };
-}
-
-async function continueDigest(state: DigestState) {
-  "use step";
-
-  const run = await start(dailyDigest, [state], {
-    deploymentId: "latest", // [!code highlight]
-  });
-
-  return run.runId;
+  return { continuedAs: run.runId };
 }
 
 async function sendDigest(userId: string) {
@@ -190,30 +183,13 @@ export async function chatSession(threadId: string) {
   });
 
   const { message } = await nextMessage;
-
-  const turnRunId = await startTurnOnLatest(
-    {
-      threadId,
-      message,
-      history,
-    },
-    writable
-  );
-
-  return { turnRunId };
-}
-
-async function startTurnOnLatest(
-  input: TurnInput,
-  writable: WritableStream<UIMessageChunk>
-) {
-  "use step";
+  const input = { threadId, message, history };
 
   const run = await start(chatTurn, [input, writable], {
     deploymentId: "latest", // [!code highlight]
   });
 
-  return run.runId;
+  return { turnRunId: run.runId };
 }
 
 export async function chatTurn(

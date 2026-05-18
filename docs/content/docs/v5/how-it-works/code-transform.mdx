@@ -193,7 +193,7 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 - The `workflowId` property is added (same as workflow mode)
 - Step functions are not transformed in client mode
 
-**Why this transformation?** Workflow functions cannot be called directly—they must be started using [`start()`](/docs/api-reference/workflow-api/start). The error prevents accidental direct execution while the `workflowId` property allows the `start()` function to identify which workflow to launch.
+**Why this transformation?** Workflow functions cannot be called directly from application code—they must be started using [`start()`](/docs/api-reference/workflow-api/start). The error prevents accidental direct execution while the `workflowId` property allows the `start()` function to identify which workflow to launch.
 
 The IDs are generated exactly like in workflow mode to ensure they can be directly referenced at runtime.
 
