@@ -30,6 +30,7 @@ import {
   WaitSchema,
   WorkflowRunSchema,
 } from '@workflow/world';
+import { z } from 'zod';
 import { DEFAULT_RESOLVE_DATA_OPTION } from '../config.js';
 import {
   assertSafeEntityId,
@@ -37,6 +38,7 @@ import {
   jsonReplacer,
   listJSONFiles,
   paginatedFileSystemQuery,
+  readJSON,
   readJSONWithFallback,
   resolveWithinBase,
   taggedPath,
@@ -61,6 +63,10 @@ import { handleLegacyEvent } from './legacy.js';
  * step are rejected.
  */
 const stepLocks = new Map<string, Promise<unknown>>();
+
+const HookTokenClaimSchema = z.object({
+  runId: z.string(),
+});
 
 function withStepLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const prev = stepLocks.get(key);
@@ -878,6 +884,11 @@ export function createEventsStorage(
           );
 
           if (!tokenClaimed) {
+            const existingClaim = await readJSON(
+              constraintPath,
+              HookTokenClaimSchema
+            );
+
             // Create hook_conflict event instead of hook_created
             // This allows the workflow to continue and fail gracefully when the hook is awaited
             const conflictEvent: Event = {
@@ -885,6 +896,9 @@ export function createEventsStorage(
               correlationId: data.correlationId,
               eventData: {
                 token: hookData.token,
+                ...(existingClaim
+                  ? { conflictingRunId: existingClaim.runId }
+                  : {}),
               },
               runId: effectiveRunId,
               eventId,

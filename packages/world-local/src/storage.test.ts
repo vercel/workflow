@@ -1358,6 +1358,9 @@ describe('Storage', () => {
         expect((result.event as any).eventData.token).toBe(
           'duplicate-test-token'
         );
+        expect((result.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
         expect(result.hook).toBeUndefined();
       });
 
@@ -1395,6 +1398,9 @@ describe('Storage', () => {
         });
 
         expect(conflictResult.event.eventType).toBe('hook_conflict');
+        expect((conflictResult.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
         expect(conflictResult.hook).toBeUndefined();
 
         // Dispose the first hook via hook_disposed event
@@ -1437,6 +1443,9 @@ describe('Storage', () => {
 
         expect(result.event.eventType).toBe('hook_conflict');
         expect((result.event as any).eventData.token).toBe(token);
+        expect((result.event as any).eventData.conflictingRunId).toBe(
+          testRunId
+        );
         expect(result.hook).toBeUndefined();
       });
 
@@ -1466,6 +1475,11 @@ describe('Storage', () => {
 
         expect(created).toHaveLength(1);
         expect(conflicts).toHaveLength(4);
+        for (const conflict of conflicts) {
+          expect(conflict.value.event.eventData.conflictingRunId).toBe(
+            testRunId
+          );
+        }
       });
     });
 

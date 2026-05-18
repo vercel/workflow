@@ -190,6 +190,7 @@ const HookConflictEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     token: z.string(),
+    conflictingRunId: z.string().optional(),
   }),
 });
 

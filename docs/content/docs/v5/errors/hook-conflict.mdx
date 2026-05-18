@@ -73,9 +73,9 @@ export async function processPayment() {
 }
 ```
 
-## Handling Hook Conflicts in Your Workflow
+## Handling Hook Conflicts
 
-When a hook conflict occurs, awaiting the hook will throw a `HookConflictError`. You can catch this error to handle the conflict gracefully:
+When a hook conflict occurs, awaiting the hook will throw a `HookConflictError`. The error exposes the token that conflicted and the run ID that currently owns it:
 
 ```typescript lineNumbers
 import { createHook } from "workflow";
@@ -93,14 +93,56 @@ export async function processPayment(orderId: string) {
     if (HookConflictError.is(error)) { // [!code highlight]
       // Another workflow is already processing this order
       console.log(`Conflicting token: ${error.token}`);
-      return { success: false, reason: "duplicate-processing" };
+      console.log(`Active run: ${error.conflictingRunId}`);
+      return {
+        success: false,
+        reason: "duplicate-processing",
+        runId: error.conflictingRunId
+      };
     }
     throw error; // Re-throw other errors
   }
 }
 ```
 
-This pattern is useful when you want to detect and handle duplicate processing attempts instead of letting the workflow fail.
+This pattern is useful when you want to detect duplicate processing inside the workflow. Runtime APIs such as `resumeHook()` and `getRun()` must be called outside workflow functions, for example from an API route.
+
+### Delegate to the Active Run
+
+In idempotency flows, a conflict means another active run already owns the hook token. You can resume that hook to deliver the payload to the existing run, then use `getRun(error.conflictingRunId)` to wait for, stream, or cancel the active run:
+
+```typescript lineNumbers
+import { HookConflictError, WorkflowRunFailedError } from "@workflow/errors";
+import { getRun, resumeHook, start } from "workflow/api";
+import { processPayment } from "@/workflows/process-payment";
+
+export async function POST(request: Request) {
+  const { orderId, payment } = await request.json();
+  const run = await start(processPayment, [orderId, payment]);
+
+  try {
+    return Response.json(await run.returnValue);
+  } catch (error) {
+    if (
+      WorkflowRunFailedError.is(error) &&
+      HookConflictError.is(error.cause) &&
+      error.cause.conflictingRunId
+    ) {
+      await resumeHook(error.cause.token, payment); // [!code highlight]
+      const activeRun = getRun(error.cause.conflictingRunId); // [!code highlight]
+
+      return Response.json({
+        delegatedToRunId: activeRun.runId,
+        result: await activeRun.returnValue
+      });
+    }
+
+    throw error;
+  }
+}
+```
+
+If the caller needs live output instead of the final result, return `activeRun.getReadable()` from the same branch. If the duplicate request should replace the active work, call `await activeRun.cancel()` after inspecting the run.
 
 ## When Hook Tokens Are Released
 
@@ -122,4 +164,6 @@ After a workflow completes, its hook tokens become available for reuse by other 
 ## Related
 
 - [Hooks](/docs/foundations/hooks) - Learn more about using hooks in workflows
+- [getRun](/docs/api-reference/workflow-api/get-run) - Retrieve or control the active run
+- [resumeHook](/docs/api-reference/workflow-api/resume-hook) - Deliver data to the active hook
 - [createWebhook](/docs/api-reference/workflow/create-webhook) - Alternative for fixed webhook URLs

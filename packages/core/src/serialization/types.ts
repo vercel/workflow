@@ -57,6 +57,13 @@ export interface SerializableSpecial {
   Error: { name: string; message: string; stack?: string; cause?: unknown };
   EvalError: { message: string; stack?: string; cause?: unknown };
   Headers: [string, string][];
+  HookConflictError: {
+    message: string;
+    stack?: string;
+    cause?: unknown;
+    token: string;
+    conflictingRunId?: string;
+  };
   Int8Array: string; // base64 string
   Int16Array: string; // base64 string
   Int32Array: string; // base64 string
