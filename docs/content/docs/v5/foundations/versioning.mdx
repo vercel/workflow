@@ -75,16 +75,26 @@ Sometimes you deploy because the old code had a bug. The safest fix is usually e
 3. Cancel the old runs if they are still running.
 4. Rerun them on the latest deployment with the same inputs.
 
-This keeps the version boundary visible. The old run ends as cancelled or failed, and the replacement run starts fresh on the fixed deployment.
+This keeps the version boundary visible. The old run ends as cancelled or failed, and the replacement run starts fresh on the fixed deployment. This is a good fit for one-off, ad-hoc upgrades where you explicitly opt in to moving affected runs onto a new version.
 
 ```bash
-# Inspect affected runs
-npx workflow inspect runs --backend vercel
+# Inspect affected runs and copy the exact workflowName value.
+npx workflow inspect runs \
+  --backend vercel \
+  --status running
 
-# Cancel one run, or bulk-cancel matching running runs
-npx workflow cancel <run-id> --backend vercel
-npx workflow cancel --status=running --workflowName=fulfillOrder --backend vercel
+# Cancel one run.
+npx workflow cancel <run-id> \
+  --backend vercel
+
+# Or bulk-cancel matching running runs.
+npx workflow cancel \
+  --status running \
+  --workflowName "workflow//./workflows/fulfill-order//fulfillOrder" \
+  --backend vercel
 ```
+
+The `--workflowName` filter expects the generated workflow ID, not only the exported function's short name. Use the `workflowName` value from `workflow inspect runs`.
 
 In the observability UI, use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
 
@@ -159,56 +169,94 @@ This pattern gives every run a clear lifecycle:
 
 Anything that is serializable by Workflow SDK can be passed from one run to the next as an argument. That includes plain state objects, `ReadableStream`, `WritableStream`, `AbortSignal`, and other supported serialized values.
 
-For example, an agent or chat system can keep a stable session workflow that owns the hook, shared state, and stream, then start per-turn child workflows on the latest deployment:
+For example, a long export can register its output stream once, write progress from each run, and pass the same stream plus updated state into the next run:
 
-```typescript title="workflows/chat-session.ts" lineNumbers
-import { createHook, getWritable } from "workflow";
+```typescript title="workflows/export-report.ts" lineNumbers
+import { getWritable } from "workflow";
 import { start } from "workflow/api";
-import type { UIMessageChunk } from "ai";
 
-type TurnInput = {
-  threadId: string;
-  message: string;
-  history: Array<{ role: "user" | "assistant"; content: string }>;
+type ExportState = {
+  exportId: string;
+  page: number;
 };
 
-export async function chatSession(threadId: string) {
-  "use workflow";
-
-  const writable = getWritable<UIMessageChunk>();
-  const history: TurnInput["history"] = [];
-
-  using nextMessage = createHook<{ message: string }>({
-    token: `chat:${threadId}:next-message`,
-  });
-
-  const { message } = await nextMessage;
-  const input = { threadId, message, history };
-
-  const run = await start(chatTurn, [input, writable], {
-    deploymentId: "latest", // [!code highlight]
-  });
-
-  return { turnRunId: run.runId };
-}
-
-export async function chatTurn(
-  input: TurnInput,
-  writable: WritableStream<UIMessageChunk>
+export async function exportReport(
+  state: ExportState,
+  progress?: WritableStream<string>
 ) {
   "use workflow";
 
-  // Generate this turn using the latest deployed code,
-  // while writing into the session's stream.
+  // Register the stream as early as possible. Continuation runs receive
+  // this same stream as an argument and keep writing to it.
+  const stream = progress ?? getWritable<string>();
+
+  const hasMore = await exportPage(state, stream);
+
+  if (!hasMore) {
+    await writeProgress(stream, { type: "done", totalPages: state.page });
+    return { totalPages: state.page };
+  }
+
+  const run = await start(exportReport, [
+    { ...state, page: state.page + 1 },
+    stream,
+  ], {
+    deploymentId: "latest", // [!code highlight]
+  });
+
+  return { continuedAs: run.runId };
+}
+
+async function exportPage(
+  state: ExportState,
+  stream: WritableStream<string>
+) {
+  "use step";
+
+  // Do work for this version boundary.
+  const hasMore = state.page < 10;
+  const writer = stream.getWriter();
+
+  try {
+    await writer.write(
+      JSON.stringify({ type: "page", page: state.page }) + "\n"
+    );
+    return hasMore;
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+async function writeProgress(
+  stream: WritableStream<string>,
+  event: { type: "done"; totalPages: number }
+) {
+  "use step";
+
+  const writer = stream.getWriter();
+  try {
+    await writer.write(JSON.stringify(event) + "\n");
+  } finally {
+    writer.releaseLock();
+  }
 }
 ```
 
-The stable session run can remain responsible for the long-lived hook and stream, while each turn runs with newer code. If you want the top-level session workflow itself to upgrade too, make the session run hand off its state to a new session run with `deploymentId: "latest"` and exit after the handoff.
+```typescript title="app/api/export/route.ts" lineNumbers
+import { start } from "workflow/api";
+import { exportReport } from "@/workflows/export-report";
 
-## Choosing a pattern
+export async function POST(request: Request) {
+  const { exportId } = await request.json();
 
-Use default version pinning for most workflows. It gives the strongest reliability and type-safety story: a run keeps executing against the code it started with.
+  const run = await start(exportReport, [{ exportId, page: 1 }]);
 
-Use one-off reruns when you fixed a bug and need specific affected runs to restart on the latest deployment.
+  // Linked continuation runs keep writing to the stream registered by
+  // the parent run, because that stream is passed forward as an argument.
+  return new Response(run.readable, {
+    headers: { "Content-Type": "application/jsonl" },
+  });
+}
+```
 
-Use explicit recursion when a workflow is intentionally long-lived and should adopt newer code over time. Keep each upgrade boundary visible by passing only the state and handles the next run needs.
+Each run still has one clear version boundary: the current run stays on its original deployment, the next run starts on the latest deployment, and only the explicit state and stream handle are carried forward.
