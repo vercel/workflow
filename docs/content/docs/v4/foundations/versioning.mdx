@@ -119,7 +119,7 @@ export async function POST(request: Request) {
 `deploymentId: "latest"` is currently a Vercelism. Other Worlds may implement the same option differently to match their own deployment runtimes, and the World spec may rename this option from `deploymentId` to `version` in a future SDK version to make the concept more generic. Because the caller and target deployment can be different, keep the [workflow function name and file path](/docs/errors/workflow-not-registered), arguments, and return value backward-compatible across the deployments you plan to bridge.
 </Callout>
 
-## Continuing on newer code
+## Self upgrading workflows
 
 Some workflows are expected to run for a very long time. Scheduled loops, recurring jobs, agents, and chat sessions often should not stay on one deployment forever.
 
