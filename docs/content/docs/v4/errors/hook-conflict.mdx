@@ -97,6 +97,7 @@ export async function processPayment(orderId: string) {
       return {
         success: false,
         reason: "duplicate-processing",
+        token: error.token,
         runId: error.conflictingRunId
       };
     }
@@ -105,40 +106,36 @@ export async function processPayment(orderId: string) {
 }
 ```
 
-This pattern is useful when you want to detect duplicate processing inside the workflow. Runtime APIs such as `resumeHook()` and `getRun()` must be called outside workflow functions, for example from an API route.
+This pattern is useful when you want to detect duplicate processing inside the workflow. Runtime APIs such as `resumeHook()` and `getRun()` must be called outside workflow functions, for example from an API route or in a step.
 
 ### Delegate to the Active Run
 
-In idempotency flows, a conflict means another active run already owns the hook token. You can resume that hook to deliver the payload to the existing run, then use `getRun(error.conflictingRunId)` to wait for, stream, or cancel the active run:
+In idempotency flows, a conflict means another active run already owns the hook token. You can return the duplicate-processing payload from the workflow, resume the active hook to deliver the payload to the existing run, then use `getRun(result.runId)` to wait for, stream, or cancel the active run:
 
 ```typescript lineNumbers
-import { HookConflictError, WorkflowRunFailedError } from "@workflow/errors";
 import { getRun, resumeHook, start } from "workflow/api";
 import { processPayment } from "@/workflows/process-payment";
 
 export async function POST(request: Request) {
   const { orderId, payment } = await request.json();
-  const run = await start(processPayment, [orderId, payment]);
+  const run = await start(processPayment, [orderId]);
+  const result = await run.returnValue;
 
-  try {
-    return Response.json(await run.returnValue);
-  } catch (error) {
-    if (
-      WorkflowRunFailedError.is(error) &&
-      HookConflictError.is(error.cause) &&
-      error.cause.conflictingRunId
-    ) {
-      await resumeHook(error.cause.token, payment); // [!code highlight]
-      const activeRun = getRun(error.cause.conflictingRunId); // [!code highlight]
+  if (
+    result.success === false &&
+    result.reason === "duplicate-processing" &&
+    result.runId
+  ) {
+    await resumeHook(result.token, payment); // [!code highlight]
+    const activeRun = getRun(result.runId); // [!code highlight]
 
-      return Response.json({
-        delegatedToRunId: activeRun.runId,
-        result: await activeRun.returnValue
-      });
-    }
-
-    throw error;
+    return Response.json({
+      delegatedToRunId: activeRun.runId,
+      result: await activeRun.returnValue
+    });
   }
+
+  return Response.json(result);
 }
 ```
 
