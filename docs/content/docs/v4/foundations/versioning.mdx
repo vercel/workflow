@@ -34,7 +34,7 @@ export async function POST(request: Request) {
 }
 ```
 
-The run is tied to the deployment that handled this request. If you deploy a new version while the workflow is sleeping, waiting on a hook, retrying a step, or processing later queue messages, that existing run still resumes on the original deployment.
+The run is tied to the deployment that handled this request. If you deploy a new version while the workflow is [sleeping](/docs/api-reference/workflow/sleep), [waiting on a hook](/docs/foundations/hooks), [retrying a step](/docs/foundations/errors-and-retries), or processing later queue messages, that existing run still resumes on the original deployment.
 
 ```typescript title="workflows/fulfill-order.ts" lineNumbers
 import { sleep } from "workflow";
@@ -71,7 +71,7 @@ If you deploy a change to `chargeCustomer()` while a run is in the two-day sleep
 Sometimes you deploy because the old code had a bug. The safest fix is usually explicit:
 
 1. Deploy the fixed code.
-2. Find the affected runs in observability or with the CLI.
+2. Find the affected runs in [observability](/docs/observability) or with the CLI.
 3. Cancel the old runs if they are still running.
 4. Rerun them on the latest deployment with the same inputs.
 
@@ -94,9 +94,9 @@ npx workflow cancel \
   --backend vercel
 ```
 
-The `--workflowName` filter expects the generated workflow ID, not only the exported function's short name. Use the `workflowName` value from `workflow inspect runs`.
+The `--workflowName` filter expects the generated workflow ID, not only the exported function's short name. Use the `workflowName` value from `workflow inspect runs`, and use [`parseWorkflowName()`](/docs/api-reference/workflow-api/world/observability) when you need display-friendly names.
 
-In the observability UI, use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
+In the [observability UI](/docs/observability), use **Rerun on latest** to enqueue the workflow again with the same inputs against the latest deployment.
 
 If you are writing your own recovery route, call `start()` with the same arguments and `deploymentId: "latest"`:
 
@@ -116,14 +116,14 @@ export async function POST(request: Request) {
 ```
 
 <Callout type="warn">
-`deploymentId: "latest"` is currently a Vercelism. Other Worlds may implement the same option differently to match their own deployment runtimes, and the World spec may rename this option from `deploymentId` to `version` in a future SDK version to make the concept more generic. Because the caller and target deployment can be different, keep the workflow function name, file path, arguments, and return value backward-compatible across the deployments you plan to bridge.
+`deploymentId: "latest"` is currently a Vercelism. Other Worlds may implement the same option differently to match their own deployment runtimes, and the World spec may rename this option from `deploymentId` to `version` in a future SDK version to make the concept more generic. Because the caller and target deployment can be different, keep the [workflow function name and file path](/docs/errors/workflow-not-registered), arguments, and return value backward-compatible across the deployments you plan to bridge.
 </Callout>
 
 ## Continuing on newer code
 
 Some workflows are expected to run for a very long time. Scheduled loops, recurring jobs, agents, and chat sessions often should not stay on one deployment forever.
 
-Model those as a sequence of runs. Each run does a bounded piece of work, then starts the next run on the latest deployment and exits. This is similar to `continueAsNew` in other durable execution systems, but in Workflow SDK it is just explicit recursion through `start()`.
+Model those as a sequence of runs. Each run does a bounded piece of work, then starts the next run on the latest deployment and exits. This is similar to `continueAsNew` in other durable execution systems, but in Workflow SDK it is just [explicit recursion through `start()`](/cookbook/common-patterns/workflow-composition).
 
 ```typescript title="workflows/daily-digest.ts" lineNumbers
 import { sleep } from "workflow";
@@ -174,9 +174,9 @@ This pattern gives every run a clear lifecycle:
 
 ## Carrying context forward
 
-Anything that is serializable by Workflow SDK can be passed from one run to the next as an argument. That includes plain state objects, `ReadableStream`, `WritableStream`, and other supported serialized values.
+Anything that is [serializable by Workflow SDK](/docs/foundations/serialization) can be passed from one run to the next as an argument. That includes plain state objects, `ReadableStream`, `WritableStream`, and other supported serialized values.
 
-For example, a long export can register its output stream once, write progress from each run, and pass the same stream plus updated state into the next run:
+For example, a long export can register its [output stream](/docs/foundations/streaming) once, write progress from each run, and pass the same stream plus updated state into the next run:
 
 ```typescript title="workflows/export-report.ts" lineNumbers
 import { getWritable } from "workflow";
