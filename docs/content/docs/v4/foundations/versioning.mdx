@@ -169,7 +169,7 @@ This pattern gives every run a clear lifecycle:
 
 - The current run stays on its original deployment.
 - The next run starts on the latest deployment.
-- The serialized `state` is the migration boundary between versions.
+- The [serialized `state`](/docs/foundations/serialization) is the migration boundary between versions.
 - Observability can link parent and child runs when a workflow starts another run.
 
 ## Carrying context forward
@@ -193,9 +193,10 @@ export async function exportReport(
 ) {
   "use workflow";
 
-  // Register the stream as early as possible. Continuation runs receive
-  // this same stream as an argument and keep writing to it.
-  const stream = progress ?? getWritable<string>();
+  // Register the stream once. Continuation runs receive this same stream
+  // as an argument and keep writing to it.
+  const stream =
+    progress !== undefined ? progress : getWritable<string>();
 
   const hasMore = await exportPage(state, stream);
 
