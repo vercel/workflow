@@ -7,7 +7,6 @@ prerequisites:
   - /docs/foundations/starting-workflows
 related:
   - /docs/api-reference/workflow-api/start
-  - /docs/foundations/cancellation
   - /cookbook/common-patterns/workflow-composition
 ---
 
@@ -116,7 +115,7 @@ export async function POST(request: Request) {
 ```
 
 <Callout type="warn">
-`deploymentId: "latest"` is currently a Vercelism. Other Worlds may implement the same option differently to match their own deployment runtimes, and the World spec may rename this option from `deploymentId` to `version` in a future SDK version to make the concept more generic. Because the caller and target deployment can be different, keep the [workflow function name and file path](/docs/errors/workflow-not-registered), arguments, and return value backward-compatible across the deployments you plan to bridge.
+`deploymentId: "latest"` is currently a Vercel-specific feature. Other Worlds may implement this option differently to match their own deployment runtimes, and the World spec may rename it from `deploymentId` to `version` in a future SDK version. On Vercel, `"latest"` resolves to the most recent deployment matching your current environment. Because the caller and target deployment can be different, keep the [workflow function name and file path](/docs/errors/workflow-not-registered), arguments, and return value backward-compatible across the deployments you plan to bridge.
 </Callout>
 
 ## Self upgrading workflows

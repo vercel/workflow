@@ -97,7 +97,7 @@ const run = await start(myWorkflow, ["arg1", "arg2"], { // [!code highlight]
 ```
 
 <Callout type="info">
-The `deploymentId` option is currently a Vercelism. Other Worlds may implement this option differently to match their own deployment runtimes, and the World spec may rename it from `deploymentId` to `version` in a future SDK version. On Vercel, `"latest"` resolves to the most recent deployment matching your current environment — the same production target for production deployments, or the same git branch for preview deployments.
+The `deploymentId` option is currently a Vercel-specific feature. Other Worlds may implement this option differently to match their own deployment runtimes, and the World spec may rename it from `deploymentId` to `version` in a future SDK version. On Vercel, `"latest"` resolves to the most recent deployment matching your current environment — the same production target for production deployments, or the same git branch for preview deployments.
 </Callout>
 
 <Callout type="warn">
