@@ -7,6 +7,10 @@ summary: Schedule future actions with durable sleep that survives cold starts, a
 
 Workflow's `sleep()` is durable — it survives cold starts, restarts, and deployments. Combined with `defineHook()` and `Promise.race()`, it becomes the foundation for interruptible scheduled workflows like drip campaigns, reminders, and timed sequences.
 
+<Callout type="info">
+Scheduled workflows are still pinned to the deployment that started them. If you are building recurring or indefinitely running schedules that should adopt newer code over time, see [Versioning](/docs/foundations/versioning) for the explicit `deploymentId: "latest"` continuation pattern.
+</Callout>
+
 ## When to use this
 
 - Sending emails on a schedule (drip campaigns, onboarding sequences, reminders)
