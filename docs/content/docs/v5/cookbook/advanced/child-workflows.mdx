@@ -22,7 +22,7 @@ For simpler cases where steps share a single event log, use [direct await compos
 
 The core pattern has three parts:
 
-1. A **step** that calls `start()` to spawn a child workflow and returns the run ID
+1. A parent workflow that calls `start()` to spawn child workflows and records their run IDs
 2. A **polling loop** in the parent workflow that checks child status with `getRun()`
 3. A **step** that retrieves the child's return value once it completes
 
@@ -67,7 +67,11 @@ export async function processDocumentBatch(documentIds: string[]) {
   "use workflow";
 
   // Spawn a child workflow for each document
-  const runIds = await spawnChildren(documentIds);
+  const runIds: string[] = [];
+  for (const docId of documentIds) {
+    const run = await start(processDocument, [docId]); // [!code highlight]
+    runIds.push(run.runId);
+  }
 
   // Poll until all children complete
   await pollUntilComplete(runIds);
@@ -76,19 +80,6 @@ export async function processDocumentBatch(documentIds: string[]) {
   const results = await collectResults(runIds);
 
   return { processed: results.length, results };
-}
-
-async function spawnChildren(
-  documentIds: string[]
-): Promise<string[]> {
-  "use step"; // [!code highlight]
-
-  const runIds: string[] = [];
-  for (const docId of documentIds) {
-    const run = await start(processDocument, [docId]); // [!code highlight]
-    runIds.push(run.runId);
-  }
-  return runIds;
 }
 ```
 
@@ -163,7 +154,7 @@ async function collectResults(
 
 ## Fan-out pattern: chunked spawning
 
-When spawning hundreds of children, batch the `start()` calls to avoid overwhelming the system. Use multiple spawn steps, each launching a chunk of children.
+When spawning hundreds of children, batch the `start()` calls to avoid overwhelming the system. Start one chunk at a time from the parent workflow.
 
 ```typescript
 import { start } from "workflow/api";
@@ -179,7 +170,7 @@ export async function largeReportBatch(reportConfigs: Array<{ id: string; query:
   const allRunIds: string[] = [];
   for (let i = 0; i < reportConfigs.length; i += CHUNK_SIZE) {
     const chunk = reportConfigs.slice(i, i + CHUNK_SIZE);
-    const runIds = await spawnReportChunk(chunk); // [!code highlight]
+    const runIds = await startReportChunk(chunk); // [!code highlight]
     allRunIds.push(...runIds);
   }
 
@@ -190,14 +181,12 @@ export async function largeReportBatch(reportConfigs: Array<{ id: string; query:
   return { total: results.length, results };
 }
 
-async function spawnReportChunk(
+async function startReportChunk(
   configs: Array<{ id: string; query: string }>
 ): Promise<string[]> {
-  "use step";
-
   const runIds: string[] = [];
   for (const config of configs) {
-    const run = await start(generateReport, [config.id, config.query]);
+    const run = await start(generateReport, [config.id, config.query]); // [!code highlight]
     runIds.push(run.runId);
   }
   return runIds;
@@ -356,12 +345,12 @@ async function pollWithRetries(
 
 ## Tips
 
-- **`start()` must be called from a step**, not directly from a workflow function. Wrap it in a `"use step"` function.
+- **`start()` can be called directly from a workflow function in v5.** It records a step-backed boundary in the parent event log and returns a serializable `Run`.
 - **`getRun()` must also be called from a step.** The polling loop lives in the workflow, but the actual status check is a step.
 - **Set a max iteration count on polling loops** to prevent runaway workflows. Calculate the count from your expected max duration and poll interval.
-- **Use chunked spawning for large batches.** Spawning 500 children in a single step can time out. Break it into chunks of 10-50.
+- **Use chunked spawning for large batches.** Starting 500 children at once can create a large burst of work. Break it into chunks of 10-50.
 - **Each child has its own retry semantics.** Steps inside child workflows retry independently. The parent only sees the child's final status.
-- **Use `deploymentId: "latest"`** if children should run on the most recent deployment. See the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for compatibility considerations.
+- **Use `deploymentId: "latest"`** if children should run on the most recent deployment. See [Versioning](/docs/foundations/versioning) for the full model and the [`start()` API reference](/docs/api-reference/workflow-api/start#using-deploymentid-latest) for compatibility considerations.
 
 ## Key APIs
 

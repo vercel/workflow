@@ -543,7 +543,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
         <div className="absolute right-3 bottom-3 z-[5] flex items-center border border-gray-alpha-400 rounded-lg bg-background-100 shadow-sm overflow-hidden divide-x divide-gray-alpha-400">
           <button
             type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
             onClick={zoomOut}
             aria-label="Zoom out"
           >
@@ -551,7 +551,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           </button>
           <button
             type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
             onClick={resetZoom}
             aria-label="Reset zoom"
           >
@@ -559,7 +559,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
           </button>
           <button
             type="button"
-            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
+            className="flex items-center justify-center w-8 h-8 text-gray-900 cursor-pointer transition-colors duration-[time:120ms] ease-in-out hover:text-gray-1000 hover:bg-gray-alpha-100"
             onClick={zoomIn}
             aria-label="Zoom in"
           >

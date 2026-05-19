@@ -3,6 +3,7 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   FatalError,
+  HookConflictError,
   HookNotFoundError,
   RetryableError,
   WorkflowRunCancelledError,
@@ -1550,6 +1551,9 @@ describe('e2e', () => {
       expect(run2Error.cause.message).toContain(
         'already in use by another workflow'
       );
+      expect(HookConflictError.is(run2Error.cause)).toBe(true);
+      assert(HookConflictError.is(run2Error.cause));
+      expect(run2Error.cause.conflictingRunId).toBe(run1.runId);
 
       // Verify workflow 2 failed
       const { json: run2Data } = await cliInspectJson(`runs ${run2.runId}`);

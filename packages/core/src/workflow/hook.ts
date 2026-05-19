@@ -84,7 +84,8 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
         // Chain through promiseQueue to ensure deterministic ordering.
         const conflictEvent = event as HookConflictEvent;
         const conflictError = new HookConflictError(
-          conflictEvent.eventData.token
+          conflictEvent.eventData.token,
+          conflictEvent.eventData.conflictingRunId
         );
 
         // Mark that we have a conflict so future awaits also reject

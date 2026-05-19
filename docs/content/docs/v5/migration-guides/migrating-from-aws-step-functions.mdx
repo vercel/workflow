@@ -54,11 +54,11 @@ The migration replaces declarative configuration with idiomatic TypeScript and c
 | Choice state | `if` / `else` / `switch` | Native TypeScript control flow. |
 | Wait state | `sleep()` | Import `sleep` from `workflow`. |
 | Parallel state | `Promise.all()` | Standard concurrency primitives. |
-| Map state | Inline sequential → `for` loop; bounded parallel (`MaxConcurrency: N`) → batched `Promise.all` or a concurrency limiter like `p-limit`; Distributed Map / large fan-out → step-wrapped `start()` per item, then step-wrapped `getRun()` to collect. | Match the concurrency mode of the original Map. |
+| Map state | Inline sequential → `for` loop; bounded parallel (`MaxConcurrency: N`) → batched `Promise.all` or a concurrency limiter like `p-limit`; Distributed Map / large fan-out → `start()` per item, then step-wrapped `getRun()` to collect. | Match the concurrency mode of the original Map. |
 | Retry / Catch | Step retries, `RetryableError`, `FatalError` | Retry logic moves to step boundaries. |
 | `Catch` to a compensation state | `try`/`catch` in the workflow function, calling compensation steps in reverse order (push/pop a rollback stack) | See [`/docs/foundations/errors-and-retries`](/docs/foundations/errors-and-retries) for the SAGA pattern. |
 | `.waitForTaskToken` | `createHook()` or `createWebhook()` | Hooks for typed signals; webhooks for HTTP. |
-| Child state machine (`StartExecution`) | `"use step"` around `start()` / `getRun()` | Return the `Run` object, await its result from another step. |
+| Child state machine (`StartExecution`) | `start()` plus a `"use step"` wrapper around `getRun()` | Return the `Run` object, await its result from another step. |
 | Execution event history | Workflow event log | Same durable replay model. |
 | Progress via DynamoDB / SNS for client polling | `getWritable()` + named streams | Stream durable updates; clients read from the stream. |
 
@@ -213,21 +213,16 @@ return { refundId, status: 'rejected' };
 
 ## Spawn a child workflow
 
-In ASL, a parent machine calls `StartExecution` (usually via `.sync` or `.waitForTaskToken`) to launch a child. In the Workflow SDK, `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Returning the `Run` object from the spawn step lets workflow observability deep-link to the child run.
+In ASL, a parent machine calls `StartExecution` (usually via `.sync` or `.waitForTaskToken`) to launch a child. In v5, call `start()` directly from the workflow to launch a child. Wrap `getRun()` and `returnValue` access in a `"use step"` function when you need to await the child result.
 
 ### Parent starts a child
 
 ```typescript title="workflow/workflows/parent.ts"
 import { start } from 'workflow/api';
 
-async function spawnChild(item: string) {
-  'use step'; // [!code highlight]
-  return await start(childWorkflow, [item]);
-}
-
 export async function parentWorkflow(item: string) {
   'use workflow';
-  const run = await spawnChild(item);
+  const run = await start(childWorkflow, [item]); // [!code highlight]
   return { childRunId: run.runId };
 }
 ```
@@ -338,7 +333,7 @@ Delete the ASL JSON, per-task Lambda deployments, IAM roles, and callback queues
 ## Features without a 1:1 equivalent
 
 - **Express workflows.** At-least-once semantics and 5-minute duration make them a poor fit for the SDK's durable replay model. Consider keeping them on Step Functions or migrating to a queue consumer.
-- **Distributed Map state.** Up to 10,000 concurrent child executions with S3 item sources has no 1:1 analog; fan out with step-wrapped `start()` per item, then `Promise.all` with `p-limit` to bound concurrency.
+- **Distributed Map state.** Up to 10,000 concurrent child executions with S3 item sources has no 1:1 analog; fan out with `start()` per item, then `Promise.all` with `p-limit` to bound concurrency.
 - **Optimized AWS service integrations (`arn:aws:states:::dynamodb:*`, `eventbridge:*`, `bedrock:*`, `ecs:runTask.sync`, etc.).** These become regular SDK calls inside `'use step'` functions — credentials, retries, and polling move into the step.
 - **Per-state IAM roles.** ASL lets each state run under its own IAM role. In the SDK, all steps share the deployment's credentials; scope secrets and roles at deployment time.
 - **CloudWatch alarms / X-Ray cross-service traces / CloudWatch Logs retention.** The SDK event log + observability UI replaces orchestrator state transitions, not AWS-wide observability. Keep alarms and traces for other resources.
@@ -351,8 +346,8 @@ Delete the ASL JSON, per-task Lambda deployments, IAM roles, and callback queues
 - Replace Choice states with `if`/`else`/`switch`.
 - Replace Wait states with `sleep()` from `workflow`.
 - Replace Parallel states with `Promise.all()`.
-- Replace Map states based on their concurrency mode: inline sequential → `for` loop; bounded parallel (`MaxConcurrency: N`) → batched `Promise.all` or a concurrency limiter like `p-limit`; Distributed Map / large fan-out → step-wrapped `start()` per item, then step-wrapped `getRun()` to collect.
-- Replace `StartExecution` child machines with `"use step"` wrappers around `start()` and `getRun()`.
+- Replace Map states based on their concurrency mode: inline sequential → `for` loop; bounded parallel (`MaxConcurrency: N`) → batched `Promise.all` or a concurrency limiter like `p-limit`; Distributed Map / large fan-out → `start()` per item, then step-wrapped `getRun()` to collect.
+- Replace `StartExecution` child machines with direct `start()` calls and a `"use step"` wrapper around `getRun()` when collecting results.
 - Replace `.waitForTaskToken` with `createHook()` (internal callers) or `createWebhook()` (HTTP callers).
 - Move Retry/Catch to step boundaries using `maxRetries`, `RetryableError`, and `FatalError`.
 - Use `getStepMetadata().stepId` as the idempotency key for external side effects.

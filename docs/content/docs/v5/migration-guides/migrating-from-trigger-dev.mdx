@@ -48,7 +48,7 @@ Migration collapses the task abstraction into plain async functions. Business lo
 | `logger` / `metadata.set` | `console` + `getWritable({ namespace: 'status' })` | Logs flow through the run timeline. Status writes go on a named stream. |
 | `wait.for({ seconds \| minutes \| hours \| days })` / `wait.until({ date })` | `sleep()` | Import from `workflow`. |
 | `wait.forToken({ timeout })` | `createHook()` + `Promise.race` with `sleep()` | Hooks carry a typed token. |
-| `tasks.trigger()` / `triggerAndWait()` | `start()` and `getRun(runId).returnValue` | Wrap both in `"use step"` functions. |
+| `tasks.trigger()` / `triggerAndWait()` | `start()` and `getRun(runId).returnValue` | Call `start()` directly; wrap `getRun()` collection in a `"use step"` function. |
 | `batch.triggerAndWait()` | `Promise.all(runIds.map(collectResult))` | Fan out via standard concurrency. |
 | `AbortTaskRunError` | `FatalError` | Stops retries immediately. |
 | `retry.onThrow` / `retry.fetch` | `RetryableError`, `FatalError`, `maxRetries` | Retry count lives on the step via `myStep.maxRetries = N` (default 3). Control delay between attempts by throwing `new RetryableError(msg, { retryAfter: '5s' })` — there is no built-in exponential helper; compute the delay yourself based on `getStepMetadata().attempt` if you need one. |
@@ -180,23 +180,14 @@ A hook is an inbound write channel. The caller that knows the token resumes the 
 
 ## Spawn a child workflow
 
-`triggerAndWait()` splits into two steps: spawn and collect. `start()` and `getRun()` are runtime APIs, so wrap them in `"use step"` functions. Return the full `Run` object from `spawnChild` so observability tooling can deep-link to the child run.
+`triggerAndWait()` splits into spawn and collect. In v5, call `start()` directly from the workflow to spawn the child. Wrap `getRun()` and `returnValue` access in a `"use step"` function when you need to collect the result.
 
 You can return either the full `Run` object (enables deep-linking) or just `run.runId` (simpler). The runtime serializes `Run` to its `runId` in the event log either way.
 
-```typescript title="workflow/workflows/parent.ts"
-import { start } from 'workflow/api';
-
-async function spawnChild(item: string) {
-  'use step';
-  return start(childWorkflow, [item]); // [!code highlight]
-}
-```
-
-Await the result in a second step, then orchestrate both from the parent:
+Await the result in a step, then orchestrate both from the parent:
 
 ```typescript title="workflow/workflows/parent.ts"
-import { getRun } from 'workflow/api';
+import { getRun, start } from 'workflow/api';
 
 async function collectResult(runId: string) {
   'use step';
@@ -206,12 +197,12 @@ async function collectResult(runId: string) {
 
 export async function parentWorkflow(item: string) {
   'use workflow';
-  const child = await spawnChild(item);
+  const child = await start(childWorkflow, [item]); // [!code highlight]
   return await collectResult(child.runId);
 }
 ```
 
-To fan out, call `spawnChild` inside a loop, then `Promise.all` the `collectResult` calls. That replaces `batch.triggerAndWait()`.
+To fan out, call `start()` inside a loop, then `Promise.all` the `collectResult` calls. That replaces `batch.triggerAndWait()`.
 
 `Promise.all` rejects on first failure; use `Promise.allSettled` if you need batch-mode error tolerance similar to trigger.dev's `{ ok, output, error }` per-run result.
 
@@ -273,7 +264,7 @@ async function loadOrder(id: string) {
 - `wait.for({ seconds | minutes | hours | days })` / `wait.until({ date })` → `sleep('5m')` or `sleep(date)` from `workflow`.
 - `wait.forToken(token)` → `createHook({ token })` + `await`. Complete it with `resumeHook(token, payload)` from an API route.
 - `wait.forToken({ timeout })` → `Promise.race([hook, sleep(timeout)])`.
-- `triggerAndWait(payload)` → wrap `start(child, [payload])` in a `"use step"` function and return the `Run` object, then read the result with a second step that calls `getRun(runId).returnValue`.
+- `triggerAndWait(payload)` → call `start(child, [payload])` from the workflow and return the `Run` object, then read the result with a step that calls `getRun(runId).returnValue`.
 
 ### Step 5: Start runs from the app
 
@@ -324,7 +315,7 @@ Throw `new RetryableError(msg, { retryAfter: '5s' })` to control delay between a
 - Swap `wait.for` / `wait.until` for `sleep()` from `workflow`.
 - Swap `wait.forToken` for `createHook()` (internal) or `createWebhook()` (HTTP).
 - Model `wait.forToken` timeouts as `Promise.race()` between the hook and `sleep()`.
-- Replace `triggerAndWait()` with `"use step"` wrappers around `start()` and `getRun()`.
+- Replace `triggerAndWait()` with direct `start()` calls and a `"use step"` wrapper around `getRun()` when collecting results.
 - Replace `batch.triggerAndWait()` with `Promise.all` over the collected child `Run` handles.
 - Move `schemaTask` validation to the call site; pass typed arguments into the workflow.
 - Replace `AbortTaskRunError` with `FatalError`; model retries per step with `RetryableError` and `maxRetries`.
