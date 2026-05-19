@@ -11,6 +11,7 @@ import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
   NORMALIZE_REQUEST_CODE,
+  replaceGeneratedRouteExport,
   type SvelteKitConfig,
 } from '@workflow/builders';
 
@@ -20,24 +21,6 @@ const SVELTEKIT_VIRTUAL_MODULES = [
   '$lib/*', // All $lib subpaths
   '$app/*', // All $app subpaths
 ];
-
-function replaceGeneratedRouteExport(
-  content: string,
-  pattern: RegExp,
-  replacement: string,
-  errorMessage: string
-) {
-  const sourceMapMarker = '\n//# sourceMappingURL=';
-  const sourceMapIndex = content.lastIndexOf(sourceMapMarker);
-  const routeCode =
-    sourceMapIndex === -1 ? content : content.slice(0, sourceMapIndex);
-  const sourceMap = sourceMapIndex === -1 ? '' : content.slice(sourceMapIndex);
-  const wrappedRouteCode = routeCode.replace(pattern, replacement);
-  if (wrappedRouteCode === routeCode) {
-    throw new Error(errorMessage);
-  }
-  return wrappedRouteCode + sourceMap;
-}
 
 export class SvelteKitBuilder extends BaseBuilder {
   constructor(config?: Partial<SvelteKitConfig>) {
@@ -183,7 +166,8 @@ export const POST = handleStepRequest;`,
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
 
     // Replace the default export with SvelteKit-compatible handler
-    const wrappedWorkflowsRouteContent = workflowsRouteContent.replace(
+    workflowsRouteContent = replaceGeneratedRouteExport(
+      workflowsRouteContent,
       /const handler = workflowEntrypoint\(workflowCode\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
       `${NORMALIZE_REQUEST_CODE}
 const handleWorkflowRequest = async ({request}) => {
@@ -192,12 +176,9 @@ const handleWorkflowRequest = async ({request}) => {
 };
 
 export const HEAD = handleWorkflowRequest;
-export const POST = handleWorkflowRequest;`
+export const POST = handleWorkflowRequest;`,
+      'Failed to wrap generated SvelteKit workflow route'
     );
-    if (wrappedWorkflowsRouteContent === workflowsRouteContent) {
-      throw new Error('Failed to wrap generated SvelteKit workflow route');
-    }
-    workflowsRouteContent = wrappedWorkflowsRouteContent;
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
     return manifest;

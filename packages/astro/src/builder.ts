@@ -5,6 +5,7 @@ import {
   BaseBuilder,
   createBaseBuilderConfig,
   NORMALIZE_REQUEST_CODE,
+  replaceGeneratedRouteExport,
   VercelBuildOutputAPIBuilder,
 } from '@workflow/builders';
 
@@ -22,24 +23,6 @@ const WORKFLOW_ROUTES = [
     dest: '/.well-known/workflow/v1/webhook/[token]',
   },
 ];
-
-function replaceGeneratedRouteExport(
-  content: string,
-  pattern: RegExp,
-  replacement: string,
-  errorMessage: string
-) {
-  const sourceMapMarker = '\n//# sourceMappingURL=';
-  const sourceMapIndex = content.lastIndexOf(sourceMapMarker);
-  const routeCode =
-    sourceMapIndex === -1 ? content : content.slice(0, sourceMapIndex);
-  const sourceMap = sourceMapIndex === -1 ? '' : content.slice(sourceMapIndex);
-  const wrappedRouteCode = routeCode.replace(pattern, replacement);
-  if (wrappedRouteCode === routeCode) {
-    throw new Error(errorMessage);
-  }
-  return wrappedRouteCode + sourceMap;
-}
 
 export class LocalBuilder extends BaseBuilder {
   constructor() {
@@ -179,7 +162,8 @@ export const prerender = false;`,
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
 
     // Normalize request, needed for preserving request through astro
-    const wrappedWorkflowsRouteContent = workflowsRouteContent.replace(
+    workflowsRouteContent = replaceGeneratedRouteExport(
+      workflowsRouteContent,
       /const handler = workflowEntrypoint\(workflowCode\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
       `${NORMALIZE_REQUEST_CODE}
 const handleWorkflowRequest = async ({request}) => {
@@ -190,12 +174,9 @@ const handleWorkflowRequest = async ({request}) => {
 export const HEAD = handleWorkflowRequest;
 export const POST = handleWorkflowRequest;
 
-export const prerender = false;`
+export const prerender = false;`,
+      'Failed to wrap generated Astro workflow route'
     );
-    if (wrappedWorkflowsRouteContent === workflowsRouteContent) {
-      throw new Error('Failed to wrap generated Astro workflow route');
-    }
-    workflowsRouteContent = wrappedWorkflowsRouteContent;
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 
     return manifest;
