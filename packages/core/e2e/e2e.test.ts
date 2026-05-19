@@ -7,6 +7,7 @@ import {
   WorkflowWorldError,
 } from '@workflow/errors';
 import { SPEC_VERSION_CURRENT, type World } from '@workflow/world';
+import { monotonicFactory } from 'ulid';
 import {
   afterAll,
   assert,
@@ -17,15 +18,23 @@ import {
   test,
 } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
-import type { Run } from '../src/runtime';
+import type { Run as WorkflowRunHandle } from '../src/runtime';
 import {
   getHookByToken,
   getRun,
   getWorld,
   healthCheck,
+  Run,
   start as rawStart,
+  reenqueueRun,
   resumeHook,
 } from '../src/runtime';
+import {
+  dehydrateStepArguments,
+  dehydrateStepReturnValue,
+  dehydrateWorkflowArguments,
+} from '../src/serialization';
+import { createContext } from '../src/vm/index';
 import {
   cliCancel,
   cliHealthJson,
@@ -93,7 +102,7 @@ async function waitForHookState(
  */
 async function start<T>(
   ...args: Parameters<typeof rawStart<T>>
-): Promise<Run<T>> {
+): Promise<WorkflowRunHandle<T>> {
   const run = await rawStart<T>(...args);
   trackRun(run);
   return run;
@@ -130,6 +139,41 @@ function writeE2EMetadata() {
 const e2e = (fn: string) =>
   getWorkflowMetadata(deploymentUrl, 'workflows/99_e2e.ts', fn);
 
+const e2eStep = async (fn: string) => {
+  const workflowFile = 'workflows/99_e2e.ts';
+  const manifest = await fetchManifest(deploymentUrl);
+
+  for (const [manifestFile, steps] of Object.entries(manifest.steps)) {
+    if (
+      manifestFile.endsWith(workflowFile) ||
+      workflowFile.endsWith(manifestFile)
+    ) {
+      const entry = steps[fn];
+      if (entry) {
+        return entry.stepId;
+      }
+    }
+  }
+
+  const fileWithoutExt = workflowFile.replace(/\.tsx?$/, '');
+  return `step//./${fileWithoutExt}//${fn}`;
+};
+
+function getWorkflowCorrelationIds(
+  runId: string,
+  workflowName: string,
+  workflowStartedAt: Date,
+  count: number
+) {
+  const startedAtMs = +workflowStartedAt;
+  const { globalThis: vmGlobalThis } = createContext({
+    seed: `${runId}:${workflowName}:${startedAtMs}`,
+    fixedTimestamp: startedAtMs,
+  });
+  const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
+  return Array.from({ length: count }, () => ulid(startedAtMs));
+}
+
 /**
  * Triggers a workflow via HTTP POST. Used only for Pages Router tests
  * that specifically need to validate the HTTP trigger endpoint.
@@ -138,7 +182,7 @@ async function startWorkflowViaHttp(
   workflow: string | { workflowFile: string; workflowFn: string },
   args: any[],
   endpoint: string
-): Promise<Run<any>> {
+): Promise<WorkflowRunHandle<any>> {
   const url = new URL(endpoint, deploymentUrl);
   const workflowFn =
     typeof workflow === 'string' ? workflow : workflow.workflowFn;
@@ -2193,6 +2237,165 @@ describe('e2e', () => {
 
       const { json: runData } = await cliInspectJson(`runs ${run.runId}`);
       expect(runData.status).toBe('completed');
+    }
+  );
+
+  test(
+    'hookSleepRaceReplayWorkflow - reproduces stale wait-branch replay corruption',
+    { timeout: 90_000 },
+    async () => {
+      const workflowMetadata = await e2e('hookSleepRaceReplayWorkflow');
+      const syncStepName = await e2eStep('hookSleepRaceReplaySyncStep');
+      const workflowName = workflowMetadata.workflowId;
+      const runId = `wrun_${monotonicFactory()()}`;
+      const token = `sleep-race-${runId}`;
+      const world = getWorld();
+      const deploymentId = await world.getDeploymentId();
+      const ops: Promise<unknown>[] = [];
+
+      const input = await dehydrateWorkflowArguments(
+        [token],
+        runId,
+        undefined,
+        ops
+      );
+      await Promise.all(ops);
+
+      await world.events.create(runId, {
+        eventType: 'run_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        eventData: {
+          deploymentId,
+          workflowName,
+          input,
+          executionContext: {
+            features: { encryption: false },
+          },
+        },
+      });
+
+      const startedResult = await world.events.create(runId, {
+        eventType: 'run_started',
+        specVersion: SPEC_VERSION_CURRENT,
+      });
+      assert(startedResult.run?.startedAt, 'Expected run_started timestamp');
+
+      const [hookId, step0Id, wait0Id, step1Id, wait1Id] =
+        getWorkflowCorrelationIds(
+          runId,
+          workflowName,
+          startedResult.run.startedAt,
+          5
+        );
+
+      const [syncInput0, syncInput1, hookPayload, syncResult0, syncResult1] =
+        await Promise.all([
+          dehydrateStepArguments([{ index: 0 }], runId, undefined),
+          dehydrateStepArguments([{ index: 1 }], runId, undefined),
+          dehydrateStepReturnValue(
+            { nonce: 'payload-0' },
+            runId,
+            undefined,
+            ops
+          ),
+          dehydrateStepReturnValue(
+            { index: 0, syncedAt: '2026-05-19T00:00:00.000Z' },
+            runId,
+            undefined,
+            ops
+          ),
+          dehydrateStepReturnValue(
+            { index: 1, syncedAt: '2026-05-19T00:00:01.000Z' },
+            runId,
+            undefined,
+            ops
+          ),
+        ]);
+      await Promise.all(ops);
+
+      const createEvent = (data: any) => world.events.create(runId, data);
+
+      await createEvent({
+        eventType: 'hook_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `hook_${hookId}`,
+        eventData: { token },
+      });
+      await createEvent({
+        eventType: 'step_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `step_${step0Id}`,
+        eventData: { stepName: syncStepName, input: syncInput0 },
+      });
+      await createEvent({
+        eventType: 'step_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `step_${step0Id}`,
+      });
+      await createEvent({
+        eventType: 'step_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `step_${step0Id}`,
+        eventData: { result: syncResult0 },
+      });
+      await createEvent({
+        eventType: 'wait_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `wait_${wait0Id}`,
+        eventData: { resumeAt: new Date('2026-05-19T00:00:05.000Z') },
+      });
+      await createEvent({
+        eventType: 'hook_received',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `hook_${hookId}`,
+        eventData: { payload: hookPayload },
+      });
+      await createEvent({
+        eventType: 'wait_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `wait_${wait0Id}`,
+      });
+      await createEvent({
+        eventType: 'step_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `step_${step1Id}`,
+        eventData: { stepName: syncStepName, input: syncInput1 },
+      });
+      await createEvent({
+        eventType: 'step_started',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `step_${step1Id}`,
+      });
+      await createEvent({
+        eventType: 'step_completed',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `step_${step1Id}`,
+        eventData: { result: syncResult1 },
+      });
+      await createEvent({
+        eventType: 'wait_created',
+        specVersion: SPEC_VERSION_CURRENT,
+        correlationId: `wait_${wait1Id}`,
+        eventData: { resumeAt: new Date('2026-05-19T00:00:10.000Z') },
+      });
+
+      const run = new Run<unknown>(runId);
+      trackRun(run);
+      await reenqueueRun(world, runId);
+
+      await expect(run.returnValue).rejects.toThrow(WorkflowRunFailedError);
+
+      const { json: runData } = await cliInspectJson(`runs ${runId}`);
+      expect(runData.status).toBe('failed');
+
+      const { json: events } = await cliInspectJson(
+        `events --run ${runId} --json`
+      );
+      const eventTypes = events.map((event: E2EEvent) => event.eventType);
+      expect(eventTypes.indexOf('hook_received')).toBeLessThan(
+        eventTypes.indexOf('wait_completed')
+      );
+      expect(eventTypes).toContain('run_failed');
     }
   );
 

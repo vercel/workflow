@@ -1416,6 +1416,62 @@ export async function hookWithSleepWorkflow(token: string) {
 
 //////////////////////////////////////////////////////////
 
+async function hookSleepRaceReplaySyncStep(args: { index: number }) {
+  'use step';
+  return { index: args.index, syncedAt: new Date().toISOString() };
+}
+
+async function hookSleepRaceReplayDrainStep(args: { index: number }) {
+  'use step';
+  return { index: args.index, drainedAt: new Date().toISOString() };
+}
+
+/**
+ * Reproduces a replay race where a hook payload lands before a stale
+ * wait_completed event, while another activation records the sleep branch.
+ */
+export async function hookSleepRaceReplayWorkflow(token: string) {
+  'use workflow';
+
+  type Payload = { nonce: string };
+
+  const hook = createHook<Payload>({ token });
+  const iterator = hook[Symbol.asyncIterator]();
+  const branches: Array<{
+    branch: 'sleep' | 'wake';
+    index: number;
+    drained?: unknown;
+  }> = [];
+  let pendingRead: Promise<IteratorResult<Payload>> | undefined;
+
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      await hookSleepRaceReplaySyncStep({ index });
+      pendingRead ??= iterator.next();
+
+      const result = await Promise.race([
+        pendingRead.then((value) => ({ kind: 'wake' as const, value })),
+        sleep('5s').then(() => ({ kind: 'sleep' as const })),
+      ]);
+
+      if (result.kind === 'sleep') {
+        branches.push({ branch: 'sleep', index });
+        continue;
+      }
+
+      pendingRead = undefined;
+      const drained = await hookSleepRaceReplayDrainStep({ index });
+      branches.push({ branch: 'wake', index, drained });
+    }
+  } finally {
+    hook.dispose();
+  }
+
+  return branches;
+}
+
+//////////////////////////////////////////////////////////
+
 async function addNumbers(a: number, b: number) {
   'use step';
   return a + b;
