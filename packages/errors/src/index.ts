@@ -507,7 +507,7 @@ export class HookConflictError extends WorkflowError {
 
   constructor(token: string, conflictingRunId?: string) {
     super(
-      `Hook token "${token}" is already in use by another workflow${conflictingRunId ? ` run "${conflictingRunId}"` : ''}`,
+      `Hook token "${token}" is already in use by another workflow${conflictingRunId ? ` (run "${conflictingRunId}")` : ''}`,
       {
         slug: ERROR_SLUGS.HOOK_CONFLICT,
       }

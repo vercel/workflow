@@ -68,6 +68,19 @@ const HookTokenClaimSchema = z.object({
   runId: z.string(),
 });
 
+async function readHookTokenClaim(
+  constraintPath: string
+): Promise<z.infer<typeof HookTokenClaimSchema> | null> {
+  try {
+    return await readJSON(constraintPath, HookTokenClaimSchema);
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof z.ZodError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
 function withStepLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const prev = stepLocks.get(key);
   const taskBox: { task?: Promise<T> } = {};
@@ -884,10 +897,7 @@ export function createEventsStorage(
           );
 
           if (!tokenClaimed) {
-            const existingClaim = await readJSON(
-              constraintPath,
-              HookTokenClaimSchema
-            );
+            const existingClaim = await readHookTokenClaim(constraintPath);
 
             // Create hook_conflict event instead of hook_created
             // This allows the workflow to continue and fail gracefully when the hook is awaited
