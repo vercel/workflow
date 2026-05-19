@@ -118,10 +118,19 @@ In idempotency flows, a conflict means another active run already owns the hook 
 import { getRun, resumeHook, start } from "workflow/api";
 import { processPayment } from "@/workflows/process-payment";
 
+type ProcessPaymentResult =
+  | { success: true; payment: unknown }
+  | {
+      success: false;
+      reason: "duplicate-processing";
+      token: string;
+      runId?: string;
+    };
+
 export async function POST(request: Request) {
   const { orderId, payment } = await request.json();
   const run = await start(processPayment, [orderId]);
-  const result = await run.returnValue;
+  const result = (await run.returnValue) as ProcessPaymentResult;
 
   if (
     result.success === false &&
