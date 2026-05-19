@@ -20,7 +20,9 @@ import {
   resolve,
 } from 'node:path';
 import {
+  cleanupStaleSocketInfoFiles,
   createSocketServer,
+  SOCKET_INFO_FILENAME,
   type SocketIO,
   type SocketServerConfig,
 } from './socket-server.js';
@@ -555,13 +557,13 @@ export async function getNextBuilderDeferred() {
         join(workflowGeneratedDir, 'manifest.json'),
       ];
 
-      await Promise.all(
-        staleArtifactPaths.map((stalePath) =>
-          rm(stalePath, { recursive: true, force: true })
-        )
-      );
-
       await Promise.all([
+        ...staleArtifactPaths.map((stalePath) =>
+          rm(stalePath, { recursive: true, force: true })
+        ),
+        cleanupStaleSocketInfoFiles(
+          join(this.config.workingDir, this.getDistDir())
+        ),
         this.removeStaleDeferredTempFiles(flowRouteDir),
         this.removeStaleDeferredTempFiles(stepRouteDir),
         this.removeStaleDeferredTempFiles(webhookRouteDir),
@@ -692,8 +694,7 @@ export async function getNextBuilderDeferred() {
       return join(
         this.config.workingDir,
         this.getDistDir(),
-        'cache',
-        'workflow-socket.json'
+        SOCKET_INFO_FILENAME
       );
     }
 
