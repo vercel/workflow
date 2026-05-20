@@ -18,13 +18,13 @@ const SEGMENT_CONFIG: Record<
   SegmentStatus,
   { className?: string; style?: React.CSSProperties }
 > = {
-  queued: { className: 'bg-gray-200 border border-gray-500' },
-  retrying: { className: 'box-border bg-gray-200 border border-gray-500' },
-  waiting: { className: 'bg-gray-200 border border-gray-500' },
+  queued: { className: 'bg-gray-400 border border-gray-500' },
+  retrying: { className: 'box-border bg-gray-400 border border-gray-500' },
+  waiting: { className: 'bg-gray-400 border border-gray-500' },
   running: { className: 'bg-blue-200 border border-blue-500' },
   failed: { className: 'bg-red-200 border border-red-500' },
   succeeded: { className: 'bg-green-200 border border-green-500' },
-  sleeping: { className: 'bg-gray-200 border border-gray-500' },
+  sleeping: { className: 'bg-gray-400 border border-gray-500' },
   received: { className: 'bg-blue-200 border border-blue-500' },
 };
 
@@ -157,7 +157,10 @@ const TimelineBar = memo(function TimelineBar({
           segPixelWidth >= getMinDurationLabelWidthPx(segDurationLabel);
         const segStyle =
           seg.status === 'queued' && segPixelWidth < 20
-            ? { background: 'var(--ds-gray-500)' }
+            ? {
+                background: 'var(--ds-gray-400)',
+                borderColor: 'var(--ds-gray-500)',
+              }
             : SEGMENT_CONFIG[seg.status].style;
 
         return (
