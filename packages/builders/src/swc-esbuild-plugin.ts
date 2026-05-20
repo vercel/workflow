@@ -124,10 +124,16 @@ function assertUniqueManifestIds(
       ) {
         const idName = label === 'step' ? 'workflow step ID' : 'workflow ID';
         const functionName = `${label} function`;
+        const capitalizedLabel = label === 'step' ? 'Step' : 'Workflow';
         throw new WorkflowBuildError(
           `Duplicate ${idName} "${id}" generated for ${formatIdLocation(existing)} and ${formatIdLocation(current)}.`,
           {
-            hint: `${label === 'step' ? 'Step' : 'Workflow'} IDs must be unique across a build. Rename one of the ${functionName}s or export the package file through a unique package subpath.`,
+            hint:
+              `${capitalizedLabel} IDs must be unique across a build. ` +
+              `If you own one of the colliding files, rename the ${functionName} or export ` +
+              `the package file through a unique package subpath. If the collision is in a ` +
+              `transitive dependency you don't control, file an issue with the upstream ` +
+              `package or pin to a non-colliding version.`,
           }
         );
       }

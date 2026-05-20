@@ -403,6 +403,26 @@ export function resolveModuleSpecifier(
 }
 
 /**
+ * Strip the trailing "@<version>" suffix from a module specifier produced by
+ * `resolveModuleSpecifier`, leaving the bare `name` or `name/subpath` form.
+ *
+ * Use this when you want to compare or dedupe specifiers across versions
+ * (e.g. treating `@workflow/ai/agent@5.0.0-beta.4` and
+ * `@workflow/ai/agent@5.0.0-beta.5` as the same logical module).
+ *
+ * Colocated with `resolveModuleSpecifier` so the construction and parsing
+ * stay in sync — see the `${pkg.name}${subpath}@${pkg.version}` and
+ * `${pkg.name}@${pkg.version}` paths above.
+ */
+export function stripPackageVersion(specifier: string): string {
+  // The version is always the final segment after the last "@". Constrain
+  // matching to characters that can't appear in a package name or subpath
+  // (no "/", no nested "@") so scoped packages like `@workflow/ai@1.0.0`
+  // keep their leading "@workflow/ai".
+  return specifier.replace(/@[^/@]+$/, '');
+}
+
+/**
  * Clear the package.json cache. Useful for testing or when package.json files may have changed.
  */
 export function clearModuleSpecifierCache(): void {

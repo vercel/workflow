@@ -16,7 +16,11 @@ import {
 } from './apply-swc-transform.js';
 import { createDiscoverEntriesPlugin } from './discover-entries-esbuild-plugin.js';
 import { getEsbuildTsconfigOptions } from './esbuild-tsconfig.js';
-import { getImportPath, resolveModuleSpecifier } from './module-specifier.js';
+import {
+  getImportPath,
+  resolveModuleSpecifier,
+  stripPackageVersion,
+} from './module-specifier.js';
 import { createNodeModuleErrorPlugin } from './node-module-esbuild-plugin.js';
 import { createPseudoPackagePlugin } from './pseudo-package-esbuild-plugin.js';
 import { createSwcPlugin } from './swc-esbuild-plugin.js';
@@ -108,9 +112,9 @@ async function withRealpaths(entries: string[]): Promise<string[]> {
 function moduleIdentityKey(file: string, projectRoot: string): string {
   const { moduleSpecifier } = resolveModuleSpecifier(file, projectRoot);
   if (moduleSpecifier) {
-    // Strip "@version" suffix so source and dist copies of the same export
-    // collapse to the same key.
-    return moduleSpecifier.replace(/@[^/@]+$/, '');
+    // Strip the "@<version>" suffix so source and dist copies of the same
+    // export collapse to the same key.
+    return stripPackageVersion(moduleSpecifier);
   }
   return file.replace(/\\/g, '/');
 }
