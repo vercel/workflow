@@ -24,7 +24,7 @@ export const TIMELINE_PADDING_PX = 16;
 
 const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   queued: 'bg-gray-400 border border-gray-500',
-  retrying: 'box-border bg-gray-400 border border-gray-500',
+  retrying: 'bg-gray-400 border border-gray-500',
   waiting: 'bg-gray-400 border border-gray-500',
   running: 'bg-blue-200 border border-blue-500',
   failed: 'bg-red-200 border border-red-500',
