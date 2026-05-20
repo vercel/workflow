@@ -91,7 +91,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           resolve();
         });
-        return EventConsumerResult.Finished;
+        return EventConsumerResult.FinishedAndYield;
       }
 
       // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.

@@ -355,8 +355,8 @@ describe('runWorkflow', () => {
     );
     // Timestamps:
     // - Initial: 0s (from startedAt)
-    // - After step 1 completes (at 2s), timestamp advances to step2_created (2.5s)
-    // - After step 2 completes (at 4s), timestamp advances to step3_created (4.5s)
+    // - After step 1 completes: 2s
+    // - After step 2 completes: 4s
     // - After step 3 completes: 6s
     expect(
       await hydrateWorkflowReturnValue(
@@ -367,14 +367,13 @@ describe('runWorkflow', () => {
       )
     ).toEqual([
       new Date('2024-01-01T00:00:00.000Z'),
-      1704067202500, // 2.5s (step2_created timestamp)
-      1704067204500, // 4.5s (step3_created timestamp)
+      1704067202000,
+      1704067204000,
       new Date('2024-01-01T00:00:06.000Z'),
     ]);
   });
 
-  // TODO: Date.now determinism is currently broken in the workflow!!
-  it.fails('should maintain determinism of `Date` across executions', async () => {
+  it('should maintain determinism of `Date` across executions', async () => {
     const ops: Promise<any>[] = [];
     const workflowRunId = 'test-run-123';
     const workflowRun: WorkflowRun = {

@@ -156,7 +156,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             }
             reject(error);
           });
-          return EventConsumerResult.Finished;
+          return EventConsumerResult.FinishedAndYield;
         }
 
         if (event.eventType === 'step_completed') {
@@ -185,7 +185,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
               ctx.pendingDeliveries--;
             }
           });
-          return EventConsumerResult.Finished;
+          return EventConsumerResult.FinishedAndYield;
         }
 
         // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.

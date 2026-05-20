@@ -7,6 +7,13 @@ export enum EventConsumerResult {
    */
   Consumed,
   /**
+   * Callback consumed the event and resolved/rejected workflow code, but should
+   * not be removed from the callbacks list. Event replay should yield before
+   * processing the next event so the resumed workflow can subscribe to follow-up
+   * operations first.
+   */
+  ConsumedAndYield,
+  /**
    * Callback did not consume the event, so it should be passed to the next callback
    */
   NotConsumed,
@@ -14,9 +21,38 @@ export enum EventConsumerResult {
    * Callback consumed the event, and should be removed from the callbacks list
    */
   Finished,
+  /**
+   * Callback consumed the event, should be removed from the callbacks list, and
+   * resumed workflow code. Event replay should yield before processing the next
+   * event.
+   */
+  FinishedAndYield,
 }
 
 type EventConsumerCallback = (event: Event | null) => EventConsumerResult;
+
+function isConsumedResult(result: EventConsumerResult) {
+  return (
+    result === EventConsumerResult.Consumed ||
+    result === EventConsumerResult.ConsumedAndYield ||
+    result === EventConsumerResult.Finished ||
+    result === EventConsumerResult.FinishedAndYield
+  );
+}
+
+function isFinishedResult(result: EventConsumerResult) {
+  return (
+    result === EventConsumerResult.Finished ||
+    result === EventConsumerResult.FinishedAndYield
+  );
+}
+
+function shouldYieldAfterResult(result: EventConsumerResult) {
+  return (
+    result === EventConsumerResult.ConsumedAndYield ||
+    result === EventConsumerResult.FinishedAndYield
+  );
+}
 
 export interface EventsConsumerOptions {
   /**
@@ -45,6 +81,8 @@ export class EventsConsumer {
   private pendingUnconsumedCheck: Promise<void> | null = null;
   private pendingUnconsumedTimeout: ReturnType<typeof setTimeout> | null = null;
   private unconsumedCheckVersion = 0;
+  private consumeScheduled = false;
+  private replayPaused = false;
 
   constructor(events: Event[], options: EventsConsumerOptions) {
     this.events = events;
@@ -75,10 +113,14 @@ export class EventsConsumer {
         this.pendingUnconsumedTimeout = null;
       }
     }
-    process.nextTick(this.consume);
+    this.scheduleConsume();
   }
 
   private consume = () => {
+    if (this.replayPaused) {
+      return;
+    }
+
     const currentEvent = this.events[this.eventIndex] ?? null;
     for (let i = 0; i < this.callbacks.length; i++) {
       const callback = this.callbacks[i];
@@ -88,20 +130,21 @@ export class EventsConsumer {
       } catch (error) {
         eventsLogger.error('EventConsumer callback threw an error', { error });
       }
-      if (
-        handled === EventConsumerResult.Consumed ||
-        handled === EventConsumerResult.Finished
-      ) {
+      if (isConsumedResult(handled)) {
         // consumer handled this event, so increase the event index
         this.eventIndex++;
 
         // remove the callback if it has finished
-        if (handled === EventConsumerResult.Finished) {
+        if (isFinishedResult(handled)) {
           this.callbacks.splice(i, 1);
         }
 
         // continue to the next event
-        process.nextTick(this.consume);
+        if (shouldYieldAfterResult(handled)) {
+          this.scheduleConsumeAfterWorkflowTurn();
+        } else {
+          this.scheduleConsume();
+        }
         return;
       }
     }
@@ -142,4 +185,31 @@ export class EventsConsumer {
         });
     }
   };
+
+  private scheduleConsume() {
+    if (this.consumeScheduled || this.replayPaused) {
+      return;
+    }
+
+    this.consumeScheduled = true;
+    process.nextTick(() => {
+      this.consumeScheduled = false;
+      this.consume();
+    });
+  }
+
+  private scheduleConsumeAfterWorkflowTurn() {
+    this.replayPaused = true;
+    this.getPromiseQueue()
+      .then(() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
+      .then(() => this.getPromiseQueue())
+      .then(() => {
+        this.replayPaused = false;
+        this.scheduleConsume();
+      })
+      .catch(() => {
+        this.replayPaused = false;
+        this.scheduleConsume();
+      });
+  }
 }

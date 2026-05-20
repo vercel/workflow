@@ -145,6 +145,7 @@ export function createCreateHook(ctx: WorkflowOrchestratorContext) {
                 ctx.pendingDeliveries--;
               }
             });
+            return EventConsumerResult.ConsumedAndYield;
           }
         } else {
           payloadsQueue.push(event);
