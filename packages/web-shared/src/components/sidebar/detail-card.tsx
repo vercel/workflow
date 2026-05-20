@@ -88,10 +88,7 @@ export function DetailCard({
     return (
       <section className="-mx-3 border-t px-3 border-gray-alpha-400">
         <div className={cn(rowClasses, summaryClassName)}>
-          <div
-            className="isolate relative shrink-0 text-gray-700"
-            style={{ width: 14, height: 14 }}
-          >
+          <div className="isolate relative shrink-0 w-3.5 h-3.5 text-gray-700">
             <ChevronRight
               size={14}
               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2"
@@ -127,10 +124,7 @@ export function DetailCard({
             summaryClassName
           )}
         >
-          <div
-            className="isolate relative shrink-0 text-gray-700 group-hover/trigger:text-gray-1000"
-            style={{ width: 14, height: 14 }}
-          >
+          <div className="isolate relative shrink-0 text-gray-700 group-hover/trigger:text-gray-1000 w-3.5 h-3.5">
             <ChevronRight
               size={14}
               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 opacity-100 group-open:opacity-0"
