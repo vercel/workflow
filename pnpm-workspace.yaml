@@ -29,3 +29,11 @@ onlyBuiltDependencies:
   - esbuild
 
 savePrefix: ""
+
+minimumReleaseAge: 2880
+
+minimumReleaseAgeExclude:
+  - '@turbo/*'
+  - 'turbo'
+  - '@vercel/*'
+  - '@workflow/*'
