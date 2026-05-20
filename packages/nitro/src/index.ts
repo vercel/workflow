@@ -226,9 +226,16 @@ export default {
 
       // Nitro v3+ Vercel deploy: configure function rules for the combined
       // flow handler so it gets the queue triggers + max duration that the
-      // workflow runtime needs. The rules are merged with any user-defined
-      // rules at the same paths so explicit user config (e.g. memory) is
-      // preserved.
+      // workflow runtime needs. Workflow-required fields (`maxDuration`,
+      // `experimentalTriggers`, `runtime` when set) take precedence over
+      // user-provided values for these routes; unrelated fields the user
+      // sets (e.g. `memory`) pass through untouched.
+      //
+      // Pattern keys must match the route patterns the handlers are
+      // registered with so nitro reuses the same function directory.
+      // Using a `webhook/**` catch-all here would create a second
+      // `webhook/[...].func` next to the `webhook/[token].func` that
+      // `addVirtualHandler` produces.
       if (isVercelDeploy) {
         nitro.options.vercel ??= {};
         nitro.options.vercel.functionRules ??= {};
@@ -248,8 +255,13 @@ export default {
         };
 
         if (runtime) {
-          const webhookPath = '/.well-known/workflow/v1/webhook/**';
+          const webhookPath = '/.well-known/workflow/v1/webhook/:token';
           rules[webhookPath] = { ...rules[webhookPath], runtime };
+
+          if (process.env.WORKFLOW_PUBLIC_MANIFEST === '1') {
+            const manifestPath = '/.well-known/workflow/v1/manifest.json';
+            rules[manifestPath] = { ...rules[manifestPath], runtime };
+          }
         }
       }
 

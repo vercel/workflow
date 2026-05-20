@@ -13,12 +13,14 @@ import { join } from 'pathe';
  * are skipped since esbuild's `external` only supports literal strings.
  *
  * Note: `externals.external` is on Nitro v2's options shape — v3 dropped it
- * in favour of `noExternals`. The cast lets us still read it on v2 setups;
- * on v3 the chained optional access just returns undefined.
+ * in favour of `noExternals`. Reading it through a v2-shaped view lets us
+ * still pick it up on v2 setups; on v3 the chained optional access just
+ * returns undefined.
  */
+type NitroV2ExternalsOptions = { externals?: { external?: unknown[] } };
 function getNitroStringExternals(nitro: Nitro): string[] | undefined {
-  const external = (nitro.options as { externals?: { external?: unknown[] } })
-    .externals?.external;
+  const external = (nitro.options as NitroV2ExternalsOptions).externals
+    ?.external;
   const strings = external?.filter(
     (entry): entry is string => typeof entry === 'string'
   );
