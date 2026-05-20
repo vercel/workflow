@@ -328,6 +328,7 @@ export function workflowEntrypoint(
                   let workflowRun: WorkflowRun | undefined;
                   let workflowStartedAt = -1;
                   let preloadedEvents: Event[] | undefined;
+                  let preloadedEventsCursor: string | null | undefined;
 
                   // If incoming message has a stepId, this is a background step
                   // execution. Execute the step, then check if all parallel steps
@@ -484,8 +485,13 @@ export function workflowEntrypoint(
 
                       // If the response includes events, use them to skip
                       // the initial events.list call and reduce TTFB.
-                      if (result.events && result.events.length > 0) {
+                      if (
+                        result.events &&
+                        result.events.length > 0 &&
+                        result.hasMore !== true
+                      ) {
                         preloadedEvents = result.events;
+                        preloadedEventsCursor = result.cursor;
                       }
 
                       if (!workflowRun.startedAt) {
@@ -629,8 +635,7 @@ export function workflowEntrypoint(
                         // otherwise do a full load with cursor.
                         if (preloadedEvents) {
                           events = preloadedEvents;
-                          // No cursor from preloaded events — next iteration
-                          // will fall through to the full reload path below.
+                          eventsCursor = preloadedEventsCursor ?? null;
                         } else {
                           const loaded = await loadWorkflowRunEvents(runId);
                           events = loaded.events;
@@ -643,10 +648,10 @@ export function workflowEntrypoint(
                           eventsCursor
                         );
                         // Dedupe by eventId: a previous iteration may have
-                        // pushed events manually (see the wait_completed
-                        // write loop below) without advancing the cursor,
-                        // so an incremental fetch can return events we
-                        // already have locally.
+                        // appended a refreshed wait-completion delta before
+                        // the next loop observes the advanced cursor, so an
+                        // incremental fetch can return events we already have
+                        // locally.
                         if (loaded.events.length > 0) {
                           const existingIds = new Set(
                             cachedEvents.map((e) => e.eventId)
@@ -750,12 +755,9 @@ export function workflowEntrypoint(
 
                       for (const waitEvent of waitsToComplete) {
                         try {
-                          const result = await world.events.create(
-                            runId,
-                            waitEvent,
-                            { requestId }
-                          );
-                          events.push(result.event!);
+                          await world.events.create(runId, waitEvent, {
+                            requestId,
+                          });
                         } catch (err) {
                           if (EntityConflictError.is(err)) {
                             runtimeLogger.info(
@@ -768,6 +770,54 @@ export function workflowEntrypoint(
                             continue;
                           }
                           throw err;
+                        }
+                      }
+
+                      if (waitsToComplete.length > 0) {
+                        // The event list above may be stale by the time an
+                        // elapsed wait is committed. Load only events after
+                        // the original snapshot cursor so concurrent durable
+                        // events, such as hook_received, keep their ordering
+                        // relative to wait_completed. Fall back to a full
+                        // reload for older worlds that cannot give us a stable
+                        // cursor, or if the cursor delta does not include the
+                        // wait completion this handler just attempted.
+                        if (eventsCursor) {
+                          const loaded = await loadWorkflowRunEvents(
+                            runId,
+                            eventsCursor
+                          );
+                          const completedWaitIdsAfterCursor = new Set(
+                            loaded.events
+                              .filter((e) => e.eventType === 'wait_completed')
+                              .map((e) => e.correlationId)
+                          );
+                          const sawAllWaitCompletions = waitsToComplete.every(
+                            (waitEvent) =>
+                              completedWaitIdsAfterCursor.has(
+                                waitEvent.correlationId
+                              )
+                          );
+
+                          if (sawAllWaitCompletions) {
+                            const existingIds = new Set(
+                              events.map((e) => e.eventId)
+                            );
+                            for (const event of loaded.events) {
+                              if (!existingIds.has(event.eventId)) {
+                                events.push(event);
+                              }
+                            }
+                            eventsCursor = loaded.cursor ?? eventsCursor;
+                          } else {
+                            const loaded = await loadWorkflowRunEvents(runId);
+                            events = loaded.events;
+                            eventsCursor = loaded.cursor;
+                          }
+                        } else {
+                          const loaded = await loadWorkflowRunEvents(runId);
+                          events = loaded.events;
+                          eventsCursor = loaded.cursor;
                         }
                       }
 

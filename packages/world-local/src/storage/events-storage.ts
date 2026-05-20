@@ -1104,19 +1104,24 @@ export function createEventsStorage(
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         const filteredEvent = stripEventDataRefs(event, resolveData);
 
-        // For run_started: include all events so the runtime can skip
-        // the initial events.list call and reduce TTFB.
+        // For run_started: preload one page of events so the runtime can skip
+        // the initial events.list call when hasMore is false.
         let events: Event[] | undefined;
+        let cursor: string | null | undefined;
+        let hasMore: boolean | undefined;
         if (data.eventType === 'run_started' && run) {
           const allEvents = await paginatedFileSystemQuery({
             directory: path.join(basedir, 'events'),
             schema: EventSchema,
             filePrefix: `${effectiveRunId}-`,
             sortOrder: 'asc',
+            limit: 1000,
             getCreatedAt: getObjectCreatedAt('evnt'),
             getId: (e) => e.eventId,
           });
           events = allEvents.data;
+          cursor = allEvents.cursor;
+          hasMore = allEvents.hasMore;
         }
 
         // Return EventResult with event and any created/updated entity
@@ -1127,6 +1132,8 @@ export function createEventsStorage(
           hook,
           wait,
           events,
+          cursor,
+          hasMore,
         };
       } // end createImpl
     },
