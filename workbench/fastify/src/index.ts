@@ -66,8 +66,14 @@ server.post('/api/test-direct-step-call', async (req: any, reply) => {
   return reply.send({ result });
 });
 
-await server.ready();
+// Note: avoid top-level `await` here. Rolldown rc.18 (used by nitro@3.0.260415-beta+)
+// emits a non-async `__esmMin` wrapper containing `await init_app()` for any
+// nitro runtime module imported from one whose evaluation chain has TLA — which
+// crashes the dev worker with `SyntaxError: Unexpected reserved word`. Defer the
+// await into the request handler instead.
+const _ready = server.ready();
 
-export default (req: any, res: any) => {
+export default async (req: any, res: any) => {
+  await _ready;
   server.server.emit('request', req, res);
 };

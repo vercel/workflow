@@ -1,5 +1,11 @@
 # @workflow/errors
 
+## 5.0.0-beta.3
+
+### Patch Changes
+
+- [#2012](https://github.com/vercel/workflow/pull/2012) [`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837) Thanks [@pranaygp](https://github.com/pranaygp)! - Expose the active run ID on hook token conflict errors.
+
 ## 5.0.0-beta.2
 
 ### Major Changes

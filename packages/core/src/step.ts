@@ -78,6 +78,24 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
           return EventConsumerResult.NotConsumed;
         }
 
+        const eventStepName =
+          'eventData' in event &&
+          event.eventData &&
+          'stepName' in event.eventData
+            ? event.eventData.stepName
+            : undefined;
+
+        if (typeof eventStepName === 'string' && eventStepName !== stepName) {
+          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+            ctx.onWorkflowError(
+              new WorkflowRuntimeError(
+                `Corrupted event log: step event ${event.eventType} for ${correlationId} belongs to "${eventStepName}", but the current step consumer is "${stepName}"`
+              )
+            );
+          });
+          return EventConsumerResult.Finished;
+        }
+
         if (event.eventType === 'step_created') {
           // Step has been created (registered for execution) - mark as having event
           // but keep in queue so suspension handler knows to queue execution without

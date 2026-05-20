@@ -85,7 +85,7 @@ export async function processOrder(orderId: string) {
 The parent continues immediately after `start()` returns. The child runs independently and can be monitored separately using the returned `runId` (e.g., via [`getRun()`](/docs/api-reference/workflow-api/get-run)).
 
 <Callout type="info">
-If you want the child workflow to run on the latest deployment rather than the current one, pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) in the `start()` options. This is currently a Vercel-specific feature. Be aware that the child workflow's function name, file path, argument types, and return type must remain compatible across deployments — renaming the function or changing its location will change the workflow ID, and modifying expected inputs or outputs can cause serialization failures.
+If you want the child workflow to run on the latest deployment rather than the current one, pass [`deploymentId: "latest"`](/docs/api-reference/workflow-api/start#using-deploymentid-latest) in the `start()` options. See [Versioning](/docs/foundations/versioning) for the full model. This is currently a Vercel-specific feature, and other Worlds may map the concept to their own deployment runtimes. Be aware that the child workflow's function name, file path, argument types, and return type must remain compatible across deployments — renaming the function or changing its location will change the workflow ID, and modifying expected inputs or outputs can cause serialization failures.
 </Callout>
 
 ## How it works
