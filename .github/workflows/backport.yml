@@ -32,8 +32,18 @@ jobs:
     # via `workflow_dispatch` with the relevant commit SHA.
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      # `id-token: write` is required so we can mint a GitHub Actions
+      # OIDC token and exchange it for a scoped GitHub App installation
+      # token via gh-sts. The gh-sts token (not the default GITHUB_TOKEN)
+      # is used for everything that actually writes to the repo —
+      # creating the backport branch, pushing the signed commit, and
+      # opening the PR. The default GITHUB_TOKEN is only used for
+      # read-only lookups (gh api / gh pr list) and for posting issue
+      # comments on the source PR, so read perms suffice for contents
+      # and pull-requests; only `issues: write` is needed for comments.
+      id-token: write
+      contents: read
+      pull-requests: read
       issues: write
     steps:
       - name: Resolve commit SHA
@@ -593,6 +603,21 @@ jobs:
               ;;
           esac
 
+      - name: Mint scoped GitHub token via gh-sts
+        # The default `GITHUB_TOKEN` cannot call `createCommitOnBranch`
+        # (the push step below) under our org's GHA token policy. We
+        # exchange the workflow's OIDC token for a scoped GitHub App
+        # installation token instead. The token is revoked automatically
+        # at the end of the job by the action's post step.
+        if: |
+          steps.cherry-pick.outputs.status == 'clean' ||
+          (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
+        id: gh-sts
+        uses: vercel/gh-sts-action@c30f0b7a16e0766c4ffbc0d210b54d0e75053fd2 # main as of 2026-05-14
+        with:
+          repos: vercel/workflow
+          permissions: '{"contents":"write","pull_requests":"write"}'
+
       - name: Push backport branch via GitHub API
         # Branch protection on this repo requires verified signatures on
         # every ref (an enterprise-level ruleset matching `~ALL`). A normal
@@ -602,7 +627,7 @@ jobs:
         # mutation, which signs commits automatically with GitHub's
         # internal key (the same way commits made via the web UI are
         # signed). The resulting commit is attributed to the token owner
-        # (`github-actions[bot]`), not the original author.
+        # (the gh-sts App installation), not the original author.
         if: |
           steps.cherry-pick.outputs.status == 'clean' ||
           (steps.cherry-pick.outputs.status == 'conflict' && steps.ai-resolve.outputs.resolved == 'true')
@@ -612,7 +637,7 @@ jobs:
           BRANCH: ${{ steps.existing-pr.outputs.branch }}
           SHA: ${{ steps.resolve.outputs.sha }}
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ steps.gh-sts.outputs.token }}
           script: |
             const { execFileSync } = require('node:child_process');
 
@@ -810,7 +835,9 @@ jobs:
         if: steps.push-branch.outputs.pushed == 'true'
         id: backport-pr
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Reuse the gh-sts token from the push step so the branch
+          # commit and the PR are attributed to the same identity.
+          GITHUB_TOKEN: ${{ steps.gh-sts.outputs.token }}
           SHA: ${{ steps.resolve.outputs.sha }}
           PR_NUMBER: ${{ steps.pr-lookup.outputs.pr_number }}
           PR_TITLE: ${{ steps.pr-lookup.outputs.pr_title }}

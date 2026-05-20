@@ -21,9 +21,14 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      # `id-token: write` is required so we can mint a GitHub Actions
+      # OIDC token and exchange it for a scoped GitHub App installation
+      # token via gh-sts. The gh-sts token (not the default GITHUB_TOKEN)
+      # is used by changesets/action to update the "Version Packages" PR
+      # and to create the GitHub Release, so we only need `contents:
+      # read` here for the checkout step.
       id-token: write
+      contents: read
     env:
       TURBO_TOKEN: ${{ secrets.TURBO_TOKEN }}
       TURBO_TEAM: ${{ vars.TURBO_TEAM }}
@@ -51,6 +56,18 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Mint scoped GitHub token via gh-sts
+        # The default `GITHUB_TOKEN` cannot call `createCommitOnBranch`
+        # under our org's GHA token policy. changesets/action with
+        # `commitMode: github-api` uses that mutation to update the
+        # "Version Packages" PR, so we mint a scoped installation token
+        # instead. The token is revoked at the end of the job.
+        id: gh-sts
+        uses: vercel/gh-sts-action@c30f0b7a16e0766c4ffbc0d210b54d0e75053fd2 # main as of 2026-05-14
+        with:
+          repos: vercel/workflow
+          permissions: '{"contents":"write","pull_requests":"write"}'
+
       - name: Create Release Pull Request or Publish to npm
         id: changesets
         uses: changesets/action@v1
@@ -62,12 +79,12 @@ jobs:
           # Use GitHub API for GPG-signed commits (required by branch rules).
           commitMode: github-api
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.gh-sts.outputs.token }}
 
       - name: Create GitHub Release
         if: steps.changesets.outputs.published == 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.gh-sts.outputs.token }}
           PUBLISHED_PACKAGES: ${{ steps.changesets.outputs.publishedPackages }}
         run: |
           # Generate release notes (PUBLISHED_PACKAGES filters to only include packages from this release)

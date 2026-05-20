@@ -936,7 +936,11 @@ jobs:
     timeout-minutes: 5
 
     permissions:
-      contents: write
+      # `id-token: write` is required to mint a scoped GitHub App
+      # installation token via gh-sts (used to push a GitHub-signed
+      # commit to `gh-pages`). `contents: read` is for actions/checkout.
+      id-token: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -960,10 +964,56 @@ jobs:
             --commit "${{ github.sha }}" \
             --branch "${{ github.ref_name }}"
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+      - name: Mint scoped GitHub token via gh-sts
+        # The `gh-pages` branch is subject to the enterprise "require
+        # signed commits" ruleset (targets ~ALL refs, no bypass actors),
+        # which rejects a normal `git push` of an unsigned commit. We
+        # use `createCommitOnBranch` instead so GitHub signs the commit
+        # automatically; that mutation requires a scoped installation
+        # token because the default `GITHUB_TOKEN` cannot call it under
+        # our org's GHA token policy.
+        id: gh-sts
+        uses: vercel/gh-sts-action@c30f0b7a16e0766c4ffbc0d210b54d0e75053fd2 # main as of 2026-05-14
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs-data
-          destination_dir: ci
-          keep_files: true
+          repos: vercel/workflow
+          permissions: '{"contents":"write"}'
+
+      - name: Publish to gh-pages via createCommitOnBranch
+        uses: actions/github-script@v7
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
+        with:
+          github-token: ${{ steps.gh-sts.outputs.token }}
+          script: |
+            const fs = require('node:fs');
+            const contents = fs
+              .readFileSync('docs-data/e2e-results.json')
+              .toString('base64');
+            const { data: ref } = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/gh-pages',
+            });
+            const result = await github.graphql(
+              `mutation($input: CreateCommitOnBranchInput!) {
+                createCommitOnBranch(input: $input) {
+                  commit { oid url }
+                }
+              }`,
+              {
+                input: {
+                  branch: {
+                    repositoryNameWithOwner: `${context.repo.owner}/${context.repo.repo}`,
+                    branchName: 'gh-pages',
+                  },
+                  expectedHeadOid: ref.object.sha,
+                  message: { headline: `deploy: ${process.env.DEPLOY_SHA}` },
+                  fileChanges: {
+                    additions: [{ path: 'ci/e2e-results.json', contents }],
+                  },
+                },
+              },
+            );
+            core.info(
+              `Pushed E2E results as ${result.createCommitOnBranch.commit.oid} (${result.createCommitOnBranch.commit.url})`,
+            );
