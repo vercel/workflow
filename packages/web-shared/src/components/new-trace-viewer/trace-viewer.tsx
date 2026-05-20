@@ -587,9 +587,7 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
                             ? 'bg-green-200 text-green-900'
                             : selectedResource === 'run'
                               ? 'bg-blue-200 text-blue-900'
-                              : selectedResource === 'hook'
-                                ? 'bg-yellow-200 text-yellow-900'
-                                : 'bg-gray-200 text-gray-900'
+                              : 'bg-gray-200 text-gray-900'
                         }`}
                       >
                         {selectedResource.charAt(0).toUpperCase() +

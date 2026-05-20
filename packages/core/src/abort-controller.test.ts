@@ -6,12 +6,15 @@
  * (for real-time step propagation).
  */
 
+import { WorkflowRuntimeError } from '@workflow/errors';
+import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
 import { monotonicFactory } from 'ulid';
 import { describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import type { WorkflowOrchestratorContext } from './private.js';
+import { dehydrateStepReturnValue } from './serialization.js';
 import { createContext } from './vm/index.js';
 import {
   createCreateAbortController,
@@ -113,6 +116,51 @@ describe('AbortController in workflow VM', () => {
       // The queue item was deleted by the event consumer for hook_received,
       // so there should be no items left requesting abort
       expect(controller.signal.aborted).toBe(true);
+    });
+
+    it('reports a WorkflowRuntimeError when abort hook_received token mismatches the controller', async () => {
+      ctx = setupWorkflowContext([]);
+      const ProbeAbortController = createCreateAbortController(ctx);
+      new ProbeAbortController();
+      const probeHookItem = [...ctx.invocationsQueue.values()].find(
+        (item) => item.type === 'hook'
+      );
+      expect(probeHookItem).toBeDefined();
+      if (!probeHookItem || probeHookItem.type !== 'hook') {
+        throw new Error('Expected abort hook item');
+      }
+
+      const ops: Promise<any>[] = [];
+      ctx = setupWorkflowContext([
+        {
+          eventId: 'evnt_0',
+          runId: 'wrun_test',
+          eventType: 'hook_received',
+          correlationId: probeHookItem.correlationId,
+          eventData: {
+            token: 'wrong-token',
+            payload: await dehydrateStepReturnValue(
+              { reason: 'aborted' },
+              'wrun_test',
+              undefined,
+              ops
+            ),
+          },
+          createdAt: new Date(),
+        },
+      ]);
+
+      const errorReceived = withResolvers<Error>();
+      ctx.onWorkflowError = errorReceived.resolve;
+
+      const AbortController = createCreateAbortController(ctx);
+      new AbortController();
+
+      const workflowError = await errorReceived.promise;
+      expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+      expect(workflowError?.message).toContain('hook_received');
+      expect(workflowError?.message).toContain('wrong-token');
+      expect(workflowError?.message).toContain(probeHookItem.token);
     });
 
     it('signal.aborted is false initially', () => {
