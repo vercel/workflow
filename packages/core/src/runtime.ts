@@ -102,57 +102,6 @@ export {
   setWorld,
 } from './runtime/world.js';
 
-function appendMissingEvents(events: Event[], loadedEvents: Event[]): boolean {
-  const existingIds = new Set(events.map((event) => event.eventId));
-  let hasNewEvents = false;
-
-  for (const event of loadedEvents) {
-    if (!existingIds.has(event.eventId)) {
-      events.push(event);
-      hasNewEvents = true;
-    }
-  }
-
-  return hasNewEvents;
-}
-
-async function refreshEventsAfterReplaySnapshot({
-  runId,
-  events,
-  cursor,
-}: {
-  runId: string;
-  events: Event[];
-  cursor: string | null;
-}): Promise<{
-  events: Event[];
-  cursor: string | null;
-  hasNewEvents: boolean;
-}> {
-  // Replay decisions are only valid for the event snapshot they saw. Before
-  // committing events derived from that replay (suspension, completed, or
-  // failed), do a cheap cursor delta check so concurrent events become part of
-  // the deterministic replay order.
-  if (cursor) {
-    const loaded = await loadWorkflowRunEvents(runId, cursor);
-    return {
-      events,
-      cursor: loaded.cursor ?? cursor,
-      hasNewEvents: appendMissingEvents(events, loaded.events),
-    };
-  }
-
-  const loaded = await loadWorkflowRunEvents(runId);
-  const existingIds = new Set(events.map((event) => event.eventId));
-  return {
-    events: loaded.events,
-    cursor: loaded.cursor,
-    hasNewEvents: loaded.events.some(
-      (event) => !existingIds.has(event.eventId)
-    ),
-  };
-}
-
 /**
  * Creates a single route which handles workflow execution requests,
  * executing steps inline when possible to reduce function invocations
@@ -645,17 +594,6 @@ export function workflowEntrypoint(
                   );
                   const encryptionKey = await getEncryptionKey();
 
-                  const refreshEventsAfterReplay = async (events: Event[]) => {
-                    const refreshed = await refreshEventsAfterReplaySnapshot({
-                      runId,
-                      events,
-                      cursor: eventsCursor,
-                    });
-                    eventsCursor = refreshed.cursor;
-                    cachedEvents = refreshed.events;
-                    return refreshed;
-                  };
-
                   // Main replay loop
                   // biome-ignore lint/correctness/noConstantCondition: intentional loop
                   while (true) {
@@ -687,11 +625,11 @@ export function workflowEntrypoint(
                     }
 
                     let replayStart = 0;
-                    let events: Event[] | undefined;
                     try {
                       // Load events — use cached events with incremental fetch on subsequent iterations.
                       // The server always returns a cursor when there are events (even on the
                       // final page), so we can reliably use it for incremental loading.
+                      let events: Event[];
                       if (cachedEvents === null) {
                         // First iteration: use preloaded events if available,
                         // otherwise do a full load with cursor.
@@ -897,20 +835,6 @@ export function workflowEntrypoint(
                         replayMs: Date.now() - replayStart,
                       });
 
-                      const refreshed = await refreshEventsAfterReplay(events);
-                      events = refreshed.events;
-                      if (refreshed.hasNewEvents) {
-                        runtimeLogger.debug(
-                          'New events arrived after replay; replaying before completing run',
-                          {
-                            workflowRunId: runId,
-                            loopIteration,
-                            eventCount: events.length,
-                          }
-                        );
-                        continue;
-                      }
-
                       // Workflow completed
                       try {
                         await world.events.create(
@@ -958,23 +882,6 @@ export function workflowEntrypoint(
                           );
                         if (suspensionMessage) {
                           runtimeLogger.debug(suspensionMessage);
-                        }
-
-                        if (events) {
-                          const refreshed =
-                            await refreshEventsAfterReplay(events);
-                          events = refreshed.events;
-                          if (refreshed.hasNewEvents) {
-                            runtimeLogger.debug(
-                              'New events arrived after suspended replay; replaying before handling suspension',
-                              {
-                                workflowRunId: runId,
-                                loopIteration,
-                                eventCount: events.length,
-                              }
-                            );
-                            continue;
-                          }
                         }
 
                         // V2: handle suspension without queuing steps
@@ -1213,23 +1120,6 @@ export function workflowEntrypoint(
                           errorName,
                           errorStack,
                         });
-
-                        if (events) {
-                          const refreshed =
-                            await refreshEventsAfterReplay(events);
-                          events = refreshed.events;
-                          if (refreshed.hasNewEvents) {
-                            runtimeLogger.debug(
-                              'New events arrived after failed replay; replaying before failing run',
-                              {
-                                workflowRunId: runId,
-                                loopIteration,
-                                eventCount: events.length,
-                              }
-                            );
-                            continue;
-                          }
-                        }
 
                         // Apply the source-map-remapped stack to the thrown
                         // value so that the serialized error preserves it

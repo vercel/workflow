@@ -150,8 +150,7 @@ async function runStaleWaitReplayScenario(options: {
     }),
   ];
 
-  const staleEventsCursor =
-    staleEvents.at(-1)?.eventId ?? 'cursor-after-stale-events';
+  const staleEventsCursor = 'cursor-after-stale-events';
   const hookReceivedEvent = event({
     eventType: 'hook_received',
     specVersion: SPEC_VERSION_CURRENT,
@@ -182,19 +181,10 @@ async function runStaleWaitReplayScenario(options: {
     }) => {
       // Cursor reads simulate the optimized delta fetch. Without a cursor, the
       // runtime has fallen back to a full reload from the beginning.
-      const cursor = params.pagination?.cursor;
-      let data: Event[];
-      if (cursor) {
-        const cursorIndex = durableEvents.findIndex(
-          (event) => event.eventId === cursor
-        );
-        data =
-          cursorIndex === -1
-            ? [...durableEvents]
-            : durableEvents.slice(cursorIndex + 1);
-      } else {
-        data = [...durableEvents];
-      }
+      let data =
+        params.pagination?.cursor === staleEventsCursor
+          ? durableEvents.slice(staleEvents.length)
+          : [...durableEvents];
       if (
         params.pagination?.cursor === staleEventsCursor &&
         options.omitWaitCompletionFromDelta
@@ -205,7 +195,9 @@ async function runStaleWaitReplayScenario(options: {
       return {
         data,
         hasMore: false,
-        cursor: data.at(-1)?.eventId ?? cursor ?? null,
+        cursor: params.pagination?.cursor
+          ? (data.at(-1)?.eventId ?? null)
+          : staleEventsCursor,
       };
     }
   );
@@ -348,230 +340,6 @@ function expectHookBranchQueued(
   );
 }
 
-/**
- * Covers the V5-only unified handler shape where replay itself suspends before
- * writing new step/wait events. If a hook payload lands after the stale replay
- * snapshot but before the suspension handler writes the sleep branch's
- * wait_created, the handler must refresh and replay instead of committing that
- * stale suspension.
- */
-async function runStaleSuspensionReplayScenario() {
-  vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
-
-  const runId = 'wrun_stale_suspension_replay';
-  const workflowName = 'workflow';
-  const deploymentId = 'dpl_stale_suspension_replay';
-  const hookToken = 'stale-suspension-hook-token';
-  const startedAt = new Date('2026-05-19T12:00:00.000Z');
-  const workflowArgs = await dehydrateWorkflowArguments(
-    [hookToken],
-    runId,
-    undefined
-  );
-
-  const { globalThis: vmGlobalThis } = createContext({
-    seed: `${runId}:${workflowName}:${+startedAt}`,
-    fixedTimestamp: +startedAt,
-  });
-  const ulid = monotonicFactory(() => vmGlobalThis.Math.random());
-  const hookCorrelationId = `hook_${ulid(+startedAt)}`;
-
-  const workflowRun: WorkflowRun = {
-    runId,
-    workflowName,
-    status: 'running',
-    input: workflowArgs,
-    deploymentId,
-    specVersion: SPEC_VERSION_CURRENT,
-    startedAt,
-    createdAt: startedAt,
-    updatedAt: startedAt,
-  };
-
-  let eventIndex = 0;
-  const event = (
-    data: CreateEventRequest,
-    createdAt = new Date(+startedAt + ++eventIndex * 100)
-  ): Event =>
-    ({
-      ...data,
-      specVersion: data.specVersion ?? SPEC_VERSION_CURRENT,
-      runId,
-      eventId: `evt_${eventIndex.toString().padStart(3, '0')}`,
-      createdAt,
-    }) as Event;
-
-  const staleEvents: Event[] = [
-    event({
-      eventType: 'run_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      eventData: {
-        deploymentId,
-        workflowName,
-        input: workflowArgs,
-      },
-    }),
-    event({
-      eventType: 'run_started',
-      specVersion: SPEC_VERSION_CURRENT,
-    }),
-    event({
-      eventType: 'hook_created',
-      specVersion: SPEC_VERSION_CURRENT,
-      correlationId: hookCorrelationId,
-      eventData: { token: hookToken },
-    }),
-  ];
-
-  const staleEventsCursor =
-    staleEvents.at(-1)?.eventId ?? 'cursor-after-stale-events';
-  const hookReceivedEvent = event({
-    eventType: 'hook_received',
-    specVersion: SPEC_VERSION_CURRENT,
-    correlationId: hookCorrelationId,
-    eventData: {
-      payload: await dehydrateStepReturnValue(
-        { value: 'hook-wins' },
-        runId,
-        undefined
-      ),
-    },
-  });
-
-  const durableEvents = [...staleEvents];
-  const createdEvents: Event[] = [];
-  const listedPages: Event[][] = [];
-  let injectedHookReceived = false;
-  let capturedHandler:
-    | ((
-        message: unknown,
-        metadata: { queueName: string; messageId: string; attempt: number }
-      ) => Promise<unknown>)
-    | undefined;
-
-  const listEvents = vi.fn(
-    async (params: {
-      runId: string;
-      pagination?: { cursor?: string; sortOrder?: 'asc' | 'desc' };
-    }) => {
-      const cursor = params.pagination?.cursor;
-      if (cursor === staleEventsCursor && !injectedHookReceived) {
-        // The hook becomes durable in the window between stale replay and
-        // writing suspension events from that replay.
-        durableEvents.push(hookReceivedEvent);
-        injectedHookReceived = true;
-      }
-
-      let data: Event[];
-      if (cursor) {
-        const cursorIndex = durableEvents.findIndex(
-          (event) => event.eventId === cursor
-        );
-        data =
-          cursorIndex === -1
-            ? [...durableEvents]
-            : durableEvents.slice(cursorIndex + 1);
-      } else {
-        data = [...durableEvents];
-      }
-
-      listedPages.push(data);
-      return {
-        data,
-        hasMore: false,
-        cursor: data.at(-1)?.eventId ?? cursor ?? null,
-      };
-    }
-  );
-
-  const createEvent = vi.fn(
-    async (_runId: string, request: CreateEventRequest) => {
-      if (request.eventType === 'run_started') {
-        return {
-          run: workflowRun,
-          events: [...staleEvents],
-          cursor: staleEventsCursor,
-          hasMore: false,
-        };
-      }
-
-      const created = event(request);
-      durableEvents.push(created);
-      createdEvents.push(created);
-      return { event: created };
-    }
-  );
-
-  const queue = vi.fn().mockResolvedValue({ messageId: 'msg_step' });
-  const fakeWorld = {
-    specVersion: SPEC_VERSION_CURRENT,
-    createQueueHandler: vi.fn((_prefix, handler) => {
-      capturedHandler = handler;
-      return vi.fn();
-    }),
-    events: {
-      list: listEvents,
-      create: createEvent,
-    },
-    queue,
-    getEncryptionKeyForRun: vi.fn().mockResolvedValue(undefined),
-  } as unknown as World;
-
-  setWorld(fakeWorld);
-
-  const workflowCode = `
-    const useStep = globalThis[Symbol.for("WORKFLOW_USE_STEP")];
-    const createHook = globalThis[Symbol.for("WORKFLOW_CREATE_HOOK")];
-    const sleep = globalThis[Symbol.for("WORKFLOW_SLEEP")];
-    const syncStep = useStep("syncStep");
-    const drainStep = useStep("drainStep");
-
-    async function workflow(token) {
-      const hook = createHook({ token });
-      const iterator = hook[Symbol.asyncIterator]();
-
-      try {
-        const result = await Promise.race([
-          iterator.next().then((value) => ({ kind: "hook", value })),
-          sleep("5s").then(() => ({ kind: "sleep" })),
-        ]);
-
-        if (result.kind === "hook") {
-          await Promise.all([drainStep({ index: 0 }), sleep("1h")]);
-          return result.value.value;
-        }
-
-        await syncStep({ index: 0 });
-        return "sleep";
-      } finally {
-        hook.dispose();
-      }
-    }
-
-    ${getWorkflowTransformCode(workflowName)}
-  `;
-
-  const handler = workflowEntrypoint(workflowCode);
-  await handler(new Request('http://localhost', { method: 'POST' }));
-  expect(capturedHandler).toBeDefined();
-
-  await capturedHandler?.(
-    { runId },
-    {
-      queueName: `__wkf_workflow_${workflowName}`,
-      messageId: 'msg_workflow',
-      attempt: 1,
-    }
-  );
-
-  return {
-    createdEvents,
-    listEvents,
-    listedPages,
-    staleEventsCursor,
-  };
-}
-
 describe('workflow handler wait completion replay', () => {
   afterEach(() => {
     setWorld(undefined);
@@ -586,7 +354,7 @@ describe('workflow handler wait completion replay', () => {
       includePreloadedCursor: true,
     });
 
-    expect(result.listEvents).toHaveBeenCalledTimes(2);
+    expect(result.listEvents).toHaveBeenCalledTimes(1);
     expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
       expect.objectContaining({
         sortOrder: 'asc',
@@ -597,7 +365,6 @@ describe('workflow handler wait completion replay', () => {
       'hook_received',
       'wait_completed',
     ]);
-    expect(result.listedPages[1]).toEqual([]);
     expectHookBranchQueued(result);
   });
 
@@ -608,7 +375,7 @@ describe('workflow handler wait completion replay', () => {
       includePreloadedCursor: false,
     });
 
-    expect(result.listEvents).toHaveBeenCalledTimes(2);
+    expect(result.listEvents).toHaveBeenCalledTimes(1);
     expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
       expect.objectContaining({
         sortOrder: 'asc',
@@ -626,7 +393,6 @@ describe('workflow handler wait completion replay', () => {
       'hook_received',
       'wait_completed',
     ]);
-    expect(result.listedPages[1]).toEqual([]);
     expectHookBranchQueued(result);
   });
 
@@ -639,7 +405,7 @@ describe('workflow handler wait completion replay', () => {
       preloadedHasMore: true,
     });
 
-    expect(result.listEvents).toHaveBeenCalledTimes(3);
+    expect(result.listEvents).toHaveBeenCalledTimes(2);
     expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
       expect.objectContaining({
         sortOrder: 'asc',
@@ -665,7 +431,6 @@ describe('workflow handler wait completion replay', () => {
       'hook_received',
       'wait_completed',
     ]);
-    expect(result.listedPages[2]).toEqual([]);
     expectHookBranchQueued(result);
   });
 
@@ -677,7 +442,7 @@ describe('workflow handler wait completion replay', () => {
       omitWaitCompletionFromDelta: true,
     });
 
-    expect(result.listEvents).toHaveBeenCalledTimes(3);
+    expect(result.listEvents).toHaveBeenCalledTimes(2);
     expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
       expect.objectContaining({
         sortOrder: 'asc',
@@ -704,41 +469,6 @@ describe('workflow handler wait completion replay', () => {
       'hook_received',
       'wait_completed',
     ]);
-    expect(result.listedPages[2]).toEqual([]);
     expectHookBranchQueued(result);
-  });
-
-  it('refreshes before writing suspension events from a stale replay', async () => {
-    const result = await runStaleSuspensionReplayScenario();
-
-    expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
-      expect.objectContaining({
-        sortOrder: 'asc',
-        cursor: result.staleEventsCursor,
-      })
-    );
-    expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
-      'hook_received',
-    ]);
-    expect(result.createdEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          eventType: 'step_created',
-          eventData: expect.objectContaining({
-            stepName: 'drainStep',
-          }),
-        }),
-      ])
-    );
-    expect(result.createdEvents).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          eventType: 'step_created',
-          eventData: expect.objectContaining({
-            stepName: 'syncStep',
-          }),
-        }),
-      ])
-    );
   });
 });
