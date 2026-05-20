@@ -40,10 +40,6 @@ const TIMELINE_INSET_STYLE: CSSProperties = {
   right: TIMELINE_PADDING_PX,
 };
 
-const DURATION_LABEL_STYLE: CSSProperties = {
-  textShadow: '0 1px 1px rgba(0, 0, 0, 0.45)',
-};
-
 // ---------------------------------------------------------------------------
 // Bar geometry
 // ---------------------------------------------------------------------------
@@ -182,15 +178,11 @@ function projectSegments(
 // Small render helpers
 // ---------------------------------------------------------------------------
 
-function minLabelWidthPx(label: string): number {
-  return Math.max(40, label.length * 6 + 12);
-}
-
 function DurationLabel({ label }: { label: string }): ReactNode {
   return (
     <span
       className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-white tabular-nums opacity-0 group-hover/timeline-row:opacity-100"
-      style={DURATION_LABEL_STYLE}
+      style={{ textShadow: '0 1px 1px rgba(0, 0, 0, 0.45)' }}
     >
       {label}
     </span>
@@ -232,7 +224,8 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
     <div className="relative h-6 w-full">
       {segments.map((seg, i) => {
         const label = formatDuration(seg.fullDurationMs);
-        const showLabel = seg.pixelWidth >= minLabelWidthPx(label);
+        // Only render the label when there's enough room for it without clipping.
+        const showLabel = seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
         // Beef up the queued segment when it's too narrow to read.
         const overrideBg =
           seg.status === 'queued' && seg.pixelWidth < 20
@@ -316,7 +309,7 @@ const TimelineBar = memo(function TimelineBar({
 
   const totalLabel = formatDuration(totalDurationMs);
   const showTotalLabel =
-    geometry.visiblePixelWidth >= minLabelWidthPx(totalLabel);
+    geometry.visiblePixelWidth >= Math.max(40, totalLabel.length * 6 + 12);
 
   const handleClick = useCallback(() => {
     onSelect(span.spanId);
