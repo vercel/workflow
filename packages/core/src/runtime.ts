@@ -21,8 +21,8 @@ import {
   REPLAY_TIMEOUT_MS,
 } from './runtime/constants.js';
 import {
-  getAllWorkflowRunEvents,
   getQueueOverhead,
+  getWorkflowRunEvents,
   handleHealthCheckMessage,
   parseHealthCheckPayload,
   withHealthCheck,
@@ -258,6 +258,7 @@ export function workflowEntrypoint(
                 // Pre-loaded events from the run_started response.
                 // When present, we skip the events.list call.
                 let preloadedEvents: Event[] | undefined;
+                let preloadedEventsCursor: string | null | undefined;
 
                 // --- Infrastructure: prepare the run state ---
                 // Always call run_started directly — this both transitions
@@ -307,6 +308,7 @@ export function workflowEntrypoint(
                   // the initial events.list call and reduce TTFB.
                   if (result.events && result.events.length > 0) {
                     preloadedEvents = result.events;
+                    preloadedEventsCursor = result.eventsCursor;
                   }
 
                   if (!workflowRun.startedAt) {
@@ -391,9 +393,18 @@ export function workflowEntrypoint(
                 // Load all events into memory before running.
                 // If we got pre-loaded events from the run_started response,
                 // skip the events.list round-trip to reduce TTFB.
-                let events =
-                  preloadedEvents ??
-                  (await getAllWorkflowRunEvents(workflowRun.runId));
+                let events: Event[];
+                let eventsCursor: string | null | undefined;
+                if (preloadedEvents) {
+                  events = preloadedEvents;
+                  eventsCursor = preloadedEventsCursor;
+                } else {
+                  const loadedEvents = await getWorkflowRunEvents(
+                    workflowRun.runId
+                  );
+                  events = loadedEvents.events;
+                  eventsCursor = loadedEvents.cursor;
+                }
 
                 // Check for any elapsed waits and create wait_completed events
                 const now = Date.now();
@@ -440,10 +451,43 @@ export function workflowEntrypoint(
 
                 if (waitsToComplete.length > 0) {
                   // The event list above may be stale by the time an elapsed
-                  // wait is committed. Reload before replay so concurrent
-                  // durable events, such as hook_received, keep their
-                  // event-log ordering relative to wait_completed.
-                  events = await getAllWorkflowRunEvents(workflowRun.runId);
+                  // wait is committed. Load only events after the original
+                  // snapshot cursor so concurrent durable events, such as
+                  // hook_received, keep their ordering relative to
+                  // wait_completed. Fall back to a full reload for older worlds
+                  // that cannot give us a stable cursor.
+                  if (eventsCursor) {
+                    const newEvents = await getWorkflowRunEvents(
+                      workflowRun.runId,
+                      eventsCursor
+                    );
+                    const completedWaitIdsAfterCursor = new Set(
+                      newEvents.events
+                        .filter((e) => e.eventType === 'wait_completed')
+                        .map((e) => e.correlationId)
+                    );
+                    const sawAllWaitCompletions = waitsToComplete.every(
+                      (waitEvent) =>
+                        completedWaitIdsAfterCursor.has(waitEvent.correlationId)
+                    );
+
+                    if (sawAllWaitCompletions) {
+                      events.push(...newEvents.events);
+                      eventsCursor = newEvents.cursor ?? eventsCursor;
+                    } else {
+                      const loadedEvents = await getWorkflowRunEvents(
+                        workflowRun.runId
+                      );
+                      events = loadedEvents.events;
+                      eventsCursor = loadedEvents.cursor;
+                    }
+                  } else {
+                    const loadedEvents = await getWorkflowRunEvents(
+                      workflowRun.runId
+                    );
+                    events = loadedEvents.events;
+                    eventsCursor = loadedEvents.cursor;
+                  }
                 }
 
                 // Resolve the encryption key for this run's deployment

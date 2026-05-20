@@ -364,19 +364,27 @@ export async function healthCheck(
   }
 }
 
+export interface LoadedWorkflowRunEvents {
+  events: Event[];
+  cursor: string | null;
+}
+
 /**
- * Loads all workflow run events by iterating through all pages of paginated results.
- * This ensures that *all* events are loaded into memory before running the workflow.
+ * Loads workflow run events by iterating through all pages of paginated results.
+ * When a cursor is provided, only events after that cursor are loaded.
  * Events must be in chronological order (ascending) for proper workflow replay.
  */
-export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
+export async function getWorkflowRunEvents(
+  runId: string,
+  cursor?: string
+): Promise<LoadedWorkflowRunEvents> {
   return trace('workflow.loadEvents', async (span) => {
     span?.setAttributes({
       ...Attribute.WorkflowRunId(runId),
     });
 
     const allEvents: Event[] = [];
-    let cursor: string | null = null;
+    let nextCursor: string | null = cursor ?? null;
     let hasMore = true;
     let pagesLoaded = 0;
 
@@ -391,13 +399,13 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
         runId,
         pagination: {
           sortOrder: 'asc', // Required: events must be in chronological order for replay
-          cursor: cursor ?? undefined,
+          cursor: nextCursor ?? undefined,
         },
       });
 
       allEvents.push(...response.data);
       hasMore = response.hasMore;
-      cursor = response.cursor;
+      nextCursor = response.cursor;
       pagesLoaded++;
 
       runtimeLogger.debug('Loaded event page', {
@@ -422,8 +430,18 @@ export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
       ...Attribute.WorkflowEventsPagesLoaded(pagesLoaded),
     });
 
-    return allEvents;
+    return { events: allEvents, cursor: nextCursor };
   });
+}
+
+/**
+ * Loads all workflow run events by iterating through all pages of paginated results.
+ * This ensures that *all* events are loaded into memory before running the workflow.
+ * Events must be in chronological order (ascending) for proper workflow replay.
+ */
+export async function getAllWorkflowRunEvents(runId: string): Promise<Event[]> {
+  const { events } = await getWorkflowRunEvents(runId);
+  return events;
 }
 
 /**

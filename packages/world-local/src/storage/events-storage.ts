@@ -428,7 +428,7 @@ export function createEventsStorage(
           // duplicate event.  This makes run_started idempotent for
           // concurrent invocations.  We omit preloaded events here
           // because this is a rare race-condition path — the runtime
-          // falls back to getAllWorkflowRunEvents().
+          // falls back to loading events separately.
           if (currentRun.status === 'running') {
             return { run: currentRun };
           }
@@ -952,6 +952,7 @@ export function createEventsStorage(
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
       let events: Event[] | undefined;
+      let eventsCursor: string | null | undefined;
       if (data.eventType === 'run_started' && run) {
         const allEvents = await paginatedFileSystemQuery({
           directory: path.join(basedir, 'events'),
@@ -962,6 +963,7 @@ export function createEventsStorage(
           getId: (e) => e.eventId,
         });
         events = allEvents.data;
+        eventsCursor = allEvents.cursor;
       }
 
       // Return EventResult with event and any created/updated entity
@@ -972,6 +974,7 @@ export function createEventsStorage(
         hook,
         wait,
         events,
+        eventsCursor,
       };
     },
 

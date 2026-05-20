@@ -388,6 +388,11 @@ export interface EventResult {
    * initial events.list call and reduce TTFB.
    */
   events?: Event[];
+  /**
+   * Cursor marking the end of the returned events snapshot. When populated
+   * with events, the runtime can fetch only events created after this snapshot.
+   */
+  eventsCursor?: string | null;
 }
 
 export interface GetEventParams {
