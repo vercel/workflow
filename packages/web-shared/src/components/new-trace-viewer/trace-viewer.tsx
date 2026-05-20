@@ -386,7 +386,8 @@ function NewTraceViewerContent({ trace }: NewTraceViewerProps): ReactNode {
             (e.clientX - rect.left - TIMELINE_PADDING_PX) / contentWidth
           )
         );
-        const scaleFactor = Math.pow(2, dy / 200);
+        const isMouseWheel = e.deltaMode === 1 || Math.abs(e.deltaY) >= 50;
+        const scaleFactor = Math.pow(2, dy / (isMouseWheel ? 200 : 60));
 
         setViewport((prev) => {
           const prevDuration = prev.end - prev.start;
