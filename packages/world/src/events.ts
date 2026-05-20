@@ -96,6 +96,7 @@ const StepCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_completed'),
   correlationId: z.string(),
   eventData: z.object({
+    stepName: z.string().optional(),
     result: SerializedDataSchema,
   }),
 });
@@ -104,6 +105,7 @@ const StepFailedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_failed'),
   correlationId: z.string(),
   eventData: z.object({
+    stepName: z.string().optional(),
     // The thrown value, serialized via the workflow serialization pipeline.
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
@@ -119,6 +121,7 @@ const StepRetryingEventSchema = BaseEventSchema.extend({
   eventType: z.literal('step_retrying'),
   correlationId: z.string(),
   eventData: z.object({
+    stepName: z.string().optional(),
     // The thrown value, serialized via the workflow serialization pipeline.
     // Can be any JavaScript value (string, number, object, Error, etc.)
     error: SerializedDataSchema,
@@ -131,6 +134,7 @@ const StepStartedEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z
     .object({
+      stepName: z.string().optional(),
       attempt: z.number().optional(),
     })
     .optional(),
@@ -168,6 +172,7 @@ const HookReceivedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_received'),
   correlationId: z.string(),
   eventData: z.object({
+    token: z.string().optional(),
     payload: SerializedDataSchema,
   }),
 });
@@ -175,6 +180,11 @@ const HookReceivedEventSchema = BaseEventSchema.extend({
 const HookDisposedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('hook_disposed'),
   correlationId: z.string(),
+  eventData: z
+    .object({
+      token: z.string().optional(),
+    })
+    .optional(),
 });
 
 /**
@@ -207,6 +217,11 @@ const WaitCreatedEventSchema = BaseEventSchema.extend({
 const WaitCompletedEventSchema = BaseEventSchema.extend({
   eventType: z.literal('wait_completed'),
   correlationId: z.string(),
+  eventData: z
+    .object({
+      resumeAt: z.coerce.date().optional(),
+    })
+    .optional(),
 });
 
 // =============================================================================

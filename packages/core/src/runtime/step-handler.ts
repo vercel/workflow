@@ -115,6 +115,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
               specVersion: SPEC_VERSION_CURRENT,
               correlationId: stepId,
               eventData: {
+                stepName: stepNameFromQueue,
                 error: await dehydrateStepError(
                   err,
                   workflowRunId,
@@ -216,6 +217,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                   eventType: 'step_started',
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
+                  eventData: { stepName },
                 },
                 { requestId }
               );
@@ -336,6 +338,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: await dehydrateStepError(
                         err,
                         workflowRunId,
@@ -431,6 +434,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: await dehydrateStepError(
                         wrappedError,
                         workflowRunId,
@@ -493,6 +497,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: await dehydrateStepError(
                         new FatalError(errorMessage),
                         workflowRunId,
@@ -735,6 +740,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                       specVersion: SPEC_VERSION_CURRENT,
                       correlationId: stepId,
                       eventData: {
+                        stepName,
                         error: await dehydrateStepError(
                           err,
                           workflowRunId,
@@ -819,6 +825,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         specVersion: SPEC_VERSION_CURRENT,
                         correlationId: stepId,
                         eventData: {
+                          stepName,
                           error: await dehydrateStepError(
                             wrappedError,
                             workflowRunId,
@@ -887,6 +894,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                         specVersion: SPEC_VERSION_CURRENT,
                         correlationId: stepId,
                         eventData: {
+                          stepName,
                           error: await dehydrateStepError(
                             err,
                             workflowRunId,
@@ -981,6 +989,7 @@ const stepHandler = (worldHandlers: WorldHandlers) =>
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       result: result as Uint8Array,
                     },
                   },
