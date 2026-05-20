@@ -23,14 +23,14 @@ const TINY_BAR_WIDTH_PX = 4;
 export const TIMELINE_PADDING_PX = 16;
 
 const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
-  queued: 'bg-gray-500',
-  retrying: 'bg-gray-500',
-  waiting: 'bg-gray-500',
-  running: 'bg-blue-700',
-  failed: 'bg-red-700',
-  succeeded: 'bg-green-700',
-  sleeping: 'bg-gray-500',
-  received: 'bg-blue-700',
+  queued: 'bg-gray-400 border border-gray-500',
+  retrying: 'box-border bg-gray-400 border border-gray-500',
+  waiting: 'bg-gray-400 border border-gray-500',
+  running: 'bg-blue-200 border border-blue-500',
+  failed: 'bg-red-200 border border-red-500',
+  succeeded: 'bg-green-200 border border-green-500',
+  sleeping: 'bg-gray-400 border border-gray-500',
+  received: 'bg-blue-200 border border-blue-500',
 };
 
 const TIMELINE_INSET_STYLE: CSSProperties = {
@@ -178,10 +178,7 @@ function projectSegments(
 
 function DurationLabel({ label }: { label: string }): ReactNode {
   return (
-    <span
-      className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-white tabular-nums opacity-0 group-hover/timeline-row:opacity-100"
-      style={{ textShadow: '0 1px 1px rgba(0, 0, 0, 0.45)' }}
-    >
+    <span className="pointer-events-none absolute inset-0 flex items-center justify-start overflow-hidden px-1 text-[10px] font-mono font-medium leading-none whitespace-nowrap text-left text-gray-1000 tabular-nums opacity-0 group-hover/timeline-row:opacity-100">
       {label}
     </span>
   );
@@ -201,16 +198,18 @@ function BoundaryArrow({
 }
 
 function PlainBar({
-  color,
+  bg,
+  border,
   label,
 }: {
-  color: string;
+  bg: string;
+  border: string;
   label: string | null;
 }): ReactNode {
   return (
     <div
-      className="relative h-6 w-full min-w-1 rounded-[0.25rem]"
-      style={{ background: color }}
+      className="relative h-6 w-full min-w-1 rounded-[0.25rem] border"
+      style={{ background: bg, borderColor: border }}
     >
       {label ? <DurationLabel label={label} /> : null}
     </div>
@@ -225,10 +224,11 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
         // Only render the label when there's enough room for it without clipping.
         const showLabel = seg.pixelWidth >= Math.max(40, label.length * 6 + 12);
         // Beef up the queued segment when it's too narrow to read.
-        const overrideBg =
-          seg.status === 'queued' && seg.pixelWidth < 20
-            ? 'var(--ds-gray-500)'
-            : undefined;
+        const isNarrowQueued = seg.status === 'queued' && seg.pixelWidth < 20;
+        const overrideBg = isNarrowQueued ? 'var(--ds-gray-400)' : undefined;
+        const overrideBorder = isNarrowQueued
+          ? 'var(--ds-gray-500)'
+          : undefined;
 
         return (
           <div
@@ -243,6 +243,7 @@ function SegmentBar({ segments }: { segments: VisibleSegment[] }): ReactNode {
               width: `calc(${seg.widthPct}% - 1px)`,
               minWidth: 1,
               background: overrideBg,
+              borderColor: overrideBorder,
             }}
           >
             {showLabel ? <DurationLabel label={label} /> : null}
@@ -301,9 +302,12 @@ const TimelineBar = memo(function TimelineBar({
     ?.status as string | undefined;
   const isErrored = span.status.code === 2 || workflowStatus === 'failed';
   const colors = getResourceColor(span.resource);
-  const fallbackColor = isErrored
-    ? (colors.errorBar ?? 'var(--ds-red-700)')
-    : colors.bar;
+  const fallbackBg = isErrored
+    ? (colors.errorBg ?? 'var(--ds-red-200)')
+    : colors.bg;
+  const fallbackBorder = isErrored
+    ? (colors.errorBorder ?? 'var(--ds-red-500)')
+    : colors.border;
 
   const totalLabel = formatDuration(totalDurationMs);
   const showTotalLabel =
@@ -331,14 +335,15 @@ const TimelineBar = memo(function TimelineBar({
             <BoundaryArrow direction={geometry.mode.direction} />
           ) : geometry.mode.kind === 'tiny' ? (
             <div
-              className="h-6 rounded-[0.25rem]"
-              style={{ background: fallbackColor }}
+              className="h-6 rounded-[0.25rem] border"
+              style={{ background: fallbackBg, borderColor: fallbackBorder }}
             />
           ) : segments.length > 0 ? (
             <SegmentBar segments={segments} />
           ) : (
             <PlainBar
-              color={fallbackColor}
+              bg={fallbackBg}
+              border={fallbackBorder}
               label={showTotalLabel ? totalLabel : null}
             />
           )}
@@ -500,7 +505,7 @@ export function Timeline({
           style={TIMELINE_INSET_STYLE}
         >
           <div
-            className="absolute top-0 bottom-0 w-px bg-gray-alpha-400"
+            className="absolute top-0 bottom-0 w-px bg-gray-alpha-500"
             style={{ left: `${hoverFraction * 100}%` }}
           />
         </div>
