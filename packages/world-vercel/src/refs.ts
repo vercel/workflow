@@ -130,7 +130,54 @@ export async function resolveRefDescriptor(
       }
 
       const contentType = response.headers.get('content-type') || '';
+      const contentLengthHeader = response.headers.get('content-length');
       const buffer = await response.arrayBuffer();
+
+      // Defense-in-depth: validate the response body before handing it to
+      // downstream callers. Stored ref payloads from workflow-server always
+      // include at least a 4-byte format prefix (see encodeWithFormatPrefix
+      // in @workflow/core), so a zero-byte body — or one whose length does
+      // not match the declared Content-Length — indicates a transport
+      // anomaly (proxy drop, abort during streaming, edge-cache miss
+      // returning a truncated 200, etc.) or a server-side corruption.
+      //
+      // Without this check, the empty/truncated bytes would flow into the
+      // workflow's event-log replay and fail downstream with "Data too
+      // short to contain format prefix: expected at least 4 bytes, got 0"
+      // (or similar truncation errors). By that point the run's in-memory
+      // event snapshot is already poisoned: the same failure replays
+      // deterministically forever, every subsequent resumeHook surfaces as
+      // "Hook not found", and the run only unsticks when stale-run cleanup
+      // terminates the sandbox.
+      //
+      // Surfacing this as WorkflowWorldError makes the resolve attempt
+      // retryable as a transport error rather than corrupting replay.
+      if (buffer.byteLength === 0) {
+        const error = new WorkflowWorldError(
+          `Ref resolve returned a zero-byte body for ${ref} (Content-Type=${contentType || '<none>'}). Refusing to corrupt the event log with an empty payload.`,
+          { url, status: response.status, code: 'empty-ref-body' }
+        );
+        span?.setAttributes({
+          ...ErrorType('empty-ref-body'),
+        });
+        span?.recordException?.(error);
+        throw error;
+      }
+
+      if (
+        contentLengthHeader != null &&
+        Number(contentLengthHeader) !== buffer.byteLength
+      ) {
+        const error = new WorkflowWorldError(
+          `Ref resolve body length mismatch for ${ref}: Content-Length=${contentLengthHeader}, actual=${buffer.byteLength} bytes. The response body was truncated in transit; refusing to use it.`,
+          { url, status: response.status, code: 'ref-body-length-mismatch' }
+        );
+        span?.setAttributes({
+          ...ErrorType('ref-body-length-mismatch'),
+        });
+        span?.recordException?.(error);
+        throw error;
+      }
 
       if (contentType.includes('application/octet-stream')) {
         // Raw binary data (e.g., Uint8Array stored by the workflow)
