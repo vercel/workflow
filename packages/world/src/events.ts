@@ -190,6 +190,9 @@ const HookConflictEventSchema = BaseEventSchema.extend({
   correlationId: z.string(),
   eventData: z.object({
     token: z.string(),
+    // TODO: Make this required once all persisted hook_conflict events and
+    // remote World implementations always include the active hook owner's run ID.
+    conflictingRunId: z.string().optional(),
   }),
 });
 

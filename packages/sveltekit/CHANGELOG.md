@@ -1,5 +1,16 @@
 # @workflow/sveltekit
 
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- [#1995](https://github.com/vercel/workflow/pull/1995) [`4753abb`](https://github.com/vercel/workflow/commit/4753abb970ad8404541c4e76489238767b0bb9d2) Thanks [@pranaygp](https://github.com/pranaygp)! - Fix duplicate Workflow queue consumers in SvelteKit deployments by removing stale workflow queue triggers from shared Vercel function configs.
+
+- Updated dependencies []:
+  - @workflow/builders@5.0.0-beta.6
+  - @workflow/rollup@5.0.0-beta.6
+  - @workflow/vite@5.0.0-beta.6
+
 ## 5.0.0-beta.5
 
 ### Minor Changes

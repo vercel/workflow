@@ -32,6 +32,10 @@ Use [`streamText()`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) 
 
 One workflow run = one full conversation. The workflow suspends between turns on a hook and resumes when the next user message arrives. Conversation state, tool history, and intermediate computation all live inside the run.
 
+<Callout type="info">
+Because the conversation is one workflow run, it stays on the deployment that started it. If each turn should run on the latest deployment while preserving selected state or streams, see [Versioning](/docs/foundations/versioning) for the child-run continuation pattern.
+</Callout>
+
 <Tabs items={['Workflow', 'API Route', 'Client']}>
 
 <Tab value="Workflow">

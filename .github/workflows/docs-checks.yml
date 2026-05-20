@@ -88,3 +88,13 @@ jobs:
           # ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars (auto-set when
           # `permissions: id-token: write` is on the job).
           # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources
+
+      - name: Verify rendered docs links
+        run: pnpm --filter docs lint:rendered-links
+        env:
+          DEPLOYMENT_URL: ${{ steps.waitForDocsDeployment.outputs.deployment-url }}
+          # Trusted-sources OIDC token is minted on demand by
+          # scripts/trusted-sources-headers.mjs via the runner's
+          # ACTIONS_ID_TOKEN_REQUEST_URL/_TOKEN env vars (auto-set when
+          # `permissions: id-token: write` is on the job).
+          # See: https://vercel.com/docs/deployment-protection/methods-to-bypass-deployment-protection/trusted-sources

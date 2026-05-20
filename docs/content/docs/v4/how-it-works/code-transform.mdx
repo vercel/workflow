@@ -321,7 +321,7 @@ The compiler generates stable IDs for workflows and steps based on file paths an
 - **Portable**: Works across different runtimes and deployments
 
 <Callout type="info">
-  Although IDs can change when files are moved or functions are renamed, Workflow SDK function assume atomic versioning in the World. This means changing IDs won't break old workflows from running, but will prevent run from being upgraded and will cause your workflow/step names to change in the observability across deployments.
+  Although IDs can change when files are moved or functions are renamed, Workflow SDK functions assume [atomic versioning](/docs/foundations/versioning) in the World. This means changing IDs won't break old workflows from running, but will prevent runs from being upgraded and will cause your workflow/step names to change in observability across deployments.
 </Callout>
 
 ## Framework Integration
