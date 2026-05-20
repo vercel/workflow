@@ -109,7 +109,9 @@ describe('createCreateHook', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     await ctx.promiseQueue;
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(observed).toEqual(['hook', 'next-event']);
+    await vi.waitFor(() => {
+      expect(observed).toEqual(['hook', 'next-event']);
+    });
   });
 
   it('should resolve with payload when hook_received event is received', async () => {

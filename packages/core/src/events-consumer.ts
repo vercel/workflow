@@ -200,9 +200,7 @@ export class EventsConsumer {
 
   private scheduleConsumeAfterWorkflowTurn() {
     this.replayPaused = true;
-    this.getPromiseQueue()
-      .then(() => new Promise<void>((resolve) => setTimeout(resolve, 0)))
-      .then(() => this.getPromiseQueue())
+    this.waitForWorkflowTurn()
       .then(() => {
         this.replayPaused = false;
         this.scheduleConsume();
@@ -211,5 +209,25 @@ export class EventsConsumer {
         this.replayPaused = false;
         this.scheduleConsume();
       });
+  }
+
+  private async waitForWorkflowTurn() {
+    for (let i = 0; i < 10; i++) {
+      const queue = this.getPromiseQueue();
+      await queue;
+
+      // Give workflow continuations resumed by the drained queue a full turn to
+      // subscribe follow-up operations. Those continuations may append more
+      // deliveries to the promise queue, for example when a buffered hook
+      // payload wins Promise.race after a step result.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+      if (this.getPromiseQueue() === queue) {
+        return;
+      }
+    }
+
+    await this.getPromiseQueue();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
   }
 }

@@ -207,6 +207,53 @@ describe('EventsConsumer', () => {
       expect(consumer.callbacks).toHaveLength(0);
     });
 
+    it('should keep replay paused for promise queues appended by a yielded workflow turn', async () => {
+      const event1 = createMockEvent({ id: 'event-1', sequence_number: 1 });
+      const event2 = createMockEvent({ id: 'event-2', sequence_number: 2 });
+      const observed: string[] = [];
+      let queue = Promise.resolve();
+
+      const consumer = new EventsConsumer([event1, event2], {
+        onUnconsumedEvent: vi.fn(),
+        getPromiseQueue: () => queue,
+      });
+      const callback = vi.fn().mockImplementation((event: Event | null) => {
+        if (event?.id === 'event-1') {
+          observed.push('event-1');
+          queue = queue.then(() => {
+            observed.push('first-delivery');
+            const appendedQueue = Promise.resolve().then(() => {
+              observed.push('second-delivery');
+              setTimeout(() => {
+                observed.push('workflow-continuation');
+              }, 0);
+            });
+            queue = appendedQueue;
+          });
+          return EventConsumerResult.ConsumedAndYield;
+        }
+        if (event?.id === 'event-2') {
+          observed.push('event-2');
+          return EventConsumerResult.Finished;
+        }
+        return EventConsumerResult.NotConsumed;
+      });
+
+      consumer.subscribe(callback);
+
+      await vi.waitFor(() => {
+        expect(observed).toContain('event-2');
+      });
+
+      expect(observed).toEqual([
+        'event-1',
+        'first-delivery',
+        'second-delivery',
+        'workflow-continuation',
+        'event-2',
+      ]);
+    });
+
     it('should handle event index beyond events array length', async () => {
       const event = createMockEvent();
       const consumer = new EventsConsumer([event], defaultOptions);

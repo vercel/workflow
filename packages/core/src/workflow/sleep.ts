@@ -52,7 +52,11 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
           queueItem.hasCreatedEvent = true;
           queueItem.resumeAt = event.eventData.resumeAt;
         }
-        return EventConsumerResult.Consumed;
+        // wait_created can be replayed while another branch of Promise.race
+        // has already queued a delivery, for example a buffered hook payload
+        // from iterator.next(). Yield so that delivery can win before replay
+        // advances to this wait's eventual wait_completed event.
+        return EventConsumerResult.ConsumedAndYield;
       }
 
       // Check for wait_completed event
