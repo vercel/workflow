@@ -193,7 +193,7 @@ handleUserSignup.workflowId = "workflow//workflows/user.js//handleUserSignup"; /
 - The `workflowId` property is added (same as workflow mode)
 - Step functions are not transformed in client mode
 
-**Why this transformation?** Workflow functions cannot be called directly—they must be started using [`start()`](/docs/api-reference/workflow-api/start). The error prevents accidental direct execution while the `workflowId` property allows the `start()` function to identify which workflow to launch.
+**Why this transformation?** Workflow functions cannot be called directly from application code—they must be started using [`start()`](/docs/api-reference/workflow-api/start). The error prevents accidental direct execution while the `workflowId` property allows the `start()` function to identify which workflow to launch.
 
 The IDs are generated exactly like in workflow mode to ensure they can be directly referenced at runtime.
 
@@ -321,7 +321,7 @@ The compiler generates stable IDs for workflows and steps based on file paths an
 - **Portable**: Works across different runtimes and deployments
 
 <Callout type="info">
-  Although IDs can change when files are moved or functions are renamed, Workflow SDK function assume atomic versioning in the World. This means changing IDs won't break old workflows from running, but will prevent run from being upgraded and will cause your workflow/step names to change in the observability across deployments.
+  Although IDs can change when files are moved or functions are renamed, Workflow SDK functions assume [atomic versioning](/docs/foundations/versioning) in the World. This means changing IDs won't break old workflows from running, but will prevent runs from being upgraded and will cause your workflow/step names to change in observability across deployments.
 </Callout>
 
 ## Framework Integration

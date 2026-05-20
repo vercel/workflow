@@ -1,6 +1,10 @@
 import { runInContext } from 'node:vm';
 import type { WorkflowRuntimeError } from '@workflow/errors';
-import { FatalError, RetryableError } from '@workflow/errors';
+import {
+  FatalError,
+  HookConflictError,
+  RetryableError,
+} from '@workflow/errors';
 import { WORKFLOW_DESERIALIZE, WORKFLOW_SERIALIZE } from '@workflow/serde';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { registerSerializationClass } from './class-serialization.js';
@@ -3697,8 +3701,8 @@ describe('DOMException serialization', () => {
   });
 });
 
-describe('FatalError and RetryableError serialization', () => {
-  // FatalError and RetryableError are first-class serialization targets
+describe('Workflow error serialization', () => {
+  // FatalError, RetryableError, and HookConflictError are first-class serialization targets
   // (handled by dedicated reducers/revivers in the common reducers module),
   // so unlike user-defined classes they round-trip without any
   // `registerSerializationClass` setup. This is what makes them usable
@@ -3790,6 +3794,31 @@ describe('FatalError and RetryableError serialization', () => {
     // See note on the FatalError variant above: assert on the devalue
     // marker `["KeyName",N]` to prove the dedicated reducer matched.
     expect(str).toContain('["RetryableError",');
+    expect(str).not.toContain('["Error",');
+    expect(str).not.toContain('Instance');
+  });
+
+  it('should round-trip HookConflictError preserving token and conflicting run id', async () => {
+    const error = new HookConflictError('approval-token', 'wrun_conflicting');
+    const hydrated = (await roundTrip(error)) as HookConflictError;
+    expect(hydrated).toBeInstanceOf(HookConflictError);
+    expect(HookConflictError.is(hydrated)).toBe(true);
+    expect(hydrated.token).toBe('approval-token');
+    expect(hydrated.conflictingRunId).toBe('wrun_conflicting');
+    expect(hydrated.message).toContain('wrun_conflicting');
+  });
+
+  it('should serialize HookConflictError using its dedicated reducer key', async () => {
+    const error = new HookConflictError('approval-token', 'wrun_conflicting');
+    const serialized = await dehydrateStepReturnValue(
+      error,
+      mockRunId,
+      noEncryptionKey
+    );
+    const str = new TextDecoder().decode(
+      (serialized as Uint8Array).subarray(4)
+    );
+    expect(str).toContain('["HookConflictError",');
     expect(str).not.toContain('["Error",');
     expect(str).not.toContain('Instance');
   });
