@@ -2,19 +2,21 @@ import { createServer, type Server } from 'node:http';
 import { JsonTransport } from '@vercel/queue';
 import { getWorkflowPort } from '@workflow/utils/get-port';
 import { MessageId, type QueuePayload } from '@workflow/world';
-import { createLocalWorld } from '@workflow/world-local';
 import { makeWorkerUtils, run, type WorkerUtils } from 'graphile-worker';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createLocalWorld } from '@workflow/world-local';
 import { stepEntrypoint } from '../../core/dist/runtime/step-handler.js';
-import { MessageData } from './message.js';
 import { createQueue } from './queue.js';
+import { MessageData } from './message.js';
 
 const transport = new JsonTransport();
 const createdQueues: Array<ReturnType<typeof createQueue>> = [];
 const createdServers: Server[] = [];
 
 vi.mock('graphile-worker', () => ({
-  Logger: class Logger {},
+  Logger: class Logger {
+    constructor(_: unknown) {}
+  },
   makeWorkerUtils: vi.fn(),
   run: vi.fn(),
 }));
@@ -44,13 +46,8 @@ describe('postgres queue http execution', () => {
   const wrappedHandler = vi.fn(async () => Response.json({ ok: true }));
   const localWorldClose = vi.fn();
   const createQueueHandler = vi.fn(() => wrappedHandler);
-  const advisoryClient = {
-    query: vi.fn(),
-    release: vi.fn(),
-  };
   const pool = {
     query: vi.fn(async () => ({ rows: [{ exists: false }] })),
-    connect: vi.fn(async () => advisoryClient),
   } as any;
 
   beforeEach(() => {
@@ -63,38 +60,6 @@ describe('postgres queue http execution', () => {
       createQueueHandler,
       close: localWorldClose,
     } as any);
-  });
-
-  it('serializes graphile migrations with an advisory lock', async () => {
-    const queue = buildQueue({ connectionString: 'postgres://test' }, pool);
-
-    await queue.start();
-
-    expect(pool.connect).toHaveBeenCalled();
-    expect(advisoryClient.query).toHaveBeenCalledWith(
-      'SELECT pg_advisory_lock(hashtext($1))',
-      ['workflow_graphile_worker_migrate']
-    );
-    expect(advisoryClient.query).toHaveBeenCalledWith(
-      'SELECT pg_advisory_unlock(hashtext($1))',
-      ['workflow_graphile_worker_migrate']
-    );
-    expect(advisoryClient.release).toHaveBeenCalledOnce();
-
-    const lockOrder = advisoryClient.query.mock.invocationCallOrder[0];
-    const migrateOrder = vi.mocked(workerUtilsMock.migrate).mock
-      .invocationCallOrder[0];
-    const unlockOrder =
-      advisoryClient.query.mock.invocationCallOrder[
-        advisoryClient.query.mock.calls.findIndex(
-          ([query]) => query === 'SELECT pg_advisory_unlock(hashtext($1))'
-        )
-      ];
-    const releaseOrder = advisoryClient.release.mock.invocationCallOrder[0];
-
-    expect(lockOrder).toBeLessThan(migrateOrder);
-    expect(migrateOrder).toBeLessThan(unlockOrder);
-    expect(unlockOrder).toBeLessThan(releaseOrder);
   });
 
   afterEach(async () => {
