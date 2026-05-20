@@ -272,7 +272,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
     .prepare('events_get_step_for_validation');
 
   const getHookByToken = drizzle
-    .select({ hookId: Schema.hooks.hookId })
+    .select({ hookId: Schema.hooks.hookId, runId: Schema.hooks.runId })
     .from(Schema.hooks)
     .where(eq(Schema.hooks.token, sql.placeholder('token')))
     .limit(1)
@@ -1038,6 +1038,7 @@ export function createEventsStorage(drizzle: Drizzle): Storage['events'] {
           // This allows the workflow to continue and fail gracefully when the hook is awaited
           const conflictEventData = {
             token: eventData.token,
+            conflictingRunId: existingHook.runId,
           };
 
           const [conflictValue] = await drizzle
