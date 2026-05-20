@@ -1,4 +1,4 @@
-import { WorkflowRuntimeError } from '@workflow/errors';
+import { CorruptedEventLogError } from '@workflow/errors';
 import { parseDurationToDate, withResolvers } from '@workflow/utils';
 import type { StringValue } from 'ms';
 import { EventConsumerResult } from '../events-consumer.js';
@@ -74,7 +74,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
           if (eventResumeAtMs !== expectedResumeAtMs) {
             ctx.promiseQueue = ctx.promiseQueue.then(() => {
               ctx.onWorkflowError(
-                new WorkflowRuntimeError(
+                new CorruptedEventLogError(
                   `Corrupted event log: wait_completed event for ${correlationId} has resumeAt "${eventResumeAtForMessage}", but the current wait consumer expects "${expectedResumeAt.toISOString()}"`
                 )
               );
@@ -97,7 +97,7 @@ export function createSleep(ctx: WorkflowOrchestratorContext) {
       // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
       ctx.promiseQueue = ctx.promiseQueue.then(() => {
         ctx.onWorkflowError(
-          new WorkflowRuntimeError(
+          new CorruptedEventLogError(
             `Unexpected event type for wait ${correlationId} "${event.eventType}"`
           )
         );

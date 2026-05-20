@@ -1,4 +1,8 @@
-import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  CorruptedEventLogError,
+  FatalError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -560,7 +564,7 @@ describe('createUseStep', () => {
     expect(error?.stack).toContain('fallbackFunction');
   });
 
-  it('should invoke workflow error handler with WorkflowRuntimeError for unexpected event type', async () => {
+  it('should invoke workflow error handler with CorruptedEventLogError for unexpected event type', async () => {
     // Simulate a corrupted event log where a step receives an unexpected event type
     // (e.g., a wait_completed event when expecting step_completed/step_failed)
     const ctx = setupWorkflowContext([
@@ -584,7 +588,7 @@ describe('createUseStep', () => {
     const stepPromise = add(1, 2);
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('Unexpected event type for step');
     expect(workflowError?.message).toContain('step_01K11TFZ62YS0YYFDQ3E8B9YCV');
     expect(workflowError?.message).toContain('add');
