@@ -152,7 +152,7 @@ describe('workflowEntrypoint replay guards', () => {
       expect.objectContaining({
         eventType: 'run_failed',
         eventData: expect.objectContaining({
-          errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+          errorCode: RUN_ERROR_CODES.CORRUPTED_EVENT_LOG,
         }),
       })
     );
@@ -210,7 +210,7 @@ describe('workflowEntrypoint replay guards', () => {
       expect.objectContaining({
         eventType: 'run_failed',
         eventData: expect.objectContaining({
-          errorCode: RUN_ERROR_CODES.RUNTIME_ERROR,
+          errorCode: RUN_ERROR_CODES.CORRUPTED_EVENT_LOG,
         }),
       })
     );
