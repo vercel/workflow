@@ -189,6 +189,9 @@ export async function wakeUpRun(
             eventType: 'wait_completed' as const,
             correlationId: waitEvent.correlationId,
             specVersion: run.specVersion,
+            eventData: {
+              resumeAt: waitEvent.eventData.resumeAt,
+            },
           };
       try {
         await world.events.create(runId, eventData, { v1Compat: compatMode });

@@ -12,6 +12,7 @@ import { runWorkflow } from './workflow.js';
 
 // No encryption key = encryption disabled
 const noEncryptionKey = undefined;
+const DEFAULT_HOOK_TOKEN = 'cJLiI7UTsKFAH_aaZ7DPQ';
 
 describe('runWorkflow', () => {
   const getWorkflowTransformCode = (workflowName?: string) =>
@@ -3871,7 +3872,7 @@ describe('runWorkflow', () => {
             eventType: 'hook_created' as const,
             correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
             eventData: {
-              token: 'test-token',
+              token: DEFAULT_HOOK_TOKEN,
             },
             createdAt: new Date(),
           },
