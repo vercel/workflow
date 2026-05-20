@@ -1,5 +1,15 @@
 # @workflow/next
 
+## 5.0.0-beta.6
+
+### Patch Changes
+
+- [#2021](https://github.com/vercel/workflow/pull/2021) [`4cde3b9`](https://github.com/vercel/workflow/commit/4cde3b962b5fa2343e07413a5df95ee120e715a6) Thanks [@lukesandberg](https://github.com/lukesandberg)! - Move `workflow-socket.json` out of `.next/cache/` so it isn't preserved across Vercel/Turborepo builds, and clean up stale copies at builder boot. Resolves `ECONNREFUSED 127.0.0.1:<port>` failures from the webpack loader when a prior build's socket-info file was restored from build cache. The loader now also annotates connection errors with the port, credentials source, and the file being processed.
+
+- Updated dependencies [[`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837)]:
+  - @workflow/core@5.0.0-beta.6
+  - @workflow/builders@5.0.0-beta.6
+
 ## 5.0.0-beta.5
 
 ### Minor Changes
