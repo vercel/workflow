@@ -423,7 +423,11 @@ export function workflowEntrypoint(
                 // Collect all waits that need completion
                 const waitsToComplete = events
                   .filter(
-                    (e): e is typeof e & { correlationId: string } =>
+                    (
+                      e
+                    ): e is Extract<Event, { eventType: 'wait_created' }> & {
+                      correlationId: string;
+                    } =>
                       e.eventType === 'wait_created' &&
                       e.correlationId !== undefined &&
                       !completedWaitIds.has(e.correlationId) &&
@@ -433,6 +437,9 @@ export function workflowEntrypoint(
                     eventType: 'wait_completed' as const,
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: e.correlationId,
+                    eventData: {
+                      resumeAt: e.eventData.resumeAt,
+                    },
                   }));
 
                 // Create all wait_completed events

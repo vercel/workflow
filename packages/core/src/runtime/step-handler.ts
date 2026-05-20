@@ -75,6 +75,7 @@ const stepHandler = createQueueHandler(
       requestedAt,
     } = StepInvokePayloadSchema.parse(message_);
     const { requestId } = metadata;
+    const stepNameFromQueue = metadata.queueName.slice('__wkf_step_'.length);
 
     // --- Max delivery check ---
     // Enforce max delivery limit before any infrastructure calls.
@@ -89,7 +90,7 @@ const stepHandler = createQueueHandler(
         {
           workflowRunId,
           stepId,
-          stepName: metadata.queueName.slice('__wkf_step_'.length),
+          stepName: stepNameFromQueue,
           attempt: metadata.attempt,
         }
       );
@@ -102,6 +103,7 @@ const stepHandler = createQueueHandler(
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: stepId,
             eventData: {
+              stepName: stepNameFromQueue,
               error: `Step exceeded maximum queue deliveries (${metadata.attempt}/${MAX_QUEUE_DELIVERIES})`,
             },
           },
@@ -190,6 +192,7 @@ const stepHandler = createQueueHandler(
                 eventType: 'step_started',
                 specVersion: SPEC_VERSION_CURRENT,
                 correlationId: stepId,
+                eventData: { stepName },
               },
               { requestId }
             );
@@ -309,6 +312,7 @@ const stepHandler = createQueueHandler(
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
+                    stepName,
                     error: err.message,
                     stack: err.stack,
                   },
@@ -375,6 +379,7 @@ const stepHandler = createQueueHandler(
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
+                    stepName,
                     error: errorMessage,
                     stack: step.error?.stack,
                   },
@@ -436,6 +441,7 @@ const stepHandler = createQueueHandler(
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
+                    stepName,
                     error: errorMessage,
                     stack: new Error(errorMessage).stack ?? '',
                   },
@@ -600,6 +606,7 @@ const stepHandler = createQueueHandler(
                     specVersion: SPEC_VERSION_CURRENT,
                     correlationId: stepId,
                     eventData: {
+                      stepName,
                       error: normalizedError.message,
                       stack: normalizedStack,
                     },
@@ -660,6 +667,7 @@ const stepHandler = createQueueHandler(
                       specVersion: SPEC_VERSION_CURRENT,
                       correlationId: stepId,
                       eventData: {
+                        stepName,
                         error: errorMessage,
                         stack: normalizedStack,
                       },
@@ -716,6 +724,7 @@ const stepHandler = createQueueHandler(
                       specVersion: SPEC_VERSION_CURRENT,
                       correlationId: stepId,
                       eventData: {
+                        stepName,
                         error: normalizedError.message,
                         stack: normalizedStack,
                         ...(RetryableError.is(err) && {
@@ -821,6 +830,7 @@ const stepHandler = createQueueHandler(
                   specVersion: SPEC_VERSION_CURRENT,
                   correlationId: stepId,
                   eventData: {
+                    stepName,
                     result: result as Uint8Array,
                   },
                 },

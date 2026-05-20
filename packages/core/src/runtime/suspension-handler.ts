@@ -165,6 +165,9 @@ export async function handleSuspension({
           eventType: 'hook_disposed' as const,
           specVersion: SPEC_VERSION_CURRENT,
           correlationId: queueItem.correlationId,
+          eventData: {
+            token: queueItem.token,
+          },
         };
         try {
           await world.events.create(runId, hookDisposedEvent, { requestId });

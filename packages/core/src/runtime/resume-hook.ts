@@ -177,6 +177,7 @@ export async function resumeHook<T = any>(
             specVersion: SPEC_VERSION_CURRENT,
             correlationId: hook.hookId,
             eventData: {
+              ...(v1Compat ? {} : { token: hook.token }),
               payload: dehydratedPayload,
             },
           },
