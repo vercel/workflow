@@ -960,6 +960,7 @@ export function createEventsStorage(
           schema: EventSchema,
           filePrefix: `${effectiveRunId}-`,
           sortOrder: 'asc',
+          limit: 1000,
           getCreatedAt: getObjectCreatedAt('evnt'),
           getId: (e) => e.eventId,
         });

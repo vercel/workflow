@@ -38,6 +38,7 @@ function getWorkflowTransformCode(workflowName: string) {
  */
 async function runStaleWaitReplayScenario(options: {
   includePreloadedCursor: boolean;
+  preloadedHasMore?: boolean;
   omitWaitCompletionFromDelta?: boolean;
 }) {
   vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
@@ -194,7 +195,9 @@ async function runStaleWaitReplayScenario(options: {
       return {
         data,
         hasMore: false,
-        cursor: data.at(-1)?.eventId ?? null,
+        cursor: params.pagination?.cursor
+          ? (data.at(-1)?.eventId ?? null)
+          : staleEventsCursor,
       };
     }
   );
@@ -206,7 +209,10 @@ async function runStaleWaitReplayScenario(options: {
           run: workflowRun,
           events: [...staleEvents],
           ...(options.includePreloadedCursor
-            ? { cursor: staleEventsCursor, hasMore: false }
+            ? {
+                cursor: staleEventsCursor,
+                hasMore: options.preloadedHasMore ?? false,
+              }
             : {}),
         };
       }
@@ -383,6 +389,44 @@ describe('workflow handler wait completion replay', () => {
       'step_started',
       'step_completed',
       'wait_created',
+      'hook_received',
+      'wait_completed',
+    ]);
+    expectHookBranchQueued(result);
+  });
+
+  it('falls back to a full reload when preloaded events are partial', async () => {
+    // A run_started response can return a preloaded page and still say more
+    // pages exist. That page is not a complete replay input, so the handler
+    // must discard it and load from the beginning before completing waits.
+    const result = await runStaleWaitReplayScenario({
+      includePreloadedCursor: true,
+      preloadedHasMore: true,
+    });
+
+    expect(result.listEvents).toHaveBeenCalledTimes(2);
+    expect(result.listEvents.mock.calls[0]?.[0].pagination).toEqual(
+      expect.objectContaining({
+        sortOrder: 'asc',
+        cursor: undefined,
+      })
+    );
+    expect(result.listEvents.mock.calls[1]?.[0].pagination).toEqual(
+      expect.objectContaining({
+        sortOrder: 'asc',
+        cursor: result.staleEventsCursor,
+      })
+    );
+    expect(result.listedPages[0]?.map((event) => event.eventType)).toEqual([
+      'run_created',
+      'run_started',
+      'hook_created',
+      'step_created',
+      'step_started',
+      'step_completed',
+      'wait_created',
+    ]);
+    expect(result.listedPages[1]?.map((event) => event.eventType)).toEqual([
       'hook_received',
       'wait_completed',
     ]);

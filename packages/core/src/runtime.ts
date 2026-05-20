@@ -477,20 +477,17 @@ export function workflowEntrypoint(
 
                     if (sawAllWaitCompletions) {
                       events.push(...newEvents.events);
-                      eventsCursor = newEvents.cursor ?? eventsCursor;
                     } else {
                       const loadedEvents = await getWorkflowRunEvents(
                         workflowRun.runId
                       );
                       events = loadedEvents.events;
-                      eventsCursor = loadedEvents.cursor;
                     }
                   } else {
                     const loadedEvents = await getWorkflowRunEvents(
                       workflowRun.runId
                     );
                     events = loadedEvents.events;
-                    eventsCursor = loadedEvents.cursor;
                   }
                 }
 
