@@ -180,14 +180,6 @@ function ConversationWithTabs({
 }
 
 /**
- * Render a value with the shared DataInspector (ObjectInspector with
- * custom theming, nodeRenderer for StreamRef/ClassInstanceRef, etc.)
- */
-function EncryptedFieldBlock() {
-  return <EncryptedDataBlock />;
-}
-
-/**
  * Compact Decrypt action rendered in a section header's trailing slot
  * (replacing the chevron) when the field's value is an encrypted marker.
  */
@@ -461,7 +453,7 @@ const attributeToDisplayFn: Record<
   // Resolved attributes, won't actually use this function
   metadata: (value: unknown) => {
     if (!hasDisplayContent(value)) return null;
-    if (isEncryptedMarker(value)) return <EncryptedFieldBlock />;
+    if (isEncryptedMarker(value)) return <EncryptedDataBlock />;
     if (isExpiredMarker(value)) return <ExpiredFieldBlock />;
     return JsonBlock(value);
   },
