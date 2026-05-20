@@ -445,10 +445,10 @@ export interface ListEventsByCorrelationIdParams {
 export interface PaginatedEventResponse extends PaginatedResponse<Event> {
   /**
    * Present when `deferRefs: true` was requested AND the world supports
-   * deferred resolution. Resolves to the same events as `data`, with refs
-   * hydrated. The hydration may mutate `data` in place or return a new
-   * array — callers should use the resolved value rather than reading
-   * `data` directly when this field is present.
+   * deferred resolution. Resolves to a **new** array of events with refs
+   * hydrated — callers MUST await this and read the resolved value rather
+   * than reading `data` directly. Treat `data` as opaque (the descriptor
+   * shape is private to the world implementation) when this field is set.
    */
   refsResolution?: Promise<Event[]>;
 }

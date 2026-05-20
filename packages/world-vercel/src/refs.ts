@@ -47,8 +47,13 @@ export function isRefDescriptor(value: unknown): value is RefDescriptor {
 }
 
 /**
- * Maximum number of concurrent ref resolution requests.
- * Limits peak concurrency to avoid overwhelming the server.
+ * Maximum number of concurrent ref resolution requests **per
+ * `hydrateEventRefs` call** (i.e. per page). This is _not_ a global cap:
+ * when `loadWorkflowRunEvents` issues several pages with `deferRefs: true`,
+ * each page runs its own bounded fan-out, so peak in-flight S3 GETs across
+ * the runtime is roughly `pages_in_flight × REF_RESOLVE_CONCURRENCY`.
+ * S3 handles that fine; the constraint to watch is the undici socket pool
+ * / fd ceiling in Fluid Compute.
  */
 const REF_RESOLVE_CONCURRENCY = 10;
 
