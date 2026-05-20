@@ -1,4 +1,4 @@
-import { FatalError, WorkflowRuntimeError } from '@workflow/errors';
+import { CorruptedEventLogError, FatalError } from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import { EventConsumerResult } from './events-consumer.js';
 import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
@@ -88,7 +88,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         if (typeof eventStepName === 'string' && eventStepName !== stepName) {
           ctx.promiseQueue = ctx.promiseQueue.then(() => {
             ctx.onWorkflowError(
-              new WorkflowRuntimeError(
+              new CorruptedEventLogError(
                 `Corrupted event log: step event ${event.eventType} for ${correlationId} belongs to "${eventStepName}", but the current step consumer is "${stepName}"`
               )
             );
@@ -106,7 +106,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
             // but the step was never invoked in the workflow during replay.
             ctx.promiseQueue = ctx.promiseQueue.then(() => {
               reject(
-                new WorkflowRuntimeError(
+                new CorruptedEventLogError(
                   `Corrupted event log: step ${correlationId} (${stepName}) created but not found in invocation queue`
                 )
               );
@@ -203,7 +203,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         // An unexpected event type has been received, this event log looks corrupted. Let's fail immediately.
         ctx.promiseQueue = ctx.promiseQueue.then(() => {
           ctx.onWorkflowError(
-            new WorkflowRuntimeError(
+            new CorruptedEventLogError(
               `Unexpected event type for step ${correlationId} (name: ${stepName}) "${event.eventType}"`
             )
           );

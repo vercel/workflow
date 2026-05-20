@@ -1,4 +1,8 @@
-import { HookConflictError, WorkflowRuntimeError } from '@workflow/errors';
+import {
+  CorruptedEventLogError,
+  HookConflictError,
+  WorkflowRuntimeError,
+} from '@workflow/errors';
 import { withResolvers } from '@workflow/utils';
 import type { Event } from '@workflow/world';
 import * as nanoid from 'nanoid';
@@ -88,7 +92,7 @@ describe('createCreateHook', () => {
     createHook({ token: 'expected-token' });
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('hook_created');
     expect(workflowError?.message).toContain('wrong-token');
     expect(workflowError?.message).toContain('expected-token');
@@ -123,7 +127,7 @@ describe('createCreateHook', () => {
     void hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('hook_received');
     expect(workflowError?.message).toContain('wrong-token');
     expect(workflowError?.message).toContain('expected-token');
@@ -150,7 +154,7 @@ describe('createCreateHook', () => {
     createHook({ token: 'expected-token' });
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('hook_disposed');
     expect(workflowError?.message).toContain('wrong-token');
     expect(workflowError?.message).toContain('expected-token');
@@ -178,7 +182,7 @@ describe('createCreateHook', () => {
     createHook({ token: 'expected-token' });
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('hook_conflict');
     expect(workflowError?.message).toContain('wrong-token');
     expect(workflowError?.message).toContain('expected-token');
@@ -200,7 +204,7 @@ describe('createCreateHook', () => {
     expect(workflowError).toBeInstanceOf(WorkflowSuspension);
   });
 
-  it('should invoke workflow error handler with WorkflowRuntimeError for unexpected event type', async () => {
+  it('should invoke workflow error handler with CorruptedEventLogError for unexpected event type', async () => {
     // Simulate a corrupted event log where a hook receives an unexpected event type
     // (e.g., a step_completed event when expecting hook_created/hook_received/hook_disposed)
     const ctx = setupWorkflowContext([
@@ -227,7 +231,7 @@ describe('createCreateHook', () => {
     const hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('Unexpected event type for hook');
     expect(workflowError?.message).toContain('hook_01K11TFZ62YS0YYFDQ3E8B9YCV');
     expect(workflowError?.message).toContain('step_completed');
@@ -410,7 +414,7 @@ describe('createCreateHook', () => {
     const hookPromise = hook.then((v) => v);
 
     const workflowError = await errorReceived.promise;
-    expect(workflowError).toBeInstanceOf(WorkflowRuntimeError);
+    expect(workflowError).toBeInstanceOf(CorruptedEventLogError);
     expect(workflowError?.message).toContain('my-custom-token');
   });
 
