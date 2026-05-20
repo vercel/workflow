@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { SerializedDataSchema } from './serialization.js';
-import type { PaginationOptions, ResolveData } from './shared.js';
+import type {
+  PaginatedResponse,
+  PaginationOptions,
+  ResolveData,
+} from './shared.js';
 
 /**
  * Fields within eventData that hold ref/payload data per event type.
@@ -411,10 +415,40 @@ export interface ListEventsParams {
   runId: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
+  /**
+   * When true, the returned page may carry `refsResolution` — a Promise that
+   * resolves to the same events with refs hydrated. The world is then free to
+   * return the page metadata (and unresolved descriptors) immediately so the
+   * caller can issue the next page request in parallel with the current
+   * page's ref resolution.
+   *
+   * Worlds that resolve refs in-process (e.g. world-local, world-postgres)
+   * may ignore this flag and return events with refs already resolved and
+   * `refsResolution` undefined.
+   */
+  deferRefs?: boolean;
 }
 
 export interface ListEventsByCorrelationIdParams {
   correlationId: string;
   pagination?: PaginationOptions;
   resolveData?: ResolveData;
+  /** See {@link ListEventsParams.deferRefs}. */
+  deferRefs?: boolean;
+}
+
+/**
+ * Result of a list-events call. Extends {@link PaginatedResponse} with an
+ * optional `refsResolution` promise that the caller can await when
+ * `deferRefs: true` was passed in.
+ */
+export interface PaginatedEventResponse extends PaginatedResponse<Event> {
+  /**
+   * Present when `deferRefs: true` was requested AND the world supports
+   * deferred resolution. Resolves to the same events as `data`, with refs
+   * hydrated. The hydration may mutate `data` in place or return a new
+   * array — callers should use the resolved value rather than reading
+   * `data` directly when this field is present.
+   */
+  refsResolution?: Promise<Event[]>;
 }

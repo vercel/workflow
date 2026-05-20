@@ -10,6 +10,7 @@ import {
   HookSchema,
   type ListEventsByCorrelationIdParams,
   type ListEventsParams,
+  type PaginatedEventResponse,
   type PaginatedResponse,
   PaginatedResponseSchema,
   stripEventDataRefs,
@@ -278,10 +279,14 @@ export async function getEvent(
 export async function getWorkflowRunEvents(
   params: ListEventsParams | ListEventsByCorrelationIdParams,
   config?: APIConfig
-): Promise<PaginatedResponse<Event>> {
+): Promise<PaginatedEventResponse> {
   const searchParams = new URLSearchParams();
 
-  const { pagination, resolveData = DEFAULT_RESOLVE_DATA_OPTION } = params;
+  const {
+    pagination,
+    resolveData = DEFAULT_RESOLVE_DATA_OPTION,
+    deferRefs = false,
+  } = params;
   let runId: string | undefined;
   let correlationId: string | undefined;
   if ('runId' in params) {
@@ -304,6 +309,12 @@ export async function getWorkflowRunEvents(
   // all refs in memory. When resolveData is 'all', we hydrate refs client-side
   // via individual ref resolution requests.
   searchParams.set('remoteRefBehavior', 'lazy');
+
+  // Ask the server to embed pre-signed S3 URLs on each nested s3rf
+  // descriptor so client-side hydration can fetch the payload directly
+  // from S3 instead of round-tripping the /refs endpoint. The server
+  // resolves the outer eventDataRef wrapper itself when this flag is set.
+  searchParams.set('presignS3Refs', 'true');
 
   const queryString = searchParams.toString();
   const query = queryString ? `?${queryString}` : '';
@@ -329,29 +340,46 @@ export async function getWorkflowRunEvents(
   })) as PaginatedResponse<Event>;
 
   if (resolveData === 'all') {
-    // Hydrate refs client-side: resolve all ref descriptors in parallel
-    const hydratedEvents = await hydrateEventRefs(
-      response.data,
-      config,
-      refResolveConcurrency
-    );
-
-    // Re-parse hydrated events through EventSchema to apply type coercions
-    // (e.g., z.coerce.date() for resumeAt) that EventWithRefsSchema skips.
-    // Use safeParse to gracefully handle any events that don't match a known
-    // type — pass them through as-is rather than failing the entire request.
-    let coercionFailures = 0;
-    const validatedEvents = hydratedEvents.map((event: any) => {
-      const result = EventSchema.safeParse(event);
-      if (!result.success) coercionFailures++;
-      return result.success ? result.data : event;
-    });
-    if (coercionFailures > 0) {
-      console.warn(
-        `[world-vercel] EventSchema coercion failed for ${coercionFailures}/${hydratedEvents.length} events`
+    // Build the hydration as a promise so the caller can either await it
+    // inline (default) or run it in parallel with the next page fetch
+    // (deferRefs=true). The hydration goes:
+    //   1. resolve every nested RemoteRef (parallel, bounded concurrency —
+    //      direct S3 GET when the descriptor carries a `_url`)
+    //   2. re-parse each event through EventSchema so any coercions
+    //      (e.g. z.coerce.date()) land on the fully-hydrated shape
+    const hydrate = async (): Promise<Event[]> => {
+      const hydratedEvents = await hydrateEventRefs(
+        response.data,
+        config,
+        refResolveConcurrency
       );
+      let coercionFailures = 0;
+      const validatedEvents = hydratedEvents.map((event: any) => {
+        const result = EventSchema.safeParse(event);
+        if (!result.success) coercionFailures++;
+        return result.success ? result.data : event;
+      });
+      if (coercionFailures > 0) {
+        console.warn(
+          `[world-vercel] EventSchema coercion failed for ${coercionFailures}/${hydratedEvents.length} events`
+        );
+      }
+      return validatedEvents;
+    };
+
+    if (deferRefs) {
+      // Return the unhydrated page immediately. The caller awaits
+      // `refsResolution` when it wants the resolved events; meanwhile it
+      // can issue the next page request. The hydration runs eagerly under
+      // the hood so refs start fetching the moment the page metadata
+      // arrives.
+      return {
+        ...response,
+        refsResolution: hydrate(),
+      };
     }
 
+    const validatedEvents = await hydrate();
     return {
       ...response,
       data: validatedEvents,

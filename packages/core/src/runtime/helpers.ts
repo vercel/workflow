@@ -329,7 +329,16 @@ export async function loadWorkflowRunEvents(
         ...Attribute.WorkflowRunId(runId),
       });
 
-      const loadedEvents: Event[] = [];
+      // Page metadata accumulates in order; ref-resolution promises run in
+      // parallel with subsequent page fetches. The page metadata loop is
+      // strictly serial (each page's cursor depends on the previous one),
+      // but hydrating page N's refs no longer blocks page N+1's request.
+      // For a 100-event run loaded 20 at a time, this collapses the
+      // critical path from `5 × (fetch + resolve)` to `5 × fetch + max(resolve)`.
+      const pages: Array<{
+        data: Event[];
+        refsResolution?: Promise<Event[]>;
+      }> = [];
       let cursor: string | null = afterCursor ?? null;
       let hasMore = true;
       let pagesLoaded = 0;
@@ -337,9 +346,6 @@ export async function loadWorkflowRunEvents(
       const world = await getWorldLazy();
       const loadStart = Date.now();
       while (hasMore) {
-        // TODO: we're currently loading all the data with resolveRef behaviour. We need to update this
-        // to lazyload the data from the world instead so that we can optimize and make the event log loading
-        // much faster and memory efficient
         const pageStart = Date.now();
         const response = await world.events.list({
           runId,
@@ -347,9 +353,13 @@ export async function loadWorkflowRunEvents(
             sortOrder: 'asc',
             cursor: cursor ?? undefined,
           },
+          deferRefs: true,
         });
 
-        loadedEvents.push(...response.data);
+        pages.push({
+          data: response.data,
+          refsResolution: response.refsResolution,
+        });
         hasMore = response.hasMore;
         cursor = response.cursor;
         pagesLoaded++;
@@ -359,11 +369,18 @@ export async function loadWorkflowRunEvents(
           incremental,
           page: pagesLoaded,
           pageEvents: response.data.length,
-          totalEvents: loadedEvents.length,
           hasMore,
           pageMs: Date.now() - pageStart,
         });
       }
+
+      // Await all in-flight ref resolutions in parallel. For worlds that
+      // don't defer (refsResolution undefined), the page's `data` is
+      // already resolved.
+      const resolvedPages = await Promise.all(
+        pages.map((p) => p.refsResolution ?? Promise.resolve(p.data))
+      );
+      const loadedEvents: Event[] = resolvedPages.flat();
 
       runtimeLogger.debug('Event load complete', {
         workflowRunId: runId,

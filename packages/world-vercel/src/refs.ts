@@ -23,6 +23,13 @@ export interface RefDescriptor {
   _data?: string;
   /** Content type of the inline payload. Present only for dbrf: refs. */
   _ct?: string;
+  /**
+   * Pre-signed S3 GET URL. Present only when the client asked the server
+   * for the pre-signed format (?presignS3Refs=true) and the ref points to
+   * S3 storage. When set, the client fetches the payload directly from S3
+   * instead of round-tripping the /refs endpoint.
+   */
+  _url?: string;
 }
 
 /**
@@ -81,20 +88,31 @@ export async function resolveRefDescriptor(
     return decode(binaryData);
   }
 
-  // Remote refs (s3rf:, kvrf:) — fetch raw bytes from the server.
-  // The server returns the raw stored bytes directly (not wrapped in a
-  // JSON/CBOR envelope). The Content-Type may be 'application/cbor' (for
-  // CBOR-encoded data) or 'application/octet-stream' (for raw binary like
-  // Uint8Array). We handle both content types directly rather than going
-  // through makeRequest, which only handles JSON/CBOR API responses.
-  const { baseUrl, headers } = await getHttpConfig(config);
-  const endpoint = `/v2/runs/${encodeURIComponent(runId)}/refs?ref=${encodeURIComponent(ref)}`;
-  const url = `${baseUrl}${endpoint}`;
-
-  // Set headers that makeRequest normally adds: Accept for content
-  // negotiation and X-Request-Time to bypass RSC request memoization.
-  headers.set('Accept', 'application/cbor, application/octet-stream');
-  headers.set('X-Request-Time', Date.now().toString());
+  // Remote refs (s3rf:, kvrf:) — fetch raw bytes.
+  //
+  // When the descriptor carries a pre-signed S3 URL (`_url`), fetch the
+  // payload directly from S3 — no auth header, no workflow-server hop.
+  // Otherwise fall back to `GET /v2/runs/:runId/refs?ref=…` which streams
+  // the object back through the server (used for kvrf: and for s3rf: when
+  // the list-events response wasn't asked to pre-sign).
+  let url: string;
+  let headers: Headers;
+  if (descriptor._url) {
+    url = descriptor._url;
+    // Pre-signed URLs already carry auth in the query string; sending
+    // additional Authorization headers can confuse S3's signature check.
+    headers = new Headers();
+    headers.set('Accept', 'application/cbor, application/octet-stream');
+  } else {
+    const http = await getHttpConfig(config);
+    const endpoint = `/v2/runs/${encodeURIComponent(runId)}/refs?ref=${encodeURIComponent(ref)}`;
+    url = `${http.baseUrl}${endpoint}`;
+    headers = http.headers;
+    // Set headers that makeRequest normally adds: Accept for content
+    // negotiation and X-Request-Time to bypass RSC request memoization.
+    headers.set('Accept', 'application/cbor, application/octet-stream');
+    headers.set('X-Request-Time', Date.now().toString());
+  }
 
   return trace(
     'http GET',
@@ -103,7 +121,7 @@ export async function resolveRefDescriptor(
       span?.setAttributes({
         ...HttpRequestMethod('GET'),
         ...UrlFull(url),
-        ...PeerService('workflow-server'),
+        ...PeerService(descriptor._url ? 's3' : 'workflow-server'),
       });
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- undici v7 dispatcher types don't match @types/node's RequestInit
