@@ -24,7 +24,7 @@ export const TIMELINE_PADDING_PX = 16;
 
 const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   queued: 'bg-gray-500',
-  retrying: 'box-border bg-gray-500',
+  retrying: 'bg-gray-500',
   waiting: 'bg-gray-500',
   running: 'bg-blue-700',
   failed: 'bg-red-700',
@@ -33,8 +33,6 @@ const SEGMENT_CLASSES: Record<SegmentStatus, string> = {
   received: 'bg-blue-700',
 };
 
-// Hoisted style constants. These are referentially stable so they don't
-// trigger unnecessary diffs in style props across renders.
 const TIMELINE_INSET_STYLE: CSSProperties = {
   left: TIMELINE_PADDING_PX,
   right: TIMELINE_PADDING_PX,
