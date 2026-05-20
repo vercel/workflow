@@ -377,16 +377,18 @@ jobs:
             const reasoning = process.env.REASONING;
             const sha = process.env.SHA.slice(0, 7);
             const prNumber = Number(process.env.PR_NUMBER);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const workflowUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/workflows/backport.yml`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: [
-                `**No backport to \`stable\`** for ${sha} (AI decision).`,
+                `**No backport to \`stable\`** for ${sha} ([AI decision](${runUrl})).`,
                 '',
                 reasoning,
                 '',
-                'To override, re-run the [Backport to stable](https://github.com/' + context.repo.owner + '/' + context.repo.repo + '/actions/workflows/backport.yml) workflow manually via `workflow_dispatch` with this commit SHA.'
+                `To override, re-run the [Backport to stable](${workflowUrl}) workflow manually via \`workflow_dispatch\` with this commit SHA.`
               ].join('\n')
             });
 
@@ -822,6 +824,7 @@ jobs:
           CHERRY_PICK_STATUS: ${{ steps.cherry-pick.outputs.status }}
           AI_REASONING: ${{ steps.decide.outputs.reasoning }}
           TRIGGER: ${{ steps.resolve.outputs.trigger }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # Build the PR title.
           if [ -n "$PR_NUMBER" ]; then
@@ -834,9 +837,9 @@ jobs:
           # Build the PR body.
           {
             if [ -n "$PR_NUMBER" ]; then
-              echo "Automated backport of #${PR_NUMBER} to \`stable\`."
+              echo "Automated backport of #${PR_NUMBER} to \`stable\` ([backport job run](${RUN_URL}))."
             else
-              echo "Automated backport of ${SHA} to \`stable\`."
+              echo "Automated backport of ${SHA} to \`stable\` ([backport job run](${RUN_URL}))."
             fi
             echo ""
 
@@ -886,6 +889,7 @@ jobs:
             const cherryPickStatus = process.env.CHERRY_PICK_STATUS;
             const prUrl = process.env.PR_URL;
             const prNumber = Number(process.env.PR_NUMBER);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const conflictNote = cherryPickStatus === 'conflict'
               ? ' Merge conflicts were resolved by AI — please review carefully.'
               : '';
@@ -893,7 +897,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
-              body: `Backport PR opened against \`stable\`: ${prUrl}.${conflictNote}`
+              body: `Backport PR opened against \`stable\`: ${prUrl}.${conflictNote} ([backport job run](${runUrl}))`
             });
 
       - name: Comment on conflict failure
@@ -917,12 +921,13 @@ jobs:
             const sha = process.env.SHA;
             const prNumber = Number(process.env.PR_NUMBER);
             const shortSha = sha.slice(0, 12);
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: [
-                '**Backport to `stable` failed** — the cherry-pick had conflicts that could not be resolved automatically.',
+                `**Backport to \`stable\` failed** — the cherry-pick had conflicts that could not be resolved automatically ([backport job run](${runUrl})).`,
                 '',
                 'To resolve manually, push a backport branch and open a PR against `stable` (the workflow never pushes directly to `stable`). Note: this repository requires verified signatures on every branch, so your local commits must be signed (`git config commit.gpgsign true` with a configured GPG/SSH signing key, or `git cherry-pick -S`).',
                 '```bash',
