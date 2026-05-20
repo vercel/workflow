@@ -134,17 +134,19 @@ async function main() {
     updateDeps(modifiedPackageJson.devDependencies);
     updateDeps(modifiedPackageJson.peerDependencies);
 
-    await fs.writeFile(
-      packageJsonPath,
-      JSON.stringify(modifiedPackageJson, null, 2)
-    );
-    const versionFileSnapshots = await updateGeneratedVersionFiles(
-      dir,
-      packageJson,
-      previewVersion
-    );
+    const versionFileSnapshots: FileSnapshot[] = [];
 
     try {
+      await fs.writeFile(
+        packageJsonPath,
+        JSON.stringify(modifiedPackageJson, null, 2)
+      );
+      await updateGeneratedVersionFiles(
+        dir,
+        packageJson,
+        previewVersion,
+        versionFileSnapshots
+      );
       await exec(`pnpm pack --out="${outDir}/%s.tgz"`, { cwd: dir });
 
       const escapedName = name.replace(/^@(.+)\//, '$1-');
@@ -197,13 +199,13 @@ function formatBytes(bytes: number): string {
 async function updateGeneratedVersionFiles(
   packageDir: string,
   packageJson: PackageJson,
-  version: string
-): Promise<FileSnapshot[]> {
+  version: string,
+  snapshots: FileSnapshot[]
+): Promise<void> {
   if (!usesGeneratedVersionFile(packageJson)) {
-    return [];
+    return;
   }
 
-  const snapshots: FileSnapshot[] = [];
   for (const relativePath of generatedVersionFiles) {
     const filePath = path.join(packageDir, relativePath);
     let content: string;
@@ -217,8 +219,6 @@ async function updateGeneratedVersionFiles(
     snapshots.push({ path: filePath, content });
     await fs.writeFile(filePath, renderGeneratedVersionFile(filePath, version));
   }
-
-  return snapshots;
 }
 
 function usesGeneratedVersionFile(packageJson: PackageJson): boolean {
@@ -230,7 +230,7 @@ function usesGeneratedVersionFile(packageJson: PackageJson): boolean {
 
 function renderGeneratedVersionFile(filePath: string, version: string): string {
   if (filePath.endsWith('.d.ts')) {
-    return `export declare const version = ${JSON.stringify(version)};\n`;
+    return `export declare const version: ${JSON.stringify(version)};\n`;
   }
   return `export const version = ${JSON.stringify(version)};\n`;
 }
