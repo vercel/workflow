@@ -1104,8 +1104,8 @@ export function createEventsStorage(
         const resolveData = params?.resolveData ?? DEFAULT_RESOLVE_DATA_OPTION;
         const filteredEvent = stripEventDataRefs(event, resolveData);
 
-        // For run_started: include all events so the runtime can skip
-        // the initial events.list call and reduce TTFB.
+        // For run_started: preload one page of events so the runtime can skip
+        // the initial events.list call when hasMore is false.
         let events: Event[] | undefined;
         let cursor: string | null | undefined;
         let hasMore: boolean | undefined;

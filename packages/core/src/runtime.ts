@@ -648,10 +648,10 @@ export function workflowEntrypoint(
                           eventsCursor
                         );
                         // Dedupe by eventId: a previous iteration may have
-                        // pushed events manually (see the wait_completed
-                        // write loop below) without advancing the cursor,
-                        // so an incremental fetch can return events we
-                        // already have locally.
+                        // appended a refreshed wait-completion delta before
+                        // the next loop observes the advanced cursor, so an
+                        // incremental fetch can return events we already have
+                        // locally.
                         if (loaded.events.length > 0) {
                           const existingIds = new Set(
                             cachedEvents.map((e) => e.eventId)
