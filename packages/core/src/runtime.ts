@@ -424,15 +424,29 @@ export function workflowEntrypoint(
                         return;
                       }
 
-                      // All steps done — fall through to the main replay loop.
-                      // Set up shared state so the loop can continue.
+                      // All steps done. Queue one workflow continuation instead
+                      // of letting every racing background step replay inline.
+                      // Without the idempotent handoff, multiple background
+                      // handlers can all observe the completed batch and race
+                      // into the next batch, creating duplicate step_started
+                      // and hook_received events.
                       runtimeLogger.debug(
-                        'All parallel steps done, replaying inline after background step',
+                        'All parallel steps done, queueing workflow continuation',
                         { workflowRunId: runId }
                       );
-                      workflowRun = bgRun;
-                      workflowStartedAt = bgStartedAt;
-                      // cachedEvents and eventsCursor already set from load above
+                      await queueMessage(
+                        world,
+                        getWorkflowQueueName(workflowName),
+                        {
+                          runId,
+                          traceCarrier: await serializeTraceCarrier(),
+                          requestedAt: new Date(),
+                        },
+                        {
+                          idempotencyKey: `workflow-continuation:${runId}:${eventsCursor ?? incomingStepId}`,
+                        }
+                      );
+                      return;
                     } else {
                       return;
                     }

@@ -23,7 +23,10 @@ export {
   createPseudoPackagePlugin,
   PSEUDO_PACKAGES,
 } from './pseudo-package-esbuild-plugin.js';
-export { NORMALIZE_REQUEST_CODE } from './request-converter.js';
+export {
+  NORMALIZE_REQUEST_CODE,
+  replaceGeneratedRouteExport,
+} from './request-converter.js';
 export {
   analyzeSerdeCompliance,
   extractClassEntries,

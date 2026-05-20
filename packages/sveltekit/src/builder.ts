@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path';
 import {
   BaseBuilder,
   NORMALIZE_REQUEST_CODE,
+  replaceGeneratedRouteExport,
   type SvelteKitConfig,
 } from '@workflow/builders';
 
@@ -81,13 +82,18 @@ export class SvelteKitBuilder extends BaseBuilder {
     let workflowsRouteContent = await readFile(workflowsRouteFile, 'utf-8');
 
     // Replace the default export with SvelteKit-compatible handler
-    workflowsRouteContent = workflowsRouteContent.replace(
-      /export const POST = workflowEntrypoint\(workflowCode\);?$/m,
+    workflowsRouteContent = replaceGeneratedRouteExport(
+      workflowsRouteContent,
+      /const handler = workflowEntrypoint\(workflowCode\);\s*export const HEAD = handler;\s*export const POST = handler;?\s*$/m,
       `${NORMALIZE_REQUEST_CODE}
-export const POST = async ({request}) => {
+const handleWorkflowRequest = async ({request}) => {
   const normalRequest = await normalizeRequest(request);
   return workflowEntrypoint(workflowCode)(normalRequest);
-}`
+};
+
+export const HEAD = handleWorkflowRequest;
+export const POST = handleWorkflowRequest;`,
+      'Failed to wrap generated SvelteKit workflow route'
     );
     await writeFile(workflowsRouteFile, workflowsRouteContent);
 

@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
-import { All, Controller, Get, Post, Req, Res } from '@nestjs/common';
+import { All, Controller, Get, Head, Post, Req, Res } from '@nestjs/common';
 import { join } from 'pathe';
 
 // Module-level state for configuration
@@ -88,14 +88,24 @@ function getOutDir(): string {
 export class WorkflowController {
   @Post('flow')
   async handleFlow(@Req() req: any, @Res() res: any) {
+    await this.handleFlowEndpoint(req, res);
+  }
+
+  @Head('flow')
+  async handleFlowHead(@Req() req: any, @Res() res: any) {
+    await this.handleFlowEndpoint(req, res);
+  }
+
+  private async handleFlowEndpoint(req: any, res: any) {
     const outDir = getOutDir();
     // Import step registrations (side effects) before the combined handler
     await import(pathToFileURL(join(outDir, 'steps.mjs')).href);
-    const { POST } = await import(
+    const { HEAD, POST } = await import(
       pathToFileURL(join(outDir, 'workflows.mjs')).href
     );
     const webRequest = toWebRequest(req);
-    const webResponse = await POST(webRequest);
+    const handler = req.method === 'HEAD' && HEAD ? HEAD : POST;
+    const webResponse = await handler(webRequest);
     await sendWebResponse(res, webResponse);
   }
 

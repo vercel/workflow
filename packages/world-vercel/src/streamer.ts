@@ -17,6 +17,7 @@ import {
  * MAX_CHUNKS_PER_BATCH. Larger batches are split into multiple requests.
  */
 export const MAX_CHUNKS_PER_REQUEST = 1000;
+const DEFAULT_STREAM_MUTATION_TIMEOUT_MS = 30_000;
 
 // Streaming calls use plain fetch() without the undici dispatcher.
 // The dispatcher's retry logic doesn't apply well to streaming operations
@@ -27,6 +28,41 @@ function getStreamUrl(name: string, runId: string, httpConfig: HttpConfig) {
   return new URL(
     `${httpConfig.baseUrl}/v2/runs/${encodeURIComponent(runId)}/stream/${encodeURIComponent(name)}`
   );
+}
+
+function getStreamMutationTimeoutMs() {
+  const parsed = Number.parseInt(
+    process.env.WORKFLOW_VERCEL_STREAM_TIMEOUT_MS ?? '',
+    10
+  );
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return DEFAULT_STREAM_MUTATION_TIMEOUT_MS;
+}
+
+async function fetchStreamMutation(
+  url: URL,
+  init: RequestInit,
+  operation: 'write' | 'close'
+) {
+  const timeoutMs = getStreamMutationTimeoutMs();
+  try {
+    return await fetch(url, {
+      ...init,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    if (
+      err instanceof Error &&
+      (err.name === 'AbortError' || err.name === 'TimeoutError')
+    ) {
+      throw new Error(`Stream ${operation} timed out after ${timeoutMs}ms`, {
+        cause: err,
+      });
+    }
+    throw err;
+  }
 }
 
 /**
@@ -101,13 +137,14 @@ export function createStreamer(config?: APIConfig): Streamer {
         const resolvedRunId = await runId;
 
         const httpConfig = await getHttpConfig(config);
-        const response = await fetch(
+        const response = await fetchStreamMutation(
           getStreamUrl(name, resolvedRunId, httpConfig),
           {
             method: 'PUT',
             body: chunk,
             headers: httpConfig.headers,
-          }
+          },
+          'write'
         );
         const text = await response.text();
         if (!response.ok) {
@@ -143,13 +180,14 @@ export function createStreamer(config?: APIConfig): Streamer {
         for (let i = 0; i < chunks.length; i += MAX_CHUNKS_PER_REQUEST) {
           const batch = chunks.slice(i, i + MAX_CHUNKS_PER_REQUEST);
           const body = encodeMultiChunks(batch);
-          const response = await fetch(
+          const response = await fetchStreamMutation(
             getStreamUrl(name, resolvedRunId, httpConfig),
             {
               method: 'PUT',
               body,
               headers: httpConfig.headers,
-            }
+            },
+            'write'
           );
           const text = await response.text();
           if (!response.ok) {
@@ -166,12 +204,13 @@ export function createStreamer(config?: APIConfig): Streamer {
 
         const httpConfig = await getHttpConfig(config);
         httpConfig.headers.set('X-Stream-Done', 'true');
-        const response = await fetch(
+        const response = await fetchStreamMutation(
           getStreamUrl(name, resolvedRunId, httpConfig),
           {
             method: 'PUT',
             headers: httpConfig.headers,
-          }
+          },
+          'close'
         );
         const text = await response.text();
         if (!response.ok) {

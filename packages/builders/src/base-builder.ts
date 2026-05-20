@@ -1120,7 +1120,10 @@ import { workflowEntrypoint } from 'workflow/runtime';
 
 const workflowCode = \`${workflowBundleCode.replace(/[\\`$]/g, '\\$&')}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+const handler = workflowEntrypoint(workflowCode);
+
+export const HEAD = handler;
+export const POST = handler;`;
 
         // we skip the final bundling step for Next.js so it can bundle itself
         if (!bundleFinalOutput) {
@@ -1310,7 +1313,10 @@ void __steps_registered;
 
 const workflowCode = \`${escapedVMCode}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+const handler = workflowEntrypoint(workflowCode);
+
+export const HEAD = handler;
+export const POST = handler;`;
 
     if (!bundleFinalOutput) {
       // Write directly (Next.js will bundle)
@@ -1380,7 +1386,10 @@ void __steps_registered;
 
 const workflowCode = \`${escaped}\`;
 
-export const POST = workflowEntrypoint(workflowCode);`;
+const handler = workflowEntrypoint(workflowCode);
+
+export const HEAD = handler;
+export const POST = handler;`;
 
       const outputDir = dirname(flowOutfile);
       await mkdir(outputDir, { recursive: true });

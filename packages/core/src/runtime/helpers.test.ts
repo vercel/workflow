@@ -1,5 +1,6 @@
+import type { World } from '@workflow/world';
 import { describe, expect, it, vi } from 'vitest';
-import { getWorkflowQueueName } from './helpers.js';
+import { getWorkflowQueueName, healthCheck } from './helpers.js';
 
 // Mock the logger to suppress output during tests
 vi.mock('../logger.js', () => ({
@@ -78,5 +79,66 @@ describe('getWorkflowQueueName', () => {
 
   it('should throw for empty string', () => {
     expect(() => getWorkflowQueueName('')).toThrow('Invalid workflow name');
+  });
+});
+
+describe('healthCheck', () => {
+  it('returns unhealthy when queue delivery does not settle before the timeout', async () => {
+    const world = {
+      queue: vi.fn(() => new Promise(() => {})),
+      streams: {
+        get: vi.fn(),
+      },
+    } as unknown as World;
+
+    const result = await healthCheck(world, 'workflow', { timeout: 10 });
+
+    expect(result).toEqual({
+      healthy: false,
+      error: 'Health check timed out after 10ms',
+    });
+    expect(world.queue).toHaveBeenCalledWith(
+      '__wkf_workflow_health_check',
+      {
+        __healthCheck: true,
+        correlationId: expect.any(String),
+      },
+      {
+        specVersion: 1,
+        deploymentId: undefined,
+      }
+    );
+    expect(world.streams.get).not.toHaveBeenCalled();
+  });
+
+  it('returns unhealthy when opening the response stream does not settle before the timeout', async () => {
+    const world = {
+      queue: vi.fn().mockResolvedValue({ messageId: null }),
+      streams: {
+        get: vi.fn(() => new Promise(() => {})),
+      },
+    } as unknown as World;
+
+    const result = await healthCheck(world, 'step', { timeout: 10 });
+
+    expect(result).toEqual({
+      healthy: false,
+      error: 'Health check timed out after 10ms',
+    });
+    expect(world.queue).toHaveBeenCalledWith(
+      '__wkf_step_health_check',
+      {
+        __healthCheck: true,
+        correlationId: expect.any(String),
+      },
+      {
+        specVersion: 1,
+        deploymentId: undefined,
+      }
+    );
+    expect(world.streams.get).toHaveBeenCalledWith(
+      expect.stringMatching(/^wrun_hc_/),
+      expect.stringMatching(/^__health_check__/)
+    );
   });
 });

@@ -1,10 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeAll, describe, expect, test } from 'vitest';
-import {
-  getWorkbenchAppPath,
-  isNextLazyDiscoveryEnabledForTest,
-} from './utils';
+import { getWorkbenchAppPath } from './utils';
 
 export interface DevTestConfig {
   generatedStepPath: string;
@@ -45,13 +42,14 @@ export function createDevTests(config?: DevTestConfig) {
       appPath,
       finalConfig.generatedWorkflowPath
     );
+    const usesNextBuilder = generatedWorkflow.endsWith(
+      path.join('app', '.well-known', 'workflow', 'v1', 'flow', 'route.js')
+    );
     const testWorkflowFile = finalConfig.testWorkflowFile ?? '3_streams.ts';
     const workflowsDir = finalConfig.workflowsDir ?? 'workflows';
     const usesDeferredBuilder = generatedStep.includes(
       path.join('.well-known', 'workflow', 'v1', 'step', 'route.js')
     );
-    const usesNextEagerBuilder =
-      !isNextLazyDiscoveryEnabledForTest() && usesDeferredBuilder;
     const workflowManifestPath = path.join(
       appPath,
       'app/.well-known/workflow/v1/manifest.json'
@@ -67,12 +65,13 @@ export function createDevTests(config?: DevTestConfig) {
     };
     const restoreFiles: Array<{ path: string; content: string }> = [];
 
-    const fetchWithTimeout = (pathname: string) => {
+    const fetchWithTimeout = (pathname: string, init?: RequestInit) => {
       if (!deploymentUrl) {
         return Promise.resolve();
       }
 
       return fetch(new URL(pathname, deploymentUrl), {
+        ...init,
         signal: AbortSignal.timeout(5_000),
       });
     };
@@ -112,6 +111,12 @@ export function createDevTests(config?: DevTestConfig) {
       await Promise.all([
         fetchWithTimeout('/').catch(() => {}),
         fetchWithTimeout('/api/chat').catch(() => {}),
+        fetchWithTimeout('/.well-known/workflow/v1/flow?__health').catch(
+          () => {}
+        ),
+        fetchWithTimeout('/.well-known/workflow/v1/step?__health').catch(
+          () => {}
+        ),
       ]);
     };
 
@@ -155,23 +160,25 @@ export function createDevTests(config?: DevTestConfig) {
     });
 
     afterEach(async () => {
-      // Restore file contents before deleting any files. If a deletion races
-      // ahead of an api-file restore, the dev server briefly sees an import
-      // pointing at a missing module and fails compilation. On Windows that
-      // failure can stick — Turbopack leaves stale imports in the generated
-      // step route bundle — and every subsequent step request returns 500.
+      // Restore file contents before clearing any added files. Dev servers can
+      // keep generated imports alive briefly after a rebuild. Next's generated
+      // step route imports deferred copies, so added workflow files need to
+      // keep their real contents until shutdown. Other builders can use empty
+      // placeholders to drop workflow directives while avoiding missing imports.
       const toRestore = restoreFiles.filter((item) => item.content !== '');
-      const toDelete = restoreFiles.filter((item) => item.content === '');
+      const toClear = restoreFiles.filter((item) => item.content === '');
       await Promise.all(
         toRestore.map((item) => fs.writeFile(item.path, item.content))
       );
-      if (toDelete.length > 0) {
+      if (toClear.length > 0) {
         await prewarm();
+        if (!usesDeferredBuilder) {
+          await Promise.all(toClear.map((item) => fs.writeFile(item.path, '')));
+          await prewarm();
+        }
       }
-      await Promise.all(toDelete.map((item) => fs.unlink(item.path)));
-      await prewarm();
       restoreFiles.length = 0;
-    });
+    }, 30_000);
 
     test('should rebuild on workflow change', { timeout: 30_000 }, async () => {
       const workflowFile = path.join(appPath, workflowsDir, testWorkflowFile);
@@ -292,11 +299,15 @@ export async function ${marker}() {
       'should rebuild on adding workflow file',
       { timeout: 60_000 },
       async () => {
+        const apiFile = path.join(appPath, finalConfig.apiFilePath);
         const workflowFile = path.join(
           appPath,
           workflowsDir,
           'new-workflow.ts'
         );
+        const workflowImportPath = usesNextBuilder
+          ? `@/${workflowsDir}/new-workflow`
+          : `${finalConfig.apiFileImportPath}/${workflowsDir}/new-workflow`;
 
         await fs.writeFile(
           workflowFile,
@@ -307,22 +318,27 @@ export async function ${marker}() {
 `
         );
         restoreFiles.push({ path: workflowFile, content: '' });
-        const apiFile = path.join(appPath, finalConfig.apiFilePath);
 
         const apiFileContent = await fs.readFile(apiFile, 'utf8');
         restoreFiles.push({ path: apiFile, content: apiFileContent });
 
         await fs.writeFile(
           apiFile,
-          `import '${finalConfig.apiFileImportPath}/${workflowsDir}/new-workflow';
+          `import '${workflowImportPath}';
 ${apiFileContent}`
         );
 
         await pollUntil({
-          description: 'generated workflow to include newWorkflowFile',
+          description:
+            'generated workflow manifest or route to include newWorkflowFile',
           timeoutMs: 50_000,
           check: async () => {
-            if (usesNextEagerBuilder) {
+            if (usesNextBuilder) {
+              await fetchWithTimeout('/api/chat', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: '{',
+              }).catch(() => {});
               const manifestJson = await fs.readFile(
                 workflowManifestPath,
                 'utf8'

@@ -145,6 +145,54 @@ const HEALTH_CHECK_POLL_INTERVAL = 100;
 // (which doesn't work across processes)
 const HEALTH_CHECK_READ_TIMEOUT = 500;
 
+class HealthCheckTimeoutError extends Error {
+  constructor(timeout: number) {
+    super(`Health check timed out after ${timeout}ms`);
+  }
+}
+
+function getHealthCheckTimeRemaining(startTime: number, timeout: number) {
+  return Math.max(0, timeout - (Date.now() - startTime));
+}
+
+async function withHealthCheckTimeout<T>(
+  promise: Promise<T>,
+  startTime: number,
+  timeout: number
+): Promise<T> {
+  const remaining = getHealthCheckTimeRemaining(startTime, timeout);
+  if (remaining <= 0) {
+    throw new HealthCheckTimeoutError(timeout);
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new HealthCheckTimeoutError(timeout)),
+          remaining
+        );
+      }),
+    ]);
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  }
+}
+
+async function waitForNextHealthCheckPoll(startTime: number, timeout: number) {
+  const remaining = getHealthCheckTimeRemaining(startTime, timeout);
+  if (remaining <= 0) {
+    return;
+  }
+  await new Promise((resolve) =>
+    setTimeout(resolve, Math.min(HEALTH_CHECK_POLL_INTERVAL, remaining))
+  );
+}
+
 /**
  * Read chunks from a stream with a timeout per read operation.
  * Returns { chunks, timedOut } where timedOut indicates if a read timed out.
@@ -225,6 +273,33 @@ function parseHealthCheckResponse(
   return parsed;
 }
 
+async function readHealthCheckResponse(
+  world: World,
+  correlationId: string,
+  streamName: string,
+  startTime: number,
+  timeout: number
+): Promise<{ healthy: boolean } | null> {
+  const stream = await withHealthCheckTimeout(
+    world.streams.get(generateHealthCheckRunId(correlationId), streamName),
+    startTime,
+    timeout
+  );
+  const reader = stream.getReader();
+  const readTimeout = Math.min(
+    HEALTH_CHECK_READ_TIMEOUT,
+    Math.max(1, getHealthCheckTimeRemaining(startTime, timeout))
+  );
+  const { chunks, timedOut } = await readStreamWithTimeout(reader, readTimeout);
+
+  if (timedOut) {
+    await reader.cancel().catch(() => {});
+    return null;
+  }
+
+  return parseHealthCheckResponse(chunks);
+}
+
 export async function healthCheck(
   world: World,
   endpoint: HealthCheckEndpoint,
@@ -242,57 +317,42 @@ export async function healthCheck(
   const startTime = Date.now();
 
   try {
-    await world.queue(
-      queueName,
-      { __healthCheck: true, correlationId },
-      {
-        // Use JSON transport so the health check works against both
-        // old (JSON-only) and new (dual) deployments.
-        specVersion: SPEC_VERSION_LEGACY,
-        deploymentId: options?.deploymentId,
-      }
+    await withHealthCheckTimeout(
+      world.queue(
+        queueName,
+        { __healthCheck: true, correlationId },
+        {
+          // Use JSON transport so the health check works against both
+          // old (JSON-only) and new (dual) deployments.
+          specVersion: SPEC_VERSION_LEGACY,
+          deploymentId: options?.deploymentId,
+        }
+      ),
+      startTime,
+      timeout
     );
 
-    while (Date.now() - startTime < timeout) {
+    while (getHealthCheckTimeRemaining(startTime, timeout) > 0) {
       try {
-        const stream = await world.streams.get(
-          generateHealthCheckRunId(correlationId),
-          streamName
+        const response = await readHealthCheckResponse(
+          world,
+          correlationId,
+          streamName,
+          startTime,
+          timeout
         );
-        const reader = stream.getReader();
-        const { chunks, timedOut } = await readStreamWithTimeout(
-          reader,
-          HEALTH_CHECK_READ_TIMEOUT
-        );
-
-        if (timedOut) {
-          try {
-            reader.cancel();
-          } catch {
-            // Ignore cancel errors
-          }
-          await new Promise((resolve) =>
-            setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-          );
-          continue;
-        }
-
-        const response = parseHealthCheckResponse(chunks);
         if (response) {
           return {
             ...response,
             latencyMs: Date.now() - startTime,
           };
         }
-
-        await new Promise((resolve) =>
-          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-        );
-      } catch {
-        await new Promise((resolve) =>
-          setTimeout(resolve, HEALTH_CHECK_POLL_INTERVAL)
-        );
+      } catch (error) {
+        if (error instanceof HealthCheckTimeoutError) {
+          throw error;
+        }
       }
+      await waitForNextHealthCheckPoll(startTime, timeout);
     }
     return {
       healthy: false,

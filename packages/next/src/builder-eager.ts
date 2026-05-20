@@ -99,11 +99,18 @@ export async function getNextBuilderEager() {
             'Invariant: expected steps build context in watch mode'
           );
         }
+        const interimBundleCtx = combinedResult?.interimBundleCtx;
+        const bundleFinal = combinedResult?.bundleFinal;
+        if (!interimBundleCtx || !bundleFinal) {
+          throw new Error(
+            'Invariant: expected workflows bundle context in watch mode'
+          );
+        }
 
         // Use stepsCtx for the watch rebuild (workflow interim ctx from combined)
         let workflowsCtx = {
-          interimBundleCtx: combinedResult?.interimBundleCtx!,
-          bundleFinal: combinedResult?.bundleFinal!,
+          interimBundleCtx,
+          bundleFinal,
         };
 
         const normalizePath = (pathname: string) =>
@@ -195,7 +202,13 @@ export async function getNextBuilderEager() {
           const newInputFiles = await this.getInputFiles();
           options.inputFiles = newInputFiles;
 
-          await stepsCtx!.dispose();
+          const existingStepsCtx = stepsCtx;
+          if (!existingStepsCtx) {
+            throw new Error(
+              'Invariant: expected steps build context before rebuild'
+            );
+          }
+          await existingStepsCtx.dispose();
           await workflowsCtx.interimBundleCtx.dispose();
 
           const newCombined = await this.buildCombinedFunction(options);
@@ -217,60 +230,6 @@ export async function getNextBuilderEager() {
           };
 
           await writeManifest(newCombined.manifest);
-        };
-
-        const logBuildMessages = (
-          result: {
-            errors?: import('esbuild').Message[];
-            warnings?: import('esbuild').Message[];
-          },
-          label: string
-        ) => {
-          const logByType = (
-            messages: import('esbuild').Message[] | undefined,
-            method: 'error' | 'warn'
-          ) => {
-            if (!messages || messages.length === 0) {
-              return;
-            }
-            const descriptor = method === 'error' ? 'errors' : 'warnings';
-            console[method](`${descriptor} while rebuilding ${label}`);
-            for (const message of messages) {
-              console[method](message);
-            }
-          };
-
-          logByType(result.errors, 'error');
-          logByType(result.warnings, 'warn');
-        };
-
-        const rebuildExistingFiles = async () => {
-          const rebuiltStepStart = Date.now();
-          const stepsResult = await stepsCtx!.rebuild();
-          logBuildMessages(stepsResult, 'steps bundle');
-          console.log(
-            'Rebuilt steps bundle',
-            `${Date.now() - rebuiltStepStart}ms`
-          );
-
-          const rebuiltWorkflowStart = Date.now();
-          const workflowResult = await workflowsCtx.interimBundleCtx.rebuild();
-          logBuildMessages(workflowResult, 'workflows bundle');
-
-          if (
-            !workflowResult.outputFiles ||
-            workflowResult.outputFiles.length === 0
-          ) {
-            console.error(
-              'No output generated while rebuilding workflows bundle'
-            );
-            return;
-          }
-          await workflowsCtx.bundleFinal(workflowResult.outputFiles[0].text);
-          console.log(
-            'Rebuilt workflow bundle',
-            `${Date.now() - rebuiltWorkflowStart}ms`
-          );
         };
 
         const isWatchableFile = (path: string) =>
@@ -370,13 +329,13 @@ export async function getNextBuilderEager() {
           }
 
           enqueue(async () => {
-            if (addedFiles.length > 0 || removedFiles.length > 0) {
+            if (
+              addedFiles.length > 0 ||
+              modifiedFiles.length > 0 ||
+              removedFiles.length > 0
+            ) {
               await fullRebuild();
               return;
-            }
-
-            if (modifiedFiles.length > 0) {
-              await rebuildExistingFiles();
             }
           });
         });
