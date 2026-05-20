@@ -17,7 +17,7 @@ import {
   test,
 } from 'vitest';
 import { getTrustedSourcesHeaders } from '../../../scripts/trusted-sources-headers.mjs';
-import type { Run as WorkflowRunHandle } from '../src/runtime';
+import type { Run } from '../src/runtime';
 import {
   getHookByToken,
   getRun,
@@ -93,7 +93,7 @@ async function waitForHookState(
  */
 async function start<T>(
   ...args: Parameters<typeof rawStart<T>>
-): Promise<WorkflowRunHandle<T>> {
+): Promise<Run<T>> {
   const run = await rawStart<T>(...args);
   trackRun(run);
   return run;
@@ -138,7 +138,7 @@ async function startWorkflowViaHttp(
   workflow: string | { workflowFile: string; workflowFn: string },
   args: any[],
   endpoint: string
-): Promise<WorkflowRunHandle<any>> {
+): Promise<Run<any>> {
   const url = new URL(endpoint, deploymentUrl);
   const workflowFn =
     typeof workflow === 'string' ? workflow : workflow.workflowFn;

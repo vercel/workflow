@@ -24,14 +24,24 @@ vi.mock('@workflow/utils/get-port', () => ({
   getPort: vi.fn().mockResolvedValue(3000),
 }));
 
+const fixedNow = new Date('2026-05-19T12:00:20.000Z');
+
 function getWorkflowTransformCode(workflowName: string) {
   return `;globalThis.__private_workflows = new Map([[${JSON.stringify(workflowName)}, ${workflowName}]]);`;
 }
 
+/**
+ * Drives the real workflow queue handler with a fake World so the test can
+ * control the storage interleaving that is hard to reproduce with wall-clock
+ * timing: the handler sees a stale event snapshot, then completing the elapsed
+ * wait races with a hook payload that landed durably first.
+ */
 async function runStaleWaitReplayScenario(options: {
   includePreloadedCursor: boolean;
   omitWaitCompletionFromDelta?: boolean;
 }) {
+  vi.spyOn(Date, 'now').mockReturnValue(+fixedNow);
+
   const runId = 'wrun_stale_wait_replay';
   const workflowName = 'workflow';
   const deploymentId = 'dpl_stale_wait_replay';
@@ -168,6 +178,8 @@ async function runStaleWaitReplayScenario(options: {
       runId: string;
       pagination?: { cursor?: string; sortOrder?: 'asc' | 'desc' };
     }) => {
+      // Cursor reads simulate the optimized delta fetch. Without a cursor, the
+      // runtime has fallen back to a full reload from the beginning.
       let data =
         params.pagination?.cursor === staleEventsCursor
           ? durableEvents.slice(staleEvents.length)
@@ -194,12 +206,15 @@ async function runStaleWaitReplayScenario(options: {
           run: workflowRun,
           events: [...staleEvents],
           ...(options.includePreloadedCursor
-            ? { eventsCursor: staleEventsCursor }
+            ? { cursor: staleEventsCursor, hasMore: false }
             : {}),
         };
       }
 
       if (request.eventType === 'wait_completed') {
+        // This is the race: the wait-triggered handler is committing
+        // wait_completed, but a hook_received event became durable just before
+        // that commit. Replay must observe both events in that durable order.
         if (!durableEvents.includes(hookReceivedEvent)) {
           durableEvents.push(hookReceivedEvent);
         }
@@ -325,6 +340,9 @@ describe('workflow handler wait completion replay', () => {
   });
 
   it('loads only events after the preloaded cursor after completing an elapsed wait', async () => {
+    // Happy path: run_started gave the handler a complete snapshot and cursor,
+    // so after wait_completed it only needs the delta containing the hook and
+    // wait completion.
     const result = await runStaleWaitReplayScenario({
       includePreloadedCursor: true,
     });
@@ -344,6 +362,8 @@ describe('workflow handler wait completion replay', () => {
   });
 
   it('falls back to a full reload when preloaded events do not include a cursor', async () => {
+    // Backward compatibility path for worlds/servers that return preloaded
+    // events but do not yet return pagination metadata with them.
     const result = await runStaleWaitReplayScenario({
       includePreloadedCursor: false,
     });
@@ -370,6 +390,8 @@ describe('workflow handler wait completion replay', () => {
   });
 
   it('falls back to a full reload when the cursor delta misses the attempted wait completion', async () => {
+    // Defensive path: if the cursor read does not include the wait completion
+    // this handler just wrote, the cursor was not a safe replay boundary.
     const result = await runStaleWaitReplayScenario({
       includePreloadedCursor: true,
       omitWaitCompletionFromDelta: true,

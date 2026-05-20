@@ -952,7 +952,8 @@ export function createEventsStorage(
       // For run_started: include all events so the runtime can skip
       // the initial events.list call and reduce TTFB.
       let events: Event[] | undefined;
-      let eventsCursor: string | null | undefined;
+      let cursor: string | null | undefined;
+      let hasMore: boolean | undefined;
       if (data.eventType === 'run_started' && run) {
         const allEvents = await paginatedFileSystemQuery({
           directory: path.join(basedir, 'events'),
@@ -963,7 +964,8 @@ export function createEventsStorage(
           getId: (e) => e.eventId,
         });
         events = allEvents.data;
-        eventsCursor = allEvents.cursor;
+        cursor = allEvents.cursor;
+        hasMore = allEvents.hasMore;
       }
 
       // Return EventResult with event and any created/updated entity
@@ -974,7 +976,8 @@ export function createEventsStorage(
         hook,
         wait,
         events,
-        eventsCursor,
+        cursor,
+        hasMore,
       };
     },
 
