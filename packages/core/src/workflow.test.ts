@@ -2122,6 +2122,7 @@ describe('runWorkflow', () => {
           correlationId: 'hook_01HK153X00GYR8SV1JHHTGN5HE',
           eventData: {
             token: 'my-duplicate-token',
+            conflictingRunId: 'wrun_conflicting',
           },
           createdAt: new Date(),
         },
@@ -2147,6 +2148,9 @@ describe('runWorkflow', () => {
       expect(error).toBeInstanceOf(HookConflictError);
       expect(error?.message).toContain('already in use by another workflow');
       expect(error?.message).toContain('my-duplicate-token');
+      expect((error as HookConflictError).conflictingRunId).toBe(
+        'wrun_conflicting'
+      );
     });
 
     it('should reject multiple awaits when hook_conflict is received (iterator pattern)', async () => {

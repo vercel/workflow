@@ -292,6 +292,7 @@ describe('createCreateHook', () => {
         correlationId: 'hook_01K11TFZ62YS0YYFDQ3E8B9YCV',
         eventData: {
           token: 'my-conflicting-token',
+          conflictingRunId: 'wrun_conflicting',
         },
         createdAt: new Date(),
       },
@@ -300,9 +301,18 @@ describe('createCreateHook', () => {
     const createHook = createCreateHook(ctx);
     const hook = createHook({ token: 'my-conflicting-token' });
 
-    // Await should reject with HookConflictError
-    await expect(hook).rejects.toThrow(HookConflictError);
-    await expect(hook).rejects.toThrow(/already in use/);
+    let error: unknown;
+    try {
+      await hook;
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(HookConflictError);
+    expect((error as HookConflictError).message).toContain('already in use');
+    expect((error as HookConflictError).token).toBe('my-conflicting-token');
+    expect((error as HookConflictError).conflictingRunId).toBe(
+      'wrun_conflicting'
+    );
   });
 
   it('should reject multiple awaits when hook_conflict event is received (iterator case)', async () => {

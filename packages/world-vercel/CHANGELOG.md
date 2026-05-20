@@ -1,5 +1,17 @@
 # @workflow/world-vercel
 
+## 5.0.0-beta.5
+
+### Patch Changes
+
+- [#1999](https://github.com/vercel/workflow/pull/1999) [`c43e721`](https://github.com/vercel/workflow/commit/c43e721efc90e93575f0e1f36221b69d50074187) Thanks [@pranaygp](https://github.com/pranaygp)! - Release failed VQS workflow handler messages on the configured retry cadence.
+
+- [#1987](https://github.com/vercel/workflow/pull/1987) [`22b5a12`](https://github.com/vercel/workflow/commit/22b5a1240f8f4dfee5536791fee981d50781ff1f) Thanks [@karthikscale3](https://github.com/karthikscale3)! - Update to new queue client version
+
+- Updated dependencies [[`9d2a926`](https://github.com/vercel/workflow/commit/9d2a9261fd9355b8e8f41342dd8b81b272162837)]:
+  - @workflow/errors@5.0.0-beta.3
+  - @workflow/world@5.0.0-beta.3
+
 ## 5.0.0-beta.4
 
 ### Major Changes
