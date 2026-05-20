@@ -580,9 +580,9 @@ export function workflowEntrypoint(
                     );
                   }
 
-                  // Classify the error: WorkflowRuntimeError indicates an
-                  // internal issue (corrupted event log, missing data);
-                  // everything else is a user code error.
+                  // Classify the error: WorkflowRuntimeError indicates
+                  // an SDK/runtime issue, and selected subclasses use
+                  // more specific codes for backend tracking.
                   const errorCode = classifyRunError(err);
 
                   runtimeLogger.error('Error while running workflow', {

@@ -1,4 +1,5 @@
 import {
+  CorruptedEventLogError,
   HookConflictError,
   RUN_ERROR_CODES,
   WorkflowNotRegisteredError,
@@ -9,6 +10,12 @@ import { describe, expect, it } from 'vitest';
 import { classifyRunError } from './classify-error.js';
 
 describe('classifyRunError', () => {
+  it('classifies CorruptedEventLogError as CORRUPTED_EVENT_LOG', () => {
+    expect(
+      classifyRunError(new CorruptedEventLogError('corrupted event log'))
+    ).toBe(RUN_ERROR_CODES.CORRUPTED_EVENT_LOG);
+  });
+
   it('classifies WorkflowRuntimeError as RUNTIME_ERROR', () => {
     expect(
       classifyRunError(new WorkflowRuntimeError('corrupted event log'))
