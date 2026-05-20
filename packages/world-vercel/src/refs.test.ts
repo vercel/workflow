@@ -136,10 +136,76 @@ describe('resolveRefDescriptor', () => {
     ).rejects.toThrow(/length mismatch/);
   });
 
+  it('throws when the body is shorter than the minimum format-prefix length (with Content-Length)', async () => {
+    // The SDK guarantees a 4-byte format prefix on every stored ref
+    // payload. A 1-3 byte body — even one that "agrees" with the
+    // declared Content-Length — would still deterministically fail
+    // downstream replay with "Data too short to contain format prefix".
+    // We catch it at the transport boundary.
+    const tooShort = new Uint8Array([0x01, 0x02, 0x03]);
+    mockFetch.mockResolvedValueOnce(
+      new Response(tooShort, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': '3',
+        },
+      })
+    );
+
+    await expect(
+      resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID)
+    ).rejects.toThrow(/truncated 3-byte body/);
+  });
+
+  it('throws when the body is shorter than the minimum format-prefix length (no Content-Length)', async () => {
+    // Same as above but for chunked transfer where Content-Length is
+    // absent. This is the case the Content-Length validator can't see,
+    // so the minimum-length defense is what protects us. Without it,
+    // a 1–3 byte truncated response in chunked mode would still flow
+    // downstream and trigger the same "Data too short" failure that
+    // poisons the in-memory event log.
+    const tooShort = new Uint8Array([0xfa]);
+    mockFetch.mockResolvedValueOnce(
+      new Response(tooShort, {
+        status: 200,
+        headers: new Headers({ 'Content-Type': 'application/cbor' }),
+      })
+    );
+
+    await expect(
+      resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID)
+    ).rejects.toThrow(/truncated 1-byte body/);
+  });
+
+  it('ignores a malformed Content-Length header instead of misreporting truncation', async () => {
+    // Some upstream paths could in theory emit a non-numeric or
+    // otherwise malformed Content-Length (e.g. proxy bugs). Without
+    // care, `Number("abc") === NaN` would surface as a "truncated"
+    // error even when the body itself is fine. We treat malformed
+    // declared lengths as absent and rely on the minimum-length check
+    // for safety.
+    const payload = { ok: true };
+    const encoded = encode(payload);
+    mockFetch.mockResolvedValueOnce(
+      new Response(encoded, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/cbor',
+          'Content-Length': 'not-a-number',
+        },
+      })
+    );
+
+    const result = await resolveRefDescriptor(s3RemoteRef(), TEST_RUN_ID);
+
+    expect(result).toEqual(payload);
+  });
+
   it('still decodes when Content-Length header is absent (transfer-encoding: chunked)', async () => {
     // Some upstream paths drop the Content-Length header (chunked
     // transfer encoding). In that case we have nothing to validate
-    // against, so only the zero-byte check applies.
+    // against, so only the minimum-length check applies.
     const payload = { ok: true };
     const encoded = encode(payload);
     const headers = new Headers({ 'Content-Type': 'application/cbor' });
