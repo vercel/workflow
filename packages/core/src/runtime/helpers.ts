@@ -342,6 +342,7 @@ export async function loadWorkflowRunEvents(
       let cursor: string | null = afterCursor ?? null;
       let hasMore = true;
       let pagesLoaded = 0;
+      let eventsSoFar = 0;
 
       const world = await getWorldLazy();
       const loadStart = Date.now();
@@ -363,12 +364,16 @@ export async function loadWorkflowRunEvents(
         hasMore = response.hasMore;
         cursor = response.cursor;
         pagesLoaded++;
+        eventsSoFar += response.data.length;
 
         runtimeLogger.debug('Loaded event page', {
           workflowRunId: runId,
           incremental,
           page: pagesLoaded,
           pageEvents: response.data.length,
+          // Running total across pages — useful for triaging slow replays
+          // from the log line alone (without summing prior pageEvents).
+          totalEvents: eventsSoFar,
           hasMore,
           pageMs: Date.now() - pageStart,
         });

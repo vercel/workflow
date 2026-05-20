@@ -314,7 +314,13 @@ export async function getWorkflowRunEvents(
   // descriptor so client-side hydration can fetch the payload directly
   // from S3 instead of round-tripping the /refs endpoint. The server
   // resolves the outer eventDataRef wrapper itself when this flag is set.
-  searchParams.set('presignS3Refs', 'true');
+  //
+  // Only relevant when we're going to hydrate refs client-side. For
+  // resolveData='none' the descriptors are stripped before any URL is
+  // dereferenced, so skip the (small but non-zero) server-side signing work.
+  if (resolveData === 'all') {
+    searchParams.set('presignS3Refs', 'true');
+  }
 
   const queryString = searchParams.toString();
   const query = queryString ? `?${queryString}` : '';

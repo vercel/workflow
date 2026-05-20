@@ -63,6 +63,28 @@ describe('getWorkflowRunEvents', () => {
     expect(capturedUrl).toMatch(/remoteRefBehavior=lazy/);
   });
 
+  it('omits presignS3Refs when resolveData=none (no client-side hydration)', async () => {
+    let capturedUrl: string | undefined;
+
+    globalThis.fetch = vi.fn(async (url: any) => {
+      capturedUrl =
+        url && typeof url === 'object' && 'url' in url ? url.url : String(url);
+      return new Response(makeListResponse([]), {
+        status: 200,
+        headers: { 'content-type': 'application/cbor' },
+      });
+    }) as any;
+
+    await getWorkflowRunEvents({
+      runId: 'wrun_test',
+      pagination: { sortOrder: 'asc' },
+      resolveData: 'none',
+    });
+
+    expect(capturedUrl).toBeDefined();
+    expect(capturedUrl).not.toMatch(/presignS3Refs/);
+  });
+
   it('with deferRefs=true returns refsResolution and unresolved data', async () => {
     const payload = { input: 'resolved-value' };
     const events = [
