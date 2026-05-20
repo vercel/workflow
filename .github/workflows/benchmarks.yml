@@ -638,9 +638,8 @@ jobs:
             --branch "${{ github.ref_name }}"
 
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: ./.github/actions/publish-to-gh-pages
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./docs-data
-          destination_dir: ci
-          keep_files: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          source-dir: ./docs-data
+          destination-dir: ci
