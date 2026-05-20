@@ -391,7 +391,7 @@ export function workflowEntrypoint(
                 // Load all events into memory before running.
                 // If we got pre-loaded events from the run_started response,
                 // skip the events.list round-trip to reduce TTFB.
-                const events =
+                let events =
                   preloadedEvents ??
                   (await getAllWorkflowRunEvents(workflowRun.runId));
 
@@ -423,11 +423,9 @@ export function workflowEntrypoint(
                 // Create all wait_completed events
                 for (const waitEvent of waitsToComplete) {
                   try {
-                    const result = await world.events.create(runId, waitEvent, {
+                    await world.events.create(runId, waitEvent, {
                       requestId,
                     });
-                    // Add the event to the events array so the workflow can see it
-                    events.push(result.event!);
                   } catch (err) {
                     if (EntityConflictError.is(err)) {
                       runtimeLogger.info('Wait already completed, skipping', {
@@ -438,6 +436,14 @@ export function workflowEntrypoint(
                     }
                     throw err;
                   }
+                }
+
+                if (waitsToComplete.length > 0) {
+                  // The event list above may be stale by the time an elapsed
+                  // wait is committed. Reload before replay so concurrent
+                  // durable events, such as hook_received, keep their
+                  // event-log ordering relative to wait_completed.
+                  events = await getAllWorkflowRunEvents(workflowRun.runId);
                 }
 
                 // Resolve the encryption key for this run's deployment
