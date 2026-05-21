@@ -47,13 +47,6 @@ export function isRefDescriptor(value: unknown): value is RefDescriptor {
 }
 
 /**
- * Maximum number of concurrent ref resolution requests per `hydrateEventRefs`
- * call (i.e. per page). Limits peak in-flight S3 GETs to avoid exhausting
- * the undici socket pool / fd ceiling.
- */
-const REF_RESOLVE_CONCURRENCY = 10;
-
-/**
  * Resolve a single ref descriptor.
  *
  * For inline refs (dbrf: prefix), the data is decoded locally from the
@@ -171,24 +164,17 @@ export interface RefWithRunId {
 }
 
 /**
- * Resolve multiple ref descriptors in parallel with bounded concurrency.
- *
- * If any ref in a batch fails, the batch rejects and remaining batches
- * are aborted to avoid cascading failures.
+ * Resolve multiple ref descriptors in parallel.
  *
  * @param refs - Array of ref descriptors with their owning runIds
  * @param config - API configuration
- * @param concurrency - Max concurrent ref resolution requests. Falls back to REF_RESOLVE_CONCURRENCY.
  * @returns Array of resolved values in the same order as input
  */
 export async function resolveRefDescriptors(
   refs: RefWithRunId[],
-  config?: APIConfig,
-  concurrency?: number
+  config?: APIConfig
 ): Promise<unknown[]> {
   if (refs.length === 0) return [];
-
-  const limit = concurrency ?? REF_RESOLVE_CONCURRENCY;
 
   return trace('world.refs.resolve', async (span) => {
     const inlineCount = refs.filter((r) =>
@@ -200,30 +186,10 @@ export async function resolveRefDescriptors(
       'workflow.refs.total_count': refs.length,
       'workflow.refs.inline_count': inlineCount,
       'workflow.refs.remote_count': remoteCount,
-      'workflow.refs.concurrency_limit': limit,
     });
 
-    // Simple case: if under concurrency limit, resolve all at once
-    if (refs.length <= limit) {
-      return Promise.all(
-        refs.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
-      );
-    }
-
-    // Batch with bounded concurrency. If any ref in a batch fails,
-    // the batch rejects and remaining batches are aborted to avoid
-    // cascading failures.
-    const results: unknown[] = new Array(refs.length);
-    for (let i = 0; i < refs.length; i += limit) {
-      const batch = refs.slice(i, i + limit);
-      const batchResults = await Promise.all(
-        batch.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
-      );
-      for (let j = 0; j < batchResults.length; j++) {
-        results[i + j] = batchResults[j];
-      }
-    }
-
-    return results;
+    return Promise.all(
+      refs.map((r) => resolveRefDescriptor(r.descriptor, r.runId, config))
+    );
   });
 }
