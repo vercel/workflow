@@ -62,6 +62,7 @@ import {
   BODY_INIT_SYMBOL,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
   STREAM_TYPE_SYMBOL,
   WEBHOOK_RESPONSE_WRITABLE,
 } from './symbols.js';
@@ -778,6 +779,31 @@ export function getExternalReducers(
       const streamId = ((global as any)[STABLE_ULID] || defaultUlid)();
       const name = `strm_${streamId}`;
 
+      // Fast path: when the writable is already backed by a workflow
+      // server stream (e.g. it came from a step-context `getWritable()`
+      // or was hydrated from a workflow input by `getStepRevivers`), do
+      // NOT pipe through it — that would compose two serialize
+      // transforms on every chunk and the consumer would see one
+      // unrecovered devalue frame of framing. Instead, bridge bytes
+      // straight from the new child-side server stream to the original
+      // server stream, leaving the producer-side serialize transform
+      // (installed once by the child's step reviver) as the only
+      // framing layer in the chain.
+      const existingName = (value as any)[STREAM_NAME_SYMBOL];
+      const existingRunId = (value as any)[STREAM_SERVER_RUN_ID_SYMBOL];
+      if (
+        typeof existingName === 'string' &&
+        typeof existingRunId === 'string'
+      ) {
+        const childReadable = new WorkflowServerReadableStream(runId, name);
+        const originalServerWritable = new WorkflowServerWritableStream(
+          existingRunId,
+          existingName
+        );
+        ops.push(childReadable.pipeTo(originalServerWritable));
+        return { name };
+      }
+
       const readable = new WorkflowServerReadableStream(runId, name);
       ops.push(readable.pipeTo(value));
 
@@ -1435,6 +1461,18 @@ export function getExternalRevivers(
       // Start polling to detect when user releases lock
       pollWritableLock(serialize.writable, state);
 
+      // See `getStepRevivers.WritableStream` for the rationale: tagging
+      // lets later reducers bypass the serialize transform when the
+      // writable is forwarded across another serialization boundary.
+      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+        value: value.name,
+        writable: false,
+      });
+      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: runId,
+        writable: false,
+      });
+
       return serialize.writable;
     },
 
@@ -1762,6 +1800,21 @@ function getStepRevivers(
 
       // Start polling to detect when user releases lock
       pollWritableLock(serialize.writable, state);
+
+      // Record the underlying `(runId, name)` so downstream reducers can
+      // recognize that this writable is already backed by a workflow
+      // server stream and avoid piping through it a second time. Without
+      // this, passing the writable as an argument to `start()` would
+      // double-frame every chunk (one serialize transform here, plus a
+      // second one installed by `getExternalReducers.WritableStream`).
+      Object.defineProperty(serialize.writable, STREAM_NAME_SYMBOL, {
+        value: value.name,
+        writable: false,
+      });
+      Object.defineProperty(serialize.writable, STREAM_SERVER_RUN_ID_SYMBOL, {
+        value: runId,
+        writable: false,
+      });
 
       return serialize.writable;
     },

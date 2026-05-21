@@ -41,6 +41,7 @@ import {
   ABORT_STREAM_NAME,
   STABLE_ULID,
   STREAM_NAME_SYMBOL,
+  STREAM_SERVER_RUN_ID_SYMBOL,
 } from './symbols.js';
 import { createContext } from './vm/index.js';
 
@@ -496,6 +497,40 @@ describe('workflow arguments', () => {
     expect(hydrated).toBeInstanceOf(OurWritableStream);
     const streamName = hydrated[STREAM_NAME_SYMBOL];
     expect(streamName).toMatch(/^strm_[0-9A-Z]{26}$/);
+  });
+
+  // Regression: when a user writable is already backed by a workflow
+  // server stream (because it was hydrated by a step-side reviver or
+  // created via step-context `getWritable()`), forwarding it across a
+  // `start()` boundary must NOT install a second serialize transform on
+  // top of it. The external WritableStream reducer recognizes the
+  // STREAM_NAME / STREAM_SERVER_RUN_ID tags and instead bridges bytes at
+  // the server-stream level, leaving the producer's serialize transform
+  // (installed once by the child's step reviver) as the only framing
+  // layer in the chain. Previously, every chunk would have been devalue-
+  // framed twice on write and only deframed once on read, so the
+  // external reader saw the inner frame as the chunk payload.
+  it('does not pipe through a tagged WritableStream (server-to-server bridge)', async () => {
+    const userWritable = new WritableStream();
+    Object.defineProperty(userWritable, STREAM_NAME_SYMBOL, {
+      value: 'strm_parentstreamname',
+      writable: false,
+    });
+    Object.defineProperty(userWritable, STREAM_SERVER_RUN_ID_SYMBOL, {
+      value: 'wrun_parent',
+      writable: false,
+    });
+
+    expect(userWritable.locked).toBe(false);
+    await dehydrateWorkflowArguments(
+      userWritable,
+      'wrun_child',
+      noEncryptionKey,
+      []
+    );
+    // If the reducer had piped through the user's writable, this would
+    // be `true` (pipeTo acquires the lock).
+    expect(userWritable.locked).toBe(false);
   });
 
   it('should work with ReadableStream', async () => {
