@@ -3037,3 +3037,57 @@ export class DistributedAbortController {
     })();
   }
 }
+
+//////////////////////////////////////////////////////////
+// WritableStream passed as argument to start()
+//
+// A parent workflow gets a WritableStream from getWritable() (its own
+// output stream), and passes it through a step that calls
+// `start(childWorkflow, [args, parentWritable])`. The child workflow
+// receives the WritableStream as a workflow argument and forwards it
+// into a step, which writes raw Uint8Array bytes to it.
+//
+// The external reader on `parentRun.getReadable()` should observe the
+// exact bytes the child step wrote.
+
+async function childStepWritesToParentWritable(
+  parentWritable: WritableStream<Uint8Array>,
+  payload: string
+) {
+  'use step';
+  const writer = parentWritable.getWriter();
+  await writer.write(new TextEncoder().encode(payload));
+  writer.releaseLock();
+}
+
+export async function writableForwardedToChildChildWorkflow(
+  parentWritable: WritableStream<Uint8Array>,
+  payload: string
+) {
+  'use workflow';
+  await childStepWritesToParentWritable(parentWritable, payload);
+  return 'child-done';
+}
+
+async function spawnChildAndForwardWritable(
+  parentWritable: WritableStream<Uint8Array>,
+  payload: string
+) {
+  'use step';
+  const childRun = await start(writableForwardedToChildChildWorkflow, [
+    parentWritable,
+    payload,
+  ]);
+  // Wait for the child to finish writing before letting the parent
+  // close its own writable.
+  await childRun.returnValue;
+  return childRun.runId;
+}
+
+export async function writableForwardedToChildWorkflow(payload: string) {
+  'use workflow';
+  const writable = getWritable<Uint8Array>();
+  const childRunId = await spawnChildAndForwardWritable(writable, payload);
+  await stepCloseOutputStream(writable);
+  return { childRunId };
+}
