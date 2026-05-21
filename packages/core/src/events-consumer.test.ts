@@ -254,6 +254,45 @@ describe('EventsConsumer', () => {
       ]);
     });
 
+    it('should require more than one stable turn before resuming replay', async () => {
+      const event1 = createMockEvent({ id: 'event-1', sequence_number: 1 });
+      const event2 = createMockEvent({ id: 'event-2', sequence_number: 2 });
+      const observed: string[] = [];
+
+      const consumer = new EventsConsumer([event1, event2], {
+        onUnconsumedEvent: vi.fn(),
+        getPromiseQueue: () => Promise.resolve(),
+      });
+      const callback = vi.fn().mockImplementation((event: Event | null) => {
+        if (event?.id === 'event-1') {
+          observed.push('event-1');
+          setTimeout(() => {
+            setTimeout(() => {
+              observed.push('delayed-workflow-continuation');
+            }, 0);
+          }, 0);
+          return EventConsumerResult.ConsumedAndYield;
+        }
+        if (event?.id === 'event-2') {
+          observed.push('event-2');
+          return EventConsumerResult.Finished;
+        }
+        return EventConsumerResult.NotConsumed;
+      });
+
+      consumer.subscribe(callback);
+
+      await vi.waitFor(() => {
+        expect(observed).toContain('event-2');
+      });
+
+      expect(observed).toEqual([
+        'event-1',
+        'delayed-workflow-continuation',
+        'event-2',
+      ]);
+    });
+
     it('should handle event index beyond events array length', async () => {
       const event = createMockEvent();
       const consumer = new EventsConsumer([event], defaultOptions);

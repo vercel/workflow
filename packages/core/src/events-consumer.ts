@@ -157,15 +157,7 @@ export class EventsConsumer {
     // is still unconsumed after the queue drains, it's truly orphaned.
     if (currentEvent !== null) {
       const checkVersion = ++this.unconsumedCheckVersion;
-      this.pendingUnconsumedCheck = this.getPromiseQueue()
-        .then(
-          // Yield once after the first queue drain so promise chains resumed by
-          // that drain can run across the VM boundary and append any follow-up
-          // async work (for example: step_completed resolves -> for-await loop
-          // resumes -> the next hook payload starts hydrating).
-          () => new Promise<void>((resolve) => setTimeout(resolve, 0))
-        )
-        .then(() => this.getPromiseQueue())
+      this.pendingUnconsumedCheck = this.waitForWorkflowTurn()
         .then(() => {
           // Use a delayed setTimeout after the queue drains. The delay must be
           // long enough for promise chains to propagate across the VM boundary
@@ -212,7 +204,9 @@ export class EventsConsumer {
   }
 
   private async waitForWorkflowTurn() {
-    for (let i = 0; i < 10; i++) {
+    let stableTurns = 0;
+
+    for (let i = 0; i < 20; i++) {
       const queue = this.getPromiseQueue();
       await queue;
 
@@ -223,7 +217,12 @@ export class EventsConsumer {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
 
       if (this.getPromiseQueue() === queue) {
-        return;
+        stableTurns++;
+        if (stableTurns >= 2) {
+          return;
+        }
+      } else {
+        stableTurns = 0;
       }
     }
 
