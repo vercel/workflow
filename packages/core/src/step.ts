@@ -5,6 +5,7 @@ import { type StepInvocationQueueItem, WorkflowSuspension } from './global.js';
 import { stepLogger } from './logger.js';
 import {
   scheduleWhenIdle,
+  trackVmDelivery,
   type WorkflowOrchestratorContext,
 } from './private.js';
 import type { Serializable } from './schemas.js';
@@ -133,9 +134,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         if (event.eventType === 'step_failed') {
           // Terminal state - we can remove the invocationQueue item
           ctx.invocationsQueue.delete(event.correlationId);
-          // Step failed - chain through promiseQueue to ensure
-          // deterministic ordering of all promise resolutions/rejections.
-          ctx.promiseQueue = ctx.promiseQueue.then(() => {
+          trackVmDelivery(ctx, async () => {
             const errorData = event.eventData.error;
             const isErrorObject =
               typeof errorData === 'object' && errorData !== null;
@@ -162,15 +161,7 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
         if (event.eventType === 'step_completed') {
           // Terminal state - we can remove the invocationQueue item
           ctx.invocationsQueue.delete(event.correlationId);
-
-          // Step has completed, so resolve the Promise with the cached result.
-          // The hydration is async (e.g., decryption), so we chain it through
-          // ctx.promiseQueue to ensure that even if deserialization
-          // takes variable time, promises resolve in event log order.
-          // Each step's hydration + resolve waits for all prior hydrations
-          // to complete before executing, preserving deterministic ordering.
-          ctx.pendingDeliveries++;
-          ctx.promiseQueue = ctx.promiseQueue.then(async () => {
+          trackVmDelivery(ctx, async () => {
             try {
               const hydratedResult = await hydrateStepReturnValue(
                 event.eventData.result,
@@ -181,8 +172,6 @@ export function createUseStep(ctx: WorkflowOrchestratorContext) {
               resolve(hydratedResult as Result);
             } catch (error) {
               reject(error);
-            } finally {
-              ctx.pendingDeliveries--;
             }
           });
           return EventConsumerResult.FinishedAndYield;

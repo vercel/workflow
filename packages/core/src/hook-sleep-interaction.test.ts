@@ -5,7 +5,7 @@ import { monotonicFactory } from 'ulid';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventsConsumer } from './events-consumer.js';
 import { WorkflowSuspension } from './global.js';
-import type { WorkflowOrchestratorContext } from './private.js';
+import { isVmIdle, type WorkflowOrchestratorContext } from './private.js';
 import { dehydrateStepReturnValue } from './serialization.js';
 import { createUseStep } from './step.js';
 import { createContext } from './vm/index.js';
@@ -41,6 +41,11 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
     eventsConsumer: new EventsConsumer(events, {
       onUnconsumedEvent: () => {},
       getPromiseQueue: () => promiseQueueHolder.current,
+      isVmIdle: () => isVmIdle(ctx),
+      onceVmIdle: (callback) => {
+        ctx.vmIdleObservers.add(callback);
+        return () => ctx.vmIdleObservers.delete(callback);
+      },
     }),
     invocationsQueue: new Map(),
     generateUlid: () => ulid(workflowStartedAt),
@@ -55,6 +60,8 @@ function setupWorkflowContext(events: Event[]): WorkflowOrchestratorContext {
       promiseQueueHolder.current = value;
     },
     pendingDeliveries: 0,
+    pendingVmWork: 0,
+    vmIdleObservers: new Set<() => void>(),
   };
   return ctx;
 }
