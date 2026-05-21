@@ -58,8 +58,13 @@ function httpLog(
  * Inline workflow-server URL override. Must remain an empty string on
  * `main` — rewritten by external CI for branch-deployment testing.
  * Prefer `VERCEL_WORKFLOW_SERVER_URL` for deployment-time configuration.
+ *
+ * On this v4 branch, set to the workflow-server PR-#439 preview deployment
+ * (https://github.com/vercel/workflow-server/pull/439) so e2e tests run
+ * against the v4-enabled server. Reset to '' before merging to main.
  */
-const WORKFLOW_SERVER_URL_OVERRIDE = '';
+const WORKFLOW_SERVER_URL_OVERRIDE =
+  'https://workflow-server-git-peter-v4.vercel.sh';
 
 /**
  * Per-request timeout for HTTP calls to workflow-server (in ms).

@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getHeaders, getHttpConfig, getHttpUrl } from './utils.js';
 
+// On this v4 PR branch, WORKFLOW_SERVER_URL_OVERRIDE in utils.ts is set
+// to the workflow-server PR #439 preview deployment so e2e tests can run
+// against the v4 server. Several tests below check what happens when the
+// inline override is empty — when this override is reset to '' before
+// merging to main, the affected expectations need to flip back too.
+const V4_SERVER_URL_OVERRIDE = 'https://workflow-server-git-peter-v4.vercel.sh';
+
 vi.mock('@vercel/oidc', () => ({
   getVercelOidcToken: vi.fn().mockRejectedValue(new Error('no OIDC')),
 }));
@@ -19,16 +26,20 @@ describe('getHttpUrl', () => {
   });
 
   it('uses default workflow-server URL when no config and no env override', () => {
+    // v4-branch: inline override wins over the default. On main this
+    // would be 'https://vercel-workflow.com/api'.
     expect(getHttpUrl()).toEqual({
-      baseUrl: 'https://vercel-workflow.com/api',
+      baseUrl: `${V4_SERVER_URL_OVERRIDE}/api`,
       usingProxy: false,
     });
   });
 
   it('respects VERCEL_WORKFLOW_SERVER_URL when set (no proxy)', () => {
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom-host.example.com';
+    // v4-branch: inline override wins over the env var. On main this
+    // would be 'https://custom-host.example.com/api'.
     expect(getHttpUrl()).toEqual({
-      baseUrl: 'https://custom-host.example.com/api',
+      baseUrl: `${V4_SERVER_URL_OVERRIDE}/api`,
       usingProxy: false,
     });
   });
@@ -77,15 +88,21 @@ describe('getHeaders', () => {
   });
 
   it('omits x-vercel-workflow-api-url when override is unset', () => {
+    // v4-branch: inline override is set, so the header IS sent (with the
+    // override URL). On main with override='' the header would be null.
     const headers = getHeaders(undefined, { usingProxy: true });
-    expect(headers.get('x-vercel-workflow-api-url')).toBeNull();
+    expect(headers.get('x-vercel-workflow-api-url')).toBe(
+      V4_SERVER_URL_OVERRIDE
+    );
   });
 
   it('sets x-vercel-workflow-api-url when VERCEL_WORKFLOW_SERVER_URL is set and using proxy', () => {
     process.env.VERCEL_WORKFLOW_SERVER_URL = 'https://custom.example.com';
+    // v4-branch: inline override wins over the env var. On main the
+    // header would be 'https://custom.example.com'.
     const headers = getHeaders(undefined, { usingProxy: true });
     expect(headers.get('x-vercel-workflow-api-url')).toBe(
-      'https://custom.example.com'
+      V4_SERVER_URL_OVERRIDE
     );
   });
 
