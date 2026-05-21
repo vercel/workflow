@@ -5,7 +5,14 @@ import {
   StepNotRegisteredError,
   WorkflowNotRegisteredError,
   WorkflowRuntimeError,
+  WorkflowWorldError,
 } from '@workflow/errors';
+
+const WORLD_CONTRACT_ERROR_CODES = new Set([
+  'PARSE_ERROR',
+  'SCHEMA_VALIDATION',
+  RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+]);
 
 /**
  * Set of error names that should classify as generic `RUNTIME_ERROR`. Each
@@ -36,9 +43,30 @@ const RUNTIME_ERROR_CHECKS = [
  * thrown inside the workflow VM and we'd misclassify genuine runtime
  * errors as user errors.
  */
+export function isWorldContractError(err: unknown): err is WorkflowWorldError {
+  if (!WorkflowWorldError.is(err) || err.status !== undefined) {
+    return false;
+  }
+
+  const cause = 'cause' in err ? err.cause : undefined;
+  return (
+    (err.code !== undefined && WORLD_CONTRACT_ERROR_CODES.has(err.code)) ||
+    err.message.startsWith('Failed to parse response body for ') ||
+    err.message.startsWith('Schema validation failed for ') ||
+    (typeof cause === 'object' &&
+      cause !== null &&
+      'name' in cause &&
+      cause.name === 'ZodError')
+  );
+}
+
 export function classifyRunError(err: unknown): RunErrorCode {
   if (CorruptedEventLogError.is(err)) {
     return RUN_ERROR_CODES.CORRUPTED_EVENT_LOG;
+  }
+
+  if (isWorldContractError(err)) {
+    return RUN_ERROR_CODES.WORLD_CONTRACT_ERROR;
   }
 
   for (const isMatch of RUNTIME_ERROR_CHECKS) {

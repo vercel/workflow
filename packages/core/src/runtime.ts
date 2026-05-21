@@ -11,7 +11,7 @@ import {
   WorkflowInvokePayloadSchema,
   type WorkflowRun,
 } from '@workflow/world';
-import { classifyRunError } from './classify-error.js';
+import { classifyRunError, isWorldContractError } from './classify-error.js';
 import { importKey } from './encryption.js';
 import { WorkflowSuspension } from './global.js';
 import { runtimeLogger } from './logger.js';
@@ -360,6 +360,69 @@ export function workflowEntrypoint(
                       ) {
                         return;
                       }
+                      if (isWorldContractError(failErr)) {
+                        runtimeLogger.error(
+                          'Fatal world contract error while recording workflow failure',
+                          {
+                            workflowRunId: runId,
+                            errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+                            error:
+                              failErr instanceof Error
+                                ? failErr.message
+                                : String(failErr),
+                          }
+                        );
+                        return;
+                      }
+                      throw failErr;
+                    }
+                    return;
+                  } else if (isWorldContractError(err)) {
+                    runtimeLogger.error(
+                      'Fatal world contract error during workflow setup',
+                      {
+                        workflowRunId: runId,
+                        errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+                        error: err.message,
+                      }
+                    );
+                    try {
+                      await world.events.create(
+                        runId,
+                        {
+                          eventType: 'run_failed',
+                          specVersion: SPEC_VERSION_CURRENT,
+                          eventData: {
+                            error: {
+                              message: err.message,
+                              stack: err.stack,
+                            },
+                            errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+                          },
+                        },
+                        { requestId }
+                      );
+                    } catch (failErr) {
+                      if (
+                        EntityConflictError.is(failErr) ||
+                        RunExpiredError.is(failErr)
+                      ) {
+                        return;
+                      }
+                      if (isWorldContractError(failErr)) {
+                        runtimeLogger.error(
+                          'Fatal world contract error while recording workflow failure',
+                          {
+                            workflowRunId: runId,
+                            errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+                            error:
+                              failErr instanceof Error
+                                ? failErr.message
+                                : String(failErr),
+                          }
+                        );
+                        return;
+                      }
                       throw failErr;
                     }
                     return;
@@ -399,15 +462,69 @@ export function workflowEntrypoint(
                 // skip the events.list round-trip to reduce TTFB.
                 let events: Event[];
                 let eventsCursor: string | null | undefined;
-                if (preloadedEvents) {
-                  events = preloadedEvents;
-                  eventsCursor = preloadedEventsCursor;
-                } else {
-                  const loadedEvents = await getWorkflowRunEvents(
-                    workflowRun.runId
-                  );
-                  events = loadedEvents.events;
-                  eventsCursor = loadedEvents.cursor;
+                try {
+                  if (preloadedEvents) {
+                    events = preloadedEvents;
+                    eventsCursor = preloadedEventsCursor;
+                  } else {
+                    const loadedEvents = await getWorkflowRunEvents(
+                      workflowRun.runId
+                    );
+                    events = loadedEvents.events;
+                    eventsCursor = loadedEvents.cursor;
+                  }
+                } catch (err) {
+                  if (isWorldContractError(err)) {
+                    runtimeLogger.error(
+                      'Fatal world contract error while loading workflow events',
+                      {
+                        workflowRunId: runId,
+                        errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+                        error: err.message,
+                      }
+                    );
+                    try {
+                      await world.events.create(
+                        runId,
+                        {
+                          eventType: 'run_failed',
+                          specVersion: SPEC_VERSION_CURRENT,
+                          eventData: {
+                            error: {
+                              message: err.message,
+                              stack: err.stack,
+                            },
+                            errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+                          },
+                        },
+                        { requestId }
+                      );
+                    } catch (failErr) {
+                      if (
+                        EntityConflictError.is(failErr) ||
+                        RunExpiredError.is(failErr)
+                      ) {
+                        return;
+                      }
+                      if (isWorldContractError(failErr)) {
+                        runtimeLogger.error(
+                          'Fatal world contract error while recording workflow failure',
+                          {
+                            workflowRunId: runId,
+                            errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+                            error:
+                              failErr instanceof Error
+                                ? failErr.message
+                                : String(failErr),
+                          }
+                        );
+                        return;
+                      }
+                      throw failErr;
+                    }
+                    return;
+                  }
+                  throw err;
                 }
 
                 // Check for any elapsed waits and create wait_completed events
@@ -628,9 +745,22 @@ export function workflowEntrypoint(
                         ...Attribute.ErrorType(errorName),
                       });
                       return;
-                    } else {
-                      throw failErr;
                     }
+                    if (isWorldContractError(failErr)) {
+                      runtimeLogger.error(
+                        'Fatal world contract error while recording workflow failure',
+                        {
+                          workflowRunId: runId,
+                          errorCode: RUN_ERROR_CODES.WORLD_CONTRACT_ERROR,
+                          error:
+                            failErr instanceof Error
+                              ? failErr.message
+                              : String(failErr),
+                        }
+                      );
+                      return;
+                    }
+                    throw failErr;
                   }
 
                   span?.setAttributes({
